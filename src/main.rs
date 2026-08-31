@@ -4,6 +4,8 @@ mod gme;
 mod gme_decoder;
 mod libvgm;
 mod libvgm_decoder;
+mod openmpt;
+mod openmpt_decoder;
 mod opl3;
 mod playback;
 mod settings;

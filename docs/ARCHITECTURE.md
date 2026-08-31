@@ -28,7 +28,8 @@ seek, position, volume, and automatic next-track behavior. Specialist backends
 remain separate so a broad fallback cannot erase behavior such as PSF
 dependency resolution, VGMStream subsongs, AdPlug subsongs, or
 emulator-authentic Roland MIDI synthesis. `libvgm` wraps Cog's exact pinned
-libvgm revision for VGM/VGZ, S98, DRO, and GYM.
+libvgm revision for VGM/VGZ, S98, DRO, and GYM. `libopenmpt` wraps Cog's exact
+0.8.7 release for the 68 extensions returned by that pinned native build.
 
 Decoder settings are shared between the probe registry and playback registry.
 The MIDI engine and current SF2 path are persisted in the platform
@@ -58,6 +59,18 @@ duration is Cog's one-pass duration; playback applies Cog's default two-loop,
 eight-second-fade, and half-second end-silence policy. A sibling `yrw801.rom`
 is supplied through libvgm's file callback when present and otherwise remains
 an optional user-provided asset.
+
+The OpenMPT adapter builds the upstream C++17 sources as a static library and
+uses libopenmpt's stable C API behind one Rust owner. Bundled miniz, minimp3,
+and stb_vorbis preserve compressed-sample support without platform package
+dependencies. Every module is loaded with synchronous sample seeking, then
+uses Cog's normal-play defaults: repeat count zero, 0 mB master gain, 100%
+stereo separation, 8-tap interpolation, automatic volume ramping, and Amiga
+resampler emulation. Probe-time expansion gives every subsong a stable
+`(path, zero-based subsong)` identity; rendering produces 44.1 kHz stereo
+floating-point PCM and seeking uses libopenmpt's time-position API. The
+extension table is asserted against the native library during tests so source
+configuration and registry routing cannot silently diverge.
 
 ## Decoder contract
 

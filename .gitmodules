@@ -4,3 +4,6 @@
 [submodule "native/libvgm"]
 	path = native/libvgm
 	url = https://github.com/ValleyBell/libvgm.git
+[submodule "native/openmpt"]
+	path = native/openmpt
+	url = https://github.com/OpenMPT/openmpt.git

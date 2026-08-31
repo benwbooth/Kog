@@ -20,8 +20,14 @@ formats still need corpus coverage. VGM/VGZ, S98, DRO, and GYM now route to the
 same libvgm revision used by Cog, with real PCM, metadata, seek, loop/fade
 policy, and optional YRW801 ROM lookup. The generated VGM path has passed the
 current real-PCM, seek, and live-UI gates; the rest of the libvgm family still
-needs corpus coverage. SFM, SGC, and the other chiptune, game-audio, and tracker
-families remain explicitly unclaimed.
+needs corpus coverage. Cog's exact libopenmpt 0.8.7 release is now statically
+built with its bundled miniz, minimp3, and stb_vorbis decoders. Its 68 native
+tracker extensions route through a real stereo-float source with runtime
+extension verification, subsongs, metadata, duration, Cog-compatible render
+settings, and seek. A deterministic ProTracker MOD passes the current PCM and
+seek gates; compressed module aliases and the wider tracker corpus remain.
+SFM, SGC, and the other chiptune and game-audio families remain explicitly
+unclaimed.
 
 ## Project direction
 

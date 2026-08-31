@@ -1,9 +1,12 @@
 use cxx_qt_build::{CxxQtBuilder, QmlModule};
+use std::fs;
 use std::path::Path;
+use std::path::PathBuf;
 
 fn main() {
     build_game_music_emu();
     let libvgm_output = build_libvgm();
+    build_openmpt();
 
     cc::Build::new()
         .cpp(true)
@@ -138,4 +141,75 @@ fn link_libvgm(output: &Path) {
     if target.contains("apple") {
         println!("cargo:rustc-link-lib=iconv");
     }
+}
+
+fn build_openmpt() {
+    let source = Path::new("native/openmpt");
+    if !source.join("libopenmpt/libopenmpt.h").is_file() {
+        panic!("OpenMPT submodule is missing; run `git submodule update --init --recursive`");
+    }
+
+    let mut sources = Vec::new();
+    for directory in [
+        "common",
+        "soundlib",
+        "soundlib/plugins",
+        "soundlib/plugins/dmo",
+        "sounddsp",
+        "libopenmpt",
+    ] {
+        sources.extend(cpp_files(&source.join(directory)));
+    }
+    sources.sort();
+
+    cc::Build::new()
+        .cpp(true)
+        .std("c++17")
+        .include(source)
+        .include(source.join("src"))
+        .include(source.join("common"))
+        .include(source.join("include"))
+        .define("LIBOPENMPT_BUILD", None)
+        .define("MPT_WITH_MINIZ", None)
+        .define("MPT_WITH_MINIMP3", None)
+        .define("MPT_WITH_STBVORBIS", None)
+        .files(sources)
+        .warnings(false)
+        .compile("kog_openmpt");
+
+    for (name, file, include) in [
+        (
+            "kog_openmpt_miniz",
+            "include/miniz/miniz.c",
+            "include/miniz",
+        ),
+        (
+            "kog_openmpt_minimp3",
+            "include/minimp3/minimp3.c",
+            "include/minimp3",
+        ),
+        (
+            "kog_openmpt_stb_vorbis",
+            "include/stb_vorbis/stb_vorbis.c",
+            "include/stb_vorbis",
+        ),
+    ] {
+        cc::Build::new()
+            .std("c11")
+            .include(source.join(include))
+            .file(source.join(file))
+            .warnings(false)
+            .compile(name);
+    }
+
+    println!("cargo:rerun-if-changed=native/openmpt");
+}
+
+fn cpp_files(directory: &Path) -> Vec<PathBuf> {
+    fs::read_dir(directory)
+        .unwrap_or_else(|error| panic!("reading {}: {error}", directory.display()))
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "cpp"))
+        .collect()
 }

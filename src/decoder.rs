@@ -175,6 +175,7 @@ impl DecoderRegistry {
                 Box::new(MidiBackend::new(settings)),
                 Box::new(crate::gme_decoder::GmeBackend),
                 Box::new(crate::libvgm_decoder::LibVgmBackend),
+                Box::new(crate::openmpt_decoder::OpenMptBackend),
             ],
         }
     }

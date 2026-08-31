@@ -23,8 +23,8 @@ is required work, not a claim of support.
 
 | State | Cog family | Extensions / behavior | Kog backend |
 | --- | --- | --- | --- |
-| Not started | OpenMPT | Runtime-enumerated libopenmpt module and archive extensions | libopenmpt |
-| Not started | DUMB/BASSMODS/modplay/playptmod | IT/ITZ, XM/XMZ, S3M/S3Z, MOD/MDZ, STM/STZ, PTM, MTM, 669, PSM, AM, J2B, DSM, AMF, OKT/OKTA, UMX, MO3, STK, M15, FST | libopenmpt first; compatibility fallbacks only where corpus proves a difference |
+| Partial | OpenMPT | Cog's exact libopenmpt 0.8.7 release is pinned and built from source. The backend verifies and advertises the 68 native extensions returned by that build, expands zero-based subsongs, reads common metadata and the long native format name, renders 44.1 kHz stereo float PCM with Cog's gain, stereo-separation, 8-tap interpolation, volume-ramping, synchronous-seek, normal-repeat, and Amiga-emulation defaults, and seeks by time. A generated ProTracker MOD passes format routing, metadata, duration, audible PCM, and seek tests. The full 68-format corpus, repeat-one, configurable sample rate/interpolation, and Cog's MDZ/MDR/S3Z/XMZ/ITZ/MPTMZ archive aliases remain. | `libopenmpt` 0.8.7 at `11363ff11ba021b1cf1533da17d9fdf20c8d883c` |
+| Partial | DUMB/BASSMODS/modplay/playptmod | Native IT, XM, S3M, MOD, STM, PTM, MTM, 669, PSM, J2B, DSM, AMF, OKT, UMX, MO3, STK, M15, and FST routing now overlaps the OpenMPT backend. Compressed aliases and any behavioral differences still require corpus-driven compatibility fallbacks. | libopenmpt first; compatibility fallbacks only where corpus proves a difference |
 | Not started | HivelyTracker | HVL, AHX and subsongs | hivelytracker |
 | Not started | Organya | ORG plus bundled wavetable/PXT instruments | organya renderer |
 | Not started | Syntrax | JXS and subsongs | libsyntrax |

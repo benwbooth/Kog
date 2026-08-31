@@ -50,6 +50,24 @@ is Kog's root `LICENSE`, and LGPL-2.1 is in `LICENSES/LGPL-2.1.txt`.
 The Yamaha YRW801 sample ROM is not included. Kog only loads a user-provided
 `yrw801.rom` beside a music file when libvgm requests it.
 
+## libopenmpt and bundled sample decoders
+
+The `native/openmpt` Git submodule is the official
+[OpenMPT](https://github.com/OpenMPT/openmpt) source at release 0.8.7, commit
+`11363ff11ba021b1cf1533da17d9fdf20c8d883c`, matching Cog's bundled release.
+Kog builds libopenmpt as a static C++17 library and calls its public C API.
+
+libopenmpt is Copyright (c) 2004-2026 OpenMPT Project Developers and
+Contributors and Copyright (c) 1997-2003 Olivier Lapicque. It is distributed
+under the BSD 3-Clause license. The complete source and license are retained
+in the submodule, and the exact license text is copied to
+`LICENSES/OpenMPT-BSD-3-Clause.txt`.
+
+Kog enables the decoder copies carried by that source tree: miniz under the
+MIT license, minimp3 under CC0-1.0, and stb_vorbis under its MIT option. Their
+complete source and license notices remain in `native/openmpt/include`; Kog's
+MIT text is also in `LICENSES/MIT.txt`.
+
 ## TinySoundFont minimal SoundFont test fixture
 
 The 484-byte `MinimalSoundFont` data encoded in `src/decoder.rs` is derived
