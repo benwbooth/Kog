@@ -2,6 +2,8 @@ mod adplug;
 mod adplug_decoder;
 mod app_controller;
 mod decoder;
+mod ffmpeg;
+mod ffmpeg_decoder;
 mod gme;
 mod gme_decoder;
 mod hively;

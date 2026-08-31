@@ -12,10 +12,10 @@ is required work, not a claim of support.
 | State | Cog family | Extensions / source behavior | Kog backend |
 | --- | --- | --- | --- |
 | Partial | CoreAudio/FFmpeg overlap | AAC/ADTS, AIFF, ALAC, CAF, FLAC, MP1/2/3, MP4/M4A, Ogg/Vorbis, Opus, WAV, Matroska/WebM combinations accepted by Symphonia. WAV and FLAC fixtures have passed the current probe/play/advance smoke; the family corpus is incomplete. | `rodio-symphonia` |
-| Not started | FFmpeg | WMA, ASF, TAK, APE, AC-3, DTS/DTS-HD, TTA, TwinVQ, RealAudio, DSD/DSF/DFF/DSDIFF/WSd and unsupported container/codec combinations | FFmpeg adapter |
-| Not started | WavPack | WV, WVP including correction files | libwavpack |
-| Not started | Musepack | MPC | libmpcdec or FFmpeg |
-| Not started | Shorten | SHN | libshn/FFmpeg |
+| Partial | FFmpeg | Cog's WMA, ASF, TAK, M4R, M2A/MPA, APE, AC-3, DTS/DTS-HD, TTA, TwinVQ, RealAudio, WebA, DSF/DFF/DSDIFF/WSd, and overlapping conventional extensions route through a real libavformat/libavcodec/libswresample backend. It keeps native rate/channel layout, converts to interleaved float PCM, reads common metadata/properties, and seeks through the demuxer. The pinned Nix shell supplies FFmpeg 9.0.1 with GPL and version-3 components disabled and an LGPL-2.1-or-later license result. A deterministic four-frame AC-3 fixture passes routing, duration, bitrate, codec, audible PCM, seek, priority, and EOS tests. The wider format/metadata corpus, exact seek across every demuxer, DSD policy, gapless trim, chapters/subtracks, artwork, content probing, remote custom I/O, and Windows/macOS build gates remain. | system FFmpeg via pkg-config; pinned Nix configuration tested at 9.0.1 |
+| Partial | WavPack | WV and WVP now route through FFmpeg. A WavPack/correction-file corpus, explicit sibling WVC resolution, lossless/float/DSD properties, and comparison with Cog's dedicated libwavpack path remain. | FFmpeg baseline; dedicated libwavpack only if parity requires it |
+| Partial | Musepack | MPC now routes through FFmpeg; SV7/SV8 corpus, seek, metadata, and behavioral comparison with Cog's libmpcdec plugin remain. | FFmpeg baseline; libmpcdec fallback if required |
+| Partial | Shorten | SHN now routes through FFmpeg; a redistributable corpus and comparison with Cog's dedicated Shorten decoder remain. | FFmpeg baseline; dedicated fallback if required |
 | Not started | APL | APL link files and referenced source ranges | Kog APL container + selected PCM backend |
 | Not started | HTTP/HLS | remote HTTP sources, M3U8/HLS | network source + FFmpeg |
 

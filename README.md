@@ -54,7 +54,17 @@ Cog's 150-second plus eight-second-fade default, and accelerated seek. A
 generated two-subtune PSID passes routing, audible PCM, metadata, seek, and
 exact end-of-stream gates. Kog deliberately does not redistribute C64 ROMs;
 RSID/BASIC tunes report that user ROM selection is still required, and raw
-MUS routing and the song-length database remain parity work.
+MUS routing and the song-length database remain parity work. A system FFmpeg
+adapter now supplies the broad conventional fallback used for Cog's AC-3,
+DTS, WMA/ASF, TAK, APE, TTA, TwinVQ, RealAudio, DSD-container, WavPack,
+Musepack, and Shorten families. It preserves the decoded channel layout and
+sample rate, converts planar or packed native samples to interleaved float
+PCM, reports common metadata and stream properties, and seeks through the
+native demuxer. A generated AC-3 stream passes routing, duration, audible PCM,
+seek, priority, and end-of-stream gates. The pinned Nix shell deliberately
+builds FFmpeg without GPL-only or version-3 components, yielding an
+LGPL-2.1-or-later library compatible with Kog's GPL-2.0-only license; the
+wider format corpus and exact-seek validation remain.
 
 ## Project direction
 
@@ -106,8 +116,11 @@ MIT-licensed [orgorg player](https://github.com/kpqi5858/orgorg/tree/main/orgorg
 can extract `wavetable.dat` and `drums.dat` from the original freeware
 `Doukutsu.exe` without requiring Kog to redistribute those assets.
 
-The direct Cargo build requires Rust, C and C++ compilers, CMake, and Qt 6 with
-Qt Quick and Qt Quick Controls.
+The direct Cargo build requires Rust, C and C++ compilers, CMake, `pkg-config`,
+FFmpeg development libraries (`libavformat`, `libavcodec`, `libavutil`, and
+`libswresample`), and Qt 6 with Qt Quick and Qt Quick Controls. FFmpeg must be
+built under terms compatible with GPL-2.0-only; Kog's Nix shell provides the
+known-compatible configuration used by the regression gates.
 
 ## License
 

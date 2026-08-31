@@ -886,6 +886,7 @@ dependencies = [
  "lofty",
  "midly",
  "orgorg",
+ "pkg-config",
  "rodio",
  "rustysynth",
  "self_cell",

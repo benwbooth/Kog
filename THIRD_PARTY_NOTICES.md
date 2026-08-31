@@ -1,5 +1,24 @@
 # Third-party notices
 
+## FFmpeg
+
+Kog dynamically links the system FFmpeg libraries `libavformat`, `libavcodec`,
+`libavutil`, and `libswresample` through the bridge in
+`native/ffmpeg_bridge.cpp`. FFmpeg source is not vendored in this repository.
+The pinned Nix development shell currently resolves FFmpeg 9.0.1 and overrides
+the package with `withGPL = false` and `withVersion3 = false`. The resulting
+binary's own license output identifies it as GNU Lesser General Public License
+version 2.1 or (at your option) any later version. Builds outside that shell
+must supply a GPL-2.0-compatible FFmpeg configuration; the default Nix
+`ffmpeg-headless` configuration is intentionally not used because it enables
+GPLv3 components.
+
+FFmpeg is Copyright (c) the FFmpeg developers and contributors identified by
+the upstream project. The linked configuration is distributed under the GNU
+Lesser General Public License, version 2.1 or later; a copy is in
+`LICENSES/LGPL-2.1.txt`. Kog's 768-byte AC-3 regression fixture is encoded from
+a generated 880 Hz sine wave and contains no third-party media.
+
 ## Cog OPL3Windows and Nuked OPL3
 
 The source under `native/opl3w`, except Kog's `kog_opl3w.cpp` and

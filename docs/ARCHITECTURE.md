@@ -19,6 +19,7 @@ backends may use safe Rust, C, or C++ libraries.
    streams into interleaved floating-point PCM.
 
 The installed backends are `rodio-symphonia` for conventional audio,
+`ffmpeg` as the broad conventional fallback behind Symphonia,
 `midi-rustysynth-sf2` for Standard MIDI File and RIFF RMID rendering through a
 user-selected SF2 SoundFont, and `midi-opl3windows` for the same MIDI containers
 through Cog's OPL3Windows General MIDI engine and Nuked OPL3 1.7.1 core.
@@ -39,6 +40,24 @@ wraps Cog's exact AdPlug and libbinio revisions and is ordered after MIDI,
 libvgm, and OpenMPT so their shared MID, VGM/DRO, and S3M extensions retain
 Cog's intended specialized routes. `libsidplayfp-residfp` wraps Cog's exact
 libsidplayfp revision for ROM-free PSID data and is ordered before AdPlug.
+
+The FFmpeg adapter discovers `libavformat`, `libavcodec`, `libavutil`, and
+`libswresample` with pkg-config and keeps all native ownership behind a small
+C ABI. The demuxer selects the best audio stream; the codec and resampler
+preserve its sample rate and channel layout while converting packed or planar
+native samples to interleaved 32-bit float PCM. Probe maps common container or
+stream metadata, native codec name, duration, bitrate, and bit depth. Seek
+flushes the demuxer, codec, resampler, and buffered PCM together, then drops
+pre-target decoded frames when timestamps are available. It is registered
+after Symphonia so existing MP3/AAC/FLAC/MP4/WAV/Ogg routes do not change, and
+before specialist backends without claiming their extensions. The pinned Nix
+shell overrides FFmpeg with both GPL and version-3 components disabled; the
+result's own license banner reports LGPL-2.1-or-later, which is compatible with
+Kog's GPL-2.0-only application. A four-frame synthetic AC-3 stream gates
+format routing, source priority, properties, audible PCM, seeking, and clean
+end-of-stream behavior. Wider family and metadata corpora, sample-accurate
+seeking across every demuxer, attached artwork, chapters/subtracks, gapless
+trim data, and remote custom I/O remain parity work.
 
 Decoder settings are shared between the probe registry and playback registry.
 The MIDI engine and current SF2 path are persisted in the platform

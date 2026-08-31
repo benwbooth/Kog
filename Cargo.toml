@@ -25,3 +25,4 @@ self_cell = "1.2.1"
 cc = "1.2.38"
 cmake = "0.1.58"
 cxx-qt-build = { version = "0.10.0", features = ["link_qt_object_files"] }
+pkg-config = "0.3.32"

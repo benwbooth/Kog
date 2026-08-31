@@ -29,6 +29,14 @@
             pkgs.qt6.qtwayland
           ];
         qtEnv = pkgs.qt6.env "kog-qt-env" qtModules;
+        # Kog is GPL-2.0-only, so do not link the default Nix FFmpeg build:
+        # its GPLv3 components make that combined work license-incompatible.
+        # Native FFmpeg audio demuxers/decoders remain available in this
+        # LGPL-2.1-or-later configuration.
+        kogFfmpeg = pkgs.ffmpeg-headless.override {
+          withGPL = false;
+          withVersion3 = false;
+        };
         linuxRuntimeLibraries = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
           pkgs.libxcb-cursor
         ];
@@ -48,6 +56,7 @@
               rustfmt
               zlib
             ])
+            ++ [ kogFfmpeg ]
             ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
               pkgs.alsa-lib
               pkgs.libxcb-cursor

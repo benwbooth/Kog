@@ -11,6 +11,7 @@ fn main() {
     build_vgmstream();
     build_adplug();
     build_libsidplayfp();
+    build_ffmpeg();
 
     cc::Build::new()
         .cpp(true)
@@ -63,6 +64,39 @@ fn main() {
     .qt_module("Quick")
     .qt_module("QuickControls2")
     .build();
+}
+
+fn build_ffmpeg() {
+    let libraries = ["libavformat", "libavcodec", "libavutil", "libswresample"];
+    let mut includes = Vec::new();
+    for library in libraries {
+        let metadata = pkg_config::Config::new()
+            .cargo_metadata(true)
+            .probe(library)
+            .unwrap_or_else(|error| {
+                panic!(
+                    "FFmpeg development library {library} is required; install FFmpeg with pkg-config metadata: {error}"
+                )
+            });
+        includes.extend(metadata.include_paths);
+    }
+    includes.sort();
+    includes.dedup();
+
+    let mut build = cc::Build::new();
+    build
+        .cpp(true)
+        .std("c++17")
+        .file("native/ffmpeg_bridge.cpp")
+        .warnings(true)
+        .extra_warnings(true);
+    for include in includes {
+        build.include(include);
+    }
+    build.compile("kog_ffmpeg");
+
+    println!("cargo:rerun-if-changed=native/ffmpeg_bridge.cpp");
+    println!("cargo:rerun-if-changed=native/ffmpeg_bridge.h");
 }
 
 fn build_game_music_emu() {
