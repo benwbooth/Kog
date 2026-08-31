@@ -114,12 +114,13 @@ impl Track {
             return true;
         }
         let query = query.to_lowercase();
+        let source_label = self.source.display_label();
         [
             self.title.as_str(),
             self.artist.as_str(),
             self.album.as_str(),
             self.genre.as_str(),
-            self.source.path.to_string_lossy().as_ref(),
+            source_label.as_str(),
         ]
         .iter()
         .any(|value| value.to_lowercase().contains(&query))

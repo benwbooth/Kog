@@ -232,6 +232,7 @@ mod tests {
         let decoder = OpenMptBackend::open(&PlaybackSource {
             path: path.clone(),
             subsong: Some(0),
+            archive_origin: None,
         })
         .expect("open MOD fixture");
         let mut source = OpenMptSource::new(decoder);

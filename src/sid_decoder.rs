@@ -248,6 +248,7 @@ mod tests {
         let decoder = SidBackend::open(&PlaybackSource {
             path: fixture.0.clone(),
             subsong: Some(0),
+            archive_origin: None,
         })
         .expect("open SID source");
         let mut source = SidSource::new(decoder);

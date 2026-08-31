@@ -49,6 +49,7 @@
               clang
               clippy
               cmake
+              libarchive
               ninja
               pkg-config
               rust-analyzer

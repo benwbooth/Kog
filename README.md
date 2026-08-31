@@ -91,8 +91,19 @@ Relative POSIX and Windows paths, local `file://` URLs, trailing numeric subsong
 fragments, nested playlists, Cog's UTF-8 → GB18030 → Windows-1251 → Latin-1
 decode order, classic-Mac/Windows line endings, cycle detection, and a nesting
 safety limit are implemented. Missing, unsupported, or remote entries remain
-visible as UI warnings while valid local tracks are retained. Network sources, HLS, playlist
-writing, and non-numeric fragment schemes remain parity work.
+visible as UI warnings while valid local tracks are retained. Network sources,
+HLS, playlist writing, and non-numeric fragment schemes remain parity work.
+
+ZIP, RAR, 7Z, RSN, VGM7Z, and raw GZ files now expand through the system
+libarchive library before decoder selection. Kog preserves physical archive
+order and stable `archive :: entry` identities while extracting a safe
+temporary companion tree, so formats such as APL can reopen sibling audio.
+Traversal paths, duplicate destinations, links/devices, oversized entries,
+and oversized archives are rejected or surfaced as warnings. Deterministic
+ZIP and GZ fixtures pass end-to-end WAV playback; real 7Z and RAR5 fixtures
+gate extraction; and ZIP-gated APL playback proves relative companion lookup.
+Encrypted and multipart archives, nested archives, broad RAR/7Z corpora, and
+Windows/macOS runtime gates remain parity work.
 
 ## Project direction
 
@@ -146,9 +157,10 @@ can extract `wavetable.dat` and `drums.dat` from the original freeware
 
 The direct Cargo build requires Rust, C and C++ compilers, CMake, `pkg-config`,
 FFmpeg development libraries (`libavformat`, `libavcodec`, `libavutil`, and
-`libswresample`), and Qt 6 with Qt Quick and Qt Quick Controls. FFmpeg must be
-built under terms compatible with GPL-2.0-only; Kog's Nix shell provides the
-known-compatible configuration used by the regression gates.
+`libswresample`), libarchive 3.2 or newer, and Qt 6 with Qt Quick and Qt Quick
+Controls. FFmpeg must be built under terms compatible with GPL-2.0-only; Kog's
+Nix shell provides the known-compatible configuration used by the regression
+gates.
 
 ## License
 

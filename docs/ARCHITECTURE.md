@@ -95,9 +95,24 @@ subsong expansion, with CUE fragments mapped by their declared track number.
 Kog additionally handles nested local playlists with an active-stack cycle
 check and 32-level safety limit. Expansion returns tracks and warnings
 separately, allowing missing, unsupported, cyclic, or remote entries to be
-reported without discarding other valid tracks. HLS tags are rejected explicitly until the HLS
-backend exists. Network sources, non-numeric fragment identities, playlist
-writing, and broad cross-platform corpora remain separate work.
+reported without discarding other valid tracks. HLS tags are rejected
+explicitly until the HLS backend exists. Network sources, non-numeric fragment
+identities, playlist writing, and broad cross-platform corpora remain separate
+work.
+
+Archive containers are also expanded before decoder selection. The registry
+recognizes Cog's ZIP, RAR, 7Z, RSN, VGM7Z, and raw GZ extensions and streams
+entries from `compress-tools`/libarchive into a private temporary tree. Entry
+order remains archive order, playable sources carry stable logical
+`archive :: entry` identities, and the whole safe tree remains alive with the
+registry so a decoder can reopen relative companion files. Extraction rejects
+absolute paths, parent traversal, duplicate destinations, links/devices, more
+than 16,384 entries, files over 4 GiB, or more than 8 GiB expanded in total.
+Filename decoding follows Cog's UTF-8, GB18030, Windows-1251, then
+byte-preserving Latin-1 fallback. Deterministic ZIP and GZ audio fixtures,
+real 7Z and RAR5 extraction fixtures, and a ZIP-contained APL plus WAV gate the
+current path. Passwords, multipart archives, nested archive expansion, broad
+format corpora, and Windows/macOS runtime gates remain separate work.
 
 Decoder settings are shared between the probe registry and playback registry.
 The MIDI engine and current SF2 path are persisted in the platform

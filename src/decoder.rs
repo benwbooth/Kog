@@ -40,10 +40,30 @@ pub struct StreamProperties {
     pub warning: Option<String>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default)]
 pub struct PlaybackSource {
     pub path: PathBuf,
     pub subsong: Option<u32>,
+    pub archive_origin: Option<ArchiveOrigin>,
+}
+
+impl PartialEq for PlaybackSource {
+    fn eq(&self, other: &Self) -> bool {
+        self.subsong == other.subsong
+            && match (&self.archive_origin, &other.archive_origin) {
+                (Some(left), Some(right)) => left == right,
+                (None, None) => self.path == other.path,
+                _ => false,
+            }
+    }
+}
+
+impl Eq for PlaybackSource {}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArchiveOrigin {
+    pub archive_path: PathBuf,
+    pub entry_name: String,
 }
 
 impl PlaybackSource {
@@ -51,13 +71,25 @@ impl PlaybackSource {
         Self {
             path,
             subsong: None,
+            archive_origin: None,
         }
     }
 
+    pub fn set_archive_origin(&mut self, archive_path: PathBuf, entry_name: String) {
+        self.archive_origin = Some(ArchiveOrigin {
+            archive_path,
+            entry_name,
+        });
+    }
+
     pub fn display_label(&self) -> String {
+        let path = self.archive_origin.as_ref().map_or_else(
+            || self.path.display().to_string(),
+            |origin| format!("{} :: {}", origin.archive_path.display(), origin.entry_name),
+        );
         match self.subsong {
-            Some(subsong) => format!("{}#{}", self.path.display(), subsong + 1),
-            None => self.path.display().to_string(),
+            Some(subsong) => format!("{path}#{}", subsong + 1),
+            None => path,
         }
     }
 }
@@ -114,6 +146,7 @@ pub trait DecoderBackend: Send + Sync {
         Ok(PlaybackSource {
             path,
             subsong: Some(subsong),
+            archive_origin: None,
         })
     }
 
@@ -172,6 +205,7 @@ impl DecoderSettings {
 
 pub struct DecoderRegistry {
     backends: Vec<Box<dyn DecoderBackend>>,
+    archive_workspaces: Mutex<Vec<tempfile::TempDir>>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -204,6 +238,7 @@ impl DecoderRegistry {
                 Box::new(crate::adplug_decoder::AdPlugBackend),
                 Box::new(crate::vgmstream_decoder::VgmstreamBackend),
             ],
+            archive_workspaces: Mutex::new(Vec::new()),
         }
     }
 
@@ -241,6 +276,9 @@ impl DecoderRegistry {
         if crate::playlist::Playlist::is_path(&path) {
             return self.expand_playlist(path, playlist_stack, depth);
         }
+        if crate::archive::is_path(&path) {
+            return self.expand_archive(path, playlist_stack, depth);
+        }
 
         let Some(backend) = self.select(&path) else {
             return Ok(ExpansionResult {
@@ -262,6 +300,7 @@ impl DecoderRegistry {
                 .map(|subsong| PlaybackSource {
                     path: path.clone(),
                     subsong: Some(subsong),
+                    archive_origin: None,
                 })
                 .collect(),
             warnings: Vec::new(),
@@ -335,6 +374,66 @@ impl DecoderRegistry {
         if result.sources.is_empty() && result.warnings.is_empty() {
             return Err(format!("{} contains no playlist entries", path.display()));
         }
+        Ok(result)
+    }
+
+    fn expand_archive(
+        &self,
+        path: PathBuf,
+        playlist_stack: &mut Vec<PathBuf>,
+        depth: usize,
+    ) -> Result<ExpansionResult, String> {
+        let path = path
+            .canonicalize()
+            .map_err(|error| format!("resolving archive {}: {error}", path.display()))?;
+        let extracted = crate::archive::ExtractedArchive::open(&path)?;
+        let (workspace, entries, warnings) = extracted.into_parts();
+        let workspace_path = workspace.path().to_path_buf();
+        let mut result = ExpansionResult {
+            sources: Vec::new(),
+            warnings,
+        };
+
+        for entry in entries {
+            if crate::archive::is_path(&entry.path) || self.select(&entry.path).is_none() {
+                continue;
+            }
+            match self.expand_local(entry.path, None, playlist_stack, depth + 1) {
+                Ok(mut expansion) => {
+                    for source in &mut expansion.sources {
+                        let entry_name = source
+                            .path
+                            .strip_prefix(&workspace_path)
+                            .ok()
+                            .map(crate::archive::portable_name)
+                            .unwrap_or_else(|| entry.name.clone());
+                        source.set_archive_origin(path.clone(), entry_name);
+                    }
+                    result.sources.extend(expansion.sources);
+                    result.warnings.extend(expansion.warnings);
+                }
+                Err(error) => result.warnings.push(format!(
+                    "Archive entry {} was not added: {error}",
+                    entry.name
+                )),
+            }
+        }
+
+        if result.sources.is_empty() {
+            let details = if result.warnings.is_empty() {
+                String::new()
+            } else {
+                format!(": {}", result.warnings.join("; "))
+            };
+            return Err(format!(
+                "{} contains no supported audio entries{details}",
+                path.display()
+            ));
+        }
+        self.archive_workspaces
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(workspace);
         Ok(result)
     }
 

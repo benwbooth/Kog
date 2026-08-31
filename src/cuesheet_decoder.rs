@@ -78,6 +78,7 @@ impl DecoderBackend for CueSheetBackend {
                 u32::try_from(index)
                     .map_err(|_| "CUE track index exceeds Kog's source model".to_owned())?,
             ),
+            archive_origin: None,
         })
     }
 
@@ -321,6 +322,7 @@ mod tests {
         let source = PlaybackSource {
             path: fixture.cue.clone(),
             subsong: Some(1),
+            archive_origin: None,
         };
         let mut source = open_source(&source).expect("open second CueSheet track");
         assert_eq!(source.sample_rate(), NonZeroU32::new(SAMPLE_RATE).unwrap());
@@ -382,6 +384,7 @@ mod tests {
         let source = PlaybackSource {
             path: fixture.cue.clone(),
             subsong: Some(9),
+            archive_origin: None,
         };
         assert!(
             CueSheetBackend

@@ -231,6 +231,7 @@ mod tests {
         let decoder = HivelyBackend::open(&PlaybackSource {
             path: path.clone(),
             subsong: Some(0),
+            archive_origin: None,
         })
         .expect("open HVL fixture");
         let mut source = HivelySource::new(decoder);

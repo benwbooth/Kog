@@ -247,6 +247,7 @@ mod tests {
         let decoder = VgmstreamBackend::open(&PlaybackSource {
             path: path.clone(),
             subsong: Some(0),
+            archive_origin: None,
         })
         .expect("open VAG fixture");
         let mut source = VgmstreamSource::new(decoder);

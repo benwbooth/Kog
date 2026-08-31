@@ -212,6 +212,7 @@ mod tests {
         let decoder = AdPlugBackend::open(&PlaybackSource {
             path: fixture_path(),
             subsong: Some(0),
+            archive_origin: None,
         })
         .expect("open AdPlug source");
         let mut source = AdPlugSource::new(decoder);

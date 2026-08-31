@@ -3,6 +3,7 @@ mod adplug_decoder;
 mod apl;
 mod apl_decoder;
 mod app_controller;
+mod archive;
 mod cuesheet;
 mod cuesheet_decoder;
 mod decoder;
