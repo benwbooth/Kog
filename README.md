@@ -74,6 +74,17 @@ audible PCM, and exact end-of-stream are gated with a generated image/link pair.
 URL image references, one-bit DSD block scaling, and a real Monkey's Audio corpus
 remain parity work.
 
+External `.cue` files now expand into playlist tracks and delegate their audio
+images to the bounded FFmpeg source. The parser handles multiple `FILE` blocks,
+Cog's persistent metadata state, 75 Hz CD-frame or raw-sample indexes, UTF-8,
+BOM-marked UTF-16, Windows-1252 fallback, and ReplayGain fields. Ogg, Opus,
+FLAC, WavPack, and MP3 retain their normal decoder routes unless a content probe
+finds an embedded `CUESHEET` tag. Generated WAV/CUE and tagged-MP3 fixtures gate
+metadata, routing priority, multi-file boundaries, duration, exact first/last
+samples, relative seek, audible PCM, and end-of-stream. Remote image URLs,
+one-bit DSD frame scaling, ReplayGain application, stable track-number fragments,
+and broad real-world cue corpora remain parity work.
+
 ## Project direction
 
 - Treat Cog as the behavioral and interface reference.

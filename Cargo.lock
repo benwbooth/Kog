@@ -883,6 +883,7 @@ dependencies = [
  "cxx-qt-build",
  "cxx-qt-lib",
  "directories",
+ "encoding_rs",
  "lofty",
  "midly",
  "orgorg",

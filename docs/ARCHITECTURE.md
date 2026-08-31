@@ -67,8 +67,23 @@ the source seeks to `Start Block`, exposes `Finish Block - Start Block` as its
 duration, interprets UI seeks relative to that selection, and will not emit a
 sample frame beyond the selection. A generated PCM image proves the first
 selected sample, exact frame count, audible output, relative seek, and EOS.
-This bounded-source primitive is intended to be reused by the CueSheet backend.
 URL sources and Cog's one-bit DSD frame scaling remain separate work.
+
+The CueSheet container reuses that bounded source for both external `.cue`
+files and embedded `CUESHEET` metadata. External relative paths are normalized
+and canonicalized; a following track limits the current range only when both
+refer to the same audio image. The parser retains Cog's scanner-state behavior
+for artist, title, genre, date, and ReplayGain, including metadata inheritance
+across track and file commands. It accepts 75 Hz CD-frame indexes and Cog's
+single-component raw-sample indexes, plus UTF-8, BOM-marked UTF-16, and a
+Windows-1252 fallback. For embedded sheets, the backend content-probes only
+Cog's Ogg, Opus, FLAC, WavPack, and MP3 candidates through FFmpeg; an ordinary
+file without the tag falls through to the existing decoder order. Generated
+external WAV/CUE and embedded tagged-MP3 fixtures gate expansion, metadata,
+priority, multi-file end calculation, exact ranges, relative seek, audible PCM,
+and EOS. URL images, broader charset detection, one-bit DSD range scaling,
+ReplayGain application, stable track-number fragment identity, and gapless
+same-decoder transitions remain parity work.
 
 Decoder settings are shared between the probe registry and playback registry.
 The MIDI engine and current SF2 path are persisted in the platform

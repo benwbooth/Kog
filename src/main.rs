@@ -3,6 +3,8 @@ mod adplug_decoder;
 mod apl;
 mod apl_decoder;
 mod app_controller;
+mod cuesheet;
+mod cuesheet_decoder;
 mod decoder;
 mod ffmpeg;
 mod ffmpeg_decoder;

@@ -11,6 +11,7 @@ cxx = "1.0.176"
 cxx-qt = "0.10.0"
 cxx-qt-lib = { version = "0.10.0", features = ["full"] }
 directories = "6.0.0"
+encoding_rs = "0.8.35"
 lofty = "0.25.1"
 rodio = { version = "0.22.2", default-features = false, features = [
   "playback",

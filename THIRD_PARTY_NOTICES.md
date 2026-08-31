@@ -17,7 +17,9 @@ FFmpeg is Copyright (c) the FFmpeg developers and contributors identified by
 the upstream project. The linked configuration is distributed under the GNU
 Lesser General Public License, version 2.1 or later; a copy is in
 `LICENSES/LGPL-2.1.txt`. Kog's 768-byte AC-3 regression fixture is encoded from
-a generated 880 Hz sine wave and contains no third-party media.
+a generated 880 Hz sine wave and contains no third-party media. The 992-byte
+MP3 CueSheet fixture is likewise encoded with FFmpeg/libmp3lame from a generated
+880 Hz sine and adds only synthetic ID3v2 CUESHEET metadata.
 
 ## Cog OPL3Windows and Nuked OPL3
 

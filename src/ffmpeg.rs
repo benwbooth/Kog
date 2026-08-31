@@ -21,6 +21,7 @@ unsafe extern "C" {
     fn kog_ffmpeg_artist(decoder: *const NativeFfmpeg) -> *const c_char;
     fn kog_ffmpeg_album(decoder: *const NativeFfmpeg) -> *const c_char;
     fn kog_ffmpeg_genre(decoder: *const NativeFfmpeg) -> *const c_char;
+    fn kog_ffmpeg_cuesheet(decoder: *const NativeFfmpeg) -> *const c_char;
     fn kog_ffmpeg_sample_rate(decoder: *const NativeFfmpeg) -> u32;
     fn kog_ffmpeg_channels(decoder: *const NativeFfmpeg) -> u16;
     fn kog_ffmpeg_bitrate(decoder: *const NativeFfmpeg) -> u32;
@@ -40,6 +41,7 @@ pub struct FfmpegMetadata {
     pub genre: Option<String>,
     pub year: Option<u32>,
     pub track: Option<u32>,
+    pub cuesheet: Option<String>,
 }
 
 pub struct Ffmpeg {
@@ -93,6 +95,7 @@ impl Ffmpeg {
             genre: native_text(unsafe { kog_ffmpeg_genre(handle.as_ptr()) }),
             year: nonzero(unsafe { kog_ffmpeg_year(handle.as_ptr()) }),
             track: nonzero(unsafe { kog_ffmpeg_track(handle.as_ptr()) }),
+            cuesheet: native_text(unsafe { kog_ffmpeg_cuesheet(handle.as_ptr()) }),
         };
         Ok(Self {
             handle,

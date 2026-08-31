@@ -87,6 +87,7 @@ struct KogFfmpeg {
     std::string artist;
     std::string album;
     std::string genre;
+    std::string cuesheet;
     std::string error;
 
     ~KogFfmpeg() {
@@ -362,6 +363,8 @@ extern "C" KogFfmpeg *kog_ffmpeg_open(const char *path) {
     decoder->artist = dictionary_value(stream->metadata, decoder->format->metadata, "artist");
     decoder->album = dictionary_value(stream->metadata, decoder->format->metadata, "album");
     decoder->genre = dictionary_value(stream->metadata, decoder->format->metadata, "genre");
+    decoder->cuesheet = dictionary_value(
+        stream->metadata, decoder->format->metadata, "cuesheet");
     decoder->year = leading_number(
         dictionary_value(stream->metadata, decoder->format->metadata, "date"));
     decoder->track = leading_number(
@@ -399,6 +402,10 @@ extern "C" const char *kog_ffmpeg_album(const KogFfmpeg *decoder) {
 
 extern "C" const char *kog_ffmpeg_genre(const KogFfmpeg *decoder) {
     return decoder != nullptr ? decoder->genre.c_str() : "";
+}
+
+extern "C" const char *kog_ffmpeg_cuesheet(const KogFfmpeg *decoder) {
+    return decoder != nullptr ? decoder->cuesheet.c_str() : "";
 }
 
 extern "C" uint32_t kog_ffmpeg_sample_rate(const KogFfmpeg *decoder) {

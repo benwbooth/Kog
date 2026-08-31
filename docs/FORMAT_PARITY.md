@@ -53,7 +53,7 @@ is required work, not a claim of support.
 
 | State | Cog family | Extensions / behavior | Kog backend |
 | --- | --- | --- | --- |
-| Not started | CueSheet | CUE plus embedded cue sheets in OGG/Opus/FLAC/WV/MP3; per-track ranges | Rust cue parser + delegated decoder |
+| Partial | CueSheet | External CUE files expand their AUDIO tracks, resolve relative Windows or POSIX paths, preserve Cog's persistent artist/title/genre/date/ReplayGain scanner state, support multiple FILE blocks, and interpret INDEX 01 as either 75 Hz CD frames or raw samples. UTF-8, BOM-marked UTF-16, and Windows-1252 fallback are implemented. OGG/Opus/FLAC/WV/MP3 are content-probed and only preempt their normal backend when FFmpeg exposes an embedded CUESHEET tag. Track metadata overrides underlying metadata and the shared bounded FFmpeg source enforces relative seek and exact EOS. Generated WAV/CUE and tagged-MP3 fixtures pass expansion, decoder-priority, multi-file, metadata, duration, audible PCM, exact boundary, seek, and EOS gates. URL sources, broader charset detection, one-bit DSD scaling, ReplayGain application, stable track-number fragments, gapless same-image transitions, real-world corpora, and Windows/macOS gates remain. | native Rust CUE parser + FFmpeg metadata probe/delegated bounded source |
 | Not started | Playlists | M3U/M3U8, PLS; relative paths and URLs | Rust playlist containers |
 | Not started | Archives | ZIP, RAR, 7Z, RSN, VGM7Z, GZ; nested source/companion resolution | libarchive/sevenz-rust adapter |
 | Partial | Tags | Cog's TagLib metadata read/write surface and album art. Common read-only fields are wired through Lofty; editing and artwork are missing. | Lofty plus TagLib fallback |
@@ -67,7 +67,7 @@ is required work, not a claim of support.
 - configurable loop counts, fade length, and indefinite playback;
 - ReplayGain, gapless playback, resampling, equalizer, pitch/tempo, and output
   device selection;
-- metadata editing, album art, ratings, play counts, cue metadata, and library
+- metadata editing, album art, ratings, play counts, and library
   persistence;
 - Last.fm, notifications, remote control, spectrum/visualization, lyrics, and
   media-key integration.

@@ -19,6 +19,7 @@ const char *kog_ffmpeg_title(const KogFfmpeg *decoder);
 const char *kog_ffmpeg_artist(const KogFfmpeg *decoder);
 const char *kog_ffmpeg_album(const KogFfmpeg *decoder);
 const char *kog_ffmpeg_genre(const KogFfmpeg *decoder);
+const char *kog_ffmpeg_cuesheet(const KogFfmpeg *decoder);
 
 uint32_t kog_ffmpeg_sample_rate(const KogFfmpeg *decoder);
 uint16_t kog_ffmpeg_channels(const KogFfmpeg *decoder);
