@@ -85,6 +85,17 @@ audible rendering, exact duration/end behavior, metadata, malformed input,
 mini-library loading, and archive companion lookup. A broad independently
 redistributable GSF corpus and direct comparison with Cog remain.
 
+QSF and miniqsf now route through the standalone Highly Quixotic engine that
+Cog's Objective-C plugin wraps, rather than translating the plugin. The pinned
+GPLv3 core emulates the Z80, Kabuki decryption, and Capcom QSound DSP; psflib
+supplies relative `_lib` chains and PSF tags. Kog adds bounded KEY/Z80/sample
+sections, Cog's 150-second/eight-second timing defaults, 24,038 Hz stereo PCM,
+and deterministic seek. An original synthetic Z80 program and sample waveform
+gate audible playback, metadata, exact end behavior, malformed input,
+mini-library loading, and archive companion lookup without Capcom code or game
+data. A broad independently redistributable QSF corpus and direct comparison
+with Cog remain.
+
 Monkey's Audio Image Link (`.apl`) files now accept the original CRLF or
 portable LF header, resolve their local image path with Cog-compatible relative
 Windows-path handling, and play only the declared start/finish PCM-frame range
@@ -121,7 +132,7 @@ Traversal paths, duplicate destinations, links/devices, oversized entries,
 and oversized archives are rejected or surfaced as warnings. Deterministic
 ZIP and GZ fixtures pass end-to-end WAV playback; real 7Z and RAR5 fixtures
 gate extraction; ZIP-gated APL playback proves relative image lookup; and
-archived NCSF and GSF mini/library pairs prove PSF dependency lookup.
+archived NCSF, GSF, and QSF mini/library pairs prove PSF dependency lookup.
 Encrypted and multipart archives, nested archives, broad RAR/7Z corpora, and
 Windows/macOS runtime gates remain parity work.
 

@@ -696,9 +696,13 @@ fn build_mgba() -> PathBuf {
 fn build_ncsf(mgba_output: &Path) {
     let player = Path::new("native/sseqplayer");
     let psflib = Path::new("native/psflib");
-    if !player.join("Player.h").is_file() || !psflib.join("psflib.h").is_file() {
+    let qsf_core = Path::new("native/highly-quixotic/Core");
+    if !player.join("Player.h").is_file()
+        || !psflib.join("psflib.h").is_file()
+        || !qsf_core.join("qsound.h").is_file()
+    {
         panic!(
-            "SSEQPlayer and psflib submodules are missing; run `git submodule update --init --recursive`"
+            "SSEQPlayer, psflib, or Highly Quixotic submodules are missing; run `git submodule update --init --recursive`"
         );
     }
 
@@ -709,6 +713,7 @@ fn build_ncsf(mgba_output: &Path) {
 
     let mut player_sources = cpp_files(player);
     player_sources.push(PathBuf::from("native/ncsf_bridge.cpp"));
+    player_sources.push(PathBuf::from("native/qsf_bridge.cpp"));
     player_sources.sort();
     let mut player_build = cc::Build::new();
     player_build
@@ -716,6 +721,7 @@ fn build_ncsf(mgba_output: &Path) {
         .std("c++17")
         .include(player)
         .include(psflib)
+        .include(qsf_core)
         .include(mgba_output.join("include"))
         // This structural feature is present in mGBA's target compile
         // definitions but omitted from its generated flags.h at this pin.
@@ -730,8 +736,109 @@ fn build_ncsf(mgba_output: &Path) {
     }
     player_build.compile("kog_sseqplayer");
 
+    // Highly Quixotic is Cog's QSF engine. Generate two narrowly patched C
+    // translation units: upstream's non-static C99 inline helpers otherwise
+    // fail to link, and its original ROM access assumes trusted game data.
+    // Keeping these changes in OUT_DIR leaves the pinned dependency pristine.
+    let qsf_generated = PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR"))
+        .join("highly-quixotic");
+    fs::create_dir_all(&qsf_generated).expect("create Highly Quixotic generated directory");
+
+    let qsound_source = fs::read_to_string(qsf_core.join("qsound.c"))
+        .expect("read Highly Quixotic qsound.c")
+        .replace("\r\n", "\n");
+    let original_banked_maps = r#"static void recompute_banked_rom_areas(struct QSOUND_STATE *state) {
+  set_memory_map_rom_area(
+    state->map_op + 1,
+    state->z80_rom      + state->bank_ofs,
+    state->z80_rom_size - state->bank_ofs
+  );
+  set_memory_map_rom_area(
+    state->map_read + 1,
+    state->z80_rom      + state->bank_ofs,
+    state->z80_rom_size - state->bank_ofs
+  );
+}"#;
+    let bounded_banked_maps = r#"static void recompute_banked_rom_areas(struct QSOUND_STATE *state) {
+  uint8 *bank_rom = safe_rom_area;
+  sint32 bank_rom_size = 0;
+  if(state->z80_rom != NULL && state->bank_ofs < state->z80_rom_size) {
+    bank_rom = state->z80_rom + state->bank_ofs;
+    bank_rom_size = (sint32)(state->z80_rom_size - state->bank_ofs);
+  }
+  set_memory_map_rom_area(state->map_op + 1, bank_rom, bank_rom_size);
+  set_memory_map_rom_area(state->map_read + 1, bank_rom, bank_rom_size);
+}"#;
+    assert!(
+        qsound_source.contains(original_banked_maps),
+        "Highly Quixotic qsound.c changed; re-audit Kog's banked-ROM safety patch"
+    );
+    fs::write(
+        qsf_generated.join("qsound.c"),
+        qsound_source.replace(original_banked_maps, bounded_banked_maps),
+    )
+    .expect("write bounded Highly Quixotic qsound.c");
+
+    let qsound_ctr_source = fs::read_to_string(qsf_core.join("qsound_ctr.c"))
+        .expect("read Highly Quixotic qsound_ctr.c")
+        .replace("\r\n", "\n");
+    assert!(
+        qsound_ctr_source.contains("#define INLINE __inline")
+            && qsound_ctr_source.contains("#define INLINE inline"),
+        "Highly Quixotic qsound_ctr.c changed; re-audit Kog's inline patch"
+    );
+    let original_sample_read =
+        "\trom_addr = (bank << 16) | (address << 0);\n\t\n\tsample_data = chip->romData[rom_addr];";
+    let bounded_sample_read = "\trom_addr = (bank << 16) | (address << 0);\n\tif (rom_addr >= chip->romSize)\n\t\treturn 0;\n\t\n\tsample_data = chip->romData[rom_addr];";
+    assert!(
+        qsound_ctr_source.contains(original_sample_read),
+        "Highly Quixotic qsound_ctr.c changed; re-audit Kog's sample-ROM safety patch"
+    );
+    let original_rom_allocation = "\tchip->romData = (UINT8*)realloc(chip->romData, memsize);\n\tchip->romSize = memsize;\n\tchip->romMask = pow2_mask(memsize);\n\tmemset(chip->romData, 0xFF, memsize);";
+    let checked_rom_allocation = "\tUINT8* newRomData = (UINT8*)realloc(chip->romData, memsize);\n\tif (!newRomData)\n\t{\n\t\tfree(chip->romData);\n\t\tchip->romData = NULL;\n\t\tchip->romSize = 0;\n\t\tchip->romMask = 0;\n\t\treturn;\n\t}\n\tchip->romData = newRomData;\n\tchip->romSize = memsize;\n\tchip->romMask = pow2_mask(memsize);\n\tmemset(chip->romData, 0xFF, memsize);";
+    assert!(
+        qsound_ctr_source.contains(original_rom_allocation),
+        "Highly Quixotic qsound_ctr.c changed; re-audit Kog's sample-ROM allocation patch"
+    );
+    let original_rom_write_guard = "\tif (offset > chip->romSize)\n\t\treturn;";
+    let checked_rom_write_guard = "\tif (!chip->romData || offset >= chip->romSize)\n\t\treturn;";
+    assert!(
+        qsound_ctr_source.contains(original_rom_write_guard),
+        "Highly Quixotic qsound_ctr.c changed; re-audit Kog's sample-ROM write patch"
+    );
+    let qsound_ctr_source = qsound_ctr_source
+        .replace("#define INLINE __inline", "#define INLINE static __inline")
+        .replace("#define INLINE inline", "#define INLINE static inline")
+        .replace(original_sample_read, bounded_sample_read)
+        .replace(original_rom_allocation, checked_rom_allocation)
+        .replace(original_rom_write_guard, checked_rom_write_guard);
+    let qsound_ctr_source = format!(
+        "{qsound_ctr_source}\n\nint kog_qsoundc_has_rom(void* info, UINT32 size)\n{{\n\tstruct qsound_chip* chip = (struct qsound_chip*)info;\n\treturn chip && chip->romData && chip->romSize == size;\n}}\n\nvoid kog_qsoundc_cleanup(void* info)\n{{\n\tstruct qsound_chip* chip = (struct qsound_chip*)info;\n\tif (!chip)\n\t\treturn;\n\tfree(chip->romData);\n\tchip->romData = NULL;\n\tchip->romSize = 0;\n\tchip->romMask = 0;\n}}\n"
+    );
+    fs::write(qsf_generated.join("qsound_ctr.c"), qsound_ctr_source)
+        .expect("write bounded Highly Quixotic qsound_ctr.c");
+
+    let mut qsf_build = cc::Build::new();
+    qsf_build
+        .std("c11")
+        .include(qsf_core)
+        .define("EMU_COMPILE", None)
+        .define("HAVE_STDINT_H", None)
+        .files([
+            qsf_generated.join("qsound.c"),
+            qsf_generated.join("qsound_ctr.c"),
+            qsf_core.join("kabuki.c"),
+            qsf_core.join("z80.c"),
+        ])
+        .warnings(false);
+    match std::env::var("CARGO_CFG_TARGET_ENDIAN").as_deref() {
+        Ok("big") => qsf_build.define("EMU_BIG_ENDIAN", None),
+        _ => qsf_build.define("EMU_LITTLE_ENDIAN", None),
+    };
+    qsf_build.compile("kog_highly_quixotic");
+
     // Emit psflib after the C++ archive so one-pass static linkers see the
-    // parser dependency after ncsf_bridge.cpp's psf_load reference.
+    // parser dependency after the NCSF, GSF, and QSF bridge references.
     let mut psf_build = cc::Build::new();
     psf_build
         .std("c11")
@@ -762,8 +869,11 @@ fn build_ncsf(mgba_output: &Path) {
 
     println!("cargo:rerun-if-changed=native/sseqplayer");
     println!("cargo:rerun-if-changed=native/psflib");
+    println!("cargo:rerun-if-changed=native/highly-quixotic");
     println!("cargo:rerun-if-changed=native/ncsf_bridge.cpp");
     println!("cargo:rerun-if-changed=native/ncsf_bridge.h");
     println!("cargo:rerun-if-changed=native/gsf_bridge.cpp");
     println!("cargo:rerun-if-changed=native/gsf_bridge.h");
+    println!("cargo:rerun-if-changed=native/qsf_bridge.cpp");
+    println!("cargo:rerun-if-changed=native/qsf_bridge.h");
 }

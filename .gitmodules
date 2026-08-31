@@ -31,3 +31,6 @@
 [submodule "native/mgba"]
 	path = native/mgba
 	url = https://github.com/kode54/mgba.git
+[submodule "native/highly-quixotic"]
+	path = native/highly-quixotic
+	url = https://github.com/kode54/Highly_Quixotic.git

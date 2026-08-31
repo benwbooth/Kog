@@ -44,6 +44,9 @@ libsidplayfp revision for ROM-free PSID data and is ordered before AdPlug.
 library dependencies, and is ordered before NCSF and the broad fallbacks.
 `sseqplayer-ncsf` wraps the official SSEQPlayer and psflib sources for NCSF and
 minincsf and is ordered before SID and the broad specialist fallbacks.
+`highly-quixotic-qsf` wraps the standalone GPLv3 Highly Quixotic core and
+psflib for QSF and miniqsf and is ordered beside the other dedicated PSF
+backends, before SID and the broad specialist fallbacks.
 
 The FFmpeg adapter discovers `libavformat`, `libavcodec`, `libavutil`, and
 `libswresample` with pkg-config and keeps all native ownership behind a small
@@ -116,9 +119,9 @@ than 16,384 entries, files over 4 GiB, or more than 8 GiB expanded in total.
 Filename decoding follows Cog's UTF-8, GB18030, Windows-1251, then
 byte-preserving Latin-1 fallback. Deterministic ZIP and GZ audio fixtures,
 real 7Z and RAR5 extraction fixtures, a ZIP-contained APL plus WAV, and
-ZIP-contained NCSF and GSF mini/library pairs gate the current path. Passwords,
-multipart archives, nested archive expansion, broad format corpora, and
-Windows/macOS runtime gates remain separate work.
+ZIP-contained NCSF, GSF, and QSF mini/library pairs gate the current path.
+Passwords, multipart archives, nested archive expansion, broad format corpora,
+and Windows/macOS runtime gates remain separate work.
 
 Decoder settings are shared between the probe registry and playback registry.
 The MIDI engine and current SF2 path are persisted in the platform
@@ -256,6 +259,24 @@ metadata, dependency loading and precedence, audible PCM, seek, fade/EOS,
 default timing, malformed input, missing libraries, and a ZIP-contained pair
 without a Nintendo BIOS, logo, or game data. Broad corpus and direct Cog
 behavior comparison remain parity work.
+
+The QSF adapter pins kode54's standalone Highly Quixotic revision `1150a17`,
+the same portable C engine wrapped by Cog's Objective-C QSF plugin, and reuses
+psflib for PSF version 0x41 parsing, zlib decompression, tags, and relative
+`_lib` traversal. The bridge applies KEY, Z80, and SMP segments in dependency
+order and bounds their offsets and aggregate sizes before initializing the
+Z80, optional Kabuki decryption keys, and Capcom QSound HLE DSP. Build-time
+generated copies of two C translation units make upstream's inline helpers
+portable, prevent out-of-range banked Z80/sample-ROM access, and release the
+DSP's copied ROM without modifying the pinned submodule. Playback converts the
+native signed-16 output to 24,038 Hz stereo float PCM, applies PSF
+`length`/`fade` tags or Cog's 150-second plus eight-second defaults, and seeks
+by reconstructing the core and discarding exact frames. Tests generate an
+original Z80 program that initializes one looping QSound PCM voice and wrap it
+with a synthetic waveform in QSF/miniqsf files; they gate metadata, dependency
+loading and precedence, audible PCM, seek, fade/EOS, default timing, malformed
+input, missing libraries, and a ZIP-contained pair without Capcom code or game
+data. Broad corpus and direct Cog behavior comparison remain parity work.
 
 ## Decoder contract
 

@@ -188,6 +188,29 @@ mGBA's high-level startup and does not include a proprietary GBA BIOS. Its GSF
 tests generate an original ARM program and PSF wrappers and contain no Nintendo
 logo, firmware, or game data.
 
+## Highly Quixotic
+
+The `native/highly-quixotic` submodule is kode54's standalone
+[Highly Quixotic](https://github.com/kode54/Highly_Quixotic) repository at
+commit `1150a17696dbd044f215f823166a5f2b6519cd5f`. This is the portable C
+Z80/Kabuki/QSound engine wrapped by Cog's Objective-C QSF plugin. Kog builds
+the active `qsound.c`, `qsound_ctr.c`, `kabuki.c`, and `z80.c` sources behind
+its own bounded C ABI bridge and shares psflib's PSF version 0x41 parser.
+
+Highly Quixotic is Copyright (C) Christopher Snowhill and the contributors
+identified by its history; its HLE QSound mixer is by Ian Karlsson with thanks
+to Valley Bell. The repository is distributed under the GNU General Public
+License, version 3, whose exact text is retained as
+`native/highly-quixotic/LICENSE.TXT` and is also Kog's root `LICENSE`.
+
+Kog generates modified copies of `qsound.c` and `qsound_ctr.c` in Cargo's
+build output. Those GPLv3 derivatives make the C inline helpers portable,
+bound banked Z80 and sample-ROM reads for untrusted files, handle sample-ROM
+allocation failure, and free the DSP's copied sample ROM without freeing its
+embedded state. The pinned submodule is not modified. Kog's QSF tests generate
+an original Z80 program, sample waveform, and PSF wrappers and contain no
+Capcom program, audio, or game data.
+
 ## SSEQPlayer and psflib
 
 The `native/sseqplayer` submodule is kode54's official

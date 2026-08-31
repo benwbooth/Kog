@@ -26,6 +26,8 @@ mod organya;
 mod organya_decoder;
 mod playback;
 mod playlist;
+mod qsf;
+mod qsf_decoder;
 mod settings;
 mod sid;
 mod sid_decoder;
