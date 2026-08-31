@@ -32,6 +32,24 @@ upstream project. It is distributed under the GNU Lesser General Public
 License, version 2.1. The complete upstream source and license are retained in
 the submodule, and a copy of the license is also in `LICENSES/LGPL-2.1.txt`.
 
+## libvgm
+
+The `native/libvgm` Git submodule is the official
+[libvgm](https://github.com/ValleyBell/libvgm) source at Cog's pinned commit
+`867223e7c33d63de115d1ab955f784c44f19040a`. Kog builds the static utilities,
+emulation, and player libraries and registers the VGM, S98, DRO, and GYM
+engines through its own small C ABI wrapper.
+
+libvgm and its emulation cores are Copyright ValleyBell and the contributors
+identified in the individual source headers. Those headers identify code under
+BSD-3-Clause, GPL-2.0, GPL-2.0-or-later, LGPL-2.1-or-later, and MIT terms. The
+complete corresponding source and per-file notices are retained in the
+submodule. Copies of the BSD-3-Clause and MIT texts are in `LICENSES`; GPL-2.0
+is Kog's root `LICENSE`, and LGPL-2.1 is in `LICENSES/LGPL-2.1.txt`.
+
+The Yamaha YRW801 sample ROM is not included. Kog only loads a user-provided
+`yrw801.rom` beside a music file when libvgm requests it.
+
 ## TinySoundFont minimal SoundFont test fixture
 
 The 484-byte `MinimalSoundFont` data encoded in `src/decoder.rs` is derived

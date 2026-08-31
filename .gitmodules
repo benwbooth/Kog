@@ -1,3 +1,6 @@
 [submodule "native/game-music-emu"]
 	path = native/game-music-emu
 	url = https://github.com/libgme/game-music-emu.git
+[submodule "native/libvgm"]
+	path = native/libvgm
+	url = https://github.com/ValleyBell/libvgm.git

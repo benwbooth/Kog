@@ -3,6 +3,7 @@ use std::path::Path;
 
 fn main() {
     build_game_music_emu();
+    let libvgm_output = build_libvgm();
 
     cc::Build::new()
         .cpp(true)
@@ -24,6 +25,16 @@ fn main() {
         .include("native/opl3w")
         .file("native/opl3w/resampler.c")
         .compile("kog_opl3w_resampler");
+
+    cc::Build::new()
+        .cpp(true)
+        .std("c++17")
+        .file("native/libvgm-kog/kog_libvgm.cpp")
+        .include("native/libvgm-kog")
+        .include("native/libvgm")
+        .warnings(false)
+        .compile("kog_libvgm");
+    link_libvgm(&libvgm_output);
 
     println!("cargo:rerun-if-changed=native/opl3w");
 
@@ -80,4 +91,51 @@ fn build_game_music_emu() {
     println!("cargo:rustc-link-search=native={}/lib", output.display());
     println!("cargo:rustc-link-lib=static=gme");
     println!("cargo:rerun-if-changed=native/game-music-emu");
+}
+
+fn build_libvgm() -> std::path::PathBuf {
+    let source = Path::new("native/libvgm");
+    if !source.join("CMakeLists.txt").is_file() {
+        panic!("libvgm submodule is missing; run `git submodule update --init --recursive`");
+    }
+
+    let output = cmake::Config::new(source)
+        .profile("Release")
+        .define("BUILD_LIBAUDIO", "OFF")
+        .define("BUILD_LIBEMU", "ON")
+        .define("BUILD_LIBPLAYER", "ON")
+        .define("BUILD_TESTS", "OFF")
+        .define("BUILD_PLAYER", "OFF")
+        .define("BUILD_VGM2WAV", "OFF")
+        .define("LIBRARY_TYPE", "STATIC")
+        .define("LINK_STATIC_LIBS", "OFF")
+        .define("UTIL_LOADERS", "ON")
+        .define("UTIL_THREADING", "OFF")
+        .define("UTIL_CHARSET_CONV", "ON")
+        .define("USE_SANITIZERS", "OFF")
+        .define("SNDEMU__ALL", "ON")
+        .define("CMAKE_INSTALL_LIBDIR", "lib")
+        .build();
+
+    println!("cargo:rerun-if-changed=native/libvgm");
+    println!("cargo:rerun-if-changed=native/libvgm-kog");
+    output
+}
+
+fn link_libvgm(output: &Path) {
+    println!("cargo:rustc-link-search=native={}/lib", output.display());
+    println!("cargo:rustc-link-lib=static=vgm-player");
+    println!("cargo:rustc-link-lib=static=vgm-emu");
+    println!("cargo:rustc-link-lib=static=vgm-utils");
+
+    let target = std::env::var("TARGET").unwrap_or_default();
+    if target.contains("windows") {
+        println!("cargo:rustc-link-lib=zlib");
+    } else {
+        println!("cargo:rustc-link-lib=z");
+        println!("cargo:rustc-link-lib=m");
+    }
+    if target.contains("apple") {
+        println!("cargo:rustc-link-lib=iconv");
+    }
 }

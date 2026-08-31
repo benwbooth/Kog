@@ -46,6 +46,7 @@
               rust-analyzer
               rustc
               rustfmt
+              zlib
             ])
             ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
               pkgs.alsa-lib

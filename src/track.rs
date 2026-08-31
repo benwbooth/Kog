@@ -84,6 +84,12 @@ impl Track {
             track.duration = properties.duration.or(track.duration);
             track.sample_rate = properties.sample_rate.or(track.sample_rate);
             track.channels = properties.channels.or(track.channels);
+            track.year = properties.year.or(track.year);
+            track.bitrate = properties.bitrate.or(track.bitrate);
+            track.bits_per_sample = properties.bits_per_sample.or(track.bits_per_sample);
+            if let Some(codec) = properties.codec.filter(|value| !value.is_empty()) {
+                track.codec = codec;
+            }
             if let Some(title) = properties.title.filter(|value| !value.is_empty()) {
                 track.title = title;
             }

@@ -16,8 +16,12 @@ and seeking. The first specialist backend is also live: AY, GBS, HES, KSS,
 NSF/NSFE, SAP, and SPC route to pinned Game Music Emu 0.6.5 code with
 multitrack expansion, companion M3U metadata, Cog's loop/fade policy, and seek.
 The NSF path has passed the current real-PCM and live-UI gates; the other GME
-formats still need corpus coverage. SFM, SGC, and the other chiptune,
-game-audio, and tracker families remain explicitly unclaimed.
+formats still need corpus coverage. VGM/VGZ, S98, DRO, and GYM now route to the
+same libvgm revision used by Cog, with real PCM, metadata, seek, loop/fade
+policy, and optional YRW801 ROM lookup. The generated VGM path has passed the
+current real-PCM, seek, and live-UI gates; the rest of the libvgm family still
+needs corpus coverage. SFM, SGC, and the other chiptune, game-audio, and tracker
+families remain explicitly unclaimed.
 
 ## Project direction
 

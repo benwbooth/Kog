@@ -104,6 +104,7 @@ impl DecoderBackend for GmeBackend {
             genre: nonempty(info.system),
             track_number: Some(track + 1),
             warning: emu.warning.clone(),
+            ..StreamProperties::default()
         })
     }
 
@@ -342,6 +343,9 @@ mod tests {
             Some("game-music-emu")
         );
         assert_eq!(registry.backend_id_for(Path::new("song.sfm")), None);
-        assert_eq!(registry.backend_id_for(Path::new("song.vgm")), None);
+        assert_eq!(
+            registry.backend_id_for(Path::new("song.vgm")),
+            Some("libvgm")
+        );
     }
 }

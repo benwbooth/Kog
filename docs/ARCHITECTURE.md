@@ -27,7 +27,8 @@ KSS, NSF/NSFE, SAP, and SPC. These backends provide real playback, pause, stop,
 seek, position, volume, and automatic next-track behavior. Specialist backends
 remain separate so a broad fallback cannot erase behavior such as PSF
 dependency resolution, VGMStream subsongs, AdPlug subsongs, or
-emulator-authentic Roland MIDI synthesis.
+emulator-authentic Roland MIDI synthesis. `libvgm` wraps Cog's exact pinned
+libvgm revision for VGM/VGZ, S98, DRO, and GYM.
 
 Decoder settings are shared between the probe registry and playback registry.
 The MIDI engine and current SF2 path are persisted in the platform
@@ -47,6 +48,17 @@ unreadable companions remain non-fatal but are surfaced as warnings. The
 current fixed defaults match Cog: 150 seconds when no duration exists, two
 loops when loop metadata exists, and an eight-second fade when none is given.
 
+The libvgm adapter registers its VGM, S98, DRO, and GYM player engines and owns
+the native player plus input memory for the lifetime of one Rust `Source`. It
+requests libvgm's packed 32-bit representation of its internal signed 24-bit
+PCM and converts that stream to stereo floating point at 44.1 kHz without
+discarding the internal precision. Probe metadata maps TITLE, ARTIST, GAME, and
+DATE tags and reports the native format/version string. The advertised
+duration is Cog's one-pass duration; playback applies Cog's default two-loop,
+eight-second-fade, and half-second end-silence policy. A sibling `yrw801.rom`
+is supplied through libvgm's file callback when present and otherwise remains
+an optional user-provided asset.
+
 ## Decoder contract
 
 `DecoderBackend` is the current executable contract. Every backend supplies:
@@ -56,7 +68,7 @@ loops when loop metadata exists, and an eight-second fade when none is given.
 - explicit capability flags;
 - optional subsong enumeration;
 - a probe that returns duration, sample rate, channel count, common metadata,
-  track number, and non-fatal warnings;
+  track number, codec, bitrate/bit depth when known, and non-fatal warnings;
 - an append operation that gives the shared player a real decoded source.
 
 The contract still needs source sniffing, per-backend loop/fade configuration,

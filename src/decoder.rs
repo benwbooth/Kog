@@ -32,7 +32,11 @@ pub struct StreamProperties {
     pub artist: Option<String>,
     pub album: Option<String>,
     pub genre: Option<String>,
+    pub year: Option<u32>,
     pub track_number: Option<u32>,
+    pub codec: Option<String>,
+    pub bitrate: Option<u32>,
+    pub bits_per_sample: Option<u8>,
     pub warning: Option<String>,
 }
 
@@ -170,6 +174,7 @@ impl DecoderRegistry {
                 Box::new(RodioBackend),
                 Box::new(MidiBackend::new(settings)),
                 Box::new(crate::gme_decoder::GmeBackend),
+                Box::new(crate::libvgm_decoder::LibVgmBackend),
             ],
         }
     }
