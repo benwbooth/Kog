@@ -118,6 +118,19 @@ loading, and archive companion lookup without Nintendo firmware, ROMs, or
 game code. Cog's initial leading-silence stripping, a broad independently
 redistributable USF corpus, and direct comparison remain.
 
+PSF and miniPSF now reuse kode54's cross-platform libupse emulator instead of
+translating Cog's Objective-C Highly Experimental plugin or redistributing its
+embedded BIOS data. Because libupse is treated conservatively as GPL-2.0-only,
+it is built as the separate `kog-psf-helper` program and is not linked into
+Kog's GPL-3.0-or-later executable. A bounded binary protocol carries metadata
+and 44.1 kHz signed-16 stereo PCM back to Rust; each seek starts a fresh helper
+and discards to the exact frame. The helper prevalidates PSF sections,
+decompression, executable RAM bounds, tag sizes, library depth, and missing
+dependencies before invoking libupse. Generated PSF/miniPSF files with an
+original MIPS SPU program gate audible playback, metadata, tagged/default
+timing, fade/EOS, malformed input, seeking, and archive companion lookup.
+PSF2 remains the next extension of this backend.
+
 Monkey's Audio Image Link (`.apl`) files now accept the original CRLF or
 portable LF header, resolve their local image path with Cog-compatible relative
 Windows-path handling, and play only the declared start/finish PCM-frame range
@@ -175,10 +188,10 @@ Windows/macOS runtime gates remain parity work.
 Likely decoder families include FFmpeg, libopenmpt, Game Music Emu, vgmstream,
 libvgm, libsidplayfp, AdPlug, a SoundFont synthesizer, and an OPL3 MIDI
 synthesizer. Dependencies and redistributable assets are selected under the
-project's documented license policy. Non-commercial decoders are permitted
-for this non-commercial project when their own terms permit redistribution,
-but they retain those terms and must be kept outside the GPL application
-binary when the licenses are incompatible.
+project's documented license policy. License-restricted decoders retain their
+own terms and require either a compatible replacement or an independently
+reviewed optional-program boundary; Kog's non-commercial intent alone does not
+make incompatible code safe to link into the GPL application.
 
 See [the architecture](docs/ARCHITECTURE.md),
 [UI parity matrix](docs/UI_PARITY.md), and
@@ -200,6 +213,10 @@ cargo run
 
 For an existing checkout, initialize native sources with
 `git submodule update --init --recursive` before building.
+
+Cargo builds `kog-psf-helper` automatically for local PSF playback. Binary
+packages must install that helper beside the Kog executable; isolated tests may
+override its location with `KOG_PSF_HELPER=/path/to/kog-psf-helper`.
 
 Choose RustySynth or OPL3Windows under **Edit → Preferences → MIDI**. RustySynth
 requires an SF2 bank; Kog also accepts `KOG_SOUNDFONT=/path/to/bank.sf2` and

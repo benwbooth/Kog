@@ -260,6 +260,31 @@ Kog's tests generate a sparse Project64 save state containing an original
 MIPS program and synthetic stereo waveform. They include no Nintendo firmware,
 ROM image, proprietary program, game data, or recorded audio.
 
+## libupse and kog-psf-helper
+
+The `native/libupse` submodule is kode54's cross-platform
+[libupse](https://github.com/kode54/libupse) repository at commit
+`e3f1192e55e3eb5e1a22b84ed2c4f5a0e0786d85`. It supplies PlayStation PSF and
+miniPSF emulation with a high-level BIOS implementation, so Kog does not copy
+Cog's Objective-C decoder or its embedded Sony BIOS data.
+
+libupse's source headers identify the project under GNU General Public License
+version 2. Kog conservatively treats the revision as GPL-2.0-only. It is not
+linked into Kog's GPL-3.0-or-later executable: the build creates the separate
+`kog-psf-helper` program, combining libupse only with the adapter sources under
+`native/psf-helper`, which are also GPL-2.0-only. A copy of the license is in
+`LICENSES/GPL-2.0.txt`; the complete corresponding libupse source and its
+individual notices remain in the pinned submodule. Binary distributions must
+install the helper beside Kog and provide its corresponding source and notices
+under those terms.
+
+The Rust application and helper communicate through the independently
+documented metadata/PCM stream in `native/psf-helper/PROTOCOL.md`. The helper
+prevalidates bounded xSF structure and contains legacy-core process failures;
+it is not an operating-system sandbox. Kog's tests generate original MIPS code,
+SPU register writes, an ADPCM waveform, and PSF wrappers. They include no Sony
+firmware, game program, game data, or recorded audio.
+
 ## SSEQPlayer and psflib
 
 The `native/sseqplayer` submodule is kode54's official

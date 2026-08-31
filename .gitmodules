@@ -40,3 +40,6 @@
 [submodule "native/lazyusf2"]
 	path = native/lazyusf2
 	url = https://bitbucket.org/losnoco/lazyusf2.git
+[submodule "native/libupse"]
+	path = native/libupse
+	url = https://github.com/kode54/libupse.git

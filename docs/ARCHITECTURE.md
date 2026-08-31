@@ -327,6 +327,39 @@ miniUSF pair without Nintendo firmware, ROM data, or game code. Cog's initial
 leading-silence stripping, a broad redistributable corpus, configurable
 timing, and direct Cog behavior comparison remain parity work.
 
+The PSF adapter pins kode54's libupse revision `e3f1192`. Kog reuses that
+portable PS1/PS2 emulator rather than translating Cog's Objective-C Highly
+Experimental plugin, and it does not copy Cog's embedded BIOS data. The
+libupse source is treated conservatively as GPL-2.0-only, so it is compiled
+only into the separately licensed `kog-psf-helper` executable; no libupse
+object is linked into the GPL-3.0-or-later Kog process. The parent and helper
+exchange a fixed little-endian header followed by signed-16 stereo PCM, as
+specified in `native/psf-helper/PROTOCOL.md`.
+
+Before libupse runs, the helper bounds each PSF and dependency to 256 MiB,
+checks section arithmetic and compressed CRCs, caps decompression at 32 MiB,
+requires PS-X executable uploads to fit aligned within 2 MiB of emulated RAM,
+bounds libupse's fixed tag fields, limits dependency nesting to sixteen, and
+rejects missing or empty library chains. `_lib9` is rejected because the pinned
+libupse revision advances beyond its auxiliary-library array after loading it;
+blank tag lines are also rejected because that parser does not reset its fixed
+name buffer for them. The helper process also contains a
+legacy-core crash to that child process, although it is a process boundary and
+not an operating-system sandbox. Rust validates the protocol header, converts
+44.1 kHz stereo PCM to float, parses timing independently of libupse's legacy
+fractional-time parser, and applies PSF `length`/`fade` or Cog's 150-second plus
+eight-second defaults exactly once. Seeking replaces the child and has the new
+emulator instance discard to the exact requested frame, including backward
+seeks.
+
+Tests generate an original MIPS program that writes a synthetic ADPCM waveform
+to the emulated SPU and wrap it as PSF/miniPSF. They gate routing, metadata,
+audible PCM, exact seek, fade/EOS, default timing, malformed executable bounds,
+missing dependencies, mini-library resolution, and a ZIP-contained pair. A
+broad redistributable corpus, Cog's leading-silence scan, configurable timing,
+PSF2/miniPSF2 routing, Windows/macOS runtime gates, and direct Cog comparison
+remain parity work.
+
 ## Decoder contract
 
 `DecoderBackend` is the current executable contract. Every backend supplies:

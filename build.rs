@@ -6,6 +6,7 @@ use std::path::PathBuf;
 fn main() {
     build_game_music_emu();
     let libvgm_output = build_libvgm();
+    build_psf_helper();
     build_openmpt();
     build_hivelytracker();
     build_vgmstream();
@@ -1076,4 +1077,41 @@ fn build_ncsf(mgba_output: &Path) {
     println!("cargo:rerun-if-changed=native/sdsf_bridge.h");
     println!("cargo:rerun-if-changed=native/usf_bridge.cpp");
     println!("cargo:rerun-if-changed=native/usf_bridge.h");
+}
+
+fn build_psf_helper() {
+    let helper = Path::new("native/psf-helper");
+    let libupse = Path::new("native/libupse");
+    if !helper.join("CMakeLists.txt").is_file() || !libupse.join("upse.h").is_file() {
+        panic!(
+            "libupse PSF helper sources are missing; run `git submodule update --init --recursive`"
+        );
+    }
+
+    let libupse = libupse
+        .canonicalize()
+        .expect("canonicalize the libupse source directory");
+    let output = cmake::Config::new(helper)
+        .profile("Release")
+        .define("UPSE_SOURCE", &libupse)
+        .build();
+    let executable_name = if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        "kog-psf-helper.exe"
+    } else {
+        "kog-psf-helper"
+    };
+    let executable = output.join("bin").join(executable_name);
+    if !executable.is_file() {
+        panic!(
+            "libupse PSF helper build did not install {}",
+            executable.display()
+        );
+    }
+
+    println!(
+        "cargo:rustc-env=KOG_BUILD_PSF_HELPER={}",
+        executable.display()
+    );
+    println!("cargo:rerun-if-changed=native/psf-helper");
+    println!("cargo:rerun-if-changed=native/libupse");
 }
