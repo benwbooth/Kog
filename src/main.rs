@@ -15,6 +15,8 @@ mod hively;
 mod hively_decoder;
 mod libvgm;
 mod libvgm_decoder;
+mod ncsf;
+mod ncsf_decoder;
 mod openmpt;
 mod openmpt_decoder;
 mod opl3;

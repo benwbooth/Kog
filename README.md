@@ -55,7 +55,7 @@ generated two-subtune PSID passes routing, audible PCM, metadata, seek, and
 exact end-of-stream gates. Kog deliberately does not redistribute C64 ROMs;
 RSID/BASIC tunes report that user ROM selection is still required, and raw
 MUS routing and the song-length database remain parity work. A system FFmpeg
-adapter now supplies the broad conventional fallback used for Cog's AC-3,
+adapter supplies the broad conventional fallback used for Cog's AC-3,
 DTS, WMA/ASF, TAK, APE, TTA, TwinVQ, RealAudio, DSD-container, WavPack,
 Musepack, and Shorten families. It preserves the decoded channel layout and
 sample rate, converts planar or packed native samples to interleaved float
@@ -65,6 +65,14 @@ seek, priority, and end-of-stream gates. The pinned Nix shell deliberately
 builds FFmpeg without GPL-only or version-3 components, yielding an
 LGPL-2.1-or-later library compatible with Kog's GPL-2.0-only license; the
 wider format corpus and exact-seek validation remain.
+
+NCSF and minincsf now route through the official SSEQPlayer and psflib
+projects, including relative `_lib` dependency resolution, common PSF tags,
+Cog's 150-second/eight-second defaults, tagged length/fade behavior, 44.1 kHz
+stereo PCM, and deterministic seek. A fully synthetic SDAT/PSF pair gates
+audible rendering, exact duration/end behavior, metadata, malformed input, and
+mini-library loading; a broad independently redistributable NCSF corpus
+remains.
 
 Monkey's Audio Image Link (`.apl`) files now accept the original CRLF or
 portable LF header, resolve their local image path with Cog-compatible relative
@@ -157,10 +165,10 @@ can extract `wavetable.dat` and `drums.dat` from the original freeware
 
 The direct Cargo build requires Rust, C and C++ compilers, CMake, `pkg-config`,
 FFmpeg development libraries (`libavformat`, `libavcodec`, `libavutil`, and
-`libswresample`), libarchive 3.2 or newer, and Qt 6 with Qt Quick and Qt Quick
-Controls. FFmpeg must be built under terms compatible with GPL-2.0-only; Kog's
-Nix shell provides the known-compatible configuration used by the regression
-gates.
+`libswresample`), zlib, libarchive 3.2 or newer, and Qt 6 with Qt Quick and Qt
+Quick Controls. FFmpeg must be built under terms compatible with GPL-2.0-only;
+Kog's Nix shell provides the known-compatible configuration used by the
+regression gates.
 
 ## License
 

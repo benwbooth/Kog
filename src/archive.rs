@@ -291,6 +291,7 @@ fn decode_archive_name(bytes: &[u8]) -> compress_tools::Result<String> {
 mod tests {
     use super::*;
     use crate::decoder::{ArchiveOrigin, DecoderRegistry, DecoderSettings, PlaybackSource};
+    use crate::ncsf::{test_ncsf_bytes, test_sdat_bytes};
 
     // Generated with libarchive 3.8.9 from an empty regular file. It exercises
     // real 7Z parsing without requiring an archive-writing tool during tests.
@@ -564,6 +565,46 @@ mod tests {
             Some(std::time::Duration::from_millis(5))
         );
         assert_eq!(properties.sample_rate, Some(8_000));
+    }
+
+    #[test]
+    fn zip_preserves_minincsf_library_resolution() {
+        let fixture = tempfile::tempdir().unwrap();
+        let archive_path = fixture.path().join("ncsf-set.zip");
+        let library = test_ncsf_bytes(Some(&test_sdat_bytes()), "title=Library\n");
+        let mini = test_ncsf_bytes(
+            None,
+            "_lib=music.ncsflib\ntitle=Archive selection\nlength=0:00.250\n",
+        );
+        write_stored_zip(
+            &archive_path,
+            &[
+                ("set/selection.minincsf", &mini),
+                ("set/music.ncsflib", &library),
+            ],
+        );
+
+        let registry = DecoderRegistry::new(DecoderSettings::default());
+        let expansion = registry
+            .expand_detailed(archive_path.clone())
+            .expect("expand archived NCSF set");
+        assert_eq!(expansion.sources.len(), 1);
+        assert_eq!(
+            expansion.sources[0]
+                .archive_origin
+                .as_ref()
+                .unwrap()
+                .entry_name,
+            "set/selection.minincsf"
+        );
+        let properties = registry
+            .probe(&expansion.sources[0])
+            .expect("probe archived minincsf through extracted library");
+        assert_eq!(properties.title.as_deref(), Some("Archive selection"));
+        assert_eq!(
+            properties.duration,
+            Some(std::time::Duration::from_millis(250))
+        );
     }
 
     #[test]

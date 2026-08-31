@@ -40,6 +40,8 @@ wraps Cog's exact AdPlug and libbinio revisions and is ordered after MIDI,
 libvgm, and OpenMPT so their shared MID, VGM/DRO, and S3M extensions retain
 Cog's intended specialized routes. `libsidplayfp-residfp` wraps Cog's exact
 libsidplayfp revision for ROM-free PSID data and is ordered before AdPlug.
+`sseqplayer-ncsf` wraps the official SSEQPlayer and psflib sources for NCSF and
+minincsf and is ordered before SID and the broad specialist fallbacks.
 
 The FFmpeg adapter discovers `libavformat`, `libavcodec`, `libavutil`, and
 `libswresample` with pkg-config and keeps all native ownership behind a small
@@ -219,6 +221,22 @@ exists. A generated two-subtune PSID gates the exact revision, routing,
 metadata, audible PCM, accelerated seek, fade duration, and exact end of
 stream. Raw MUS/MUS+STR routing, configurable synthesis policy, user ROMs, and
 the song-length database remain parity work.
+
+The NCSF adapter pins kode54's SSEQPlayer revision `77222d3` and psflib
+revision `95509e0`. psflib owns PSF version 0x25 parsing, zlib decompression,
+tag collection, and relative `_lib` traversal; the bridge merges the library
+programs and selects the SSEQ number stored in the reserved field as Cog does.
+Before invoking SSEQPlayer, Kog bounds-checks the SDAT section table, INFO and
+FAT records, selected SSEQ/SBNK/SWAR files, instrument references, and encoded
+sample ranges. Playback renders SSEQPlayer's signed-16 sinc output as 44.1 kHz
+stereo float PCM, applies PSF `length`/`fade` tags or Cog's 150-second plus
+eight-second defaults, and seeks by reconstructing the player and discarding
+exact frames. A generated SDAT containing an original sequence, bank, and PCM
+wave plus generated NCSF/minincsf wrappers gates metadata, dependency loading,
+audible PCM, seek, fade/EOS, default timing, and malformed-file rejection
+without redistributing Nintendo content. A ZIP-contained mini/library pair
+also gates archive companion resolution. A wider redistributable corpus and
+behavioral comparison against Cog remain parity work.
 
 ## Decoder contract
 

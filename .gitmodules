@@ -22,3 +22,9 @@
 [submodule "native/libsidplayfp"]
 	path = native/libsidplayfp
 	url = https://github.com/kode54/libsidplayfp.git
+[submodule "native/sseqplayer"]
+	path = native/sseqplayer
+	url = https://github.com/kode54/SSEQPlayer.git
+[submodule "native/psflib"]
+	path = native/psflib
+	url = https://github.com/kode54/psflib.git

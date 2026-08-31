@@ -11,6 +11,7 @@ fn main() {
     build_vgmstream();
     build_adplug();
     build_libsidplayfp();
+    build_ncsf();
     build_ffmpeg();
 
     cc::Build::new()
@@ -573,4 +574,55 @@ fn build_libsidplayfp() {
     println!("cargo:rerun-if-changed=native/libsidplayfp-generated");
     println!("cargo:rerun-if-changed=native/sid_bridge.cpp");
     println!("cargo:rerun-if-changed=native/sid_bridge.h");
+}
+
+fn build_ncsf() {
+    let player = Path::new("native/sseqplayer");
+    let psflib = Path::new("native/psflib");
+    if !player.join("Player.h").is_file() || !psflib.join("psflib.h").is_file() {
+        panic!(
+            "SSEQPlayer and psflib submodules are missing; run `git submodule update --init --recursive`"
+        );
+    }
+
+    let zlib = pkg_config::Config::new()
+        .cargo_metadata(true)
+        .probe("zlib")
+        .unwrap_or_else(|error| panic!("zlib is required for NCSF/psflib support: {error}"));
+
+    let mut player_sources = cpp_files(player);
+    player_sources.push(PathBuf::from("native/ncsf_bridge.cpp"));
+    player_sources.sort();
+    let mut player_build = cc::Build::new();
+    player_build
+        .cpp(true)
+        .std("c++17")
+        .include(player)
+        .include(psflib)
+        .files(player_sources)
+        .warnings(false);
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("gnu") {
+        // SSEQPlayer's pre-C++11 libstdc++ shims conflict with modern GNU
+        // libstdc++. libc++ and MSVC select their own standard implementation.
+        player_build.define("_LIBCPP_VERSION", "1");
+    }
+    player_build.compile("kog_sseqplayer");
+
+    // Emit psflib after the C++ archive so one-pass static linkers see the
+    // parser dependency after ncsf_bridge.cpp's psf_load reference.
+    let mut psf_build = cc::Build::new();
+    psf_build
+        .std("c11")
+        .include(psflib)
+        .file(psflib.join("psflib.c"))
+        .warnings(false);
+    for include in &zlib.include_paths {
+        psf_build.include(include);
+    }
+    psf_build.compile("kog_psflib");
+
+    println!("cargo:rerun-if-changed=native/sseqplayer");
+    println!("cargo:rerun-if-changed=native/psflib");
+    println!("cargo:rerun-if-changed=native/ncsf_bridge.cpp");
+    println!("cargo:rerun-if-changed=native/ncsf_bridge.h");
 }
