@@ -111,6 +111,24 @@ submodule and copied verbatim to `LICENSES/vgmstream-ISC.txt`. Kog's generated
 VAG fixture and `!tags.m3u` file are created by its tests and contain no game
 content.
 
+## AdPlug and libbinio
+
+The `native/adplug` submodule is Cog maintainer kode54's
+[AdPlug](https://github.com/kode54/adplug) fork at Cog's exact commit
+`4e0141ab41ac4ebf388b765d669eb656376d04fd` (version 2.3.4-beta). The
+`native/libbinio` submodule is AdPlug's matching binary-I/O dependency at
+Cog's exact commit `e2f8d50c53102c618d675c3310e09a0e0bdf49cd`. Kog builds both
+statically, uses AdPlug's bundled Nuked OPL3 emulator through a small C ABI
+bridge, and namespaces its OPL symbols from Kog's separate MIDI synthesizer.
+The upstream `test/2.CMF` is used as the first playback fixture. Cog's optional
+AdPlug song database is not yet bundled.
+
+AdPlug and libbinio are Copyright (C) Simon Peter and the contributors named
+in their source and are distributed under the GNU Lesser General Public
+License, version 2.1 or (at your option) any later version. Their complete
+source and exact license texts are retained in the two submodules; a copy of
+the LGPL-2.1 text is also in `LICENSES/LGPL-2.1.txt`.
+
 ## TinySoundFont minimal SoundFont test fixture
 
 The 484-byte `MinimalSoundFont` data encoded in `src/decoder.rs` is derived

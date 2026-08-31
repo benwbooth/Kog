@@ -42,7 +42,12 @@ generated PlayStation VAG passes routing, metadata, audible PCM, seek, and
 exact end-of-stream gates. The first portable build deliberately enables
 vgmstream's native codecs plus built-in G.722.1; formats requiring its optional
 FFmpeg, Vorbis, mpg123, G.719, ATRAC9, CELT, or Speex dependencies remain
-explicitly partial.
+explicitly partial. Cog's exact AdPlug revision and matching libbinio pin now
+add 51 runtime-enumerated AdLib/OPL extensions, native subsong expansion,
+metadata, duration, 44.1 kHz stereo output through the bundled Nuked OPL3
+core, and exact restart-and-render seeking. AdPlug's upstream `2.CMF` fixture
+passes routing, audible PCM, seek, and end-of-stream gates; Cog's AdPlug
+database and the wider 51-format corpus remain.
 
 ## Project direction
 

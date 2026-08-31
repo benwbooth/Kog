@@ -9,6 +9,7 @@ fn main() {
     build_openmpt();
     build_hivelytracker();
     build_vgmstream();
+    build_adplug();
 
     cc::Build::new()
         .cpp(true)
@@ -310,4 +311,109 @@ fn build_vgmstream() {
     println!("cargo:rerun-if-changed=native/vgmstream");
     println!("cargo:rerun-if-changed=native/vgmstream_bridge.c");
     println!("cargo:rerun-if-changed=native/vgmstream_bridge.h");
+}
+
+fn build_adplug() {
+    let adplug = Path::new("native/adplug");
+    let binio = Path::new("native/libbinio");
+    if !adplug.join("src/adplug.h").is_file() || !binio.join("src/binio.h.in").is_file() {
+        panic!("AdPlug submodules are missing; run `git submodule update --init --recursive`");
+    }
+
+    let generated = PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR"))
+        .join("kog-libbinio");
+    fs::create_dir_all(&generated).expect("create libbinio generated-header directory");
+    let binio_header = fs::read_to_string(binio.join("src/binio.h.in"))
+        .expect("read libbinio header template")
+        .replace("@ENABLE_STRING@", "1")
+        .replace("@ENABLE_IOSTREAM@", "1")
+        .replace("@ISO_STDLIB@", "1")
+        .replace("@WITH_MATH@", "1")
+        .replace("@TYPE_INT@", "long long")
+        .replace("@TYPE_FLOAT@", "long double");
+    fs::write(generated.join("binio.h"), binio_header).expect("write configured libbinio header");
+    let adplug_version = fs::read_to_string(adplug.join("src/version.h.in"))
+        .expect("read AdPlug version-header template")
+        .replace("@VERSION@", "2.3.4-beta");
+    fs::write(generated.join("version.h"), adplug_version)
+        .expect("write configured AdPlug version header");
+
+    let mut adplug_cpp = cpp_files(&adplug.join("src"));
+    adplug_cpp.push(PathBuf::from("native/adplug_bridge.cpp"));
+    adplug_cpp.sort();
+
+    let target = std::env::var("TARGET").unwrap_or_default();
+    let mut adplug_build = cc::Build::new();
+    adplug_build
+        .cpp(true)
+        .std("c++17")
+        .include(adplug.join("src"))
+        .include(binio.join("src"))
+        .include(&generated)
+        .files(adplug_cpp)
+        .warnings(false);
+    if target.contains("windows") {
+        adplug_build
+            .define("WIN32", None)
+            .define("stricmp", "_stricmp");
+    } else {
+        adplug_build
+            .define("stricmp", "strcasecmp")
+            .flag("-include")
+            .flag("strings.h");
+    }
+    define_adplug_opl_symbols(&mut adplug_build);
+    adplug_build.compile("kog_adplug");
+
+    let mut adplug_c = cc::Build::new();
+    adplug_c
+        .std("c11")
+        .include(adplug.join("src"))
+        .files([
+            adplug.join("src/adlibemu.c"),
+            adplug.join("src/debug.c"),
+            adplug.join("src/fmopl.c"),
+            adplug.join("src/nukedopl.c"),
+        ])
+        .warnings(false);
+    if target.contains("windows") {
+        adplug_c.define("WIN32", None);
+    }
+    define_adplug_opl_symbols(&mut adplug_c);
+    adplug_c.compile("kog_adplug_c");
+
+    cc::Build::new()
+        .cpp(true)
+        .std("c++17")
+        .include(binio.join("src"))
+        .include(&generated)
+        .files([
+            binio.join("src/binio.cpp"),
+            binio.join("src/binfile.cpp"),
+            binio.join("src/binwrap.cpp"),
+            binio.join("src/binstr.cpp"),
+        ])
+        .warnings(false)
+        .compile("kog_libbinio");
+
+    println!("cargo:rerun-if-changed=native/adplug");
+    println!("cargo:rerun-if-changed=native/libbinio");
+    println!("cargo:rerun-if-changed=native/adplug_bridge.cpp");
+    println!("cargo:rerun-if-changed=native/adplug_bridge.h");
+}
+
+fn define_adplug_opl_symbols(build: &mut cc::Build) {
+    for (symbol, namespaced) in [
+        ("OPL3_Generate", "kog_adplug_OPL3_Generate"),
+        (
+            "OPL3_GenerateResampled",
+            "kog_adplug_OPL3_GenerateResampled",
+        ),
+        ("OPL3_Reset", "kog_adplug_OPL3_Reset"),
+        ("OPL3_WriteReg", "kog_adplug_OPL3_WriteReg"),
+        ("OPL3_WriteRegBuffered", "kog_adplug_OPL3_WriteRegBuffered"),
+        ("OPL3_GenerateStream", "kog_adplug_OPL3_GenerateStream"),
+    ] {
+        build.define(symbol, namespaced);
+    }
 }

@@ -13,3 +13,9 @@
 [submodule "native/vgmstream"]
 	path = native/vgmstream
 	url = https://github.com/vgmstream/vgmstream.git
+[submodule "native/adplug"]
+	path = native/adplug
+	url = https://github.com/kode54/adplug.git
+[submodule "native/libbinio"]
+	path = native/libbinio
+	url = https://github.com/adplug/libbinio.git

@@ -1,3 +1,5 @@
+mod adplug;
+mod adplug_decoder;
 mod app_controller;
 mod decoder;
 mod gme;

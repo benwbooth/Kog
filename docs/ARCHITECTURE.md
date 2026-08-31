@@ -34,7 +34,10 @@ libvgm revision for VGM/VGZ, S98, DRO, and GYM. `libopenmpt` wraps Cog's exact
 `orgorg` 0.2.1 renders Organya Org-02/Org-03 songs from a user-supplied
 soundbank. `vgmstream` is the final specialist fallback for its large runtime
 extension table, after every narrower backend and excluding its common-format
-table so it cannot steal WAV, Ogg, or other conventional containers.
+table so it cannot steal WAV, Ogg, or other conventional containers. `adplug`
+wraps Cog's exact AdPlug and libbinio revisions and is ordered after MIDI,
+libvgm, and OpenMPT so their shared MID, VGM/DRO, and S3M extensions retain
+Cog's intended specialized routes.
 
 Decoder settings are shared between the probe registry and playback registry.
 The MIDI engine and current SF2 path are persisted in the platform
@@ -112,6 +115,19 @@ enables native codecs and built-in G.722.1 only; optional external codec
 families are tracked separately rather than silently claimed. A generated
 mono PlayStation VAG gates public API version, extension routing, tag parsing,
 duration, audible PCM, seek, and exact end-of-stream behavior.
+
+The AdPlug adapter pins kode54's revision `4e0141ab` and libbinio revision
+`e2f8d50c`, builds all 51 runtime-enumerated player extensions, and renders
+through that fork's bundled Nuked OPL3 core. The C++ bridge owns the native
+player and emulator, calculates Cog-compatible length at 44.1 kHz, expands
+zero-based subsongs, converts stereo signed-16 synthesis to the shared float
+stream, and implements exact seeking by rewinding and rendering discarded
+audio. Its Nuked OPL symbols are namespaced to coexist with Kog's independent
+OPL3Windows MIDI core. AdPlug is registered immediately before vgmstream and
+after the narrower overlapping backends. Upstream's Creative Music File
+`2.CMF` gates the exact extension/version pin, type metadata, duration,
+audible PCM, seeking, and end-of-stream behavior. The optional database and a
+wider format corpus remain explicit parity work.
 
 ## Decoder contract
 
