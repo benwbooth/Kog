@@ -104,6 +104,19 @@ pub trait DecoderBackend: Send + Sync {
         Ok(None)
     }
 
+    fn source_for_fragment(&self, path: PathBuf, fragment: &str) -> Result<PlaybackSource, String> {
+        let subsong = fragment.parse::<u32>().map_err(|error| {
+            format!(
+                "{} has unsupported non-numeric fragment #{fragment}: {error}",
+                path.display()
+            )
+        })?;
+        Ok(PlaybackSource {
+            path,
+            subsong: Some(subsong),
+        })
+    }
+
     fn accepts(&self, path: &Path) -> bool {
         let Some(extension) = path.extension().and_then(|value| value.to_str()) else {
             return false;
@@ -161,6 +174,12 @@ pub struct DecoderRegistry {
     backends: Vec<Box<dyn DecoderBackend>>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ExpansionResult {
+    pub sources: Vec<PlaybackSource>,
+    pub warnings: Vec<String>,
+}
+
 impl Default for DecoderRegistry {
     fn default() -> Self {
         Self::new(DecoderSettings::default())
@@ -188,22 +207,135 @@ impl DecoderRegistry {
         }
     }
 
+    #[cfg(test)]
     pub fn expand(&self, path: PathBuf) -> Result<Vec<PlaybackSource>, String> {
+        Ok(self.expand_detailed(path)?.sources)
+    }
+
+    pub fn expand_detailed(&self, path: PathBuf) -> Result<ExpansionResult, String> {
+        self.expand_local(path, None, &mut Vec::new(), 0)
+    }
+
+    fn expand_local(
+        &self,
+        path: PathBuf,
+        fragment: Option<&str>,
+        playlist_stack: &mut Vec<PathBuf>,
+        depth: usize,
+    ) -> Result<ExpansionResult, String> {
+        if depth > 32 {
+            return Err("playlist nesting exceeds Kog's 32-level safety limit".to_owned());
+        }
+        if let Some(fragment) = fragment {
+            let backend = self
+                .select(&path)
+                .ok_or_else(|| unsupported_message(&path))?;
+            return backend
+                .source_for_fragment(path, fragment)
+                .map(|source| ExpansionResult {
+                    sources: vec![source],
+                    warnings: Vec::new(),
+                });
+        }
+
+        if crate::playlist::Playlist::is_path(&path) {
+            return self.expand_playlist(path, playlist_stack, depth);
+        }
+
         let Some(backend) = self.select(&path) else {
-            return Ok(vec![PlaybackSource::from_path(path)]);
+            return Ok(ExpansionResult {
+                sources: vec![PlaybackSource::from_path(path)],
+                warnings: Vec::new(),
+            });
         };
         let Some(count) = backend.subsong_count(&path)? else {
-            return Ok(vec![PlaybackSource::from_path(path)]);
+            return Ok(ExpansionResult {
+                sources: vec![PlaybackSource::from_path(path)],
+                warnings: Vec::new(),
+            });
         };
         if count == 0 {
             return Err(format!("{} contains no playable subsongs", path.display()));
         }
-        Ok((0..count)
-            .map(|subsong| PlaybackSource {
-                path: path.clone(),
-                subsong: Some(subsong),
-            })
-            .collect())
+        Ok(ExpansionResult {
+            sources: (0..count)
+                .map(|subsong| PlaybackSource {
+                    path: path.clone(),
+                    subsong: Some(subsong),
+                })
+                .collect(),
+            warnings: Vec::new(),
+        })
+    }
+
+    fn expand_playlist(
+        &self,
+        path: PathBuf,
+        playlist_stack: &mut Vec<PathBuf>,
+        depth: usize,
+    ) -> Result<ExpansionResult, String> {
+        let path = path
+            .canonicalize()
+            .map_err(|error| format!("resolving playlist {}: {error}", path.display()))?;
+        if let Some(cycle_start) = playlist_stack.iter().position(|ancestor| ancestor == &path) {
+            let mut cycle = playlist_stack[cycle_start..]
+                .iter()
+                .map(|entry| entry.display().to_string())
+                .collect::<Vec<_>>();
+            cycle.push(path.display().to_string());
+            return Err(format!("playlist cycle: {}", cycle.join(" -> ")));
+        }
+
+        let playlist = crate::playlist::Playlist::open(&path)?;
+        playlist_stack.push(path.clone());
+        let mut result = ExpansionResult::default();
+        for entry in playlist.entries() {
+            match &entry.location {
+                crate::playlist::PlaylistLocation::Remote(url) => result.warnings.push(format!(
+                    "Remote playlist entry {url} was not added because network sources are not implemented yet"
+                )),
+                crate::playlist::PlaylistLocation::Local(entry_path) => {
+                    let resolved = match entry_path.canonicalize() {
+                        Ok(path) => path,
+                        Err(error) => {
+                            result.warnings.push(format!(
+                                "Could not resolve playlist entry {}: {error}",
+                                entry_path.display()
+                            ));
+                            continue;
+                        }
+                    };
+                    if !crate::playlist::Playlist::is_path(&resolved)
+                        && self.select(&resolved).is_none()
+                    {
+                        result.warnings.push(format!(
+                            "Playlist entry {} was not added: {}",
+                            resolved.display(),
+                            unsupported_message(&resolved)
+                        ));
+                        continue;
+                    }
+                    match self.expand_local(
+                        resolved,
+                        entry.fragment.as_deref(),
+                        playlist_stack,
+                        depth + 1,
+                    ) {
+                        Ok(expansion) => {
+                            result.sources.extend(expansion.sources);
+                            result.warnings.extend(expansion.warnings);
+                        }
+                        Err(error) => result.warnings.push(error),
+                    }
+                }
+            }
+        }
+        playlist_stack.pop();
+
+        if result.sources.is_empty() && result.warnings.is_empty() {
+            return Err(format!("{} contains no playlist entries", path.display()));
+        }
+        Ok(result)
     }
 
     pub fn probe(&self, source: &PlaybackSource) -> Result<StreamProperties, String> {

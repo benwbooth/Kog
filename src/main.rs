@@ -20,6 +20,7 @@ mod opl3;
 mod organya;
 mod organya_decoder;
 mod playback;
+mod playlist;
 mod settings;
 mod sid;
 mod sid_decoder;

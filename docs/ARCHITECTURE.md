@@ -85,6 +85,20 @@ and EOS. URL images, broader charset detection, one-bit DSD range scaling,
 ReplayGain application, stable track-number fragment identity, and gapless
 same-decoder transitions remain parity work.
 
+Playlist containers are expanded before decoder selection. M3U/M3U8 parsing
+retains Cog's line ordering and ignores comment/EXTINF lines; PLS accepts only
+case-insensitive `File…=` keys in physical file order. Text decoding follows
+Cog's UTF-8, GB18030, Windows-1251, then byte-preserving Latin-1 fallback, and
+normalizes CR, LF, and CRLF input. Local entries resolve relative POSIX or
+Windows-style paths and `file://` URLs; trailing numeric fragments bypass normal
+subsong expansion, with CUE fragments mapped by their declared track number.
+Kog additionally handles nested local playlists with an active-stack cycle
+check and 32-level safety limit. Expansion returns tracks and warnings
+separately, allowing missing, unsupported, cyclic, or remote entries to be
+reported without discarding other valid tracks. HLS tags are rejected explicitly until the HLS
+backend exists. Network sources, non-numeric fragment identities, playlist
+writing, and broad cross-platform corpora remain separate work.
+
 Decoder settings are shared between the probe registry and playback registry.
 The MIDI engine and current SF2 path are persisted in the platform
 configuration directory; the SF2 is validated before it is accepted and cached

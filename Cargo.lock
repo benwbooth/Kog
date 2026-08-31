@@ -891,6 +891,7 @@ dependencies = [
  "rodio",
  "rustysynth",
  "self_cell",
+ "url",
 ]
 
 [[package]]

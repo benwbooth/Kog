@@ -85,6 +85,15 @@ samples, relative seek, audible PCM, and end-of-stream. Remote image URLs,
 one-bit DSD frame scaling, ReplayGain application, stable track-number fragments,
 and broad real-world cue corpora remain parity work.
 
+M3U, M3U8, and PLS files now expand into the playlist in file order. M3U keeps
+Cog's comment/`EXTINF` behavior, while PLS consumes only `File…=` entries.
+Relative POSIX and Windows paths, local `file://` URLs, trailing numeric subsong
+fragments, nested playlists, Cog's UTF-8 → GB18030 → Windows-1251 → Latin-1
+decode order, classic-Mac/Windows line endings, cycle detection, and a nesting
+safety limit are implemented. Missing, unsupported, or remote entries remain
+visible as UI warnings while valid local tracks are retained. Network sources, HLS, playlist
+writing, and non-numeric fragment schemes remain parity work.
+
 ## Project direction
 
 - Treat Cog as the behavioral and interface reference.

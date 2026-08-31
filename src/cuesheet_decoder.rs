@@ -1,6 +1,6 @@
 //! CueSheet container backend with delegated FFmpeg decoding.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use rodio::Player;
@@ -57,6 +57,28 @@ impl DecoderBackend for CueSheetBackend {
         u32::try_from(sheet.tracks().len())
             .map(Some)
             .map_err(|_| format!("{} contains too many CUE tracks", path.display()))
+    }
+
+    fn source_for_fragment(&self, path: PathBuf, fragment: &str) -> Result<PlaybackSource, String> {
+        let requested = fragment.parse::<u32>().map_err(|error| {
+            format!(
+                "{} has invalid CUE track fragment #{fragment}: {error}",
+                path.display()
+            )
+        })?;
+        let sheet = load_sheet(&path)?;
+        let index = sheet
+            .tracks()
+            .iter()
+            .position(|track| track.number == requested)
+            .ok_or_else(|| format!("{} has no CUE track numbered {fragment}", path.display()))?;
+        Ok(PlaybackSource {
+            path,
+            subsong: Some(
+                u32::try_from(index)
+                    .map_err(|_| "CUE track index exceeds Kog's source model".to_owned())?,
+            ),
+        })
     }
 
     fn probe(&self, source: &PlaybackSource) -> Result<StreamProperties, String> {

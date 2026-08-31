@@ -126,11 +126,24 @@ struct AddPathResult {
     warning: Option<String>,
 }
 
+impl AddPathResult {
+    fn push_warning(&mut self, warning: impl AsRef<str>) {
+        let warning = warning.as_ref();
+        match &mut self.warning {
+            Some(existing) => {
+                existing.push_str("; ");
+                existing.push_str(warning);
+            }
+            None => self.warning = Some(warning.to_owned()),
+        }
+    }
+}
+
 fn add_path_status(result: &AddPathResult) -> String {
-    let added = if result.added == 1 {
-        "Added to playlist".to_owned()
-    } else {
-        format!("Added {} subsongs to playlist", result.added)
+    let added = match result.added {
+        0 => "No tracks added".to_owned(),
+        1 => "Added to playlist".to_owned(),
+        count => format!("Added {count} tracks to playlist"),
     };
     match result.warning.as_deref() {
         Some(warning) => format!("{added} — {warning}"),
@@ -318,15 +331,18 @@ impl AppControllerRust {
         if !path.is_file() {
             return Err(format!("{} is not a playable file", path.display()));
         }
-        let sources = self.decoders.expand(path)?;
+        let expansion = self.decoders.expand_detailed(path)?;
         let mut result = AddPathResult::default();
-        for source in sources {
+        for warning in expansion.warnings {
+            result.push_warning(warning);
+        }
+        for source in expansion.sources {
             if self.tracks.iter().any(|track| track.source == source) {
                 continue;
             }
             let track = Track::from_source(source, &self.decoders);
-            if result.warning.is_none() {
-                result.warning.clone_from(&track.decoder_warning);
+            if let Some(warning) = &track.decoder_warning {
+                result.push_warning(warning.clone());
             }
             self.tracks.push(track);
             result.added += 1;
@@ -882,5 +898,25 @@ impl qobject::AppController {
         self.as_mut()
             .set_directory_path(qstring(path.to_string_lossy()));
         self.as_mut().set_directory_count(count);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AddPathResult, add_path_status};
+
+    #[test]
+    fn add_path_status_keeps_every_warning() {
+        let mut result = AddPathResult {
+            added: 0,
+            warning: None,
+        };
+        result.push_warning("remote entry skipped");
+        result.push_warning("decoder metadata unavailable");
+
+        assert_eq!(
+            add_path_status(&result),
+            "No tracks added — remote entry skipped; decoder metadata unavailable"
+        );
     }
 }
