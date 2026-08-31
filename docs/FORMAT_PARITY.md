@@ -44,8 +44,8 @@ is required work, not a claim of support.
 
 | State | Cog family | Extensions / behavior | Kog backend |
 | --- | --- | --- | --- |
-| Not started | MIDI containers | MID, MIDI, KAR, RMI, MIDS, MDS, HMI, HMP, HMQ, MUS, XMI, LDS, XMF, MXMF | shared MIDI parser/converter |
-| Not started | SoundFont synthesis | SF2/SF3 playback, per-file flavor selection, effects and configurable interpolation | FluidSynth or XSynth-compatible library |
+| Partial | MIDI containers | MID, MIDI, and KAR Standard MIDI Files (formats 0 and 1) plus RIFF RMID are parsed and rendered; SMF format 2, MIDS, MDS, HMI, HMP, HMQ, MUS, XMI, LDS, XMF, and MXMF remain missing | `midi-rustysynth-sf2` |
+| Partial | SoundFont synthesis | Configurable and persisted SF2 selection, 48 kHz stereo rendering, duration, seek, and end-of-stream behavior are implemented. SF3, per-file flavor selection, and synthesis/effect controls remain missing. | RustySynth |
 | Not started | OPL synthesis | Accurate OPL3 playback for compatible MIDI and AdLib inputs | Nuked OPL3 |
 | Not started | Roland emulation | MT-32/CM-32L and SC-55 behavior exposed by Cog preferences | Munt and Nuked SC-55 where legally redistributable |
 

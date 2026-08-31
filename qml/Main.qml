@@ -68,6 +68,7 @@ ApplicationWindow {
 
     InfoInspector { id: infoInspector; app: appController }
     MiniPlayer { id: miniPlayer; app: appController }
+    Preferences { id: preferences; app: appController }
 
     menuBar: MenuBar {
         background: Rectangle { color: "#f7f7f7"; border.color: "#d3d3d3" }
@@ -92,6 +93,8 @@ ApplicationWindow {
                     root.selectedRow = -1
                 }
             }
+            MenuSeparator {}
+            Action { text: qsTr("Preferences…"); shortcut: "Ctrl+,"; onTriggered: preferences.show() }
         }
         Menu {
             title: qsTr("View")

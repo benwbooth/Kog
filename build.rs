@@ -11,6 +11,7 @@ fn main() {
                 "qml/MiniPlayer.qml",
                 "qml/PlaylistHeader.qml",
                 "qml/PlaylistRow.qml",
+                "qml/Preferences.qml",
             ]),
     )
     .files(["src/app_controller.rs"])

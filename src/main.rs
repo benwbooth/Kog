@@ -1,6 +1,7 @@
 mod app_controller;
 mod decoder;
 mod playback;
+mod settings;
 mod track;
 
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};

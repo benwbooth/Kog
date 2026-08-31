@@ -33,17 +33,21 @@ pub struct PlaybackEngine {
 
 impl Default for PlaybackEngine {
     fn default() -> Self {
-        Self {
-            output: None,
-            player: None,
-            decoders: DecoderRegistry::default(),
-            volume: 0.75,
-            state: PlaybackState::Stopped,
-        }
+        Self::new(DecoderRegistry::default())
     }
 }
 
 impl PlaybackEngine {
+    pub fn new(decoders: DecoderRegistry) -> Self {
+        Self {
+            output: None,
+            player: None,
+            decoders,
+            volume: 0.75,
+            state: PlaybackState::Stopped,
+        }
+    }
+
     pub fn play_path(&mut self, path: &Path) -> Result<SelectedBackend, String> {
         self.ensure_output()?;
         let player = self.player.as_ref().expect("output creates player");

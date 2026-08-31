@@ -33,6 +33,8 @@ pub mod qobject {
         #[qproperty(QString, total_duration)]
         #[qproperty(QString, directory_path)]
         #[qproperty(i32, directory_count)]
+        #[qproperty(QString, soundfont_path)]
+        #[qproperty(QString, midi_status)]
         type AppController = super::AppControllerRust;
 
         #[qinvokable]
@@ -89,6 +91,10 @@ pub mod qobject {
         fn parent_directory(self: Pin<&mut AppController>);
         #[qinvokable]
         fn choose_directory(self: Pin<&mut AppController>, url: QUrl);
+        #[qinvokable]
+        fn set_soundfont(self: Pin<&mut AppController>, url: QUrl);
+        #[qinvokable]
+        fn clear_soundfont(self: Pin<&mut AppController>);
     }
 }
 
@@ -99,8 +105,9 @@ use std::time::Duration;
 use cxx_qt::CxxQtType;
 use cxx_qt_lib::{QString, QUrl};
 
-use crate::decoder::DecoderRegistry;
+use crate::decoder::{DecoderRegistry, DecoderSettings, validate_soundfont};
 use crate::playback::{PlaybackEngine, PlaybackState};
+use crate::settings::AppSettings;
 use crate::track::{Track, canonical_path, duration_label};
 
 #[derive(Clone, Debug)]
@@ -134,11 +141,14 @@ pub struct AppControllerRust {
     total_duration: QString,
     directory_path: QString,
     directory_count: i32,
+    soundfont_path: QString,
+    midi_status: QString,
     tracks: Vec<Track>,
     visible_indices: Vec<usize>,
     filter: String,
     directory_entries: Vec<DirectoryEntry>,
     directory: PathBuf,
+    decoder_settings: DecoderSettings,
     decoders: DecoderRegistry,
     playback: PlaybackEngine,
 }
@@ -147,6 +157,16 @@ impl Default for AppControllerRust {
     fn default() -> Self {
         let directory = default_music_directory();
         let directory_entries = read_directory(&directory);
+        let app_settings = AppSettings::load();
+        let decoder_settings = DecoderSettings::new(app_settings.soundfont_path.clone());
+        let soundfont_path = app_settings
+            .soundfont_path
+            .as_deref()
+            .map(|path| qstring(path.to_string_lossy()))
+            .unwrap_or_default();
+        let midi_status = qstring(soundfont_status(app_settings.soundfont_path.as_deref()));
+        let decoders = DecoderRegistry::new(decoder_settings.clone());
+        let playback = PlaybackEngine::new(DecoderRegistry::new(decoder_settings.clone()));
         let mut controller = Self {
             playlist_count: 0,
             playlist_revision: 0,
@@ -171,13 +191,16 @@ impl Default for AppControllerRust {
             total_duration: qstring("Total Duration: 0:00"),
             directory_path: qstring(directory.to_string_lossy()),
             directory_count: saturating_i32(directory_entries.len()),
+            soundfont_path,
+            midi_status,
             tracks: Vec::new(),
             visible_indices: Vec::new(),
             filter: String::new(),
             directory_entries,
             directory,
-            decoders: DecoderRegistry::default(),
-            playback: PlaybackEngine::default(),
+            decoder_settings,
+            decoders,
+            playback,
         };
 
         if let Some(paths) = std::env::var_os("KOG_OPEN_FILES") {
@@ -206,6 +229,16 @@ fn default_music_directory() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."));
     let music = home.join("Music");
     if music.is_dir() { music } else { home }
+}
+
+fn soundfont_status(path: Option<&Path>) -> String {
+    match path {
+        Some(path) if path.is_file() => {
+            format!("Ready to render MIDI with {}", path.display())
+        }
+        Some(path) => format!("Selected SoundFont is unavailable: {}", path.display()),
+        None => "Choose an SF2 SoundFont to enable MIDI playback".to_owned(),
+    }
 }
 
 fn read_directory(path: &Path) -> Vec<DirectoryEntry> {
@@ -533,6 +566,66 @@ impl qobject::AppController {
             return;
         };
         self.as_mut().set_directory(PathBuf::from(path.to_string()));
+    }
+
+    pub fn set_soundfont(mut self: Pin<&mut Self>, url: QUrl) {
+        let Some(local_file) = url.to_local_file() else {
+            self.as_mut()
+                .set_midi_status(qstring("Only local SF2 SoundFonts can be selected"));
+            return;
+        };
+        let path = PathBuf::from(local_file.to_string());
+        let is_sf2 = path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("sf2"));
+        if !is_sf2 {
+            self.as_mut()
+                .set_midi_status(qstring("Kog's current MIDI backend accepts SF2 files"));
+            return;
+        }
+        let path = match std::fs::canonicalize(&path) {
+            Ok(path) => path,
+            Err(error) => {
+                self.as_mut().set_midi_status(qstring(format!(
+                    "Opening SoundFont {}: {error}",
+                    path.display()
+                )));
+                return;
+            }
+        };
+        if let Err(error) = validate_soundfont(&path) {
+            self.as_mut().set_midi_status(qstring(error));
+            return;
+        }
+        if let Err(error) = AppSettings::save_soundfont_path(Some(&path)) {
+            self.as_mut().set_midi_status(qstring(error));
+            return;
+        }
+        self.as_ref()
+            .rust()
+            .decoder_settings
+            .set_soundfont_path(Some(path.clone()));
+        self.as_mut()
+            .set_soundfont_path(qstring(path.to_string_lossy()));
+        self.as_mut()
+            .set_midi_status(qstring(soundfont_status(Some(&path))));
+        self.as_mut().set_status(qstring("MIDI SoundFont updated"));
+    }
+
+    pub fn clear_soundfont(mut self: Pin<&mut Self>) {
+        if let Err(error) = AppSettings::save_soundfont_path(None) {
+            self.as_mut().set_midi_status(qstring(error));
+            return;
+        }
+        self.as_ref()
+            .rust()
+            .decoder_settings
+            .set_soundfont_path(None);
+        self.as_mut().set_soundfont_path(QString::default());
+        self.as_mut()
+            .set_midi_status(qstring(soundfont_status(None)));
+        self.as_mut().set_status(qstring("MIDI SoundFont cleared"));
     }
 
     fn rebuild_playlist(mut self: Pin<&mut Self>) {

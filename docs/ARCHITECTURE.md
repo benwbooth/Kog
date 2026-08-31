@@ -18,11 +18,20 @@ backends may use safe Rust, C, or C++ libraries.
 5. **Native library adapters** isolate unsafe FFI and convert library-specific
    streams into interleaved floating-point PCM.
 
-The first installed backend is `rodio-symphonia`. It provides real playback,
-pause, stop, seek, position, volume, and automatic next-track behavior for its
-conventional formats. Specialist backends remain separate so a broad fallback
-cannot erase behavior such as PSF dependency resolution, VGMStream subsongs,
-or emulator-authentic MIDI synthesis.
+The installed backends are `rodio-symphonia` for conventional audio and
+`midi-rustysynth-sf2` for Standard MIDI File and RIFF RMID rendering through a
+user-selected SF2 SoundFont. Both provide real playback, pause, stop, seek,
+position, volume, and automatic next-track behavior. Specialist backends
+remain separate so a broad fallback cannot erase behavior such as PSF
+dependency resolution, VGMStream subsongs, or emulator-authentic OPL and
+Roland MIDI synthesis.
+
+Decoder settings are shared between the probe registry and playback registry.
+The current SF2 path is validated before it is accepted, persisted in the
+platform configuration directory, and cached by path and modification time.
+MIDI is rendered to interleaved 48 kHz stereo floating-point PCM; seeking
+reconstructs the sequencer and deterministically advances it to the requested
+frame.
 
 ## Decoder contract
 

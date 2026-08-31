@@ -9,8 +9,11 @@ tracker modules, chiptunes, and game-audio formats.
 The current milestone contains a working Cog-style main window, filesystem
 browser, metadata playlist, search, inspector and mini-player windows, and a
 real conventional-audio playback path with pause, stop, seek, volume, and
-automatic track advance. Specialist chiptune, game-audio, tracker, and MIDI
-backends are tracked explicitly and are not yet claimed as supported.
+automatic track advance. It also renders format-0/1 MID, MIDI, KAR, and RIFF
+RMID files through a validated, persisted SF2 SoundFont using RustySynth, with
+duration probing and seeking. The remaining MIDI families and specialist
+chiptune, game-audio, and tracker backends are tracked explicitly and are not
+yet claimed as supported.
 
 ## Project direction
 
@@ -44,10 +47,15 @@ nix develop
 cargo run
 ```
 
+Choose an SF2 bank under **Edit → Preferences → MIDI** before playing MIDI.
+Kog also accepts `KOG_SOUNDFONT=/path/to/bank.sf2` for isolated testing and
+packaged deployments.
+
 The direct Cargo build requires Rust, a C++ compiler, CMake, and Qt 6 with Qt
 Quick and Qt Quick Controls.
 
 ## License
 
 Kog is licensed under GPL-2.0-only. Third-party decoder libraries and assets
-retain their own licenses.
+retain their own licenses; bundled test-fixture attribution is recorded in
+[the third-party notices](THIRD_PARTY_NOTICES.md).
