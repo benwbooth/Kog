@@ -6,8 +6,11 @@ interface connected through CXX-Qt. Its target is feature parity with
 desktop interface and broad playback support for conventional audio, MIDI,
 tracker modules, chiptunes, and game-audio formats.
 
-This repository currently contains only the verified CXX-Qt application
-foundation. It does not play audio yet.
+The current milestone contains a working Cog-style main window, filesystem
+browser, metadata playlist, search, inspector and mini-player windows, and a
+real conventional-audio playback path with pause, stop, seek, volume, and
+automatic track advance. Specialist chiptune, game-audio, tracker, and MIDI
+backends are tracked explicitly and are not yet claimed as supported.
 
 ## Project direction
 
@@ -26,6 +29,11 @@ Likely decoder families include FFmpeg, libopenmpt, Game Music Emu, vgmstream,
 libvgm, libsidplayfp, AdPlug, a SoundFont synthesizer, and an OPL3 MIDI
 synthesizer. Dependencies and redistributable assets will be selected only
 after license review.
+
+See [the architecture](docs/ARCHITECTURE.md),
+[UI parity matrix](docs/UI_PARITY.md), and
+[format parity matrix](docs/FORMAT_PARITY.md) for the executable backend
+contract, fidelity gates, and the complete Cog-derived worklist.
 
 ## Development
 

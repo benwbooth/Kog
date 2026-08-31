@@ -29,6 +29,9 @@
             pkgs.qt6.qtwayland
           ];
         qtEnv = pkgs.qt6.env "kog-qt-env" qtModules;
+        linuxRuntimeLibraries = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+          pkgs.libxcb-cursor
+        ];
       in
       {
         devShells.default = pkgs.mkShell {
@@ -44,6 +47,10 @@
               rustc
               rustfmt
             ])
+            ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+              pkgs.alsa-lib
+              pkgs.libxcb-cursor
+            ]
             ++ qtModules;
 
           QMAKE = "${qtEnv}/bin/qmake";
@@ -56,6 +63,9 @@
             export QMAKE="${qtEnv}/bin/qmake"
             export QT_INCLUDE_PATH="${qtEnv}/include"
             export QT_LIBEXEC_PATH="${qtEnv}/libexec"
+            export QT_PLUGIN_PATH="${qtEnv}/lib/qt-6/plugins"
+            export QML_IMPORT_PATH="${qtEnv}/lib/qt-6/qml"
+            export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath linuxRuntimeLibraries}:''${LD_LIBRARY_PATH:-}"
           '';
         };
 
