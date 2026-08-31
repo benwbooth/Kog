@@ -31,6 +31,8 @@ emulator-authentic Roland MIDI synthesis. `libvgm` wraps Cog's exact pinned
 libvgm revision for VGM/VGZ, S98, DRO, and GYM. `libopenmpt` wraps Cog's exact
 0.8.7 release for the 68 extensions returned by that pinned native build.
 `hivelytracker` wraps the official portable 1.9 replayer for AHX and HVL.
+`orgorg` 0.2.1 renders Organya Org-02/Org-03 songs from a user-supplied
+soundbank.
 
 Decoder settings are shared between the probe registry and playback registry.
 The MIDI engine and current SF2 path are persisted in the platform
@@ -83,6 +85,17 @@ float stream, applies the fade, and exposes deterministic restart-and-skip
 seeking. The official AHX and HVL examples gate both parsers, while a
 test-only HVL derivative with a second valid start position gates stable
 subsong identities.
+
+The Organya adapter owns the song, normalized wavetable/drum samples, and the
+self-referential `orgorg` player as one safe Rust source. It discovers either
+the `soundbank.wdb` format used by `orgorg-player` or that player's extracted
+`wavetable.dat`/`drums.dat` pair beside the song, in Kog's platform data
+directories, or through `KOG_ORGANYA_SOUNDBANK`. Kog does not bundle Cave
+Story's synthesis data. Playback uses 44.1 kHz stereo float PCM, Cog's default
+two-loop/eight-second-fade policy, and deterministic restart-and-skip seeking.
+A generated Org-02 song and synthetic wavetable gate parsing, loop duration,
+audible PCM, fade completion, routing, and seek without redistributing game
+content.
 
 ## Decoder contract
 

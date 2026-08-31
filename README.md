@@ -30,8 +30,11 @@ AHX and HVL now route through the official HivelyTracker 1.9 replayer with
 title metadata, subsong expansion, two-loop duration scanning, Cog's default
 eight-second fade, real stereo PCM, and seek. Official AHX/HVL songs plus a
 deterministic two-subsong derivative pass the current routing, PCM, and seek
-gates. SFM, SGC, and the other chiptune and game-audio families remain
-explicitly unclaimed.
+gates. Org-02 and Org-03 Organya files now route through the MIT-licensed
+`orgorg` renderer with real stereo PCM, loop/fade timing, and seek. Kog does not
+redistribute Cave Story's synthesis assets; a deterministic original-format
+fixture and synthetic bank gate the backend. SFM, SGC, and the other chiptune
+and game-audio families remain explicitly unclaimed.
 
 ## Project direction
 
@@ -74,6 +77,14 @@ Choose RustySynth or OPL3Windows under **Edit → Preferences → MIDI**. RustyS
 requires an SF2 bank; Kog also accepts `KOG_SOUNDFONT=/path/to/bank.sf2` and
 `KOG_MIDI_ENGINE=rustysynth-sf2|opl3windows` for isolated testing and packaged
 deployments.
+
+Organya needs a user-owned synthesis bank. Put `soundbank.wdb` or the
+`wavetable.dat` and `drums.dat` pair beside the `.org` file, put them in Kog's
+platform `organya` configuration/data directory, or set
+`KOG_ORGANYA_SOUNDBANK` to the bank file or containing directory. The
+MIT-licensed [orgorg player](https://github.com/kpqi5858/orgorg/tree/main/orgorg-player)
+can extract `wavetable.dat` and `drums.dat` from the original freeware
+`Doukutsu.exe` without requiring Kog to redistribute those assets.
 
 The direct Cargo build requires Rust, C and C++ compilers, CMake, and Qt 6 with
 Qt Quick and Qt Quick Controls.

@@ -9,6 +9,8 @@ mod libvgm_decoder;
 mod openmpt;
 mod openmpt_decoder;
 mod opl3;
+mod organya;
+mod organya_decoder;
 mod playback;
 mod settings;
 mod track;

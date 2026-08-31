@@ -81,6 +81,18 @@ the BSD 3-Clause license. The complete source and license are retained in the
 submodule, and the exact license text is copied to
 `LICENSES/HivelyTracker-BSD-3-Clause.txt`.
 
+## orgorg
+
+Kog uses version 0.2.1 of the
+[orgorg](https://github.com/kpqi5858/orgorg) Rust crate for Organya synthesis.
+orgorg is Copyright (c) 2025 kpqi5858 and is distributed under the MIT
+license; the exact license is in `LICENSES/orgorg-MIT.txt`.
+
+The original Cave Story wavetable and PixTone drum data are not included in
+Kog. Users may point Kog at their own `soundbank.wdb` or an extracted
+`wavetable.dat`/`drums.dat` pair. Kog's tests instead generate a small Org-02
+song and synthetic wavetable specifically for the test run.
+
 ## TinySoundFont minimal SoundFont test fixture
 
 The 484-byte `MinimalSoundFont` data encoded in `src/decoder.rs` is derived
