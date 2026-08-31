@@ -211,6 +211,31 @@ embedded state. The pinned submodule is not modified. Kog's QSF tests generate
 an original Z80 program, sample waveform, and PSF wrappers and contain no
 Capcom program, audio, or game data.
 
+## Highly Theoretical
+
+The `native/highly-theoretical` submodule is kode54's standalone
+[Highly Theoretical](https://github.com/kode54/Highly_Theoretical) repository
+at commit `2998a4bf550949cd2daee249e725a64462cf15e0`. This is the portable
+Saturn/Dreamcast sound emulator beneath Cog's Objective-C SSF/DSF plugin. Kog
+builds `sega.c`, the SCSP/AICA and ARM components, and the C68k implementation
+behind its own bounded C ABI bridge, and shares psflib's PSF 0x11/0x12 parser.
+
+The Highly Theoretical repository carries the GNU General Public License,
+version 3, in `native/highly-theoretical/LICENSE.TXT`; its bundled C68k files
+are explicitly distributed under the GNU General Public License, version 2 or
+(at your option) any later version. Kog selects that GPL-compatible C68k route.
+The upstream submodule also contains Musashi, whose notice permits only
+non-commercial use without a separate license, and Starscream, whose terms
+forbid commercial use; neither alternative is compiled or linked into Kog.
+Their source and individual notices remain unmodified in the submodule and do
+not change the license of Kog's executable.
+
+Kog generates patched copies of `satsound.c` and `yam.c` in Cargo's build
+output to make an upstream pointer conversion explicit and to make the calling
+convention portable to AArch64. The pin itself is not modified. Kog's tests
+generate original synthetic 68000 and ARM programs, waveforms, and PSF wrappers
+and contain no Sega firmware, program, audio, or game data.
+
 ## SSEQPlayer and psflib
 
 The `native/sseqplayer` submodule is kode54's official

@@ -28,6 +28,8 @@ mod playback;
 mod playlist;
 mod qsf;
 mod qsf_decoder;
+mod sdsf;
+mod sdsf_decoder;
 mod settings;
 mod sid;
 mod sid_decoder;

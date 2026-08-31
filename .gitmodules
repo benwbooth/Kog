@@ -34,3 +34,6 @@
 [submodule "native/highly-quixotic"]
 	path = native/highly-quixotic
 	url = https://github.com/kode54/Highly_Quixotic.git
+[submodule "native/highly-theoretical"]
+	path = native/highly-theoretical
+	url = https://github.com/kode54/Highly_Theoretical.git

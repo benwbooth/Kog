@@ -294,6 +294,7 @@ mod tests {
     use crate::gsf::{test_gba_rom, test_gsf_bytes};
     use crate::ncsf::{test_ncsf_bytes, test_sdat_bytes};
     use crate::qsf::{test_qsf_bytes, test_qsf_program};
+    use crate::sdsf::{test_sdsf_bytes, test_ssf_program};
 
     // Generated with libarchive 3.8.9 from an empty regular file. It exercises
     // real 7Z parsing without requiring an archive-writing tool during tests.
@@ -686,6 +687,47 @@ mod tests {
         let duration = properties.duration.expect("archived QSF duration");
         let expected = std::time::Duration::from_millis(250);
         let frame = std::time::Duration::from_nanos(1_000_000_000 / 24_038 + 1);
+        assert!(duration.abs_diff(expected) <= frame);
+    }
+
+    #[test]
+    fn zip_preserves_minissf_library_resolution() {
+        let fixture = tempfile::tempdir().unwrap();
+        let archive_path = fixture.path().join("ssf-set.zip");
+        let library = test_sdsf_bytes(0x11, Some(&test_ssf_program()), "title=Library\n");
+        let mini = test_sdsf_bytes(
+            0x11,
+            None,
+            "_lib=music.ssflib\ntitle=Archive selection\nlength=0:00.250\n",
+        );
+        write_stored_zip(
+            &archive_path,
+            &[
+                ("set/selection.minissf", &mini),
+                ("set/music.ssflib", &library),
+            ],
+        );
+
+        let registry = DecoderRegistry::new(DecoderSettings::default());
+        let expansion = registry
+            .expand_detailed(archive_path.clone())
+            .expect("expand archived SSF set");
+        assert_eq!(expansion.sources.len(), 1);
+        assert_eq!(
+            expansion.sources[0]
+                .archive_origin
+                .as_ref()
+                .unwrap()
+                .entry_name,
+            "set/selection.minissf"
+        );
+        let properties = registry
+            .probe(&expansion.sources[0])
+            .expect("probe archived minissf through extracted library");
+        assert_eq!(properties.title.as_deref(), Some("Archive selection"));
+        let duration = properties.duration.expect("archived SSF duration");
+        let expected = std::time::Duration::from_millis(250);
+        let frame = std::time::Duration::from_nanos(1_000_000_000 / 44_100 + 1);
         assert!(duration.abs_diff(expected) <= frame);
     }
 

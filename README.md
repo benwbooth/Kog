@@ -96,6 +96,17 @@ mini-library loading, and archive companion lookup without Capcom code or game
 data. A broad independently redistributable QSF corpus and direct comparison
 with Cog remain.
 
+SSF, minissf, DSF, and minidsf now route through kode54's standalone Highly
+Theoretical engine, again reusing the cross-platform core beneath Cog instead
+of translating its Objective-C plugin. Kog selects the GPL-2.0-or-later C68k
+backend rather than the separately licensed Musashi or Starscream alternatives,
+shares psflib for relative `_lib` chains and tags, bounds uploads to the Saturn
+or Dreamcast sound RAM, renders 44.1 kHz stereo PCM, and seeks by deterministic
+reconstruction. Original synthetic 68000 and ARM programs gate audible playback,
+metadata, timing, malformed input, mini-library loading, and archive companion
+lookup without Sega firmware or game data. A broad independently redistributable
+SSF/DSF corpus and direct comparison with Cog remain.
+
 Monkey's Audio Image Link (`.apl`) files now accept the original CRLF or
 portable LF header, resolve their local image path with Cog-compatible relative
 Windows-path handling, and play only the declared start/finish PCM-frame range
@@ -132,7 +143,7 @@ Traversal paths, duplicate destinations, links/devices, oversized entries,
 and oversized archives are rejected or surfaced as warnings. Deterministic
 ZIP and GZ fixtures pass end-to-end WAV playback; real 7Z and RAR5 fixtures
 gate extraction; ZIP-gated APL playback proves relative image lookup; and
-archived NCSF, GSF, and QSF mini/library pairs prove PSF dependency lookup.
+archived NCSF, GSF, QSF, and SSF mini/library pairs prove PSF dependency lookup.
 Encrypted and multipart archives, nested archives, broad RAR/7Z corpora, and
 Windows/macOS runtime gates remain parity work.
 

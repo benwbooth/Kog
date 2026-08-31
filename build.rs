@@ -697,12 +697,14 @@ fn build_ncsf(mgba_output: &Path) {
     let player = Path::new("native/sseqplayer");
     let psflib = Path::new("native/psflib");
     let qsf_core = Path::new("native/highly-quixotic/Core");
+    let sdsf_core = Path::new("native/highly-theoretical/Core");
     if !player.join("Player.h").is_file()
         || !psflib.join("psflib.h").is_file()
         || !qsf_core.join("qsound.h").is_file()
+        || !sdsf_core.join("sega.h").is_file()
     {
         panic!(
-            "SSEQPlayer, psflib, or Highly Quixotic submodules are missing; run `git submodule update --init --recursive`"
+            "SSEQPlayer, psflib, Highly Quixotic, or Highly Theoretical submodules are missing; run `git submodule update --init --recursive`"
         );
     }
 
@@ -714,6 +716,7 @@ fn build_ncsf(mgba_output: &Path) {
     let mut player_sources = cpp_files(player);
     player_sources.push(PathBuf::from("native/ncsf_bridge.cpp"));
     player_sources.push(PathBuf::from("native/qsf_bridge.cpp"));
+    player_sources.push(PathBuf::from("native/sdsf_bridge.cpp"));
     player_sources.sort();
     let mut player_build = cc::Build::new();
     player_build
@@ -722,6 +725,7 @@ fn build_ncsf(mgba_output: &Path) {
         .include(player)
         .include(psflib)
         .include(qsf_core)
+        .include(sdsf_core)
         .include(mgba_output.join("include"))
         // This structural feature is present in mGBA's target compile
         // definitions but omitted from its generated flags.h at this pin.
@@ -837,6 +841,73 @@ fn build_ncsf(mgba_output: &Path) {
     };
     qsf_build.compile("kog_highly_quixotic");
 
+    // Highly Theoretical is Cog's underlying SSF/DSF engine. Build its
+    // GPLv2-or-later C68k path rather than the separately licensed optional
+    // Musashi or Starscream cores. Two generated source patches preserve the
+    // pinned submodule while fixing a pointer conversion and modern 64-bit
+    // portability warnings already addressed by Cog's local copy.
+    let sdsf_generated = PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR"))
+        .join("highly-theoretical");
+    fs::create_dir_all(&sdsf_generated).expect("create Highly Theoretical generated directory");
+
+    let satsound_source = fs::read_to_string(sdsf_core.join("satsound.c"))
+        .expect("read Highly Theoretical satsound.c")
+        .replace("\r\n", "\n");
+    let original_fetch = "C68k_Set_Fetch(SCPUSTATE, 0x00000, 0x7FFFF, RAMBYTEPTR);";
+    assert_eq!(
+        satsound_source.matches(original_fetch).count(),
+        2,
+        "Highly Theoretical satsound.c changed; re-audit Kog's C68k pointer patch"
+    );
+    fs::write(
+        sdsf_generated.join("satsound.c"),
+        satsound_source.replace(
+            original_fetch,
+            "C68k_Set_Fetch(SCPUSTATE, 0x00000, 0x7FFFF, (pointer)RAMBYTEPTR);",
+        ),
+    )
+    .expect("write portable Highly Theoretical satsound.c");
+
+    let yam_source = fs::read_to_string(sdsf_core.join("yam.c"))
+        .expect("read Highly Theoretical yam.c")
+        .replace("\r\n", "\n");
+    let original_calling_convention =
+        "#ifndef _WIN32\n#define __cdecl\n#define __fastcall __attribute__((regparm(3)))\n#endif";
+    let portable_calling_convention = "#ifndef _WIN32\n#define __cdecl\n#ifdef __aarch64__\n#define __fastcall\n#else\n#define __fastcall __attribute__((regparm(3)))\n#endif\n#endif";
+    assert!(
+        yam_source.contains(original_calling_convention),
+        "Highly Theoretical yam.c changed; re-audit Kog's calling-convention patch"
+    );
+    fs::write(
+        sdsf_generated.join("yam.c"),
+        yam_source.replace(original_calling_convention, portable_calling_convention),
+    )
+    .expect("write portable Highly Theoretical yam.c");
+
+    let mut sdsf_build = cc::Build::new();
+    sdsf_build
+        .std("c11")
+        .include(sdsf_core)
+        .include(sdsf_core.join("c68k"))
+        .define("EMU_COMPILE", None)
+        .define("HAVE_STDINT_H", None)
+        .define("C68K_NO_JUMP_TABLE", None)
+        .files([
+            sdsf_core.join("sega.c"),
+            sdsf_core.join("dcsound.c"),
+            sdsf_generated.join("satsound.c"),
+            sdsf_generated.join("yam.c"),
+            sdsf_core.join("arm.c"),
+            sdsf_core.join("c68k/c68k.c"),
+            sdsf_core.join("c68k/c68kexec.c"),
+        ])
+        .warnings(false);
+    match std::env::var("CARGO_CFG_TARGET_ENDIAN").as_deref() {
+        Ok("big") => sdsf_build.define("EMU_BIG_ENDIAN", None),
+        _ => sdsf_build.define("EMU_LITTLE_ENDIAN", None),
+    };
+    sdsf_build.compile("kog_highly_theoretical");
+
     // Emit psflib after the C++ archive so one-pass static linkers see the
     // parser dependency after the NCSF, GSF, and QSF bridge references.
     let mut psf_build = cc::Build::new();
@@ -870,10 +941,13 @@ fn build_ncsf(mgba_output: &Path) {
     println!("cargo:rerun-if-changed=native/sseqplayer");
     println!("cargo:rerun-if-changed=native/psflib");
     println!("cargo:rerun-if-changed=native/highly-quixotic");
+    println!("cargo:rerun-if-changed=native/highly-theoretical");
     println!("cargo:rerun-if-changed=native/ncsf_bridge.cpp");
     println!("cargo:rerun-if-changed=native/ncsf_bridge.h");
     println!("cargo:rerun-if-changed=native/gsf_bridge.cpp");
     println!("cargo:rerun-if-changed=native/gsf_bridge.h");
     println!("cargo:rerun-if-changed=native/qsf_bridge.cpp");
     println!("cargo:rerun-if-changed=native/qsf_bridge.h");
+    println!("cargo:rerun-if-changed=native/sdsf_bridge.cpp");
+    println!("cargo:rerun-if-changed=native/sdsf_bridge.h");
 }

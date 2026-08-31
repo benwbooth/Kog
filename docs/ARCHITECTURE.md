@@ -47,6 +47,11 @@ minincsf and is ordered before SID and the broad specialist fallbacks.
 `highly-quixotic-qsf` wraps the standalone GPLv3 Highly Quixotic core and
 psflib for QSF and miniqsf and is ordered beside the other dedicated PSF
 backends, before SID and the broad specialist fallbacks.
+`highly-theoretical-sdsf` wraps kode54's standalone Highly Theoretical core
+and psflib for SSF/minissf and DSF/minidsf. It selects the GPL-2.0-or-later
+C68k implementation and does not compile the separately licensed Musashi or
+Starscream alternatives. It is ordered before FFmpeg so `.ssf` reaches the
+console emulator rather than a broad demuxer.
 
 The FFmpeg adapter discovers `libavformat`, `libavcodec`, `libavutil`, and
 `libswresample` with pkg-config and keeps all native ownership behind a small
@@ -119,7 +124,7 @@ than 16,384 entries, files over 4 GiB, or more than 8 GiB expanded in total.
 Filename decoding follows Cog's UTF-8, GB18030, Windows-1251, then
 byte-preserving Latin-1 fallback. Deterministic ZIP and GZ audio fixtures,
 real 7Z and RAR5 extraction fixtures, a ZIP-contained APL plus WAV, and
-ZIP-contained NCSF, GSF, and QSF mini/library pairs gate the current path.
+ZIP-contained NCSF, GSF, QSF, and SSF mini/library pairs gate the current path.
 Passwords, multipart archives, nested archive expansion, broad format corpora,
 and Windows/macOS runtime gates remain separate work.
 
@@ -277,6 +282,25 @@ with a synthetic waveform in QSF/miniqsf files; they gate metadata, dependency
 loading and precedence, audible PCM, seek, fade/EOS, default timing, malformed
 input, missing libraries, and a ZIP-contained pair without Capcom code or game
 data. Broad corpus and direct Cog behavior comparison remain parity work.
+
+The SSF/DSF adapter pins kode54's standalone Highly Theoretical revision
+`2998a4b`, the portable emulator core beneath Cog's Objective-C plugin, and
+reuses psflib for PSF versions 0x11 and 0x12, zlib decompression, tags, and
+relative `_lib` traversal. Its bridge applies dependency and root programs in
+order, rejects uploads beyond the Saturn's 512 KiB or Dreamcast's 8 MiB sound
+RAM, and initializes the matching 68000/SCSP or ARM/AICA path. Kog builds the
+GPL-2.0-or-later C68k implementation; the non-commercial Musashi and Starscream
+alternatives remain present in the unmodified upstream submodule but are not
+compiled or linked. Build-time generated copies of `satsound.c` and `yam.c`
+apply narrowly asserted modern-compiler and AArch64 portability fixes without
+modifying the pin. Playback converts signed-16 output to 44.1 kHz stereo float
+PCM, applies PSF `length`/`fade` tags or Cog's 150-second plus eight-second
+defaults, and seeks by reconstructing the core and discarding exact frames.
+Tests generate original 68000 and ARM sound programs and PSF wrappers; they
+gate both console routes, metadata, dependency loading and precedence, audible
+PCM after seek, fade/EOS, default timing, malformed and missing dependencies,
+and a ZIP-contained SSF pair without Sega firmware or game data. Broad corpus
+and direct Cog behavior comparison remain parity work.
 
 ## Decoder contract
 
