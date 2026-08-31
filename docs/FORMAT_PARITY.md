@@ -16,7 +16,7 @@ is required work, not a claim of support.
 | Partial | WavPack | WV and WVP now route through FFmpeg. A WavPack/correction-file corpus, explicit sibling WVC resolution, lossless/float/DSD properties, and comparison with Cog's dedicated libwavpack path remain. | FFmpeg baseline; dedicated libwavpack only if parity requires it |
 | Partial | Musepack | MPC now routes through FFmpeg; SV7/SV8 corpus, seek, metadata, and behavioral comparison with Cog's libmpcdec plugin remain. | FFmpeg baseline; libmpcdec fallback if required |
 | Partial | Shorten | SHN now routes through FFmpeg; a redistributable corpus and comparison with Cog's dedicated Shorten decoder remain. | FFmpeg baseline; dedicated fallback if required |
-| Not started | APL | APL link files and referenced source ranges | Kog APL container + selected PCM backend |
+| Partial | APL | Monkey's Audio Image Link files parse Cog's case-insensitive header and fields with original CRLF or portable LF endings, normalize relative Windows paths, resolve a local image, and enforce the declared start/finish PCM-frame range through FFmpeg. A deterministic WAV image proves routing, 50 ms duration, the exact first selected sample, audible PCM, relative seek, exact frame count, and EOS. Real APE/large-file corpora, appended APEv2 tag metadata, finish-block validation, one-bit DSD block scaling, URL image references, and Windows/macOS build gates remain. | native Rust APL parser + bounded FFmpeg source |
 | Not started | HTTP/HLS | remote HTTP sources, M3U8/HLS | network source + FFmpeg |
 
 ## Tracker and computer-music formats

@@ -59,6 +59,17 @@ end-of-stream behavior. Wider family and metadata corpora, sample-accurate
 seeking across every demuxer, attached artwork, chapters/subtracks, gapless
 trim data, and remote custom I/O remain parity work.
 
+The APL container parser follows Cog's Monkey's Audio Image Link header and
+field semantics, resolves relative backslash paths against the link file, and
+stops parsing at the appended APE-tag marker. Its backend opens the referenced
+local image with FFmpeg and uses the shared float source in a bounded mode:
+the source seeks to `Start Block`, exposes `Finish Block - Start Block` as its
+duration, interprets UI seeks relative to that selection, and will not emit a
+sample frame beyond the selection. A generated PCM image proves the first
+selected sample, exact frame count, audible output, relative seek, and EOS.
+This bounded-source primitive is intended to be reused by the CueSheet backend.
+URL sources and Cog's one-bit DSD frame scaling remain separate work.
+
 Decoder settings are shared between the probe registry and playback registry.
 The MIDI engine and current SF2 path are persisted in the platform
 configuration directory; the SF2 is validated before it is accepted and cached

@@ -1,5 +1,7 @@
 mod adplug;
 mod adplug_decoder;
+mod apl;
+mod apl_decoder;
 mod app_controller;
 mod decoder;
 mod ffmpeg;

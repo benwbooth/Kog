@@ -66,6 +66,14 @@ builds FFmpeg without GPL-only or version-3 components, yielding an
 LGPL-2.1-or-later library compatible with Kog's GPL-2.0-only license; the
 wider format corpus and exact-seek validation remain.
 
+Monkey's Audio Image Link (`.apl`) files now accept the original CRLF or
+portable LF header, resolve their local image path with Cog-compatible relative
+Windows-path handling, and play only the declared start/finish PCM-frame range
+through the FFmpeg backend. Duration, relative seek, the first selected sample,
+audible PCM, and exact end-of-stream are gated with a generated image/link pair.
+URL image references, one-bit DSD block scaling, and a real Monkey's Audio corpus
+remain parity work.
+
 ## Project direction
 
 - Treat Cog as the behavioral and interface reference.

@@ -171,6 +171,7 @@ impl DecoderRegistry {
     pub fn new(settings: DecoderSettings) -> Self {
         Self {
             backends: vec![
+                Box::new(crate::apl_decoder::AplBackend),
                 Box::new(RodioBackend),
                 Box::new(MidiBackend::new(settings)),
                 Box::new(crate::ffmpeg_decoder::FfmpegBackend),
