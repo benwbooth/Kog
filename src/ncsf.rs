@@ -140,7 +140,11 @@ impl Ncsf {
     }
 
     pub fn seek(&mut self, position: Duration) -> Result<Duration, String> {
-        let target = frames_from_duration(position.min(self.duration()), self.sample_rate)?;
+        let target = if position >= self.duration() {
+            self.total_frames
+        } else {
+            frames_from_duration(position, self.sample_rate)?
+        };
         let actual = unsafe { kog_ncsf_seek(self.handle.as_ptr(), target) };
         let actual = u64::try_from(actual)
             .map_err(|_| format!("SSEQPlayer seek failed: {}", last_error()))?;

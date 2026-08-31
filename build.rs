@@ -11,7 +11,8 @@ fn main() {
     build_vgmstream();
     build_adplug();
     build_libsidplayfp();
-    build_ncsf();
+    let mgba_output = build_mgba();
+    build_ncsf(&mgba_output);
     build_ffmpeg();
 
     cc::Build::new()
@@ -576,7 +577,67 @@ fn build_libsidplayfp() {
     println!("cargo:rerun-if-changed=native/sid_bridge.h");
 }
 
-fn build_ncsf() {
+fn build_mgba() -> PathBuf {
+    let source = Path::new("native/mgba");
+    if !source.join("CMakeLists.txt").is_file() {
+        panic!("mGBA submodule is missing; run `git submodule update --init --recursive`");
+    }
+
+    let output_directory =
+        PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR")).join("mgba");
+    let mut config = cmake::Config::new(source);
+    config
+        .out_dir(output_directory)
+        .profile("Release")
+        .define("BUILD_STATIC", "ON")
+        .define("BUILD_SHARED", "OFF")
+        .define("DISABLE_FRONTENDS", "ON")
+        .define("DISABLE_DEPS", "ON")
+        .define("M_CORE_GBA", "ON")
+        .define("M_CORE_GB", "OFF")
+        .define("ENABLE_DEBUGGERS", "OFF")
+        .define("ENABLE_GDB_STUB", "OFF")
+        .define("ENABLE_SCRIPTING", "OFF")
+        .define("BUILD_QT", "OFF")
+        .define("BUILD_SDL", "OFF")
+        .define("BUILD_GL", "OFF")
+        .define("BUILD_GLES2", "OFF")
+        .define("BUILD_GLES3", "OFF")
+        .define("BUILD_TEST", "OFF")
+        .define("BUILD_SUITE", "OFF")
+        .define("BUILD_CINEMA", "OFF")
+        .define("BUILD_HEADLESS", "OFF")
+        .define("BUILD_EXAMPLE", "OFF")
+        .define("BUILD_PYTHON", "OFF")
+        .define("BUILD_LIBRETRO", "OFF")
+        .define("BUILD_LTO", "OFF")
+        .define("USE_FFMPEG", "OFF")
+        .define("USE_ZLIB", "OFF")
+        .define("USE_MINIZIP", "OFF")
+        .define("USE_PNG", "OFF")
+        .define("USE_LIBZIP", "OFF")
+        .define("USE_SQLITE3", "OFF")
+        .define("USE_ELF", "OFF")
+        .define("USE_LUA", "OFF")
+        .define("USE_JSON_C", "OFF")
+        .define("USE_FREETYPE", "OFF")
+        .define("USE_LZMA", "OFF")
+        .define("USE_DISCORD_RPC", "OFF")
+        .define("CMAKE_INSTALL_LIBDIR", "lib");
+    // mGBA's utility CRC function otherwise collides with zlib's public
+    // crc32 symbol when both static archives are linked into Kog.
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        config.cflag("/Dcrc32=kog_mgba_crc32");
+    } else {
+        config.cflag("-Dcrc32=kog_mgba_crc32");
+    }
+    let output = config.build();
+
+    println!("cargo:rerun-if-changed=native/mgba");
+    output
+}
+
+fn build_ncsf(mgba_output: &Path) {
     let player = Path::new("native/sseqplayer");
     let psflib = Path::new("native/psflib");
     if !player.join("Player.h").is_file() || !psflib.join("psflib.h").is_file() {
@@ -599,6 +660,11 @@ fn build_ncsf() {
         .std("c++17")
         .include(player)
         .include(psflib)
+        .include(mgba_output.join("include"))
+        // This structural feature is present in mGBA's target compile
+        // definitions but omitted from its generated flags.h at this pin.
+        .define("ENABLE_DIRECTORIES", None)
+        .file("native/gsf_bridge.cpp")
         .files(player_sources)
         .warnings(false);
     if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("gnu") {
@@ -621,8 +687,27 @@ fn build_ncsf() {
     }
     psf_build.compile("kog_psflib");
 
+    println!(
+        "cargo:rustc-link-search=native={}/lib",
+        mgba_output.display()
+    );
+    println!("cargo:rustc-link-lib=static=mgba");
+    let target = std::env::var("TARGET").unwrap_or_default();
+    if target.contains("windows") {
+        println!("cargo:rustc-link-lib=ws2_32");
+        println!("cargo:rustc-link-lib=shlwapi");
+    } else {
+        println!("cargo:rustc-link-lib=m");
+        println!("cargo:rustc-link-lib=pthread");
+    }
+    if target.contains("apple") {
+        println!("cargo:rustc-link-lib=framework=Foundation");
+    }
+
     println!("cargo:rerun-if-changed=native/sseqplayer");
     println!("cargo:rerun-if-changed=native/psflib");
     println!("cargo:rerun-if-changed=native/ncsf_bridge.cpp");
     println!("cargo:rerun-if-changed=native/ncsf_bridge.h");
+    println!("cargo:rerun-if-changed=native/gsf_bridge.cpp");
+    println!("cargo:rerun-if-changed=native/gsf_bridge.h");
 }

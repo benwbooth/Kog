@@ -11,6 +11,8 @@ mod ffmpeg;
 mod ffmpeg_decoder;
 mod gme;
 mod gme_decoder;
+mod gsf;
+mod gsf_decoder;
 mod hively;
 mod hively_decoder;
 mod libvgm;

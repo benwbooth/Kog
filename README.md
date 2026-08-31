@@ -74,6 +74,16 @@ audible rendering, exact duration/end behavior, metadata, malformed input, and
 mini-library loading; a broad independently redistributable NCSF corpus
 remains.
 
+GSF and minigsf now route through Cog's exact pinned mGBA revision and the
+same psflib parser, including relative `_lib` dependency resolution, common
+PSF tags, Cog's 150-second/eight-second defaults, tagged length/fade behavior,
+32,768 Hz stereo PCM, and deterministic seek. Tests construct an original
+tiny ARM program that drives the emulated GBA PSG and wrap it in generated
+PSF files; no Nintendo BIOS, logo, or game data is included. The fixture gates
+audible rendering, exact duration/end behavior, metadata, malformed input,
+mini-library loading, and archive companion lookup. A broad independently
+redistributable GSF corpus and direct comparison with Cog remain.
+
 Monkey's Audio Image Link (`.apl`) files now accept the original CRLF or
 portable LF header, resolve their local image path with Cog-compatible relative
 Windows-path handling, and play only the declared start/finish PCM-frame range
@@ -109,7 +119,8 @@ temporary companion tree, so formats such as APL can reopen sibling audio.
 Traversal paths, duplicate destinations, links/devices, oversized entries,
 and oversized archives are rejected or surfaced as warnings. Deterministic
 ZIP and GZ fixtures pass end-to-end WAV playback; real 7Z and RAR5 fixtures
-gate extraction; and ZIP-gated APL playback proves relative companion lookup.
+gate extraction; ZIP-gated APL playback proves relative image lookup; and
+archived NCSF and GSF mini/library pairs prove PSF dependency lookup.
 Encrypted and multipart archives, nested archives, broad RAR/7Z corpora, and
 Windows/macOS runtime gates remain parity work.
 

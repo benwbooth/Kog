@@ -40,6 +40,8 @@ wraps Cog's exact AdPlug and libbinio revisions and is ordered after MIDI,
 libvgm, and OpenMPT so their shared MID, VGM/DRO, and S3M extensions retain
 Cog's intended specialized routes. `libsidplayfp-residfp` wraps Cog's exact
 libsidplayfp revision for ROM-free PSID data and is ordered before AdPlug.
+`mgba-gsf` wraps Cog's exact mGBA revision for GSF and minigsf, including PSF
+library dependencies, and is ordered before NCSF and the broad fallbacks.
 `sseqplayer-ncsf` wraps the official SSEQPlayer and psflib sources for NCSF and
 minincsf and is ordered before SID and the broad specialist fallbacks.
 
@@ -112,9 +114,10 @@ absolute paths, parent traversal, duplicate destinations, links/devices, more
 than 16,384 entries, files over 4 GiB, or more than 8 GiB expanded in total.
 Filename decoding follows Cog's UTF-8, GB18030, Windows-1251, then
 byte-preserving Latin-1 fallback. Deterministic ZIP and GZ audio fixtures,
-real 7Z and RAR5 extraction fixtures, and a ZIP-contained APL plus WAV gate the
-current path. Passwords, multipart archives, nested archive expansion, broad
-format corpora, and Windows/macOS runtime gates remain separate work.
+real 7Z and RAR5 extraction fixtures, a ZIP-contained APL plus WAV, and
+ZIP-contained NCSF and GSF mini/library pairs gate the current path. Passwords,
+multipart archives, nested archive expansion, broad format corpora, and
+Windows/macOS runtime gates remain separate work.
 
 Decoder settings are shared between the probe registry and playback registry.
 The MIDI engine and current SF2 path are persisted in the platform
@@ -237,6 +240,21 @@ audible PCM, seek, fade/EOS, default timing, and malformed-file rejection
 without redistributing Nintendo content. A ZIP-contained mini/library pair
 also gates archive companion resolution. A wider redistributable corpus and
 behavioral comparison against Cog remain parity work.
+
+The GSF adapter pins Cog's mGBA revision `f6b1854` and reuses psflib for PSF
+version 0x22 parsing, zlib decompression, tags, and relative `_lib` traversal.
+Its bridge applies library and root ROM segments in dependency order, rejects
+overflow beyond the GBA's 32 MiB ROM space, and boots the image with mGBA's
+high-level startup rather than a console BIOS. The deliberately minimal static
+build enables only the GBA core needed for decoding. Playback converts mGBA's
+signed-16 output to 32,768 Hz stereo float PCM, applies PSF `length`/`fade`
+tags or Cog's 150-second plus eight-second defaults, and seeks by reconstructing
+the core and discarding exact frames. Tests generate an original ARM program
+that initializes the emulated PSG and wrap it in GSF/minigsf files; they gate
+metadata, dependency loading and precedence, audible PCM, seek, fade/EOS,
+default timing, malformed input, missing libraries, and a ZIP-contained pair
+without a Nintendo BIOS, logo, or game data. Broad corpus and direct Cog
+behavior comparison remain parity work.
 
 ## Decoder contract
 

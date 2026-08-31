@@ -234,6 +234,7 @@ impl DecoderRegistry {
                 Box::new(crate::openmpt_decoder::OpenMptBackend),
                 Box::new(crate::hively_decoder::HivelyBackend),
                 Box::new(crate::organya_decoder::OrganyaBackend),
+                Box::new(crate::gsf_decoder::GsfBackend),
                 Box::new(crate::ncsf_decoder::NcsfBackend),
                 Box::new(crate::sid_decoder::SidBackend),
                 Box::new(crate::adplug_decoder::AdPlugBackend),

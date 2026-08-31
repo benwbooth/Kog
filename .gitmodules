@@ -28,3 +28,6 @@
 [submodule "native/psflib"]
 	path = native/psflib
 	url = https://github.com/kode54/psflib.git
+[submodule "native/mgba"]
+	path = native/mgba
+	url = https://github.com/kode54/mgba.git

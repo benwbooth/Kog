@@ -291,6 +291,7 @@ fn decode_archive_name(bytes: &[u8]) -> compress_tools::Result<String> {
 mod tests {
     use super::*;
     use crate::decoder::{ArchiveOrigin, DecoderRegistry, DecoderSettings, PlaybackSource};
+    use crate::gsf::{test_gba_rom, test_gsf_bytes};
     use crate::ncsf::{test_ncsf_bytes, test_sdat_bytes};
 
     // Generated with libarchive 3.8.9 from an empty regular file. It exercises
@@ -600,6 +601,46 @@ mod tests {
         let properties = registry
             .probe(&expansion.sources[0])
             .expect("probe archived minincsf through extracted library");
+        assert_eq!(properties.title.as_deref(), Some("Archive selection"));
+        assert_eq!(
+            properties.duration,
+            Some(std::time::Duration::from_millis(250))
+        );
+    }
+
+    #[test]
+    fn zip_preserves_minigsf_library_resolution() {
+        let fixture = tempfile::tempdir().unwrap();
+        let archive_path = fixture.path().join("gsf-set.zip");
+        let library = test_gsf_bytes(Some(&test_gba_rom()), "title=Library\n");
+        let mini = test_gsf_bytes(
+            None,
+            "_lib=music.gsflib\ntitle=Archive selection\nlength=0:00.250\n",
+        );
+        write_stored_zip(
+            &archive_path,
+            &[
+                ("set/selection.minigsf", &mini),
+                ("set/music.gsflib", &library),
+            ],
+        );
+
+        let registry = DecoderRegistry::new(DecoderSettings::default());
+        let expansion = registry
+            .expand_detailed(archive_path.clone())
+            .expect("expand archived GSF set");
+        assert_eq!(expansion.sources.len(), 1);
+        assert_eq!(
+            expansion.sources[0]
+                .archive_origin
+                .as_ref()
+                .unwrap()
+                .entry_name,
+            "set/selection.minigsf"
+        );
+        let properties = registry
+            .probe(&expansion.sources[0])
+            .expect("probe archived minigsf through extracted library");
         assert_eq!(properties.title.as_deref(), Some("Archive selection"));
         assert_eq!(
             properties.duration,
