@@ -8,6 +8,7 @@ fn main() {
     let libvgm_output = build_libvgm();
     build_openmpt();
     build_hivelytracker();
+    build_vgmstream();
 
     cc::Build::new()
         .cpp(true)
@@ -174,6 +175,8 @@ fn build_openmpt() {
         .define("MPT_WITH_MINIZ", None)
         .define("MPT_WITH_MINIMP3", None)
         .define("MPT_WITH_STBVORBIS", None)
+        .define("mp3dec_init", "kog_openmpt_mp3dec_init")
+        .define("mp3dec_decode_frame", "kog_openmpt_mp3dec_decode_frame")
         .files(sources)
         .warnings(false)
         .compile("kog_openmpt");
@@ -199,6 +202,8 @@ fn build_openmpt() {
             .std("c11")
             .include(source.join(include))
             .file(source.join(file))
+            .define("mp3dec_init", "kog_openmpt_mp3dec_init")
+            .define("mp3dec_decode_frame", "kog_openmpt_mp3dec_decode_frame")
             .warnings(false)
             .compile(name);
     }
@@ -240,4 +245,69 @@ fn build_hivelytracker() {
     println!("cargo:rerun-if-changed=native/hivelytracker/Replayer_Windows");
     println!("cargo:rerun-if-changed=native/hively_bridge.c");
     println!("cargo:rerun-if-changed=native/hively_bridge.h");
+}
+
+fn build_vgmstream() {
+    let source = Path::new("native/vgmstream");
+    if !source.join("CMakeLists.txt").is_file() {
+        panic!("vgmstream submodule is missing; run `git submodule update --init --recursive`");
+    }
+
+    let target = std::env::var("TARGET").unwrap_or_default();
+    let mut config = cmake::Config::new(source);
+    config
+        .profile("Release")
+        .build_target("libvgmstream")
+        .define("BUILD_CLI", "OFF")
+        .define("BUILD_V123", "OFF")
+        .define("BUILD_AUDACIOUS", "OFF")
+        .define("BUILD_SHARED_LIBS", "OFF")
+        .define("USE_MPEG", "OFF")
+        .define("USE_VORBIS", "OFF")
+        .define("USE_FFMPEG", "OFF")
+        .define("USE_G7221", "ON")
+        .define("USE_G719", "OFF")
+        .define("USE_ATRAC9", "OFF")
+        .define("USE_CELT", "OFF")
+        .define("USE_SPEEX", "OFF");
+    if target.contains("windows") {
+        config
+            .define("BUILD_WINAMP", "OFF")
+            .define("BUILD_XMPLAY", "OFF")
+            .define("BUILD_FB2K", "OFF");
+        if target.contains("msvc") {
+            config.cflag("/DVGM_STDIO_UNICODE");
+        } else {
+            config.cflag("-DVGM_STDIO_UNICODE");
+        }
+    }
+    let output = config.build();
+
+    cc::Build::new()
+        .std("c11")
+        .include(source.join("src"))
+        .file("native/vgmstream_bridge.c")
+        .warnings(false)
+        .compile("kog_vgmstream_bridge");
+
+    println!(
+        "cargo:rustc-link-search=native={}/build/src",
+        output.display()
+    );
+    println!(
+        "cargo:rustc-link-search=native={}/build/src/Release",
+        output.display()
+    );
+    if target.contains("msvc") {
+        println!("cargo:rustc-link-lib=static=libvgmstream");
+    } else {
+        println!("cargo:rustc-link-lib=static=vgmstream");
+    }
+    if !target.contains("windows") {
+        println!("cargo:rustc-link-lib=m");
+    }
+
+    println!("cargo:rerun-if-changed=native/vgmstream");
+    println!("cargo:rerun-if-changed=native/vgmstream_bridge.c");
+    println!("cargo:rerun-if-changed=native/vgmstream_bridge.h");
 }

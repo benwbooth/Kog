@@ -32,7 +32,9 @@ libvgm revision for VGM/VGZ, S98, DRO, and GYM. `libopenmpt` wraps Cog's exact
 0.8.7 release for the 68 extensions returned by that pinned native build.
 `hivelytracker` wraps the official portable 1.9 replayer for AHX and HVL.
 `orgorg` 0.2.1 renders Organya Org-02/Org-03 songs from a user-supplied
-soundbank.
+soundbank. `vgmstream` is the final specialist fallback for its large runtime
+extension table, after every narrower backend and excluding its common-format
+table so it cannot steal WAV, Ogg, or other conventional containers.
 
 Decoder settings are shared between the probe registry and playback registry.
 The MIDI engine and current SF2 path are persisted in the platform
@@ -96,6 +98,20 @@ two-loop/eight-second-fade policy, and deterministic restart-and-skip seeking.
 A generated Org-02 song and synthetic wavetable gate parsing, loop duration,
 audible PCM, fade completion, routing, and seek without redistributing game
 content.
+
+The vgmstream adapter pins upstream r2117 at commit `05dbda9b` and builds the
+static core through its CMake target. A small C bridge owns the public
+`libvgmstream` handle, filesystem streamfile, and companion-file behavior while
+Rust receives interleaved floating-point PCM and immutable format metadata.
+The adapter expands native subsongs into stable zero-based identities, applies
+Cog's default two-loop/eight-second-fade policy, exposes loop and companion
+capabilities, seeks in native sample frames, and reads common fields from a
+sibling `!tags.m3u`. Runtime extension validation excludes vgmstream's common
+formats and the registry orders this backend last. The portable baseline
+enables native codecs and built-in G.722.1 only; optional external codec
+families are tracked separately rather than silently claimed. A generated
+mono PlayStation VAG gates public API version, extension routing, tag parsing,
+duration, audible PCM, seek, and exact end-of-stream behavior.
 
 ## Decoder contract
 

@@ -93,6 +93,24 @@ Kog. Users may point Kog at their own `soundbank.wdb` or an extracted
 `wavetable.dat`/`drums.dat` pair. Kog's tests instead generate a small Org-02
 song and synthetic wavetable specifically for the test run.
 
+## vgmstream
+
+The `native/vgmstream` Git submodule is the official
+[vgmstream](https://github.com/vgmstream/vgmstream) source at r2117 commit
+`05dbda9b930b8d174f03387fb626d97d827d0647`. Kog builds the static library with
+its native codecs and built-in G.722.1 enabled, and calls its public C API
+through a small ownership and metadata bridge. The optional FFmpeg, Vorbis,
+mpg123, G.719, ATRAC9, CELT, and Speex dependencies are not part of this
+baseline build.
+
+vgmstream is Copyright (c) 2008-2025 Adam Gashlin, Fastelbja, Ronny Elfert,
+bnnm, Christopher Snowhill, NicknineTheEagle, bxaimc, Thealexbarney,
+CyberBotX, EdnessP, and other contributors identified by the upstream source.
+It is distributed under the permissive ISC-style terms retained in the
+submodule and copied verbatim to `LICENSES/vgmstream-ISC.txt`. Kog's generated
+VAG fixture and `!tags.m3u` file are created by its tests and contain no game
+content.
+
 ## TinySoundFont minimal SoundFont test fixture
 
 The 484-byte `MinimalSoundFont` data encoded in `src/decoder.rs` is derived

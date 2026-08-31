@@ -10,3 +10,6 @@
 [submodule "native/hivelytracker"]
 	path = native/hivelytracker
 	url = https://github.com/pete-gordon/hivelytracker.git
+[submodule "native/vgmstream"]
+	path = native/vgmstream
+	url = https://github.com/vgmstream/vgmstream.git

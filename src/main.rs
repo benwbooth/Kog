@@ -14,6 +14,8 @@ mod organya_decoder;
 mod playback;
 mod settings;
 mod track;
+mod vgmstream;
+mod vgmstream_decoder;
 
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
 

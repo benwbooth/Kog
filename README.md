@@ -34,7 +34,15 @@ gates. Org-02 and Org-03 Organya files now route through the MIT-licensed
 `orgorg` renderer with real stereo PCM, loop/fade timing, and seek. Kog does not
 redistribute Cave Story's synthesis assets; a deterministic original-format
 fixture and synthetic bank gate the backend. SFM, SGC, and the other chiptune
-and game-audio families remain explicitly unclaimed.
+families remain explicitly unclaimed. The pinned upstream vgmstream r2117 core
+now supplies a lowest-priority game-stream backend with its runtime-enumerated
+700-plus specialist extensions, companion-file and TXTP reopening, subsongs,
+loop/fade timing, `!tags.m3u` metadata, multichannel float PCM, and seek. A
+generated PlayStation VAG passes routing, metadata, audible PCM, seek, and
+exact end-of-stream gates. The first portable build deliberately enables
+vgmstream's native codecs plus built-in G.722.1; formats requiring its optional
+FFmpeg, Vorbis, mpg123, G.719, ATRAC9, CELT, or Speex dependencies remain
+explicitly partial.
 
 ## Project direction
 
