@@ -55,9 +55,10 @@ flushes the demuxer, codec, resampler, and buffered PCM together, then drops
 pre-target decoded frames when timestamps are available. It is registered
 after Symphonia so existing MP3/AAC/FLAC/MP4/WAV/Ogg routes do not change, and
 before specialist backends without claiming their extensions. The pinned Nix
-shell overrides FFmpeg with both GPL and version-3 components disabled; the
-result's own license banner reports LGPL-2.1-or-later, which is compatible with
-Kog's GPL-2.0-only application. A four-frame synthetic AC-3 stream gates
+shell currently overrides FFmpeg with both GPL and version-3 components
+disabled; the result's own license banner reports LGPL-2.1-or-later, which is
+compatible with Kog's GPL-3.0-or-later application. A four-frame synthetic
+AC-3 stream gates
 format routing, source priority, properties, audible PCM, seeking, and clean
 end-of-stream behavior. Wider family and metadata corpora, sample-accurate
 seeking across every demuxer, attached artwork, chapters/subtracks, gapless

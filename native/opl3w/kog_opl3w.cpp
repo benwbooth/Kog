@@ -1,6 +1,6 @@
 // Kog C ABI wrapper for Cog's OPL3Windows MIDI synthesizer.
 // Copyright (C) 2026 Kog contributors.
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "kog_opl3w.h"
 

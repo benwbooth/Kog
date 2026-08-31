@@ -62,9 +62,10 @@ sample rate, converts planar or packed native samples to interleaved float
 PCM, reports common metadata and stream properties, and seeks through the
 native demuxer. A generated AC-3 stream passes routing, duration, audible PCM,
 seek, priority, and end-of-stream gates. The pinned Nix shell deliberately
-builds FFmpeg without GPL-only or version-3 components, yielding an
-LGPL-2.1-or-later library compatible with Kog's GPL-2.0-only license; the
-wider format corpus and exact-seek validation remain.
+builds a conservative FFmpeg configuration without GPL-only or version-3
+components, yielding an LGPL-2.1-or-later library compatible with Kog's
+GPL-3.0-or-later license; the wider format corpus and exact-seek validation
+remain.
 
 NCSF and minincsf now route through the official SSEQPlayer and psflib
 projects, including relative `_lib` dependency resolution, common PSF tags,
@@ -139,13 +140,18 @@ Windows/macOS runtime gates remain parity work.
 
 Likely decoder families include FFmpeg, libopenmpt, Game Music Emu, vgmstream,
 libvgm, libsidplayfp, AdPlug, a SoundFont synthesizer, and an OPL3 MIDI
-synthesizer. Dependencies and redistributable assets will be selected only
-after license review.
+synthesizer. Dependencies and redistributable assets are selected under the
+project's documented license policy. Non-commercial decoders are permitted
+for this non-commercial project when their own terms permit redistribution,
+but they retain those terms and must be kept outside the GPL application
+binary when the licenses are incompatible.
 
 See [the architecture](docs/ARCHITECTURE.md),
 [UI parity matrix](docs/UI_PARITY.md), and
 [format parity matrix](docs/FORMAT_PARITY.md) for the executable backend
-contract, fidelity gates, and the complete Cog-derived worklist.
+contract, fidelity gates, and the complete Cog-derived worklist. The
+[license policy](docs/LICENSING.md) defines the boundary for GPLv3 and
+separately licensed optional decoder helpers.
 
 ## Development
 
@@ -177,12 +183,14 @@ can extract `wavetable.dat` and `drums.dat` from the original freeware
 The direct Cargo build requires Rust, C and C++ compilers, CMake, `pkg-config`,
 FFmpeg development libraries (`libavformat`, `libavcodec`, `libavutil`, and
 `libswresample`), zlib, libarchive 3.2 or newer, and Qt 6 with Qt Quick and Qt
-Quick Controls. FFmpeg must be built under terms compatible with GPL-2.0-only;
-Kog's Nix shell provides the known-compatible configuration used by the
-regression gates.
+Quick Controls. FFmpeg must be built under terms compatible with
+GPL-3.0-or-later. Kog's Nix shell provides the known-compatible conservative
+configuration used by the regression gates.
 
 ## License
 
-Kog is licensed under GPL-2.0-only. Third-party decoder libraries and assets
-retain their own licenses; bundled test-fixture attribution is recorded in
-[the third-party notices](THIRD_PARTY_NOTICES.md).
+Kog-authored code is licensed under GPL-3.0-or-later. Third-party decoder
+libraries and assets retain their own licenses; bundled test-fixture
+attribution is recorded in [the third-party notices](THIRD_PARTY_NOTICES.md),
+and optional non-commercial components follow the
+[license policy](docs/LICENSING.md).

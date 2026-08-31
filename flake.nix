@@ -29,10 +29,10 @@
             pkgs.qt6.qtwayland
           ];
         qtEnv = pkgs.qt6.env "kog-qt-env" qtModules;
-        # Kog is GPL-2.0-only, so do not link the default Nix FFmpeg build:
-        # its GPLv3 components make that combined work license-incompatible.
-        # Native FFmpeg audio demuxers/decoders remain available in this
-        # LGPL-2.1-or-later configuration.
+        # Keep a conservative, reproducible LGPL FFmpeg baseline. Kog's
+        # GPL-3.0-or-later license also permits compatible GPLv3 FFmpeg builds.
+        # Native FFmpeg audio demuxers/decoders remain available here without
+        # enabling those additional components.
         kogFfmpeg = pkgs.ffmpeg-headless.override {
           withGPL = false;
           withVersion3 = false;

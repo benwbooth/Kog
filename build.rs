@@ -142,7 +142,8 @@ fn build_libvgm() -> std::path::PathBuf {
         panic!("libvgm submodule is missing; run `git submodule update --init --recursive`");
     }
 
-    let output = cmake::Config::new(source)
+    let mut config = cmake::Config::new(source);
+    config
         .profile("Release")
         .define("BUILD_LIBAUDIO", "OFF")
         .define("BUILD_LIBEMU", "ON")
@@ -156,9 +157,64 @@ fn build_libvgm() -> std::path::PathBuf {
         .define("UTIL_THREADING", "OFF")
         .define("UTIL_CHARSET_CONV", "ON")
         .define("USE_SANITIZERS", "OFF")
-        .define("SNDEMU__ALL", "ON")
-        .define("CMAKE_INSTALL_LIBDIR", "lib")
-        .build();
+        .define("SNDEMU__ALL", "OFF")
+        .define("CMAKE_INSTALL_LIBDIR", "lib");
+
+    // Keep libvgm's broad chip coverage without linking its GPL-2.0-only
+    // YMF278B implementation into Kog's GPL-3.0-or-later executable.
+    for device in [
+        "SNDEMU_SN76496_ALL",
+        "SNDEMU_YM2413_ALL",
+        "SNDEMU_YM2612_ALL",
+        "SNDEMU_YM2151_ALL",
+        "SNDEMU_SEGAPCM_ALL",
+        "SNDEMU_RF5C68_ALL",
+        "SNDEMU_YM2203_ALL",
+        "SNDEMU_YM2608_ALL",
+        "SNDEMU_YM2610_ALL",
+        "SNDEMU_YM3812_ALL",
+        "SNDEMU_YM3526_ALL",
+        "SNDEMU_Y8950_ALL",
+        "SNDEMU_YMF262_ALL",
+        "SNDEMU_YMZ280B_ALL",
+        "SNDEMU_YMF271_ALL",
+        "SNDEMU_AY8910_ALL",
+        "SNDEMU_32X_PWM_ALL",
+        "SNDEMU_GAMEBOY_ALL",
+        "SNDEMU_NESAPU_ALL",
+        "SNDEMU_YMW258_ALL",
+        "SNDEMU_UPD7759_ALL",
+        "SNDEMU_MSM6258_ALL",
+        "SNDEMU_MSM6295_ALL",
+        "SNDEMU_K051649_ALL",
+        "SNDEMU_K054539_ALL",
+        "SNDEMU_C6280_ALL",
+        "SNDEMU_C140_ALL",
+        "SNDEMU_C219_ALL",
+        "SNDEMU_K053260_ALL",
+        "SNDEMU_POKEY_ALL",
+        "SNDEMU_QSOUND_ALL",
+        "SNDEMU_SCSP_ALL",
+        "SNDEMU_WSWAN_ALL",
+        "SNDEMU_VBOY_VSU_ALL",
+        "SNDEMU_SAA1099_ALL",
+        "SNDEMU_ES5503_ALL",
+        "SNDEMU_ES5506_ALL",
+        "SNDEMU_X1_010_ALL",
+        "SNDEMU_C352_ALL",
+        "SNDEMU_GA20_ALL",
+        "SNDEMU_MIKEY_ALL",
+        "SNDEMU_K007232_ALL",
+        "SNDEMU_K005289_ALL",
+        "SNDEMU_MSM5205_ALL",
+        "SNDEMU_MSM5232_ALL",
+        "SNDEMU_BSMT2000_ALL",
+        "SNDEMU_ICS2115_ALL",
+    ] {
+        config.define(device, "ON");
+    }
+
+    let output = config.build();
 
     println!("cargo:rerun-if-changed=native/libvgm");
     println!("cargo:rerun-if-changed=native/libvgm-kog");

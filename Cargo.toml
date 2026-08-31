@@ -2,7 +2,7 @@
 name = "kog"
 version = "0.1.0"
 edition = "2024"
-license = "GPL-2.0-only"
+license = "GPL-3.0-or-later"
 description = "A cross-platform, format-comprehensive local music player"
 repository = "https://github.com/benwbooth/Kog"
 
