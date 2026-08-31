@@ -178,6 +178,7 @@ impl DecoderRegistry {
                 Box::new(crate::openmpt_decoder::OpenMptBackend),
                 Box::new(crate::hively_decoder::HivelyBackend),
                 Box::new(crate::organya_decoder::OrganyaBackend),
+                Box::new(crate::sid_decoder::SidBackend),
                 Box::new(crate::adplug_decoder::AdPlugBackend),
                 Box::new(crate::vgmstream_decoder::VgmstreamBackend),
             ],
@@ -1133,7 +1134,10 @@ mod tests {
     #[test]
     fn registry_advertises_only_implemented_specialist_formats() {
         let registry = DecoderRegistry::default();
-        assert_eq!(registry.backend_id_for(Path::new("song.sid")), None);
+        assert_eq!(
+            registry.backend_id_for(Path::new("song.sid")),
+            Some("libsidplayfp-residfp")
+        );
         assert_eq!(
             registry.backend_id_for(Path::new("song.mid")),
             Some("midi-rustysynth-sf2")

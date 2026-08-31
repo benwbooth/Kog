@@ -47,7 +47,14 @@ add 51 runtime-enumerated AdLib/OPL extensions, native subsong expansion,
 metadata, duration, 44.1 kHz stereo output through the bundled Nuked OPL3
 core, and exact restart-and-render seeking. AdPlug's upstream `2.CMF` fixture
 passes routing, audible PCM, seek, and end-of-stream gates; Cog's AdPlug
-database and the wider 51-format corpus remain.
+database and the wider 51-format corpus remain. Cog's exact libsidplayfp
+revision now handles ROM-free PSID files through reSIDfp, including subtune
+expansion, title/artist/release metadata, mono or multi-SID stereo output,
+Cog's 150-second plus eight-second-fade default, and accelerated seek. A
+generated two-subtune PSID passes routing, audible PCM, metadata, seek, and
+exact end-of-stream gates. Kog deliberately does not redistribute C64 ROMs;
+RSID/BASIC tunes report that user ROM selection is still required, and raw
+MUS routing and the song-length database remain parity work.
 
 ## Project direction
 

@@ -10,6 +10,7 @@ fn main() {
     build_hivelytracker();
     build_vgmstream();
     build_adplug();
+    build_libsidplayfp();
 
     cc::Build::new()
         .cpp(true)
@@ -416,4 +417,126 @@ fn define_adplug_opl_symbols(build: &mut cc::Build) {
     ] {
         build.define(symbol, namespaced);
     }
+}
+
+fn build_libsidplayfp() {
+    let source = Path::new("native/libsidplayfp");
+    if !source.join("src/sidplayfp/sidplayfp.h").is_file() {
+        panic!("libsidplayfp submodule is missing; run `git submodule update --init --recursive`");
+    }
+
+    let generated = PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR"))
+        .join("kog-libsidplayfp");
+    let generated_api = generated.join("sidplayfp");
+    let generated_residfp = generated.join("residfp");
+    fs::create_dir_all(&generated_api).expect("create libsidplayfp generated API directory");
+    fs::create_dir_all(&generated_residfp).expect("create reSIDfp generated-header directory");
+
+    let sid_version = fs::read_to_string(source.join("src/sidplayfp/sidversion.h.in"))
+        .expect("read libsidplayfp version-header template")
+        .replace("@LIB_MAJOR@", "2")
+        .replace("@LIB_MINOR@", "4")
+        // The pinned development suffix is `0a`; this numeric macro is not
+        // consumed by the library, while PACKAGE_VERSION carries the exact
+        // printable version below.
+        .replace("@LIB_LEVEL@", "0");
+    fs::write(generated_api.join("sidversion.h"), sid_version)
+        .expect("write configured libsidplayfp version header");
+
+    let have_builtin_expect = if std::env::var("TARGET").unwrap_or_default().contains("msvc") {
+        "0"
+    } else {
+        "1"
+    };
+    let residfp_defs =
+        fs::read_to_string(source.join("src/builders/residfp-builder/residfp/siddefs-fp.h.in"))
+            .expect("read reSIDfp configuration-header template")
+            .replace("@RESID_BRANCH_HINTS@", "1")
+            .replace("@HAVE_BUILTIN_EXPECT@", have_builtin_expect)
+            .replace("@PACKAGE_VERSION@", "2.4.0a")
+            .replace("@RESID_INLINING@", "1")
+            .replace("@RESID_INLINE@", "inline");
+    fs::write(generated_residfp.join("siddefs-fp.h"), residfp_defs)
+        .expect("write configured reSIDfp header");
+
+    let main_sources = [
+        "src/EventScheduler.cpp",
+        "src/player.cpp",
+        "src/psiddrv.cpp",
+        "src/mixer.cpp",
+        "src/reloc65.cpp",
+        "src/sidemu.cpp",
+        "src/c64/c64.cpp",
+        "src/c64/mmu.cpp",
+        "src/c64/VIC_II/mos656x.cpp",
+        "src/c64/CPU/mos6510.cpp",
+        "src/c64/CPU/mos6510debug.cpp",
+        "src/c64/CIA/interrupt.cpp",
+        "src/c64/CIA/mos652x.cpp",
+        "src/c64/CIA/SerialPort.cpp",
+        "src/c64/CIA/timer.cpp",
+        "src/c64/CIA/tod.cpp",
+        "src/sidplayfp/sidplayfp.cpp",
+        "src/sidplayfp/sidbuilder.cpp",
+        "src/sidplayfp/SidConfig.cpp",
+        "src/sidplayfp/SidInfo.cpp",
+        "src/sidplayfp/SidTune.cpp",
+        "src/sidplayfp/SidTuneInfo.cpp",
+        "src/sidtune/MUS.cpp",
+        "src/sidtune/p00.cpp",
+        "src/sidtune/prg.cpp",
+        "src/sidtune/PSID.cpp",
+        "src/sidtune/SidTuneBase.cpp",
+        "src/sidtune/SidTuneTools.cpp",
+        "src/utils/iniParser.cpp",
+        "src/utils/md5Factory.cpp",
+        "src/utils/SidDatabase.cpp",
+        "src/utils/MD5/MD5.cpp",
+        "src/builders/residfp-builder/residfp-builder.cpp",
+        "src/builders/residfp-builder/residfp-emu.cpp",
+        "src/builders/residfp-builder/residfp/Dac.cpp",
+        "src/builders/residfp-builder/residfp/EnvelopeGenerator.cpp",
+        "src/builders/residfp-builder/residfp/ExternalFilter.cpp",
+        "src/builders/residfp-builder/residfp/Filter.cpp",
+        "src/builders/residfp-builder/residfp/Filter6581.cpp",
+        "src/builders/residfp-builder/residfp/Filter8580.cpp",
+        "src/builders/residfp-builder/residfp/FilterModelConfig6581.cpp",
+        "src/builders/residfp-builder/residfp/FilterModelConfig8580.cpp",
+        "src/builders/residfp-builder/residfp/Integrator6581.cpp",
+        "src/builders/residfp-builder/residfp/Integrator8580.cpp",
+        "src/builders/residfp-builder/residfp/OpAmp.cpp",
+        "src/builders/residfp-builder/residfp/SID.cpp",
+        "src/builders/residfp-builder/residfp/Spline.cpp",
+        "src/builders/residfp-builder/residfp/WaveformCalculator.cpp",
+        "src/builders/residfp-builder/residfp/WaveformGenerator.cpp",
+        "src/builders/residfp-builder/residfp/resample/SincResampler.cpp",
+        "src/builders/residfp-builder/residfp/version.cc",
+    ];
+
+    let mut build = cc::Build::new();
+    build
+        .cpp(true)
+        .std("c++17")
+        .include(&generated)
+        .include(&generated_residfp)
+        .include(source.join("src"))
+        .include(source.join("src/sidtune"))
+        .include("native/libsidplayfp-generated/sidtune")
+        .include(source.join("src/builders/residfp-builder"))
+        .include(source.join("src/builders/residfp-builder/residfp"))
+        .define("HAVE_CXX11", None)
+        .define("HAVE_CXX14", None)
+        .define("PACKAGE_NAME", "\"libsidplayfp\"")
+        .define("PACKAGE_VERSION", "\"2.4.0a\"")
+        .define("PACKAGE_URL", "\"https://github.com/kode54/libsidplayfp\"")
+        .define("VERSION", "\"2.4.0a\"")
+        .files(main_sources.iter().map(|path| source.join(path)))
+        .file("native/sid_bridge.cpp")
+        .warnings(false)
+        .compile("kog_libsidplayfp");
+
+    println!("cargo:rerun-if-changed=native/libsidplayfp");
+    println!("cargo:rerun-if-changed=native/libsidplayfp-generated");
+    println!("cargo:rerun-if-changed=native/sid_bridge.cpp");
+    println!("cargo:rerun-if-changed=native/sid_bridge.h");
 }

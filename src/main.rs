@@ -15,6 +15,8 @@ mod organya;
 mod organya_decoder;
 mod playback;
 mod settings;
+mod sid;
+mod sid_decoder;
 mod track;
 mod vgmstream;
 mod vgmstream_decoder;

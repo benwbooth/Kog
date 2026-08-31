@@ -37,7 +37,8 @@ extension table, after every narrower backend and excluding its common-format
 table so it cannot steal WAV, Ogg, or other conventional containers. `adplug`
 wraps Cog's exact AdPlug and libbinio revisions and is ordered after MIDI,
 libvgm, and OpenMPT so their shared MID, VGM/DRO, and S3M extensions retain
-Cog's intended specialized routes.
+Cog's intended specialized routes. `libsidplayfp-residfp` wraps Cog's exact
+libsidplayfp revision for ROM-free PSID data and is ordered before AdPlug.
 
 Decoder settings are shared between the probe registry and playback registry.
 The MIDI engine and current SF2 path are persisted in the platform
@@ -128,6 +129,22 @@ after the narrower overlapping backends. Upstream's Creative Music File
 `2.CMF` gates the exact extension/version pin, type metadata, duration,
 audible PCM, seeking, and end-of-stream behavior. The optional database and a
 wider format corpus remain explicit parity work.
+
+The SID adapter pins kode54's libsidplayfp revision `519d1201`, builds its
+reSIDfp emulator and generated 6502 player data, and accepts self-contained
+PSID files from memory. It expands every tune into stable zero-based subtune
+identities, maps the PSID title to album when a file has multiple subtunes,
+reports artist and release metadata, and chooses mono or stereo according to
+the number of declared SID chips. Playback converts native signed-16 samples
+to the shared float stream at 44.1 kHz, applies Cog's 150-second default plus
+eight-second fade and stereo-width transform, and seeks using libsidplayfp's
+32x fast-forward mode followed by an exact residual render. Kog does not copy
+Cog's embedded copyrighted C64 ROM arrays: RSID and BASIC-compatible tunes are
+identified and rejected with an actionable user-ROM error until ROM selection
+exists. A generated two-subtune PSID gates the exact revision, routing,
+metadata, audible PCM, accelerated seek, fade duration, and exact end of
+stream. Raw MUS/MUS+STR routing, configurable synthesis policy, user ROMs, and
+the song-length database remain parity work.
 
 ## Decoder contract
 
