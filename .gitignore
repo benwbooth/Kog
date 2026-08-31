@@ -1,0 +1,8 @@
+/target/
+/.direnv/
+/.idea/
+/.vscode/
+.qmlls.ini
+*.user
+*.qmlc
+*.jsc
