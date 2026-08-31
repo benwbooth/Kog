@@ -18,20 +18,23 @@ backends may use safe Rust, C, or C++ libraries.
 5. **Native library adapters** isolate unsafe FFI and convert library-specific
    streams into interleaved floating-point PCM.
 
-The installed backends are `rodio-symphonia` for conventional audio and
+The installed backends are `rodio-symphonia` for conventional audio,
 `midi-rustysynth-sf2` for Standard MIDI File and RIFF RMID rendering through a
-user-selected SF2 SoundFont. Both provide real playback, pause, stop, seek,
-position, volume, and automatic next-track behavior. Specialist backends
-remain separate so a broad fallback cannot erase behavior such as PSF
-dependency resolution, VGMStream subsongs, or emulator-authentic OPL and
-Roland MIDI synthesis.
+user-selected SF2 SoundFont, and `midi-opl3windows` for the same MIDI containers
+through Cog's OPL3Windows General MIDI engine and Nuked OPL3 1.7.1 core. They
+provide real playback, pause, stop, seek, position, volume, and automatic
+next-track behavior. Specialist backends remain separate so a broad fallback
+cannot erase behavior such as PSF dependency resolution, VGMStream subsongs,
+AdPlug subsongs, or emulator-authentic Roland MIDI synthesis.
 
 Decoder settings are shared between the probe registry and playback registry.
-The current SF2 path is validated before it is accepted, persisted in the
-platform configuration directory, and cached by path and modification time.
-MIDI is rendered to interleaved 48 kHz stereo floating-point PCM; seeking
-reconstructs the sequencer and deterministically advances it to the requested
-frame.
+The MIDI engine and current SF2 path are persisted in the platform
+configuration directory; the SF2 is validated before it is accepted and cached
+by path and modification time. Both MIDI engines render interleaved 48 kHz
+stereo floating-point PCM. The OPL3 path uses a small C ABI around Cog's
+GPL-compatible native engine; Midly merges format-0/1 tracks and schedules
+legacy MIDI messages at exact output frames. Seeking recreates the selected
+synthesizer and deterministically advances it to the requested frame.
 
 ## Decoder contract
 

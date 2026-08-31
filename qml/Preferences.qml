@@ -9,7 +9,7 @@ Window {
     required property var app
 
     width: 620
-    height: 360
+    height: 410
     minimumWidth: 500
     minimumHeight: 320
     title: qsTr("Kog Preferences")
@@ -39,7 +39,7 @@ Window {
         }
 
         GroupBox {
-            title: qsTr("SoundFont synthesis")
+            title: qsTr("MIDI synthesis")
             Layout.fillWidth: true
 
             ColumnLayout {
@@ -49,9 +49,20 @@ Window {
                 RowLayout {
                     Layout.fillWidth: true
                     Label { text: qsTr("Backend:"); font.bold: true }
-                    Label { text: qsTr("RustySynth (SF2)") }
-                    Item { Layout.fillWidth: true }
+                    ComboBox {
+                        id: midiEngine
+                        Layout.fillWidth: true
+                        model: [
+                            qsTr("RustySynth (SF2)"),
+                            qsTr("OPL3Windows (Nuked OPL3)")
+                        ]
+                        currentIndex: root.app.midi_engine === "opl3windows" ? 1 : 0
+                        onActivated: root.app.select_midi_engine(
+                            currentIndex === 1 ? "opl3windows" : "rustysynth-sf2")
+                    }
                 }
+
+                Label { text: qsTr("SoundFont:"); font.bold: true }
 
                 Label {
                     Layout.fillWidth: true
@@ -83,7 +94,7 @@ Window {
 
         Label {
             Layout.fillWidth: true
-            text: qsTr("SF3, OPL3, MT-32, and SC-55 rendering are tracked separately and are not enabled in this milestone.")
+            text: qsTr("OPL3Windows uses Cog's General MIDI timbre table and Nuked OPL3 engine. SF3, MT-32, SC-55, and additional OPL banks remain separate milestones.")
             wrapMode: Text.Wrap
             color: "#666666"
         }

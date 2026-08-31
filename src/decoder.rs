@@ -7,9 +7,13 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 use std::time::SystemTime;
 
+use midly::{Format, Fps, MetaMessage, MidiMessage, Smf, Timing, TrackEventKind};
 use rodio::source::SeekError;
 use rodio::{ChannelCount, Decoder, Player, SampleRate, Source};
 use rustysynth::{MidiFile, MidiFileSequencer, SoundFont, Synthesizer, SynthesizerSettings};
+
+use crate::opl3::Opl3WindowsSynth;
+use crate::settings::MidiEngine;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DecoderCapabilities {
@@ -77,12 +81,14 @@ pub trait DecoderBackend: Send + Sync {
 #[derive(Clone, Default)]
 pub struct DecoderSettings {
     soundfont_path: Arc<RwLock<Option<PathBuf>>>,
+    midi_engine: Arc<RwLock<MidiEngine>>,
 }
 
 impl DecoderSettings {
-    pub fn new(soundfont_path: Option<PathBuf>) -> Self {
+    pub fn new(soundfont_path: Option<PathBuf>, midi_engine: MidiEngine) -> Self {
         Self {
             soundfont_path: Arc::new(RwLock::new(soundfont_path)),
+            midi_engine: Arc::new(RwLock::new(midi_engine)),
         }
     }
 
@@ -98,6 +104,20 @@ impl DecoderSettings {
             .soundfont_path
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = path;
+    }
+
+    pub fn midi_engine(&self) -> MidiEngine {
+        *self
+            .midi_engine
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    pub fn set_midi_engine(&self, midi_engine: MidiEngine) {
+        *self
+            .midi_engine
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = midi_engine;
     }
 }
 
@@ -263,11 +283,17 @@ impl MidiBackend {
 
 impl DecoderBackend for MidiBackend {
     fn id(&self) -> &'static str {
-        "midi-rustysynth-sf2"
+        match self.settings.midi_engine() {
+            MidiEngine::RustySynth => "midi-rustysynth-sf2",
+            MidiEngine::Opl3Windows => "midi-opl3windows",
+        }
     }
 
     fn display_name(&self) -> &'static str {
-        "RustySynth SoundFont"
+        match self.settings.midi_engine() {
+            MidiEngine::RustySynth => "RustySynth SoundFont",
+            MidiEngine::Opl3Windows => "OPL3Windows (Nuked OPL3)",
+        }
     }
 
     fn extensions(&self) -> &'static [&'static str] {
@@ -282,7 +308,10 @@ impl DecoderBackend for MidiBackend {
     }
 
     fn probe(&self, path: &Path) -> Result<StreamProperties, String> {
-        let (_, duration) = load_midi_file(path)?;
+        let duration = match self.settings.midi_engine() {
+            MidiEngine::RustySynth => load_midi_file(path)?.1,
+            MidiEngine::Opl3Windows => OplMidiTimeline::parse(&read_standard_midi(path)?)?.duration,
+        };
         Ok(StreamProperties {
             duration: Some(duration),
             sample_rate: Some(MIDI_SAMPLE_RATE),
@@ -291,9 +320,17 @@ impl DecoderBackend for MidiBackend {
     }
 
     fn append(&self, path: &Path, player: &Player) -> Result<(), String> {
-        let soundfont = self.load_soundfont()?;
-        let (midi_file, duration) = load_midi_file(path)?;
-        player.append(MidiSource::new(soundfont, midi_file, duration)?);
+        match self.settings.midi_engine() {
+            MidiEngine::RustySynth => {
+                let soundfont = self.load_soundfont()?;
+                let (midi_file, duration) = load_midi_file(path)?;
+                player.append(MidiSource::new(soundfont, midi_file, duration)?);
+            }
+            MidiEngine::Opl3Windows => {
+                let timeline = Arc::new(OplMidiTimeline::parse(&read_standard_midi(path)?)?);
+                player.append(OplMidiSource::new(timeline)?);
+            }
+        }
         Ok(())
     }
 }
@@ -370,6 +407,369 @@ fn read_standard_midi(path: &Path) -> Result<Vec<u8>, String> {
         "MIDI file {} has neither an MThd nor RIFF RMID header",
         path.display()
     ))
+}
+
+#[derive(Clone, Copy, Debug)]
+enum OplTimelineInputKind {
+    Midi(u32),
+    Tempo(u32),
+}
+
+#[derive(Clone, Copy, Debug)]
+struct OplTimelineInput {
+    tick: u64,
+    track: usize,
+    order: usize,
+    kind: OplTimelineInputKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct OplMidiEvent {
+    frame: u64,
+    packed: u32,
+}
+
+#[derive(Clone, Debug)]
+struct OplMidiTimeline {
+    events: Vec<OplMidiEvent>,
+    total_frames: u64,
+    duration: Duration,
+}
+
+impl OplMidiTimeline {
+    fn parse(bytes: &[u8]) -> Result<Self, String> {
+        let smf = Smf::parse(bytes).map_err(|error| format!("parsing MIDI for OPL3: {error}"))?;
+        if smf.header.format == Format::Sequential {
+            return Err(
+                "SMF format 2 contains separate songs; subsong selection is not implemented yet"
+                    .to_owned(),
+            );
+        }
+
+        let mut inputs = Vec::new();
+        let mut total_ticks = 0_u64;
+        for (track_index, track) in smf.tracks.iter().enumerate() {
+            let mut tick = 0_u64;
+            for (event_index, event) in track.iter().enumerate() {
+                tick = tick
+                    .checked_add(u64::from(event.delta.as_int()))
+                    .ok_or_else(|| "MIDI tick position overflowed".to_owned())?;
+                let kind = match &event.kind {
+                    TrackEventKind::Midi { channel, message } => {
+                        pack_opl_midi(channel.as_int(), *message).map(OplTimelineInputKind::Midi)
+                    }
+                    TrackEventKind::Meta(MetaMessage::Tempo(tempo)) => {
+                        Some(OplTimelineInputKind::Tempo(tempo.as_int()))
+                    }
+                    _ => None,
+                };
+                if let Some(kind) = kind {
+                    inputs.push(OplTimelineInput {
+                        tick,
+                        track: track_index,
+                        order: event_index,
+                        kind,
+                    });
+                }
+            }
+            total_ticks = total_ticks.max(tick);
+        }
+        inputs.sort_by_key(|event| (event.tick, event.track, event.order));
+
+        let mut clock = OplFrameClock::new(smf.header.timing)?;
+        let mut events = Vec::new();
+        let mut current_tick = 0_u64;
+        for input in inputs {
+            clock.advance(input.tick - current_tick)?;
+            current_tick = input.tick;
+            match input.kind {
+                OplTimelineInputKind::Midi(packed) => events.push(OplMidiEvent {
+                    frame: clock.frame()?,
+                    packed,
+                }),
+                OplTimelineInputKind::Tempo(tempo) => clock.set_tempo(tempo),
+            }
+        }
+        clock.advance(total_ticks - current_tick)?;
+        let total_frames = clock.frame()?;
+        let duration = Duration::from_secs_f64(total_frames as f64 / f64::from(MIDI_SAMPLE_RATE));
+        Ok(Self {
+            events,
+            total_frames,
+            duration,
+        })
+    }
+}
+
+fn pack_opl_midi(channel: u8, message: MidiMessage) -> Option<u32> {
+    let channel = u32::from(channel);
+    let packed = match message {
+        MidiMessage::NoteOff { key, vel } => {
+            0x80 | channel | (u32::from(key.as_int()) << 8) | (u32::from(vel.as_int()) << 16)
+        }
+        MidiMessage::NoteOn { key, vel } => {
+            0x90 | channel | (u32::from(key.as_int()) << 8) | (u32::from(vel.as_int()) << 16)
+        }
+        MidiMessage::Controller { controller, value } => {
+            0xb0 | channel
+                | (u32::from(controller.as_int()) << 8)
+                | (u32::from(value.as_int()) << 16)
+        }
+        MidiMessage::ProgramChange { program } => {
+            0xc0 | channel | (u32::from(program.as_int()) << 8)
+        }
+        MidiMessage::PitchBend { bend } => {
+            let raw = bend.0.as_int();
+            0xe0 | channel | (u32::from(raw & 0x7f) << 8) | (u32::from(raw >> 7) << 16)
+        }
+        MidiMessage::Aftertouch { .. } | MidiMessage::ChannelAftertouch { .. } => return None,
+    };
+    Some(packed)
+}
+
+enum OplFrameClockKind {
+    Metrical {
+        ticks_per_beat: u128,
+        tempo: u128,
+    },
+    Timecode {
+        fps_numerator: u128,
+        fps_denominator: u128,
+        subframe: u128,
+    },
+}
+
+struct OplFrameClock {
+    kind: OplFrameClockKind,
+    frame: u128,
+    remainder: u128,
+}
+
+impl OplFrameClock {
+    fn new(timing: Timing) -> Result<Self, String> {
+        let kind = match timing {
+            Timing::Metrical(ticks_per_beat) => {
+                let ticks_per_beat = u128::from(ticks_per_beat.as_int());
+                if ticks_per_beat == 0 {
+                    return Err("MIDI metrical timing has zero ticks per beat".to_owned());
+                }
+                OplFrameClockKind::Metrical {
+                    ticks_per_beat,
+                    tempo: 500_000,
+                }
+            }
+            Timing::Timecode(fps, subframe) => {
+                if subframe == 0 {
+                    return Err("MIDI timecode timing has zero subframes".to_owned());
+                }
+                let (fps_numerator, fps_denominator) = match fps {
+                    Fps::Fps24 => (24, 1),
+                    Fps::Fps25 => (25, 1),
+                    Fps::Fps29 => (30_000, 1_001),
+                    Fps::Fps30 => (30, 1),
+                };
+                OplFrameClockKind::Timecode {
+                    fps_numerator,
+                    fps_denominator,
+                    subframe: u128::from(subframe),
+                }
+            }
+        };
+        Ok(Self {
+            kind,
+            frame: 0,
+            remainder: 0,
+        })
+    }
+
+    fn advance(&mut self, ticks: u64) -> Result<(), String> {
+        let (numerator_per_tick, denominator) = match self.kind {
+            OplFrameClockKind::Metrical {
+                ticks_per_beat,
+                tempo,
+            } => (
+                u128::from(MIDI_SAMPLE_RATE) * tempo,
+                ticks_per_beat * 1_000_000,
+            ),
+            OplFrameClockKind::Timecode {
+                fps_numerator,
+                fps_denominator,
+                subframe,
+            } => (
+                u128::from(MIDI_SAMPLE_RATE) * fps_denominator,
+                fps_numerator * subframe,
+            ),
+        };
+        let numerator = u128::from(ticks)
+            .checked_mul(numerator_per_tick)
+            .and_then(|value| value.checked_add(self.remainder))
+            .ok_or_else(|| "MIDI frame position overflowed".to_owned())?;
+        self.frame = self
+            .frame
+            .checked_add(numerator / denominator)
+            .ok_or_else(|| "MIDI frame position overflowed".to_owned())?;
+        self.remainder = numerator % denominator;
+        Ok(())
+    }
+
+    fn set_tempo(&mut self, tempo: u32) {
+        if let OplFrameClockKind::Metrical { tempo: current, .. } = &mut self.kind {
+            *current = u128::from(tempo);
+        }
+    }
+
+    fn frame(&self) -> Result<u64, String> {
+        u64::try_from(self.frame).map_err(|_| "MIDI duration exceeds Kog's limit".to_owned())
+    }
+}
+
+struct OplMidiSource {
+    timeline: Arc<OplMidiTimeline>,
+    synth: Opl3WindowsSynth,
+    event_index: usize,
+    frames_rendered: u64,
+    samples_emitted: u64,
+    pcm: Vec<i16>,
+    interleaved: Vec<f32>,
+    interleaved_index: usize,
+}
+
+impl OplMidiSource {
+    fn new(timeline: Arc<OplMidiTimeline>) -> Result<Self, String> {
+        Ok(Self {
+            timeline,
+            synth: Opl3WindowsSynth::new(MIDI_SAMPLE_RATE)?,
+            event_index: 0,
+            frames_rendered: 0,
+            samples_emitted: 0,
+            pcm: vec![0; MIDI_RENDER_FRAMES * usize::from(MIDI_CHANNELS)],
+            interleaved: Vec::with_capacity(MIDI_RENDER_FRAMES * usize::from(MIDI_CHANNELS)),
+            interleaved_index: 0,
+        })
+    }
+
+    fn render_frames(&mut self, frames: usize, emit: bool) {
+        self.pcm[..frames * 2].fill(0);
+        let mut rendered = 0_usize;
+        while rendered < frames {
+            let absolute_frame = self.frames_rendered + rendered as u64;
+            while let Some(event) = self.timeline.events.get(self.event_index) {
+                if event.frame > absolute_frame {
+                    break;
+                }
+                self.synth.write_packed(event.packed);
+                self.event_index += 1;
+            }
+            let remaining = frames - rendered;
+            let until_event = self
+                .timeline
+                .events
+                .get(self.event_index)
+                .map(|event| event.frame.saturating_sub(absolute_frame))
+                .unwrap_or(remaining as u64);
+            let segment = usize::try_from(until_event)
+                .unwrap_or(usize::MAX)
+                .min(remaining);
+            debug_assert!(segment > 0);
+            self.synth
+                .generate(&mut self.pcm[rendered * 2..(rendered + segment) * 2])
+                .expect("fixed OPL3 render buffer is valid");
+            rendered += segment;
+        }
+        self.frames_rendered += frames as u64;
+        if emit {
+            self.interleaved.clear();
+            self.interleaved.extend(
+                self.pcm[..frames * 2]
+                    .iter()
+                    .map(|sample| f32::from(*sample) * (1.0 / 8192.0)),
+            );
+            self.interleaved_index = 0;
+        }
+    }
+
+    fn fill_interleaved(&mut self) {
+        let frames = usize::try_from(
+            self.timeline
+                .total_frames
+                .saturating_sub(self.frames_rendered),
+        )
+        .unwrap_or(usize::MAX)
+        .min(MIDI_RENDER_FRAMES);
+        if frames > 0 {
+            self.render_frames(frames, true);
+        }
+    }
+
+    fn seek_to(&mut self, position: Duration) -> Result<(), String> {
+        self.synth = Opl3WindowsSynth::new(MIDI_SAMPLE_RATE)?;
+        self.event_index = 0;
+        self.frames_rendered = 0;
+        self.samples_emitted = 0;
+        self.interleaved.clear();
+        self.interleaved_index = 0;
+        let target = position.min(self.timeline.duration);
+        let target_frames = (target.as_secs_f64() * f64::from(MIDI_SAMPLE_RATE)).floor() as u64;
+        while self.frames_rendered < target_frames {
+            let frames = usize::try_from(target_frames - self.frames_rendered)
+                .unwrap_or(usize::MAX)
+                .min(MIDI_RENDER_FRAMES);
+            self.render_frames(frames, false);
+        }
+        self.samples_emitted = target_frames * u64::from(MIDI_CHANNELS);
+        Ok(())
+    }
+}
+
+impl Iterator for OplMidiSource {
+    type Item = f32;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let total_samples = self.timeline.total_frames * u64::from(MIDI_CHANNELS);
+        if self.samples_emitted >= total_samples {
+            return None;
+        }
+        if self.interleaved_index == self.interleaved.len() {
+            self.fill_interleaved();
+        }
+        let sample = *self.interleaved.get(self.interleaved_index)?;
+        self.interleaved_index += 1;
+        self.samples_emitted += 1;
+        Some(sample)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self
+            .timeline
+            .total_frames
+            .saturating_mul(u64::from(MIDI_CHANNELS))
+            .saturating_sub(self.samples_emitted);
+        let remaining = usize::try_from(remaining).unwrap_or(usize::MAX);
+        (remaining, Some(remaining))
+    }
+}
+
+impl Source for OplMidiSource {
+    fn current_span_len(&self) -> Option<usize> {
+        self.size_hint().1
+    }
+
+    fn channels(&self) -> ChannelCount {
+        NonZeroU16::new(MIDI_CHANNELS).expect("MIDI output is stereo")
+    }
+
+    fn sample_rate(&self) -> SampleRate {
+        NonZeroU32::new(MIDI_SAMPLE_RATE).expect("MIDI sample rate is nonzero")
+    }
+
+    fn total_duration(&self) -> Option<Duration> {
+        Some(self.timeline.duration)
+    }
+
+    fn try_seek(&mut self, position: Duration) -> Result<(), SeekError> {
+        self.seek_to(position)
+            .map_err(|error| SeekError::Other(Arc::new(std::io::Error::other(error))))
+    }
 }
 
 struct MidiSource {
@@ -577,6 +977,22 @@ mod tests {
         ]
     }
 
+    fn tempo_change_test_midi() -> Vec<u8> {
+        vec![
+            b'M', b'T', b'h', b'd', 0, 0, 0, 6, 0, 1, 0, 2, 1, 0xe0, b'M', b'T', b'r', b'k', 0, 0,
+            0, 20, 0, 0xff, 0x51, 3, 0x07, 0xa1, 0x20, 0x83, 0x60, 0xff, 0x51, 3, 0x0f, 0x42, 0x40,
+            0x83, 0x60, 0xff, 0x2f, 0, b'M', b'T', b'r', b'k', 0, 0, 0, 16, 0, 0xc0, 0, 0, 0x90,
+            60, 100, 0x87, 0x40, 0x80, 60, 64, 0, 0xff, 0x2f, 0,
+        ]
+    }
+
+    fn timecode_test_midi() -> Vec<u8> {
+        vec![
+            b'M', b'T', b'h', b'd', 0, 0, 0, 6, 0, 0, 0, 1, 0xe7, 40, b'M', b'T', b'r', b'k', 0, 0,
+            0, 13, 0, 0x90, 60, 100, 0x87, 0x68, 0x80, 60, 64, 0, 0xff, 0x2f, 0,
+        ]
+    }
+
     fn write_test_midi(path: &Path) {
         std::fs::write(path, minimal_test_midi()).expect("write MIDI fixture");
     }
@@ -650,6 +1066,22 @@ mod tests {
     }
 
     #[test]
+    fn registry_reports_the_selected_midi_engine() {
+        let settings = DecoderSettings::new(None, MidiEngine::Opl3Windows);
+        let registry = DecoderRegistry::new(settings.clone());
+        assert_eq!(
+            registry.backend_id_for(Path::new("song.mid")),
+            Some("midi-opl3windows")
+        );
+
+        settings.set_midi_engine(MidiEngine::RustySynth);
+        assert_eq!(
+            registry.backend_id_for(Path::new("song.mid")),
+            Some("midi-rustysynth-sf2")
+        );
+    }
+
+    #[test]
     fn midi_probe_reports_smf_and_rmid_stream_properties() {
         let directory = std::env::temp_dir();
         let midi_path = directory.join(format!("kog-midi-{}.mid", std::process::id()));
@@ -675,6 +1107,65 @@ mod tests {
         let backend = MidiBackend::new(DecoderSettings::default());
         let error = backend.load_soundfont().expect_err("missing SoundFont");
         assert!(error.contains("requires an SF2 SoundFont"));
+    }
+
+    #[test]
+    fn opl3_timeline_handles_tempo_changes_and_smpte_timing() {
+        let timeline = OplMidiTimeline::parse(&tempo_change_test_midi()).expect("tempo timeline");
+        assert_eq!(timeline.total_frames, 72_000);
+        assert_eq!(
+            timeline.events.last().map(|event| event.frame),
+            Some(72_000)
+        );
+
+        let timeline = OplMidiTimeline::parse(&timecode_test_midi()).expect("timecode timeline");
+        assert_eq!(timeline.total_frames, 48_000);
+        assert_eq!(
+            timeline.events.last().map(|event| event.frame),
+            Some(48_000)
+        );
+    }
+
+    #[test]
+    fn opl3_backend_needs_no_soundfont_and_rejects_format_two() {
+        let path = std::env::temp_dir().join(format!("kog-opl3-midi-{}.mid", std::process::id()));
+        write_test_midi(&path);
+        let backend = MidiBackend::new(DecoderSettings::new(None, MidiEngine::Opl3Windows));
+        let properties = backend.probe(&path).expect("probe OPL3 MIDI without SF2");
+        assert_eq!(properties.duration, Some(Duration::from_millis(500)));
+
+        let mut format_two = minimal_test_midi();
+        format_two[8..10].copy_from_slice(&2_u16.to_be_bytes());
+        let error = OplMidiTimeline::parse(&format_two).expect_err("format 2 rejection");
+        assert!(error.contains("subsong selection is not implemented"));
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn opl3_midi_source_renders_non_silent_pcm_and_seeks() {
+        let timeline = Arc::new(
+            OplMidiTimeline::parse(&minimal_test_midi()).expect("minimal OPL3 MIDI timeline"),
+        );
+        let mut source = OplMidiSource::new(timeline).expect("OPL3 MIDI source");
+
+        let initial_pcm = source.by_ref().take(4_800 * 2).collect::<Vec<_>>();
+        assert!(
+            initial_pcm.iter().any(|sample| sample.abs() > 0.000_01),
+            "rendered OPL3 PCM was silent"
+        );
+
+        source
+            .try_seek(Duration::from_millis(250))
+            .expect("seek OPL3 MIDI source");
+        assert_eq!(source.frames_rendered, 12_000);
+        assert_eq!(source.samples_emitted, 24_000);
+        assert!(
+            source
+                .by_ref()
+                .take(2_400 * 2)
+                .any(|sample| sample.abs() > 0.000_01),
+            "rendered OPL3 PCM was silent after seeking"
+        );
     }
 
     #[test]

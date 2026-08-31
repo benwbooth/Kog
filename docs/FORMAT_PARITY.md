@@ -44,9 +44,9 @@ is required work, not a claim of support.
 
 | State | Cog family | Extensions / behavior | Kog backend |
 | --- | --- | --- | --- |
-| Partial | MIDI containers | MID, MIDI, and KAR Standard MIDI Files (formats 0 and 1) plus RIFF RMID are parsed and rendered; SMF format 2, MIDS, MDS, HMI, HMP, HMQ, MUS, XMI, LDS, XMF, and MXMF remain missing | `midi-rustysynth-sf2` |
+| Partial | MIDI containers | MID, MIDI, and KAR Standard MIDI Files (formats 0 and 1) plus RIFF RMID are parsed and rendered; SMF format 2, MIDS, MDS, HMI, HMP, HMQ, MUS, XMI, LDS, XMF, and MXMF remain missing | `midi-rustysynth-sf2`, `midi-opl3windows` |
 | Partial | SoundFont synthesis | Configurable and persisted SF2 selection, 48 kHz stereo rendering, duration, seek, and end-of-stream behavior are implemented. SF3, per-file flavor selection, and synthesis/effect controls remain missing. | RustySynth |
-| Not started | OPL synthesis | Accurate OPL3 playback for compatible MIDI and AdLib inputs | Nuked OPL3 |
+| Partial | OPL synthesis | Cog's OPL3Windows General MIDI timbre table, 18-voice engine, and Nuked OPL3 1.7.1 core render format-0/1 SMF and RMID with tempo/SMPTE timing, controls, pitch bend, drums, duration, and seek. Cog's DMX banks and AdPlug input formats remain separate work. | `midi-opl3windows` |
 | Not started | Roland emulation | MT-32/CM-32L and SC-55 behavior exposed by Cog preferences | Munt and Nuked SC-55 where legally redistributable |
 
 ## Containers, playlists, and metadata

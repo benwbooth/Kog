@@ -1,5 +1,24 @@
 # Third-party notices
 
+## Cog OPL3Windows and Nuked OPL3
+
+The source under `native/opl3w`, except Kog's `kog_opl3w.cpp` and
+`kog_opl3w.h` C ABI wrapper, is copied from the MIDI plugin in
+[Cog](https://github.com/losnoco/Cog) at commit
+`c17be85654a64170c86bb8bbb4b59fd7b6795722`.
+
+The OPL3Windows synthesizer, General MIDI timbre table, chip wrapper, and Nuked
+OPL3 1.7.1 core are Copyright (C) Apogee Software, Ltd., Alexey Khokholov
+(Nuke.YKT), and the contributors identified in their source headers. They are
+distributed under the GNU General Public License, version 2 or (at your option)
+any later version. Kog distributes them under GPL version 2 as part of the
+GPL-2.0-only application; see `LICENSE`.
+
+The resampler is Copyright (C) 2004-2008 Shay Green and Copyright (C)
+2015-2022 Christopher Snowhill. It is distributed under the GNU Lesser General
+Public License, version 2.1 or (at your option) any later version. A copy is in
+`LICENSES/LGPL-2.1.txt`.
+
 ## TinySoundFont minimal SoundFont test fixture
 
 The 484-byte `MinimalSoundFont` data encoded in `src/decoder.rs` is derived

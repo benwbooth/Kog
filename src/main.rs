@@ -1,5 +1,6 @@
 mod app_controller;
 mod decoder;
+mod opl3;
 mod playback;
 mod settings;
 mod track;
