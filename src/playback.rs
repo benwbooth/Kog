@@ -1,9 +1,8 @@
-use std::path::Path;
 use std::time::Duration;
 
 use rodio::{DeviceSinkBuilder, MixerDeviceSink, Player};
 
-use crate::decoder::{DecoderRegistry, SelectedBackend};
+use crate::decoder::{DecoderRegistry, PlaybackSource, SelectedBackend};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PlaybackState {
@@ -48,11 +47,11 @@ impl PlaybackEngine {
         }
     }
 
-    pub fn play_path(&mut self, path: &Path) -> Result<SelectedBackend, String> {
+    pub fn play_source(&mut self, source: &PlaybackSource) -> Result<SelectedBackend, String> {
         self.ensure_output()?;
         let player = self.player.as_ref().expect("output creates player");
         player.stop();
-        let backend = self.decoders.append(path, player)?;
+        let backend = self.decoders.append(source, player)?;
         player.set_volume(self.volume);
         player.play();
         self.state = PlaybackState::Playing;

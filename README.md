@@ -12,9 +12,12 @@ real conventional-audio playback path with pause, stop, seek, volume, and
 automatic track advance. It also renders format-0/1 MID, MIDI, KAR, and RIFF
 RMID files through either a validated, persisted SF2 SoundFont using RustySynth
 or Cog's OPL3Windows synthesizer and its Nuked OPL3 core, with duration probing
-and seeking. The remaining MIDI families and specialist chiptune, game-audio,
-and tracker backends are tracked explicitly and are not yet claimed as
-supported.
+and seeking. The first specialist backend is also live: AY, GBS, HES, KSS,
+NSF/NSFE, SAP, and SPC route to pinned Game Music Emu 0.6.5 code with
+multitrack expansion, companion M3U metadata, Cog's loop/fade policy, and seek.
+The NSF path has passed the current real-PCM and live-UI gates; the other GME
+formats still need corpus coverage. SFM, SGC, and the other chiptune,
+game-audio, and tracker families remain explicitly unclaimed.
 
 ## Project direction
 
@@ -44,9 +47,14 @@ contract, fidelity gates, and the complete Cog-derived worklist.
 On NixOS or another system with Nix installed:
 
 ```sh
+git clone --recurse-submodules https://github.com/benwbooth/Kog.git
+cd Kog
 nix develop
 cargo run
 ```
+
+For an existing checkout, initialize native sources with
+`git submodule update --init --recursive` before building.
 
 Choose RustySynth or OPL3Windows under **Edit → Preferences → MIDI**. RustySynth
 requires an SF2 bank; Kog also accepts `KOG_SOUNDFONT=/path/to/bank.sf2` and

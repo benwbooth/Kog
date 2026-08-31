@@ -21,4 +21,5 @@ midly = { version = "0.5.3", default-features = false, features = ["std"] }
 
 [build-dependencies]
 cc = "1.2.38"
+cmake = "0.1.58"
 cxx-qt-build = { version = "0.10.0", features = ["link_qt_object_files"] }

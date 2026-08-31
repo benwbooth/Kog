@@ -120,6 +120,24 @@ struct DirectoryEntry {
     is_directory: bool,
 }
 
+#[derive(Debug, Default)]
+struct AddPathResult {
+    added: usize,
+    warning: Option<String>,
+}
+
+fn add_path_status(result: &AddPathResult) -> String {
+    let added = if result.added == 1 {
+        "Added to playlist".to_owned()
+    } else {
+        format!("Added {} subsongs to playlist", result.added)
+    };
+    match result.warning.as_deref() {
+        Some(warning) => format!("{added} — {warning}"),
+        None => added,
+    }
+}
+
 pub struct AppControllerRust {
     playlist_count: i32,
     playlist_revision: i32,
@@ -216,11 +234,19 @@ impl Default for AppControllerRust {
         };
 
         if let Some(paths) = std::env::var_os("KOG_OPEN_FILES") {
+            let mut open_issue = None;
             for path in std::env::split_paths(&paths) {
-                controller.add_path(path);
+                match controller.add_path(path) {
+                    Ok(result) if result.warning.is_some() => open_issue = result.warning,
+                    Ok(_) => {}
+                    Err(error) => open_issue = Some(error),
+                }
             }
             controller.rebuild_visible_indices();
             controller.refresh_total_duration_value();
+            if let Some(issue) = open_issue {
+                controller.status = qstring(issue);
+            }
         }
         controller
     }
@@ -287,14 +313,25 @@ fn read_directory(path: &Path) -> Vec<DirectoryEntry> {
 }
 
 impl AppControllerRust {
-    fn add_path(&mut self, path: PathBuf) {
-        let Ok(path) = canonical_path(&path) else {
-            return;
-        };
-        if !path.is_file() || self.tracks.iter().any(|track| track.path == path) {
-            return;
+    fn add_path(&mut self, path: PathBuf) -> Result<AddPathResult, String> {
+        let path = canonical_path(&path)?;
+        if !path.is_file() {
+            return Err(format!("{} is not a playable file", path.display()));
         }
-        self.tracks.push(Track::from_path(path, &self.decoders));
+        let sources = self.decoders.expand(path)?;
+        let mut result = AddPathResult::default();
+        for source in sources {
+            if self.tracks.iter().any(|track| track.source == source) {
+                continue;
+            }
+            let track = Track::from_source(source, &self.decoders);
+            if result.warning.is_none() {
+                result.warning.clone_from(&track.decoder_warning);
+            }
+            self.tracks.push(track);
+            result.added += 1;
+        }
+        Ok(result)
     }
 
     fn rebuild_visible_indices(&mut self) {
@@ -344,16 +381,20 @@ impl qobject::AppController {
             self.as_mut().set_directory(path);
             return;
         }
-        let before = self.as_ref().rust().tracks.len();
-        self.as_mut().rust_mut().add_path(path);
-        if self.as_ref().rust().tracks.len() == before {
-            self.as_mut().set_status(qstring(
-                "The file is unavailable or already in the playlist",
-            ));
-            return;
-        }
+        let result = match self.as_mut().rust_mut().add_path(path) {
+            Ok(result) if result.added == 0 => {
+                self.as_mut()
+                    .set_status(qstring("The file is already in the playlist"));
+                return;
+            }
+            Ok(result) => result,
+            Err(error) => {
+                self.as_mut().set_status(qstring(error));
+                return;
+            }
+        };
         self.as_mut().rebuild_playlist();
-        self.as_mut().set_status(qstring("Added to playlist"));
+        self.as_mut().set_status(qstring(add_path_status(&result)));
     }
 
     pub fn remove_track(mut self: Pin<&mut Self>, index: i32) {
@@ -685,17 +726,17 @@ impl qobject::AppController {
     }
 
     fn play_source_index(mut self: Pin<&mut Self>, source_index: usize) {
-        let Some(path) = self
+        let Some(source) = self
             .as_ref()
             .get_ref()
             .rust()
             .tracks
             .get(source_index)
-            .map(|track| track.path.clone())
+            .map(|track| track.source.clone())
         else {
             return;
         };
-        match self.as_mut().rust_mut().playback.play_path(&path) {
+        match self.as_mut().rust_mut().playback.play_source(&source) {
             Ok(backend) => {
                 self.as_mut()
                     .set_current_index(saturating_i32(source_index));
@@ -736,7 +777,7 @@ impl qobject::AppController {
         let artist = qstring(&track.artist);
         let album = qstring(&track.album);
         let genre = qstring(&track.genre);
-        let file = qstring(track.path.to_string_lossy());
+        let file = qstring(track.source.display_label());
         let codec = qstring(&track.codec);
         let year = track
             .year
@@ -813,11 +854,15 @@ impl qobject::AppController {
     }
 
     fn add_local_path(mut self: Pin<&mut Self>, path: PathBuf) {
-        let before = self.as_ref().rust().tracks.len();
-        self.as_mut().rust_mut().add_path(path);
-        if self.as_ref().rust().tracks.len() != before {
-            self.as_mut().rebuild_playlist();
-            self.as_mut().set_status(qstring("Added to playlist"));
+        match self.as_mut().rust_mut().add_path(path) {
+            Ok(result) if result.added > 0 => {
+                self.as_mut().rebuild_playlist();
+                self.as_mut().set_status(qstring(add_path_status(&result)));
+            }
+            Ok(_) => self
+                .as_mut()
+                .set_status(qstring("The file is already in the playlist")),
+            Err(error) => self.as_mut().set_status(qstring(error)),
         }
     }
 

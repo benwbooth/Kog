@@ -33,7 +33,7 @@ is required work, not a claim of support.
 
 | State | Cog family | Extensions / behavior | Kog backend |
 | --- | --- | --- | --- |
-| Not started | Game Music Emu | AY, GBS, HES, KSS, NSF/NSFE, SAP, SFM, SGC, SPC; subsongs, loops, fades | Game Music Emu |
+| Partial | Game Music Emu | A real PCM backend is wired for AY, GBS, HES, KSS, NSF/NSFE, SAP, and SPC, with metadata, seek, M3U companions, multitrack expansion where applicable, and Cog-compatible default loop/fade timing. The official NSF fixture passes probe, non-silent decode, seek, metadata, duration, and live Qt playback tests; the other routed formats still need corpus validation. SFM and SGC are not routed because upstream libGME 0.6.5 does not implement Cog's fork-specific support. Configurable synthesis policy also remains. | `game-music-emu` (upstream libGME 0.6.5) |
 | Not started | HighlyComplete | PSF/miniPSF, PSF2, SSF, DSF, QSF, GSF, NCSF, 2SF, USF, SNSF and mini variants; dependency libraries | Cog's GPL-compatible emulator cores behind Rust adapters |
 | Not started | libvgm | S98, DRO, GYM, VGM/VGZ; subsongs where present | libvgm |
 | Not started | vgmstream | Runtime-enumerated game-stream extensions; companion files, TXTP, subsongs, loops and fades | libvgmstream |
@@ -62,7 +62,8 @@ is required work, not a claim of support.
 
 - decoder priority and content probing rather than extension-only selection;
 - remote, archive, and local source abstractions;
-- subsong expansion with stable fragment identifiers;
+- stable fragment identifiers and persisted subsong identity across every
+  remaining multitrack backend;
 - configurable loop counts, fade length, and indefinite playback;
 - ReplayGain, gapless playback, resampling, equalizer, pitch/tempo, and output
   device selection;

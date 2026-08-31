@@ -4,11 +4,11 @@ use std::time::Duration;
 use lofty::file::{AudioFile, TaggedFileExt};
 use lofty::tag::Accessor;
 
-use crate::decoder::DecoderRegistry;
+use crate::decoder::{DecoderRegistry, PlaybackSource};
 
 #[derive(Clone, Debug, Default)]
 pub struct Track {
-    pub path: PathBuf,
+    pub source: PlaybackSource,
     pub title: String,
     pub artist: String,
     pub album: String,
@@ -20,29 +20,35 @@ pub struct Track {
     pub channels: Option<u16>,
     pub bitrate: Option<u32>,
     pub bits_per_sample: Option<u8>,
+    pub decoder_warning: Option<String>,
     pub codec: String,
 }
 
 impl Track {
-    pub fn from_path(path: PathBuf, decoders: &DecoderRegistry) -> Self {
-        let fallback_title = path
+    pub fn from_source(source: PlaybackSource, decoders: &DecoderRegistry) -> Self {
+        let mut fallback_title = source
+            .path
             .file_stem()
             .and_then(|value| value.to_str())
             .unwrap_or("Untitled")
             .to_owned();
-        let codec = path
+        if let Some(subsong) = source.subsong {
+            fallback_title.push_str(&format!(" [{}]", subsong + 1));
+        }
+        let codec = source
+            .path
             .extension()
             .and_then(|value| value.to_str())
             .unwrap_or_default()
             .to_ascii_uppercase();
         let mut track = Self {
-            path,
+            source,
             title: fallback_title,
             codec,
             ..Self::default()
         };
 
-        if let Ok(tagged_file) = lofty::read_from_path(&track.path) {
+        if let Ok(tagged_file) = lofty::read_from_path(&track.source.path) {
             let properties = tagged_file.properties();
             track.duration = Some(properties.duration());
             track.sample_rate = properties.sample_rate();
@@ -74,10 +80,24 @@ impl Track {
             }
         }
 
-        if let Ok(properties) = decoders.probe(&track.path) {
+        if let Ok(properties) = decoders.probe(&track.source) {
             track.duration = properties.duration.or(track.duration);
             track.sample_rate = properties.sample_rate.or(track.sample_rate);
             track.channels = properties.channels.or(track.channels);
+            if let Some(title) = properties.title.filter(|value| !value.is_empty()) {
+                track.title = title;
+            }
+            if let Some(artist) = properties.artist.filter(|value| !value.is_empty()) {
+                track.artist = artist;
+            }
+            if let Some(album) = properties.album.filter(|value| !value.is_empty()) {
+                track.album = album;
+            }
+            if let Some(genre) = properties.genre.filter(|value| !value.is_empty()) {
+                track.genre = genre;
+            }
+            track.track_number = properties.track_number.or(track.track_number);
+            track.decoder_warning = properties.warning;
         }
 
         track
@@ -93,7 +113,7 @@ impl Track {
             self.artist.as_str(),
             self.album.as_str(),
             self.genre.as_str(),
-            self.path.to_string_lossy().as_ref(),
+            self.source.path.to_string_lossy().as_ref(),
         ]
         .iter()
         .any(|value| value.to_lowercase().contains(&query))

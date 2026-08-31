@@ -21,11 +21,13 @@ backends may use safe Rust, C, or C++ libraries.
 The installed backends are `rodio-symphonia` for conventional audio,
 `midi-rustysynth-sf2` for Standard MIDI File and RIFF RMID rendering through a
 user-selected SF2 SoundFont, and `midi-opl3windows` for the same MIDI containers
-through Cog's OPL3Windows General MIDI engine and Nuked OPL3 1.7.1 core. They
-provide real playback, pause, stop, seek, position, volume, and automatic
-next-track behavior. Specialist backends remain separate so a broad fallback
-cannot erase behavior such as PSF dependency resolution, VGMStream subsongs,
-AdPlug subsongs, or emulator-authentic Roland MIDI synthesis.
+through Cog's OPL3Windows General MIDI engine and Nuked OPL3 1.7.1 core.
+`game-music-emu` wraps the pinned upstream libGME 0.6.5 C API for AY, GBS, HES,
+KSS, NSF/NSFE, SAP, and SPC. These backends provide real playback, pause, stop,
+seek, position, volume, and automatic next-track behavior. Specialist backends
+remain separate so a broad fallback cannot erase behavior such as PSF
+dependency resolution, VGMStream subsongs, AdPlug subsongs, or
+emulator-authentic Roland MIDI synthesis.
 
 Decoder settings are shared between the probe registry and playback registry.
 The MIDI engine and current SF2 path are persisted in the platform
@@ -36,6 +38,15 @@ GPL-compatible native engine; Midly merges format-0/1 tracks and schedules
 legacy MIDI messages at exact output frames. Seeking recreates the selected
 synthesizer and deterministically advances it to the requested frame.
 
+The GME adapter owns each native emulator handle in one Rust `Source`, converts
+its stereo signed-16 PCM to the shared floating-point stream, and uses 44.1 kHz
+except for Cog-compatible 32 kHz SPC playback. Probe-time subsong expansion
+creates stable `(path, zero-based subsong)` identities. Companion M3U metadata
+can restrict/reorder that set and supplies titles and lengths; malformed or
+unreadable companions remain non-fatal but are surfaced as warnings. The
+current fixed defaults match Cog: 150 seconds when no duration exists, two
+loops when loop metadata exists, and an eight-second fade when none is given.
+
 ## Decoder contract
 
 `DecoderBackend` is the current executable contract. Every backend supplies:
@@ -43,13 +54,14 @@ synthesizer and deterministically advances it to the requested frame.
 - stable identifier and display name;
 - extensions used for initial routing;
 - explicit capability flags;
-- a probe that returns duration, sample rate, and channel count;
+- optional subsong enumeration;
+- a probe that returns duration, sample rate, channel count, common metadata,
+  track number, and non-fatal warnings;
 - an append operation that gives the shared player a real decoded source.
 
-The contract will grow before the first specialist backend to include source
-sniffing, metadata, subsong enumeration, loop/fade policy, companion file
-resolution, and deterministic error categories. Those additions must be made
-without weakening the existing real playback path.
+The contract still needs source sniffing, per-backend loop/fade configuration,
+general companion/dependency resolution, and deterministic error categories.
+Those additions must not weaken the existing real playback paths.
 
 ## Fidelity gates
 

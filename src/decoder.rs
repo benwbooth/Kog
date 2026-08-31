@@ -28,6 +28,34 @@ pub struct StreamProperties {
     pub duration: Option<Duration>,
     pub sample_rate: Option<u32>,
     pub channels: Option<u16>,
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub genre: Option<String>,
+    pub track_number: Option<u32>,
+    pub warning: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PlaybackSource {
+    pub path: PathBuf,
+    pub subsong: Option<u32>,
+}
+
+impl PlaybackSource {
+    pub fn from_path(path: PathBuf) -> Self {
+        Self {
+            path,
+            subsong: None,
+        }
+    }
+
+    pub fn display_label(&self) -> String {
+        match self.subsong {
+            Some(subsong) => format!("{}#{}", self.path.display(), subsong + 1),
+            None => self.path.display().to_string(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,8 +93,12 @@ pub trait DecoderBackend: Send + Sync {
     fn display_name(&self) -> &'static str;
     fn extensions(&self) -> &'static [&'static str];
     fn capabilities(&self) -> DecoderCapabilities;
-    fn probe(&self, path: &Path) -> Result<StreamProperties, String>;
-    fn append(&self, path: &Path, player: &Player) -> Result<(), String>;
+    fn probe(&self, source: &PlaybackSource) -> Result<StreamProperties, String>;
+    fn append(&self, source: &PlaybackSource, player: &Player) -> Result<(), String>;
+
+    fn subsong_count(&self, _path: &Path) -> Result<Option<u32>, String> {
+        Ok(None)
+    }
 
     fn accepts(&self, path: &Path) -> bool {
         let Some(extension) = path.extension().and_then(|value| value.to_str()) else {
@@ -134,18 +166,48 @@ impl Default for DecoderRegistry {
 impl DecoderRegistry {
     pub fn new(settings: DecoderSettings) -> Self {
         Self {
-            backends: vec![Box::new(RodioBackend), Box::new(MidiBackend::new(settings))],
+            backends: vec![
+                Box::new(RodioBackend),
+                Box::new(MidiBackend::new(settings)),
+                Box::new(crate::gme_decoder::GmeBackend),
+            ],
         }
     }
 
-    pub fn probe(&self, path: &Path) -> Result<StreamProperties, String> {
-        let backend = self.select(path).ok_or_else(|| unsupported_message(path))?;
-        backend.probe(path)
+    pub fn expand(&self, path: PathBuf) -> Result<Vec<PlaybackSource>, String> {
+        let Some(backend) = self.select(&path) else {
+            return Ok(vec![PlaybackSource::from_path(path)]);
+        };
+        let Some(count) = backend.subsong_count(&path)? else {
+            return Ok(vec![PlaybackSource::from_path(path)]);
+        };
+        if count == 0 {
+            return Err(format!("{} contains no playable subsongs", path.display()));
+        }
+        Ok((0..count)
+            .map(|subsong| PlaybackSource {
+                path: path.clone(),
+                subsong: Some(subsong),
+            })
+            .collect())
     }
 
-    pub fn append(&self, path: &Path, player: &Player) -> Result<SelectedBackend, String> {
-        let backend = self.select(path).ok_or_else(|| unsupported_message(path))?;
-        backend.append(path, player)?;
+    pub fn probe(&self, source: &PlaybackSource) -> Result<StreamProperties, String> {
+        let backend = self
+            .select(&source.path)
+            .ok_or_else(|| unsupported_message(&source.path))?;
+        backend.probe(source)
+    }
+
+    pub fn append(
+        &self,
+        source: &PlaybackSource,
+        player: &Player,
+    ) -> Result<SelectedBackend, String> {
+        let backend = self
+            .select(&source.path)
+            .ok_or_else(|| unsupported_message(&source.path))?;
+        backend.append(source, player)?;
         Ok(SelectedBackend {
             id: backend.id(),
             display_name: backend.display_name(),
@@ -205,24 +267,27 @@ impl DecoderBackend for RodioBackend {
         }
     }
 
-    fn probe(&self, path: &Path) -> Result<StreamProperties, String> {
+    fn probe(&self, source: &PlaybackSource) -> Result<StreamProperties, String> {
         let decoder = Decoder::try_from(
-            File::open(path).map_err(|error| format!("opening {}: {error}", path.display()))?,
+            File::open(&source.path)
+                .map_err(|error| format!("opening {}: {error}", source.path.display()))?,
         )
-        .map_err(|error| format!("decoding {}: {error}", path.display()))?;
+        .map_err(|error| format!("decoding {}: {error}", source.path.display()))?;
 
         Ok(StreamProperties {
             duration: decoder.total_duration(),
             sample_rate: Some(decoder.sample_rate().get()),
             channels: Some(decoder.channels().get()),
+            ..StreamProperties::default()
         })
     }
 
-    fn append(&self, path: &Path, player: &Player) -> Result<(), String> {
+    fn append(&self, source: &PlaybackSource, player: &Player) -> Result<(), String> {
         let decoder = Decoder::try_from(
-            File::open(path).map_err(|error| format!("opening {}: {error}", path.display()))?,
+            File::open(&source.path)
+                .map_err(|error| format!("opening {}: {error}", source.path.display()))?,
         )
-        .map_err(|error| format!("decoding {}: {error}", path.display()))?;
+        .map_err(|error| format!("decoding {}: {error}", source.path.display()))?;
         player.append(decoder);
         Ok(())
     }
@@ -307,27 +372,31 @@ impl DecoderBackend for MidiBackend {
         }
     }
 
-    fn probe(&self, path: &Path) -> Result<StreamProperties, String> {
+    fn probe(&self, source: &PlaybackSource) -> Result<StreamProperties, String> {
         let duration = match self.settings.midi_engine() {
-            MidiEngine::RustySynth => load_midi_file(path)?.1,
-            MidiEngine::Opl3Windows => OplMidiTimeline::parse(&read_standard_midi(path)?)?.duration,
+            MidiEngine::RustySynth => load_midi_file(&source.path)?.1,
+            MidiEngine::Opl3Windows => {
+                OplMidiTimeline::parse(&read_standard_midi(&source.path)?)?.duration
+            }
         };
         Ok(StreamProperties {
             duration: Some(duration),
             sample_rate: Some(MIDI_SAMPLE_RATE),
             channels: Some(MIDI_CHANNELS),
+            ..StreamProperties::default()
         })
     }
 
-    fn append(&self, path: &Path, player: &Player) -> Result<(), String> {
+    fn append(&self, source: &PlaybackSource, player: &Player) -> Result<(), String> {
         match self.settings.midi_engine() {
             MidiEngine::RustySynth => {
                 let soundfont = self.load_soundfont()?;
-                let (midi_file, duration) = load_midi_file(path)?;
+                let (midi_file, duration) = load_midi_file(&source.path)?;
                 player.append(MidiSource::new(soundfont, midi_file, duration)?);
             }
             MidiEngine::Opl3Windows => {
-                let timeline = Arc::new(OplMidiTimeline::parse(&read_standard_midi(path)?)?);
+                let timeline =
+                    Arc::new(OplMidiTimeline::parse(&read_standard_midi(&source.path)?)?);
                 player.append(OplMidiSource::new(timeline)?);
             }
         }
@@ -1041,7 +1110,8 @@ mod tests {
         write_test_wav(&path);
         let registry = DecoderRegistry::default();
 
-        let properties = registry.probe(&path).expect("probe wave fixture");
+        let source = PlaybackSource::from_path(path.clone());
+        let properties = registry.probe(&source).expect("probe wave fixture");
 
         assert_eq!(registry.backend_id_for(&path), Some("rodio-symphonia"));
         assert_eq!(properties.sample_rate, Some(8_000));
@@ -1062,7 +1132,10 @@ mod tests {
             registry.backend_id_for(Path::new("song.rmi")),
             Some("midi-rustysynth-sf2")
         );
-        assert_eq!(registry.backend_id_for(Path::new("song.spc")), None);
+        assert_eq!(
+            registry.backend_id_for(Path::new("song.spc")),
+            Some("game-music-emu")
+        );
     }
 
     #[test]
@@ -1091,7 +1164,8 @@ mod tests {
         let registry = DecoderRegistry::default();
 
         for path in [&midi_path, &rmid_path] {
-            let properties = registry.probe(path).expect("probe MIDI fixture");
+            let source = PlaybackSource::from_path(path.clone());
+            let properties = registry.probe(&source).expect("probe MIDI fixture");
             assert_eq!(properties.sample_rate, Some(MIDI_SAMPLE_RATE));
             assert_eq!(properties.channels, Some(MIDI_CHANNELS));
             let duration = properties.duration.expect("MIDI duration").as_secs_f64();
@@ -1131,7 +1205,8 @@ mod tests {
         let path = std::env::temp_dir().join(format!("kog-opl3-midi-{}.mid", std::process::id()));
         write_test_midi(&path);
         let backend = MidiBackend::new(DecoderSettings::new(None, MidiEngine::Opl3Windows));
-        let properties = backend.probe(&path).expect("probe OPL3 MIDI without SF2");
+        let source = PlaybackSource::from_path(path.clone());
+        let properties = backend.probe(&source).expect("probe OPL3 MIDI without SF2");
         assert_eq!(properties.duration, Some(Duration::from_millis(500)));
 
         let mut format_two = minimal_test_midi();

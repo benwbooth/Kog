@@ -19,6 +19,19 @@ The resampler is Copyright (C) 2004-2008 Shay Green and Copyright (C)
 Public License, version 2.1 or (at your option) any later version. A copy is in
 `LICENSES/LGPL-2.1.txt`.
 
+## Game Music Emu
+
+The `native/game-music-emu` Git submodule is the official
+[Game Music Emu](https://github.com/libgme/game-music-emu) source at release
+0.6.5, commit `9e23d10f9fd2a6a2f33b10912dd8dc7153258995`. Kog builds a selected
+set of its emulators as a static native library and calls its public C API.
+The upstream `test.nsf` and `test.m3u` files are used as playback fixtures.
+
+Game Music Emu is Copyright Shay Green and the contributors identified by the
+upstream project. It is distributed under the GNU Lesser General Public
+License, version 2.1. The complete upstream source and license are retained in
+the submodule, and a copy of the license is also in `LICENSES/LGPL-2.1.txt`.
+
 ## TinySoundFont minimal SoundFont test fixture
 
 The 484-byte `MinimalSoundFont` data encoded in `src/decoder.rs` is derived

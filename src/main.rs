@@ -1,5 +1,7 @@
 mod app_controller;
 mod decoder;
+mod gme;
+mod gme_decoder;
 mod opl3;
 mod playback;
 mod settings;
