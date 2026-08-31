@@ -107,6 +107,17 @@ metadata, timing, malformed input, mini-library loading, and archive companion
 lookup without Sega firmware or game data. A broad independently redistributable
 SSF/DSF corpus and direct comparison with Cog remain.
 
+USF and miniusf now route through losnoco's maintained LazyUSF2 core, the
+cross-platform Nintendo 64 emulator already wrapped by Cog's Objective-C
+plugin. Kog shares psflib for relative `_lib` chains and tags, validates and
+bounds the core's reserved ROM/save-state block format before upload, renders
+resampled 44.1 kHz stereo PCM, and uses LazyUSF2's restart/discard path for
+seek. A sparse generated Project64 state with an original MIPS sound program
+gates audible playback, metadata, timing/fade, malformed input, mini-library
+loading, and archive companion lookup without Nintendo firmware, ROMs, or
+game code. Cog's initial leading-silence stripping, a broad independently
+redistributable USF corpus, and direct comparison remain.
+
 Monkey's Audio Image Link (`.apl`) files now accept the original CRLF or
 portable LF header, resolve their local image path with Cog-compatible relative
 Windows-path handling, and play only the declared start/finish PCM-frame range
@@ -143,7 +154,8 @@ Traversal paths, duplicate destinations, links/devices, oversized entries,
 and oversized archives are rejected or surfaced as warnings. Deterministic
 ZIP and GZ fixtures pass end-to-end WAV playback; real 7Z and RAR5 fixtures
 gate extraction; ZIP-gated APL playback proves relative image lookup; and
-archived NCSF, GSF, QSF, and SSF mini/library pairs prove PSF dependency lookup.
+archived NCSF, GSF, QSF, SSF, and USF mini/library pairs prove PSF dependency
+lookup.
 Encrypted and multipart archives, nested archives, broad RAR/7Z corpora, and
 Windows/macOS runtime gates remain parity work.
 

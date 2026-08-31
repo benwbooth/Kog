@@ -295,6 +295,7 @@ mod tests {
     use crate::ncsf::{test_ncsf_bytes, test_sdat_bytes};
     use crate::qsf::{test_qsf_bytes, test_qsf_program};
     use crate::sdsf::{test_sdsf_bytes, test_ssf_program};
+    use crate::usf::{test_usf_bytes, test_usf_reserved};
 
     // Generated with libarchive 3.8.9 from an empty regular file. It exercises
     // real 7Z parsing without requiring an archive-writing tool during tests.
@@ -726,6 +727,46 @@ mod tests {
             .expect("probe archived minissf through extracted library");
         assert_eq!(properties.title.as_deref(), Some("Archive selection"));
         let duration = properties.duration.expect("archived SSF duration");
+        let expected = std::time::Duration::from_millis(250);
+        let frame = std::time::Duration::from_nanos(1_000_000_000 / 44_100 + 1);
+        assert!(duration.abs_diff(expected) <= frame);
+    }
+
+    #[test]
+    fn zip_preserves_miniusf_library_resolution() {
+        let fixture = tempfile::tempdir().unwrap();
+        let archive_path = fixture.path().join("usf-set.zip");
+        let library = test_usf_bytes(Some(&test_usf_reserved()), "title=Library\n");
+        let mini = test_usf_bytes(
+            None,
+            "_lib=music.usflib\ntitle=Archive selection\nlength=0:00.250\n",
+        );
+        write_stored_zip(
+            &archive_path,
+            &[
+                ("set/selection.miniusf", &mini),
+                ("set/music.usflib", &library),
+            ],
+        );
+
+        let registry = DecoderRegistry::new(DecoderSettings::default());
+        let expansion = registry
+            .expand_detailed(archive_path.clone())
+            .expect("expand archived USF set");
+        assert_eq!(expansion.sources.len(), 1);
+        assert_eq!(
+            expansion.sources[0]
+                .archive_origin
+                .as_ref()
+                .unwrap()
+                .entry_name,
+            "set/selection.miniusf"
+        );
+        let properties = registry
+            .probe(&expansion.sources[0])
+            .expect("probe archived miniusf through extracted library");
+        assert_eq!(properties.title.as_deref(), Some("Archive selection"));
+        let duration = properties.duration.expect("archived USF duration");
         let expected = std::time::Duration::from_millis(250);
         let frame = std::time::Duration::from_nanos(1_000_000_000 / 44_100 + 1);
         assert!(duration.abs_diff(expected) <= frame);

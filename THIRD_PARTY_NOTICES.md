@@ -236,6 +236,30 @@ convention portable to AArch64. The pin itself is not modified. Kog's tests
 generate original synthetic 68000 and ARM programs, waveforms, and PSF wrappers
 and contain no Sega firmware, program, audio, or game data.
 
+## LazyUSF2
+
+The `native/lazyusf2` submodule is the maintained
+[LazyUSF2](https://bitbucket.org/losnoco/lazyusf2) repository at commit
+`f771b33f3a9f96f351ab43635a4b8529fa26a47d`. It is the cross-platform
+Nintendo 64 emulator core beneath Cog's Objective-C USF plugin. Kog compiles
+the upstream x86 or x86-64 dynarec where supported and the cached interpreter
+on other architectures, together with the HLE/LLE RSP audio paths, behind its
+own bounded C ABI bridge and psflib's PSF version 0x21 parser.
+
+LazyUSF2 is assembled from Mupen64Plus core and RSP-HLE code whose compiled
+source headers permit redistribution under GNU GPL version 2 or any later
+version, CC0-dedicated RSP-LLE/vector code, and BSD-licensed CIC and debugger
+components. Copyright belongs to the Mupen64Plus, LazyUSF2, RSP-HLE, RSP-LLE,
+NetBSD, X-Scale, and other contributors identified in the retained source
+headers and `native/lazyusf2/rsp_hle/LICENSES`. The complete corresponding
+source and notices remain in the pinned submodule; copies of GPL-2.0,
+BSD-2-Clause, and BSD-3-Clause terms are also in `LICENSES`. These terms are
+compatible with Kog's GPL-3.0-or-later application.
+
+Kog's tests generate a sparse Project64 save state containing an original
+MIPS program and synthetic stereo waveform. They include no Nintendo firmware,
+ROM image, proprietary program, game data, or recorded audio.
+
 ## SSEQPlayer and psflib
 
 The `native/sseqplayer` submodule is kode54's official

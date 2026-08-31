@@ -229,6 +229,7 @@ impl DecoderRegistry {
                 Box::new(RodioBackend),
                 Box::new(MidiBackend::new(settings)),
                 Box::new(crate::sdsf_decoder::SdsfBackend),
+                Box::new(crate::usf_decoder::UsfBackend),
                 Box::new(crate::ffmpeg_decoder::FfmpegBackend),
                 Box::new(crate::gme_decoder::GmeBackend),
                 Box::new(crate::libvgm_decoder::LibVgmBackend),

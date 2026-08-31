@@ -52,6 +52,11 @@ and psflib for SSF/minissf and DSF/minidsf. It selects the GPL-2.0-or-later
 C68k implementation and does not compile the separately licensed Musashi or
 Starscream alternatives. It is ordered before FFmpeg so `.ssf` reaches the
 console emulator rather than a broad demuxer.
+`lazyusf2-usf` wraps losnoco's maintained LazyUSF2 core and psflib for USF and
+miniusf. It is ordered beside the other dedicated PSF backends and before
+FFmpeg. Kog's build selects LazyUSF2's x86/x86-64 dynarec where supported,
+its cached interpreter elsewhere, SSE2 RSP vectors on x86, NEON RSP vectors
+on AArch64, and the scalar RSP path on remaining targets.
 
 The FFmpeg adapter discovers `libavformat`, `libavcodec`, `libavutil`, and
 `libswresample` with pkg-config and keeps all native ownership behind a small
@@ -124,7 +129,8 @@ than 16,384 entries, files over 4 GiB, or more than 8 GiB expanded in total.
 Filename decoding follows Cog's UTF-8, GB18030, Windows-1251, then
 byte-preserving Latin-1 fallback. Deterministic ZIP and GZ audio fixtures,
 real 7Z and RAR5 extraction fixtures, a ZIP-contained APL plus WAV, and
-ZIP-contained NCSF, GSF, QSF, and SSF mini/library pairs gate the current path.
+ZIP-contained NCSF, GSF, QSF, SSF, and USF mini/library pairs gate the
+current path.
 Passwords, multipart archives, nested archive expansion, broad format corpora,
 and Windows/macOS runtime gates remain separate work.
 
@@ -301,6 +307,25 @@ gate both console routes, metadata, dependency loading and precedence, audible
 PCM after seek, fade/EOS, default timing, malformed and missing dependencies,
 and a ZIP-contained SSF pair without Sega firmware or game data. Broad corpus
 and direct Cog behavior comparison remain parity work.
+
+The USF adapter pins losnoco's maintained LazyUSF2 revision `f771b33`, the
+portable Nintendo 64 emulator core beneath Cog's Objective-C plugin, and
+reuses psflib for PSF version 0x21, zlib decompression, tags, and relative
+`_lib` traversal. Kog rejects executable PSF payloads as Cog does and validates
+every reserved-section block before LazyUSF2 sees it, limiting ROM writes to
+64 MiB and Project64 save-state writes to LazyUSF2's 8 MiB-RDRAM state size.
+The `_enablecompare` and `_enablefifofull` compatibility tags are collected
+across library chains while common metadata comes only from the selected
+outer file. Playback enables LazyUSF2's HLE audio path, resamples to Cog's
+44.1 kHz stereo signed-16 output, converts it to float PCM, applies PSF
+`length`/`fade` tags or Cog's 150-second plus eight-second defaults, and seeks
+with the core's restart API and Cog-sized discard chunks. Tests construct a
+sparse Project64 save state containing an original MIPS program and synthetic
+stereo waveform; they gate routing, metadata precedence, audible PCM, seek,
+fade/EOS, defaults, malformed and missing dependencies, and a ZIP-contained
+miniUSF pair without Nintendo firmware, ROM data, or game code. Cog's initial
+leading-silence stripping, a broad redistributable corpus, configurable
+timing, and direct Cog behavior comparison remain parity work.
 
 ## Decoder contract
 

@@ -37,3 +37,6 @@
 [submodule "native/highly-theoretical"]
 	path = native/highly-theoretical
 	url = https://github.com/kode54/Highly_Theoretical.git
+[submodule "native/lazyusf2"]
+	path = native/lazyusf2
+	url = https://bitbucket.org/losnoco/lazyusf2.git

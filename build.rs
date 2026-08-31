@@ -698,13 +698,15 @@ fn build_ncsf(mgba_output: &Path) {
     let psflib = Path::new("native/psflib");
     let qsf_core = Path::new("native/highly-quixotic/Core");
     let sdsf_core = Path::new("native/highly-theoretical/Core");
+    let usf_core = Path::new("native/lazyusf2");
     if !player.join("Player.h").is_file()
         || !psflib.join("psflib.h").is_file()
         || !qsf_core.join("qsound.h").is_file()
         || !sdsf_core.join("sega.h").is_file()
+        || !usf_core.join("usf/usf.h").is_file()
     {
         panic!(
-            "SSEQPlayer, psflib, Highly Quixotic, or Highly Theoretical submodules are missing; run `git submodule update --init --recursive`"
+            "SSEQPlayer, psflib, Highly Quixotic, Highly Theoretical, or LazyUSF2 submodules are missing; run `git submodule update --init --recursive`"
         );
     }
 
@@ -717,6 +719,7 @@ fn build_ncsf(mgba_output: &Path) {
     player_sources.push(PathBuf::from("native/ncsf_bridge.cpp"));
     player_sources.push(PathBuf::from("native/qsf_bridge.cpp"));
     player_sources.push(PathBuf::from("native/sdsf_bridge.cpp"));
+    player_sources.push(PathBuf::from("native/usf_bridge.cpp"));
     player_sources.sort();
     let mut player_build = cc::Build::new();
     player_build
@@ -726,6 +729,8 @@ fn build_ncsf(mgba_output: &Path) {
         .include(psflib)
         .include(qsf_core)
         .include(sdsf_core)
+        .include(usf_core)
+        .include(usf_core.join("usf"))
         .include(mgba_output.join("include"))
         // This structural feature is present in mGBA's target compile
         // definitions but omitted from its generated flags.h at this pin.
@@ -908,6 +913,124 @@ fn build_ncsf(mgba_output: &Path) {
     };
     sdsf_build.compile("kog_highly_theoretical");
 
+    // LazyUSF2 is Cog's underlying USF engine. Its upstream CMake file is
+    // hard-coded to x86-64, so select the maintained dynarec only where it is
+    // supported and retain the cached interpreter on every other target.
+    let mut usf_sources = vec![
+        "ai/ai_controller.c",
+        "api/callbacks.c",
+        "debugger/dbg_decoder.c",
+        "main/main.c",
+        "main/rom.c",
+        "main/savestates.c",
+        "main/util.c",
+        "memory/memory.c",
+        "pi/cart_rom.c",
+        "pi/pi_controller.c",
+        "r4300/cached_interp.c",
+        "r4300/cp0.c",
+        "r4300/cp1.c",
+        "r4300/exception.c",
+        "r4300/interupt.c",
+        "r4300/mi_controller.c",
+        "r4300/pure_interp.c",
+        "r4300/r4300.c",
+        "r4300/r4300_core.c",
+        "r4300/recomp.c",
+        "r4300/reset.c",
+        "r4300/tlb.c",
+        "rdp/rdp_core.c",
+        "ri/rdram.c",
+        "ri/rdram_detection_hack.c",
+        "ri/ri_controller.c",
+        "rsp/rsp_core.c",
+        "rsp_hle/alist.c",
+        "rsp_hle/alist_audio.c",
+        "rsp_hle/alist_naudio.c",
+        "rsp_hle/alist_nead.c",
+        "rsp_hle/audio.c",
+        "rsp_hle/cicx105.c",
+        "rsp_hle/hle.c",
+        "rsp_hle/hvqm.c",
+        "rsp_hle/jpeg.c",
+        "rsp_hle/memory.c",
+        "rsp_hle/mp3.c",
+        "rsp_hle/musyx.c",
+        "rsp_hle/plugin.c",
+        "rsp_hle/re2.c",
+        "rsp_lle/rsp.c",
+        "si/cic.c",
+        "si/game_controller.c",
+        "si/n64_cic_nus_6105.c",
+        "si/pif.c",
+        "si/si_controller.c",
+        "usf/barray.c",
+        "usf/resampler.c",
+        "usf/usf.c",
+        "vi/vi_controller.c",
+    ];
+    let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+    let mut usf_build = cc::Build::new();
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        usf_build.std("c11");
+    } else {
+        // Upstream's CMake build uses compiler extensions and relies on the
+        // POSIX strdup declaration exposed by GNU/Clang's gnu11 mode.
+        usf_build.std("gnu11");
+    }
+    usf_build.include(usf_core).warnings(false);
+    match target_arch.as_str() {
+        "x86_64" => {
+            usf_build
+                .define("DYNAREC", None)
+                .define("ARCH_MIN_SSE2", None);
+            usf_sources.extend([
+                "r4300/x86_64/assemble.c",
+                "r4300/x86_64/gbc.c",
+                "r4300/x86_64/gcop0.c",
+                "r4300/x86_64/gcop1.c",
+                "r4300/x86_64/gcop1_d.c",
+                "r4300/x86_64/gcop1_l.c",
+                "r4300/x86_64/gcop1_s.c",
+                "r4300/x86_64/gcop1_w.c",
+                "r4300/x86_64/gr4300.c",
+                "r4300/x86_64/gregimm.c",
+                "r4300/x86_64/gspecial.c",
+                "r4300/x86_64/gtlb.c",
+                "r4300/x86_64/regcache.c",
+                "r4300/x86_64/rjump.c",
+            ]);
+        }
+        "x86" => {
+            usf_build
+                .define("DYNAREC", None)
+                .define("ARCH_MIN_SSE2", None);
+            usf_sources.extend([
+                "r4300/x86/assemble.c",
+                "r4300/x86/gbc.c",
+                "r4300/x86/gcop0.c",
+                "r4300/x86/gcop1.c",
+                "r4300/x86/gcop1_d.c",
+                "r4300/x86/gcop1_l.c",
+                "r4300/x86/gcop1_s.c",
+                "r4300/x86/gcop1_w.c",
+                "r4300/x86/gr4300.c",
+                "r4300/x86/gregimm.c",
+                "r4300/x86/gspecial.c",
+                "r4300/x86/gtlb.c",
+                "r4300/x86/regcache.c",
+                "r4300/x86/rjump.c",
+            ]);
+        }
+        "aarch64" => {
+            usf_build.define("ARCH_MIN_ARM_NEON", None);
+            usf_sources.push("r4300/empty_dynarec.c");
+        }
+        _ => usf_sources.push("r4300/empty_dynarec.c"),
+    }
+    usf_build.files(usf_sources.iter().map(|source| usf_core.join(source)));
+    usf_build.compile("kog_lazyusf2");
+
     // Emit psflib after the C++ archive so one-pass static linkers see the
     // parser dependency after the NCSF, GSF, and QSF bridge references.
     let mut psf_build = cc::Build::new();
@@ -942,6 +1065,7 @@ fn build_ncsf(mgba_output: &Path) {
     println!("cargo:rerun-if-changed=native/psflib");
     println!("cargo:rerun-if-changed=native/highly-quixotic");
     println!("cargo:rerun-if-changed=native/highly-theoretical");
+    println!("cargo:rerun-if-changed=native/lazyusf2");
     println!("cargo:rerun-if-changed=native/ncsf_bridge.cpp");
     println!("cargo:rerun-if-changed=native/ncsf_bridge.h");
     println!("cargo:rerun-if-changed=native/gsf_bridge.cpp");
@@ -950,4 +1074,6 @@ fn build_ncsf(mgba_output: &Path) {
     println!("cargo:rerun-if-changed=native/qsf_bridge.h");
     println!("cargo:rerun-if-changed=native/sdsf_bridge.cpp");
     println!("cargo:rerun-if-changed=native/sdsf_bridge.h");
+    println!("cargo:rerun-if-changed=native/usf_bridge.cpp");
+    println!("cargo:rerun-if-changed=native/usf_bridge.h");
 }

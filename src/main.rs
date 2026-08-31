@@ -34,6 +34,8 @@ mod settings;
 mod sid;
 mod sid_decoder;
 mod track;
+mod usf;
+mod usf_decoder;
 mod vgmstream;
 mod vgmstream_decoder;
 
