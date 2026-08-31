@@ -2,6 +2,8 @@ mod app_controller;
 mod decoder;
 mod gme;
 mod gme_decoder;
+mod hively;
+mod hively_decoder;
 mod libvgm;
 mod libvgm_decoder;
 mod openmpt;

@@ -7,6 +7,7 @@ fn main() {
     build_game_music_emu();
     let libvgm_output = build_libvgm();
     build_openmpt();
+    build_hivelytracker();
 
     cc::Build::new()
         .cpp(true)
@@ -212,4 +213,31 @@ fn cpp_files(directory: &Path) -> Vec<PathBuf> {
         .map(|entry| entry.path())
         .filter(|path| path.extension().is_some_and(|extension| extension == "cpp"))
         .collect()
+}
+
+fn build_hivelytracker() {
+    let source = Path::new("native/hivelytracker/Replayer_Windows");
+    if !source.join("hvl_replay.h").is_file() {
+        panic!("HivelyTracker submodule is missing; run `git submodule update --init --recursive`");
+    }
+
+    cc::Build::new()
+        .std("c11")
+        .include(source)
+        .include("native")
+        .flag_if_supported("-fcommon")
+        .files([
+            source.join("hvl_replay.c"),
+            source.join("hvl_tables.c"),
+            PathBuf::from("native/hively_bridge.c"),
+        ])
+        .warnings(false)
+        .compile("kog_hivelytracker");
+
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        println!("cargo:rustc-link-lib=m");
+    }
+    println!("cargo:rerun-if-changed=native/hivelytracker/Replayer_Windows");
+    println!("cargo:rerun-if-changed=native/hively_bridge.c");
+    println!("cargo:rerun-if-changed=native/hively_bridge.h");
 }

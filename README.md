@@ -26,8 +26,12 @@ tracker extensions route through a real stereo-float source with runtime
 extension verification, subsongs, metadata, duration, Cog-compatible render
 settings, and seek. A deterministic ProTracker MOD passes the current PCM and
 seek gates; compressed module aliases and the wider tracker corpus remain.
-SFM, SGC, and the other chiptune and game-audio families remain explicitly
-unclaimed.
+AHX and HVL now route through the official HivelyTracker 1.9 replayer with
+title metadata, subsong expansion, two-loop duration scanning, Cog's default
+eight-second fade, real stereo PCM, and seek. Official AHX/HVL songs plus a
+deterministic two-subsong derivative pass the current routing, PCM, and seek
+gates. SFM, SGC, and the other chiptune and game-audio families remain
+explicitly unclaimed.
 
 ## Project direction
 

@@ -30,6 +30,7 @@ dependency resolution, VGMStream subsongs, AdPlug subsongs, or
 emulator-authentic Roland MIDI synthesis. `libvgm` wraps Cog's exact pinned
 libvgm revision for VGM/VGZ, S98, DRO, and GYM. `libopenmpt` wraps Cog's exact
 0.8.7 release for the 68 extensions returned by that pinned native build.
+`hivelytracker` wraps the official portable 1.9 replayer for AHX and HVL.
 
 Decoder settings are shared between the probe registry and playback registry.
 The MIDI engine and current SF2 path are persisted in the platform
@@ -71,6 +72,17 @@ resampler emulation. Probe-time expansion gives every subsong a stable
 floating-point PCM and seeking uses libopenmpt's time-position API. The
 extension table is asserted against the native library during tests so source
 configuration and registry routing cannot silently diverge.
+
+The Hively adapter builds the upstream portable C replayer at commit
+`f393ca7` and keeps its state behind a narrow C bridge. It loads from the
+shared in-memory source, expands the native main song plus every declared
+subsong, and reports the embedded title. A bounded dry run detects two song
+ends and derives duration using Cog's 44.1 kHz, two-loop, eight-second-fade
+policy. Playback converts the replayer's stereo 16-bit frames to the shared
+float stream, applies the fade, and exposes deterministic restart-and-skip
+seeking. The official AHX and HVL examples gate both parsers, while a
+test-only HVL derivative with a second valid start position gates stable
+subsong identities.
 
 ## Decoder contract
 

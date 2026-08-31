@@ -68,6 +68,19 @@ MIT license, minimp3 under CC0-1.0, and stb_vorbis under its MIT option. Their
 complete source and license notices remain in `native/openmpt/include`; Kog's
 MIT text is also in `LICENSES/MIT.txt`.
 
+## HivelyTracker
+
+The `native/hivelytracker` Git submodule is the official
+[HivelyTracker](https://github.com/pete-gordon/hivelytracker) source at commit
+`f393ca7c6416f00bcb574b334a7e8b57dcb19eb2`, version 1.9 plus its upstream
+post-release fixes. Kog builds the portable Windows replayer sources behind a
+small C ownership and streaming bridge; no Windows runtime code is used.
+
+HivelyTracker is Copyright (c) 2006-2018 Pete Gordon and distributed under
+the BSD 3-Clause license. The complete source and license are retained in the
+submodule, and the exact license text is copied to
+`LICENSES/HivelyTracker-BSD-3-Clause.txt`.
+
 ## TinySoundFont minimal SoundFont test fixture
 
 The 484-byte `MinimalSoundFont` data encoded in `src/decoder.rs` is derived

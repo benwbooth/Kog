@@ -7,3 +7,6 @@
 [submodule "native/openmpt"]
 	path = native/openmpt
 	url = https://github.com/OpenMPT/openmpt.git
+[submodule "native/hivelytracker"]
+	path = native/hivelytracker
+	url = https://github.com/pete-gordon/hivelytracker.git
