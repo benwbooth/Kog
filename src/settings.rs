@@ -230,7 +230,7 @@ impl AppSettings {
         let read_cue_sheets_in_folders = load_bool(READ_CUE_SETTING_FILE).unwrap_or(true);
         let read_playlists_in_folders = load_bool(READ_PLAYLISTS_SETTING_FILE).unwrap_or(true);
         let show_tray_icon = load_bool(SHOW_TRAY_ICON_SETTING_FILE).unwrap_or(true);
-        let close_to_tray = load_bool(CLOSE_TO_TRAY_SETTING_FILE).unwrap_or(false);
+        let close_to_tray = load_bool(CLOSE_TO_TRAY_SETTING_FILE).unwrap_or(true);
         let minimize_to_tray = load_bool(MINIMIZE_TO_TRAY_SETTING_FILE).unwrap_or(false);
         let output_volume = load_text(OUTPUT_VOLUME_SETTING_FILE)
             .and_then(|value| value.parse::<f64>().ok())
