@@ -54,6 +54,10 @@ pub mod qobject {
         #[qproperty(bool, show_tray_icon)]
         #[qproperty(bool, close_to_tray)]
         #[qproperty(bool, minimize_to_tray)]
+        #[qproperty(bool, directory_scan_active)]
+        #[qproperty(i32, directory_scan_files_scanned)]
+        #[qproperty(i32, directory_scan_tracks_added)]
+        #[qproperty(QString, directory_scan_current_path)]
         #[qproperty(bool, equalizer_enabled)]
         #[qproperty(bool, equalizer_track_genre)]
         #[qproperty(f64, equalizer_preamp_db)]
@@ -74,6 +78,10 @@ pub mod qobject {
         fn add_local_paths_json(self: Pin<&mut AppController>, paths: QString);
         #[qinvokable]
         fn activate_local_paths_json(self: Pin<&mut AppController>, paths: QString);
+        #[qinvokable]
+        fn poll_directory_scan(self: Pin<&mut AppController>);
+        #[qinvokable]
+        fn cancel_directory_scan(self: Pin<&mut AppController>);
         #[qinvokable]
         fn add_url(self: Pin<&mut AppController>, url: QString);
         #[qinvokable]
@@ -236,6 +244,9 @@ pub mod qobject {
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError};
 use std::time::Duration;
 
 use cxx_qt::CxxQtType;
@@ -260,6 +271,21 @@ use crate::track::{Track, canonical_path};
 struct AddPathResult {
     added: usize,
     warning: Option<String>,
+}
+
+enum DirectoryScanEvent {
+    File(PathBuf),
+    Warning(String),
+    Complete { cancelled: bool },
+}
+
+struct DirectoryScanState {
+    receiver: Receiver<DirectoryScanEvent>,
+    cancel: Arc<AtomicBool>,
+    cancel_requested: bool,
+    behavior: OpeningFilesBehavior,
+    first_new_source_index: usize,
+    combined: AddPathResult,
 }
 
 impl AddPathResult {
@@ -319,6 +345,113 @@ fn ordered_directory_files(directory: &Path) -> Result<Vec<PathBuf>, String> {
     }
 
     Ok(files)
+}
+
+fn send_directory_scan_event(
+    sender: &SyncSender<DirectoryScanEvent>,
+    cancel: &AtomicBool,
+    mut event: DirectoryScanEvent,
+) -> bool {
+    loop {
+        match sender.try_send(event) {
+            Ok(()) => return true,
+            Err(TrySendError::Disconnected(_)) => return false,
+            Err(TrySendError::Full(returned)) => {
+                event = returned;
+                if cancel.load(AtomicOrdering::Relaxed)
+                    && !matches!(event, DirectoryScanEvent::Complete { .. })
+                {
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
+}
+
+fn scan_directory_paths(
+    paths: Vec<PathBuf>,
+    sender: SyncSender<DirectoryScanEvent>,
+    cancel: Arc<AtomicBool>,
+) {
+    'roots: for root in paths {
+        if cancel.load(AtomicOrdering::Relaxed) {
+            break;
+        }
+        let root = match std::fs::canonicalize(&root) {
+            Ok(root) => root,
+            Err(error) => {
+                if !send_directory_scan_event(
+                    &sender,
+                    &cancel,
+                    DirectoryScanEvent::Warning(format!("reading {}: {error}", root.display())),
+                ) {
+                    return;
+                }
+                continue;
+            }
+        };
+
+        if root.is_file() {
+            if !send_directory_scan_event(&sender, &cancel, DirectoryScanEvent::File(root)) {
+                return;
+            }
+            continue;
+        }
+        if !root.is_dir() {
+            let _ = send_directory_scan_event(
+                &sender,
+                &cancel,
+                DirectoryScanEvent::Warning(format!("{} is not a file or folder", root.display())),
+            );
+            continue;
+        }
+
+        let mut pending = vec![(root, true)];
+        while let Some((path, is_directory)) = pending.pop() {
+            if cancel.load(AtomicOrdering::Relaxed) {
+                break 'roots;
+            }
+            if !is_directory {
+                if !send_directory_scan_event(&sender, &cancel, DirectoryScanEvent::File(path)) {
+                    return;
+                }
+                continue;
+            }
+
+            let mut entries = match std::fs::read_dir(&path) {
+                Ok(entries) => entries.filter_map(Result::ok).collect::<Vec<_>>(),
+                Err(error) => {
+                    if !send_directory_scan_event(
+                        &sender,
+                        &cancel,
+                        DirectoryScanEvent::Warning(format!("reading {}: {error}", path.display())),
+                    ) {
+                        return;
+                    }
+                    continue;
+                }
+            };
+            entries.sort_by_key(std::fs::DirEntry::path);
+            for entry in entries.into_iter().rev() {
+                if cancel.load(AtomicOrdering::Relaxed) {
+                    break 'roots;
+                }
+                let path = entry.path();
+                let Ok(file_type) = entry.file_type() else {
+                    continue;
+                };
+                if file_type.is_dir() {
+                    pending.push((path, true));
+                } else if file_type.is_file() {
+                    pending.push((path, false));
+                }
+            }
+        }
+    }
+
+    let cancelled = cancel.load(AtomicOrdering::Relaxed);
+    let _ = send_directory_scan_event(&sender, &cancel, DirectoryScanEvent::Complete { cancelled });
 }
 
 fn local_paths_from_json(value: &str) -> Result<Vec<PathBuf>, String> {
@@ -775,6 +908,10 @@ pub struct AppControllerRust {
     show_tray_icon: bool,
     close_to_tray: bool,
     minimize_to_tray: bool,
+    directory_scan_active: bool,
+    directory_scan_files_scanned: i32,
+    directory_scan_tracks_added: i32,
+    directory_scan_current_path: QString,
     equalizer_enabled: bool,
     equalizer_track_genre: bool,
     equalizer_preamp_db: f64,
@@ -791,6 +928,7 @@ pub struct AppControllerRust {
     decoders: DecoderRegistry,
     playback: PlaybackEngine,
     equalizer_settings: EqualizerSettings,
+    directory_scan: Option<DirectoryScanState>,
 }
 
 impl Default for AppControllerRust {
@@ -938,6 +1076,10 @@ impl Default for AppControllerRust {
             show_tray_icon: app_settings.show_tray_icon,
             close_to_tray: app_settings.close_to_tray,
             minimize_to_tray: app_settings.minimize_to_tray,
+            directory_scan_active: false,
+            directory_scan_files_scanned: 0,
+            directory_scan_tracks_added: 0,
+            directory_scan_current_path: QString::default(),
             equalizer_enabled: equalizer_settings.enabled,
             equalizer_track_genre: equalizer_settings.track_genre,
             equalizer_preamp_db: f64::from(equalizer_settings.preamp_db),
@@ -958,6 +1100,7 @@ impl Default for AppControllerRust {
             decoders,
             playback,
             equalizer_settings,
+            directory_scan: None,
         };
 
         if let Some(paths) = std::env::var_os("KOG_OPEN_FILES") {
@@ -1122,24 +1265,7 @@ impl AppControllerRust {
 
         let mut result = AddPathResult::default();
         for path in ordered_directory_files(&directory)? {
-            if !self.decoders.accepts_path(&path) {
-                continue;
-            }
-            let extension = path
-                .extension()
-                .and_then(|value| value.to_str())
-                .unwrap_or_default();
-            if extension.eq_ignore_ascii_case("cue") && !self.read_cue_sheets_in_folders {
-                continue;
-            }
-            if matches!(
-                extension.to_ascii_lowercase().as_str(),
-                "m3u" | "m3u8" | "pls"
-            ) && !self.read_playlists_in_folders
-            {
-                continue;
-            }
-            match self.add_path(path) {
+            match self.add_scanned_file(path) {
                 Ok(added) => {
                     result.added += added.added;
                     if let Some(warning) = added.warning {
@@ -1150,6 +1276,27 @@ impl AppControllerRust {
             }
         }
         Ok(result)
+    }
+
+    fn add_scanned_file(&mut self, path: PathBuf) -> Result<AddPathResult, String> {
+        if !self.decoders.accepts_path(&path) {
+            return Ok(AddPathResult::default());
+        }
+        let extension = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
+        if extension.eq_ignore_ascii_case("cue") && !self.read_cue_sheets_in_folders {
+            return Ok(AddPathResult::default());
+        }
+        if matches!(
+            extension.to_ascii_lowercase().as_str(),
+            "m3u" | "m3u8" | "pls"
+        ) && !self.read_playlists_in_folders
+        {
+            return Ok(AddPathResult::default());
+        }
+        self.add_path(path)
     }
 
     fn rebuild_visible_indices(&mut self) {
@@ -1415,6 +1562,124 @@ impl qobject::AppController {
         )
         .unwrap_or_default();
         self.as_mut().add_local_paths(paths, behavior);
+    }
+
+    pub fn poll_directory_scan(mut self: Pin<&mut Self>) {
+        if !self.as_ref().rust().directory_scan_active {
+            return;
+        }
+
+        let cancel_requested = self
+            .as_ref()
+            .rust()
+            .directory_scan
+            .as_ref()
+            .is_some_and(|scan| scan.cancel_requested);
+        let limit = if cancel_requested { 128 } else { 8 };
+        let mut events = Vec::new();
+        let mut disconnected = false;
+        if let Some(scan) = self.as_ref().rust().directory_scan.as_ref() {
+            for _ in 0..limit {
+                match scan.receiver.try_recv() {
+                    Ok(event) => {
+                        let complete = matches!(event, DirectoryScanEvent::Complete { .. });
+                        events.push(event);
+                        if complete {
+                            break;
+                        }
+                    }
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        disconnected = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        let mut playlist_changed = false;
+        let mut completion = None;
+        for event in events {
+            match event {
+                DirectoryScanEvent::File(path) => {
+                    let skip = self
+                        .as_ref()
+                        .rust()
+                        .directory_scan
+                        .as_ref()
+                        .is_none_or(|scan| scan.cancel_requested);
+                    if skip {
+                        continue;
+                    }
+                    let scanned = self
+                        .as_ref()
+                        .rust()
+                        .directory_scan_files_scanned
+                        .saturating_add(1);
+                    self.as_mut().set_directory_scan_files_scanned(scanned);
+                    self.as_mut()
+                        .set_directory_scan_current_path(qstring(path.to_string_lossy()));
+                    let result = self.as_mut().rust_mut().add_scanned_file(path);
+                    let added_count =
+                        if let Some(scan) = self.as_mut().rust_mut().directory_scan.as_mut() {
+                            match result {
+                                Ok(added) => {
+                                    playlist_changed |= added.added > 0;
+                                    scan.combined.added += added.added;
+                                    if let Some(warning) = added.warning {
+                                        scan.combined.push_warning(warning);
+                                    }
+                                }
+                                Err(error) => scan.combined.push_warning(error),
+                            }
+                            Some(scan.combined.added)
+                        } else {
+                            None
+                        };
+                    if let Some(added_count) = added_count {
+                        self.as_mut()
+                            .set_directory_scan_tracks_added(saturating_i32(added_count));
+                    }
+                }
+                DirectoryScanEvent::Warning(warning) => {
+                    if let Some(scan) = self.as_mut().rust_mut().directory_scan.as_mut() {
+                        scan.combined.push_warning(warning);
+                    }
+                }
+                DirectoryScanEvent::Complete { cancelled } => completion = Some(cancelled),
+            }
+        }
+
+        if playlist_changed {
+            self.as_mut().refresh_playback_order();
+            self.as_mut().rebuild_playlist();
+        }
+        if disconnected && completion.is_none() {
+            if !cancel_requested
+                && let Some(scan) = self.as_mut().rust_mut().directory_scan.as_mut()
+            {
+                scan.combined
+                    .push_warning("The folder scanner stopped unexpectedly");
+            }
+            completion = Some(cancel_requested);
+        }
+        if let Some(cancelled) = completion {
+            self.as_mut().finish_directory_scan(cancelled);
+        }
+    }
+
+    pub fn cancel_directory_scan(mut self: Pin<&mut Self>) {
+        {
+            let mut rust = self.as_mut().rust_mut();
+            let Some(scan) = rust.directory_scan.as_mut() else {
+                return;
+            };
+            scan.cancel_requested = true;
+            scan.cancel.store(true, AtomicOrdering::Relaxed);
+        }
+        self.as_mut()
+            .set_directory_scan_current_path(qstring("Cancelling…"));
+        self.as_mut().set_status(qstring("Cancelling folder scan…"));
     }
 
     pub fn add_url(mut self: Pin<&mut Self>, url: QString) {
@@ -2798,6 +3063,16 @@ impl qobject::AppController {
         if paths.is_empty() {
             return;
         }
+        if self.as_ref().rust().directory_scan_active {
+            self.as_mut().set_status(qstring(
+                "A folder scan is already running; cancel it before adding more files",
+            ));
+            return;
+        }
+        if paths.iter().any(|path| path.is_dir()) {
+            self.as_mut().begin_directory_scan(paths, behavior);
+            return;
+        }
         if behavior.clears_playlist() {
             self.as_mut().clear_playlist();
         }
@@ -2838,6 +3113,79 @@ impl qobject::AppController {
             .set_status(qstring(add_path_status(&combined)));
         if behavior.starts_playback() {
             self.as_mut().play_source_index(first_new_source_index);
+        }
+    }
+
+    fn begin_directory_scan(
+        mut self: Pin<&mut Self>,
+        paths: Vec<PathBuf>,
+        behavior: OpeningFilesBehavior,
+    ) {
+        if behavior.clears_playlist() {
+            self.as_mut().clear_playlist();
+        }
+        let first_new_source_index = self.as_ref().rust().tracks.len();
+        let (sender, receiver) = std::sync::mpsc::sync_channel(64);
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.as_mut().rust_mut().directory_scan = Some(DirectoryScanState {
+            receiver,
+            cancel: Arc::clone(&cancel),
+            cancel_requested: false,
+            behavior,
+            first_new_source_index,
+            combined: AddPathResult::default(),
+        });
+        self.as_mut().set_directory_scan_files_scanned(0);
+        self.as_mut().set_directory_scan_tracks_added(0);
+        self.as_mut()
+            .set_directory_scan_current_path(qstring("Finding files…"));
+        self.as_mut().set_directory_scan_active(true);
+        self.as_mut().set_status(qstring("Scanning folders…"));
+
+        if let Err(error) = std::thread::Builder::new()
+            .name("kog-directory-scan".to_owned())
+            .spawn(move || scan_directory_paths(paths, sender, cancel))
+        {
+            self.as_mut().rust_mut().directory_scan = None;
+            self.as_mut().set_directory_scan_active(false);
+            self.as_mut()
+                .set_status(qstring(format!("Starting the folder scanner: {error}")));
+        }
+    }
+
+    fn finish_directory_scan(mut self: Pin<&mut Self>, worker_cancelled: bool) {
+        let Some(scan) = self.as_mut().rust_mut().directory_scan.take() else {
+            return;
+        };
+        let cancelled = worker_cancelled || scan.cancel_requested;
+        let files_scanned = self.as_ref().rust().directory_scan_files_scanned;
+        let tracks_added = scan.combined.added;
+        self.as_mut().set_directory_scan_active(false);
+        self.as_mut()
+            .set_directory_scan_current_path(QString::default());
+
+        if tracks_added > 0 {
+            self.as_mut().refresh_playback_order();
+            self.as_mut().rebuild_playlist();
+        }
+
+        let mut status = if cancelled {
+            format!(
+                "Folder scan cancelled — {files_scanned} files scanned, {tracks_added} tracks added"
+            )
+        } else {
+            format!(
+                "Folder scan complete — {files_scanned} files scanned, {tracks_added} tracks added"
+            )
+        };
+        if let Some(warning) = scan.combined.warning {
+            status.push_str("; ");
+            status.push_str(&warning);
+        }
+        self.as_mut().set_status(qstring(status));
+
+        if !cancelled && tracks_added > 0 && scan.behavior.starts_playback() {
+            self.as_mut().play_source_index(scan.first_new_source_index);
         }
     }
 
@@ -3080,10 +3428,11 @@ impl qobject::AppController {
 #[cfg(test)]
 mod tests {
     use super::{
-        AddPathResult, PlaylistSortColumn, add_path_status, compare_tracks, local_paths_from_json,
-        move_selected_items, natural_compare, normalize_playlist_save_path,
+        AddPathResult, DirectoryScanEvent, PlaylistSortColumn, add_path_status, compare_tracks,
+        local_paths_from_json, move_selected_items, natural_compare, normalize_playlist_save_path,
         ordered_directory_files, output_devices_json, parse_row_indices, playlist_entry_for_track,
-        resolve_output_device, sample_rate_label, sort_visible_indices, valid_equalizer_gain,
+        resolve_output_device, sample_rate_label, scan_directory_paths, sort_visible_indices,
+        valid_equalizer_gain,
     };
     use crate::decoder::{ArchiveOrigin, PlaybackSource};
     use crate::playback::OutputDevice;
@@ -3093,6 +3442,8 @@ mod tests {
     use std::cmp::Ordering;
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
     use tempfile::tempdir;
 
     #[test]
@@ -3124,6 +3475,45 @@ mod tests {
             .expect("scan the music folder")
             .into_iter()
             .map(|path| path.strip_prefix(root).unwrap().to_owned())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            relative,
+            [
+                PathBuf::from("01-first.flac"),
+                PathBuf::from("02-disc/01-middle.flac"),
+                PathBuf::from("02-disc/02-middle.flac"),
+                PathBuf::from("03-last.flac"),
+            ]
+        );
+    }
+
+    #[test]
+    fn background_directory_scan_preserves_visual_file_order() {
+        let temporary = tempdir().expect("create temporary music folder");
+        let root = temporary.path();
+        fs::create_dir(root.join("02-disc")).expect("create nested album folder");
+        fs::write(root.join("01-first.flac"), []).expect("create first track");
+        fs::write(root.join("02-disc/01-middle.flac"), []).expect("create nested first track");
+        fs::write(root.join("02-disc/02-middle.flac"), []).expect("create nested second track");
+        fs::write(root.join("03-last.flac"), []).expect("create last track");
+
+        let (sender, receiver) = std::sync::mpsc::sync_channel(16);
+        scan_directory_paths(
+            vec![root.to_owned()],
+            sender,
+            Arc::new(AtomicBool::new(false)),
+        );
+        let relative = receiver
+            .into_iter()
+            .filter_map(|event| match event {
+                DirectoryScanEvent::File(path) => Some(path.strip_prefix(root).unwrap().to_owned()),
+                DirectoryScanEvent::Warning(warning) => panic!("unexpected warning: {warning}"),
+                DirectoryScanEvent::Complete { cancelled } => {
+                    assert!(!cancelled);
+                    None
+                }
+            })
             .collect::<Vec<_>>();
 
         assert_eq!(

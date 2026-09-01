@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <mask id="symbol">
-    <rect width="64" height="64" fill="black"/>
-    <g fill="white">
+  <circle cx="32" cy="32" r="30" fill="#000"/>
+  <g transform="translate(8 8) scale(.75)">
+    <g fill="#fff">
       <rect x="27" y="1" width="10" height="15" rx="3"/>
       <rect x="27" y="48" width="10" height="15" rx="3"/>
       <rect x="48" y="27" width="15" height="10" rx="3"/>
@@ -12,8 +12,11 @@
       <rect x="5.2" y="12.5" width="15" height="10" rx="3" transform="rotate(45 12.7 17.5)"/>
       <circle cx="32" cy="32" r="23"/>
     </g>
-    <circle cx="32" cy="32" r="14.5" fill="black"/>
-    <path fill="white" d="M37.8 20.8v17.1a6.1 6.1 0 1 1-3.6-5.5V24l11.2-2.5v12.7a6.1 6.1 0 1 1-3.6-5.5V19.9l-4 0.9z" transform="translate(-5 4) scale(.82)"/>
-  </mask>
-  <rect width="64" height="64" fill="#000" mask="url(#symbol)"/>
+    <circle cx="32" cy="32" r="13" fill="#000"/>
+    <g fill="#fff">
+      <ellipse cx="29.5" cy="39.5" rx="6.5" ry="4.7" transform="rotate(-18 29.5 39.5)"/>
+      <rect x="34.5" y="22.5" width="4" height="17" rx="2"/>
+      <path d="M36.5 22.5c6.2.6 10 3.8 10 8.6-2.4-2.4-5.1-3.7-8-3.9v3.3h-2z"/>
+    </g>
+  </g>
 </svg>

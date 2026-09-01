@@ -108,6 +108,8 @@ fn main() {
         "qml/icons/media-skip-forward-light.svg",
         "qml/icons/view-list-tree.svg",
         "qml/icons/view-list-tree-light.svg",
+        "qml/icons/view-restore.svg",
+        "qml/icons/view-restore-light.svg",
     ])
     .files([
         "src/app_controller.rs",

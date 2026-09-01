@@ -31,6 +31,7 @@ ApplicationWindow {
     property bool applicationQuitRequested: false
     property var treeSelectedPaths: []
     property int treeSelectionAnchorRow: -1
+    property string treeContextPath: ""
     readonly property string selectedQueueState: {
         appController.playlist_revision
         return selectedRows.length > 0
@@ -59,7 +60,7 @@ ApplicationWindow {
             root.hide()
         }
     }
-    onVisibilityChanged: {
+    onVisibilityChanged: function(visibility) {
         if (visibility === Window.Minimized && appController.show_tray_icon
                 && appController.minimize_to_tray && trayIcon.available) {
             Qt.callLater(function() {
@@ -166,10 +167,29 @@ ApplicationWindow {
         clearTreeSelection()
     }
 
+    function useTreeRoot(path) {
+        if (!fileTreeModel.is_path_directory(path))
+            return
+        appController.choose_directory(fileTreeModel.path_url(path))
+        fileTreeModel.set_root_path_text(appController.directory_path)
+        clearTreeSelection()
+    }
+
     function showFromTray() {
+        miniPlayer.hide()
+        root.visible = true
         root.showNormal()
-        root.raise()
-        root.requestActivate()
+        Qt.callLater(function() {
+            root.raise()
+            root.requestActivate()
+        })
+    }
+
+    function showMiniPlayer() {
+        miniPlayer.show()
+        miniPlayer.raise()
+        miniPlayer.requestActivate()
+        root.hide()
     }
 
     function quitKog() {
@@ -180,7 +200,7 @@ ApplicationWindow {
     function treePathAtRow(row) {
         if (row < 0 || row >= directoryTree.rows)
             return ""
-        return fileTreeModel.path_for_index(directoryTree.modelIndex(row, 0))
+        return fileTreeModel.path_for_index(directoryTree.index(row, 0))
     }
 
     function setTreeSelection(paths, currentRow, anchorRow) {
@@ -196,7 +216,7 @@ ApplicationWindow {
             const path = treePathAtRow(row)
             if (requested.indexOf(path) === -1)
                 continue
-            const index = directoryTree.modelIndex(row, 0)
+            const index = directoryTree.index(row, 0)
             directoryTree.selectionModel.select(index,
                 ItemSelectionModel.Select | ItemSelectionModel.Rows)
             ordered.push(path)
@@ -209,7 +229,7 @@ ApplicationWindow {
         treeSelectionAnchorRow = ordered.length > 0 ? anchorRow : -1
         if (currentRow >= 0 && currentRow < directoryTree.rows)
             directoryTree.selectionModel.setCurrentIndex(
-                directoryTree.modelIndex(currentRow, 0),
+                directoryTree.index(currentRow, 0),
                 ItemSelectionModel.NoUpdate)
     }
 
@@ -370,17 +390,17 @@ ApplicationWindow {
             ? qsTr("Kog — Not Playing")
             : appController.now_title + " — Kog"
         icon.source: Qt.resolvedUrl("icons/kog-symbolic.svg")
-        icon.mask: true
-        onActivated: reason => {
-            if (reason === Platform.SystemTrayIcon.Trigger
-                    || reason === Platform.SystemTrayIcon.DoubleClick)
-                root.showFromTray()
+        icon.mask: false
+        onActivated: function(reason) {
+            if (reason !== Platform.SystemTrayIcon.Context
+                    && reason !== Platform.SystemTrayIcon.MiddleClick)
+                Qt.callLater(function() { root.showFromTray() })
         }
         menu: Platform.Menu {
             Platform.MenuItem {
                 text: qsTr("Show Kog")
                 icon.source: Qt.resolvedUrl("icons/kog.svg")
-                onTriggered: root.showFromTray()
+                onTriggered: Qt.callLater(function() { root.showFromTray() })
             }
             Platform.MenuSeparator {}
             Platform.MenuItem {
@@ -421,12 +441,97 @@ ApplicationWindow {
         onTriggered: appController.poll_playback()
     }
 
+    Timer {
+        id: directoryScanTimer
+
+        interval: 35
+        running: appController.directory_scan_active
+        repeat: true
+        onTriggered: {
+            appController.poll_directory_scan()
+            if (!appController.directory_scan_active
+                    && directoryScanDialog.opened)
+                directoryScanDialog.close()
+        }
+    }
+
+    Timer {
+        interval: 2000
+        running: appController.directory_scan_active
+        repeat: false
+        onTriggered: if (appController.directory_scan_active)
+            directoryScanDialog.open()
+    }
+
     InfoInspector { id: infoInspector; app: appController }
     TagEditor { id: tagEditor; app: appController }
     Equalizer { id: equalizerWindow; app: appController }
     Lyrics { id: lyricsWindow; app: appController }
-    MiniPlayer { id: miniPlayer; app: appController }
+    MiniPlayer {
+        id: miniPlayer
+        app: appController
+        mainWindow: root
+    }
     Preferences { id: preferences; app: appController }
+
+    Dialog {
+        id: directoryScanDialog
+
+        anchors.centerIn: parent
+        width: Math.min(520, root.width - 48)
+        modal: true
+        title: qsTr("Adding Music")
+        closePolicy: Popup.NoAutoClose
+
+        contentItem: ColumnLayout {
+            spacing: 12
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 10
+
+                BusyIndicator {
+                    Layout.preferredWidth: 32
+                    Layout.preferredHeight: 32
+                    running: appController.directory_scan_active
+                }
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 2
+
+                    Label {
+                        Layout.fillWidth: true
+                        text: qsTr("Scanning folders and adding playable music…")
+                        font.bold: true
+                        wrapMode: Text.Wrap
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        text: qsTr("%1 files scanned   •   %2 tracks added to queue")
+                            .arg(appController.directory_scan_files_scanned)
+                            .arg(appController.directory_scan_tracks_added)
+                        color: root.palette.placeholderText
+                    }
+                }
+            }
+
+            Label {
+                Layout.fillWidth: true
+                text: appController.directory_scan_current_path
+                color: root.palette.placeholderText
+                elide: Text.ElideMiddle
+                font.pixelSize: 11
+            }
+
+            Button {
+                Layout.alignment: Qt.AlignRight
+                text: qsTr("Cancel")
+                icon.name: "dialog-cancel"
+                enabled: appController.directory_scan_active
+                onClicked: appController.cancel_directory_scan()
+            }
+        }
+    }
 
     Dialog {
         id: openUrlDialog
@@ -590,6 +695,23 @@ ApplicationWindow {
     }
 
     Menu {
+        id: treeContextMenu
+
+        MenuItem {
+            text: qsTr("Use as Tree Root")
+            icon.name: "folder-open"
+            enabled: fileTreeModel.is_path_directory(root.treeContextPath)
+            onTriggered: root.useTreeRoot(root.treeContextPath)
+        }
+        MenuSeparator {}
+        MenuItem {
+            text: qsTr("Add to Playlist")
+            icon.name: "list-add"
+            onTriggered: root.addTreeSelection(root.treeContextPath, false)
+        }
+    }
+
+    Menu {
         id: hamburgerMenu
 
         Action {
@@ -640,7 +762,7 @@ ApplicationWindow {
             Action { text: qsTr("Show Info Inspector"); icon.name: "dialog-information"; shortcut: "Ctrl+I"; onTriggered: infoInspector.show() }
             Action { text: qsTr("Show Equalizer"); icon.name: "audio-equalizer"; shortcut: "Ctrl+E"; onTriggered: equalizerWindow.visible ? equalizerWindow.hide() : equalizerWindow.show() }
             Action { text: qsTr("Show Lyrics"); icon.name: "view-media-lyrics"; shortcut: "Ctrl+Shift+L"; onTriggered: lyricsWindow.show() }
-            Action { text: qsTr("Show Mini Player"); icon.name: "view-restore"; shortcut: "Ctrl+Shift+M"; onTriggered: miniPlayer.show() }
+            Action { text: qsTr("Show Mini Player"); icon.name: "view-restore"; shortcut: "Ctrl+Shift+M"; onTriggered: root.showMiniPlayer() }
         }
 
         Menu {
@@ -1178,7 +1300,7 @@ ApplicationWindow {
 
                             anchors.fill: parent
                             z: 2
-                            acceptedButtons: Qt.LeftButton
+                            acceptedButtons: Qt.LeftButton | Qt.RightButton
                             hoverEnabled: true
                             preventStealing: true
 
@@ -1186,6 +1308,16 @@ ApplicationWindow {
                                 pressX = mouse.x
                                 pressY = mouse.y
                                 manualDragging = false
+                                if (mouse.button === Qt.RightButton) {
+                                    root.treeContextPath = treeDelegate.dragPath
+                                    if (root.treeSelectedPaths.indexOf(
+                                            treeDelegate.dragPath) === -1)
+                                        root.setTreeSelection(
+                                            [treeDelegate.dragPath],
+                                            treeDelegate.row, treeDelegate.row)
+                                    treeContextMenu.popup()
+                                    return
+                                }
                                 collapseSelectionOnClick = root.selectTreeRow(
                                     treeDelegate.row, treeDelegate.dragPath,
                                     mouse.modifiers)
@@ -1211,6 +1343,8 @@ ApplicationWindow {
                                     : -1
                             }
                             onClicked: mouse => {
+                                if (mouse.button !== Qt.LeftButton)
+                                    return
                                 if (collapseSelectionOnClick)
                                     root.setTreeSelection(
                                         [treeDelegate.dragPath],
@@ -1224,8 +1358,11 @@ ApplicationWindow {
                                             treeDelegate.dragPath))
                                     directoryTree.toggleExpanded(treeDelegate.row)
                             }
-                            onDoubleClicked: root.addTreeSelection(
-                                treeDelegate.dragPath, true)
+                            onDoubleClicked: mouse => {
+                                if (mouse.button === Qt.LeftButton)
+                                    root.addTreeSelection(
+                                        treeDelegate.dragPath, true)
+                            }
                             onReleased: mouse => {
                                 if (manualDragging) {
                                     const point = mapToItem(playlistView,
