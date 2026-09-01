@@ -710,6 +710,16 @@ ApplicationWindow {
                     id: playlistHeader
                     Layout.fillWidth: true
                     theme: root.palette
+                    savedWidths: appController.playlist_column_widths
+                    sortColumn: appController.playlist_sort_column
+                    sortAscending: appController.playlist_sort_ascending
+                    onSortRequested: column => {
+                        const selected = appController.sort_playlist(
+                            column, root.selectedRows.join(","))
+                        root.applyMovedSelection(selected)
+                    }
+                    onColumnWidthsChanged: widths =>
+                        appController.save_playlist_column_widths(widths)
                 }
 
                 ListView {

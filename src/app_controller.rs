@@ -12,6 +12,9 @@ pub mod qobject {
         #[qml_element]
         #[qproperty(i32, playlist_count)]
         #[qproperty(i32, playlist_revision)]
+        #[qproperty(QString, playlist_sort_column)]
+        #[qproperty(bool, playlist_sort_ascending)]
+        #[qproperty(QString, playlist_column_widths)]
         #[qproperty(i32, current_index)]
         #[qproperty(QString, playback_state)]
         #[qproperty(QString, status)]
@@ -65,6 +68,14 @@ pub mod qobject {
         fn clear_playlist(self: Pin<&mut AppController>);
         #[qinvokable]
         fn filter_playlist(self: Pin<&mut AppController>, query: QString);
+        #[qinvokable]
+        fn sort_playlist(
+            self: Pin<&mut AppController>,
+            column: QString,
+            selected_indices: QString,
+        ) -> QString;
+        #[qinvokable]
+        fn save_playlist_column_widths(self: Pin<&mut AppController>, widths: QString);
         #[qinvokable]
         fn play_index(self: Pin<&mut AppController>, index: i32);
         #[qinvokable]
@@ -140,6 +151,7 @@ pub mod qobject {
     }
 }
 
+use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::time::Duration;
@@ -283,9 +295,179 @@ fn encode_row_indices(indices: &[usize]) -> QString {
     )
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum PlaylistSortColumn {
+    #[default]
+    Index,
+    Rating,
+    Title,
+    Artist,
+    Album,
+    Length,
+    Year,
+    Genre,
+    Track,
+}
+
+impl PlaylistSortColumn {
+    fn from_identifier(identifier: &str) -> Option<Self> {
+        match identifier {
+            "index" => Some(Self::Index),
+            "rating" => Some(Self::Rating),
+            "title" => Some(Self::Title),
+            "artist" => Some(Self::Artist),
+            "album" => Some(Self::Album),
+            "length" => Some(Self::Length),
+            "year" | "date" => Some(Self::Year),
+            "genre" => Some(Self::Genre),
+            "track" => Some(Self::Track),
+            _ => None,
+        }
+    }
+
+    const fn identifier(self) -> &'static str {
+        match self {
+            Self::Index => "index",
+            Self::Rating => "rating",
+            Self::Title => "title",
+            Self::Artist => "artist",
+            Self::Album => "album",
+            Self::Length => "length",
+            Self::Year => "year",
+            Self::Genre => "genre",
+            Self::Track => "track",
+        }
+    }
+
+    const fn display_name(self) -> &'static str {
+        match self {
+            Self::Index => "playlist order",
+            Self::Rating => "Rating",
+            Self::Title => "Title",
+            Self::Artist => "Artist",
+            Self::Album => "Album",
+            Self::Length => "Length",
+            Self::Year => "Year",
+            Self::Genre => "Genre",
+            Self::Track => "Track",
+        }
+    }
+}
+
+fn natural_compare(left: &str, right: &str) -> Ordering {
+    let left = left.to_lowercase().chars().collect::<Vec<_>>();
+    let right = right.to_lowercase().chars().collect::<Vec<_>>();
+    let mut left_index = 0;
+    let mut right_index = 0;
+
+    while left_index < left.len() && right_index < right.len() {
+        if left[left_index].is_ascii_digit() && right[right_index].is_ascii_digit() {
+            let left_end = left[left_index..]
+                .iter()
+                .position(|character| !character.is_ascii_digit())
+                .map_or(left.len(), |offset| left_index + offset);
+            let right_end = right[right_index..]
+                .iter()
+                .position(|character| !character.is_ascii_digit())
+                .map_or(right.len(), |offset| right_index + offset);
+            let left_significant = left_index
+                + left[left_index..left_end]
+                    .iter()
+                    .take_while(|character| **character == '0')
+                    .count();
+            let right_significant = right_index
+                + right[right_index..right_end]
+                    .iter()
+                    .take_while(|character| **character == '0')
+                    .count();
+            let left_digits = &left[left_significant..left_end];
+            let right_digits = &right[right_significant..right_end];
+
+            match left_digits.len().cmp(&right_digits.len()) {
+                Ordering::Equal => match left_digits.cmp(right_digits) {
+                    Ordering::Equal => {}
+                    ordering => return ordering,
+                },
+                ordering => return ordering,
+            }
+            left_index = left_end;
+            right_index = right_end;
+            continue;
+        }
+
+        match left[left_index].cmp(&right[right_index]) {
+            Ordering::Equal => {
+                left_index += 1;
+                right_index += 1;
+            }
+            ordering => return ordering,
+        }
+    }
+
+    (left.len() - left_index).cmp(&(right.len() - right_index))
+}
+
+fn compare_tracks(left: &Track, right: &Track, column: PlaylistSortColumn) -> Ordering {
+    match column {
+        PlaylistSortColumn::Index | PlaylistSortColumn::Rating => Ordering::Equal,
+        PlaylistSortColumn::Title => natural_compare(&left.title, &right.title),
+        PlaylistSortColumn::Artist => natural_compare(&left.artist, &right.artist),
+        PlaylistSortColumn::Album => natural_compare(&left.album, &right.album),
+        PlaylistSortColumn::Length => left.duration.cmp(&right.duration),
+        PlaylistSortColumn::Year => left.year.cmp(&right.year),
+        PlaylistSortColumn::Genre => natural_compare(&left.genre, &right.genre),
+        PlaylistSortColumn::Track => {
+            let left_album_artist = if left.album_artist.is_empty() {
+                &left.artist
+            } else {
+                &left.album_artist
+            };
+            let right_album_artist = if right.album_artist.is_empty() {
+                &right.artist
+            } else {
+                &right.album_artist
+            };
+            natural_compare(left_album_artist, right_album_artist)
+                .then_with(|| natural_compare(&left.album, &right.album))
+                .then_with(|| {
+                    left.disc_number
+                        .unwrap_or_default()
+                        .cmp(&right.disc_number.unwrap_or_default())
+                })
+                .then_with(|| {
+                    left.track_number
+                        .unwrap_or_default()
+                        .cmp(&right.track_number.unwrap_or_default())
+                })
+        }
+    }
+}
+
+fn sort_visible_indices(
+    tracks: &[Track],
+    visible_indices: &mut [usize],
+    column: PlaylistSortColumn,
+    ascending: bool,
+) {
+    if column == PlaylistSortColumn::Index {
+        return;
+    }
+    visible_indices.sort_by(|left, right| {
+        let ordering = compare_tracks(&tracks[*left], &tracks[*right], column);
+        if ascending {
+            ordering
+        } else {
+            ordering.reverse()
+        }
+    });
+}
+
 pub struct AppControllerRust {
     playlist_count: i32,
     playlist_revision: i32,
+    playlist_sort_column: QString,
+    playlist_sort_ascending: bool,
+    playlist_column_widths: QString,
     current_index: i32,
     playback_state: QString,
     status: QString,
@@ -319,6 +501,7 @@ pub struct AppControllerRust {
     read_playlists_in_folders: bool,
     tracks: Vec<Track>,
     visible_indices: Vec<usize>,
+    sort_column: PlaylistSortColumn,
     shuffle_order: Vec<usize>,
     shuffle_seed: u64,
     filter: String,
@@ -357,6 +540,11 @@ impl Default for AppControllerRust {
             .map(|path| qstring(path.to_string_lossy()))
             .unwrap_or_default();
         let midi_engine = qstring(app_settings.midi_engine.setting_value());
+        let playlist_column_widths = app_settings
+            .playlist_column_widths
+            .as_deref()
+            .map(qstring)
+            .unwrap_or_default();
         let midi_status = qstring(midi_status(
             app_settings.midi_engine,
             app_settings.soundfont_path.as_deref(),
@@ -369,6 +557,9 @@ impl Default for AppControllerRust {
         let mut controller = Self {
             playlist_count: 0,
             playlist_revision: 0,
+            playlist_sort_column: qstring(PlaylistSortColumn::Index.identifier()),
+            playlist_sort_ascending: true,
+            playlist_column_widths,
             current_index: -1,
             playback_state: qstring(PlaybackState::Stopped.as_str()),
             status: qstring("Drop audio files here or use the Kog menu to add files"),
@@ -402,6 +593,7 @@ impl Default for AppControllerRust {
             read_playlists_in_folders: app_settings.read_playlists_in_folders,
             tracks: Vec::new(),
             visible_indices: Vec::new(),
+            sort_column: PlaylistSortColumn::Index,
             shuffle_order: Vec::new(),
             shuffle_seed: 0x4b6f_672d_7368_7566 ^ u64::from(std::process::id()),
             filter: String::new(),
@@ -672,6 +864,14 @@ impl AppControllerRust {
             .filter(|(_, track)| track.matches(&self.filter))
             .map(|(index, _)| index)
             .collect();
+        if self.sort_column != PlaylistSortColumn::Index {
+            sort_visible_indices(
+                &self.tracks,
+                &mut self.visible_indices,
+                self.sort_column,
+                self.playlist_sort_ascending,
+            );
+        }
         self.playlist_count = saturating_i32(self.visible_indices.len());
         self.playlist_revision = self.playlist_revision.wrapping_add(1);
     }
@@ -839,6 +1039,11 @@ impl qobject::AppController {
             ));
             return indices;
         }
+        if self.as_ref().rust().sort_column != PlaylistSortColumn::Index {
+            self.as_mut()
+                .set_status(qstring("Restore playlist order before reordering tracks"));
+            return indices;
+        }
 
         let row_count = self.as_ref().rust().tracks.len();
         let selected_indices = parse_row_indices(&indices.to_string(), row_count);
@@ -896,6 +1101,79 @@ impl qobject::AppController {
     pub fn filter_playlist(mut self: Pin<&mut Self>, query: QString) {
         self.as_mut().rust_mut().filter = query.to_string().trim().to_lowercase();
         self.as_mut().rebuild_playlist();
+    }
+
+    pub fn sort_playlist(
+        mut self: Pin<&mut Self>,
+        column: QString,
+        selected_indices: QString,
+    ) -> QString {
+        let Some(column) = PlaylistSortColumn::from_identifier(column.to_string().trim()) else {
+            self.as_mut()
+                .set_status(qstring("That playlist column cannot be sorted"));
+            return selected_indices;
+        };
+        let selected_sources = {
+            let model = self.as_ref();
+            let rows = parse_row_indices(
+                &selected_indices.to_string(),
+                model.rust().visible_indices.len(),
+            );
+            rows.iter()
+                .filter_map(|row| model.rust().visible_indices.get(*row))
+                .filter_map(|source_index| model.rust().tracks.get(*source_index))
+                .map(|track| track.source.clone())
+                .collect::<Vec<_>>()
+        };
+        let ascending = if column == PlaylistSortColumn::Index {
+            true
+        } else if self.as_ref().rust().sort_column == column {
+            !self.as_ref().rust().playlist_sort_ascending
+        } else {
+            true
+        };
+
+        self.as_mut().rust_mut().sort_column = column;
+        self.as_mut()
+            .set_playlist_sort_column(qstring(column.identifier()));
+        self.as_mut().set_playlist_sort_ascending(ascending);
+        self.as_mut().rebuild_playlist();
+
+        let selected_rows = {
+            let model = self.as_ref();
+            model
+                .rust()
+                .visible_indices
+                .iter()
+                .enumerate()
+                .filter_map(|(row, source_index)| {
+                    let source = &model.rust().tracks[*source_index].source;
+                    selected_sources
+                        .iter()
+                        .any(|selected| selected == source)
+                        .then_some(row)
+                })
+                .collect::<Vec<_>>()
+        };
+        if column == PlaylistSortColumn::Index {
+            self.as_mut()
+                .set_status(qstring("Restored original playlist order"));
+        } else {
+            self.as_mut().set_status(qstring(format!(
+                "Sorted by {} {}",
+                column.display_name(),
+                if ascending { "ascending" } else { "descending" }
+            )));
+        }
+        encode_row_indices(&selected_rows)
+    }
+
+    pub fn save_playlist_column_widths(mut self: Pin<&mut Self>, widths: QString) {
+        if let Err(error) = AppSettings::save_playlist_column_widths(&widths.to_string()) {
+            self.as_mut().set_status(qstring(error));
+            return;
+        }
+        self.as_mut().set_playlist_column_widths(widths);
     }
 
     pub fn play_index(mut self: Pin<&mut Self>, index: i32) {
@@ -1601,7 +1879,12 @@ impl qobject::AppController {
 
 #[cfg(test)]
 mod tests {
-    use super::{AddPathResult, add_path_status, move_selected_items, parse_row_indices};
+    use super::{
+        AddPathResult, PlaylistSortColumn, add_path_status, compare_tracks, move_selected_items,
+        natural_compare, parse_row_indices, sort_visible_indices,
+    };
+    use crate::track::Track;
+    use std::cmp::Ordering;
 
     #[test]
     fn add_path_status_keeps_every_warning() {
@@ -1640,5 +1923,61 @@ mod tests {
 
         assert_eq!(values, ['a', 'b', 'c', 'd', 'e']);
         assert_eq!(moved, [1, 2]);
+    }
+
+    #[test]
+    fn natural_comparison_is_case_insensitive_and_orders_digit_runs_numerically() {
+        assert_eq!(natural_compare("Track 2", "track 10"), Ordering::Less);
+        assert_eq!(natural_compare("SONG 01", "song 1"), Ordering::Equal);
+        assert_eq!(natural_compare("Alpha", "beta"), Ordering::Less);
+    }
+
+    #[test]
+    fn track_sort_matches_cogs_album_disc_track_sequence() {
+        let disc_two = Track {
+            album_artist: "The Artist".to_owned(),
+            album: "Record".to_owned(),
+            disc_number: Some(2),
+            track_number: Some(1),
+            ..Track::default()
+        };
+        let track_ten = Track {
+            album_artist: "the artist".to_owned(),
+            album: "record".to_owned(),
+            disc_number: Some(1),
+            track_number: Some(10),
+            ..Track::default()
+        };
+
+        assert_eq!(
+            compare_tracks(&track_ten, &disc_two, PlaylistSortColumn::Track),
+            Ordering::Less
+        );
+    }
+
+    #[test]
+    fn visible_sort_is_stable_and_index_mode_preserves_original_order() {
+        let tracks = [
+            Track {
+                title: "Song 10".to_owned(),
+                ..Track::default()
+            },
+            Track {
+                title: "song 2".to_owned(),
+                ..Track::default()
+            },
+            Track {
+                title: "SONG 02".to_owned(),
+                ..Track::default()
+            },
+        ];
+        let mut visible = vec![0, 1, 2];
+
+        sort_visible_indices(&tracks, &mut visible, PlaylistSortColumn::Title, true);
+        assert_eq!(visible, [1, 2, 0]);
+
+        let mut original = vec![0, 1, 2];
+        sort_visible_indices(&tracks, &mut original, PlaylistSortColumn::Index, false);
+        assert_eq!(original, [0, 1, 2]);
     }
 }

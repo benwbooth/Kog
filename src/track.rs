@@ -11,10 +11,13 @@ pub struct Track {
     pub source: PlaybackSource,
     pub title: String,
     pub artist: String,
+    pub album_artist: String,
     pub album: String,
     pub genre: String,
+    pub composer: String,
     pub lyrics: String,
     pub year: Option<u32>,
+    pub disc_number: Option<u32>,
     pub track_number: Option<u32>,
     pub duration: Option<Duration>,
     pub sample_rate: Option<u32>,
@@ -72,12 +75,21 @@ impl Track {
                     .album()
                     .map(|value| value.to_string())
                     .unwrap_or_default();
+                track.album_artist = tag
+                    .get_string(ItemKey::AlbumArtist)
+                    .unwrap_or_default()
+                    .to_owned();
                 track.genre = tag
                     .genre()
                     .map(|value| value.to_string())
                     .unwrap_or_default();
+                track.composer = tag
+                    .get_string(ItemKey::Composer)
+                    .unwrap_or_default()
+                    .to_owned();
                 track.lyrics = lyrics_from_tag(tag);
                 track.year = tag.date().map(|date| u32::from(date.year));
+                track.disc_number = tag.disk();
                 track.track_number = tag.track();
             }
         }
@@ -123,8 +135,10 @@ impl Track {
         [
             self.title.as_str(),
             self.artist.as_str(),
+            self.album_artist.as_str(),
             self.album.as_str(),
             self.genre.as_str(),
+            self.composer.as_str(),
             source_label.as_str(),
         ]
         .iter()

@@ -11,6 +11,7 @@ const OPENING_BEHAVIOR_SETTING_FILE: &str = "opening-files-behavior";
 const READ_CUE_SETTING_FILE: &str = "read-cue-sheets-in-folders";
 const READ_PLAYLISTS_SETTING_FILE: &str = "read-playlists-in-folders";
 const OUTPUT_VOLUME_SETTING_FILE: &str = "output-volume";
+const PLAYLIST_COLUMN_WIDTHS_SETTING_FILE: &str = "playlist-column-widths";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum OpeningFilesBehavior {
@@ -77,6 +78,7 @@ pub struct AppSettings {
     pub read_cue_sheets_in_folders: bool,
     pub read_playlists_in_folders: bool,
     pub output_volume: f64,
+    pub playlist_column_widths: Option<String>,
 }
 
 impl AppSettings {
@@ -107,6 +109,8 @@ impl AppSettings {
             .filter(|value| value.is_finite())
             .unwrap_or(0.75)
             .clamp(0.0, 1.0);
+        let playlist_column_widths = load_text(PLAYLIST_COLUMN_WIDTHS_SETTING_FILE)
+            .filter(|value| validate_playlist_column_widths(value));
         Self {
             soundfont_path,
             sc55_rom_path,
@@ -117,6 +121,7 @@ impl AppSettings {
             read_cue_sheets_in_folders,
             read_playlists_in_folders,
             output_volume,
+            playlist_column_widths,
         }
     }
 
@@ -199,6 +204,27 @@ impl AppSettings {
             &volume.clamp(0.0, 1.0).to_string(),
         )
     }
+
+    pub fn save_playlist_column_widths(widths: &str) -> Result<(), String> {
+        if !validate_playlist_column_widths(widths) {
+            return Err("Playlist column widths are invalid".to_owned());
+        }
+        save_text(PLAYLIST_COLUMN_WIDTHS_SETTING_FILE, widths)
+    }
+}
+
+fn validate_playlist_column_widths(value: &str) -> bool {
+    if value.len() > 256 {
+        return false;
+    }
+    let widths = value.split(',').collect::<Vec<_>>();
+    widths.len() == 9
+        && widths.iter().all(|width| {
+            width
+                .trim()
+                .parse::<f64>()
+                .is_ok_and(|width| width.is_finite() && (24.0..=4096.0).contains(&width))
+        })
 }
 
 fn save_text(file_name: &str, value: &str) -> Result<(), String> {
@@ -293,5 +319,19 @@ mod tests {
         assert_eq!(MidiEngine::from_setting("MT-32"), Some(MidiEngine::Mt32));
         assert_eq!(MidiEngine::from_setting("cm32l"), Some(MidiEngine::Mt32));
         assert_eq!(MidiEngine::Mt32.setting_value(), "munt-mt32");
+    }
+
+    #[test]
+    fn playlist_column_widths_require_nine_bounded_finite_values() {
+        assert!(validate_playlist_column_widths(
+            "54,78,189.5,212,210.5,70,58,121,54"
+        ));
+        assert!(!validate_playlist_column_widths("54,78,189"));
+        assert!(!validate_playlist_column_widths(
+            "54,78,NaN,212,210.5,70,58,121,54"
+        ));
+        assert!(!validate_playlist_column_widths(
+            "12,78,189.5,212,210.5,70,58,121,54"
+        ));
     }
 }

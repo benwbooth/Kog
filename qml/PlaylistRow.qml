@@ -1,3 +1,5 @@
+pragma ComponentBehavior: Bound
+
 import QtQuick
 
 Item {
@@ -45,7 +47,7 @@ Item {
     }
 
     component Cell: Text {
-        required property int cellWidth
+        required property real cellWidth
         property int alignment: Text.AlignLeft
 
         width: cellWidth
@@ -63,48 +65,50 @@ Item {
         anchors.fill: parent
 
         Cell {
-            cellWidth: columns.numberWidth
+            cellWidth: root.columns.numberWidth
             alignment: Text.AlignHCenter
             text: {
                 root.revision
-                const status = app.track_status_at(root.rowIndex)
-                return status.length > 0 ? status : app.track_number_at(root.rowIndex)
+                const status = root.app.track_status_at(root.rowIndex)
+                return status.length > 0
+                    ? status
+                    : root.app.track_number_at(root.rowIndex)
             }
         }
         Cell {
-            cellWidth: columns.ratingWidth
-            text: { root.revision; return app.track_rating_at(root.rowIndex) }
+            cellWidth: root.columns.ratingWidth
+            text: { root.revision; return root.app.track_rating_at(root.rowIndex) }
         }
         Cell {
-            cellWidth: columns.titleWidth
-            text: { root.revision; return app.track_title_at(root.rowIndex) }
+            cellWidth: root.columns.titleWidth
+            text: { root.revision; return root.app.track_title_at(root.rowIndex) }
         }
         Cell {
-            cellWidth: columns.artistWidth
-            text: { root.revision; return app.track_artist_at(root.rowIndex) }
+            cellWidth: root.columns.artistWidth
+            text: { root.revision; return root.app.track_artist_at(root.rowIndex) }
         }
         Cell {
-            cellWidth: columns.albumWidth
-            text: { root.revision; return app.track_album_at(root.rowIndex) }
+            cellWidth: root.columns.albumWidth
+            text: { root.revision; return root.app.track_album_at(root.rowIndex) }
         }
         Cell {
-            cellWidth: columns.lengthWidth
+            cellWidth: root.columns.lengthWidth
             alignment: Text.AlignRight
-            text: { root.revision; return app.track_length_at(root.rowIndex) }
+            text: { root.revision; return root.app.track_length_at(root.rowIndex) }
         }
         Cell {
-            cellWidth: columns.yearWidth
+            cellWidth: root.columns.yearWidth
             alignment: Text.AlignRight
-            text: { root.revision; return app.track_year_at(root.rowIndex) }
+            text: { root.revision; return root.app.track_year_at(root.rowIndex) }
         }
         Cell {
-            cellWidth: columns.genreWidth
-            text: { root.revision; return app.track_genre_at(root.rowIndex) }
+            cellWidth: root.columns.genreWidth
+            text: { root.revision; return root.app.track_genre_at(root.rowIndex) }
         }
         Cell {
-            cellWidth: columns.trackWidth
+            cellWidth: root.columns.trackWidth
             alignment: Text.AlignHCenter
-            text: { root.revision; return app.track_metadata_number_at(root.rowIndex) }
+            text: { root.revision; return root.app.track_metadata_number_at(root.rowIndex) }
         }
     }
 
