@@ -2,8 +2,10 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Controls.impl as ControlsImpl
 import QtQuick.Layouts
 import QtQml.Models
+import Qt.labs.platform as Platform
 
 import org.kog.player 1.0
 
@@ -26,6 +28,9 @@ ApplicationWindow {
     property var selectedRows: []
     property int playlistDropTarget: -1
     property real volumeBeforeMute: 0.75
+    property bool applicationQuitRequested: false
+    property var treeSelectedPaths: []
+    property int treeSelectionAnchorRow: -1
     readonly property string selectedQueueState: {
         appController.playlist_revision
         return selectedRows.length > 0
@@ -46,6 +51,23 @@ ApplicationWindow {
     readonly property color toolbarSurface: baseLuminance < 0.5
         ? Qt.lighter(palette.base, 1.35)
         : palette.window
+
+    onClosing: close => {
+        if (!applicationQuitRequested && appController.show_tray_icon
+                && appController.close_to_tray && trayIcon.available) {
+            close.accepted = false
+            root.hide()
+        }
+    }
+    onVisibilityChanged: {
+        if (visibility === Window.Minimized && appController.show_tray_icon
+                && appController.minimize_to_tray && trayIcon.available) {
+            Qt.callLater(function() {
+                if (root.visibility === Window.Minimized)
+                    root.hide()
+            })
+        }
+    }
     component WindowButton: AbstractButton {
         id: windowControl
         required property color buttonColor
@@ -141,6 +163,109 @@ ApplicationWindow {
     function chooseMusicFolder() {
         appController.choose_music_folder()
         fileTreeModel.set_root_path_text(appController.directory_path)
+        clearTreeSelection()
+    }
+
+    function showFromTray() {
+        root.showNormal()
+        root.raise()
+        root.requestActivate()
+    }
+
+    function quitKog() {
+        applicationQuitRequested = true
+        Qt.quit()
+    }
+
+    function treePathAtRow(row) {
+        if (row < 0 || row >= directoryTree.rows)
+            return ""
+        return fileTreeModel.path_for_index(directoryTree.modelIndex(row, 0))
+    }
+
+    function setTreeSelection(paths, currentRow, anchorRow) {
+        const requested = []
+        for (const path of paths) {
+            if (path.length > 0 && requested.indexOf(path) === -1)
+                requested.push(path)
+        }
+
+        directoryTree.selectionModel.clear()
+        const ordered = []
+        for (let row = 0; row < directoryTree.rows; ++row) {
+            const path = treePathAtRow(row)
+            if (requested.indexOf(path) === -1)
+                continue
+            const index = directoryTree.modelIndex(row, 0)
+            directoryTree.selectionModel.select(index,
+                ItemSelectionModel.Select | ItemSelectionModel.Rows)
+            ordered.push(path)
+        }
+        for (const path of requested) {
+            if (ordered.indexOf(path) === -1)
+                ordered.push(path)
+        }
+        treeSelectedPaths = ordered
+        treeSelectionAnchorRow = ordered.length > 0 ? anchorRow : -1
+        if (currentRow >= 0 && currentRow < directoryTree.rows)
+            directoryTree.selectionModel.setCurrentIndex(
+                directoryTree.modelIndex(currentRow, 0),
+                ItemSelectionModel.NoUpdate)
+    }
+
+    function clearTreeSelection() {
+        treeSelectedPaths = []
+        treeSelectionAnchorRow = -1
+        if (directoryTree.selectionModel)
+            directoryTree.selectionModel.clear()
+    }
+
+    function selectTreeRow(row, path, modifiers) {
+        const extend = (modifiers & Qt.ShiftModifier) !== 0
+        const toggle = (modifiers
+            & (Qt.ControlModifier | Qt.MetaModifier)) !== 0
+        if (extend && treeSelectionAnchorRow >= 0) {
+            const paths = toggle ? treeSelectedPaths.slice() : []
+            const first = Math.min(treeSelectionAnchorRow, row)
+            const last = Math.max(treeSelectionAnchorRow, row)
+            for (let candidate = first; candidate <= last; ++candidate) {
+                const candidatePath = treePathAtRow(candidate)
+                if (candidatePath.length > 0
+                        && paths.indexOf(candidatePath) === -1)
+                    paths.push(candidatePath)
+            }
+            setTreeSelection(paths, row, treeSelectionAnchorRow)
+            return false
+        }
+        if (toggle) {
+            const paths = treeSelectedPaths.slice()
+            const selectedIndex = paths.indexOf(path)
+            if (selectedIndex === -1)
+                paths.push(path)
+            else
+                paths.splice(selectedIndex, 1)
+            setTreeSelection(paths, row, row)
+            return false
+        }
+        if (treeSelectedPaths.length > 1
+                && treeSelectedPaths.indexOf(path) !== -1)
+            return true
+        setTreeSelection([path], row, row)
+        return false
+    }
+
+    function selectedTreePathsFor(path) {
+        if (treeSelectedPaths.indexOf(path) === -1)
+            return [path]
+        return treeSelectedPaths.slice()
+    }
+
+    function addTreeSelection(path, activate) {
+        const paths = selectedTreePathsFor(path)
+        if (activate)
+            appController.activate_local_paths_json(JSON.stringify(paths))
+        else
+            appController.add_local_paths_json(JSON.stringify(paths))
     }
 
     function isPlaylistRowSelected(row) {
@@ -236,6 +361,56 @@ ApplicationWindow {
 
     AppController { id: appController }
     FileTreeModel { id: fileTreeModel }
+
+    Platform.SystemTrayIcon {
+        id: trayIcon
+
+        visible: appController.show_tray_icon && available
+        tooltip: appController.now_title === "Not Playing"
+            ? qsTr("Kog — Not Playing")
+            : appController.now_title + " — Kog"
+        icon.source: Qt.resolvedUrl("icons/kog-symbolic.svg")
+        icon.mask: true
+        onActivated: reason => {
+            if (reason === Platform.SystemTrayIcon.Trigger
+                    || reason === Platform.SystemTrayIcon.DoubleClick)
+                root.showFromTray()
+        }
+        menu: Platform.Menu {
+            Platform.MenuItem {
+                text: qsTr("Show Kog")
+                icon.source: Qt.resolvedUrl("icons/kog.svg")
+                onTriggered: root.showFromTray()
+            }
+            Platform.MenuSeparator {}
+            Platform.MenuItem {
+                text: appController.playback_state === "playing"
+                    ? qsTr("Pause") : qsTr("Play")
+                icon.name: appController.playback_state === "playing"
+                    ? "media-playback-pause" : "media-playback-start"
+                enabled: appController.playlist_count > 0
+                onTriggered: appController.play_pause()
+            }
+            Platform.MenuItem {
+                text: qsTr("Previous")
+                icon.name: "media-skip-backward"
+                enabled: appController.playlist_count > 0
+                onTriggered: appController.previous()
+            }
+            Platform.MenuItem {
+                text: qsTr("Next")
+                icon.name: "media-skip-forward"
+                enabled: appController.playlist_count > 0
+                onTriggered: appController.next()
+            }
+            Platform.MenuSeparator {}
+            Platform.MenuItem {
+                text: qsTr("Quit Kog")
+                icon.name: "application-exit"
+                onTriggered: root.quitKog()
+            }
+        }
+    }
 
     Component.onCompleted: fileTreeModel.set_root_path_text(appController.directory_path)
 
@@ -542,7 +717,7 @@ ApplicationWindow {
 
         MenuSeparator {}
         Action { text: qsTr("Preferences…"); icon.name: "configure"; shortcut: "Ctrl+,"; onTriggered: preferences.show() }
-        Action { text: qsTr("Quit Kog"); icon.name: "application-exit"; shortcut: StandardKey.Quit; onTriggered: Qt.quit() }
+        Action { text: qsTr("Quit Kog"); icon.name: "application-exit"; shortcut: StandardKey.Quit; onTriggered: root.quitKog() }
     }
 
     header: ToolBar {
@@ -629,9 +804,23 @@ ApplicationWindow {
                 toolTip: qsTr("Info Inspector")
                 onClicked: infoInspector.show()
             }
+            Image {
+                Layout.preferredWidth: 28
+                Layout.preferredHeight: 28
+                Layout.leftMargin: 4
+                Layout.rightMargin: 3
+                source: Qt.resolvedUrl("icons/kog.svg")
+                sourceSize.width: 56
+                sourceSize.height: 56
+                fillMode: Image.PreserveAspectFit
+                mipmap: true
+                Accessible.name: qsTr("Kog")
+
+                TitleDragArea { anchors.fill: parent }
+            }
             Label {
-                Layout.preferredWidth: root.compactToolbar ? 92 : 176
-                Layout.minimumWidth: 72
+                Layout.preferredWidth: root.compactToolbar ? 62 : 142
+                Layout.minimumWidth: 50
                 text: appController.now_title === "Not Playing"
                     ? qsTr("Kog")
                     : appController.now_title
@@ -885,23 +1074,35 @@ ApplicationWindow {
                         CogButton {
                             Layout.preferredWidth: 30
                             Layout.preferredHeight: 30
-                            glyph: "↑"
-                            iconName: "go-up"
-                            toolTip: qsTr("Use parent folder as the tree root")
-                            onClicked: {
-                                appController.parent_directory()
-                                fileTreeModel.set_root_path_text(appController.directory_path)
-                            }
-                        }
-                        CogButton {
-                            Layout.preferredWidth: 30
-                            Layout.preferredHeight: 30
                             glyph: "▣"
                             iconName: "folder-open"
                             toolTip: qsTr("Choose music folder")
                             onClicked: root.chooseMusicFolder()
                         }
                         Label { Layout.fillWidth: true; text: appController.directory_path; font.bold: true; elide: Text.ElideMiddle }
+                    }
+                }
+
+                ItemDelegate {
+                    id: parentDirectoryRow
+
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: visible ? 28 : 0
+                    visible: fileTreeModel.can_go_up
+                    text: ".."
+                    icon.name: "go-up"
+                    icon.width: 18
+                    icon.height: 18
+                    leftPadding: 9
+                    Accessible.name: qsTr("Go to parent folder")
+                    ToolTip.visible: hovered
+                    ToolTip.delay: 700
+                    ToolTip.text: fileTreeModel.parent_path
+                    onClicked: {
+                        appController.parent_directory()
+                        fileTreeModel.set_root_path_text(
+                            appController.directory_path)
+                        root.clearTreeSelection()
                     }
                 }
 
@@ -914,7 +1115,7 @@ ApplicationWindow {
                     rootIndex: fileTreeModel.root_index
                     alternatingRows: true
                     selectionBehavior: TableView.SelectRows
-                    selectionMode: TableView.SingleSelection
+                    selectionMode: TableView.ExtendedSelection
                     // Delegate handlers own pointer selection, activation,
                     // and drag arbitration. Disabling TreeView's hidden tap
                     // handler avoids competing exclusive grabs on Wayland.
@@ -937,12 +1138,34 @@ ApplicationWindow {
                         // property. Accessing it through the transient `model`
                         // object leaves recycled TreeView delegates displaying
                         // and activating the preceding row after expansion.
+                        required property string fileName
                         required property string filePath
                         readonly property string dragPath: filePath
                         width: directoryTree.width
                         implicitHeight: 26
+                        icon.name: fileTreeModel.icon_name(filePath)
                         icon.width: 18
                         icon.height: 18
+                        contentItem: RowLayout {
+                            spacing: 5
+
+                            ControlsImpl.IconImage {
+                                Layout.preferredWidth: 18
+                                Layout.preferredHeight: 18
+                                name: treeDelegate.icon.name
+                                sourceSize.width: 18
+                                sourceSize.height: 18
+                                fillMode: Image.PreserveAspectFit
+                            }
+                            Label {
+                                Layout.fillWidth: true
+                                text: treeDelegate.fileName
+                                elide: Text.ElideRight
+                                color: treeDelegate.selected
+                                    ? treeDelegate.palette.highlightedText
+                                    : treeDelegate.palette.text
+                            }
+                        }
                         ToolTip.visible: treePointer.containsMouse
                         ToolTip.delay: 700
                         ToolTip.text: treeDelegate.dragPath
@@ -951,6 +1174,7 @@ ApplicationWindow {
                             property real pressX: 0
                             property real pressY: 0
                             property bool manualDragging: false
+                            property bool collapseSelectionOnClick: false
 
                             anchors.fill: parent
                             z: 2
@@ -962,10 +1186,9 @@ ApplicationWindow {
                                 pressX = mouse.x
                                 pressY = mouse.y
                                 manualDragging = false
-                                const index = directoryTree.index(
-                                    treeDelegate.row, treeDelegate.column)
-                                directoryTree.selectionModel.setCurrentIndex(
-                                    index, ItemSelectionModel.ClearAndSelect)
+                                collapseSelectionOnClick = root.selectTreeRow(
+                                    treeDelegate.row, treeDelegate.dragPath,
+                                    mouse.modifiers)
                             }
                             onPositionChanged: mouse => {
                                 if ((mouse.buttons & Qt.LeftButton) === 0)
@@ -988,12 +1211,21 @@ ApplicationWindow {
                                     : -1
                             }
                             onClicked: mouse => {
-                                if (fileTreeModel.is_path_directory(
-                                        treeDelegate.dragPath))
+                                if (collapseSelectionOnClick)
+                                    root.setTreeSelection(
+                                        [treeDelegate.dragPath],
+                                        treeDelegate.row, treeDelegate.row)
+                                collapseSelectionOnClick = false
+                                if ((mouse.modifiers
+                                        & (Qt.ControlModifier
+                                            | Qt.MetaModifier
+                                            | Qt.ShiftModifier)) === 0
+                                        && fileTreeModel.is_path_directory(
+                                            treeDelegate.dragPath))
                                     directoryTree.toggleExpanded(treeDelegate.row)
                             }
-                            onDoubleClicked: appController.activate_local_path(
-                                treeDelegate.dragPath)
+                            onDoubleClicked: root.addTreeSelection(
+                                treeDelegate.dragPath, true)
                             onReleased: mouse => {
                                 if (manualDragging) {
                                     const point = mapToItem(playlistView,
@@ -1002,15 +1234,17 @@ ApplicationWindow {
                                             && point.x <= playlistView.width
                                             && point.y >= 0
                                             && point.y <= playlistView.height)
-                                        appController.add_local_path(
-                                            treeDelegate.dragPath)
+                                        root.addTreeSelection(
+                                            treeDelegate.dragPath, false)
                                     mouse.accepted = true
                                 }
                                 manualDragging = false
+                                collapseSelectionOnClick = false
                                 root.playlistDropTarget = -1
                             }
                             onCanceled: {
                                 manualDragging = false
+                                collapseSelectionOnClick = false
                                 root.playlistDropTarget = -1
                             }
                         }

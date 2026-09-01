@@ -350,6 +350,40 @@ Window {
                         }
                     }
 
+                    PreferenceGroup {
+                        title: qsTr("System tray")
+                        Layout.fillWidth: true
+
+                        ColumnLayout {
+                            anchors.fill: parent
+                            spacing: 6
+
+                            PreferenceCheckBox {
+                                text: qsTr("Show Kog in the system tray")
+                                checked: root.app.show_tray_icon
+                                onToggled: root.app.update_show_tray_icon(checked)
+                            }
+                            PreferenceCheckBox {
+                                text: qsTr("Close the main window to the tray")
+                                enabled: root.app.show_tray_icon
+                                checked: root.app.close_to_tray
+                                onToggled: root.app.update_close_to_tray(checked)
+                            }
+                            PreferenceCheckBox {
+                                text: qsTr("Minimize the main window to the tray")
+                                enabled: root.app.show_tray_icon
+                                checked: root.app.minimize_to_tray
+                                onToggled: root.app.update_minimize_to_tray(checked)
+                            }
+                            PreferenceLabel {
+                                Layout.fillWidth: true
+                                text: qsTr("Tray behavior is used only when the desktop provides a system tray.")
+                                wrapMode: Text.Wrap
+                                color: root.palette.placeholderText
+                            }
+                        }
+                    }
+
                     Item { Layout.fillHeight: true }
                 }
             }

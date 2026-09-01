@@ -70,10 +70,9 @@ fn main() {
         "qml/Preferences.qml",
         "qml/TagEditor.qml",
     ]))
-    // Kog does not export hand-written C++ headers. Avoid recursively tracking
-    // the entire repository as an include root, which otherwise makes Cargo
-    // rebuild every native decoder after unrelated documentation changes.
-    .crate_include_root(None)
+    // Keep the bridge include root limited to Kog's hand-written integration
+    // header instead of recursively tracking the whole repository.
+    .crate_include_root(Some("native".to_owned()))
     .qrc_resources([
         "qml/icons/application-menu.svg",
         "qml/icons/application-menu-light.svg",
@@ -91,6 +90,8 @@ fn main() {
         "qml/icons/folder-light.svg",
         "qml/icons/go-up.svg",
         "qml/icons/go-up-light.svg",
+        "qml/icons/kog.svg",
+        "qml/icons/kog-symbolic.svg",
         "qml/icons/media-playback-pause.svg",
         "qml/icons/media-playback-pause-light.svg",
         "qml/icons/media-playback-start.svg",
@@ -108,11 +109,17 @@ fn main() {
         "qml/icons/view-list-tree.svg",
         "qml/icons/view-list-tree-light.svg",
     ])
-    .files(["src/app_controller.rs", "src/file_tree_model.rs"])
+    .files([
+        "src/app_controller.rs",
+        "src/desktop_integration.rs",
+        "src/file_tree_model.rs",
+    ])
+    .cpp_file("native/kog_desktop_integration.cpp")
     .qt_module("Gui")
     .qt_module("Network")
     .qt_module("Quick")
     .qt_module("QuickControls2")
+    .qt_module("Widgets")
     .build();
 }
 

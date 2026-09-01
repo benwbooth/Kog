@@ -12,6 +12,9 @@ const MUSIC_DIRECTORY_SETTING_FILE: &str = "music-directory";
 const OPENING_BEHAVIOR_SETTING_FILE: &str = "opening-files-behavior";
 const READ_CUE_SETTING_FILE: &str = "read-cue-sheets-in-folders";
 const READ_PLAYLISTS_SETTING_FILE: &str = "read-playlists-in-folders";
+const SHOW_TRAY_ICON_SETTING_FILE: &str = "show-tray-icon";
+const CLOSE_TO_TRAY_SETTING_FILE: &str = "close-to-tray";
+const MINIMIZE_TO_TRAY_SETTING_FILE: &str = "minimize-to-tray";
 const OUTPUT_VOLUME_SETTING_FILE: &str = "output-volume";
 const OUTPUT_DEVICE_SETTING_FILE: &str = "output-device";
 const PLAYLIST_COLUMN_LAYOUT_SETTING_FILE: &str = "playlist-column-layout";
@@ -192,6 +195,9 @@ pub struct AppSettings {
     pub opening_files_behavior: OpeningFilesBehavior,
     pub read_cue_sheets_in_folders: bool,
     pub read_playlists_in_folders: bool,
+    pub show_tray_icon: bool,
+    pub close_to_tray: bool,
+    pub minimize_to_tray: bool,
     pub output_volume: f64,
     pub output_device: Option<OutputDevicePreference>,
     pub playlist_column_layout: Option<String>,
@@ -223,6 +229,9 @@ impl AppSettings {
             .unwrap_or_default();
         let read_cue_sheets_in_folders = load_bool(READ_CUE_SETTING_FILE).unwrap_or(true);
         let read_playlists_in_folders = load_bool(READ_PLAYLISTS_SETTING_FILE).unwrap_or(true);
+        let show_tray_icon = load_bool(SHOW_TRAY_ICON_SETTING_FILE).unwrap_or(true);
+        let close_to_tray = load_bool(CLOSE_TO_TRAY_SETTING_FILE).unwrap_or(false);
+        let minimize_to_tray = load_bool(MINIMIZE_TO_TRAY_SETTING_FILE).unwrap_or(false);
         let output_volume = load_text(OUTPUT_VOLUME_SETTING_FILE)
             .and_then(|value| value.parse::<f64>().ok())
             .filter(|value| value.is_finite())
@@ -254,6 +263,9 @@ impl AppSettings {
             opening_files_behavior,
             read_cue_sheets_in_folders,
             read_playlists_in_folders,
+            show_tray_icon,
+            close_to_tray,
+            minimize_to_tray,
             output_volume,
             output_device,
             playlist_column_layout,
@@ -334,6 +346,18 @@ impl AppSettings {
             READ_PLAYLISTS_SETTING_FILE,
             if enabled { "true" } else { "false" },
         )
+    }
+
+    pub fn save_show_tray_icon(enabled: bool) -> Result<(), String> {
+        save_bool(SHOW_TRAY_ICON_SETTING_FILE, enabled)
+    }
+
+    pub fn save_close_to_tray(enabled: bool) -> Result<(), String> {
+        save_bool(CLOSE_TO_TRAY_SETTING_FILE, enabled)
+    }
+
+    pub fn save_minimize_to_tray(enabled: bool) -> Result<(), String> {
+        save_bool(MINIMIZE_TO_TRAY_SETTING_FILE, enabled)
     }
 
     pub fn save_output_volume(volume: f64) -> Result<(), String> {
@@ -472,6 +496,10 @@ fn save_text(file_name: &str, value: &str) -> Result<(), String> {
     std::fs::create_dir_all(parent)
         .map_err(|error| format!("creating {}: {error}", parent.display()))?;
     std::fs::write(&path, value).map_err(|error| format!("writing {}: {error}", path.display()))
+}
+
+fn save_bool(file_name: &str, enabled: bool) -> Result<(), String> {
+    save_text(file_name, if enabled { "true" } else { "false" })
 }
 
 fn load_text(file_name: &str) -> Option<String> {

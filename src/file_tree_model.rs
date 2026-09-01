@@ -7,6 +7,10 @@ pub mod qobject {
         type QString = cxx_qt_lib::QString;
         include!("cxx-qt-lib/qurl.h");
         type QUrl = cxx_qt_lib::QUrl;
+
+        include!("kog/kog_desktop_integration.h");
+        #[cxx_name = "kogFileIconName"]
+        fn themed_file_icon_name(path: &QString) -> QString;
     }
 
     unsafe extern "C++Qt" {
@@ -21,6 +25,8 @@ pub mod qobject {
         #[qml_element]
         #[qproperty(QModelIndex, root_index)]
         #[qproperty(QString, root_path)]
+        #[qproperty(QString, parent_path)]
+        #[qproperty(bool, can_go_up)]
         type FileTreeModel = super::FileTreeModelRust;
 
         #[inherit]
@@ -56,6 +62,12 @@ pub mod qobject {
 
         #[qinvokable]
         fn path_url(self: &FileTreeModel, path: QString) -> QUrl;
+
+        #[qinvokable]
+        fn path_for_index(self: &FileTreeModel, index: &QModelIndex) -> QString;
+
+        #[qinvokable]
+        fn icon_name(self: &FileTreeModel, path: QString) -> QString;
     }
 }
 
@@ -68,6 +80,8 @@ use cxx_qt_lib::{QModelIndex, QString, QUrl};
 pub struct FileTreeModelRust {
     root_index: QModelIndex,
     root_path: QString,
+    parent_path: QString,
+    can_go_up: bool,
 }
 
 impl qobject::FileTreeModel {
@@ -102,14 +116,33 @@ impl qobject::FileTreeModel {
         QUrl::from_local_file(&path)
     }
 
+    pub fn path_for_index(&self, index: &QModelIndex) -> QString {
+        self.file_path_super(index)
+    }
+
+    pub fn icon_name(&self, path: QString) -> QString {
+        qobject::themed_file_icon_name(&path)
+    }
+
     fn set_tree_root(mut self: Pin<&mut Self>, path: PathBuf) {
         let path = std::fs::canonicalize(&path).unwrap_or(path);
         if !Path::new(&path).is_dir() {
             return;
         }
 
+        let parent = path
+            .parent()
+            .filter(|parent| *parent != path)
+            .map(Path::to_path_buf);
+        let parent_path = parent
+            .as_deref()
+            .map(|parent| QString::from(parent.to_string_lossy().as_ref()))
+            .unwrap_or_default();
+        let can_go_up = parent.is_some();
         let path = QString::from(path.to_string_lossy().as_ref());
         let index = self.as_mut().set_root_path_super(&path);
+        self.as_mut().set_parent_path(parent_path);
+        self.as_mut().set_can_go_up(can_go_up);
         self.as_mut().set_root_path(path);
         self.as_mut().set_root_index(index);
     }

@@ -9,6 +9,7 @@ mod archive;
 mod cuesheet;
 mod cuesheet_decoder;
 mod decoder;
+mod desktop_integration;
 mod equalizer;
 mod ffmpeg;
 mod ffmpeg_decoder;
@@ -54,7 +55,7 @@ mod usf_decoder;
 mod vgmstream;
 mod vgmstream_decoder;
 
-use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
+use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QString, QUrl};
 
 fn configure_platform_theme() {
     #[cfg(target_os = "linux")]
@@ -84,14 +85,16 @@ fn configure_platform_theme() {
 
 fn main() {
     configure_platform_theme();
-    let mut application = QGuiApplication::new();
+    let mut application = desktop_integration::DesktopApplication::new();
     let mut engine = QQmlApplicationEngine::new();
+
+    QGuiApplication::set_desktop_file_name(&QString::from("org.kog.player"));
+    application.set_application_name(&QString::from("Kog"));
 
     if let Some(engine) = engine.as_mut() {
         engine.load(&QUrl::from("qrc:/qt/qml/org/kog/player/qml/Main.qml"));
     }
+    desktop_integration::apply_application_icon();
 
-    if let Some(application) = application.as_mut() {
-        application.exec();
-    }
+    application.exec();
 }

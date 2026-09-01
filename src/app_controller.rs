@@ -51,6 +51,9 @@ pub mod qobject {
         #[qproperty(QString, opening_files_behavior)]
         #[qproperty(bool, read_cue_sheets_in_folders)]
         #[qproperty(bool, read_playlists_in_folders)]
+        #[qproperty(bool, show_tray_icon)]
+        #[qproperty(bool, close_to_tray)]
+        #[qproperty(bool, minimize_to_tray)]
         #[qproperty(bool, equalizer_enabled)]
         #[qproperty(bool, equalizer_track_genre)]
         #[qproperty(f64, equalizer_preamp_db)]
@@ -67,6 +70,10 @@ pub mod qobject {
         fn add_local_path(self: Pin<&mut AppController>, path: QString);
         #[qinvokable]
         fn activate_local_path(self: Pin<&mut AppController>, path: QString);
+        #[qinvokable]
+        fn add_local_paths_json(self: Pin<&mut AppController>, paths: QString);
+        #[qinvokable]
+        fn activate_local_paths_json(self: Pin<&mut AppController>, paths: QString);
         #[qinvokable]
         fn add_url(self: Pin<&mut AppController>, url: QString);
         #[qinvokable]
@@ -217,6 +224,12 @@ pub mod qobject {
         fn set_folder_cue_mode(self: Pin<&mut AppController>, enabled: bool);
         #[qinvokable]
         fn set_folder_playlist_mode(self: Pin<&mut AppController>, enabled: bool);
+        #[qinvokable]
+        fn update_show_tray_icon(self: Pin<&mut AppController>, enabled: bool);
+        #[qinvokable]
+        fn update_close_to_tray(self: Pin<&mut AppController>, enabled: bool);
+        #[qinvokable]
+        fn update_minimize_to_tray(self: Pin<&mut AppController>, enabled: bool);
     }
 }
 
@@ -272,6 +285,56 @@ fn add_path_status(result: &AddPathResult) -> String {
         Some(warning) => format!("{added} — {warning}"),
         None => added,
     }
+}
+
+fn ordered_directory_files(directory: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut files = Vec::new();
+    let mut pending = vec![(directory.to_owned(), true)];
+
+    while let Some((path, is_directory)) = pending.pop() {
+        if !is_directory {
+            files.push(path);
+            continue;
+        }
+
+        let mut entries = std::fs::read_dir(&path)
+            .map_err(|error| format!("reading {}: {error}", path.display()))?
+            .filter_map(Result::ok)
+            .collect::<Vec<_>>();
+        entries.sort_by_key(std::fs::DirEntry::path);
+
+        // The stack is LIFO, so queue entries backward to visit them in their
+        // sorted order. Keep the file/directory distinction with each queued
+        // path so regular files are appended only when they are visited.
+        for entry in entries.into_iter().rev() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() {
+                pending.push((entry.path(), true));
+            } else if file_type.is_file() {
+                pending.push((entry.path(), false));
+            }
+        }
+    }
+
+    Ok(files)
+}
+
+fn local_paths_from_json(value: &str) -> Result<Vec<PathBuf>, String> {
+    if value.len() > 1_048_576 {
+        return Err("The file-tree selection is too large".to_owned());
+    }
+    let paths = serde_json::from_str::<Vec<String>>(value)
+        .map_err(|error| format!("Reading the file-tree selection: {error}"))?;
+    if paths.len() > 4_096 {
+        return Err("The file-tree selection contains too many items".to_owned());
+    }
+    Ok(paths
+        .into_iter()
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .collect())
 }
 
 fn total_duration_label(duration: Duration) -> String {
@@ -709,6 +772,9 @@ pub struct AppControllerRust {
     opening_files_behavior: QString,
     read_cue_sheets_in_folders: bool,
     read_playlists_in_folders: bool,
+    show_tray_icon: bool,
+    close_to_tray: bool,
+    minimize_to_tray: bool,
     equalizer_enabled: bool,
     equalizer_track_genre: bool,
     equalizer_preamp_db: f64,
@@ -869,6 +935,9 @@ impl Default for AppControllerRust {
             opening_files_behavior: qstring(app_settings.opening_files_behavior.setting_value()),
             read_cue_sheets_in_folders: app_settings.read_cue_sheets_in_folders,
             read_playlists_in_folders: app_settings.read_playlists_in_folders,
+            show_tray_icon: app_settings.show_tray_icon,
+            close_to_tray: app_settings.close_to_tray,
+            minimize_to_tray: app_settings.minimize_to_tray,
             equalizer_enabled: equalizer_settings.enabled,
             equalizer_track_genre: equalizer_settings.track_genre,
             equalizer_preamp_db: f64::from(equalizer_settings.preamp_db),
@@ -1052,48 +1121,32 @@ impl AppControllerRust {
         }
 
         let mut result = AddPathResult::default();
-        let mut pending = vec![directory];
-        while let Some(folder) = pending.pop() {
-            let mut entries = std::fs::read_dir(&folder)
-                .map_err(|error| format!("reading {}: {error}", folder.display()))?
-                .filter_map(Result::ok)
-                .collect::<Vec<_>>();
-            entries.sort_by_key(std::fs::DirEntry::path);
-            for entry in entries.into_iter().rev() {
-                let path = entry.path();
-                let Ok(file_type) = entry.file_type() else {
-                    continue;
-                };
-                if file_type.is_dir() {
-                    pending.push(path);
-                    continue;
-                }
-                if !file_type.is_file() || !self.decoders.accepts_path(&path) {
-                    continue;
-                }
-                let extension = path
-                    .extension()
-                    .and_then(|value| value.to_str())
-                    .unwrap_or_default();
-                if extension.eq_ignore_ascii_case("cue") && !self.read_cue_sheets_in_folders {
-                    continue;
-                }
-                if matches!(
-                    extension.to_ascii_lowercase().as_str(),
-                    "m3u" | "m3u8" | "pls"
-                ) && !self.read_playlists_in_folders
-                {
-                    continue;
-                }
-                match self.add_path(path) {
-                    Ok(added) => {
-                        result.added += added.added;
-                        if let Some(warning) = added.warning {
-                            result.push_warning(warning);
-                        }
+        for path in ordered_directory_files(&directory)? {
+            if !self.decoders.accepts_path(&path) {
+                continue;
+            }
+            let extension = path
+                .extension()
+                .and_then(|value| value.to_str())
+                .unwrap_or_default();
+            if extension.eq_ignore_ascii_case("cue") && !self.read_cue_sheets_in_folders {
+                continue;
+            }
+            if matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "m3u" | "m3u8" | "pls"
+            ) && !self.read_playlists_in_folders
+            {
+                continue;
+            }
+            match self.add_path(path) {
+                Ok(added) => {
+                    result.added += added.added;
+                    if let Some(warning) = added.warning {
+                        result.push_warning(warning);
                     }
-                    Err(error) => result.push_warning(error),
                 }
+                Err(error) => result.push_warning(error),
             }
         }
         Ok(result)
@@ -1335,6 +1388,33 @@ impl qobject::AppController {
         .unwrap_or_default();
         self.as_mut()
             .add_local_paths(vec![PathBuf::from(path.to_string())], behavior);
+    }
+
+    pub fn add_local_paths_json(mut self: Pin<&mut Self>, paths: QString) {
+        let paths = match local_paths_from_json(&paths.to_string()) {
+            Ok(paths) => paths,
+            Err(error) => {
+                self.as_mut().set_status(qstring(error));
+                return;
+            }
+        };
+        self.as_mut()
+            .add_local_paths(paths, OpeningFilesBehavior::Enqueue);
+    }
+
+    pub fn activate_local_paths_json(mut self: Pin<&mut Self>, paths: QString) {
+        let paths = match local_paths_from_json(&paths.to_string()) {
+            Ok(paths) => paths,
+            Err(error) => {
+                self.as_mut().set_status(qstring(error));
+                return;
+            }
+        };
+        let behavior = OpeningFilesBehavior::from_setting(
+            &self.as_ref().rust().opening_files_behavior.to_string(),
+        )
+        .unwrap_or_default();
+        self.as_mut().add_local_paths(paths, behavior);
     }
 
     pub fn add_url(mut self: Pin<&mut Self>, url: QString) {
@@ -2579,6 +2659,30 @@ impl qobject::AppController {
         self.as_mut().set_read_playlists_in_folders(enabled);
     }
 
+    pub fn update_show_tray_icon(mut self: Pin<&mut Self>, enabled: bool) {
+        if let Err(error) = AppSettings::save_show_tray_icon(enabled) {
+            self.as_mut().set_status(qstring(error));
+            return;
+        }
+        self.as_mut().set_show_tray_icon(enabled);
+    }
+
+    pub fn update_close_to_tray(mut self: Pin<&mut Self>, enabled: bool) {
+        if let Err(error) = AppSettings::save_close_to_tray(enabled) {
+            self.as_mut().set_status(qstring(error));
+            return;
+        }
+        self.as_mut().set_close_to_tray(enabled);
+    }
+
+    pub fn update_minimize_to_tray(mut self: Pin<&mut Self>, enabled: bool) {
+        if let Err(error) = AppSettings::save_minimize_to_tray(enabled) {
+            self.as_mut().set_status(qstring(error));
+            return;
+        }
+        self.as_mut().set_minimize_to_tray(enabled);
+    }
+
     fn commit_equalizer_settings(
         mut self: Pin<&mut Self>,
         settings: EqualizerSettings,
@@ -2976,10 +3080,10 @@ impl qobject::AppController {
 #[cfg(test)]
 mod tests {
     use super::{
-        AddPathResult, PlaylistSortColumn, add_path_status, compare_tracks, move_selected_items,
-        natural_compare, normalize_playlist_save_path, output_devices_json, parse_row_indices,
-        playlist_entry_for_track, resolve_output_device, sample_rate_label, sort_visible_indices,
-        valid_equalizer_gain,
+        AddPathResult, PlaylistSortColumn, add_path_status, compare_tracks, local_paths_from_json,
+        move_selected_items, natural_compare, normalize_playlist_save_path,
+        ordered_directory_files, output_devices_json, parse_row_indices, playlist_entry_for_track,
+        resolve_output_device, sample_rate_label, sort_visible_indices, valid_equalizer_gain,
     };
     use crate::decoder::{ArchiveOrigin, PlaybackSource};
     use crate::playback::OutputDevice;
@@ -2987,7 +3091,9 @@ mod tests {
     use crate::settings::OutputDevicePreference;
     use crate::track::Track;
     use std::cmp::Ordering;
+    use std::fs;
     use std::path::PathBuf;
+    use tempfile::tempdir;
 
     #[test]
     fn add_path_status_keeps_every_warning() {
@@ -3002,6 +3108,45 @@ mod tests {
             add_path_status(&result),
             "No tracks added — remote entry skipped; decoder metadata unavailable"
         );
+    }
+
+    #[test]
+    fn directory_scan_preserves_sorted_depth_first_file_order() {
+        let temporary = tempdir().expect("create temporary music folder");
+        let root = temporary.path();
+        fs::create_dir(root.join("02-disc")).expect("create nested album folder");
+        fs::write(root.join("01-first.flac"), []).expect("create first track");
+        fs::write(root.join("02-disc/01-middle.flac"), []).expect("create nested first track");
+        fs::write(root.join("02-disc/02-middle.flac"), []).expect("create nested second track");
+        fs::write(root.join("03-last.flac"), []).expect("create last track");
+
+        let relative = ordered_directory_files(root)
+            .expect("scan the music folder")
+            .into_iter()
+            .map(|path| path.strip_prefix(root).unwrap().to_owned())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            relative,
+            [
+                PathBuf::from("01-first.flac"),
+                PathBuf::from("02-disc/01-middle.flac"),
+                PathBuf::from("02-disc/02-middle.flac"),
+                PathBuf::from("03-last.flac"),
+            ]
+        );
+    }
+
+    #[test]
+    fn file_tree_path_batches_preserve_selection_order() {
+        assert_eq!(
+            local_paths_from_json(r#"["/music/01.flac","/music/02.flac"]"#).unwrap(),
+            [
+                PathBuf::from("/music/01.flac"),
+                PathBuf::from("/music/02.flac"),
+            ]
+        );
+        assert!(local_paths_from_json(r#"{"path":"/music/01.flac"}"#).is_err());
     }
 
     #[test]
