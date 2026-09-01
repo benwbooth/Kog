@@ -504,7 +504,7 @@ ApplicationWindow {
 
                     Label {
                         Layout.fillWidth: true
-                        text: qsTr("Scanning folders and adding playable music…")
+                        text: qsTr("Finding files and loading music in the background…")
                         font.bold: true
                         wrapMode: Text.Wrap
                     }
@@ -1395,7 +1395,9 @@ ApplicationWindow {
                         }
                     }
 
-                    ScrollBar.vertical: ScrollBar {}
+                    ScrollBar.vertical: ScrollBar {
+                        policy: ScrollBar.AlwaysOff
+                    }
                 }
             }
         }
@@ -1513,8 +1515,12 @@ ApplicationWindow {
                         onDragCanceled: root.playlistDropTarget = -1
                     }
 
-                    ScrollBar.vertical: ScrollBar {}
-                    ScrollBar.horizontal: ScrollBar {}
+                    ScrollBar.vertical: ScrollBar {
+                        policy: ScrollBar.AlwaysOff
+                    }
+                    ScrollBar.horizontal: ScrollBar {
+                        policy: ScrollBar.AlwaysOff
+                    }
 
                     Item {
                         anchors.fill: parent
@@ -1570,28 +1576,19 @@ ApplicationWindow {
                 }
                 onExited: root.playlistDropTarget = -1
                 onDropped: drop => {
+                    const urls = []
                     if (!drop.hasUrls) {
                         if (drop.formats.indexOf("text/uri-list") === -1)
                             return
                         const uriList = drop.getDataAsString("text/uri-list")
                             .split(/\r?\n/).filter(value => value.length > 0)
-                        for (const url of uriList) {
-                            if (/^https?:\/\//i.test(url))
-                                appController.enqueue_url(url)
-                            else
-                                appController.add_file(url)
-                        }
-                        drop.acceptProposedAction()
-                        root.playlistDropTarget = -1
-                        return
+                        for (const url of uriList)
+                            urls.push(url)
+                    } else {
+                        for (const url of drop.urls)
+                            urls.push(url.toString())
                     }
-                    for (let url of drop.urls) {
-                        const value = url.toString()
-                        if (/^https?:\/\//i.test(value))
-                            appController.enqueue_url(value)
-                        else
-                            appController.add_file(url)
-                    }
+                    appController.enqueue_urls_json(JSON.stringify(urls))
                     drop.acceptProposedAction()
                     root.playlistDropTarget = -1
                 }

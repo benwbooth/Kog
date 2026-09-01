@@ -656,8 +656,7 @@ Window {
 
                                     required property var modelData
 
-                                    width: Math.max(0, formatList.width
-                                        - formatScrollBar.width - 10)
+                                    width: formatList.width
                                     title: modelData.name + "  ·  "
                                         + qsTr("%1 extensions").arg(modelData.extensions.length)
 
@@ -684,8 +683,7 @@ Window {
                                 }
 
                                 ScrollBar.vertical: ScrollBar {
-                                    id: formatScrollBar
-                                    policy: ScrollBar.AsNeeded
+                                    policy: ScrollBar.AlwaysOff
                                 }
                             }
 

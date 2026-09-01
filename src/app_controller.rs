@@ -87,6 +87,8 @@ pub mod qobject {
         #[qinvokable]
         fn enqueue_url(self: Pin<&mut AppController>, url: QString);
         #[qinvokable]
+        fn enqueue_urls_json(self: Pin<&mut AppController>, urls: QString);
+        #[qinvokable]
         fn open_audio_files(self: Pin<&mut AppController>);
         #[qinvokable]
         fn choose_music_folder(self: Pin<&mut AppController>);
@@ -252,10 +254,11 @@ pub mod qobject {
 }
 
 use std::cmp::Ordering;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError};
 use std::time::Duration;
 
@@ -285,9 +288,15 @@ struct AddPathResult {
 }
 
 enum DirectoryScanEvent {
-    File(PathBuf),
+    Prepared(PreparedScanFile),
     Warning(String),
     Complete { cancelled: bool },
+}
+
+struct PreparedScanFile {
+    path: PathBuf,
+    tracks: Vec<Track>,
+    warnings: Vec<String>,
 }
 
 struct DirectoryScanState {
@@ -400,11 +409,70 @@ fn send_directory_scan_event(
     }
 }
 
+fn prepare_scan_file(
+    path: PathBuf,
+    decoders: &DecoderRegistry,
+    read_cue_sheets: bool,
+    read_playlists: bool,
+) -> PreparedScanFile {
+    let mut prepared = PreparedScanFile {
+        path: path.clone(),
+        tracks: Vec::new(),
+        warnings: Vec::new(),
+    };
+    if !decoders.accepts_path(&path) {
+        return prepared;
+    }
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    if extension.eq_ignore_ascii_case("cue") && !read_cue_sheets {
+        return prepared;
+    }
+    if matches!(
+        extension.to_ascii_lowercase().as_str(),
+        "m3u" | "m3u8" | "pls"
+    ) && !read_playlists
+    {
+        return prepared;
+    }
+
+    let path = match canonical_path(&path) {
+        Ok(path) => path,
+        Err(error) => {
+            prepared.warnings.push(error);
+            return prepared;
+        }
+    };
+    let expansion = match decoders.expand_detailed(path) {
+        Ok(expansion) => expansion,
+        Err(error) => {
+            prepared.warnings.push(error);
+            return prepared;
+        }
+    };
+    prepared.warnings.extend(expansion.warnings);
+    for source in expansion.sources {
+        let track = Track::from_source(source, decoders);
+        if let Some(warning) = &track.decoder_warning {
+            prepared.warnings.push(warning.clone());
+        }
+        prepared.tracks.push(track);
+    }
+    prepared
+}
+
 fn scan_directory_paths(
     paths: Vec<PathBuf>,
     sender: SyncSender<DirectoryScanEvent>,
     cancel: Arc<AtomicBool>,
+    decoders: DecoderRegistry,
+    decoder_settings: DecoderSettings,
+    read_cue_sheets: bool,
+    read_playlists: bool,
 ) {
+    let mut files = Vec::new();
     'roots: for root in paths {
         if cancel.load(AtomicOrdering::Relaxed) {
             break;
@@ -424,9 +492,7 @@ fn scan_directory_paths(
         };
 
         if root.is_file() {
-            if !send_directory_scan_event(&sender, &cancel, DirectoryScanEvent::File(root)) {
-                return;
-            }
+            files.push(root);
             continue;
         }
         if !root.is_dir() {
@@ -444,9 +510,7 @@ fn scan_directory_paths(
                 break 'roots;
             }
             if !is_directory {
-                if !send_directory_scan_event(&sender, &cancel, DirectoryScanEvent::File(path)) {
-                    return;
-                }
+                files.push(path);
                 continue;
             }
 
@@ -481,6 +545,70 @@ fn scan_directory_paths(
         }
     }
 
+    if !files.is_empty() && !cancel.load(AtomicOrdering::Relaxed) {
+        let files = Arc::new(files);
+        let next_index = Arc::new(AtomicUsize::new(0));
+        let worker_count = std::thread::available_parallelism()
+            .map_or(2, usize::from)
+            .min(4)
+            .min(files.len());
+        let (prepared_sender, prepared_receiver) =
+            std::sync::mpsc::sync_channel::<(usize, PreparedScanFile)>(worker_count * 2);
+
+        std::thread::scope(|scope| {
+            for _ in 0..worker_count {
+                let files = Arc::clone(&files);
+                let next_index = Arc::clone(&next_index);
+                let prepared_sender = prepared_sender.clone();
+                let cancel = Arc::clone(&cancel);
+                let worker_decoders = decoders.background_worker(decoder_settings.clone());
+                scope.spawn(move || {
+                    loop {
+                        if cancel.load(AtomicOrdering::Relaxed) {
+                            break;
+                        }
+                        let index = next_index.fetch_add(1, AtomicOrdering::Relaxed);
+                        let Some(path) = files.get(index).cloned() else {
+                            break;
+                        };
+                        let prepared = prepare_scan_file(
+                            path,
+                            &worker_decoders,
+                            read_cue_sheets,
+                            read_playlists,
+                        );
+                        if prepared_sender.send((index, prepared)).is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+            drop(prepared_sender);
+
+            let mut next_to_send = 0_usize;
+            let mut pending = BTreeMap::new();
+            let mut forwarding = true;
+            while let Ok((index, prepared)) = prepared_receiver.recv() {
+                if !forwarding || cancel.load(AtomicOrdering::Relaxed) {
+                    forwarding = false;
+                    continue;
+                }
+                pending.insert(index, prepared);
+                while let Some(prepared) = pending.remove(&next_to_send) {
+                    if !send_directory_scan_event(
+                        &sender,
+                        &cancel,
+                        DirectoryScanEvent::Prepared(prepared),
+                    ) {
+                        forwarding = false;
+                        break;
+                    }
+                    next_to_send += 1;
+                }
+            }
+        });
+    }
+
     let cancelled = cancel.load(AtomicOrdering::Relaxed);
     let _ = send_directory_scan_event(&sender, &cancel, DirectoryScanEvent::Complete { cancelled });
 }
@@ -499,6 +627,36 @@ fn local_paths_from_json(value: &str) -> Result<Vec<PathBuf>, String> {
         .filter(|path| !path.is_empty())
         .map(PathBuf::from)
         .collect())
+}
+
+fn dropped_urls_from_json(value: &str) -> Result<(Vec<PathBuf>, Vec<String>), String> {
+    if value.len() > 1_048_576 {
+        return Err("The dropped URL list is too large".to_owned());
+    }
+    let values = serde_json::from_str::<Vec<String>>(value)
+        .map_err(|error| format!("Reading the dropped URL list: {error}"))?;
+    if values.len() > 4_096 {
+        return Err("No more than 4096 items can be dropped at once".to_owned());
+    }
+
+    let mut paths = Vec::new();
+    let mut remote_urls = Vec::new();
+    for value in values {
+        let value = value.trim();
+        if value.is_empty() || value.starts_with('#') {
+            continue;
+        }
+        let parsed = url::Url::parse(value)
+            .map_err(|error| format!("Invalid dropped URL {value:?}: {error}"))?;
+        match parsed.scheme() {
+            "file" => paths.push(parsed.to_file_path().map_err(|()| {
+                format!("Dropped file URL cannot be represented on this system: {value}")
+            })?),
+            "http" | "https" => remote_urls.push(value.to_owned()),
+            scheme => return Err(format!("Unsupported dropped URL scheme: {scheme}")),
+        }
+    }
+    Ok((paths, remote_urls))
 }
 
 fn total_duration_label(duration: Duration) -> String {
@@ -1606,7 +1764,7 @@ impl qobject::AppController {
             .directory_scan
             .as_ref()
             .is_some_and(|scan| scan.cancel_requested);
-        let limit = if cancel_requested { 128 } else { 8 };
+        let limit = if cancel_requested { 256 } else { 128 };
         let mut events = Vec::new();
         let mut disconnected = false;
         if let Some(scan) = self.as_ref().rust().directory_scan.as_ref() {
@@ -1630,9 +1788,16 @@ impl qobject::AppController {
 
         let mut playlist_changed = false;
         let mut completion = None;
+        let mut known_sources = self
+            .as_ref()
+            .rust()
+            .tracks
+            .iter()
+            .map(|track| track.source.clone())
+            .collect::<HashSet<_>>();
         for event in events {
             match event {
-                DirectoryScanEvent::File(path) => {
+                DirectoryScanEvent::Prepared(prepared) => {
                     let skip = self
                         .as_ref()
                         .rust()
@@ -1649,19 +1814,22 @@ impl qobject::AppController {
                         .saturating_add(1);
                     self.as_mut().set_directory_scan_files_scanned(scanned);
                     self.as_mut()
-                        .set_directory_scan_current_path(qstring(path.to_string_lossy()));
-                    let result = self.as_mut().rust_mut().add_scanned_file(path);
+                        .set_directory_scan_current_path(qstring(prepared.path.to_string_lossy()));
+                    let new_tracks = prepared
+                        .tracks
+                        .into_iter()
+                        .filter(|track| known_sources.insert(track.source.clone()))
+                        .collect::<Vec<_>>();
+                    let newly_added = new_tracks.len();
+                    if newly_added > 0 {
+                        playlist_changed = true;
+                        self.as_mut().rust_mut().tracks.extend(new_tracks);
+                    }
                     let added_count =
                         if let Some(scan) = self.as_mut().rust_mut().directory_scan.as_mut() {
-                            match result {
-                                Ok(added) => {
-                                    playlist_changed |= added.added > 0;
-                                    scan.combined.added += added.added;
-                                    if let Some(warning) = added.warning {
-                                        scan.combined.push_warning(warning);
-                                    }
-                                }
-                                Err(error) => scan.combined.push_warning(error),
+                            scan.combined.added += newly_added;
+                            for warning in prepared.warnings {
+                                scan.combined.push_warning(warning);
                             }
                             Some(scan.combined.added)
                         } else {
@@ -1710,7 +1878,7 @@ impl qobject::AppController {
         }
         self.as_mut()
             .set_directory_scan_current_path(qstring("Cancelling…"));
-        self.as_mut().set_status(qstring("Cancelling folder scan…"));
+        self.as_mut().set_status(qstring("Cancelling music load…"));
     }
 
     pub fn add_url(mut self: Pin<&mut Self>, url: QString) {
@@ -1725,6 +1893,24 @@ impl qobject::AppController {
     pub fn enqueue_url(mut self: Pin<&mut Self>, url: QString) {
         self.as_mut()
             .add_remote_url_value(url.to_string(), OpeningFilesBehavior::Enqueue);
+    }
+
+    pub fn enqueue_urls_json(mut self: Pin<&mut Self>, urls: QString) {
+        let (paths, remote_urls) = match dropped_urls_from_json(&urls.to_string()) {
+            Ok(inputs) => inputs,
+            Err(error) => {
+                self.as_mut().set_status(qstring(error));
+                return;
+            }
+        };
+        if !paths.is_empty() {
+            self.as_mut()
+                .add_local_paths(paths, OpeningFilesBehavior::Enqueue);
+        }
+        for url in remote_urls {
+            self.as_mut()
+                .add_remote_url_value(url, OpeningFilesBehavior::Enqueue);
+        }
     }
 
     fn add_remote_url_value(
@@ -3214,51 +3400,7 @@ impl qobject::AppController {
             ));
             return;
         }
-        if paths.iter().any(|path| path.is_dir()) {
-            self.as_mut().begin_directory_scan(paths, behavior);
-            return;
-        }
-        if behavior.clears_playlist() {
-            self.as_mut().clear_playlist();
-        }
-
-        let first_new_source_index = self.as_ref().rust().tracks.len();
-        let mut combined = AddPathResult::default();
-        for path in paths {
-            let result = if path.is_dir() {
-                self.as_mut().rust_mut().add_directory(&path)
-            } else {
-                self.as_mut().rust_mut().add_path(path)
-            };
-            match result {
-                Ok(result) => {
-                    combined.added += result.added;
-                    if let Some(warning) = result.warning {
-                        combined.push_warning(warning);
-                    }
-                }
-                Err(error) => combined.push_warning(error),
-            }
-        }
-
-        if combined.added == 0 && combined.warning.is_none() {
-            self.as_mut()
-                .set_status(qstring("The file is already in the playlist"));
-            return;
-        }
-        if combined.added == 0 {
-            self.as_mut()
-                .set_status(qstring(add_path_status(&combined)));
-            return;
-        }
-
-        self.as_mut().refresh_playback_order();
-        self.as_mut().rebuild_playlist();
-        self.as_mut()
-            .set_status(qstring(add_path_status(&combined)));
-        if behavior.starts_playback() {
-            self.as_mut().play_source_index(first_new_source_index);
-        }
+        self.as_mut().begin_directory_scan(paths, behavior);
     }
 
     fn begin_directory_scan(
@@ -3272,6 +3414,14 @@ impl qobject::AppController {
         let first_new_source_index = self.as_ref().rust().tracks.len();
         let (sender, receiver) = std::sync::mpsc::sync_channel(64);
         let cancel = Arc::new(AtomicBool::new(false));
+        let decoder_settings = self.as_ref().rust().decoder_settings.clone();
+        let worker_decoders = self
+            .as_ref()
+            .rust()
+            .decoders
+            .background_worker(decoder_settings.clone());
+        let read_cue_sheets = self.as_ref().rust().read_cue_sheets_in_folders;
+        let read_playlists = self.as_ref().rust().read_playlists_in_folders;
         self.as_mut().rust_mut().directory_scan = Some(DirectoryScanState {
             receiver,
             cancel: Arc::clone(&cancel),
@@ -3285,11 +3435,21 @@ impl qobject::AppController {
         self.as_mut()
             .set_directory_scan_current_path(qstring("Finding files…"));
         self.as_mut().set_directory_scan_active(true);
-        self.as_mut().set_status(qstring("Scanning folders…"));
+        self.as_mut().set_status(qstring("Loading music…"));
 
         if let Err(error) = std::thread::Builder::new()
             .name("kog-directory-scan".to_owned())
-            .spawn(move || scan_directory_paths(paths, sender, cancel))
+            .spawn(move || {
+                scan_directory_paths(
+                    paths,
+                    sender,
+                    cancel,
+                    worker_decoders,
+                    decoder_settings,
+                    read_cue_sheets,
+                    read_playlists,
+                )
+            })
         {
             self.as_mut().rust_mut().directory_scan = None;
             self.as_mut().set_directory_scan_active(false);
@@ -3309,18 +3469,13 @@ impl qobject::AppController {
         self.as_mut()
             .set_directory_scan_current_path(QString::default());
 
-        if tracks_added > 0 {
-            self.as_mut().refresh_playback_order();
-            self.as_mut().rebuild_playlist();
-        }
-
         let mut status = if cancelled {
             format!(
-                "Folder scan cancelled — {files_scanned} files scanned, {tracks_added} tracks added"
+                "Music load cancelled — {files_scanned} files scanned, {tracks_added} tracks added"
             )
         } else {
             format!(
-                "Folder scan complete — {files_scanned} files scanned, {tracks_added} tracks added"
+                "Music load complete — {files_scanned} files scanned, {tracks_added} tracks added"
             )
         };
         if let Some(warning) = scan.combined.warning {
@@ -3574,12 +3729,12 @@ impl qobject::AppController {
 mod tests {
     use super::{
         AddPathResult, DirectoryScanEvent, PlaylistSortColumn, add_path_status, compare_tracks,
-        local_paths_from_json, move_selected_items, natural_compare, normalize_playlist_save_path,
-        ordered_directory_files, output_devices_json, parse_row_indices, playlist_entry_for_track,
-        resolve_output_device, sample_rate_label, scan_directory_paths, sort_visible_indices,
-        valid_equalizer_gain,
+        dropped_urls_from_json, local_paths_from_json, move_selected_items, natural_compare,
+        normalize_playlist_save_path, ordered_directory_files, output_devices_json,
+        parse_row_indices, playlist_entry_for_track, resolve_output_device, sample_rate_label,
+        scan_directory_paths, sort_visible_indices, valid_equalizer_gain,
     };
-    use crate::decoder::{ArchiveOrigin, PlaybackSource};
+    use crate::decoder::{ArchiveOrigin, DecoderRegistry, DecoderSettings, PlaybackSource};
     use crate::playback::OutputDevice;
     use crate::playlist::PlaylistLocation;
     use crate::settings::OutputDevicePreference;
@@ -3648,11 +3803,17 @@ mod tests {
             vec![root.to_owned()],
             sender,
             Arc::new(AtomicBool::new(false)),
+            DecoderRegistry::default(),
+            DecoderSettings::default(),
+            true,
+            true,
         );
         let relative = receiver
             .into_iter()
             .filter_map(|event| match event {
-                DirectoryScanEvent::File(path) => Some(path.strip_prefix(root).unwrap().to_owned()),
+                DirectoryScanEvent::Prepared(prepared) => {
+                    Some(prepared.path.strip_prefix(root).unwrap().to_owned())
+                }
                 DirectoryScanEvent::Warning(warning) => panic!("unexpected warning: {warning}"),
                 DirectoryScanEvent::Complete { cancelled } => {
                     assert!(!cancelled);
@@ -3682,6 +3843,21 @@ mod tests {
             ]
         );
         assert!(local_paths_from_json(r#"{"path":"/music/01.flac"}"#).is_err());
+    }
+
+    #[test]
+    fn dropped_file_urls_are_decoded_as_one_ordered_batch() {
+        let (paths, remotes) =
+            dropped_urls_from_json(r#"["file:///music/01%20intro.flac","file:///music/02.flac"]"#)
+                .expect("parse file URL batch");
+        assert_eq!(
+            paths,
+            [
+                PathBuf::from("/music/01 intro.flac"),
+                PathBuf::from("/music/02.flac"),
+            ]
+        );
+        assert!(remotes.is_empty());
     }
 
     #[test]

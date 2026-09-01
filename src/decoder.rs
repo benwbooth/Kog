@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::fs::File;
+use std::hash::{Hash, Hasher};
 use std::io::Cursor;
 use std::num::{NonZeroU16, NonZeroU32};
 use std::path::Path;
@@ -90,7 +91,23 @@ impl PartialEq for PlaybackSource {
 
 impl Eq for PlaybackSource {}
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+impl Hash for PlaybackSource {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.subsong.hash(state);
+        if let Some(origin) = &self.archive_origin {
+            0_u8.hash(state);
+            origin.hash(state);
+        } else if let Some(url) = &self.remote_url {
+            1_u8.hash(state);
+            url.hash(state);
+        } else {
+            2_u8.hash(state);
+            self.path.hash(state);
+        }
+    }
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct ArchiveOrigin {
     pub archive_path: PathBuf,
     pub entry_name: String,
@@ -302,7 +319,7 @@ impl DecoderSettings {
 
 pub struct DecoderRegistry {
     backends: Vec<Box<dyn DecoderBackend>>,
-    archive_workspaces: Mutex<Vec<tempfile::TempDir>>,
+    archive_workspaces: Arc<Mutex<Vec<tempfile::TempDir>>>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -344,8 +361,16 @@ impl DecoderRegistry {
                 Box::new(crate::adplug_decoder::AdPlugBackend),
                 Box::new(crate::vgmstream_decoder::VgmstreamBackend),
             ],
-            archive_workspaces: Mutex::new(Vec::new()),
+            archive_workspaces: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    /// Build an independent decoder set for background metadata work while
+    /// sharing ownership of extracted archive workspaces with this registry.
+    pub fn background_worker(&self, settings: DecoderSettings) -> Self {
+        let mut worker = Self::new(settings);
+        worker.archive_workspaces = Arc::clone(&self.archive_workspaces);
+        worker
     }
 
     #[cfg(test)]
