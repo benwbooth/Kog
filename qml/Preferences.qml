@@ -493,6 +493,11 @@ Window {
                                     onClicked: root.app.choose_sc55_rom_folder()
                                 }
                                 Button {
+                                    text: qsTr("Import Archive…")
+                                    icon.name: "archive-insert"
+                                    onClicked: root.app.choose_sc55_rom_archive()
+                                }
+                                Button {
                                     text: qsTr("Clear")
                                     icon.name: "edit-clear"
                                     enabled: root.app.sc55_rom_path.length > 0
@@ -525,6 +530,11 @@ Window {
                                     onClicked: root.app.choose_mt32_rom_folder()
                                 }
                                 Button {
+                                    text: qsTr("Import Archive…")
+                                    icon.name: "archive-insert"
+                                    onClicked: root.app.choose_mt32_rom_archive()
+                                }
+                                Button {
                                     text: qsTr("Clear")
                                     icon.name: "edit-clear"
                                     enabled: root.app.mt32_rom_path.length > 0
@@ -536,7 +546,7 @@ Window {
                             PreferenceLabel {
                                 Layout.fillWidth: true
                                 visible: midiEngine.currentIndex === 3
-                                text: qsTr("Munt is built into Kog. Roland control and PCM ROM images must be supplied from hardware you own.")
+                                text: qsTr("Munt is built into Kog. Select a folder or import a ZIP, 7Z, RAR, TAR, or compressed ROM archive. ROMs are recognized by content, so filenames do not matter.")
                                 wrapMode: Text.Wrap
                                 color: root.palette.placeholderText
                             }
@@ -552,7 +562,7 @@ Window {
 
                     PreferenceLabel {
                         Layout.fillWidth: true
-                        text: qsTr("SF2 SoundFonts and OPL3 need no proprietary firmware. Nuked SC-55 is built into Kog but requires ROM images dumped from supported hardware; Kog does not include Roland ROMs.")
+                        text: qsTr("SF2 SoundFonts and OPL3 need no proprietary firmware. Nuked SC-55 is built into Kog but requires a supported user-supplied ROM set. Imported archives are unpacked safely into Kog's private data directory; Kog does not include Roland ROMs.")
                         wrapMode: Text.Wrap
                         color: root.palette.placeholderText
                     }

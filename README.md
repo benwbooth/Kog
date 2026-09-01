@@ -330,6 +330,11 @@ you own; Kog accepts `KOG_SC55_ROMS=/path/to/rom-directory` and never downloads
 or bundles those files. Munt is linked into Kog and likewise requires a
 user-supplied compatible MT-32 or CM-32L control/PCM ROM pair; select its
 directory in Preferences or set `KOG_MT32_ROMS=/path/to/rom-directory`.
+Preferences can also import ZIP, 7Z, RAR, TAR, gzip, bzip2, xz, and other
+libarchive-supported ROM archives in-process. Kog safely flattens the regular
+files into its private data directory and points the selected backend there;
+both pinned backends identify known ROM data by content, so filenames do not
+need to be changed.
 Isolated tests and packages may also set
 `KOG_SOUNDFONT=/path/to/bank.sf2` and
 `KOG_MIDI_ENGINE=rustysynth-sf2|opl3windows|nuked-sc55|munt-mt32`.

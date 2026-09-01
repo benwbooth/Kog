@@ -209,6 +209,22 @@ impl Drop for Sc55 {
     }
 }
 
+pub fn validate_rom_directory(path: &Path) -> Result<String, String> {
+    let schedule = Sc55Schedule {
+        duration: Duration::from_millis(1),
+        events: Vec::new(),
+    };
+    let mut schedule_file = NamedTempFile::new()
+        .map_err(|error| format!("creating SC-55 validation schedule: {error}"))?;
+    schedule.write(&mut schedule_file)?;
+    schedule_file
+        .flush()
+        .map_err(|error| format!("flushing SC-55 validation schedule: {error}"))?;
+    let (mut process, header) = spawn_helper(schedule_file.path(), path, 0)?;
+    stop_process(&mut process);
+    Ok(header.model)
+}
+
 impl Sc55Schedule {
     fn parse(bytes: &[u8]) -> Result<Self, String> {
         let smf = Smf::parse(bytes).map_err(|error| format!("parsing MIDI for SC-55: {error}"))?;
@@ -705,5 +721,24 @@ mod tests {
             error.contains("No complete romsets") || error.contains("loading SC-55 ROM set failed"),
             "unexpected error: {error}"
         );
+    }
+
+    #[test]
+    #[ignore = "requires user-supplied Roland ROMs through KOG_SC55_ROMS"]
+    fn user_rom_gate_recognizes_and_renders_sc55() {
+        let path = std::env::var_os("KOG_SC55_ROMS")
+            .map(PathBuf::from)
+            .expect("set KOG_SC55_ROMS to a user-owned ROM directory");
+        let midi = NamedTempFile::new().expect("create MIDI fixture");
+        std::fs::write(midi.path(), minimal_midi()).expect("write MIDI fixture");
+        let mut source =
+            Sc55::open(&minimal_midi(), midi.path(), &path).expect("open real Nuked SC-55 ROM set");
+        assert_eq!(source.model(), "SC-55mk1");
+        let mut samples = vec![0.0; 8_192];
+        let frames = source
+            .render(&mut samples)
+            .expect("render real SC-55 ROM set");
+        assert_eq!(frames, samples.len() / 2);
+        assert!(samples.iter().any(|sample| sample.abs() > 0.000_01));
     }
 }

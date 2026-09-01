@@ -154,6 +154,11 @@ impl Drop for Mt32Synth {
     }
 }
 
+pub fn validate_rom_directory(path: &Path) -> Result<String, String> {
+    let synth = Mt32Synth::open(path)?;
+    Ok(synth.model.clone())
+}
+
 fn error_message(error: &[c_char]) -> String {
     // The native bridge always NUL-terminates this fixed buffer.
     let message = unsafe { CStr::from_ptr(error.as_ptr()) }
@@ -639,5 +644,31 @@ mod tests {
             error.contains("no complete compatible MT-32/CM-32L ROM pair"),
             "unexpected error: {error}"
         );
+    }
+
+    #[test]
+    #[ignore = "requires user-supplied Roland ROMs through KOG_MT32_ROMS"]
+    fn user_rom_gate_recognizes_and_renders_mt32() {
+        let path = std::env::var_os("KOG_MT32_ROMS")
+            .map(PathBuf::from)
+            .expect("set KOG_MT32_ROMS to a user-owned ROM directory");
+        let mut midi = minimal_midi();
+        for byte in &mut midi {
+            *byte = match *byte {
+                0xc0 => 0xc2,
+                0x90 => 0x92,
+                0x80 => 0x82,
+                value => value,
+            };
+        }
+        let mut source = Mt32Source::open(&midi, &path).expect("open real Munt ROM set");
+        assert!(
+            source.model().contains("MT-32"),
+            "model: {}",
+            source.model()
+        );
+        let samples = source.by_ref().take(48_000).collect::<Vec<_>>();
+        assert_eq!(samples.len(), 48_000);
+        assert!(samples.iter().any(|sample| sample.abs() > 0.000_01));
     }
 }

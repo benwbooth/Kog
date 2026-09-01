@@ -37,6 +37,7 @@ mod psf;
 mod psf_decoder;
 mod qsf;
 mod qsf_decoder;
+mod rom_import;
 mod sc55;
 mod sdsf;
 mod sdsf_decoder;

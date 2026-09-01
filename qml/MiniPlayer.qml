@@ -72,15 +72,10 @@ Window {
         implicitHeight: primary ? 38 : 32
         display: AbstractButton.IconOnly
         hoverEnabled: true
-
-        contentItem: Image {
-            source: Qt.resolvedUrl("icons/" + button.iconName
-                + (button.primary || root.darkMode ? "-light" : "") + ".svg")
-            sourceSize.width: button.primary ? 19 : 17
-            sourceSize.height: button.primary ? 19 : 17
-            fillMode: Image.PreserveAspectFit
-            mipmap: true
-        }
+        icon.name: iconName
+        icon.width: primary ? 20 : 18
+        icon.height: primary ? 20 : 18
+        icon.color: primary ? palette.highlightedText : palette.buttonText
 
         background: Rectangle {
             radius: button.primary ? height / 2 : 7
@@ -153,20 +148,14 @@ Window {
                     Layout.preferredHeight: 28
                     display: AbstractButton.IconOnly
                     hoverEnabled: true
+                    icon.name: "view-restore"
+                    icon.width: 16
+                    icon.height: 16
                     Accessible.name: qsTr("Return to full player")
                     ToolTip.visible: hovered
                     ToolTip.delay: 500
                     ToolTip.text: Accessible.name
                     onClicked: root.restoreFullPlayer()
-
-                    contentItem: Image {
-                        source: Qt.resolvedUrl("icons/view-restore"
-                            + (root.darkMode ? "-light" : "") + ".svg")
-                        sourceSize.width: 16
-                        sourceSize.height: 16
-                        fillMode: Image.PreserveAspectFit
-                        mipmap: true
-                    }
 
                     background: Rectangle {
                         radius: 6

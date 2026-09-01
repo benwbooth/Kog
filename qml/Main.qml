@@ -1475,7 +1475,7 @@ ApplicationWindow {
                         }
                         onActivated: row => {
                             root.setPlaylistSelection([row], row, row)
-                            appController.play_index(row)
+                            appController.activate_playlist_index(row)
                         }
                         onDragStarted: row => {
                             if (!root.isPlaylistRowSelected(row))

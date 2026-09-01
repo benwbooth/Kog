@@ -12,6 +12,9 @@ use tempfile::TempDir;
 const MAX_ENTRIES: usize = 16_384;
 const MAX_ENTRY_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const MAX_TOTAL_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+const MAX_ROM_ENTRIES: usize = 256;
+const MAX_ROM_ENTRY_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_ROM_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 const FILE_TYPE_MASK: u32 = 0o170_000;
 const FILE_TYPE_DIRECTORY: u32 = 0o040_000;
 const FILE_TYPE_REGULAR: u32 = 0o100_000;
@@ -40,17 +43,39 @@ impl ExtractedArchive {
             ));
         }
 
+        Self::open_with_limits(path, MAX_ENTRIES, MAX_ENTRY_BYTES, MAX_TOTAL_BYTES)
+    }
+
+    pub fn open_rom(path: &Path) -> Result<Self, String> {
+        Self::open_with_limits(
+            path,
+            MAX_ROM_ENTRIES,
+            MAX_ROM_ENTRY_BYTES,
+            MAX_ROM_TOTAL_BYTES,
+        )
+    }
+
+    fn open_with_limits(
+        path: &Path,
+        max_entries: usize,
+        max_entry_bytes: u64,
+        max_total_bytes: u64,
+    ) -> Result<Self, String> {
         let source = File::open(path)
             .map_err(|error| format!("opening archive {}: {error}", path.display()))?;
         let temporary_directory = tempfile::Builder::new()
             .prefix("kog-archive-")
             .tempdir()
             .map_err(|error| format!("creating archive workspace: {error}"))?;
-        let raw_gzip = extension(path).is_some_and(|value| value.eq_ignore_ascii_case("gz"));
+        let raw_stream = extension(path).is_some_and(|value| {
+            ["gz", "bz2", "xz", "lzma"]
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(value))
+        });
         let iterator = ArchiveIteratorBuilder::new(source)
             .decoder(decode_archive_name)
             .mtree_format(false)
-            .raw_format(raw_gzip)
+            .raw_format(raw_stream)
             .build()
             .map_err(|error| format!("reading archive {}: {error}", path.display()))?;
 
@@ -71,14 +96,14 @@ impl ExtractedArchive {
                         ));
                     }
                     entry_count += 1;
-                    if entry_count > MAX_ENTRIES {
+                    if entry_count > max_entries {
                         return Err(format!(
-                            "archive {} exceeds Kog's {MAX_ENTRIES}-entry safety limit",
-                            path.display()
+                            "archive {} exceeds Kog's {max_entries}-entry safety limit",
+                            path.display(),
                         ));
                     }
 
-                    let name = raw_entry_name(path, &name, raw_gzip);
+                    let name = raw_entry_name(path, &name, raw_stream);
                     let relative = match safe_relative_path(&name) {
                         Ok(relative) => relative,
                         Err(error) => {
@@ -116,11 +141,11 @@ impl ExtractedArchive {
                         current = CurrentEntry::Discard { written: 0 };
                         continue;
                     }
-                    if stat.st_size > 0 && stat.st_size as u64 > MAX_ENTRY_BYTES {
+                    if stat.st_size > 0 && stat.st_size as u64 > max_entry_bytes {
                         return Err(format!(
-                            "archive entry {} exceeds Kog's {} GiB per-file safety limit",
+                            "archive entry {} exceeds Kog's {} MiB per-file safety limit",
                             portable_name(&relative),
-                            MAX_ENTRY_BYTES / 1024 / 1024 / 1024
+                            max_entry_bytes / 1024 / 1024,
                         ));
                     }
                     if let Some(parent) = target.parent() {
@@ -147,11 +172,11 @@ impl ExtractedArchive {
                     total_bytes = total_bytes
                         .checked_add(chunk_size)
                         .ok_or_else(|| "archive expanded size overflowed".to_owned())?;
-                    if total_bytes > MAX_TOTAL_BYTES {
+                    if total_bytes > max_total_bytes {
                         return Err(format!(
-                            "archive {} exceeds Kog's {} GiB expanded-size safety limit",
+                            "archive {} exceeds Kog's {} MiB expanded-size safety limit",
                             path.display(),
-                            MAX_TOTAL_BYTES / 1024 / 1024 / 1024
+                            max_total_bytes / 1024 / 1024,
                         ));
                     }
                     match &mut current {
@@ -159,11 +184,11 @@ impl ExtractedArchive {
                             *written = written
                                 .checked_add(chunk_size)
                                 .ok_or_else(|| "archive entry size overflowed".to_owned())?;
-                            if *written > MAX_ENTRY_BYTES {
+                            if *written > max_entry_bytes {
                                 return Err(format!(
-                                    "an entry in {} exceeds Kog's {} GiB per-file safety limit",
+                                    "an entry in {} exceeds Kog's {} MiB per-file safety limit",
                                     path.display(),
-                                    MAX_ENTRY_BYTES / 1024 / 1024 / 1024
+                                    max_entry_bytes / 1024 / 1024,
                                 ));
                             }
                             file.write_all(&bytes).map_err(|error| {
@@ -235,8 +260,8 @@ fn extension(path: &Path) -> Option<&str> {
     path.extension().and_then(|value| value.to_str())
 }
 
-fn raw_entry_name(archive: &Path, name: &str, raw_gzip: bool) -> String {
-    if !raw_gzip || name != "data" {
+fn raw_entry_name(archive: &Path, name: &str, raw_stream: bool) -> String {
+    if !raw_stream || name != "data" {
         return name.to_owned();
     }
     archive

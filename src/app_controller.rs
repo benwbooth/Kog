@@ -119,6 +119,8 @@ pub mod qobject {
         #[qinvokable]
         fn play_index(self: Pin<&mut AppController>, index: i32);
         #[qinvokable]
+        fn activate_playlist_index(self: Pin<&mut AppController>, index: i32);
+        #[qinvokable]
         fn play_pause(self: Pin<&mut AppController>);
         #[qinvokable]
         fn stop(self: Pin<&mut AppController>);
@@ -217,11 +219,19 @@ pub mod qobject {
         #[qinvokable]
         fn choose_sc55_rom_folder(self: Pin<&mut AppController>);
         #[qinvokable]
+        fn import_sc55_rom_archive(self: Pin<&mut AppController>, url: QUrl);
+        #[qinvokable]
+        fn choose_sc55_rom_archive(self: Pin<&mut AppController>);
+        #[qinvokable]
         fn clear_sc55_rom_directory(self: Pin<&mut AppController>);
         #[qinvokable]
         fn set_mt32_rom_directory(self: Pin<&mut AppController>, url: QUrl);
         #[qinvokable]
         fn choose_mt32_rom_folder(self: Pin<&mut AppController>);
+        #[qinvokable]
+        fn import_mt32_rom_archive(self: Pin<&mut AppController>, url: QUrl);
+        #[qinvokable]
+        fn choose_mt32_rom_archive(self: Pin<&mut AppController>);
         #[qinvokable]
         fn clear_mt32_rom_directory(self: Pin<&mut AppController>);
         #[qinvokable]
@@ -261,6 +271,7 @@ use crate::equalizer::{
 use crate::playback::{OutputDevice, PlaybackEngine, PlaybackState, available_output_devices};
 use crate::playback_order::{PlaybackOrder, SelectionState};
 use crate::playlist::{Playlist, PlaylistEntry, PlaylistLocation};
+use crate::rom_import::{ImportedRomSet, RomKind, import_rom_archive};
 use crate::settings::{
     AppSettings, MidiEngine, OpeningFilesBehavior, OutputDevicePreference, RepeatMode, ShuffleMode,
 };
@@ -311,6 +322,26 @@ fn add_path_status(result: &AddPathResult) -> String {
         Some(warning) => format!("{added} — {warning}"),
         None => added,
     }
+}
+
+fn rom_import_status(
+    engine: &str,
+    recognized_model: &str,
+    archive: &Path,
+    imported: &ImportedRomSet,
+) -> String {
+    let mut status = format!(
+        "Imported {} {} ROM files from {} — recognized {}",
+        imported.file_count,
+        engine,
+        archive.display(),
+        recognized_model
+    );
+    if !imported.warnings.is_empty() {
+        status.push_str(" — ");
+        status.push_str(&imported.warnings.join("; "));
+    }
+    status
 }
 
 fn ordered_directory_files(directory: &Path) -> Result<Vec<PathBuf>, String> {
@@ -2066,6 +2097,17 @@ impl qobject::AppController {
         self.as_mut().play_source_index(source_index);
     }
 
+    pub fn activate_playlist_index(mut self: Pin<&mut Self>, index: i32) {
+        let Some(source_index) = visible_source_index(self.as_ref().get_ref(), index) else {
+            return;
+        };
+        if self.as_ref().rust().current_index == saturating_i32(source_index) {
+            self.as_mut().play_pause();
+        } else {
+            self.as_mut().play_source_index(source_index);
+        }
+    }
+
     pub fn play_pause(mut self: Pin<&mut Self>) {
         if self.as_ref().rust().tracks.is_empty() {
             return;
@@ -2741,6 +2783,56 @@ impl qobject::AppController {
         self.as_mut().set_sc55_rom_directory(url);
     }
 
+    pub fn import_sc55_rom_archive(mut self: Pin<&mut Self>, url: QUrl) {
+        let Some(local_file) = url.to_local_file() else {
+            self.as_mut()
+                .set_midi_status(qstring("Only a local SC-55 ROM archive can be selected"));
+            return;
+        };
+        let archive = PathBuf::from(local_file.to_string());
+        let imported = match import_rom_archive(&archive, RomKind::Sc55) {
+            Ok(imported) => imported,
+            Err(error) => {
+                self.as_mut().set_midi_status(qstring(error));
+                return;
+            }
+        };
+        let model = match crate::sc55::validate_rom_directory(&imported.directory) {
+            Ok(model) => model,
+            Err(error) => {
+                let _ = std::fs::remove_dir_all(&imported.directory);
+                self.as_mut().set_midi_status(qstring(format!(
+                    "The imported SC-55 archive is not a complete supported ROM set: {error}"
+                )));
+                return;
+            }
+        };
+        let directory = QUrl::from_local_file(&qstring(imported.directory.to_string_lossy()));
+        self.as_mut().set_sc55_rom_directory(directory);
+        self.as_mut().set_status(qstring(rom_import_status(
+            "SC-55", &model, &archive, &imported,
+        )));
+    }
+
+    pub fn choose_sc55_rom_archive(mut self: Pin<&mut Self>) {
+        let initial_directory = self.as_ref().rust().directory.clone();
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Import a compressed SC-55 ROM set")
+            .set_directory(initial_directory)
+            .add_filter(
+                "ROM archives",
+                &[
+                    "zip", "7z", "rar", "tar", "tgz", "tbz", "tbz2", "txz", "gz", "bz2", "xz",
+                ],
+            )
+            .pick_file()
+        else {
+            return;
+        };
+        let url = QUrl::from_local_file(&qstring(path.to_string_lossy()));
+        self.as_mut().import_sc55_rom_archive(url);
+    }
+
     pub fn clear_sc55_rom_directory(mut self: Pin<&mut Self>) {
         if let Err(error) = AppSettings::save_sc55_rom_path(None) {
             self.as_mut().set_midi_status(qstring(error));
@@ -2827,6 +2919,59 @@ impl qobject::AppController {
         };
         let url = QUrl::from_local_file(&qstring(path.to_string_lossy()));
         self.as_mut().set_mt32_rom_directory(url);
+    }
+
+    pub fn import_mt32_rom_archive(mut self: Pin<&mut Self>, url: QUrl) {
+        let Some(local_file) = url.to_local_file() else {
+            self.as_mut()
+                .set_midi_status(qstring("Only a local MT-32 ROM archive can be selected"));
+            return;
+        };
+        let archive = PathBuf::from(local_file.to_string());
+        let imported = match import_rom_archive(&archive, RomKind::Mt32) {
+            Ok(imported) => imported,
+            Err(error) => {
+                self.as_mut().set_midi_status(qstring(error));
+                return;
+            }
+        };
+        let model = match crate::mt32::validate_rom_directory(&imported.directory) {
+            Ok(model) => model,
+            Err(error) => {
+                let _ = std::fs::remove_dir_all(&imported.directory);
+                self.as_mut().set_midi_status(qstring(format!(
+                    "The imported MT-32 archive has no complete compatible ROM pair: {error}"
+                )));
+                return;
+            }
+        };
+        let directory = QUrl::from_local_file(&qstring(imported.directory.to_string_lossy()));
+        self.as_mut().set_mt32_rom_directory(directory);
+        self.as_mut().set_status(qstring(rom_import_status(
+            "MT-32/CM-32L",
+            &model,
+            &archive,
+            &imported,
+        )));
+    }
+
+    pub fn choose_mt32_rom_archive(mut self: Pin<&mut Self>) {
+        let initial_directory = self.as_ref().rust().directory.clone();
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Import a compressed MT-32 or CM-32L ROM set")
+            .set_directory(initial_directory)
+            .add_filter(
+                "ROM archives",
+                &[
+                    "zip", "7z", "rar", "tar", "tgz", "tbz", "tbz2", "txz", "gz", "bz2", "xz",
+                ],
+            )
+            .pick_file()
+        else {
+            return;
+        };
+        let url = QUrl::from_local_file(&qstring(path.to_string_lossy()));
+        self.as_mut().import_mt32_rom_archive(url);
     }
 
     pub fn clear_mt32_rom_directory(mut self: Pin<&mut Self>) {
