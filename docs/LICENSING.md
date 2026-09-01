@@ -38,6 +38,12 @@ source trees and are summarized in `THIRD_PARTY_NOTICES.md`.
   and its corresponding source must be distributed under their own terms and
   installed beside Kog; changing Kog's root license would not make GPL-2.0-only
   and GPL-3.0-only code link-compatible.
+- SFM playback similarly compiles Cog's fork-specific GME SFM/higan subset and
+  Kog's adapter only into the GPL-2.0-only `kog-sfm-helper`. The main
+  GPL-3.0-or-later executable launches it through a documented PCM protocol and
+  links none of its objects. Binary distributions must install the helper
+  beside Kog and provide its retained source, LGPL-2.1 and GPL-2.0 notices, and
+  Kog adapter source under the helper's own terms.
 - PSF2 playback uses the BSD-licensed Play! emulator and its permissively
   licensed dependencies in a separate `kog-psf2-helper`. That boundary keeps
   the large emulator and legacy container parsers out of Kog's address space;

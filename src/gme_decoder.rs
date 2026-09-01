@@ -342,7 +342,10 @@ mod tests {
             registry.backend_id_for(Path::new("song.nsf")),
             Some("game-music-emu")
         );
-        assert_eq!(registry.backend_id_for(Path::new("song.sfm")), None);
+        assert_eq!(
+            registry.backend_id_for(Path::new("song.sfm")),
+            Some("cog-gme-sfm")
+        );
         assert_eq!(
             registry.backend_id_for(Path::new("song.vgm")),
             Some("libvgm")

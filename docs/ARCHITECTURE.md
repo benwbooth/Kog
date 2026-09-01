@@ -224,6 +224,17 @@ unreadable companions remain non-fatal but are surfaced as warnings. The
 current fixed defaults match Cog: 150 seconds when no duration exists, two
 loops when loop metadata exists, and an eight-second fade when none is given.
 
+Cog's SFM extension is absent from upstream libGME 0.6.5, so `cog-gme-sfm`
+uses the minimal portable `Spc_Sfm`, BML, SPC700, SMP, and DSP source subset
+from Cog commit `c17be856`. Its higan integration is GPL-2.0-only and therefore
+builds only into `kog-sfm-helper`, never into the main GPL-3.0-or-later Kog
+executable. The helper validates the SFM container, metadata sizes, state
+offsets, loop-log bounds, DSP indices, and duration before invoking the legacy
+core. It returns native tags and 32 kHz signed-16 stereo PCM through a bounded,
+versioned stream. Rust converts that stream to float PCM and seeks by restarting
+the helper at a requested frame. Cargo builds and locates the helper, so users
+do not install or launch an external renderer.
+
 The libvgm adapter registers its VGM, S98, DRO, and GYM player engines and owns
 the native player plus input memory for the lifetime of one Rust `Source`. It
 requests libvgm's packed 32-bit representation of its internal signed 24-bit

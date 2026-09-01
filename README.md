@@ -33,7 +33,12 @@ set. The first specialist backend is also live: AY, GBS, HES, KSS,
 NSF/NSFE, SAP, and SPC route to pinned Game Music Emu 0.6.5 code with
 multitrack expansion, companion M3U metadata, Cog's loop/fade policy, and seek.
 The NSF path has passed the current real-PCM and live-UI gates; the other GME
-formats still need corpus coverage. VGM/VGZ, S98, DRO, and GYM now route to the
+formats still need corpus coverage. Cog's fork-specific SFM renderer is built
+from a minimal pinned portable source subset in a bundled GPL-2.0-only helper,
+with native metadata, 32 kHz stereo PCM, loop/fade timing, bounded input, and
+restart-and-render seek. A fully generated SFM state gates routing, metadata,
+audible PCM, seek, fade, and exact end-of-stream behavior. VGM/VGZ, S98, DRO,
+and GYM now route to the
 same libvgm revision used by Cog, with real PCM, metadata, seek, loop/fade
 policy, and optional YRW801 ROM lookup. The generated VGM path has passed the
 current real-PCM, seek, and live-UI gates; the rest of the libvgm family still
@@ -62,7 +67,7 @@ fade, seek, and exact end-of-stream behavior. Org-02 and Org-03 Organya files
 now route through the MIT-licensed
 `orgorg` renderer with real stereo PCM, loop/fade timing, and seek. Kog does not
 redistribute Cave Story's synthesis assets; a deterministic original-format
-fixture and synthetic bank gate the backend. SFM, SGC, and the other chiptune
+fixture and synthetic bank gate the backend. SGC and the other chiptune
 families remain explicitly unclaimed. The pinned upstream vgmstream r2117 core
 now supplies a lowest-priority game-stream backend with its runtime-enumerated
 700-plus specialist extensions, companion-file and TXTP reopening, subsongs,
@@ -279,8 +284,9 @@ For an existing checkout, initialize native sources with
 `git submodule update --init --recursive` before building.
 
 Cargo builds `kog-psf-helper`, `kog-psf2-helper`, `kog-snsf-helper`,
-`kog-2sf-helper`, `kog-syntrax-helper`, and `kog-sc55-helper` automatically for
-local playback; users do not install third-party player or renderer programs.
+`kog-2sf-helper`, `kog-syntrax-helper`, `kog-sfm-helper`, and
+`kog-sc55-helper` automatically for local playback; users do not install
+third-party player or renderer programs.
 Binary packages bundle the companion processes they distribute beside the Kog
 executable and carry each process's corresponding notices. Isolated tests may override their locations
 with
@@ -288,8 +294,9 @@ with
 `KOG_PSF2_HELPER=/path/to/kog-psf2-helper`, or
 `KOG_SNSF_HELPER=/path/to/kog-snsf-helper` and
 `KOG_2SF_HELPER=/path/to/kog-2sf-helper`. Syntrax tests and packages may use
-`KOG_SYNTRAX_HELPER=/path/to/kog-syntrax-helper`; SC-55 tests and packages may
-use `KOG_SC55_HELPER=/path/to/kog-sc55-helper`.
+`KOG_SYNTRAX_HELPER=/path/to/kog-syntrax-helper`; SFM tests and packages may
+use `KOG_SFM_HELPER=/path/to/kog-sfm-helper`; SC-55 tests and packages may use
+`KOG_SC55_HELPER=/path/to/kog-sc55-helper`.
 
 Choose RustySynth, OPL3Windows, Nuked SC-55, or Munt under
 **Hamburger menu → Preferences → Synthesis**. RustySynth requires an SF2 bank.

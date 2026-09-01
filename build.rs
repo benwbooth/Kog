@@ -6,6 +6,7 @@ use std::path::PathBuf;
 fn main() {
     build_mt32emu();
     build_game_music_emu();
+    build_sfm_helper();
     let libvgm_output = build_libvgm();
     build_psf_helper();
     build_psf2_helper();
@@ -254,6 +255,44 @@ fn build_game_music_emu() {
     println!("cargo:rustc-link-search=native={}/lib", output.display());
     println!("cargo:rustc-link-lib=static=gme");
     println!("cargo:rerun-if-changed=native/game-music-emu");
+}
+
+fn build_sfm_helper() {
+    let helper = Path::new("native/sfm-helper");
+    let source = Path::new("native/cog-gme-sfm");
+    if !helper.join("CMakeLists.txt").is_file() || !source.join("gme/Spc_Sfm.cpp").is_file() {
+        panic!("Cog GME SFM helper sources are missing from the Kog checkout");
+    }
+
+    let source = source
+        .canonicalize()
+        .expect("canonicalize the Cog GME SFM source directory");
+    let output_directory =
+        PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR")).join("sfm-helper");
+    let output = cmake::Config::new(helper)
+        .out_dir(output_directory)
+        .profile("Release")
+        .define("COG_GME_SFM_SOURCE", &source)
+        .build();
+    let executable_name = if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        "kog-sfm-helper.exe"
+    } else {
+        "kog-sfm-helper"
+    };
+    let executable = output.join("bin").join(executable_name);
+    if !executable.is_file() {
+        panic!(
+            "Cog GME SFM helper build did not install {}",
+            executable.display()
+        );
+    }
+
+    println!(
+        "cargo:rustc-env=KOG_BUILD_SFM_HELPER={}",
+        executable.display()
+    );
+    println!("cargo:rerun-if-changed=native/sfm-helper");
+    println!("cargo:rerun-if-changed=native/cog-gme-sfm");
 }
 
 fn build_libvgm() -> std::path::PathBuf {

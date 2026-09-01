@@ -128,6 +128,24 @@ upstream project. It is distributed under the GNU Lesser General Public
 License, version 2.1. The complete upstream source and license are retained in
 the submodule, and a copy of the license is also in `LICENSES/LGPL-2.1.txt`.
 
+## Cog GME SFM helper
+
+The `native/cog-gme-sfm` directory is the minimal portable SFM source subset
+copied from `Frameworks/GME` in
+[Cog](https://github.com/losnoco/Cog) commit
+`c17be85654a64170c86bb8bbb4b59fd7b6795722`. Kog builds it only into the
+separately identified `kog-sfm-helper` process and communicates through a
+versioned PCM stream; none of this GPL-2.0-only code is linked into Kog's
+GPL-3.0-or-later executable.
+
+The GME SFM/BML code is Copyright 2013-2026 Christopher Snowhill. The SPC DSP
+code is Copyright 2007 Shay Green. Those files and the supporting GME files
+are distributed under LGPL-2.1-or-later terms; the imported higan SPC700/SMP
+integration and Kog helper adapter are distributed under GPL-2.0-only terms.
+The exact source, provenance record, and license texts are retained in
+`native/cog-gme-sfm`. The generated SFM regression state contains original
+Kog test code and synthetic BRR data, not third-party music or game data.
+
 ## libvgm
 
 The `native/libvgm` Git submodule is the official

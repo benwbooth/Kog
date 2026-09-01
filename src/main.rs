@@ -38,6 +38,8 @@ mod sc55;
 mod sdsf;
 mod sdsf_decoder;
 mod settings;
+mod sfm;
+mod sfm_decoder;
 mod sid;
 mod sid_decoder;
 mod syntrax;
