@@ -129,7 +129,17 @@ decompression, executable RAM bounds, tag sizes, library depth, and missing
 dependencies before invoking libupse. Generated PSF/miniPSF files with an
 original MIPS SPU program gate audible playback, metadata, tagged/default
 timing, fade/EOS, malformed input, seeking, and archive companion lookup.
-PSF2 remains the next extension of this backend.
+
+PSF2 and miniPSF2 use Play!'s portable PSF player and high-level IOP BIOS
+behind a separate `kog-psf2-helper`; Kog does not translate Cog's Objective-C
+wrapper or ship a Sony BIOS. The helper validates bounded PSF2 filesystems,
+zlib blocks, dependency depth/cycles, and loadable IRX/ELF ranges before
+starting Play!, then streams 44.1 kHz signed-16 stereo PCM through the same
+versioned Rust protocol. Generated PSF2/miniPSF2 files with original MIPS/SPU2
+code gate routing, metadata, audible playback after seek, tagged/default
+timing, exact EOS, malformed input, missing/cyclic libraries, and archive
+companion lookup. Broad corpus comparison and Windows/macOS runtime gates
+remain.
 
 Monkey's Audio Image Link (`.apl`) files now accept the original CRLF or
 portable LF header, resolve their local image path with Cog-compatible relative
@@ -167,8 +177,8 @@ Traversal paths, duplicate destinations, links/devices, oversized entries,
 and oversized archives are rejected or surfaced as warnings. Deterministic
 ZIP and GZ fixtures pass end-to-end WAV playback; real 7Z and RAR5 fixtures
 gate extraction; ZIP-gated APL playback proves relative image lookup; and
-archived NCSF, GSF, QSF, SSF, and USF mini/library pairs prove PSF dependency
-lookup.
+archived NCSF, GSF, QSF, SSF, USF, PSF, and PSF2 mini/library pairs prove PSF
+dependency lookup.
 Encrypted and multipart archives, nested archives, broad RAR/7Z corpora, and
 Windows/macOS runtime gates remain parity work.
 
@@ -214,9 +224,11 @@ cargo run
 For an existing checkout, initialize native sources with
 `git submodule update --init --recursive` before building.
 
-Cargo builds `kog-psf-helper` automatically for local PSF playback. Binary
-packages must install that helper beside the Kog executable; isolated tests may
-override its location with `KOG_PSF_HELPER=/path/to/kog-psf-helper`.
+Cargo builds `kog-psf-helper` and `kog-psf2-helper` automatically for local PSF
+playback. Binary packages must install both helpers beside the Kog executable;
+isolated tests may override their locations with
+`KOG_PSF_HELPER=/path/to/kog-psf-helper` and
+`KOG_PSF2_HELPER=/path/to/kog-psf2-helper`.
 
 Choose RustySynth or OPL3Windows under **Edit → Preferences → MIDI**. RustySynth
 requires an SF2 bank; Kog also accepts `KOG_SOUNDFONT=/path/to/bank.sf2` and

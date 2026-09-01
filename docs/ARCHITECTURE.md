@@ -357,8 +357,27 @@ to the emulated SPU and wrap it as PSF/miniPSF. They gate routing, metadata,
 audible PCM, exact seek, fade/EOS, default timing, malformed executable bounds,
 missing dependencies, mini-library resolution, and a ZIP-contained pair. A
 broad redistributable corpus, Cog's leading-silence scan, configurable timing,
-PSF2/miniPSF2 routing, Windows/macOS runtime gates, and direct Cog comparison
-remain parity work.
+Windows/macOS runtime gates, and direct Cog comparison remain parity work.
+
+PSF2 and miniPSF2 reuse Play! revision `04bde0d` through a second executable,
+`kog-psf2-helper`. Play!'s IOP HLE BIOS, MIPS execution, PSF filesystem, and
+SPU2 emulation stay in that process; Kog links no Play! objects. The helper
+prevalidates every root and dependency file, bounds aggregate filesystem data
+and compressed blocks, rejects absolute/cyclic or more-than-sixteen-level
+library chains, verifies zlib output, requires a root `psf2.irx`, and validates
+its little-endian MIPS ELF tables, single load segment, IOP module section, and
+emulated-RAM range. The fixed stream protocol is documented separately in
+`native/psf2-helper/PROTOCOL.md`.
+
+Rust dispatches PSF version 1 to libupse and version 2 to Play!, while exposing
+one `psf-family` registry backend. It owns common metadata, exact duration and
+fade policy, EOS, and restart/discard seeking. Tests generate an original IOP
+module that drives an SPU2 ADPCM loop and wrap it as PSF2/miniPSF2. They gate
+routing, metadata, audible PCM after seek, exact timing/EOS, defaults,
+malformed filesystem and IRX input, missing/cyclic libraries, tag precedence,
+and a ZIP-contained mini/library pair. A broad redistributable corpus,
+leading-silence comparison, Windows/macOS runtime gates, and direct comparison
+with Cog remain.
 
 ## Decoder contract
 

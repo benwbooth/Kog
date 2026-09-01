@@ -8,7 +8,7 @@ use rodio::{ChannelCount, Player, SampleRate, Source};
 use crate::decoder::{DecoderBackend, DecoderCapabilities, PlaybackSource, StreamProperties};
 use crate::psf::Psf;
 
-const PSF_EXTENSIONS: &[&str] = &["psf", "minipsf"];
+const PSF_EXTENSIONS: &[&str] = &["psf", "minipsf", "psf2", "minipsf2"];
 const PSF_DEFAULT_LENGTH: Duration = Duration::from_secs(150);
 const PSF_DEFAULT_FADE: Duration = Duration::from_secs(8);
 const PSF_RENDER_FRAMES: usize = 2_048;
@@ -23,11 +23,11 @@ impl PsfBackend {
 
 impl DecoderBackend for PsfBackend {
     fn id(&self) -> &'static str {
-        "libupse-psf"
+        "psf-family"
     }
 
     fn display_name(&self) -> &'static str {
-        "libupse / PSF"
+        "libupse + Play! / PSF family"
     }
 
     fn extensions(&self) -> &'static [&'static str] {
@@ -54,7 +54,10 @@ impl DecoderBackend for PsfBackend {
             album: metadata.album.clone(),
             genre: metadata.genre.clone(),
             year: metadata.date.as_deref().and_then(tag_year),
-            codec: Some("PlayStation Sound Format (PSF) / libupse helper".to_owned()),
+            codec: Some(match decoder.format_version() {
+                2 => "PlayStation 2 Sound Format (PSF2) / Play! helper".to_owned(),
+                _ => "PlayStation Sound Format (PSF) / libupse helper".to_owned(),
+            }),
             bits_per_sample: Some(16),
             ..StreamProperties::default()
         })
@@ -165,7 +168,10 @@ impl Source for PsfSource {
 mod tests {
     use super::*;
     use crate::decoder::{DecoderRegistry, DecoderSettings};
-    use crate::psf::{test_psf_bytes, test_psf_executable, test_psf_out_of_bounds_executable};
+    use crate::psf::{
+        test_psf_bytes, test_psf_executable, test_psf_out_of_bounds_executable, test_psf2_bytes,
+        test_psf2_irx,
+    };
 
     fn fixture_tags(title: &str) -> String {
         format!(
@@ -193,7 +199,7 @@ mod tests {
         .unwrap();
 
         let registry = DecoderRegistry::new(DecoderSettings::default());
-        assert_eq!(registry.backend_id_for(&path), Some("libupse-psf"));
+        assert_eq!(registry.backend_id_for(&path), Some("psf-family"));
         let source = PlaybackSource::from_path(path);
         let properties = registry.probe(&source).expect("probe generated PSF");
         assert_duration_within_one_frame(properties.duration, Duration::from_millis(600));
@@ -260,6 +266,132 @@ mod tests {
 
         decoder.seek(Duration::from_secs(10)).unwrap();
         assert_eq!(decoder.render(&mut pcm).expect("render PSF at end"), 0);
+    }
+
+    #[test]
+    fn generated_psf2_routes_renders_seeks_and_ends_exactly() {
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path().join("fixture.psf2");
+        let irx = test_psf2_irx();
+        std::fs::write(
+            &path,
+            test_psf2_bytes(&[("psf2.irx", &irx)], &fixture_tags("Synthetic PSF2")),
+        )
+        .unwrap();
+
+        let registry = DecoderRegistry::new(DecoderSettings::default());
+        assert_eq!(registry.backend_id_for(&path), Some("psf-family"));
+        let source = PlaybackSource::from_path(path.clone());
+        let properties = registry.probe(&source).expect("probe generated PSF2");
+        assert_duration_within_one_frame(properties.duration, Duration::from_millis(600));
+        assert_eq!(properties.sample_rate, Some(44_100));
+        assert_eq!(properties.channels, Some(2));
+        assert_eq!(properties.title.as_deref(), Some("Synthetic PSF2"));
+        assert_eq!(
+            properties.codec.as_deref(),
+            Some("PlayStation 2 Sound Format (PSF2) / Play! helper")
+        );
+
+        let mut decoder =
+            Psf::open(&path, PSF_DEFAULT_LENGTH, PSF_DEFAULT_FADE).expect("open generated PSF2");
+        let mut pcm = vec![0.0; 512 * 2];
+        assert_eq!(decoder.render(&mut pcm).expect("render PSF2"), 512);
+        assert!(
+            pcm.iter().any(|sample| sample.abs() > 0.000_01),
+            "generated PSF2 was silent"
+        );
+        assert_eq!(
+            decoder.seek(Duration::from_millis(250)).unwrap(),
+            Duration::from_millis(250)
+        );
+        pcm.fill(0.0);
+        assert_eq!(
+            decoder.render(&mut pcm).expect("render after PSF2 seek"),
+            512
+        );
+        assert!(
+            pcm.iter().any(|sample| sample.abs() > 0.000_01),
+            "generated PSF2 was silent after seek"
+        );
+        decoder.seek(Duration::from_secs(10)).unwrap();
+        assert_eq!(decoder.render(&mut pcm).expect("render PSF2 at end"), 0);
+    }
+
+    #[test]
+    fn minipsf2_resolves_relative_library_and_outer_tags() {
+        let fixture = tempfile::tempdir().unwrap();
+        let library = fixture.path().join("music.psflib2");
+        let mini = fixture.path().join("selection.minipsf2");
+        let irx = test_psf2_irx();
+        std::fs::write(
+            &library,
+            test_psf2_bytes(&[("psf2.irx", &irx)], "title=Library title\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            &mini,
+            test_psf2_bytes(
+                &[],
+                "_lib=music.psflib2\ntitle=Mini PSF2 selection\nlength=0:00.250\n",
+            ),
+        )
+        .unwrap();
+
+        let decoder = Psf::open(&mini, PSF_DEFAULT_LENGTH, PSF_DEFAULT_FADE)
+            .expect("open miniPSF2 library chain");
+        assert_duration_within_one_frame(Some(decoder.duration()), Duration::from_millis(250));
+        assert_eq!(
+            decoder.metadata().title.as_deref(),
+            Some("Mini PSF2 selection")
+        );
+    }
+
+    #[test]
+    fn psf2_defaults_and_malformed_inputs_are_rejected() {
+        let fixture = tempfile::tempdir().unwrap();
+        let irx = test_psf2_irx();
+
+        let untimed = fixture.path().join("untimed.psf2");
+        std::fs::write(
+            &untimed,
+            test_psf2_bytes(&[("psf2.irx", &irx)], "title=Untimed PSF2 fixture\n"),
+        )
+        .unwrap();
+        let decoder =
+            Psf::open(&untimed, PSF_DEFAULT_LENGTH, PSF_DEFAULT_FADE).expect("open untimed PSF2");
+        assert_duration_within_one_frame(Some(decoder.duration()), Duration::from_secs(158));
+
+        let no_root = fixture.path().join("no-root.psf2");
+        std::fs::write(&no_root, test_psf2_bytes(&[], "")).unwrap();
+        assert!(Psf::open(&no_root, PSF_DEFAULT_LENGTH, PSF_DEFAULT_FADE).is_err());
+
+        let malformed_irx = fixture.path().join("malformed-irx.psf2");
+        std::fs::write(
+            &malformed_irx,
+            test_psf2_bytes(&[("psf2.irx", &[0_u8; 52])], ""),
+        )
+        .unwrap();
+        assert!(Psf::open(&malformed_irx, PSF_DEFAULT_LENGTH, PSF_DEFAULT_FADE).is_err());
+
+        let malformed_fs = fixture.path().join("malformed-fs.psf2");
+        let mut malformed_fs_bytes = test_psf2_bytes(&[("psf2.irx", &irx)], "");
+        malformed_fs_bytes[56..60].copy_from_slice(&u32::MAX.to_le_bytes());
+        std::fs::write(&malformed_fs, malformed_fs_bytes).unwrap();
+        assert!(Psf::open(&malformed_fs, PSF_DEFAULT_LENGTH, PSF_DEFAULT_FADE).is_err());
+
+        let missing = fixture.path().join("missing.minipsf2");
+        std::fs::write(
+            &missing,
+            test_psf2_bytes(&[], "_lib=does-not-exist.psflib2\n"),
+        )
+        .unwrap();
+        assert!(Psf::open(&missing, PSF_DEFAULT_LENGTH, PSF_DEFAULT_FADE).is_err());
+
+        let cycle_a = fixture.path().join("cycle-a.minipsf2");
+        let cycle_b = fixture.path().join("cycle-b.psflib2");
+        std::fs::write(&cycle_a, test_psf2_bytes(&[], "_lib=cycle-b.psflib2\n")).unwrap();
+        std::fs::write(&cycle_b, test_psf2_bytes(&[], "_lib=cycle-a.minipsf2\n")).unwrap();
+        assert!(Psf::open(&cycle_a, PSF_DEFAULT_LENGTH, PSF_DEFAULT_FADE).is_err());
     }
 
     #[test]

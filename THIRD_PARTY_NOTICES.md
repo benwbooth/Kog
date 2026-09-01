@@ -285,6 +285,36 @@ it is not an operating-system sandbox. Kog's tests generate original MIPS code,
 SPU register writes, an ADPCM waveform, and PSF wrappers. They include no Sony
 firmware, game program, game data, or recorded audio.
 
+## Play! and kog-psf2-helper
+
+The `native/play` submodule is Jean-Philip Desjardins' cross-platform
+[Play!](https://github.com/jpd002/Play-) emulator at commit
+`04bde0df87ee7c0e2f0151b51bb2cc22c88541da`. Kog reuses Play!'s PSF player,
+IOP high-level BIOS, CPU, and SPU2 implementation for PSF2 and miniPSF2 instead
+of translating Cog's Objective-C plugin or redistributing Sony firmware.
+
+Play!, Framework (`587f278917acc0026bf5fc34b39f995fc26bd015`), and CodeGen
+(`a5009f7dca062695b8e5aebbd71e67b4ddfa9251`) use permissive BSD two-clause
+terms; their complete notices remain in the pinned recursive submodules. The
+exact Play! notice is copied to `LICENSES/Play-BSD-2-Clause.txt`. The helper's
+reachable dependency set also includes BSD-licensed libchdr, xxHash, and zstd;
+the public-domain LZMA SDK; system zlib; and platform-provided OpenSSL, bzip2,
+and ICU libraries where selected by Play!'s CMake build. Their license files
+and copyright notices remain in `native/play/deps`, and binary packagers must
+carry the corresponding notices for the libraries they distribute.
+
+Kog's GPL-3.0-or-later adapter under `native/psf2-helper` and Play! are compiled
+only into the separate `kog-psf2-helper` executable; no Play! object is linked
+into the Kog executable. The helper uses the versioned metadata/PCM protocol in
+`native/psf2-helper/PROTOCOL.md`. It validates PSF2 containers, dependency
+chains, filesystem blocks, and IRX/ELF bounds before Play! sees them. This is a
+process boundary, not an operating-system sandbox.
+
+Tests construct an original MIPS IOP module that writes a synthetic ADPCM
+waveform to emulated SPU2 registers, then wrap it in generated PSF2/miniPSF2
+filesystems. They contain no Sony BIOS, firmware, game code, game data, or
+recorded audio.
+
 ## SSEQPlayer and psflib
 
 The `native/sseqplayer` submodule is kode54's official

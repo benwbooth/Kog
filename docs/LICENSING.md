@@ -21,6 +21,13 @@ source trees and are summarized in `THIRD_PARTY_NOTICES.md`.
   and its corresponding source must be distributed under their own terms and
   installed beside Kog; changing Kog's root license would not make GPL-2.0-only
   and GPL-3.0-only code link-compatible.
+- PSF2 playback uses the BSD-licensed Play! emulator and its permissively
+  licensed dependencies in a separate `kog-psf2-helper`. That boundary keeps
+  the large emulator and legacy container parsers out of Kog's address space;
+  it is an engineering and fault-containment choice, not a license workaround.
+  The GPL-3.0-or-later Kog adapter, Play! notices, and dependency notices must
+  accompany binary distributions. Play! is not relicensed by Kog, and no root
+  license change is required to use its BSD-licensed code.
 - A decoder whose license adds non-commercial or other GPL-incompatible terms
   does not become link-compatible merely because Kog is intended as a
   non-commercial project. Such a component requires an independently reviewed,

@@ -1,5 +1,6 @@
-//! Safe process wrapper for libupse PlayStation PSF playback.
+//! Safe process wrapper for libupse PSF and Play! PSF2 playback.
 
+use std::fs::File;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Command, Stdio};
@@ -95,6 +96,10 @@ impl Psf {
 
     pub fn channels(&self) -> u16 {
         self.channels
+    }
+
+    pub fn format_version(&self) -> u32 {
+        self.format_version
     }
 
     pub fn metadata(&self) -> &PsfMetadata {
@@ -277,7 +282,7 @@ fn spawn_helper(
     default_length_milliseconds: u32,
     default_fade_milliseconds: u32,
 ) -> Result<(PsfProcess, HelperHeader), String> {
-    let helper = helper_path()?;
+    let helper = helper_path(path)?;
     let mut child = Command::new(&helper)
         .arg(path)
         .arg(start_frame.to_string())
@@ -320,7 +325,9 @@ fn spawn_helper(
 }
 
 fn validate_header(header: &HelperHeader, path: &Path) -> Result<(), String> {
-    if header.format_version != 1
+    let source_version = psf_format_version(path)?;
+    if header.format_version != u32::from(source_version)
+        || !matches!(header.format_version, 1 | 2)
         || header.sample_rate == 0
         || header.channels != 2
         || header.main_frames == 0
@@ -334,37 +341,71 @@ fn validate_header(header: &HelperHeader, path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn helper_path() -> Result<PathBuf, String> {
-    if let Some(path) = std::env::var_os("KOG_PSF_HELPER") {
+fn helper_path(source: &Path) -> Result<PathBuf, String> {
+    let version = psf_format_version(source)?;
+    let (override_name, executable_name, build_helper) = match version {
+        1 => (
+            "KOG_PSF_HELPER",
+            if cfg!(windows) {
+                "kog-psf-helper.exe"
+            } else {
+                "kog-psf-helper"
+            },
+            PathBuf::from(env!("KOG_BUILD_PSF_HELPER")),
+        ),
+        2 => (
+            "KOG_PSF2_HELPER",
+            if cfg!(windows) {
+                "kog-psf2-helper.exe"
+            } else {
+                "kog-psf2-helper"
+            },
+            PathBuf::from(env!("KOG_BUILD_PSF2_HELPER")),
+        ),
+        _ => {
+            return Err(format!(
+                "unsupported PSF format version {version} in {}",
+                source.display()
+            ));
+        }
+    };
+    if let Some(path) = std::env::var_os(override_name) {
         let path = PathBuf::from(path);
         if path.is_file() {
             return Ok(path);
         }
         return Err(format!(
-            "KOG_PSF_HELPER does not name a file: {}",
+            "{override_name} does not name a file: {}",
             path.display()
         ));
     }
 
     if let Ok(executable) = std::env::current_exe() {
-        let sibling = executable.with_file_name(if cfg!(windows) {
-            "kog-psf-helper.exe"
-        } else {
-            "kog-psf-helper"
-        });
+        let sibling = executable.with_file_name(executable_name);
         if sibling.is_file() {
             return Ok(sibling);
         }
     }
 
-    let build_helper = PathBuf::from(env!("KOG_BUILD_PSF_HELPER"));
     if build_helper.is_file() {
         return Ok(build_helper);
     }
     Err(format!(
-        "PSF helper is not installed beside Kog and the build copy is missing: {}",
+        "PSF format {version} helper is not installed beside Kog and the build copy is missing: {}",
         build_helper.display()
     ))
+}
+
+fn psf_format_version(path: &Path) -> Result<u8, String> {
+    let mut file = File::open(path)
+        .map_err(|error| format!("opening PSF header {}: {error}", path.display()))?;
+    let mut header = [0_u8; 4];
+    file.read_exact(&mut header)
+        .map_err(|error| format!("reading PSF header {}: {error}", path.display()))?;
+    if &header[..3] != b"PSF" {
+        return Err(format!("invalid PSF signature in {}", path.display()));
+    }
+    Ok(header[3])
 }
 
 fn stop_process(process: &mut PsfProcess) {
@@ -447,7 +488,7 @@ pub fn test_psf_executable() -> Vec<u8> {
     write_spu(&mut program, 0x01aa, 0xc000); // SPU on + main output
     write_spu(&mut program, 0x01a6, 0x0200); // transfer address 0x1000
     for word in [
-        0x0700, 0x7777, 0x9999, 0x7777, 0x9999, 0x7777, 0x9999, 0x7777,
+        0x0300, 0x7777, 0x9999, 0x7777, 0x9999, 0x7777, 0x9999, 0x7777,
     ] {
         write_spu(&mut program, 0x01a8, word);
     }
@@ -483,6 +524,160 @@ pub fn test_psf_out_of_bounds_executable() -> Vec<u8> {
     executable[0x18..0x1c].copy_from_slice(&0x801f_fffc_u32.to_le_bytes());
     executable[0x1c..0x20].copy_from_slice(&8_u32.to_le_bytes());
     executable
+}
+
+#[cfg(test)]
+pub fn test_psf2_bytes(files: &[(&str, &[u8])], tags: &str) -> Vec<u8> {
+    let reserved = test_psf2_filesystem(files);
+    let mut output = Vec::new();
+    output.extend_from_slice(b"PSF\x02");
+    output.extend_from_slice(&u32::try_from(reserved.len()).unwrap().to_le_bytes());
+    output.extend_from_slice(&0_u32.to_le_bytes());
+    output.extend_from_slice(&0_u32.to_le_bytes());
+    output.extend_from_slice(&reserved);
+    output.extend_from_slice(b"[TAG]");
+    output.extend_from_slice(tags.as_bytes());
+    output
+}
+
+#[cfg(test)]
+pub fn test_psf2_irx() -> Vec<u8> {
+    const T0: u32 = 8;
+    const T1: u32 = 9;
+    const ELF_HEADER_BYTES: usize = 52;
+    const PROGRAM_HEADER_BYTES: usize = 32;
+    const CODE_OFFSET: usize = 0x100;
+    const IOPMOD_BYTES: usize = 282;
+
+    let mut program = Vec::new();
+    push_instruction(&mut program, 0x3c00_0000 | (T0 << 16) | 0x1f90); // LUI t0,0x1f90
+    let write_spu2 = |program: &mut Vec<u8>, offset: u16, value: u16| {
+        push_instruction(program, 0x3400_0000 | (T1 << 16) | u32::from(value));
+        push_instruction(
+            program,
+            0xa400_0000 | (T0 << 21) | (T1 << 16) | u32::from(offset),
+        );
+    };
+
+    write_spu2(&mut program, 0x019a, 0x8000); // enable SPU2 core 0
+    write_spu2(&mut program, 0x01a8, 0x0000); // transfer address high
+    write_spu2(&mut program, 0x01aa, 0x0800); // transfer address 0x1000
+    for word in [
+        0x0300, 0x7777, 0x9999, 0x7777, 0x9999, 0x7777, 0x9999, 0x7777,
+    ] {
+        write_spu2(&mut program, 0x01ac, word);
+    }
+    write_spu2(&mut program, 0x0000, 0x3fff); // voice 0 left
+    write_spu2(&mut program, 0x0002, 0x3fff); // voice 0 right
+    write_spu2(&mut program, 0x0004, 0x1000); // native pitch
+    write_spu2(&mut program, 0x0006, 0x000f); // fast attack, full sustain
+    write_spu2(&mut program, 0x0008, 0x0000);
+    write_spu2(&mut program, 0x01c0, 0x0000); // sample address high
+    write_spu2(&mut program, 0x01c2, 0x0800); // sample address 0x1000
+    write_spu2(&mut program, 0x01c4, 0x0000); // repeat address high
+    write_spu2(&mut program, 0x01c6, 0x0800); // repeat address 0x1000
+    write_spu2(&mut program, 0x01a0, 0x0001); // key on voice 0
+    push_instruction(&mut program, 0x1000_ffff); // loop
+    push_instruction(&mut program, 0); // branch delay slot
+
+    let iopmod_offset = align4(CODE_OFFSET + program.len());
+    let section_offset = align4(iopmod_offset + IOPMOD_BYTES);
+    let mut elf = vec![0_u8; section_offset + 80];
+    elf[0..4].copy_from_slice(b"\x7fELF");
+    elf[4] = 1; // ELF32
+    elf[5] = 1; // little endian
+    elf[6] = 1; // current version
+    write_u16_at(&mut elf, 16, 0xff80); // relocatable IOP executable
+    write_u16_at(&mut elf, 18, 8); // MIPS
+    write_u32_at(&mut elf, 20, 1);
+    write_u32_at(&mut elf, 24, 0); // entry is relative to allocated base
+    write_u32_at(&mut elf, 28, u32::try_from(ELF_HEADER_BYTES).unwrap());
+    write_u32_at(&mut elf, 32, u32::try_from(section_offset).unwrap());
+    write_u16_at(&mut elf, 40, u16::try_from(ELF_HEADER_BYTES).unwrap());
+    write_u16_at(&mut elf, 42, u16::try_from(PROGRAM_HEADER_BYTES).unwrap());
+    write_u16_at(&mut elf, 44, 1);
+    write_u16_at(&mut elf, 46, 40);
+    write_u16_at(&mut elf, 48, 2);
+
+    write_u32_at(&mut elf, ELF_HEADER_BYTES, 1); // PT_LOAD
+    write_u32_at(
+        &mut elf,
+        ELF_HEADER_BYTES + 4,
+        u32::try_from(CODE_OFFSET).unwrap(),
+    );
+    write_u32_at(
+        &mut elf,
+        ELF_HEADER_BYTES + 16,
+        u32::try_from(program.len()).unwrap(),
+    );
+    write_u32_at(
+        &mut elf,
+        ELF_HEADER_BYTES + 20,
+        u32::try_from(program.len()).unwrap(),
+    );
+    write_u32_at(&mut elf, ELF_HEADER_BYTES + 24, 7); // read/write/execute
+    write_u32_at(&mut elf, ELF_HEADER_BYTES + 28, 16);
+    elf[CODE_OFFSET..CODE_OFFSET + program.len()].copy_from_slice(&program);
+
+    write_u32_at(
+        &mut elf,
+        iopmod_offset + 12,
+        u32::try_from(program.len()).unwrap(),
+    );
+    write_u16_at(&mut elf, iopmod_offset + 24, 0x0100);
+    elf[iopmod_offset + 26..iopmod_offset + 34].copy_from_slice(b"kogpsf2\0");
+
+    let iopmod_section = section_offset + 40;
+    write_u32_at(&mut elf, iopmod_section + 4, 0x7000_0080);
+    write_u32_at(
+        &mut elf,
+        iopmod_section + 16,
+        u32::try_from(iopmod_offset).unwrap(),
+    );
+    write_u32_at(
+        &mut elf,
+        iopmod_section + 20,
+        u32::try_from(IOPMOD_BYTES).unwrap(),
+    );
+    write_u32_at(&mut elf, iopmod_section + 32, 4);
+    elf
+}
+
+#[cfg(test)]
+fn test_psf2_filesystem(files: &[(&str, &[u8])]) -> Vec<u8> {
+    let table_bytes = 4 + files.len() * 48;
+    let mut output = vec![0_u8; table_bytes];
+    write_u32_at(&mut output, 0, u32::try_from(files.len()).unwrap());
+    for (index, (name, data)) in files.iter().enumerate() {
+        assert!(!data.is_empty());
+        assert!(name.len() < 36 && !name.contains('/') && !name.contains('\\'));
+        let compressed = stored_zlib(data);
+        let data_offset = output.len();
+        output.extend_from_slice(&u32::try_from(compressed.len()).unwrap().to_le_bytes());
+        output.extend_from_slice(&compressed);
+
+        let entry = 4 + index * 48;
+        output[entry..entry + name.len()].copy_from_slice(name.as_bytes());
+        write_u32_at(&mut output, entry + 36, u32::try_from(data_offset).unwrap());
+        write_u32_at(&mut output, entry + 40, u32::try_from(data.len()).unwrap());
+        write_u32_at(&mut output, entry + 44, u32::try_from(data.len()).unwrap());
+    }
+    output
+}
+
+#[cfg(test)]
+fn align4(value: usize) -> usize {
+    (value + 3) & !3
+}
+
+#[cfg(test)]
+fn write_u16_at(bytes: &mut [u8], offset: usize, value: u16) {
+    bytes[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+}
+
+#[cfg(test)]
+fn write_u32_at(bytes: &mut [u8], offset: usize, value: u32) {
+    bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
 }
 
 #[cfg(test)]

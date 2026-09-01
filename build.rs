@@ -7,6 +7,7 @@ fn main() {
     build_game_music_emu();
     let libvgm_output = build_libvgm();
     build_psf_helper();
+    build_psf2_helper();
     build_openmpt();
     build_hivelytracker();
     build_vgmstream();
@@ -62,6 +63,10 @@ fn main() {
                 "qml/Preferences.qml",
             ]),
     )
+    // Kog does not export hand-written C++ headers. Avoid recursively tracking
+    // the entire repository as an include root, which otherwise makes Cargo
+    // rebuild every native decoder after unrelated documentation changes.
+    .crate_include_root(None)
     .files(["src/app_controller.rs"])
     .qt_module("Network")
     .qt_module("Quick")
@@ -1114,4 +1119,59 @@ fn build_psf_helper() {
     );
     println!("cargo:rerun-if-changed=native/psf-helper");
     println!("cargo:rerun-if-changed=native/libupse");
+}
+
+fn build_psf2_helper() {
+    let helper = Path::new("native/psf2-helper");
+    let play = Path::new("native/play");
+    if !helper.join("CMakeLists.txt").is_file()
+        || !play.join("License.txt").is_file()
+        || !play
+            .join("deps/Framework/build_cmake/Framework/CMakeLists.txt")
+            .exists()
+        || !play.join("deps/CodeGen/CMakeLists.txt").exists()
+        || !play
+            .join("deps/Dependencies/zstd/build/cmake/CMakeLists.txt")
+            .exists()
+    {
+        panic!(
+            "Play! PSF2 helper sources are missing; run `git submodule update --init --recursive`"
+        );
+    }
+
+    let play = play
+        .canonicalize()
+        .expect("canonicalize the Play! source directory");
+    let output_directory =
+        PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR")).join("psf2-helper");
+    let mut config = cmake::Config::new(helper);
+    config
+        .out_dir(output_directory)
+        .profile("Release")
+        .define("PLAY_SOURCE", &play)
+        .define("ENABLE_AMAZON_S3", "OFF")
+        // libchdr's bundled zlib CMake renames a tracked source header during
+        // out-of-tree configuration. Use the system zlib so Cargo builds stay
+        // reproducible and the pinned Play! submodule remains immutable.
+        .define("WITH_SYSTEM_ZLIB", "ON");
+    let output = config.build();
+    let executable_name = if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        "kog-psf2-helper.exe"
+    } else {
+        "kog-psf2-helper"
+    };
+    let executable = output.join("bin").join(executable_name);
+    if !executable.is_file() {
+        panic!(
+            "Play! PSF2 helper build did not install {}",
+            executable.display()
+        );
+    }
+
+    println!(
+        "cargo:rustc-env=KOG_BUILD_PSF2_HELPER={}",
+        executable.display()
+    );
+    println!("cargo:rerun-if-changed=native/psf2-helper");
+    println!("cargo:rerun-if-changed=native/play");
 }

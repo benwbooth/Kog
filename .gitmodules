@@ -43,3 +43,6 @@
 [submodule "native/libupse"]
 	path = native/libupse
 	url = https://github.com/kode54/libupse.git
+[submodule "native/play"]
+	path = native/play
+	url = https://github.com/jpd002/Play-.git
