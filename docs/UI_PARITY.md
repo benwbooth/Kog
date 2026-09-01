@@ -25,7 +25,7 @@ surface.
 | Not started | Spectrum and SC-55 visualization | None | Spectrum modes/settings and the Nuked SC-55 visualization window |
 | Not started | Spotlight/library search | None | Search location, result columns/sorting, add-to-playlist, reveal action, and keyboard flow |
 | Not started | Tag editor | None | Multi-track edit states, artwork, save/reload/error behavior, and decoder-safe file updates |
-| Not started | Open URL and path suggester | None | URL entry/history, validation, local sandbox/path suggestion equivalents, and error states |
+| Partial | Open URL and path suggester | The hamburger menu exposes Cog's Add URL command with its `Ctrl+Shift+O` shortcut, themed modal HTTP(S) entry, Rust URL validation, Cog opening-policy integration, and linked-FFmpeg HTTP/HLS playback | URL history/autocomplete, richer inline validation and loading/error states, local sandbox/path suggestion equivalents, and deterministic captures |
 | Not started | About, credits, and feedback | None | Cross-platform equivalents using Kog identity and third-party notices |
 
 ## Interaction and integration surface
@@ -33,7 +33,7 @@ surface.
 | State | Behavior |
 | --- | --- |
 | Partial | Qt platform-native file/folder dialogs (with Qt's platform fallback), local drag-and-drop, search, core transport shortcuts, seek, volume, end-of-track advance |
-| Partial | Kog deliberately uses one toolbar hamburger menu instead of Cog's macOS menu bar. Implemented file, playlist-removal, View-window, playback, preferences, and quit commands retain shortcuts and state-based enablement; playlist save/load, Open Recent, URL playback, queue/stop-after-selection, previous/next album, repeat modes, and shuffle modes remain |
+| Partial | Kog deliberately uses one toolbar hamburger menu instead of Cog's macOS menu bar. Implemented file/URL opening, playlist-removal, View-window, playback, preferences, and quit commands retain shortcuts and state-based enablement; playlist save/load, Open Recent, queue/stop-after-selection, previous/next album, repeat modes, and shuffle modes remain |
 | Not started | Media keys, desktop notifications, dock/tray behavior, Now Playing/MPRIS/SMTC/MediaRemote integration, Last.fm, remote control, accessibility pass, localization |
 
 ## Visual verification states

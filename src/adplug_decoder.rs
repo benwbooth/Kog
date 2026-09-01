@@ -211,6 +211,7 @@ mod tests {
     fn source_renders_non_silent_pcm_and_seeks() {
         let decoder = AdPlugBackend::open(&PlaybackSource {
             path: fixture_path(),
+            remote_url: None,
             subsong: Some(0),
             archive_origin: None,
         })

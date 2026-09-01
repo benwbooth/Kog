@@ -74,6 +74,7 @@ impl DecoderBackend for CueSheetBackend {
             .ok_or_else(|| format!("{} has no CUE track numbered {fragment}", path.display()))?;
         Ok(PlaybackSource {
             path,
+            remote_url: None,
             subsong: Some(
                 u32::try_from(index)
                     .map_err(|_| "CUE track index exceeds Kog's source model".to_owned())?,
@@ -321,6 +322,7 @@ mod tests {
         let fixture = Fixture::new();
         let source = PlaybackSource {
             path: fixture.cue.clone(),
+            remote_url: None,
             subsong: Some(1),
             archive_origin: None,
         };
@@ -383,6 +385,7 @@ mod tests {
         let fixture = Fixture::new();
         let source = PlaybackSource {
             path: fixture.cue.clone(),
+            remote_url: None,
             subsong: Some(9),
             archive_origin: None,
         };

@@ -509,6 +509,7 @@ mod tests {
 
         let same_logical_source = PlaybackSource {
             path: PathBuf::from("/different/temporary/path.wav"),
+            remote_url: None,
             subsong: None,
             archive_origin: expansion.sources[0].archive_origin.clone(),
         };

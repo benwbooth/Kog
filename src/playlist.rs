@@ -53,6 +53,15 @@ impl Playlist {
     pub fn is_path(path: &Path) -> bool {
         PlaylistFormat::for_path(path).is_ok()
     }
+
+    pub fn is_hls(path: &Path) -> Result<bool, String> {
+        if PlaylistFormat::for_path(path).ok() != Some(PlaylistFormat::M3u) {
+            return Ok(false);
+        }
+        let bytes = std::fs::read(path)
+            .map_err(|error| format!("opening playlist {}: {error}", path.display()))?;
+        Ok(contains_hls_tag(&decode_text(&bytes).replace('\r', "\n")))
+    }
 }
 
 impl PlaylistFormat {
@@ -74,12 +83,9 @@ impl PlaylistFormat {
 fn parse_m3u<'a>(path: &Path, text: &'a str) -> Result<Vec<&'a str>, String> {
     let mut entries = Vec::new();
     for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
-        if line
-            .get(..7)
-            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("#EXT-X-"))
-        {
+        if is_hls_tag(line) {
             return Err(format!(
-                "{} is an HLS playlist; Kog's HLS backend is not implemented yet",
+                "{} is an HLS playlist and must be opened through Kog's FFmpeg backend",
                 path.display()
             ));
         }
@@ -88,6 +94,15 @@ fn parse_m3u<'a>(path: &Path, text: &'a str) -> Result<Vec<&'a str>, String> {
         }
     }
     Ok(entries)
+}
+
+fn contains_hls_tag(text: &str) -> bool {
+    text.lines().map(str::trim).any(is_hls_tag)
+}
+
+fn is_hls_tag(line: &str) -> bool {
+    line.get(..7)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("#EXT-X-"))
 }
 
 fn parse_pls(text: &str) -> Vec<&str> {
@@ -324,7 +339,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_hls_content_instead_of_treating_segments_as_songs() {
+    fn detects_hls_content_for_ffmpeg_instead_of_treating_segments_as_songs() {
         let fixture = Fixture::new();
         let playlist_path = fixture.path("stream.m3u8");
         std::fs::write(
@@ -332,11 +347,22 @@ mod tests {
             "#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:12\n#EXTINF:6,\nsegment.ts\n",
         )
         .unwrap();
+        assert!(Playlist::is_hls(&playlist_path).expect("detect HLS"));
         assert!(
             Playlist::open(&playlist_path)
                 .unwrap_err()
-                .contains("HLS backend")
+                .contains("FFmpeg backend")
         );
+        let registry = DecoderRegistry::new(DecoderSettings::default());
+        let expansion = registry
+            .expand_detailed(playlist_path.clone())
+            .expect("route local HLS playlist");
+        assert_eq!(expansion.sources.len(), 1);
+        assert_eq!(
+            expansion.sources[0].path,
+            playlist_path.canonicalize().unwrap()
+        );
+        assert_eq!(registry.backend_id_for(&playlist_path), Some("ffmpeg"));
     }
 
     fn write_wav(path: &Path) {
@@ -404,17 +430,20 @@ mod tests {
         let expansion = registry
             .expand_detailed(outer)
             .expect("expand nested playlists");
-        assert_eq!(expansion.sources.len(), 3);
+        assert_eq!(expansion.sources.len(), 4);
         assert_eq!(expansion.sources[0].path, first.canonicalize().unwrap());
         assert_eq!(expansion.sources[0].subsong, None);
         assert_eq!(expansion.sources[1].path, cue.canonicalize().unwrap());
         assert_eq!(expansion.sources[1].subsong, Some(1));
-        assert_eq!(expansion.sources[2].path, second.canonicalize().unwrap());
-        assert_eq!(expansion.sources[2].subsong, Some(0));
-        assert_eq!(expansion.warnings.len(), 3);
-        assert!(expansion.warnings[0].contains("network sources"));
-        assert!(expansion.warnings[1].contains("missing.flac"));
-        assert!(expansion.warnings[2].contains("No installed decoder backend accepts .txt"));
+        assert_eq!(
+            expansion.sources[2].remote_url.as_deref(),
+            Some("https://example.invalid/radio.mp3")
+        );
+        assert_eq!(expansion.sources[3].path, second.canonicalize().unwrap());
+        assert_eq!(expansion.sources[3].subsong, Some(0));
+        assert_eq!(expansion.warnings.len(), 2);
+        assert!(expansion.warnings[0].contains("missing.flac"));
+        assert!(expansion.warnings[1].contains("No installed decoder backend accepts .txt"));
     }
 
     #[test]

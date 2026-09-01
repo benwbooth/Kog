@@ -57,6 +57,10 @@ pub mod qobject {
         #[qinvokable]
         fn activate_local_path(self: Pin<&mut AppController>, path: QString);
         #[qinvokable]
+        fn add_url(self: Pin<&mut AppController>, url: QString);
+        #[qinvokable]
+        fn enqueue_url(self: Pin<&mut AppController>, url: QString);
+        #[qinvokable]
         fn open_audio_files(self: Pin<&mut AppController>);
         #[qinvokable]
         fn choose_music_folder(self: Pin<&mut AppController>);
@@ -167,7 +171,7 @@ use std::time::Duration;
 use cxx_qt::CxxQtType;
 use cxx_qt_lib::{QString, QUrl};
 
-use crate::decoder::{DecoderRegistry, DecoderSettings, validate_soundfont};
+use crate::decoder::{DecoderRegistry, DecoderSettings, ExpansionResult, validate_soundfont};
 use crate::playback::{PlaybackEngine, PlaybackState};
 use crate::settings::{AppSettings, MidiEngine, OpeningFilesBehavior};
 use crate::track::{Track, canonical_path};
@@ -456,6 +460,9 @@ fn natural_compare(left: &str, right: &str) -> Ordering {
 }
 
 fn track_path(track: &Track) -> String {
+    if let Some(url) = &track.source.remote_url {
+        return url.clone();
+    }
     let path = track
         .source
         .archive_origin
@@ -886,6 +893,15 @@ impl AppControllerRust {
             return Err(format!("{} is not a playable file", path.display()));
         }
         let expansion = self.decoders.expand_detailed(path)?;
+        Ok(self.add_expansion(expansion))
+    }
+
+    fn add_remote_url(&mut self, url: &str) -> Result<AddPathResult, String> {
+        let expansion = self.decoders.expand_remote_url(url)?;
+        Ok(self.add_expansion(expansion))
+    }
+
+    fn add_expansion(&mut self, expansion: ExpansionResult) -> AddPathResult {
         let mut result = AddPathResult::default();
         for warning in expansion.warnings {
             result.push_warning(warning);
@@ -901,7 +917,7 @@ impl AppControllerRust {
             self.tracks.push(track);
             result.added += 1;
         }
-        Ok(result)
+        result
     }
 
     fn add_directory(&mut self, directory: &Path) -> Result<AddPathResult, String> {
@@ -1068,6 +1084,52 @@ impl qobject::AppController {
         .unwrap_or_default();
         self.as_mut()
             .add_local_paths(vec![PathBuf::from(path.to_string())], behavior);
+    }
+
+    pub fn add_url(mut self: Pin<&mut Self>, url: QString) {
+        let behavior = OpeningFilesBehavior::from_setting(
+            &self.as_ref().rust().opening_files_behavior.to_string(),
+        )
+        .unwrap_or_default();
+        self.as_mut()
+            .add_remote_url_value(url.to_string(), behavior);
+    }
+
+    pub fn enqueue_url(mut self: Pin<&mut Self>, url: QString) {
+        self.as_mut()
+            .add_remote_url_value(url.to_string(), OpeningFilesBehavior::Enqueue);
+    }
+
+    fn add_remote_url_value(
+        mut self: Pin<&mut Self>,
+        value: String,
+        behavior: OpeningFilesBehavior,
+    ) {
+        if let Err(error) = self.as_ref().rust().decoders.expand_remote_url(&value) {
+            self.as_mut().set_status(qstring(error));
+            return;
+        }
+        if behavior.clears_playlist() {
+            self.as_mut().clear_playlist();
+        }
+        let first_new_source_index = self.as_ref().rust().tracks.len();
+        let result = match self.as_mut().rust_mut().add_remote_url(&value) {
+            Ok(result) => result,
+            Err(error) => {
+                self.as_mut().set_status(qstring(error));
+                return;
+            }
+        };
+        if result.added == 0 {
+            self.as_mut()
+                .set_status(qstring("The URL is already in the playlist"));
+            return;
+        }
+        self.as_mut().rebuild_playlist();
+        self.as_mut().set_status(qstring(add_path_status(&result)));
+        if behavior.starts_playback() {
+            self.as_mut().play_source_index(first_new_source_index);
+        }
     }
 
     pub fn remove_track(mut self: Pin<&mut Self>, index: i32) {

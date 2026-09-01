@@ -224,9 +224,13 @@ Cog's comment/`EXTINF` behavior, while PLS consumes only `File…=` entries.
 Relative POSIX and Windows paths, local `file://` URLs, trailing numeric subsong
 fragments, nested playlists, Cog's UTF-8 → GB18030 → Windows-1251 → Latin-1
 decode order, classic-Mac/Windows line endings, cycle detection, and a nesting
-safety limit are implemented. Missing, unsupported, or remote entries remain
-visible as UI warnings while valid local tracks are retained. Network sources,
-HLS, playlist writing, and non-numeric fragment schemes remain parity work.
+safety limit are implemented. HTTP(S) entries are retained as real playlist
+sources, and local or remote HLS manifests route to the linked FFmpeg libraries
+instead of being flattened as ordinary M3U entries. Kog's hamburger menu exposes
+a themed Add URL dialog, and a generated direct HTTP stream plus HLS
+manifest/segment pass an in-process network decode gate without spawning an
+external binary. Remote playlist recursion, richer stream metadata and buffering,
+playlist writing, and non-numeric fragment schemes remain parity work.
 
 ZIP, RAR, 7Z, RSN, VGM7Z, and raw GZ files now expand through the system
 libarchive library before decoder selection. Kog preserves physical archive

@@ -247,6 +247,7 @@ mod tests {
         let fixture = Fixture::new();
         let decoder = SidBackend::open(&PlaybackSource {
             path: fixture.0.clone(),
+            remote_url: None,
             subsong: Some(0),
             archive_origin: None,
         })

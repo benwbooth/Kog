@@ -52,7 +52,9 @@ impl Track {
             ..Self::default()
         };
 
-        if let Ok(tagged_file) = lofty::read_from_path(&track.source.path) {
+        if !track.source.is_remote()
+            && let Ok(tagged_file) = lofty::read_from_path(&track.source.path)
+        {
             let properties = tagged_file.properties();
             track.duration = Some(properties.duration());
             track.sample_rate = properties.sample_rate();

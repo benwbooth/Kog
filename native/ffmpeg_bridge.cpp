@@ -19,12 +19,20 @@ extern "C" {
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
 namespace {
 
 thread_local std::string last_open_error;
+std::once_flag network_init_once;
+int network_init_result = 0;
+
+bool is_http_location(const char *location) {
+    const std::string value(location);
+    return value.rfind("http://", 0) == 0 || value.rfind("https://", 0) == 0;
+}
 
 std::string ffmpeg_error(int code) {
     char buffer[AV_ERROR_MAX_STRING_SIZE] = {};
@@ -274,7 +282,36 @@ extern "C" KogFfmpeg *kog_ffmpeg_open(const char *path) {
     }
 
     auto decoder = std::make_unique<KogFfmpeg>();
-    int result = avformat_open_input(&decoder->format, path, nullptr, nullptr);
+    const bool remote = is_http_location(path);
+    if (remote) {
+        std::call_once(network_init_once, []() {
+            network_init_result = avformat_network_init();
+        });
+        if (network_init_result < 0) {
+            last_open_error = "initializing FFmpeg network support: " +
+                              ffmpeg_error(network_init_result);
+            return nullptr;
+        }
+    }
+
+    AVDictionary *open_options = nullptr;
+    if (remote) {
+        // Bound stalled servers while retaining streamed/radio inputs. Limit
+        // nested HLS access to network and crypto transports so a remote
+        // manifest cannot redirect FFmpeg to a local file URL.
+        av_dict_set(&open_options, "rw_timeout", "15000000", 0);
+        av_dict_set(&open_options, "timeout", "15000000", 0);
+        av_dict_set(&open_options, "reconnect", "1", 0);
+        av_dict_set(&open_options, "reconnect_streamed", "1", 0);
+        av_dict_set(&open_options, "reconnect_delay_max", "2", 0);
+        av_dict_set(
+            &open_options,
+            "protocol_whitelist",
+            "http,https,tcp,tls,crypto",
+            0);
+    }
+    int result = avformat_open_input(&decoder->format, path, nullptr, &open_options);
+    av_dict_free(&open_options);
     if (result < 0) {
         last_open_error = "opening with FFmpeg: " + ffmpeg_error(result);
         return nullptr;

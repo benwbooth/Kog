@@ -15,6 +15,7 @@ const FFMPEG_EXTENSIONS: &[&str] = &[
     "wma", "asf", "tak", "mp4", "m4a", "m4b", "m4r", "aac", "mp3", "mp2", "m2a", "mpa", "ape",
     "ac3", "dts", "dtshd", "wav", "tta", "vqf", "vqe", "vql", "ra", "rm", "rmj", "mka", "mkv",
     "weba", "webm", "dsf", "dff", "iff", "dsdiff", "wsd", "aiff", "aif", "wv", "wvp", "mpc", "shn",
+    "m3u", "m3u8",
 ];
 const RENDER_FRAMES: usize = 2_048;
 
@@ -41,7 +42,7 @@ impl DecoderBackend for FfmpegBackend {
     }
 
     fn probe(&self, source: &PlaybackSource) -> Result<StreamProperties, String> {
-        let decoder = Ffmpeg::open(&source.path)?;
+        let decoder = Ffmpeg::open_location(&source.input_location())?;
         let metadata = decoder.metadata();
         Ok(StreamProperties {
             duration: decoder.duration(),
@@ -61,7 +62,9 @@ impl DecoderBackend for FfmpegBackend {
     }
 
     fn append(&self, source: &PlaybackSource, player: &Player) -> Result<(), String> {
-        player.append(FfmpegSource::new(Ffmpeg::open(&source.path)?));
+        player.append(FfmpegSource::new(Ffmpeg::open_location(
+            &source.input_location(),
+        )?));
         Ok(())
     }
 }

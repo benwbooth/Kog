@@ -57,20 +57,14 @@ pub struct Ffmpeg {
 
 impl Ffmpeg {
     pub fn open(path: &Path) -> Result<Self, String> {
-        let encoded_path = CString::new(path.to_string_lossy().as_bytes()).map_err(|_| {
-            format!(
-                "FFmpeg cannot open a path containing NUL: {}",
-                path.display()
-            )
-        })?;
-        let handle =
-            NonNull::new(unsafe { kog_ffmpeg_open(encoded_path.as_ptr()) }).ok_or_else(|| {
-                format!(
-                    "opening {} with FFmpeg: {}",
-                    path.display(),
-                    native_error(None)
-                )
-            })?;
+        Self::open_location(&path.to_string_lossy())
+    }
+
+    pub fn open_location(location: &str) -> Result<Self, String> {
+        let encoded_path = CString::new(location.as_bytes())
+            .map_err(|_| "FFmpeg cannot open a location containing NUL".to_owned())?;
+        let handle = NonNull::new(unsafe { kog_ffmpeg_open(encoded_path.as_ptr()) })
+            .ok_or_else(|| format!("opening {} with FFmpeg: {}", location, native_error(None)))?;
 
         let sample_rate = unsafe { kog_ffmpeg_sample_rate(handle.as_ptr()) };
         let channels = unsafe { kog_ffmpeg_channels(handle.as_ptr()) };
@@ -78,7 +72,7 @@ impl Ffmpeg {
             unsafe { kog_ffmpeg_close(handle.as_ptr()) };
             return Err(format!(
                 "FFmpeg reported invalid stream properties for {}",
-                path.display()
+                location
             ));
         }
         let duration_seconds = unsafe { kog_ffmpeg_duration(handle.as_ptr()) };
@@ -237,7 +231,11 @@ pub fn test_ac3_bytes() -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::thread::JoinHandle;
 
     static FIXTURE_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -258,6 +256,87 @@ mod tests {
     impl Drop for Fixture {
         fn drop(&mut self) {
             let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    struct HttpFixture {
+        address: std::net::SocketAddr,
+        stopping: Arc<AtomicBool>,
+        worker: Option<JoinHandle<()>>,
+    }
+
+    impl HttpFixture {
+        fn new() -> Self {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind HTTP fixture");
+            let address = listener.local_addr().expect("HTTP fixture address");
+            listener
+                .set_nonblocking(true)
+                .expect("nonblocking HTTP fixture");
+            let stopping = Arc::new(AtomicBool::new(false));
+            let worker_stopping = Arc::clone(&stopping);
+            let audio = test_ac3_bytes();
+            let worker = std::thread::spawn(move || {
+                while !worker_stopping.load(Ordering::Relaxed) {
+                    let (mut stream, _) = match listener.accept() {
+                        Ok(connection) => connection,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(2));
+                            continue;
+                        }
+                        Err(_) => break,
+                    };
+                    let mut request = [0_u8; 8_192];
+                    let read = stream.read(&mut request).unwrap_or_default();
+                    let request = String::from_utf8_lossy(&request[..read]);
+                    let path = request
+                        .lines()
+                        .next()
+                        .and_then(|line| line.split_ascii_whitespace().nth(1))
+                        .unwrap_or("/");
+                    let manifest = concat!(
+                        "#EXTM3U\n",
+                        "#EXT-X-VERSION:3\n",
+                        "#EXT-X-TARGETDURATION:1\n",
+                        "#EXT-X-MEDIA-SEQUENCE:0\n",
+                        "#EXTINF:0.192,\n",
+                        "audio.ac3\n",
+                        "#EXT-X-ENDLIST\n",
+                    );
+                    let (status, content_type, body) = match path {
+                        "/audio.ac3" => ("200 OK", "audio/ac3", audio.as_slice()),
+                        "/stream.m3u8" => (
+                            "200 OK",
+                            "application/vnd.apple.mpegurl",
+                            manifest.as_bytes(),
+                        ),
+                        _ => ("404 Not Found", "text/plain", b"missing".as_slice()),
+                    };
+                    let headers = format!(
+                        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = stream.write_all(headers.as_bytes());
+                    let _ = stream.write_all(body);
+                }
+            });
+            Self {
+                address,
+                stopping,
+                worker: Some(worker),
+            }
+        }
+
+        fn url(&self, path: &str) -> String {
+            format!("http://{}{}", self.address, path)
+        }
+    }
+
+    impl Drop for HttpFixture {
+        fn drop(&mut self) {
+            self.stopping.store(true, Ordering::Relaxed);
+            if let Some(worker) = self.worker.take() {
+                worker.join().expect("join HTTP fixture");
+            }
         }
     }
 
@@ -294,6 +373,21 @@ mod tests {
                 break;
             }
             assert!(frames <= 32_000, "AC-3 decoder did not reach EOS");
+        }
+    }
+
+    #[test]
+    fn linked_ffmpeg_decodes_http_audio_and_hls_without_an_external_binary() {
+        let fixture = HttpFixture::new();
+        for path in ["/audio.ac3", "/stream.m3u8"] {
+            let location = fixture.url(path);
+            let mut decoder = Ffmpeg::open_location(&location)
+                .unwrap_or_else(|error| panic!("open {location}: {error}"));
+            assert_eq!(decoder.sample_rate(), 32_000);
+            assert_eq!(decoder.channels(), 1);
+            let mut pcm = vec![0.0_f32; 2_048];
+            assert!(decoder.render(&mut pcm).expect("render remote audio") > 0);
+            assert!(pcm.iter().any(|sample| sample.abs() > 0.000_01));
         }
     }
 }

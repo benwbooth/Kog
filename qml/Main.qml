@@ -214,6 +214,53 @@ ApplicationWindow {
     MiniPlayer { id: miniPlayer; app: appController }
     Preferences { id: preferences; app: appController }
 
+    Dialog {
+        id: openUrlDialog
+
+        anchors.centerIn: parent
+        width: Math.min(480, root.width - 48)
+        modal: true
+        title: qsTr("Add URL")
+        standardButtons: Dialog.Ok | Dialog.Cancel
+        closePolicy: Popup.CloseOnEscape
+        function updateAcceptButton() {
+            const button = standardButton(Dialog.Ok)
+            if (button)
+                button.enabled = urlField.acceptableInput
+        }
+        onOpened: {
+            urlField.forceActiveFocus()
+            urlField.selectAll()
+            updateAcceptButton()
+        }
+        onAccepted: {
+            appController.add_url(urlField.text.trim())
+            urlField.text = ""
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 10
+
+            Label {
+                Layout.fillWidth: true
+                text: qsTr("Enter an HTTP or HTTPS audio stream or HLS playlist URL.")
+                wrapMode: Text.WordWrap
+            }
+            TextField {
+                id: urlField
+
+                Layout.fillWidth: true
+                placeholderText: qsTr("https://example.com/music.m3u8")
+                inputMethodHints: Qt.ImhUrlCharactersOnly | Qt.ImhNoPredictiveText
+                validator: RegularExpressionValidator {
+                    regularExpression: /^https?:\/\/\S+$/i
+                }
+                onTextChanged: openUrlDialog.updateAcceptButton()
+                onAccepted: if (acceptableInput) openUrlDialog.accept()
+            }
+        }
+    }
+
     Action {
         id: removeSelectedAction
         text: qsTr("Remove Selected")
@@ -270,6 +317,12 @@ ApplicationWindow {
             icon.name: "document-open"
             shortcut: StandardKey.Open
             onTriggered: appController.open_audio_files()
+        }
+        Action {
+            text: qsTr("Add URL…")
+            icon.name: "network-connect"
+            shortcut: "Ctrl+Shift+O"
+            onTriggered: openUrlDialog.open()
         }
         MenuItem {
             text: qsTr("Choose Music Folder…")
@@ -871,14 +924,23 @@ ApplicationWindow {
                             return
                         const uriList = drop.getDataAsString("text/uri-list")
                             .split(/\r?\n/).filter(value => value.length > 0)
-                        for (const url of uriList)
-                            appController.add_file(url)
+                        for (const url of uriList) {
+                            if (/^https?:\/\//i.test(url))
+                                appController.enqueue_url(url)
+                            else
+                                appController.add_file(url)
+                        }
                         drop.acceptProposedAction()
                         root.playlistDropTarget = -1
                         return
                     }
-                    for (let url of drop.urls)
-                        appController.add_file(url)
+                    for (let url of drop.urls) {
+                        const value = url.toString()
+                        if (/^https?:\/\//i.test(value))
+                            appController.enqueue_url(value)
+                        else
+                            appController.add_file(url)
+                    }
                     drop.acceptProposedAction()
                     root.playlistDropTarget = -1
                 }

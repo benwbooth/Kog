@@ -307,6 +307,7 @@ mod tests {
         let path = fixture_path("source");
         let decoder = OpenMptBackend::open(&PlaybackSource {
             path: path.clone(),
+            remote_url: None,
             subsong: Some(0),
             archive_origin: None,
         })

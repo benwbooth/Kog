@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::fs::File;
 use std::io::Cursor;
 use std::num::{NonZeroU16, NonZeroU32};
@@ -11,6 +12,7 @@ use midly::{Format, Fps, MetaMessage, MidiMessage, Smf, Timing, TrackEventKind};
 use rodio::source::SeekError;
 use rodio::{ChannelCount, Decoder, Player, SampleRate, Source};
 use rustysynth::{MidiFile, MidiFileSequencer, SoundFont, Synthesizer, SynthesizerSettings};
+use url::Url;
 
 use crate::mt32::Mt32Source;
 use crate::opl3::Opl3WindowsSynth;
@@ -46,6 +48,7 @@ pub struct StreamProperties {
 #[derive(Clone, Debug, Default)]
 pub struct PlaybackSource {
     pub path: PathBuf,
+    pub remote_url: Option<String>,
     pub subsong: Option<u32>,
     pub archive_origin: Option<ArchiveOrigin>,
 }
@@ -55,7 +58,11 @@ impl PartialEq for PlaybackSource {
         self.subsong == other.subsong
             && match (&self.archive_origin, &other.archive_origin) {
                 (Some(left), Some(right)) => left == right,
-                (None, None) => self.path == other.path,
+                (None, None) => match (&self.remote_url, &other.remote_url) {
+                    (Some(left), Some(right)) => left == right,
+                    (None, None) => self.path == other.path,
+                    _ => false,
+                },
                 _ => false,
             }
     }
@@ -73,9 +80,32 @@ impl PlaybackSource {
     pub fn from_path(path: PathBuf) -> Self {
         Self {
             path,
+            remote_url: None,
             subsong: None,
             archive_origin: None,
         }
+    }
+
+    pub fn from_remote_url(mut url: Url) -> Self {
+        url.set_fragment(None);
+        let path = PathBuf::from(url.path());
+        Self {
+            path,
+            remote_url: Some(url.into()),
+            subsong: None,
+            archive_origin: None,
+        }
+    }
+
+    pub fn is_remote(&self) -> bool {
+        self.remote_url.is_some()
+    }
+
+    pub fn input_location(&self) -> Cow<'_, str> {
+        self.remote_url
+            .as_deref()
+            .map(Cow::Borrowed)
+            .unwrap_or_else(|| self.path.to_string_lossy())
     }
 
     pub fn set_archive_origin(&mut self, archive_path: PathBuf, entry_name: String) {
@@ -86,10 +116,12 @@ impl PlaybackSource {
     }
 
     pub fn display_label(&self) -> String {
-        let path = self.archive_origin.as_ref().map_or_else(
-            || self.path.display().to_string(),
-            |origin| format!("{} :: {}", origin.archive_path.display(), origin.entry_name),
-        );
+        let path = self.remote_url.clone().unwrap_or_else(|| {
+            self.archive_origin.as_ref().map_or_else(
+                || self.path.display().to_string(),
+                |origin| format!("{} :: {}", origin.archive_path.display(), origin.entry_name),
+            )
+        });
         match self.subsong {
             Some(subsong) => format!("{path}#{}", subsong + 1),
             None => path,
@@ -148,6 +180,7 @@ pub trait DecoderBackend: Send + Sync {
         })?;
         Ok(PlaybackSource {
             path,
+            remote_url: None,
             subsong: Some(subsong),
             archive_origin: None,
         })
@@ -305,6 +338,23 @@ impl DecoderRegistry {
         self.expand_local(path, None, &mut Vec::new(), 0)
     }
 
+    pub fn expand_remote_url(&self, value: &str) -> Result<ExpansionResult, String> {
+        if value.len() > 8_192 {
+            return Err("Remote URL exceeds Kog's 8192-character safety limit".to_owned());
+        }
+        let url = Url::parse(value.trim()).map_err(|error| format!("Invalid URL: {error}"))?;
+        if !matches!(url.scheme(), "http" | "https") {
+            return Err("Kog supports remote http:// and https:// audio URLs".to_owned());
+        }
+        if !url.has_host() {
+            return Err("Remote URL must include a host".to_owned());
+        }
+        Ok(ExpansionResult {
+            sources: vec![PlaybackSource::from_remote_url(url)],
+            warnings: Vec::new(),
+        })
+    }
+
     pub fn accepts_path(&self, path: &Path) -> bool {
         crate::playlist::Playlist::is_path(path)
             || crate::archive::is_path(path)
@@ -333,6 +383,12 @@ impl DecoderRegistry {
                 });
         }
 
+        if crate::playlist::Playlist::is_path(&path) && crate::playlist::Playlist::is_hls(&path)? {
+            return Ok(ExpansionResult {
+                sources: vec![PlaybackSource::from_path(path)],
+                warnings: Vec::new(),
+            });
+        }
         if crate::playlist::Playlist::is_path(&path) {
             return self.expand_playlist(path, playlist_stack, depth);
         }
@@ -359,6 +415,7 @@ impl DecoderRegistry {
             sources: (0..count)
                 .map(|subsong| PlaybackSource {
                     path: path.clone(),
+                    remote_url: None,
                     subsong: Some(subsong),
                     archive_origin: None,
                 })
@@ -390,9 +447,14 @@ impl DecoderRegistry {
         let mut result = ExpansionResult::default();
         for entry in playlist.entries() {
             match &entry.location {
-                crate::playlist::PlaylistLocation::Remote(url) => result.warnings.push(format!(
-                    "Remote playlist entry {url} was not added because network sources are not implemented yet"
-                )),
+                crate::playlist::PlaylistLocation::Remote(url) => {
+                    match self.expand_remote_url(url) {
+                        Ok(expansion) => result.sources.extend(expansion.sources),
+                        Err(error) => result.warnings.push(format!(
+                            "Remote playlist entry {url} was not added: {error}"
+                        )),
+                    }
+                }
                 crate::playlist::PlaylistLocation::Local(entry_path) => {
                     let resolved = match entry_path.canonicalize() {
                         Ok(path) => path,
@@ -499,7 +561,7 @@ impl DecoderRegistry {
 
     pub fn probe(&self, source: &PlaybackSource) -> Result<StreamProperties, String> {
         let backend = self
-            .select(&source.path)
+            .select_source(source)
             .ok_or_else(|| unsupported_message(&source.path))?;
         backend.probe(source)
     }
@@ -510,7 +572,7 @@ impl DecoderRegistry {
         player: &Player,
     ) -> Result<SelectedBackend, String> {
         let backend = self
-            .select(&source.path)
+            .select_source(source)
             .ok_or_else(|| unsupported_message(&source.path))?;
         backend.append(source, player)?;
         Ok(SelectedBackend {
@@ -530,6 +592,17 @@ impl DecoderRegistry {
             .iter()
             .map(Box::as_ref)
             .find(|backend| backend.accepts(path))
+    }
+
+    fn select_source(&self, source: &PlaybackSource) -> Option<&dyn DecoderBackend> {
+        if source.is_remote() {
+            return self
+                .backends
+                .iter()
+                .map(Box::as_ref)
+                .find(|backend| backend.id() == "ffmpeg");
+        }
+        self.select(&source.path)
     }
 }
 
@@ -1634,6 +1707,32 @@ mod tests {
             registry.backend_id_for(Path::new("song.spc")),
             Some("game-music-emu")
         );
+    }
+
+    #[test]
+    fn remote_http_sources_are_normalized_and_forced_through_ffmpeg() {
+        let registry = DecoderRegistry::default();
+        let expansion = registry
+            .expand_remote_url(" https://example.invalid/live?token=test#ignored ")
+            .expect("expand remote stream");
+        assert_eq!(expansion.sources.len(), 1);
+        let source = &expansion.sources[0];
+        assert_eq!(
+            source.remote_url.as_deref(),
+            Some("https://example.invalid/live?token=test")
+        );
+        assert_eq!(source.display_label(), source.input_location().as_ref());
+        assert_eq!(
+            registry.select_source(source).map(DecoderBackend::id),
+            Some("ffmpeg")
+        );
+        assert!(registry.expand_remote_url("file:///tmp/song.flac").is_err());
+        assert!(
+            registry
+                .expand_remote_url("ftp://example.invalid/song.mp3")
+                .is_err()
+        );
+        assert!(registry.expand_remote_url("https://").is_err());
     }
 
     #[test]
