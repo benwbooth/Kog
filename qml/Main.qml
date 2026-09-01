@@ -46,6 +46,12 @@ ApplicationWindow {
     }
     readonly property bool compactToolbar: width < 980
     readonly property bool useMacWindowControls: Qt.platform.os === "osx"
+    readonly property bool playerShowing: (root.visible
+        && root.visibility !== Window.Hidden
+        && root.visibility !== Window.Minimized)
+        || (miniPlayer.visible
+            && miniPlayer.visibility !== Window.Hidden
+            && miniPlayer.visibility !== Window.Minimized)
     readonly property real baseLuminance: 0.2126 * palette.base.r
         + 0.7152 * palette.base.g
         + 0.0722 * palette.base.b
@@ -186,6 +192,15 @@ ApplicationWindow {
             root.raise()
             root.requestActivate()
         })
+    }
+
+    function toggleFromTray() {
+        if (root.playerShowing) {
+            root.hide()
+            miniPlayer.hide()
+            return
+        }
+        root.showFromTray()
     }
 
     function showMiniPlayer() {
@@ -395,15 +410,19 @@ ApplicationWindow {
         icon.source: Qt.resolvedUrl("icons/kog-symbolic.svg")
         icon.mask: false
         onActivated: function(reason) {
-            if (reason !== Platform.SystemTrayIcon.Context
-                    && reason !== Platform.SystemTrayIcon.MiddleClick)
+            if (reason === Platform.SystemTrayIcon.Trigger
+                    || reason === Platform.SystemTrayIcon.Unknown)
+                Qt.callLater(function() { root.toggleFromTray() })
+            else if (reason === Platform.SystemTrayIcon.DoubleClick)
                 Qt.callLater(function() { root.showFromTray() })
         }
         menu: Platform.Menu {
             Platform.MenuItem {
-                text: qsTr("Show Kog")
+                text: root.playerShowing ? qsTr("Hide Kog") : qsTr("Show Kog")
                 icon.source: Qt.resolvedUrl("icons/kog.svg")
-                onTriggered: Qt.callLater(function() { root.showFromTray() })
+                onTriggered: Qt.callLater(function() {
+                    root.toggleFromTray()
+                })
             }
             Platform.MenuSeparator {}
             Platform.MenuItem {

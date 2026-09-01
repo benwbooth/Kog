@@ -121,7 +121,7 @@ impl ExtractedArchive {
                         continue;
                     }
 
-                    let mode = stat.st_mode & FILE_TYPE_MASK;
+                    let mode = u32::from(stat.st_mode) & FILE_TYPE_MASK;
                     let named_directory = name.ends_with('/') || name.ends_with('\\');
                     let is_directory = mode == FILE_TYPE_DIRECTORY || named_directory;
                     let is_regular = mode == 0 || mode == FILE_TYPE_REGULAR;

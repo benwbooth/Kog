@@ -83,7 +83,8 @@ jobs:
       - name: Install Flatpak tooling
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends elfutils flatpak flatpak-builder zstd
+          sudo apt-get install -y --no-install-recommends \
+            elfutils flatpak flatpak-builder librsvg2-common zstd
           flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
 
       - uses: astral-sh/setup-uv@v7
