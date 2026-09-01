@@ -141,8 +141,9 @@ identities, playlist writing, and broad cross-platform corpora remain separate
 work.
 
 Archive containers are also expanded before decoder selection. The registry
-recognizes Cog's ZIP, RAR, 7Z, RSN, VGM7Z, and raw GZ extensions and streams
-entries from `compress-tools`/libarchive into a private temporary tree. Entry
+recognizes Cog's ZIP, RAR, 7Z, RSN, VGM7Z, raw GZ, and six OpenMPT compressed
+module aliases and streams entries from `compress-tools`/libarchive into a
+private temporary tree. Entry
 order remains archive order, playable sources carry stable logical
 `archive :: entry` identities, and the whole safe tree remains alive with the
 registry so a decoder can reopen relative companion files. Extraction rejects
@@ -244,7 +245,12 @@ resampler emulation. Probe-time expansion gives every subsong a stable
 `(path, zero-based subsong)` identity; rendering produces 44.1 kHz stereo
 floating-point PCM and seeking uses libopenmpt's time-position API. The
 extension table is asserted against the native library during tests so source
-configuration and registry routing cannot silently diverge.
+configuration and registry routing cannot silently diverge. Cog's additional
+MDZ, MDR, S3Z, XMZ, ITZ, and MPTMZ suffixes are treated as compressed-module
+containers: the bounded archive layer content-detects and extracts them, keeps
+their outer-file identity, and then routes each contained native module back to
+libopenmpt. Generated ZIP-wrapped MOD fixtures gate all six aliases through
+extraction, metadata, audible rendering, and seek.
 
 The Hively adapter builds the upstream portable C replayer at commit
 `f393ca7` and keeps its state behind a narrow C bridge. It loads from the

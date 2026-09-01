@@ -15,6 +15,8 @@ const MAX_TOTAL_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const FILE_TYPE_MASK: u32 = 0o170_000;
 const FILE_TYPE_DIRECTORY: u32 = 0o040_000;
 const FILE_TYPE_REGULAR: u32 = 0o100_000;
+const GENERAL_ARCHIVE_EXTENSIONS: &[&str] = &["zip", "rar", "7z", "rsn", "vgm7z", "gz"];
+pub const COG_OPENMPT_ARCHIVE_EXTENSIONS: &[&str] = &["mdz", "mdr", "s3z", "xmz", "itz", "mptmz"];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArchiveEntry {
@@ -214,8 +216,9 @@ enum CurrentEntry {
 
 pub fn is_path(path: &Path) -> bool {
     extension(path).is_some_and(|extension| {
-        ["zip", "rar", "7z", "rsn", "vgm7z", "gz"]
+        GENERAL_ARCHIVE_EXTENSIONS
             .iter()
+            .chain(COG_OPENMPT_ARCHIVE_EXTENSIONS)
             .any(|candidate| candidate.eq_ignore_ascii_case(extension))
     })
 }
@@ -436,7 +439,10 @@ mod tests {
 
     #[test]
     fn archive_extensions_match_cog() {
-        for extension in ["zip", "rar", "7z", "rsn", "vgm7z", "gz", "ZIP"] {
+        for extension in [
+            "zip", "rar", "7z", "rsn", "vgm7z", "gz", "mdz", "mdr", "s3z", "xmz", "itz", "mptmz",
+            "ZIP",
+        ] {
             assert!(is_path(Path::new(&format!("music.{extension}"))));
         }
         assert!(!is_path(Path::new("music.tar")));

@@ -42,7 +42,12 @@ built with its bundled miniz, minimp3, and stb_vorbis decoders. Its 68 native
 tracker extensions route through a real stereo-float source with runtime
 extension verification, subsongs, metadata, duration, Cog-compatible render
 settings, and seek. A deterministic ProTracker MOD passes the current PCM and
-seek gates; compressed module aliases and the wider tracker corpus remain.
+seek gates. Cog's MDZ, MDR, S3Z, XMZ, ITZ, and MPTMZ compressed-module aliases
+are recognized by their outer suffix, safely extracted through the bounded
+archive layer, and decoded by the same libopenmpt source while retaining the
+outer-file identity. A ZIP-wrapped generated module gates every alias through
+routing, extraction, metadata, audible PCM, and seek; the wider tracker corpus
+remains.
 AHX and HVL now route through the official HivelyTracker 1.9 replayer with
 title metadata, subsong expansion, two-loop duration scanning, Cog's default
 eight-second fade, real stereo PCM, and seek. Official AHX/HVL songs plus a
