@@ -11,27 +11,62 @@ const OPENING_BEHAVIOR_SETTING_FILE: &str = "opening-files-behavior";
 const READ_CUE_SETTING_FILE: &str = "read-cue-sheets-in-folders";
 const READ_PLAYLISTS_SETTING_FILE: &str = "read-playlists-in-folders";
 const OUTPUT_VOLUME_SETTING_FILE: &str = "output-volume";
+const PLAYLIST_COLUMN_LAYOUT_SETTING_FILE: &str = "playlist-column-layout";
 const PLAYLIST_COLUMN_WIDTHS_SETTING_FILE: &str = "playlist-column-widths";
+const PLAYLIST_COLUMN_IDS: [&str; 19] = [
+    "index",
+    "status",
+    "rating",
+    "title",
+    "albumartist",
+    "artist",
+    "composer",
+    "album",
+    "length",
+    "date",
+    "genre",
+    "track",
+    "playcount",
+    "path",
+    "filename",
+    "codec",
+    "samplerate",
+    "bitspersample",
+    "bitrate",
+];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum OpeningFilesBehavior {
+    ClearAndPlay,
+    Enqueue,
     #[default]
-    Add,
-    Replace,
+    EnqueueAndPlay,
 }
 
 impl OpeningFilesBehavior {
     pub const fn setting_value(self) -> &'static str {
         match self {
-            Self::Add => "add",
-            Self::Replace => "replace",
+            Self::ClearAndPlay => "clearAndPlay",
+            Self::Enqueue => "enqueue",
+            Self::EnqueueAndPlay => "enqueueAndPlay",
         }
+    }
+
+    pub const fn clears_playlist(self) -> bool {
+        matches!(self, Self::ClearAndPlay)
+    }
+
+    pub const fn starts_playback(self) -> bool {
+        matches!(self, Self::ClearAndPlay | Self::EnqueueAndPlay)
     }
 
     pub fn from_setting(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "add" | "enqueue" => Some(Self::Add),
-            "replace" | "clear-and-add" => Some(Self::Replace),
+            "clearandplay" | "clear-and-play" | "replace" | "clear-and-add" => {
+                Some(Self::ClearAndPlay)
+            }
+            "add" | "enqueue" => Some(Self::Enqueue),
+            "enqueueandplay" | "enqueue-and-play" | "add-and-play" => Some(Self::EnqueueAndPlay),
             _ => None,
         }
     }
@@ -78,7 +113,7 @@ pub struct AppSettings {
     pub read_cue_sheets_in_folders: bool,
     pub read_playlists_in_folders: bool,
     pub output_volume: f64,
-    pub playlist_column_widths: Option<String>,
+    pub playlist_column_layout: Option<String>,
 }
 
 impl AppSettings {
@@ -109,8 +144,12 @@ impl AppSettings {
             .filter(|value| value.is_finite())
             .unwrap_or(0.75)
             .clamp(0.0, 1.0);
-        let playlist_column_widths = load_text(PLAYLIST_COLUMN_WIDTHS_SETTING_FILE)
-            .filter(|value| validate_playlist_column_widths(value));
+        let playlist_column_layout = load_text(PLAYLIST_COLUMN_LAYOUT_SETTING_FILE)
+            .filter(|value| validate_playlist_column_layout(value))
+            .or_else(|| {
+                load_text(PLAYLIST_COLUMN_WIDTHS_SETTING_FILE)
+                    .filter(|value| validate_legacy_playlist_column_widths(value))
+            });
         Self {
             soundfont_path,
             sc55_rom_path,
@@ -121,7 +160,7 @@ impl AppSettings {
             read_cue_sheets_in_folders,
             read_playlists_in_folders,
             output_volume,
-            playlist_column_widths,
+            playlist_column_layout,
         }
     }
 
@@ -205,15 +244,15 @@ impl AppSettings {
         )
     }
 
-    pub fn save_playlist_column_widths(widths: &str) -> Result<(), String> {
-        if !validate_playlist_column_widths(widths) {
-            return Err("Playlist column widths are invalid".to_owned());
+    pub fn save_playlist_column_layout(layout: &str) -> Result<(), String> {
+        if !validate_playlist_column_layout(layout) {
+            return Err("Playlist column layout is invalid".to_owned());
         }
-        save_text(PLAYLIST_COLUMN_WIDTHS_SETTING_FILE, widths)
+        save_text(PLAYLIST_COLUMN_LAYOUT_SETTING_FILE, layout)
     }
 }
 
-fn validate_playlist_column_widths(value: &str) -> bool {
+fn validate_legacy_playlist_column_widths(value: &str) -> bool {
     if value.len() > 256 {
         return false;
     }
@@ -225,6 +264,39 @@ fn validate_playlist_column_widths(value: &str) -> bool {
                 .parse::<f64>()
                 .is_ok_and(|width| width.is_finite() && (24.0..=4096.0).contains(&width))
         })
+}
+
+fn validate_playlist_column_layout(value: &str) -> bool {
+    if value.len() > 2_048 {
+        return false;
+    }
+    let entries = value.split(';').collect::<Vec<_>>();
+    if entries.len() != PLAYLIST_COLUMN_IDS.len() {
+        return false;
+    }
+
+    let mut seen = Vec::with_capacity(entries.len());
+    let mut visible = 0;
+    for entry in entries {
+        let fields = entry.split(',').collect::<Vec<_>>();
+        if fields.len() != 3 {
+            return false;
+        }
+        let identifier = fields[0].trim();
+        if !PLAYLIST_COLUMN_IDS.contains(&identifier) || seen.contains(&identifier) {
+            return false;
+        }
+        let valid_width = fields[1]
+            .trim()
+            .parse::<f64>()
+            .is_ok_and(|width| width.is_finite() && (20.0..=4096.0).contains(&width));
+        if !valid_width || !matches!(fields[2].trim(), "0" | "1") {
+            return false;
+        }
+        visible += usize::from(fields[2].trim() == "1");
+        seen.push(identifier);
+    }
+    visible > 0
 }
 
 fn save_text(file_name: &str, value: &str) -> Result<(), String> {
@@ -322,16 +394,51 @@ mod tests {
     }
 
     #[test]
-    fn playlist_column_widths_require_nine_bounded_finite_values() {
-        assert!(validate_playlist_column_widths(
+    fn opening_behavior_matches_cog_and_migrates_kog_aliases() {
+        assert_eq!(
+            OpeningFilesBehavior::default(),
+            OpeningFilesBehavior::EnqueueAndPlay
+        );
+        assert_eq!(
+            OpeningFilesBehavior::from_setting("clearAndPlay"),
+            Some(OpeningFilesBehavior::ClearAndPlay)
+        );
+        assert_eq!(
+            OpeningFilesBehavior::from_setting("add"),
+            Some(OpeningFilesBehavior::Enqueue)
+        );
+        assert_eq!(
+            OpeningFilesBehavior::from_setting("replace"),
+            Some(OpeningFilesBehavior::ClearAndPlay)
+        );
+        assert!(OpeningFilesBehavior::EnqueueAndPlay.starts_playback());
+        assert!(!OpeningFilesBehavior::Enqueue.clears_playlist());
+    }
+
+    #[test]
+    fn legacy_playlist_column_widths_require_nine_bounded_finite_values() {
+        assert!(validate_legacy_playlist_column_widths(
             "54,78,189.5,212,210.5,70,58,121,54"
         ));
-        assert!(!validate_playlist_column_widths("54,78,189"));
-        assert!(!validate_playlist_column_widths(
+        assert!(!validate_legacy_playlist_column_widths("54,78,189"));
+        assert!(!validate_legacy_playlist_column_widths(
             "54,78,NaN,212,210.5,70,58,121,54"
         ));
-        assert!(!validate_playlist_column_widths(
+        assert!(!validate_legacy_playlist_column_widths(
             "12,78,189.5,212,210.5,70,58,121,54"
+        ));
+    }
+
+    #[test]
+    fn playlist_column_layout_requires_every_unique_column_and_one_visible_column() {
+        let valid = "index,54,1;status,20,1;rating,78,1;title,220,1;albumartist,150,0;artist,190,1;composer,151,0;album,220,1;length,70,1;date,58,1;genre,120,1;track,54,1;playcount,71,0;path,64,0;filename,64,0;codec,64,0;samplerate,64,0;bitspersample,64,0;bitrate,64,0";
+        assert!(validate_playlist_column_layout(valid));
+        assert!(!validate_playlist_column_layout(
+            &valid.replace("bitrate,64,0", "title,64,0")
+        ));
+        assert!(!validate_playlist_column_layout(&valid.replace(",1", ",0")));
+        assert!(!validate_playlist_column_layout(
+            &valid.replace("genre,120,1", "genre,NaN,1")
         ));
     }
 }

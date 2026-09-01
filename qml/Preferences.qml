@@ -97,10 +97,16 @@ Window {
                             Label { text: qsTr("Normally:") }
                             ComboBox {
                                 Layout.fillWidth: true
-                                model: [qsTr("Add to the current playlist"), qsTr("Replace the current playlist")]
-                                currentIndex: root.app.opening_files_behavior === "replace" ? 1 : 0
+                                model: [
+                                    qsTr("Clear playlist and play"),
+                                    qsTr("Enqueue"),
+                                    qsTr("Enqueue and play")
+                                ]
+                                currentIndex: root.app.opening_files_behavior === "clearAndPlay"
+                                    ? 0
+                                    : (root.app.opening_files_behavior === "enqueue" ? 1 : 2)
                                 onActivated: root.app.select_opening_files_behavior(
-                                    currentIndex === 1 ? "replace" : "add")
+                                    ["clearAndPlay", "enqueue", "enqueueAndPlay"][currentIndex])
                             }
                         }
                     }

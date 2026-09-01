@@ -14,7 +14,7 @@ pub mod qobject {
         #[qproperty(i32, playlist_revision)]
         #[qproperty(QString, playlist_sort_column)]
         #[qproperty(bool, playlist_sort_ascending)]
-        #[qproperty(QString, playlist_column_widths)]
+        #[qproperty(QString, playlist_column_layout)]
         #[qproperty(i32, current_index)]
         #[qproperty(QString, playback_state)]
         #[qproperty(QString, status)]
@@ -51,6 +51,12 @@ pub mod qobject {
         #[qinvokable]
         fn add_file(self: Pin<&mut AppController>, url: QUrl);
         #[qinvokable]
+        fn activate_file(self: Pin<&mut AppController>, url: QUrl);
+        #[qinvokable]
+        fn add_local_path(self: Pin<&mut AppController>, path: QString);
+        #[qinvokable]
+        fn activate_local_path(self: Pin<&mut AppController>, path: QString);
+        #[qinvokable]
         fn open_audio_files(self: Pin<&mut AppController>);
         #[qinvokable]
         fn choose_music_folder(self: Pin<&mut AppController>);
@@ -75,7 +81,7 @@ pub mod qobject {
             selected_indices: QString,
         ) -> QString;
         #[qinvokable]
-        fn save_playlist_column_widths(self: Pin<&mut AppController>, widths: QString);
+        fn save_playlist_column_layout(self: Pin<&mut AppController>, layout: QString);
         #[qinvokable]
         fn play_index(self: Pin<&mut AppController>, index: i32);
         #[qinvokable]
@@ -117,6 +123,8 @@ pub mod qobject {
         fn track_year_at(self: &AppController, index: i32) -> QString;
         #[qinvokable]
         fn track_genre_at(self: &AppController, index: i32) -> QString;
+        #[qinvokable]
+        fn track_value_at(self: &AppController, index: i32, column: QString) -> QString;
 
         #[qinvokable]
         fn parent_directory(self: Pin<&mut AppController>);
@@ -301,12 +309,22 @@ enum PlaylistSortColumn {
     Index,
     Rating,
     Title,
+    AlbumArtist,
     Artist,
+    Composer,
     Album,
     Length,
-    Year,
+    Date,
     Genre,
     Track,
+    PlayCount,
+    Path,
+    Filename,
+    Codec,
+    SampleRate,
+    BitsPerSample,
+    Bitrate,
+    Status,
 }
 
 impl PlaylistSortColumn {
@@ -315,12 +333,22 @@ impl PlaylistSortColumn {
             "index" => Some(Self::Index),
             "rating" => Some(Self::Rating),
             "title" => Some(Self::Title),
+            "albumartist" => Some(Self::AlbumArtist),
             "artist" => Some(Self::Artist),
+            "composer" => Some(Self::Composer),
             "album" => Some(Self::Album),
             "length" => Some(Self::Length),
-            "year" | "date" => Some(Self::Year),
+            "year" | "date" => Some(Self::Date),
             "genre" => Some(Self::Genre),
             "track" => Some(Self::Track),
+            "playcount" => Some(Self::PlayCount),
+            "path" => Some(Self::Path),
+            "filename" => Some(Self::Filename),
+            "codec" => Some(Self::Codec),
+            "samplerate" => Some(Self::SampleRate),
+            "bitspersample" => Some(Self::BitsPerSample),
+            "bitrate" => Some(Self::Bitrate),
+            "status" => Some(Self::Status),
             _ => None,
         }
     }
@@ -330,12 +358,22 @@ impl PlaylistSortColumn {
             Self::Index => "index",
             Self::Rating => "rating",
             Self::Title => "title",
+            Self::AlbumArtist => "albumartist",
             Self::Artist => "artist",
+            Self::Composer => "composer",
             Self::Album => "album",
             Self::Length => "length",
-            Self::Year => "year",
+            Self::Date => "date",
             Self::Genre => "genre",
             Self::Track => "track",
+            Self::PlayCount => "playcount",
+            Self::Path => "path",
+            Self::Filename => "filename",
+            Self::Codec => "codec",
+            Self::SampleRate => "samplerate",
+            Self::BitsPerSample => "bitspersample",
+            Self::Bitrate => "bitrate",
+            Self::Status => "status",
         }
     }
 
@@ -344,12 +382,22 @@ impl PlaylistSortColumn {
             Self::Index => "playlist order",
             Self::Rating => "Rating",
             Self::Title => "Title",
+            Self::AlbumArtist => "Album Artist",
             Self::Artist => "Artist",
+            Self::Composer => "Composer",
             Self::Album => "Album",
             Self::Length => "Length",
-            Self::Year => "Year",
+            Self::Date => "Date",
             Self::Genre => "Genre",
             Self::Track => "Track",
+            Self::PlayCount => "Play Count",
+            Self::Path => "Path",
+            Self::Filename => "Filename",
+            Self::Codec => "Codec",
+            Self::SampleRate => "Sample Rate",
+            Self::BitsPerSample => "Bits Per Sample",
+            Self::Bitrate => "Bitrate",
+            Self::Status => "Status",
         }
     }
 }
@@ -407,15 +455,67 @@ fn natural_compare(left: &str, right: &str) -> Ordering {
     (left.len() - left_index).cmp(&(right.len() - right_index))
 }
 
+fn track_path(track: &Track) -> String {
+    let path = track
+        .source
+        .archive_origin
+        .as_ref()
+        .map_or(&track.source.path, |origin| &origin.archive_path);
+    path.parent()
+        .map(|parent| parent.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+fn track_filename(track: &Track) -> String {
+    let path = track
+        .source
+        .archive_origin
+        .as_ref()
+        .map(|origin| Path::new(&origin.entry_name))
+        .unwrap_or(&track.source.path);
+    path.file_name()
+        .map(|filename| filename.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+fn sample_rate_label(sample_rate: Option<u32>) -> String {
+    let Some(sample_rate) = sample_rate else {
+        return String::new();
+    };
+    if sample_rate >= 1_000 {
+        let kilohertz = f64::from(sample_rate) / 1_000.0;
+        if sample_rate.is_multiple_of(1_000) {
+            format!("{kilohertz:.0} kHz")
+        } else {
+            format!("{kilohertz:.1} kHz")
+        }
+    } else {
+        format!("{sample_rate} Hz")
+    }
+}
+
 fn compare_tracks(left: &Track, right: &Track, column: PlaylistSortColumn) -> Ordering {
     match column {
-        PlaylistSortColumn::Index | PlaylistSortColumn::Rating => Ordering::Equal,
+        PlaylistSortColumn::Index
+        | PlaylistSortColumn::Rating
+        | PlaylistSortColumn::PlayCount
+        | PlaylistSortColumn::Status => Ordering::Equal,
         PlaylistSortColumn::Title => natural_compare(&left.title, &right.title),
+        PlaylistSortColumn::AlbumArtist => natural_compare(&left.album_artist, &right.album_artist),
         PlaylistSortColumn::Artist => natural_compare(&left.artist, &right.artist),
+        PlaylistSortColumn::Composer => natural_compare(&left.composer, &right.composer),
         PlaylistSortColumn::Album => natural_compare(&left.album, &right.album),
         PlaylistSortColumn::Length => left.duration.cmp(&right.duration),
-        PlaylistSortColumn::Year => left.year.cmp(&right.year),
+        PlaylistSortColumn::Date => left.year.cmp(&right.year),
         PlaylistSortColumn::Genre => natural_compare(&left.genre, &right.genre),
+        PlaylistSortColumn::Path => natural_compare(&track_path(left), &track_path(right)),
+        PlaylistSortColumn::Filename => {
+            natural_compare(&track_filename(left), &track_filename(right))
+        }
+        PlaylistSortColumn::Codec => natural_compare(&left.codec, &right.codec),
+        PlaylistSortColumn::SampleRate => left.sample_rate.cmp(&right.sample_rate),
+        PlaylistSortColumn::BitsPerSample => left.bits_per_sample.cmp(&right.bits_per_sample),
+        PlaylistSortColumn::Bitrate => left.bitrate.cmp(&right.bitrate),
         PlaylistSortColumn::Track => {
             let left_album_artist = if left.album_artist.is_empty() {
                 &left.artist
@@ -467,7 +567,7 @@ pub struct AppControllerRust {
     playlist_revision: i32,
     playlist_sort_column: QString,
     playlist_sort_ascending: bool,
-    playlist_column_widths: QString,
+    playlist_column_layout: QString,
     current_index: i32,
     playback_state: QString,
     status: QString,
@@ -540,8 +640,8 @@ impl Default for AppControllerRust {
             .map(|path| qstring(path.to_string_lossy()))
             .unwrap_or_default();
         let midi_engine = qstring(app_settings.midi_engine.setting_value());
-        let playlist_column_widths = app_settings
-            .playlist_column_widths
+        let playlist_column_layout = app_settings
+            .playlist_column_layout
             .as_deref()
             .map(qstring)
             .unwrap_or_default();
@@ -559,7 +659,7 @@ impl Default for AppControllerRust {
             playlist_revision: 0,
             playlist_sort_column: qstring(PlaylistSortColumn::Index.identifier()),
             playlist_sort_ascending: true,
-            playlist_column_widths,
+            playlist_column_layout,
             current_index: -1,
             playback_state: qstring(PlaybackState::Stopped.as_str()),
             status: qstring("Drop audio files here or use the Kog menu to add files"),
@@ -617,7 +717,9 @@ impl Default for AppControllerRust {
                 }
             }
             controller.rebuild_visible_indices();
-            controller.refresh_total_duration_value();
+            controller.playlist_count = saturating_i32(controller.visible_indices.len());
+            controller.playlist_revision = 1;
+            controller.total_duration = controller.total_duration_value();
             if open_result.added > 0 || open_result.warning.is_some() {
                 controller.status = qstring(add_path_status(&open_result));
             }
@@ -872,17 +974,15 @@ impl AppControllerRust {
                 self.playlist_sort_ascending,
             );
         }
-        self.playlist_count = saturating_i32(self.visible_indices.len());
-        self.playlist_revision = self.playlist_revision.wrapping_add(1);
     }
 
-    fn refresh_total_duration_value(&mut self) {
+    fn total_duration_value(&self) -> QString {
         let duration = self
             .tracks
             .iter()
             .filter_map(|track| track.duration)
             .fold(Duration::ZERO, |total, duration| total + duration);
-        self.total_duration = qstring(total_duration_label(duration));
+        qstring(total_duration_label(duration))
     }
 }
 
@@ -909,17 +1009,11 @@ impl qobject::AppController {
         else {
             return;
         };
-        let opening_behavior = OpeningFilesBehavior::from_setting(
+        let behavior = OpeningFilesBehavior::from_setting(
             &self.as_ref().rust().opening_files_behavior.to_string(),
         )
         .unwrap_or_default();
-        if opening_behavior == OpeningFilesBehavior::Replace {
-            self.as_mut().clear_playlist();
-        }
-        for path in paths {
-            let url = QUrl::from_local_file(&qstring(path.to_string_lossy()));
-            self.as_mut().add_file(url);
-        }
+        self.as_mut().add_local_paths(paths, behavior);
     }
 
     pub fn choose_music_folder(mut self: Pin<&mut Self>) {
@@ -940,25 +1034,40 @@ impl qobject::AppController {
                 .set_status(qstring("Only local files can be added"));
             return;
         };
-        let path = PathBuf::from(local_file.to_string());
-        let result = match if path.is_dir() {
-            self.as_mut().rust_mut().add_directory(&path)
-        } else {
-            self.as_mut().rust_mut().add_path(path)
-        } {
-            Ok(result) if result.added == 0 => {
-                self.as_mut()
-                    .set_status(qstring("The file is already in the playlist"));
-                return;
-            }
-            Ok(result) => result,
-            Err(error) => {
-                self.as_mut().set_status(qstring(error));
-                return;
-            }
+        self.as_mut().add_local_paths(
+            vec![PathBuf::from(local_file.to_string())],
+            OpeningFilesBehavior::Enqueue,
+        );
+    }
+
+    pub fn activate_file(mut self: Pin<&mut Self>, url: QUrl) {
+        let Some(local_file) = url.to_local_file() else {
+            self.as_mut()
+                .set_status(qstring("Only local files can be opened"));
+            return;
         };
-        self.as_mut().rebuild_playlist();
-        self.as_mut().set_status(qstring(add_path_status(&result)));
+        let behavior = OpeningFilesBehavior::from_setting(
+            &self.as_ref().rust().opening_files_behavior.to_string(),
+        )
+        .unwrap_or_default();
+        self.as_mut()
+            .add_local_paths(vec![PathBuf::from(local_file.to_string())], behavior);
+    }
+
+    pub fn add_local_path(mut self: Pin<&mut Self>, path: QString) {
+        self.as_mut().add_local_paths(
+            vec![PathBuf::from(path.to_string())],
+            OpeningFilesBehavior::Enqueue,
+        );
+    }
+
+    pub fn activate_local_path(mut self: Pin<&mut Self>, path: QString) {
+        let behavior = OpeningFilesBehavior::from_setting(
+            &self.as_ref().rust().opening_files_behavior.to_string(),
+        )
+        .unwrap_or_default();
+        self.as_mut()
+            .add_local_paths(vec![PathBuf::from(path.to_string())], behavior);
     }
 
     pub fn remove_track(mut self: Pin<&mut Self>, index: i32) {
@@ -1168,12 +1277,12 @@ impl qobject::AppController {
         encode_row_indices(&selected_rows)
     }
 
-    pub fn save_playlist_column_widths(mut self: Pin<&mut Self>, widths: QString) {
-        if let Err(error) = AppSettings::save_playlist_column_widths(&widths.to_string()) {
+    pub fn save_playlist_column_layout(mut self: Pin<&mut Self>, layout: QString) {
+        if let Err(error) = AppSettings::save_playlist_column_layout(&layout.to_string()) {
             self.as_mut().set_status(qstring(error));
             return;
         }
-        self.as_mut().set_playlist_column_widths(widths);
+        self.as_mut().set_playlist_column_layout(layout);
     }
 
     pub fn play_index(mut self: Pin<&mut Self>, index: i32) {
@@ -1248,13 +1357,12 @@ impl qobject::AppController {
         if self.as_ref().rust().shuffle_enabled == enabled {
             return;
         }
-        self.as_mut().rust_mut().shuffle_enabled = enabled;
+        self.as_mut().set_shuffle_enabled(enabled);
         if enabled {
             self.as_mut().rust_mut().rebuild_shuffle_order();
         } else {
             self.as_mut().rust_mut().shuffle_order.clear();
         }
-        self.as_mut().set_shuffle_enabled(enabled);
         self.as_mut().set_status(qstring(if enabled {
             "Shuffle enabled"
         } else {
@@ -1266,7 +1374,6 @@ impl qobject::AppController {
         if self.as_ref().rust().repeat_enabled == enabled {
             return;
         }
-        self.as_mut().rust_mut().repeat_enabled = enabled;
         self.as_mut().set_repeat_enabled(enabled);
         self.as_mut().set_status(qstring(if enabled {
             "Repeat playlist enabled"
@@ -1356,6 +1463,48 @@ impl qobject::AppController {
         visible_track(self, index)
             .map(|track| qstring(&track.genre))
             .unwrap_or_default()
+    }
+
+    pub fn track_value_at(&self, index: i32, column: QString) -> QString {
+        let Some(source_index) = visible_source_index(self, index) else {
+            return QString::default();
+        };
+        let Some(track) = self.rust().tracks.get(source_index) else {
+            return QString::default();
+        };
+        match column.to_string().as_str() {
+            "index" => qstring((source_index + 1).to_string()),
+            "status" => self.track_status_at(index),
+            "rating" | "playcount" => QString::default(),
+            "title" => qstring(&track.title),
+            "albumartist" => qstring(&track.album_artist),
+            "artist" => qstring(&track.artist),
+            "composer" => qstring(&track.composer),
+            "album" => qstring(&track.album),
+            "length" => qstring(track.duration_label()),
+            "date" => track
+                .year
+                .map(|year| qstring(year.to_string()))
+                .unwrap_or_default(),
+            "genre" => qstring(&track.genre),
+            "track" => track
+                .track_number
+                .map(|number| qstring(number.to_string()))
+                .unwrap_or_default(),
+            "path" => qstring(track_path(track)),
+            "filename" => qstring(track_filename(track)),
+            "codec" => qstring(&track.codec),
+            "samplerate" => qstring(sample_rate_label(track.sample_rate)),
+            "bitspersample" => track
+                .bits_per_sample
+                .map(|bits| qstring(bits.to_string()))
+                .unwrap_or_default(),
+            "bitrate" => track
+                .bitrate
+                .map(|bitrate| qstring(format!("{bitrate} kbps")))
+                .unwrap_or_default(),
+            _ => QString::default(),
+        }
     }
 
     pub fn parent_directory(mut self: Pin<&mut Self>) {
@@ -1695,8 +1844,11 @@ impl qobject::AppController {
         self.as_mut()
             .set_opening_files_behavior(qstring(behavior.setting_value()));
         self.as_mut().set_status(qstring(match behavior {
-            OpeningFilesBehavior::Add => "New files will be added to the playlist",
-            OpeningFilesBehavior::Replace => "New files will replace the playlist",
+            OpeningFilesBehavior::ClearAndPlay => {
+                "Opening files will clear the playlist and start playback"
+            }
+            OpeningFilesBehavior::Enqueue => "Opening files will enqueue without starting playback",
+            OpeningFilesBehavior::EnqueueAndPlay => "Opening files will enqueue and start playback",
         }));
     }
 
@@ -1718,13 +1870,62 @@ impl qobject::AppController {
 
     fn rebuild_playlist(mut self: Pin<&mut Self>) {
         self.as_mut().rust_mut().rebuild_visible_indices();
-        self.as_mut().rust_mut().refresh_total_duration_value();
-        let count = self.as_ref().rust().playlist_count;
-        let revision = self.as_ref().rust().playlist_revision;
-        let duration = self.as_ref().rust().total_duration.clone();
+        let count = saturating_i32(self.as_ref().rust().visible_indices.len());
+        let revision = self.as_ref().rust().playlist_revision.wrapping_add(1);
+        let duration = self.as_ref().rust().total_duration_value();
         self.as_mut().set_playlist_count(count);
         self.as_mut().set_playlist_revision(revision);
         self.as_mut().set_total_duration(duration);
+    }
+
+    fn add_local_paths(
+        mut self: Pin<&mut Self>,
+        paths: Vec<PathBuf>,
+        behavior: OpeningFilesBehavior,
+    ) {
+        if paths.is_empty() {
+            return;
+        }
+        if behavior.clears_playlist() {
+            self.as_mut().clear_playlist();
+        }
+
+        let first_new_source_index = self.as_ref().rust().tracks.len();
+        let mut combined = AddPathResult::default();
+        for path in paths {
+            let result = if path.is_dir() {
+                self.as_mut().rust_mut().add_directory(&path)
+            } else {
+                self.as_mut().rust_mut().add_path(path)
+            };
+            match result {
+                Ok(result) => {
+                    combined.added += result.added;
+                    if let Some(warning) = result.warning {
+                        combined.push_warning(warning);
+                    }
+                }
+                Err(error) => combined.push_warning(error),
+            }
+        }
+
+        if combined.added == 0 && combined.warning.is_none() {
+            self.as_mut()
+                .set_status(qstring("The file is already in the playlist"));
+            return;
+        }
+        if combined.added == 0 {
+            self.as_mut()
+                .set_status(qstring(add_path_status(&combined)));
+            return;
+        }
+
+        self.as_mut().rebuild_playlist();
+        self.as_mut()
+            .set_status(qstring(add_path_status(&combined)));
+        if behavior.starts_playback() {
+            self.as_mut().play_source_index(first_new_source_index);
+        }
     }
 
     fn play_source_index(mut self: Pin<&mut Self>, source_index: usize) {
@@ -1854,7 +2055,6 @@ impl qobject::AppController {
 
     fn bump_playlist_revision(mut self: Pin<&mut Self>) {
         let revision = self.as_ref().rust().playlist_revision.wrapping_add(1);
-        self.as_mut().rust_mut().playlist_revision = revision;
         self.as_mut().set_playlist_revision(revision);
     }
 
@@ -1881,7 +2081,7 @@ impl qobject::AppController {
 mod tests {
     use super::{
         AddPathResult, PlaylistSortColumn, add_path_status, compare_tracks, move_selected_items,
-        natural_compare, parse_row_indices, sort_visible_indices,
+        natural_compare, parse_row_indices, sample_rate_label, sort_visible_indices,
     };
     use crate::track::Track;
     use std::cmp::Ordering;
@@ -1930,6 +2130,44 @@ mod tests {
         assert_eq!(natural_compare("Track 2", "track 10"), Ordering::Less);
         assert_eq!(natural_compare("SONG 01", "song 1"), Ordering::Equal);
         assert_eq!(natural_compare("Alpha", "beta"), Ordering::Less);
+    }
+
+    #[test]
+    fn cogs_complete_playlist_column_schema_is_sortable() {
+        let identifiers = [
+            "index",
+            "status",
+            "rating",
+            "title",
+            "albumartist",
+            "artist",
+            "composer",
+            "album",
+            "length",
+            "date",
+            "genre",
+            "track",
+            "playcount",
+            "path",
+            "filename",
+            "codec",
+            "samplerate",
+            "bitspersample",
+            "bitrate",
+        ];
+        for identifier in identifiers {
+            let column = PlaylistSortColumn::from_identifier(identifier)
+                .unwrap_or_else(|| panic!("missing playlist column {identifier}"));
+            assert_eq!(column.identifier(), identifier);
+        }
+    }
+
+    #[test]
+    fn sample_rate_labels_use_compact_cog_style_units() {
+        assert_eq!(sample_rate_label(None), "");
+        assert_eq!(sample_rate_label(Some(500)), "500 Hz");
+        assert_eq!(sample_rate_label(Some(44_100)), "44.1 kHz");
+        assert_eq!(sample_rate_label(Some(48_000)), "48 kHz");
     }
 
     #[test]

@@ -50,6 +50,12 @@ pub mod qobject {
 
         #[qinvokable]
         fn is_directory(self: &FileTreeModel, index: &QModelIndex) -> bool;
+
+        #[qinvokable]
+        fn is_path_directory(self: &FileTreeModel, path: QString) -> bool;
+
+        #[qinvokable]
+        fn path_url(self: &FileTreeModel, path: QString) -> QUrl;
     }
 }
 
@@ -86,6 +92,14 @@ impl qobject::FileTreeModel {
 
     pub fn is_directory(&self, index: &QModelIndex) -> bool {
         self.is_directory_super(index)
+    }
+
+    pub fn is_path_directory(&self, path: QString) -> bool {
+        Path::new(&path.to_string()).is_dir()
+    }
+
+    pub fn path_url(&self, path: QString) -> QUrl {
+        QUrl::from_local_file(&path)
     }
 
     fn set_tree_root(mut self: Pin<&mut Self>, path: PathBuf) {

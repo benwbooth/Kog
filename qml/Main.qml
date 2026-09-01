@@ -177,6 +177,17 @@ ApplicationWindow {
         return item && contentPosition >= item.y + item.height / 2 ? row + 1 : row
     }
 
+    function isPlaylistDrag(drag) {
+        return (drag.source && drag.source.playlistDrag)
+            || drag.formats.indexOf("application/x-kog-playlist-rows") !== -1
+    }
+
+    function playlistDragRows(drop) {
+        if (drop.source && drop.source.playlistDrag)
+            return drop.source.dragRows
+        return drop.getDataAsString("application/x-kog-playlist-rows").trim()
+    }
+
     function applyMovedSelection(encodedRows) {
         if (encodedRows.length === 0) {
             clearPlaylistSelection()
@@ -612,27 +623,37 @@ ApplicationWindow {
                     alternatingRows: true
                     selectionBehavior: TableView.SelectRows
                     selectionMode: TableView.SingleSelection
-                    // Route pointer input through the handlers in the delegate.
-                    // Otherwise TreeView's built-in double-tap expansion races
-                    // our file activation and the native DragHandler.
-                    pointerNavigationEnabled: false
+                    // TreeView owns row selection and folder expansion. The
+                    // delegate only adds Cog's file activation behavior.
+                    pointerNavigationEnabled: true
                     selectionModel: ItemSelectionModel {
                         model: fileTreeModel
                     }
+                    // Qt 6.10's TreeViewDelegate can retain the previous
+                    // QFileSystemModel row when expansion shifts the flattened
+                    // rows. Only visible delegates exist here, so disabling
+                    // reuse is cheap and keeps labels, paths, and activation in
+                    // lockstep.
+                    reuseItems: false
                     boundsBehavior: Flickable.StopAtBounds
                     columnWidthProvider: function(column) { return width }
 
                     delegate: TreeViewDelegate {
                         id: treeDelegate
-                        readonly property url dragUrl: fileTreeModel.file_url(
-                            treeView.index(row, column))
+                        // Bind the QFileSystemModel role as a required delegate
+                        // property. Accessing it through the transient `model`
+                        // object leaves recycled TreeView delegates displaying
+                        // and activating the preceding row after expansion.
+                        required property string filePath
+                        readonly property string dragPath: filePath
+                        readonly property url dragUrl: fileTreeModel.path_url(dragPath)
                         width: directoryTree.width
                         implicitHeight: 26
                         icon.width: 18
                         icon.height: 18
                         ToolTip.visible: hovered
                         ToolTip.delay: 700
-                        ToolTip.text: fileTreeModel.file_url(treeView.index(row, column)).toString()
+                        ToolTip.text: treeDelegate.dragPath
                         Drag.active: treeDrag.active
                         // A native drag follows the pointer while this delegate
                         // remains in place. Drag.Internal would leave the drag
@@ -641,6 +662,7 @@ ApplicationWindow {
                         Drag.keys: ["kog-file-tree-entry"]
                         Drag.supportedActions: Qt.CopyAction
                         Drag.proposedAction: Qt.CopyAction
+                        Drag.source: treeDelegate
                         Drag.mimeData: ({
                             "text/uri-list": treeDelegate.dragUrl.toString() + "\r\n"
                         })
@@ -655,40 +677,15 @@ ApplicationWindow {
                                 | PointerHandler.ApprovesTakeOverByAnything
                         }
 
-                        TapHandler {
-                            id: treeTap
-                            acceptedButtons: Qt.LeftButton
-                            gesturePolicy: TapHandler.DragThreshold
-                            grabPermissions: PointerHandler.CanTakeOverFromAnything
-                                | PointerHandler.ApprovesTakeOverByAnything
-
-                            onTapped: {
-                                const itemIndex = treeView.index(treeDelegate.row, 0)
-                                directoryTree.selectionModel.setCurrentIndex(
-                                    itemIndex, ItemSelectionModel.ClearAndSelect)
-                            }
-                            onDoubleTapped: eventPoint => {
-                                const indicator = treeDelegate.indicator
-                                if (indicator
-                                        && eventPoint.position.x >= indicator.x
-                                        && eventPoint.position.x < indicator.x + indicator.width)
-                                    return
-                                const itemIndex = treeView.index(treeDelegate.row, 0)
-                                if (fileTreeModel.is_directory(itemIndex))
-                                    treeView.toggleExpanded(treeDelegate.row)
-                                else
-                                    appController.add_file(treeDelegate.dragUrl)
-                            }
-                        }
-
-                        TapHandler {
-                            parent: treeDelegate.indicator
-                            enabled: treeDelegate.hasChildren
-                            acceptedButtons: Qt.LeftButton
-                            exclusiveSignals: TapHandler.SingleTap | TapHandler.DoubleTap
-
-                            onSingleTapped: treeView.toggleExpanded(treeDelegate.row)
-                            onDoubleTapped: treeView.toggleExpanded(treeDelegate.row)
+                        onDoubleClicked: {
+                            const indicatorItem = treeDelegate.indicator
+                            if (indicatorItem
+                                    && treeDelegate.pressX >= indicatorItem.x
+                                    && treeDelegate.pressX < indicatorItem.x
+                                        + indicatorItem.width)
+                                return
+                            if (!fileTreeModel.is_path_directory(treeDelegate.dragPath))
+                                appController.activate_local_path(treeDelegate.dragPath)
                         }
                     }
 
@@ -706,20 +703,31 @@ ApplicationWindow {
                 anchors.fill: parent
                 spacing: 0
 
-                PlaylistHeader {
-                    id: playlistHeader
+                Item {
+                    id: playlistHeaderViewport
                     Layout.fillWidth: true
-                    theme: root.palette
-                    savedWidths: appController.playlist_column_widths
-                    sortColumn: appController.playlist_sort_column
-                    sortAscending: appController.playlist_sort_ascending
-                    onSortRequested: column => {
-                        const selected = appController.sort_playlist(
-                            column, root.selectedRows.join(","))
-                        root.applyMovedSelection(selected)
+                    Layout.preferredHeight: playlistHeader.implicitHeight
+                    clip: true
+
+                    PlaylistHeader {
+                        id: playlistHeader
+                        x: -playlistView.contentX
+                        width: Math.max(playlistHeaderViewport.width, totalWidth)
+                        height: implicitHeight
+                        availableWidth: playlistHeaderViewport.width
+                        theme: root.palette
+                        app: appController
+                        savedLayout: appController.playlist_column_layout
+                        sortColumn: appController.playlist_sort_column
+                        sortAscending: appController.playlist_sort_ascending
+                        onSortRequested: column => {
+                            const selected = appController.sort_playlist(
+                                column, root.selectedRows.join(","))
+                            root.applyMovedSelection(selected)
+                        }
+                        onColumnLayoutChanged: layout =>
+                            appController.save_playlist_column_layout(layout)
                     }
-                    onColumnWidthsChanged: widths =>
-                        appController.save_playlist_column_widths(widths)
                 }
 
                 ListView {
@@ -729,6 +737,8 @@ ApplicationWindow {
                     clip: true
                     model: appController.playlist_count
                     boundsBehavior: Flickable.StopAtBounds
+                    contentWidth: Math.max(width, playlistHeader.totalWidth)
+                    flickableDirection: Flickable.AutoFlickDirection
                     currentIndex: root.selectedRow
                     keyNavigationEnabled: true
                     focus: true
@@ -750,7 +760,7 @@ ApplicationWindow {
 
                     delegate: PlaylistRow {
                         required property int index
-                        width: playlistView.width
+                        width: playlistView.contentWidth
                         app: appController
                         columns: playlistHeader
                         theme: root.palette
@@ -779,6 +789,7 @@ ApplicationWindow {
                     }
 
                     ScrollBar.vertical: ScrollBar {}
+                    ScrollBar.horizontal: ScrollBar {}
 
                     Item {
                         anchors.fill: parent
@@ -811,45 +822,61 @@ ApplicationWindow {
                 radius: 1
                 color: root.palette.highlight
                 visible: root.playlistDropTarget >= 0
-                y: Math.max(playlistHeader.height,
+                y: Math.max(playlistHeaderViewport.height,
                     Math.min(parent.height - height,
-                        playlistHeader.height + root.playlistDropTarget * 24
+                        playlistHeaderViewport.height + root.playlistDropTarget * 24
                             - playlistView.contentY))
             }
 
             DropArea {
                 x: 0
-                y: playlistHeader.height
+                y: playlistHeaderViewport.height
                 width: parent.width
                 height: parent.height - y
                 onEntered: drag => {
-                    if (drag.source && drag.source.playlistDrag)
+                    if (root.isPlaylistDrag(drag))
                         root.playlistDropTarget = root.playlistDropIndex(drag.y)
                 }
                 onPositionChanged: drag => {
-                    if (drag.source && drag.source.playlistDrag)
+                    if (root.isPlaylistDrag(drag))
                         root.playlistDropTarget = root.playlistDropIndex(drag.y)
                 }
                 onExited: root.playlistDropTarget = -1
                 onDropped: drop => {
-                    if (drop.source && drop.source.playlistDrag) {
+                    if (root.isPlaylistDrag(drop)) {
+                        const dragRows = root.playlistDragRows(drop)
+                        if (dragRows.length === 0)
+                            return
                         const target = root.playlistDropTarget >= 0
                             ? root.playlistDropTarget
                             : root.playlistDropIndex(drop.y)
                         const moved = appController.move_tracks(
-                            drop.source.dragRows, target)
+                            dragRows, target)
                         root.applyMovedSelection(moved)
                         root.playlistDropTarget = -1
                         drop.acceptProposedAction()
                         return
                     }
                     if (drop.source && drop.source.dragUrl) {
-                        appController.add_file(drop.source.dragUrl)
+                        if (drop.source.dragPath)
+                            appController.add_local_path(drop.source.dragPath)
+                        else
+                            appController.add_file(drop.source.dragUrl)
                         drop.acceptProposedAction()
                         return
                     }
                     if (!drop.hasUrls)
+                    {
+                        if (drop.formats.indexOf("text/uri-list") === -1)
+                            return
+                        const uriList = drop.getDataAsString("text/uri-list")
+                            .split(/\r?\n/).filter(value => value.length > 0)
+                        for (const url of uriList)
+                            appController.add_file(url)
+                        drop.acceptProposedAction()
+                        root.playlistDropTarget = -1
                         return
+                    }
                     for (let url of drop.urls)
                         appController.add_file(url)
                     drop.acceptProposedAction()

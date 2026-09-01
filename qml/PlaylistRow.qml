@@ -20,12 +20,14 @@ Item {
     signal dragStarted(int rowIndex)
 
     implicitHeight: 24
+    height: implicitHeight
 
     Drag.active: rowDrag.active
     Drag.dragType: Drag.Automatic
     Drag.keys: ["kog-playlist-row"]
     Drag.supportedActions: Qt.MoveAction
     Drag.proposedAction: Qt.MoveAction
+    Drag.source: root
     Drag.mimeData: ({
         "application/x-kog-playlist-rows": root.dragRows
     })
@@ -47,16 +49,15 @@ Item {
     }
 
     component Cell: Text {
-        required property real cellWidth
-        property int alignment: Text.AlignLeft
+        required property var column
 
-        width: cellWidth
+        width: column.width
         height: root.height
         leftPadding: 6
         rightPadding: 6
         color: root.selected ? root.theme.highlightedText : root.theme.text
         font.pixelSize: 11
-        horizontalAlignment: alignment
+        horizontalAlignment: column.alignment
         verticalAlignment: Text.AlignVCenter
         elide: Text.ElideRight
     }
@@ -64,51 +65,17 @@ Item {
     Row {
         anchors.fill: parent
 
-        Cell {
-            cellWidth: root.columns.numberWidth
-            alignment: Text.AlignHCenter
-            text: {
-                root.revision
-                const status = root.app.track_status_at(root.rowIndex)
-                return status.length > 0
-                    ? status
-                    : root.app.track_number_at(root.rowIndex)
+        Repeater {
+            model: root.columns.visibleColumns
+
+            Cell {
+                required property var modelData
+                column: modelData
+                text: {
+                    root.revision
+                    return root.app.track_value_at(root.rowIndex, modelData.id)
+                }
             }
-        }
-        Cell {
-            cellWidth: root.columns.ratingWidth
-            text: { root.revision; return root.app.track_rating_at(root.rowIndex) }
-        }
-        Cell {
-            cellWidth: root.columns.titleWidth
-            text: { root.revision; return root.app.track_title_at(root.rowIndex) }
-        }
-        Cell {
-            cellWidth: root.columns.artistWidth
-            text: { root.revision; return root.app.track_artist_at(root.rowIndex) }
-        }
-        Cell {
-            cellWidth: root.columns.albumWidth
-            text: { root.revision; return root.app.track_album_at(root.rowIndex) }
-        }
-        Cell {
-            cellWidth: root.columns.lengthWidth
-            alignment: Text.AlignRight
-            text: { root.revision; return root.app.track_length_at(root.rowIndex) }
-        }
-        Cell {
-            cellWidth: root.columns.yearWidth
-            alignment: Text.AlignRight
-            text: { root.revision; return root.app.track_year_at(root.rowIndex) }
-        }
-        Cell {
-            cellWidth: root.columns.genreWidth
-            text: { root.revision; return root.app.track_genre_at(root.rowIndex) }
-        }
-        Cell {
-            cellWidth: root.columns.trackWidth
-            alignment: Text.AlignHCenter
-            text: { root.revision; return root.app.track_metadata_number_at(root.rowIndex) }
         }
     }
 
