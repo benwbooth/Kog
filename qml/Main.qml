@@ -701,9 +701,10 @@ ApplicationWindow {
                     alternatingRows: true
                     selectionBehavior: TableView.SelectRows
                     selectionMode: TableView.SingleSelection
-                    // TreeView owns row selection and folder expansion. The
-                    // delegate only adds Cog's file activation behavior.
-                    pointerNavigationEnabled: true
+                    // Delegate handlers own pointer selection, activation,
+                    // and drag arbitration. Disabling TreeView's hidden tap
+                    // handler avoids competing exclusive grabs on Wayland.
+                    pointerNavigationEnabled: false
                     selectionModel: ItemSelectionModel {
                         model: fileTreeModel
                     }
@@ -729,40 +730,71 @@ ApplicationWindow {
                         implicitHeight: 26
                         icon.width: 18
                         icon.height: 18
-                        ToolTip.visible: hovered
+                        ToolTip.visible: treePointer.containsMouse
                         ToolTip.delay: 700
                         ToolTip.text: treeDelegate.dragPath
-                        Drag.active: treeDrag.active
-                        // A native drag follows the pointer while this delegate
-                        // remains in place. Drag.Internal would leave the drag
-                        // hotspot over the tree because treeDrag has no target.
-                        Drag.dragType: Drag.Automatic
-                        Drag.keys: ["kog-file-tree-entry"]
-                        Drag.supportedActions: Qt.CopyAction
-                        Drag.proposedAction: Qt.CopyAction
-                        Drag.source: treeDelegate
-                        Drag.mimeData: ({
-                            "text/uri-list": treeDelegate.dragUrl.toString() + "\r\n"
-                        })
-                        Drag.hotSpot.x: 20
-                        Drag.hotSpot.y: height / 2
-
-                        DragHandler {
-                            id: treeDrag
-                            target: null
-                            acceptedButtons: Qt.LeftButton
-                            grabPermissions: PointerHandler.CanTakeOverFromAnything
-                                | PointerHandler.ApprovesTakeOverByAnything
+                        Item {
+                            id: treeDragProxy
+                            width: 1
+                            height: 1
+                            opacity: 0
+                            Drag.active: treePointer.drag.active
+                            Drag.dragType: Drag.Automatic
+                            Drag.keys: ["kog-file-tree-entry"]
+                            Drag.supportedActions: Qt.CopyAction
+                            Drag.proposedAction: Qt.CopyAction
+                            Drag.source: treeDelegate
+                            Drag.mimeData: ({
+                                "text/uri-list": treeDelegate.dragUrl.toString() + "\r\n"
+                            })
+                            Drag.hotSpot.x: 0
+                            Drag.hotSpot.y: 0
+                            Drag.onDragFinished: {
+                                treeDragProxy.x = 0
+                                treeDragProxy.y = 0
+                            }
                         }
 
-                        TapHandler {
+                        MouseArea {
+                            id: treePointer
+                            anchors.fill: parent
+                            z: 2
                             acceptedButtons: Qt.LeftButton
-                            gesturePolicy: TapHandler.ReleaseWithinBounds
-                            onDoubleTapped: {
+                            hoverEnabled: true
+                            preventStealing: true
+                            drag.target: treeDragProxy
+                            drag.axis: Drag.XAndYAxis
+                            drag.threshold: Application.styleHints.startDragDistance
+                            drag.smoothed: false
+
+                            onPressed: {
+                                treeDragProxy.x = mouseX
+                                treeDragProxy.y = mouseY
+                                const index = directoryTree.index(
+                                    treeDelegate.row, treeDelegate.column)
+                                directoryTree.selectionModel.setCurrentIndex(
+                                    index, ItemSelectionModel.ClearAndSelect)
+                            }
+                            onClicked: mouse => {
+                                const indicator = treeDelegate.indicator
+                                if (treeDelegate.hasChildren && indicator
+                                        && mouse.x >= indicator.x
+                                        && mouse.x <= indicator.x + indicator.width)
+                                    directoryTree.toggleExpanded(treeDelegate.row)
+                            }
+                            onDoubleClicked: {
                                 if (fileTreeModel.is_path_directory(treeDelegate.dragPath))
                                     directoryTree.toggleExpanded(treeDelegate.row)
                                 else
                                     appController.activate_local_path(treeDelegate.dragPath)
+                            }
+                            onReleased: {
+                                treeDragProxy.x = 0
+                                treeDragProxy.y = 0
+                            }
+                            onCanceled: {
+                                treeDragProxy.x = 0
+                                treeDragProxy.y = 0
                             }
                         }
                     }
