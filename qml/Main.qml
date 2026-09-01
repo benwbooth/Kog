@@ -58,7 +58,10 @@ ApplicationWindow {
                 && appController.close_to_tray && trayIcon.available) {
             close.accepted = false
             root.hide()
+            return
         }
+        applicationQuitRequested = true
+        Qt.callLater(Qt.quit)
     }
     onVisibilityChanged: function(visibility) {
         if (visibility === Window.Minimized && appController.show_tray_icon
@@ -662,6 +665,17 @@ ApplicationWindow {
         onTriggered: appController.clear_queue()
     }
 
+    Action {
+        id: clearPlaylistAction
+        text: qsTr("Clear Playlist")
+        icon.name: "edit-clear-list"
+        enabled: appController.playlist_count > 0
+        onTriggered: {
+            appController.clear_playlist()
+            root.clearPlaylistSelection()
+        }
+    }
+
     Menu {
         id: playlistContextMenu
         MenuItem {
@@ -683,15 +697,7 @@ ApplicationWindow {
             enabled: appController.playlist_count > 0
             onTriggered: selectAllAction.trigger()
         }
-        MenuItem {
-            text: qsTr("Clear Playlist")
-            icon.name: "edit-clear-list"
-            enabled: appController.playlist_count > 0
-            onTriggered: {
-                appController.clear_playlist()
-                root.clearPlaylistSelection()
-            }
-        }
+        MenuItem { action: clearPlaylistAction }
     }
 
     Menu {
@@ -737,15 +743,7 @@ ApplicationWindow {
         MenuItem { action: editTagsAction }
         MenuSeparator {}
         MenuItem { action: removeSelectedAction; icon.name: "edit-delete" }
-        MenuItem {
-            text: qsTr("Clear Playlist")
-            icon.name: "edit-clear-list"
-            enabled: appController.playlist_count > 0
-            onTriggered: {
-                appController.clear_playlist()
-                root.clearPlaylistSelection()
-            }
-        }
+        MenuItem { action: clearPlaylistAction }
         MenuSeparator {}
 
         Menu {
@@ -1077,6 +1075,16 @@ ApplicationWindow {
             }
 
             TitleDragArea { Layout.fillWidth: true; Layout.fillHeight: true }
+
+            ToolbarButton {
+                Layout.preferredWidth: 34
+                Layout.preferredHeight: 34
+                glyph: "×"
+                iconName: "edit-clear-list"
+                toolTip: qsTr("Clear Playlist")
+                enabled: clearPlaylistAction.enabled
+                onClicked: clearPlaylistAction.trigger()
+            }
 
             TextField {
                 id: searchField

@@ -29,6 +29,20 @@ Window {
     readonly property var outputDevices: JSON.parse(app.output_devices_json)
     readonly property var supportedFormatCatalog: JSON.parse(app.supported_formats_json)
     property string formatSearchText: ""
+    readonly property var filteredFormatGroups: {
+        const groups = []
+        for (const group of supportedFormatCatalog.groups) {
+            const extensions = matchingFormatExtensions(group)
+            if (extensions.length > 0) {
+                groups.push({
+                    name: group.name,
+                    detail: group.detail,
+                    extensions: extensions
+                })
+            }
+        }
+        return groups
+    }
 
     component PreferenceLabel: Label {
         color: root.foregroundColor
@@ -634,21 +648,18 @@ Window {
                                 Layout.fillHeight: true
                                 clip: true
                                 spacing: 8
-                                model: root.supportedFormatCatalog.groups
+                                model: root.filteredFormatGroups
                                 boundsBehavior: Flickable.StopAtBounds
 
                                 delegate: PreferenceGroup {
                                     id: formatGroup
 
                                     required property var modelData
-                                    readonly property var matchingExtensions:
-                                        root.matchingFormatExtensions(modelData)
 
-                                    width: formatList.width
-                                    visible: matchingExtensions.length > 0
-                                    height: visible ? implicitHeight : 0
+                                    width: Math.max(0, formatList.width
+                                        - formatScrollBar.width - 10)
                                     title: modelData.name + "  ·  "
-                                        + qsTr("%1 extensions").arg(matchingExtensions.length)
+                                        + qsTr("%1 extensions").arg(modelData.extensions.length)
 
                                     ColumnLayout {
                                         anchors.fill: parent
@@ -664,7 +675,7 @@ Window {
                                         }
                                         PreferenceLabel {
                                             Layout.fillWidth: true
-                                            text: formatGroup.matchingExtensions
+                                            text: formatGroup.modelData.extensions
                                                 .map(extension => "." + extension).join("  ")
                                             wrapMode: Text.Wrap
                                             textFormat: Text.PlainText
@@ -672,7 +683,10 @@ Window {
                                     }
                                 }
 
-                                ScrollBar.vertical: ScrollBar {}
+                                ScrollBar.vertical: ScrollBar {
+                                    id: formatScrollBar
+                                    policy: ScrollBar.AsNeeded
+                                }
                             }
 
                             PreferenceLabel {

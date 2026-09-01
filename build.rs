@@ -84,6 +84,8 @@ fn main() {
         "qml/icons/dialog-information-light.svg",
         "qml/icons/edit-find.svg",
         "qml/icons/edit-find-light.svg",
+        "qml/icons/edit-clear-list.svg",
+        "qml/icons/edit-clear-list-light.svg",
         "qml/icons/folder-open.svg",
         "qml/icons/folder-open-light.svg",
         "qml/icons/folder.svg",
