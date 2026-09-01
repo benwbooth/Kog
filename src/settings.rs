@@ -13,6 +13,7 @@ const OPENING_BEHAVIOR_SETTING_FILE: &str = "opening-files-behavior";
 const READ_CUE_SETTING_FILE: &str = "read-cue-sheets-in-folders";
 const READ_PLAYLISTS_SETTING_FILE: &str = "read-playlists-in-folders";
 const OUTPUT_VOLUME_SETTING_FILE: &str = "output-volume";
+const OUTPUT_DEVICE_SETTING_FILE: &str = "output-device";
 const PLAYLIST_COLUMN_LAYOUT_SETTING_FILE: &str = "playlist-column-layout";
 const PLAYLIST_COLUMN_WIDTHS_SETTING_FILE: &str = "playlist-column-widths";
 const EQUALIZER_SETTING_FILE: &str = "equalizer-settings";
@@ -116,6 +117,7 @@ pub struct AppSettings {
     pub read_cue_sheets_in_folders: bool,
     pub read_playlists_in_folders: bool,
     pub output_volume: f64,
+    pub output_device: Option<OutputDevicePreference>,
     pub playlist_column_layout: Option<String>,
     pub equalizer: EqualizerSettings,
 }
@@ -148,6 +150,8 @@ impl AppSettings {
             .filter(|value| value.is_finite())
             .unwrap_or(0.75)
             .clamp(0.0, 1.0);
+        let output_device = load_text(OUTPUT_DEVICE_SETTING_FILE)
+            .and_then(|value| OutputDevicePreference::parse(&value));
         let playlist_column_layout = load_text(PLAYLIST_COLUMN_LAYOUT_SETTING_FILE)
             .filter(|value| validate_playlist_column_layout(value))
             .or_else(|| {
@@ -167,6 +171,7 @@ impl AppSettings {
             read_cue_sheets_in_folders,
             read_playlists_in_folders,
             output_volume,
+            output_device,
             playlist_column_layout,
             equalizer,
         }
@@ -252,6 +257,16 @@ impl AppSettings {
         )
     }
 
+    pub fn save_output_device(device: Option<&OutputDevicePreference>) -> Result<(), String> {
+        save_text(
+            OUTPUT_DEVICE_SETTING_FILE,
+            &device
+                .map(OutputDevicePreference::serialize)
+                .transpose()?
+                .unwrap_or_default(),
+        )
+    }
+
     pub fn save_playlist_column_layout(layout: &str) -> Result<(), String> {
         if !validate_playlist_column_layout(layout) {
             return Err("Playlist column layout is invalid".to_owned());
@@ -276,6 +291,49 @@ fn validate_legacy_playlist_column_widths(value: &str) -> bool {
                 .parse::<f64>()
                 .is_ok_and(|width| width.is_finite() && (24.0..=4096.0).contains(&width))
         })
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OutputDevicePreference {
+    pub id: String,
+    pub name: String,
+}
+
+impl OutputDevicePreference {
+    fn is_valid(&self) -> bool {
+        valid_output_device_text(&self.id, 1_024) && valid_output_device_text(&self.name, 512)
+    }
+
+    fn serialize(&self) -> Result<String, String> {
+        if !self.is_valid() {
+            return Err("The output device selection is invalid".to_owned());
+        }
+        Ok(serde_json::json!({
+            "version": 1,
+            "id": self.id,
+            "name": self.name,
+        })
+        .to_string())
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        if value.len() > 2_048 {
+            return None;
+        }
+        let value: serde_json::Value = serde_json::from_str(value).ok()?;
+        if value.as_object()?.len() != 3 || value.get("version")?.as_u64()? != 1 {
+            return None;
+        }
+        let selection = Self {
+            id: value.get("id")?.as_str()?.to_owned(),
+            name: value.get("name")?.as_str()?.to_owned(),
+        };
+        selection.is_valid().then_some(selection)
+    }
+}
+
+fn valid_output_device_text(value: &str, maximum_length: usize) -> bool {
+    !value.is_empty() && value.len() <= maximum_length && !value.contains(['\0', '\r', '\n'])
 }
 
 fn validate_playlist_column_layout(value: &str) -> bool {
@@ -425,6 +483,25 @@ mod tests {
         );
         assert!(OpeningFilesBehavior::EnqueueAndPlay.starts_playback());
         assert!(!OpeningFilesBehavior::Enqueue.clears_playlist());
+    }
+
+    #[test]
+    fn output_device_selection_roundtrips_and_rejects_malformed_state() {
+        let selection = OutputDevicePreference {
+            id: "Alsa:default".to_owned(),
+            name: "Built-in Audio Analog Stereo".to_owned(),
+        };
+        assert_eq!(
+            OutputDevicePreference::parse(&selection.serialize().unwrap()),
+            Some(selection)
+        );
+        assert!(
+            OutputDevicePreference::parse(r#"{"version":1,"id":"","name":"Output"}"#).is_none()
+        );
+        assert!(
+            OutputDevicePreference::parse(r#"{"version":2,"id":"id","name":"Output"}"#).is_none()
+        );
+        assert!(!valid_output_device_text("Line Out\nInjected", 512));
     }
 
     #[test]

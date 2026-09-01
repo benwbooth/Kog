@@ -76,7 +76,8 @@ is required work, not a claim of support.
   remaining multitrack backend;
 - configurable loop counts, fade length, and indefinite playback;
 - ReplayGain, gapless playback, general resampling, direct Cog equalizer PCM
-  comparison, pitch/tempo, and output device selection;
+  comparison, pitch/tempo, automatic audio-device hot-plug failover, and
+  output-buffer controls;
 - metadata editing, album art, ratings, play counts, and library
   persistence;
 - Last.fm, notifications, remote control, spectrum/visualization, lyrics, and

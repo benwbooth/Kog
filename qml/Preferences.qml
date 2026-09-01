@@ -17,6 +17,22 @@ Window {
     color: palette.window
 
     property int currentPage: 0
+    readonly property var outputDevices: JSON.parse(app.output_devices_json)
+
+    function outputDeviceIndex(id) {
+        if (id.length === 0)
+            return 0
+        for (let index = 0; index < outputDevices.length; ++index) {
+            if (outputDevices[index].id === id)
+                return index + 1
+        }
+        return 0
+    }
+
+    onVisibleChanged: {
+        if (visible)
+            app.refresh_output_devices()
+    }
 
     RowLayout {
         anchors.fill: parent
@@ -165,11 +181,35 @@ Window {
                             RowLayout {
                                 Layout.fillWidth: true
                                 Label { text: qsTr("Device:") }
-                                Label {
+                                ComboBox {
+                                    id: outputDeviceSelector
+
                                     Layout.fillWidth: true
-                                    text: qsTr("System default")
-                                    color: root.palette.placeholderText
+                                    model: [{
+                                        id: "",
+                                        label: qsTr("System Default Device")
+                                    }].concat(root.outputDevices)
+                                    textRole: "label"
+                                    valueRole: "id"
+                                    currentIndex: root.outputDeviceIndex(
+                                        root.app.output_device_id)
+                                    onActivated: index => root.app.select_output_device(
+                                        index === 0
+                                            ? ""
+                                            : root.outputDevices[index - 1].id)
+                                    Accessible.name: qsTr("Audio output device")
                                 }
+                                Button {
+                                    text: qsTr("Refresh")
+                                    icon.name: "view-refresh"
+                                    onClicked: root.app.refresh_output_devices()
+                                }
+                            }
+                            Label {
+                                Layout.fillWidth: true
+                                text: root.app.output_device_status
+                                wrapMode: Text.Wrap
+                                color: root.palette.placeholderText
                             }
                             RowLayout {
                                 Layout.fillWidth: true

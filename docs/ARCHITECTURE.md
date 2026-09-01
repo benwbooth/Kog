@@ -31,6 +31,13 @@ legacy-core containment need; Cargo builds it from pinned source and release
 packages bundle it, so Kog never depends on a separately installed player or
 renderer executable.
 
+Audio output uses Rodio's re-exported CPAL backend in-process. The preferences
+model enumerates native output-capable devices and stores both the backend's
+stable device ID and its human-readable name. Resolution prefers the ID and
+falls back to the name when a backend regenerates IDs, then persists the new
+ID. Switching outputs rebuilds the stream before replacing the old one and the
+controller reopens the active source at its prior position and pause state.
+
 The installed backends are `rodio-symphonia` for conventional audio,
 `ffmpeg` as the broad conventional fallback behind Symphonia,
 `midi-rustysynth-sf2` for Standard MIDI File and RIFF RMID rendering through a

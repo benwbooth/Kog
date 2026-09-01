@@ -34,6 +34,9 @@ pub mod qobject {
         #[qproperty(f64, position_seconds)]
         #[qproperty(f64, duration_seconds)]
         #[qproperty(f64, volume)]
+        #[qproperty(QString, output_device_id)]
+        #[qproperty(QString, output_devices_json)]
+        #[qproperty(QString, output_device_status)]
         #[qproperty(bool, shuffle_enabled)]
         #[qproperty(bool, repeat_enabled)]
         #[qproperty(QString, total_duration)]
@@ -110,6 +113,10 @@ pub mod qobject {
         fn seek(self: Pin<&mut AppController>, seconds: f64);
         #[qinvokable]
         fn set_volume_level(self: Pin<&mut AppController>, volume: f64);
+        #[qinvokable]
+        fn refresh_output_devices(self: Pin<&mut AppController>);
+        #[qinvokable]
+        fn select_output_device(self: Pin<&mut AppController>, id: QString);
         #[qinvokable]
         fn set_shuffle_mode(self: Pin<&mut AppController>, enabled: bool);
         #[qinvokable]
@@ -201,9 +208,9 @@ use crate::decoder::{DecoderRegistry, DecoderSettings, ExpansionResult, validate
 use crate::equalizer::{
     EqualizerSettings, apply_preset, preset_for_genre, preset_named, preset_names,
 };
-use crate::playback::{PlaybackEngine, PlaybackState};
+use crate::playback::{OutputDevice, PlaybackEngine, PlaybackState, available_output_devices};
 use crate::playlist::{Playlist, PlaylistEntry, PlaylistLocation};
-use crate::settings::{AppSettings, MidiEngine, OpeningFilesBehavior};
+use crate::settings::{AppSettings, MidiEngine, OpeningFilesBehavior, OutputDevicePreference};
 use crate::track::{Track, canonical_path};
 
 #[derive(Debug, Default)]
@@ -673,6 +680,9 @@ pub struct AppControllerRust {
     position_seconds: f64,
     duration_seconds: f64,
     volume: f64,
+    output_device_id: QString,
+    output_devices_json: QString,
+    output_device_status: QString,
     shuffle_enabled: bool,
     repeat_enabled: bool,
     total_duration: QString,
@@ -745,10 +755,57 @@ impl Default for AppControllerRust {
             app_settings.mt32_rom_path.as_deref(),
         ));
         let equalizer_settings = app_settings.equalizer.clone();
+        let available_output_devices = available_output_devices();
+        let output_devices = available_output_devices.clone().unwrap_or_default();
+        let requested_output_device = app_settings.output_device.clone();
+        let selected_output_device = requested_output_device
+            .as_ref()
+            .and_then(|requested| resolve_output_device(&output_devices, requested));
+        let remapped_output_device = requested_output_device
+            .as_ref()
+            .zip(selected_output_device.as_ref())
+            .filter(|(requested, selected)| requested.id != selected.id);
+        let mut output_device_status = match (&available_output_devices, &requested_output_device) {
+            (Err(error), _) => error.clone(),
+            (Ok(_), Some(requested)) if selected_output_device.is_none() => {
+                format!(
+                    "Saved audio output is unavailable; using the system default: {}",
+                    requested.name
+                )
+            }
+            (Ok(_), Some(_)) if remapped_output_device.is_some() => format!(
+                "Using audio output: {} (matched the saved device name and refreshed its device ID)",
+                selected_output_device
+                    .as_ref()
+                    .map(|device| device.label.as_str())
+                    .unwrap_or("System Default Device")
+            ),
+            (Ok(_), Some(_)) => format!(
+                "Using audio output: {}",
+                selected_output_device
+                    .as_ref()
+                    .map(|device| device.label.as_str())
+                    .unwrap_or("System Default Device")
+            ),
+            (Ok(_), None) => "Following the system default audio output".to_owned(),
+        };
+        if let Some((_, selected)) = remapped_output_device
+            && let Err(error) = AppSettings::save_output_device(Some(&OutputDevicePreference {
+                id: selected.id.clone(),
+                name: selected.name.clone(),
+            }))
+        {
+            output_device_status.push_str(&format!(
+                "; the refreshed device ID could not be saved: {error}"
+            ));
+        }
         let decoders = DecoderRegistry::new(decoder_settings.clone());
-        let mut playback = PlaybackEngine::with_equalizer(
+        let mut playback = PlaybackEngine::with_equalizer_and_output(
             DecoderRegistry::new(decoder_settings.clone()),
             equalizer_settings.clone(),
+            selected_output_device
+                .as_ref()
+                .map(|device| device.id.clone()),
         );
         playback.set_volume(app_settings.output_volume as f32);
         let mut controller = Self {
@@ -776,6 +833,12 @@ impl Default for AppControllerRust {
             position_seconds: 0.0,
             duration_seconds: 0.0,
             volume: app_settings.output_volume,
+            output_device_id: selected_output_device
+                .as_ref()
+                .map(|device| qstring(&device.id))
+                .unwrap_or_default(),
+            output_devices_json: qstring(output_devices_json(&output_devices)),
+            output_device_status: qstring(output_device_status),
             shuffle_enabled: false,
             repeat_enabled: false,
             total_duration: qstring("Total duration: 0 seconds"),
@@ -834,6 +897,33 @@ impl Default for AppControllerRust {
 
 fn qstring(value: impl AsRef<str>) -> QString {
     QString::from(value.as_ref())
+}
+
+fn output_devices_json(devices: &[OutputDevice]) -> String {
+    serde_json::Value::Array(
+        devices
+            .iter()
+            .map(|device| {
+                serde_json::json!({
+                    "id": device.id,
+                    "label": device.label,
+                    "isDefault": device.is_default,
+                })
+            })
+            .collect(),
+    )
+    .to_string()
+}
+
+fn resolve_output_device(
+    devices: &[OutputDevice],
+    requested: &OutputDevicePreference,
+) -> Option<OutputDevice> {
+    devices
+        .iter()
+        .find(|device| device.id == requested.id)
+        .or_else(|| devices.iter().find(|device| device.name == requested.name))
+        .cloned()
 }
 
 fn saturating_i32(value: usize) -> i32 {
@@ -1606,6 +1696,70 @@ impl qobject::AppController {
         self.as_mut().set_volume(volume);
     }
 
+    pub fn refresh_output_devices(mut self: Pin<&mut Self>) {
+        let devices = match available_output_devices() {
+            Ok(devices) => devices,
+            Err(error) => {
+                self.as_mut().set_output_device_status(qstring(&error));
+                self.as_mut().set_status(qstring(error));
+                return;
+            }
+        };
+        self.as_mut()
+            .set_output_devices_json(qstring(output_devices_json(&devices)));
+        let selected_id = self.as_ref().rust().output_device_id.to_string();
+        let selected = devices.iter().find(|device| device.id == selected_id);
+        if !selected_id.is_empty() && selected.is_none() {
+            self.as_mut().apply_output_device(
+                None,
+                &format!(
+                    "Audio output {selected_id} is no longer available; using the system default"
+                ),
+            );
+            return;
+        }
+        let status = if let Some(selected) = selected {
+            format!("Using audio output: {}", selected.label)
+        } else {
+            format!(
+                "Following the system default audio output; {} available device{}",
+                devices.len(),
+                if devices.len() == 1 { "" } else { "s" }
+            )
+        };
+        self.as_mut().set_output_device_status(qstring(&status));
+        self.as_mut().set_status(qstring(status));
+    }
+
+    pub fn select_output_device(mut self: Pin<&mut Self>, id: QString) {
+        let id = id.to_string();
+        let selection = if id.is_empty() {
+            None
+        } else {
+            let devices = match available_output_devices() {
+                Ok(devices) => devices,
+                Err(error) => {
+                    self.as_mut().set_output_device_status(qstring(&error));
+                    self.as_mut().set_status(qstring(error));
+                    return;
+                }
+            };
+            let Some(device) = devices.into_iter().find(|device| device.id == id) else {
+                let error = format!("That audio output is no longer available: {id}");
+                self.as_mut().set_output_device_status(qstring(&error));
+                self.as_mut().set_status(qstring(error));
+                return;
+            };
+            Some(device)
+        };
+        let label = selection
+            .as_ref()
+            .map(|device| device.label.as_str())
+            .unwrap_or("the system default");
+        let status = format!("Switched audio output to {label}");
+        self.as_mut().apply_output_device(selection, &status);
+    }
+
     pub fn set_shuffle_mode(mut self: Pin<&mut Self>, enabled: bool) {
         if self.as_ref().rust().shuffle_enabled == enabled {
             return;
@@ -2269,6 +2423,77 @@ impl qobject::AppController {
         self.as_mut().set_status(qstring(status));
     }
 
+    fn apply_output_device(
+        mut self: Pin<&mut Self>,
+        output_device: Option<OutputDevice>,
+        success_status: &str,
+    ) {
+        let output_device_id = output_device.as_ref().map(|device| device.id.clone());
+        let current = self.as_ref().rust().output_device_id.to_string();
+        if current == output_device_id.as_deref().unwrap_or_default() {
+            self.as_mut()
+                .set_output_device_status(qstring(success_status));
+            self.as_mut().set_status(qstring(success_status));
+            return;
+        }
+
+        let (previous_state, source_index, position) = {
+            let this = self.as_ref();
+            let rust = this.rust();
+            (
+                rust.playback.state(),
+                usize::try_from(rust.current_index).ok(),
+                rust.playback.position(),
+            )
+        };
+        if let Err(error) = self
+            .as_mut()
+            .rust_mut()
+            .playback
+            .switch_output_device(output_device_id.clone())
+        {
+            self.as_mut().set_output_device_status(qstring(&error));
+            self.as_mut().set_status(qstring(error));
+            return;
+        }
+
+        self.as_mut()
+            .set_output_device_id(output_device_id.as_deref().map(qstring).unwrap_or_default());
+        let preference = output_device.as_ref().map(|device| OutputDevicePreference {
+            id: device.id.clone(),
+            name: device.name.clone(),
+        });
+        let save_error = AppSettings::save_output_device(preference.as_ref()).err();
+        let mut status = success_status.to_owned();
+
+        if previous_state != PlaybackState::Stopped
+            && let Some(source_index) = source_index
+        {
+            self.as_mut().play_source_index(source_index);
+            if self.as_ref().rust().playback.state() == PlaybackState::Stopped {
+                status.push_str("; playback could not be resumed");
+            } else {
+                if !position.is_zero() {
+                    match self.as_ref().rust().playback.seek(position) {
+                        Ok(()) => self.as_mut().set_position_seconds(position.as_secs_f64()),
+                        Err(error) => {
+                            status.push_str(&format!("; restoring position failed: {error}"));
+                        }
+                    }
+                }
+                if previous_state == PlaybackState::Paused {
+                    self.as_mut().rust_mut().playback.play_pause();
+                }
+                self.as_mut().sync_playback_state();
+            }
+        }
+        if let Some(error) = save_error {
+            status.push_str(&format!("; the selection could not be saved: {error}"));
+        }
+        self.as_mut().set_output_device_status(qstring(&status));
+        self.as_mut().set_status(qstring(status));
+    }
+
     fn rebuild_playlist(mut self: Pin<&mut Self>) {
         self.as_mut().rust_mut().rebuild_visible_indices();
         let count = saturating_i32(self.as_ref().rust().visible_indices.len());
@@ -2491,11 +2716,14 @@ impl qobject::AppController {
 mod tests {
     use super::{
         AddPathResult, PlaylistSortColumn, add_path_status, compare_tracks, move_selected_items,
-        natural_compare, normalize_playlist_save_path, parse_row_indices, playlist_entry_for_track,
-        sample_rate_label, sort_visible_indices, valid_equalizer_gain,
+        natural_compare, normalize_playlist_save_path, output_devices_json, parse_row_indices,
+        playlist_entry_for_track, resolve_output_device, sample_rate_label, sort_visible_indices,
+        valid_equalizer_gain,
     };
     use crate::decoder::{ArchiveOrigin, PlaybackSource};
+    use crate::playback::OutputDevice;
     use crate::playlist::PlaylistLocation;
+    use crate::settings::OutputDevicePreference;
     use crate::track::Track;
     use std::cmp::Ordering;
     use std::path::PathBuf;
@@ -2513,6 +2741,61 @@ mod tests {
             add_path_status(&result),
             "No tracks added — remote entry skipped; decoder metadata unavailable"
         );
+    }
+
+    #[test]
+    fn output_device_resolution_prefers_stable_id_then_falls_back_to_name() {
+        let devices = vec![
+            OutputDevice {
+                id: "new-speakers-id".to_owned(),
+                name: "Studio Speakers".to_owned(),
+                label: "Studio Speakers — ALSA".to_owned(),
+                is_default: true,
+            },
+            OutputDevice {
+                id: "saved-id".to_owned(),
+                name: "Headphones".to_owned(),
+                label: "Headphones — ALSA".to_owned(),
+                is_default: false,
+            },
+        ];
+
+        let exact = resolve_output_device(
+            &devices,
+            &OutputDevicePreference {
+                id: "saved-id".to_owned(),
+                name: "Studio Speakers".to_owned(),
+            },
+        )
+        .expect("resolve the stable ID before the matching name");
+        assert_eq!(exact.id, "saved-id");
+
+        let remapped = resolve_output_device(
+            &devices,
+            &OutputDevicePreference {
+                id: "stale-speakers-id".to_owned(),
+                name: "Studio Speakers".to_owned(),
+            },
+        )
+        .expect("recover a changed backend ID from the saved device name");
+        assert_eq!(remapped.id, "new-speakers-id");
+    }
+
+    #[test]
+    fn output_device_json_exposes_only_safe_ui_fields() {
+        let json = output_devices_json(&[OutputDevice {
+            id: "alsa:output:1".to_owned(),
+            name: "Raw backend name".to_owned(),
+            label: "Studio Speakers — ALSA".to_owned(),
+            is_default: true,
+        }]);
+        let value: serde_json::Value = serde_json::from_str(&json).expect("valid device JSON");
+        let device = &value[0];
+
+        assert_eq!(device["id"], "alsa:output:1");
+        assert_eq!(device["label"], "Studio Speakers — ALSA");
+        assert_eq!(device["isDefault"], true);
+        assert!(device.get("name").is_none());
     }
 
     #[test]
