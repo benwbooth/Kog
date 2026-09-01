@@ -184,8 +184,10 @@ The SC-55 path pins J.C. Moyer's maintained reusable-backend fork at release
 0.6.1 (`50dcdde`). Cargo compiles only its emulator backend, ROM hash loader,
 and Kog's `kog-sc55-helper`; it excludes SDL, RtMidi, the standard frontend,
 renderer frontend, and GUI. The companion is built and bundled with Kog rather
-than installed as an external dependency. Rust parses bounded SMF/RMID input, stably merges
-tracks, applies tempo or SMPTE timing, preserves channel voice, SysEx, and
+than installed as an external dependency. A common bounded SMF/RMID layer first
+exposes each track of a multi-track format-2 SMF as an independent zero-based
+subsong and re-encodes only the selected track as format 0. Rust then stably merges
+format-0/1 tracks, applies tempo or SMPTE timing, preserves channel voice, SysEx, and
 escape byte streams, then writes the versioned schedule described in
 `native/sc55-helper/PROTOCOL.md`. The helper detects complete supported ROM
 sets by hash, performs a GS reset and upstream-style startup, and streams its
@@ -198,8 +200,9 @@ The MT-32 path pins the official Munt 2.8.2 source at `3b05ec2` and statically
 links libmt32emu plus its internal resampler into Kog. The bridge asks Munt to
 identify up to 256 bounded regular-file ROM candidates, opens the first
 compatible control/PCM pair, selects float output with coarse analog emulation,
-and sends a valid Roland MT-32 reset. Rust parses bounded
-format-0/1 SMF or RMID input, stably merges tracks, applies tempo or SMPTE
+and sends a valid Roland MT-32 reset. The same common MIDI layer selects and
+re-encodes format-2 subsongs before Rust parses bounded format-0/1 SMF or RMID
+input, stably merges tracks, applies tempo or SMPTE
 timing, and preserves channel messages plus fragmented SysEx/escape streams.
 Playback emits 48 kHz stereo float PCM; seeking recreates the synth and renders
 discarded frames to the exact target. This route is an in-process library, not

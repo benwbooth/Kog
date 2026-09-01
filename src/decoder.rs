@@ -8,7 +8,8 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 use std::time::SystemTime;
 
-use midly::{Format, Fps, MetaMessage, MidiMessage, Smf, Timing, TrackEventKind};
+use encoding_rs::WINDOWS_1252;
+use midly::{Format, Fps, Header, MetaMessage, MidiMessage, Smf, Timing, TrackEventKind};
 use rodio::source::SeekError;
 use rodio::{ChannelCount, Decoder, Player, SampleRate, Source};
 use rustysynth::{MidiFile, MidiFileSequencer, SoundFont, Synthesizer, SynthesizerSettings};
@@ -804,7 +805,7 @@ impl MidiBackend {
         Ok(soundfont)
     }
 
-    fn open_sc55(&self, path: &Path) -> Result<Sc55, String> {
+    fn open_sc55(&self, path: &Path, midi: &[u8]) -> Result<Sc55, String> {
         let rom_directory = self.settings.sc55_rom_path().ok_or_else(|| {
             "SC-55 playback requires user-supplied Roland ROMs. Choose their directory in Edit > Preferences > MIDI."
                 .to_owned()
@@ -815,10 +816,10 @@ impl MidiBackend {
                 rom_directory.display()
             ));
         }
-        Sc55::open(path, &rom_directory)
+        Sc55::open(midi, path, &rom_directory)
     }
 
-    fn open_mt32(&self, path: &Path) -> Result<Mt32Source, String> {
+    fn open_mt32(&self, midi: &[u8]) -> Result<Mt32Source, String> {
         let rom_directory = self.settings.mt32_rom_path().ok_or_else(|| {
             "MT-32 playback requires user-supplied Roland ROMs. Choose their directory in Preferences > Synthesis."
                 .to_owned()
@@ -829,7 +830,7 @@ impl MidiBackend {
                 rom_directory.display()
             ));
         }
-        Mt32Source::open(path, &rom_directory)
+        Mt32Source::open(midi, &rom_directory)
     }
 }
 
@@ -859,45 +860,61 @@ impl DecoderBackend for MidiBackend {
     fn capabilities(&self) -> DecoderCapabilities {
         DecoderCapabilities {
             seek: true,
+            subsongs: true,
             ..DecoderCapabilities::default()
         }
     }
 
+    fn subsong_count(&self, path: &Path) -> Result<Option<u32>, String> {
+        Ok(read_standard_midi_subsong(path, None)?.subsong_count)
+    }
+
     fn probe(&self, source: &PlaybackSource) -> Result<StreamProperties, String> {
+        let midi = read_standard_midi_subsong(&source.path, source.subsong)?;
+        let title = midi.title.clone();
+        let track_number = source.subsong.map(|subsong| subsong + 1);
         let properties = match self.settings.midi_engine() {
             MidiEngine::RustySynth => StreamProperties {
-                duration: Some(load_midi_file(&source.path)?.1),
+                duration: Some(load_midi_file(&source.path, &midi.bytes)?.1),
                 sample_rate: Some(MIDI_SAMPLE_RATE),
                 channels: Some(MIDI_CHANNELS),
+                title,
+                track_number,
                 codec: Some("SoundFont 2".to_owned()),
                 ..StreamProperties::default()
             },
             MidiEngine::Opl3Windows => {
-                let duration = OplMidiTimeline::parse(&read_standard_midi(&source.path)?)?.duration;
+                let duration = OplMidiTimeline::parse(&midi.bytes)?.duration;
                 StreamProperties {
                     duration: Some(duration),
                     sample_rate: Some(MIDI_SAMPLE_RATE),
                     channels: Some(MIDI_CHANNELS),
+                    title,
+                    track_number,
                     codec: Some("OPL3Windows / Nuked OPL3".to_owned()),
                     ..StreamProperties::default()
                 }
             }
             MidiEngine::Sc55 => {
-                let sc55 = self.open_sc55(&source.path)?;
+                let sc55 = self.open_sc55(&source.path, &midi.bytes)?;
                 StreamProperties {
                     duration: Some(sc55.duration()),
                     sample_rate: Some(sc55.sample_rate()),
                     channels: Some(sc55.channels()),
+                    title,
+                    track_number,
                     codec: Some(format!("Nuked SC-55 ({})", sc55.model())),
                     ..StreamProperties::default()
                 }
             }
             MidiEngine::Mt32 => {
-                let mt32 = self.open_mt32(&source.path)?;
+                let mt32 = self.open_mt32(&midi.bytes)?;
                 StreamProperties {
                     duration: Some(mt32.duration()),
                     sample_rate: Some(mt32.sample_rate_value()),
                     channels: Some(MIDI_CHANNELS),
+                    title,
+                    track_number,
                     codec: Some(format!("Munt MT-32 ({})", mt32.model())),
                     ..StreamProperties::default()
                 }
@@ -907,22 +924,24 @@ impl DecoderBackend for MidiBackend {
     }
 
     fn append(&self, source: &PlaybackSource, player: &Player) -> Result<(), String> {
+        let midi = read_standard_midi_subsong(&source.path, source.subsong)?;
         match self.settings.midi_engine() {
             MidiEngine::RustySynth => {
                 let soundfont = self.load_soundfont()?;
-                let (midi_file, duration) = load_midi_file(&source.path)?;
+                let (midi_file, duration) = load_midi_file(&source.path, &midi.bytes)?;
                 player.append(MidiSource::new(soundfont, midi_file, duration)?);
             }
             MidiEngine::Opl3Windows => {
-                let timeline =
-                    Arc::new(OplMidiTimeline::parse(&read_standard_midi(&source.path)?)?);
+                let timeline = Arc::new(OplMidiTimeline::parse(&midi.bytes)?);
                 player.append(OplMidiSource::new(timeline)?);
             }
             MidiEngine::Sc55 => {
-                player.append(Sc55MidiSource::new(self.open_sc55(&source.path)?));
+                player.append(Sc55MidiSource::new(
+                    self.open_sc55(&source.path, &midi.bytes)?,
+                ));
             }
             MidiEngine::Mt32 => {
-                player.append(self.open_mt32(&source.path)?);
+                player.append(self.open_mt32(&midi.bytes)?);
             }
         }
         Ok(())
@@ -940,8 +959,7 @@ fn load_soundfont_file(path: &Path) -> Result<SoundFont, String> {
         .map_err(|error| format!("loading SoundFont {}: {error}", path.display()))
 }
 
-fn load_midi_file(path: &Path) -> Result<(Arc<MidiFile>, Duration), String> {
-    let bytes = read_standard_midi(path)?;
+fn load_midi_file(path: &Path, bytes: &[u8]) -> Result<(Arc<MidiFile>, Duration), String> {
     let track_count = bytes
         .get(10..12)
         .and_then(|bytes| <[u8; 2]>::try_from(bytes).ok())
@@ -1016,6 +1034,113 @@ pub(crate) fn read_standard_midi(path: &Path) -> Result<Vec<u8>, String> {
         "MIDI file {} has neither an MThd nor RIFF RMID header",
         path.display()
     ))
+}
+
+#[derive(Debug)]
+pub(crate) struct StandardMidiSubsong {
+    pub bytes: Vec<u8>,
+    pub title: Option<String>,
+    pub subsong_count: Option<u32>,
+}
+
+pub(crate) fn read_standard_midi_subsong(
+    path: &Path,
+    subsong: Option<u32>,
+) -> Result<StandardMidiSubsong, String> {
+    let bytes = read_standard_midi(path)?;
+    select_standard_midi_subsong(&bytes, subsong)
+        .map_err(|error| format!("preparing MIDI file {}: {error}", path.display()))
+}
+
+pub(crate) fn select_standard_midi_subsong(
+    bytes: &[u8],
+    subsong: Option<u32>,
+) -> Result<StandardMidiSubsong, String> {
+    let smf = Smf::parse(bytes).map_err(|error| format!("parsing SMF: {error}"))?;
+    if smf.tracks.is_empty() {
+        return Err("SMF contains no tracks".to_owned());
+    }
+
+    let sequential = smf.header.format == Format::Sequential;
+    let subsong_count = if sequential && smf.tracks.len() > 1 {
+        Some(
+            u32::try_from(smf.tracks.len())
+                .map_err(|_| "SMF format 2 track count exceeds Kog's limit".to_owned())?,
+        )
+    } else {
+        None
+    };
+    let selected_index = usize::try_from(subsong.unwrap_or(0))
+        .map_err(|_| "MIDI subsong index exceeds this platform's limit".to_owned())?;
+    if sequential {
+        let track = smf.tracks.get(selected_index).ok_or_else(|| {
+            format!(
+                "SMF format 2 subsong {} is outside the {}-track file",
+                selected_index,
+                smf.tracks.len()
+            )
+        })?;
+        let title = midi_track_title(track);
+        let selected = Smf {
+            header: Header::new(Format::SingleTrack, smf.header.timing),
+            tracks: vec![track.clone()],
+        };
+        let mut selected_bytes = Vec::new();
+        selected
+            .write_std(&mut selected_bytes)
+            .map_err(|error| format!("encoding selected SMF format 2 track: {error}"))?;
+        return Ok(StandardMidiSubsong {
+            bytes: selected_bytes,
+            title,
+            subsong_count,
+        });
+    }
+
+    if selected_index != 0 {
+        return Err(format!(
+            "MIDI subsong {selected_index} was requested from a format {} file with one song",
+            match smf.header.format {
+                Format::SingleTrack => 0,
+                Format::Parallel => 1,
+                Format::Sequential => unreachable!("handled above"),
+            }
+        ));
+    }
+    Ok(StandardMidiSubsong {
+        title: smf.tracks.first().and_then(|track| midi_track_title(track)),
+        bytes: bytes.to_vec(),
+        subsong_count,
+    })
+}
+
+fn midi_track_title(track: &[midly::TrackEvent<'_>]) -> Option<String> {
+    track.iter().find_map(|event| match event.kind {
+        TrackEventKind::Meta(MetaMessage::TrackName(bytes)) => decode_midi_text(bytes),
+        _ => None,
+    })
+}
+
+fn decode_midi_text(bytes: &[u8]) -> Option<String> {
+    let decoded = std::str::from_utf8(bytes).map_or_else(
+        |_| WINDOWS_1252.decode_without_bom_handling(bytes).0,
+        Cow::Borrowed,
+    );
+    let mut text = String::with_capacity(decoded.len().min(512));
+    for character in decoded
+        .trim_matches(['\0', ' ', '\t', '\r', '\n'])
+        .chars()
+        .take(512)
+    {
+        if matches!(character, '\r' | '\n' | '\t') {
+            if !text.ends_with(' ') {
+                text.push(' ');
+            }
+        } else if !character.is_control() {
+            text.push(character);
+        }
+    }
+    let text = text.trim().to_owned();
+    (!text.is_empty()).then_some(text)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1695,6 +1820,24 @@ mod tests {
         ]
     }
 
+    fn format_two_test_midi() -> Vec<u8> {
+        let mut midi = vec![b'M', b'T', b'h', b'd', 0, 0, 0, 6, 0, 2, 0, 2, 1, 0xe0];
+        for (name, note, duration) in [
+            ("Opening Theme", 60_u8, [0x83, 0x60]),
+            ("Finale", 67_u8, [0x87, 0x40]),
+        ] {
+            let mut track = vec![0, 0xff, 0x03, name.len() as u8];
+            track.extend_from_slice(name.as_bytes());
+            track.extend_from_slice(&[0, 0xc0, 0, 0, 0x90, note, 100]);
+            track.extend_from_slice(&duration);
+            track.extend_from_slice(&[0x80, note, 64, 0, 0xff, 0x2f, 0]);
+            midi.extend_from_slice(b"MTrk");
+            midi.extend_from_slice(&(track.len() as u32).to_be_bytes());
+            midi.extend_from_slice(&track);
+        }
+        midi
+    }
+
     fn tempo_change_test_midi() -> Vec<u8> {
         vec![
             b'M', b'T', b'h', b'd', 0, 0, 0, 6, 0, 1, 0, 2, 1, 0xe0, b'M', b'T', b'r', b'k', 0, 0,
@@ -1915,19 +2058,118 @@ mod tests {
     }
 
     #[test]
-    fn opl3_backend_needs_no_soundfont_and_rejects_format_two() {
+    fn opl3_backend_needs_no_soundfont() {
         let path = std::env::temp_dir().join(format!("kog-opl3-midi-{}.mid", std::process::id()));
         write_test_midi(&path);
         let backend = MidiBackend::new(DecoderSettings::new(None, MidiEngine::Opl3Windows));
         let source = PlaybackSource::from_path(path.clone());
         let properties = backend.probe(&source).expect("probe OPL3 MIDI without SF2");
         assert_eq!(properties.duration, Some(Duration::from_millis(500)));
-
-        let mut format_two = minimal_test_midi();
-        format_two[8..10].copy_from_slice(&2_u16.to_be_bytes());
-        let error = OplMidiTimeline::parse(&format_two).expect_err("format 2 rejection");
-        assert!(error.contains("subsong selection is not implemented"));
         std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn format_two_midi_expands_named_independent_subsongs_for_opl3() {
+        let fixture = tempfile::tempdir().expect("create format 2 fixture directory");
+        let path = fixture.path().join("two-songs.mid");
+        std::fs::write(&path, format_two_test_midi()).expect("write format 2 fixture");
+        let registry = DecoderRegistry::new(DecoderSettings::new(None, MidiEngine::Opl3Windows));
+
+        let sources = registry.expand(path.clone()).expect("expand format 2 MIDI");
+        assert_eq!(sources.len(), 2);
+        assert_eq!(sources[0].subsong, Some(0));
+        assert_eq!(sources[1].subsong, Some(1));
+
+        let first = registry.probe(&sources[0]).expect("probe first song");
+        assert_eq!(first.title.as_deref(), Some("Opening Theme"));
+        assert_eq!(first.track_number, Some(1));
+        assert_eq!(first.duration, Some(Duration::from_millis(500)));
+        let second = registry.probe(&sources[1]).expect("probe second song");
+        assert_eq!(second.title.as_deref(), Some("Finale"));
+        assert_eq!(second.track_number, Some(2));
+        assert_eq!(second.duration, Some(Duration::from_secs(1)));
+
+        let selected = read_standard_midi_subsong(&path, Some(1)).expect("select second song");
+        let smf = Smf::parse(&selected.bytes).expect("parse selected format 0 stream");
+        assert_eq!(smf.header.format, Format::SingleTrack);
+        assert_eq!(smf.tracks.len(), 1);
+        assert!(smf.tracks[0].iter().any(|event| matches!(
+            event.kind,
+            TrackEventKind::Midi {
+                message: MidiMessage::NoteOn { key, .. },
+                ..
+            } if key.as_int() == 67
+        )));
+
+        let timeline = Arc::new(OplMidiTimeline::parse(&selected.bytes).expect("OPL3 timeline"));
+        let mut opl_source = OplMidiSource::new(timeline).expect("OPL3 format 2 source");
+        assert!(
+            opl_source
+                .by_ref()
+                .take(4_800 * 2)
+                .any(|sample| sample.abs() > 0.000_01),
+            "selected OPL3 subsong was silent"
+        );
+        opl_source
+            .try_seek(Duration::from_millis(750))
+            .expect("seek selected OPL3 subsong");
+        assert_eq!(opl_source.frames_rendered, 36_000);
+
+        let mut soundfont_bytes = Cursor::new(minimal_test_soundfont());
+        let soundfont = Arc::new(
+            SoundFont::new(&mut soundfont_bytes).expect("load generated minimal SoundFont"),
+        );
+        let (midi_file, duration) =
+            load_midi_file(&path, &selected.bytes).expect("load selected SoundFont song");
+        assert_eq!(duration, Duration::from_secs(1));
+        let mut soundfont_source =
+            MidiSource::new(soundfont, midi_file, duration).expect("SoundFont format 2 source");
+        assert!(
+            soundfont_source
+                .by_ref()
+                .take(4_800 * 2)
+                .any(|sample| sample.abs() > 0.000_01),
+            "selected SoundFont subsong was silent"
+        );
+        soundfont_source
+            .try_seek(Duration::from_millis(750))
+            .expect("seek selected SoundFont subsong");
+        assert_eq!(soundfont_source.frames_rendered, 36_000);
+
+        let error = registry
+            .probe(&PlaybackSource {
+                path,
+                subsong: Some(2),
+                ..PlaybackSource::default()
+            })
+            .expect_err("reject out-of-range format 2 subsong");
+        assert!(error.contains("outside the 2-track file"));
+    }
+
+    #[test]
+    fn midi_subsong_selector_bounds_fragments_and_decodes_legacy_track_names() {
+        let format_zero = minimal_test_midi();
+        let error = select_standard_midi_subsong(&format_zero, Some(1))
+            .expect_err("reject a fragment on a one-song MIDI file");
+        assert!(error.contains("format 0 file with one song"));
+
+        let mut one_track_format_two = format_two_test_midi();
+        one_track_format_two[11] = 1;
+        let first_track_size = u32::from_be_bytes(
+            one_track_format_two[18..22]
+                .try_into()
+                .expect("first track length"),
+        ) as usize;
+        one_track_format_two.truncate(22 + first_track_size);
+        let selected = select_standard_midi_subsong(&one_track_format_two, None)
+            .expect("select the only format 2 track");
+        assert_eq!(selected.subsong_count, None);
+        assert_eq!(selected.title.as_deref(), Some("Opening Theme"));
+
+        assert_eq!(
+            decode_midi_text(b" Caf\xe9\r\nTheme ").as_deref(),
+            Some("Caf\u{e9} Theme")
+        );
     }
 
     #[test]

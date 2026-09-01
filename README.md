@@ -19,8 +19,8 @@ or paused track while retaining its position. Cog's 31-band graphic equalizer
 is live across the shared output path for every decoder, with the original 22 presets and exact
 10-to-31-band interpolation, preamp leveling, genre tracking, right-drag curve
 editing, strict persistence, and live coefficient changes. It also renders
-format-0/1 MID, MIDI, KAR, and RIFF
-RMID files through either a validated, persisted SF2 SoundFont using RustySynth
+format-0/1 MID, MIDI, KAR, and RIFF RMID files, plus format-2 SMF files as
+independent named playlist subsongs, through either a validated, persisted SF2 SoundFont using RustySynth
 or Cog's OPL3Windows synthesizer and its Nuked OPL3 core, with duration probing
 and seeking. A fourth in-process route statically links Munt 2.8.2/libmt32emu
 for MT-32 and CM-32L synthesis. It detects a compatible control/PCM ROM pair

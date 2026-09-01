@@ -303,6 +303,7 @@ mod tests {
     };
     use crate::qsf::{test_qsf_bytes, test_qsf_program};
     use crate::sdsf::{test_sdsf_bytes, test_ssf_program};
+    use crate::settings::MidiEngine;
     use crate::syntrax::test_jxs_bytes;
     use crate::usf::{test_usf_bytes, test_usf_reserved};
 
@@ -354,6 +355,24 @@ mod tests {
             bytes.extend_from_slice(&(seed + frame as i16 * 100).to_le_bytes());
         }
         bytes
+    }
+
+    fn format_two_midi_bytes() -> Vec<u8> {
+        let mut midi = vec![b'M', b'T', b'h', b'd', 0, 0, 0, 6, 0, 2, 0, 2, 1, 0xe0];
+        for (name, note, duration) in [
+            ("Archive Opening", 60_u8, [0x83, 0x60]),
+            ("Archive Finale", 67_u8, [0x87, 0x40]),
+        ] {
+            let mut track = vec![0, 0xff, 0x03, name.len() as u8];
+            track.extend_from_slice(name.as_bytes());
+            track.extend_from_slice(&[0, 0xc0, 0, 0, 0x90, note, 100]);
+            track.extend_from_slice(&duration);
+            track.extend_from_slice(&[0x80, note, 64, 0, 0xff, 0x2f, 0]);
+            midi.extend_from_slice(b"MTrk");
+            midi.extend_from_slice(&(track.len() as u32).to_be_bytes());
+            midi.extend_from_slice(&track);
+        }
+        midi
     }
 
     fn crc32(bytes: &[u8]) -> u32 {
@@ -577,6 +596,68 @@ mod tests {
                 .title
                 .as_deref(),
             Some("Synthetic JXS B")
+        );
+    }
+
+    #[test]
+    fn zip_expands_format_two_midi_tracks_with_stable_archive_identity() {
+        let fixture = tempfile::tempdir().unwrap();
+        let archive_path = fixture.path().join("midi-set.zip");
+        let midi = format_two_midi_bytes();
+        write_stored_zip(&archive_path, &[("set/two-songs.mid", &midi)]);
+
+        let registry = DecoderRegistry::new(DecoderSettings::new(None, MidiEngine::Opl3Windows));
+        let expansion = registry
+            .expand_detailed(archive_path.clone())
+            .expect("expand archived format 2 MIDI");
+        assert!(expansion.warnings.is_empty());
+        assert_eq!(expansion.sources.len(), 2);
+        assert_eq!(expansion.sources[0].subsong, Some(0));
+        assert_eq!(expansion.sources[1].subsong, Some(1));
+        assert!(expansion.sources.iter().all(|source| {
+            source
+                .archive_origin
+                .as_ref()
+                .is_some_and(|origin| origin.entry_name == "set/two-songs.mid")
+        }));
+        assert!(expansion.sources[0].display_label().ends_with("#1"));
+        assert!(expansion.sources[1].display_label().ends_with("#2"));
+
+        let first = registry
+            .probe(&expansion.sources[0])
+            .expect("probe first archived MIDI song");
+        assert_eq!(first.title.as_deref(), Some("Archive Opening"));
+        assert_eq!(first.duration, Some(std::time::Duration::from_millis(500)));
+        let second = registry
+            .probe(&expansion.sources[1])
+            .expect("probe second archived MIDI song");
+        assert_eq!(second.title.as_deref(), Some("Archive Finale"));
+        assert_eq!(second.duration, Some(std::time::Duration::from_secs(1)));
+
+        let playlist_path = fixture.path().join("selected.m3u");
+        Playlist::save(
+            &playlist_path,
+            &[PlaylistEntry {
+                location: PlaylistLocation::Archive {
+                    archive_path: archive_path.canonicalize().unwrap(),
+                    entry_name: "set/two-songs.mid".to_owned(),
+                },
+                fragment: Some("1".to_owned()),
+            }],
+        )
+        .expect("save selected archived MIDI track");
+        let restored = registry
+            .expand_detailed(playlist_path)
+            .expect("restore selected archived MIDI track");
+        assert_eq!(restored.sources.len(), 1);
+        assert_eq!(restored.sources[0].subsong, Some(1));
+        assert_eq!(
+            registry
+                .probe(&restored.sources[0])
+                .expect("probe restored archived MIDI track")
+                .title
+                .as_deref(),
+            Some("Archive Finale")
         );
     }
 

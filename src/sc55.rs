@@ -71,9 +71,8 @@ struct Sc55Schedule {
 }
 
 impl Sc55 {
-    pub fn open(path: &Path, rom_directory: &Path) -> Result<Self, String> {
-        let midi = crate::decoder::read_standard_midi(path)?;
-        let schedule = Sc55Schedule::parse(&midi)?;
+    pub fn open(midi: &[u8], path: &Path, rom_directory: &Path) -> Result<Self, String> {
+        let schedule = Sc55Schedule::parse(midi)?;
         let mut schedule_file =
             NamedTempFile::new().map_err(|error| format!("creating SC-55 schedule: {error}"))?;
         schedule.write(&mut schedule_file)?;
@@ -638,6 +637,24 @@ mod tests {
         ]
     }
 
+    fn format_two_midi() -> Vec<u8> {
+        let mut midi = vec![b'M', b'T', b'h', b'd', 0, 0, 0, 6, 0, 2, 0, 2, 1, 0xe0];
+        for (name, note, duration) in [
+            ("First", 60_u8, [0x83, 0x60]),
+            ("Second", 67_u8, [0x87, 0x40]),
+        ] {
+            let mut track = vec![0, 0xff, 0x03, name.len() as u8];
+            track.extend_from_slice(name.as_bytes());
+            track.extend_from_slice(&[0, 0x90, note, 100]);
+            track.extend_from_slice(&duration);
+            track.extend_from_slice(&[0x80, note, 0, 0, 0xff, 0x2f, 0]);
+            midi.extend_from_slice(b"MTrk");
+            midi.extend_from_slice(&(track.len() as u32).to_be_bytes());
+            midi.extend_from_slice(&track);
+        }
+        midi
+    }
+
     #[test]
     fn schedule_preserves_uart_messages_and_duration() {
         let schedule = Sc55Schedule::parse(&minimal_midi()).expect("parse generated MIDI");
@@ -647,6 +664,20 @@ mod tests {
         assert_eq!(schedule.events[1].bytes, [0x90, 60, 100]);
         assert_eq!(schedule.events[2].bytes, [0x80, 60, 0]);
         assert_eq!(schedule.events[2].nanoseconds, 500_000_000);
+    }
+
+    #[test]
+    fn schedule_renders_only_the_selected_format_two_subsong() {
+        let selected = crate::decoder::select_standard_midi_subsong(&format_two_midi(), Some(1))
+            .expect("select second format 2 song");
+        let schedule = Sc55Schedule::parse(&selected.bytes).expect("parse selected SC-55 song");
+
+        assert_eq!(selected.title.as_deref(), Some("Second"));
+        assert_eq!(selected.subsong_count, Some(2));
+        assert_eq!(schedule.duration, Duration::from_secs(1));
+        assert_eq!(schedule.events.len(), 2);
+        assert_eq!(schedule.events[0].bytes, [0x90, 67, 100]);
+        assert_eq!(schedule.events[1].bytes, [0x80, 67, 0]);
     }
 
     #[test]
@@ -667,7 +698,7 @@ mod tests {
         let midi = NamedTempFile::new().expect("create MIDI fixture");
         std::fs::write(midi.path(), minimal_midi()).expect("write MIDI fixture");
         let roms = tempfile::tempdir().expect("create empty ROM directory");
-        let error = Sc55::open(midi.path(), roms.path())
+        let error = Sc55::open(&minimal_midi(), midi.path(), roms.path())
             .err()
             .expect("missing ROM rejection");
         assert!(
