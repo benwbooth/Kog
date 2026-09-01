@@ -957,21 +957,82 @@ ApplicationWindow {
 
                 TitleDragArea { anchors.fill: parent }
             }
-            Label {
-                Layout.preferredWidth: root.compactToolbar ? 62 : 142
-                Layout.minimumWidth: 50
-                text: appController.now_title === "Not Playing"
-                    ? qsTr("Kog")
-                    : appController.now_title
-                font.pixelSize: 14
-                font.bold: true
-                color: root.palette.text
-                elide: Text.ElideRight
+            Item {
+                id: nowPlayingTitle
+
+                readonly property string displayTitle:
+                    appController.now_title === "Not Playing"
+                        ? qsTr("Kog") : appController.now_title
+                readonly property bool overflowing:
+                    nowPlayingLabel.implicitWidth > width
+
+                Layout.preferredWidth: root.compactToolbar ? 82 : 156
+                Layout.minimumWidth: root.compactToolbar ? 58 : 92
+                Layout.maximumWidth: root.compactToolbar ? 112 : 210
+                Layout.fillHeight: true
+                clip: true
+
+                Label {
+                    id: nowPlayingLabel
+
+                    anchors.verticalCenter: parent.verticalCenter
+                    x: 0
+                    text: nowPlayingTitle.displayTitle
+                    font.pixelSize: 12
+                    font.weight: Font.DemiBold
+                    color: root.palette.text
+                    wrapMode: Text.NoWrap
+                }
+
+                SequentialAnimation {
+                    id: nowPlayingMarquee
+
+                    running: nowPlayingTitle.overflowing
+                        && !nowPlayingHover.containsMouse
+                    loops: Animation.Infinite
+
+                    PauseAnimation { duration: 1200 }
+                    NumberAnimation {
+                        target: nowPlayingLabel
+                        property: "x"
+                        from: 0
+                        to: Math.min(0, nowPlayingTitle.width
+                            - nowPlayingLabel.implicitWidth)
+                        duration: Math.max(2600,
+                            Math.abs(to) * 28)
+                        easing.type: Easing.Linear
+                    }
+                    PauseAnimation { duration: 900 }
+                    NumberAnimation {
+                        target: nowPlayingLabel
+                        property: "x"
+                        to: 0
+                        duration: 320
+                        easing.type: Easing.OutCubic
+                    }
+
+                    onStopped: nowPlayingLabel.x = 0
+                }
+
+                MouseArea {
+                    id: nowPlayingHover
+
+                    anchors.fill: parent
+                    acceptedButtons: Qt.NoButton
+                    hoverEnabled: true
+                }
+                ToolTip.visible: nowPlayingHover.containsMouse
+                    && appController.now_title !== "Not Playing"
+                ToolTip.delay: 500
+                ToolTip.text: appController.now_title
 
                 TitleDragArea { anchors.fill: parent }
             }
 
-            TitleDragArea { Layout.fillWidth: true; Layout.fillHeight: true }
+            TitleDragArea {
+                Layout.preferredWidth: root.compactToolbar ? 0 : 6
+                Layout.fillHeight: true
+            }
 
             ToolbarButton {
                 Layout.preferredWidth: 34
@@ -1046,8 +1107,11 @@ ApplicationWindow {
                 }
             }
             Slider {
-                Layout.preferredWidth: 106
-                visible: !root.compactToolbar
+                Layout.fillWidth: true
+                Layout.minimumWidth: root.compactToolbar ? 72 : 140
+                Layout.preferredWidth: root.compactToolbar ? 110 : 260
+                Layout.maximumWidth: 460
+                visible: !root.searchVisible || root.width >= 1080
                 from: 0
                 to: Math.max(1, appController.duration_seconds)
                 value: appController.position_seconds
@@ -1093,7 +1157,10 @@ ApplicationWindow {
                 onClicked: appController.cycle_repeat_mode()
             }
 
-            TitleDragArea { Layout.fillWidth: true; Layout.fillHeight: true }
+            TitleDragArea {
+                Layout.preferredWidth: root.compactToolbar ? 0 : 6
+                Layout.fillHeight: true
+            }
 
             ToolbarButton {
                 Layout.preferredWidth: 34
@@ -1107,7 +1174,7 @@ ApplicationWindow {
 
             TextField {
                 id: searchField
-                Layout.preferredWidth: 165
+                Layout.preferredWidth: root.compactToolbar ? 122 : 165
                 visible: root.searchVisible
                 placeholderText: qsTr("Search playlist")
                 selectByMouse: true

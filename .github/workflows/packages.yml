@@ -88,6 +88,8 @@ jobs:
           flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
 
       - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: false
 
       - name: Generate locked Cargo sources
         run: |
@@ -213,7 +215,7 @@ jobs:
           cache: true
 
       - name: Install native dependencies
-        run: brew install cmake dylibbundler ffmpeg libarchive librsvg ninja pkg-config zlib
+        run: brew install cmake ffmpeg libarchive librsvg ninja pkg-config zlib
 
       - name: Configure dependency paths
         run: |
@@ -233,6 +235,8 @@ jobs:
           key: cargo-macos-${{ matrix.arch }}-${{ hashFiles('Cargo.lock') }}
 
       - name: Build release binary
+        env:
+          RUSTFLAGS: -C link-arg=-Wl,-headerpad_max_install_names
         run: cargo build --release --locked
 
       - name: Build application DMG

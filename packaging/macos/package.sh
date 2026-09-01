@@ -42,7 +42,7 @@ done
 iconutil -c icns "$iconset" -o "$contents/Resources/Kog.icns"
 rm -rf "$iconset" "$output_dir/Kog-1024.png"
 
-qt_lib="${QT_ROOT_DIR:?QT_ROOT_DIR is set by install-qt-action}/lib"
+: "${QT_ROOT_DIR:?QT_ROOT_DIR is set by install-qt-action}"
 brew_search=(
   -libpath="$(brew --prefix ffmpeg)/lib"
   -libpath="$(brew --prefix libarchive)/lib"
@@ -50,15 +50,10 @@ brew_search=(
 macdeployqt "$app" -qmldir="$root_dir/qml" -always-overwrite -verbose=2 \
   "${extra_executables[@]}" "${brew_search[@]}"
 
-dylib_search=(
-  -s "$qt_lib"
-  -s "$(brew --prefix ffmpeg)/lib"
-  -s "$(brew --prefix libarchive)/lib"
-)
-for executable in "$contents/MacOS/"*; do
-  dylibbundler -od -b -ns -x "$executable" -d "$contents/Frameworks" \
-    -p '@executable_path/../Frameworks/' "${dylib_search[@]}"
-done
+# macdeployqt includes every Qt SQL driver even though Kog does not use QtSql.
+# Several of those optional drivers reference database SDKs absent from Qt's
+# distribution, so do not ship unusable plugins with dangling dependencies.
+rm -rf "$contents/PlugIns/sqldrivers"
 
 if find "$contents" -type f -perm -100 -print0 | xargs -0 -n1 otool -L \
     | grep -E '/(opt/homebrew|usr/local)/(opt|Cellar)/'; then
