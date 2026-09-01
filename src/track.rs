@@ -27,6 +27,7 @@ pub struct Track {
     pub decoder_warning: Option<String>,
     pub codec: String,
     pub backend_id: String,
+    pub search_text: String,
 }
 
 impl Track {
@@ -53,9 +54,11 @@ impl Track {
             ..Self::default()
         };
 
+        let mut tagged_metadata_loaded = false;
         if !track.source.is_remote()
             && let Ok(tagged_file) = lofty::read_from_path(&track.source.path)
         {
+            tagged_metadata_loaded = true;
             let properties = tagged_file.properties();
             track.duration = Some(properties.duration());
             track.sample_rate = properties.sample_rate();
@@ -97,7 +100,10 @@ impl Track {
             }
         }
 
-        if let Ok((backend_id, properties)) = decoders.probe_with_backend(&track.source) {
+        let selected_backend_id = decoders.selected_backend_id(&track.source);
+        if tagged_metadata_loaded && selected_backend_id == Some("rodio-symphonia") {
+            track.backend_id = "rodio-symphonia".to_owned();
+        } else if let Ok((backend_id, properties)) = decoders.probe_with_backend(&track.source) {
             track.backend_id = backend_id.to_owned();
             track.duration = properties.duration.or(track.duration);
             track.sample_rate = properties.sample_rate.or(track.sample_rate);
@@ -127,16 +133,13 @@ impl Track {
             track.decoder_warning = properties.warning;
         }
 
+        track.refresh_search_text();
         track
     }
 
-    pub fn matches(&self, query: &str) -> bool {
-        if query.is_empty() {
-            return true;
-        }
-        let query = query.to_lowercase();
+    fn refresh_search_text(&mut self) {
         let source_label = self.source.display_label();
-        [
+        self.search_text = [
             self.title.as_str(),
             self.artist.as_str(),
             self.album_artist.as_str(),
@@ -145,8 +148,15 @@ impl Track {
             self.composer.as_str(),
             source_label.as_str(),
         ]
-        .iter()
-        .any(|value| value.to_lowercase().contains(&query))
+        .join("\n")
+        .to_lowercase();
+    }
+
+    pub fn matches(&self, query: &str) -> bool {
+        if query.is_empty() {
+            return true;
+        }
+        self.search_text.contains(query)
     }
 
     pub fn duration_label(&self) -> String {
@@ -208,5 +218,21 @@ mod tests {
         assert_eq!(lyrics_from_tag(&vorbis), "Generic lyrics");
 
         assert_eq!(lyrics_from_tag(&Tag::new(TagType::Id3v2)), "");
+    }
+
+    #[test]
+    fn playlist_search_uses_one_normalized_metadata_cache() {
+        let mut track = Track {
+            title: "Neon Skyline".to_owned(),
+            artist: "Blue-Green Ensemble".to_owned(),
+            source: PlaybackSource::from_path(PathBuf::from("/music/Final Theme.FLAC")),
+            ..Track::default()
+        };
+        track.refresh_search_text();
+
+        assert!(track.matches("neon skyline"));
+        assert!(track.matches("blue-green"));
+        assert!(track.matches("final theme.flac"));
+        assert!(!track.matches("missing"));
     }
 }

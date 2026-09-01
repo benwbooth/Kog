@@ -464,6 +464,24 @@ ApplicationWindow {
     }
 
     Timer {
+        interval: 50
+        running: true
+        repeat: true
+        onTriggered: appController.poll_audio_levels()
+    }
+
+    Timer {
+        id: playlistSearchTimer
+
+        interval: 90
+        repeat: false
+        onTriggered: {
+            appController.filter_playlist(searchField.text)
+            root.clearPlaylistSelection()
+        }
+    }
+
+    Timer {
         id: directoryScanTimer
 
         interval: 35
@@ -1179,8 +1197,13 @@ ApplicationWindow {
                 placeholderText: qsTr("Search playlist")
                 selectByMouse: true
                 onTextChanged: {
-                    appController.filter_playlist(text)
-                    root.clearPlaylistSelection()
+                    if (text.length === 0) {
+                        playlistSearchTimer.stop()
+                        appController.filter_playlist("")
+                        root.clearPlaylistSelection()
+                    } else {
+                        playlistSearchTimer.restart()
+                    }
                 }
                 onVisibleChanged: if (visible) forceActiveFocus()
                 Keys.onEscapePressed: {
@@ -1346,6 +1369,8 @@ ApplicationWindow {
                     // lockstep.
                     reuseItems: false
                     boundsBehavior: Flickable.StopAtBounds
+                    maximumFlickVelocity: 12000
+                    flickDeceleration: 2200
                     readonly property real scrollGutter:
                         directoryScrollBar.visible
                             ? directoryScrollBar.implicitWidth + 4 : 0
@@ -1491,6 +1516,30 @@ ApplicationWindow {
                         id: directoryScrollBar
                         policy: ScrollBar.AsNeeded
                     }
+
+                    WheelHandler {
+                        target: null
+                        acceptedDevices: PointerDevice.Mouse
+
+                        onWheel: event => {
+                            if (event.pixelDelta.y !== 0
+                                    || event.modifiers & Qt.ShiftModifier
+                                    || event.angleDelta.y === 0) {
+                                event.accepted = false
+                                return
+                            }
+                            const impulse = event.angleDelta.y * 8
+                            let velocity = directoryTree.verticalVelocity
+                            if (velocity * impulse < 0)
+                                velocity *= 0.25
+                            velocity = Math.max(
+                                -directoryTree.maximumFlickVelocity,
+                                Math.min(directoryTree.maximumFlickVelocity,
+                                    velocity + impulse))
+                            directoryTree.flick(0, velocity)
+                            event.accepted = true
+                        }
+                    }
                 }
             }
         }
@@ -1538,6 +1587,8 @@ ApplicationWindow {
                     Layout.fillHeight: true
                     clip: true
                     model: appController.playlist_count
+                    reuseItems: true
+                    cacheBuffer: Math.min(height * 1.5, 1200)
                     boundsBehavior: Flickable.StopAtBounds
                     readonly property real verticalScrollGutter:
                         playlistVerticalScrollBar.visible
@@ -1553,7 +1604,7 @@ ApplicationWindow {
                     focus: true
                     highlightMoveDuration: 0
                     maximumFlickVelocity: 12000
-                    flickDeceleration: 3000
+                    flickDeceleration: 2200
 
                     Keys.onReturnPressed: if (root.selectedRow >= 0)
                         appController.play_index(root.selectedRow)
@@ -1650,7 +1701,15 @@ ApplicationWindow {
                                 event.accepted = false
                                 return
                             }
-                            playlistView.flick(0, event.angleDelta.y * 8)
+                            const impulse = event.angleDelta.y * 8
+                            let velocity = playlistView.verticalVelocity
+                            if (velocity * impulse < 0)
+                                velocity *= 0.25
+                            velocity = Math.max(
+                                -playlistView.maximumFlickVelocity,
+                                Math.min(playlistView.maximumFlickVelocity,
+                                    velocity + impulse))
+                            playlistView.flick(0, velocity)
                             event.accepted = true
                         }
                     }

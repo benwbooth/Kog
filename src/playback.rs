@@ -1,10 +1,12 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use rodio::cpal;
 use rodio::cpal::traits::{DeviceTrait, HostTrait};
-use rodio::source::Zero;
-use rodio::{DeviceSinkBuilder, MixerDeviceSink, Player, mixer};
+use rodio::source::{SeekError, Zero};
+use rodio::{ChannelCount, DeviceSinkBuilder, MixerDeviceSink, Player, SampleRate, Source, mixer};
 
 use crate::decoder::{DecoderRegistry, PlaybackSource, SelectedBackend};
 use crate::equalizer::{EqualizerControl, EqualizerSettings, EqualizerSource};
@@ -95,6 +97,7 @@ pub struct PlaybackEngine {
     player: Option<Player>,
     decoders: DecoderRegistry,
     equalizer: EqualizerControl,
+    meter: AudioMeter,
     output_device_id: Option<String>,
     volume: f32,
     state: PlaybackState,
@@ -125,6 +128,7 @@ impl PlaybackEngine {
             player: None,
             decoders,
             equalizer: EqualizerControl::new(equalizer),
+            meter: AudioMeter::default(),
             output_device_id,
             volume: 0.75,
             state: PlaybackState::Stopped,
@@ -136,6 +140,7 @@ impl PlaybackEngine {
         let player = self.player.as_ref().expect("output creates player");
         player.stop();
         self.equalizer.reset();
+        self.meter.reset();
         let backend = self.decoders.append(source, player)?;
         player.set_volume(self.volume);
         player.play();
@@ -164,6 +169,7 @@ impl PlaybackEngine {
         if let Some(player) = self.player.as_ref() {
             player.stop();
             self.equalizer.reset();
+            self.meter.reset();
         }
         self.state = PlaybackState::Stopped;
     }
@@ -177,6 +183,7 @@ impl PlaybackEngine {
             .try_seek(position)
             .map_err(|error| format!("seeking: {error}"))?;
         self.equalizer.reset();
+        self.meter.reset();
         Ok(())
     }
 
@@ -200,6 +207,7 @@ impl PlaybackEngine {
             self.output = Some(output);
             self.player = Some(player);
             self.state = PlaybackState::Stopped;
+            self.meter.reset();
         }
         self.output_device_id = output_device_id;
         Ok(())
@@ -218,6 +226,10 @@ impl PlaybackEngine {
 
     pub fn state(&self) -> PlaybackState {
         self.state
+    }
+
+    pub fn audio_levels(&self) -> [f32; 5] {
+        self.meter.levels()
     }
 
     fn ensure_output(&mut self) -> Result<(), String> {
@@ -242,12 +254,180 @@ impl PlaybackEngine {
         // Rodio removes an empty mixer from its parent. Permanent silence keeps
         // this DSP bus alive between tracks without changing Player::empty().
         processing_mixer.add(Zero::new(channels, sample_rate));
-        output.mixer().add(EqualizerSource::new(
-            processing_source,
-            self.equalizer.clone(),
+        output.mixer().add(AudioMeterSource::new(
+            EqualizerSource::new(processing_source, self.equalizer.clone()),
+            self.meter.clone(),
         ));
         let player = Player::connect_new(&processing_mixer);
         Ok((output, player))
+    }
+}
+
+const AUDIO_METER_BANDS: usize = 5;
+const AUDIO_METER_SPLITS_HZ: [f32; AUDIO_METER_BANDS - 1] = [180.0, 700.0, 2_500.0, 7_000.0];
+const AUDIO_METER_GAIN: [f32; AUDIO_METER_BANDS] = [1.35, 1.2, 1.0, 1.05, 1.2];
+
+#[derive(Clone)]
+struct AudioMeter {
+    levels: Arc<[AtomicU32; AUDIO_METER_BANDS]>,
+}
+
+impl Default for AudioMeter {
+    fn default() -> Self {
+        Self {
+            levels: Arc::new(std::array::from_fn(|_| AtomicU32::new(0))),
+        }
+    }
+}
+
+impl AudioMeter {
+    fn levels(&self) -> [f32; AUDIO_METER_BANDS] {
+        std::array::from_fn(|index| f32::from_bits(self.levels[index].load(Ordering::Relaxed)))
+    }
+
+    fn publish(&self, levels: [f32; AUDIO_METER_BANDS]) {
+        for (target, level) in self.levels.iter().zip(levels) {
+            target.store(level.to_bits(), Ordering::Relaxed);
+        }
+    }
+
+    fn reset(&self) {
+        self.publish([0.0; AUDIO_METER_BANDS]);
+    }
+}
+
+struct AudioMeterSource<S> {
+    input: S,
+    meter: AudioMeter,
+    channels: ChannelCount,
+    sample_rate: SampleRate,
+    channel_cursor: usize,
+    frame_sum: f32,
+    low_pass: [f32; AUDIO_METER_BANDS - 1],
+    low_pass_alpha: [f32; AUDIO_METER_BANDS - 1],
+    energy: [f64; AUDIO_METER_BANDS],
+    frames_in_window: u32,
+    frames_per_window: u32,
+    smoothed: [f32; AUDIO_METER_BANDS],
+}
+
+impl<S: Source<Item = f32>> AudioMeterSource<S> {
+    fn new(input: S, meter: AudioMeter) -> Self {
+        let channels = input.channels();
+        let sample_rate = input.sample_rate();
+        let rate = sample_rate.get() as f32;
+        let low_pass_alpha = AUDIO_METER_SPLITS_HZ.map(|frequency| {
+            let frequency = frequency.min(rate * 0.45);
+            1.0 - (-2.0 * std::f32::consts::PI * frequency / rate).exp()
+        });
+        Self {
+            input,
+            meter,
+            channels,
+            sample_rate,
+            channel_cursor: 0,
+            frame_sum: 0.0,
+            low_pass: [0.0; AUDIO_METER_BANDS - 1],
+            low_pass_alpha,
+            energy: [0.0; AUDIO_METER_BANDS],
+            frames_in_window: 0,
+            frames_per_window: (sample_rate.get() / 50).max(64),
+            smoothed: [0.0; AUDIO_METER_BANDS],
+        }
+    }
+
+    fn observe_frame(&mut self, sample: f32) {
+        for (low_pass, alpha) in self.low_pass.iter_mut().zip(self.low_pass_alpha) {
+            *low_pass += alpha * (sample - *low_pass);
+        }
+        let bands = [
+            self.low_pass[0],
+            self.low_pass[1] - self.low_pass[0],
+            self.low_pass[2] - self.low_pass[1],
+            self.low_pass[3] - self.low_pass[2],
+            sample - self.low_pass[3],
+        ];
+        for (energy, band) in self.energy.iter_mut().zip(bands) {
+            *energy += f64::from(band) * f64::from(band);
+        }
+        self.frames_in_window += 1;
+        if self.frames_in_window < self.frames_per_window {
+            return;
+        }
+
+        let frames = f64::from(self.frames_in_window);
+        for index in 0..AUDIO_METER_BANDS {
+            let rms = (self.energy[index] / frames).sqrt() as f32 * AUDIO_METER_GAIN[index];
+            let decibels = 20.0 * rms.max(0.000_001).log10();
+            let target = ((decibels + 60.0) / 60.0).clamp(0.0, 1.0);
+            let smoothing = if target > self.smoothed[index] {
+                0.72
+            } else {
+                0.16
+            };
+            self.smoothed[index] += smoothing * (target - self.smoothed[index]);
+            if self.smoothed[index] < 0.004 {
+                self.smoothed[index] = 0.0;
+            }
+        }
+        self.meter.publish(self.smoothed);
+        self.energy.fill(0.0);
+        self.frames_in_window = 0;
+    }
+
+    fn reset(&mut self) {
+        self.channel_cursor = 0;
+        self.frame_sum = 0.0;
+        self.low_pass.fill(0.0);
+        self.energy.fill(0.0);
+        self.frames_in_window = 0;
+        self.smoothed.fill(0.0);
+        self.meter.reset();
+    }
+}
+
+impl<S: Source<Item = f32>> Iterator for AudioMeterSource<S> {
+    type Item = f32;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let sample = self.input.next()?;
+        self.frame_sum += sample;
+        self.channel_cursor += 1;
+        if self.channel_cursor == usize::from(self.channels.get()) {
+            let mono = self.frame_sum / f32::from(self.channels.get());
+            self.observe_frame(mono);
+            self.channel_cursor = 0;
+            self.frame_sum = 0.0;
+        }
+        Some(sample)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.input.size_hint()
+    }
+}
+
+impl<S: Source<Item = f32>> Source for AudioMeterSource<S> {
+    fn current_span_len(&self) -> Option<usize> {
+        self.input.current_span_len()
+    }
+
+    fn channels(&self) -> ChannelCount {
+        self.channels
+    }
+
+    fn sample_rate(&self) -> SampleRate {
+        self.sample_rate
+    }
+
+    fn total_duration(&self) -> Option<Duration> {
+        self.input.total_duration()
+    }
+
+    fn try_seek(&mut self, position: Duration) -> Result<(), SeekError> {
+        self.input.try_seek(position)?;
+        self.reset();
+        Ok(())
     }
 }
 
@@ -272,7 +452,30 @@ fn open_output(output_device_id: Option<&str>) -> Result<MixerDeviceSink, String
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZero;
+
+    use rodio::buffer::SamplesBuffer;
+
     use super::*;
+
+    fn measured_sine(frequency: f32) -> [f32; AUDIO_METER_BANDS] {
+        let sample_rate = 48_000_u32;
+        let samples = (0..sample_rate / 4)
+            .map(|frame| {
+                (2.0 * std::f32::consts::PI * frequency * frame as f32 / sample_rate as f32).sin()
+                    * 0.5
+            })
+            .collect::<Vec<_>>();
+        let meter = AudioMeter::default();
+        let source = SamplesBuffer::new(
+            NonZero::new(1).unwrap(),
+            NonZero::new(sample_rate).unwrap(),
+            samples.clone(),
+        );
+        let output = AudioMeterSource::new(source, meter.clone()).collect::<Vec<_>>();
+        assert_eq!(output, samples, "metering must not alter playback samples");
+        meter.levels()
+    }
 
     #[test]
     fn output_devices_are_unique_safe_and_disambiguated_for_qml() {
@@ -332,5 +535,22 @@ mod tests {
         );
         assert_eq!(playback.state(), PlaybackState::Stopped);
         assert!(playback.output.is_none());
+    }
+
+    #[test]
+    fn audio_meter_levels_come_from_the_real_frequency_content() {
+        let bass = measured_sine(90.0);
+        let treble = measured_sine(10_000.0);
+
+        assert!(
+            bass[0] > bass[4],
+            "bass should favor the low band: {bass:?}"
+        );
+        assert!(
+            treble[4] > treble[0],
+            "treble should favor the high band: {treble:?}"
+        );
+        assert!(bass.iter().copied().fold(0.0_f32, f32::max) > 0.25);
+        assert!(treble.iter().copied().fold(0.0_f32, f32::max) > 0.25);
     }
 }

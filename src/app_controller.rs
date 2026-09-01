@@ -17,6 +17,11 @@ pub mod qobject {
         #[qproperty(QString, playlist_column_layout)]
         #[qproperty(i32, current_index)]
         #[qproperty(QString, playback_state)]
+        #[qproperty(f64, audio_level_low)]
+        #[qproperty(f64, audio_level_low_mid)]
+        #[qproperty(f64, audio_level_mid)]
+        #[qproperty(f64, audio_level_high_mid)]
+        #[qproperty(f64, audio_level_high)]
         #[qproperty(QString, status)]
         #[qproperty(QString, now_title)]
         #[qproperty(QString, now_artist)]
@@ -159,6 +164,8 @@ pub mod qobject {
         #[qinvokable]
         fn poll_playback(self: Pin<&mut AppController>);
         #[qinvokable]
+        fn poll_audio_levels(self: Pin<&mut AppController>);
+        #[qinvokable]
         fn equalizer_band_gain(self: &AppController, index: i32) -> f64;
         #[qinvokable]
         fn update_equalizer_enabled(self: Pin<&mut AppController>, enabled: bool);
@@ -260,7 +267,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use cxx_qt::CxxQtType;
 use cxx_qt_lib::{QString, QUrl};
@@ -306,6 +313,9 @@ struct DirectoryScanState {
     behavior: OpeningFilesBehavior,
     first_new_source_index: usize,
     combined: AddPathResult,
+    known_sources: HashSet<PlaybackSource>,
+    playlist_dirty: bool,
+    last_playlist_refresh: Instant,
 }
 
 impl AddPathResult {
@@ -550,10 +560,10 @@ fn scan_directory_paths(
         let next_index = Arc::new(AtomicUsize::new(0));
         let worker_count = std::thread::available_parallelism()
             .map_or(2, usize::from)
-            .min(4)
+            .min(8)
             .min(files.len());
         let (prepared_sender, prepared_receiver) =
-            std::sync::mpsc::sync_channel::<(usize, PreparedScanFile)>(worker_count * 2);
+            std::sync::mpsc::sync_channel::<(usize, PreparedScanFile)>(worker_count * 4);
 
         std::thread::scope(|scope| {
             for _ in 0..worker_count {
@@ -1060,6 +1070,11 @@ pub struct AppControllerRust {
     playlist_column_layout: QString,
     current_index: i32,
     playback_state: QString,
+    audio_level_low: f64,
+    audio_level_low_mid: f64,
+    audio_level_mid: f64,
+    audio_level_high_mid: f64,
+    audio_level_high: f64,
     status: QString,
     now_title: QString,
     now_artist: QString,
@@ -1225,6 +1240,11 @@ impl Default for AppControllerRust {
             playlist_column_layout,
             current_index: -1,
             playback_state: qstring(PlaybackState::Stopped.as_str()),
+            audio_level_low: 0.0,
+            audio_level_low_mid: 0.0,
+            audio_level_mid: 0.0,
+            audio_level_high_mid: 0.0,
+            audio_level_high: 0.0,
             status: qstring("Drop audio files here or use the Kog menu to add files"),
             now_title: qstring("Not Playing"),
             now_artist: QString::default(),
@@ -1504,6 +1524,12 @@ impl AppControllerRust {
                 self.playlist_sort_ascending,
             );
         }
+    }
+
+    fn sync_tracks_in_playback_order(&mut self) -> usize {
+        let current = usize::try_from(self.current_index).ok();
+        self.playback_order.tracks_changed(&self.tracks, current);
+        self.playback_order.queue_count()
     }
 
     fn total_duration_value(&self) -> QString {
@@ -1786,15 +1812,10 @@ impl qobject::AppController {
             }
         }
 
-        let mut playlist_changed = false;
         let mut completion = None;
-        let mut known_sources = self
-            .as_ref()
-            .rust()
-            .tracks
-            .iter()
-            .map(|track| track.source.clone())
-            .collect::<HashSet<_>>();
+        let mut scanned_increment = 0_i32;
+        let mut last_scanned_path = None;
+        let mut last_added_count = None;
         for event in events {
             match event {
                 DirectoryScanEvent::Prepared(prepared) => {
@@ -1807,38 +1828,30 @@ impl qobject::AppController {
                     if skip {
                         continue;
                     }
-                    let scanned = self
-                        .as_ref()
-                        .rust()
-                        .directory_scan_files_scanned
-                        .saturating_add(1);
-                    self.as_mut().set_directory_scan_files_scanned(scanned);
-                    self.as_mut()
-                        .set_directory_scan_current_path(qstring(prepared.path.to_string_lossy()));
-                    let new_tracks = prepared
-                        .tracks
-                        .into_iter()
-                        .filter(|track| known_sources.insert(track.source.clone()))
-                        .collect::<Vec<_>>();
-                    let newly_added = new_tracks.len();
-                    if newly_added > 0 {
-                        playlist_changed = true;
+                    scanned_increment = scanned_increment.saturating_add(1);
+                    last_scanned_path = Some(prepared.path);
+                    let (new_tracks, added_count) = {
+                        let mut rust = self.as_mut().rust_mut();
+                        let Some(scan) = rust.directory_scan.as_mut() else {
+                            continue;
+                        };
+                        let new_tracks = prepared
+                            .tracks
+                            .into_iter()
+                            .filter(|track| scan.known_sources.insert(track.source.clone()))
+                            .collect::<Vec<_>>();
+                        let newly_added = new_tracks.len();
+                        scan.combined.added += newly_added;
+                        scan.playlist_dirty |= newly_added > 0;
+                        for warning in prepared.warnings {
+                            scan.combined.push_warning(warning);
+                        }
+                        (new_tracks, scan.combined.added)
+                    };
+                    if !new_tracks.is_empty() {
                         self.as_mut().rust_mut().tracks.extend(new_tracks);
                     }
-                    let added_count =
-                        if let Some(scan) = self.as_mut().rust_mut().directory_scan.as_mut() {
-                            scan.combined.added += newly_added;
-                            for warning in prepared.warnings {
-                                scan.combined.push_warning(warning);
-                            }
-                            Some(scan.combined.added)
-                        } else {
-                            None
-                        };
-                    if let Some(added_count) = added_count {
-                        self.as_mut()
-                            .set_directory_scan_tracks_added(saturating_i32(added_count));
-                    }
+                    last_added_count = Some(added_count);
                 }
                 DirectoryScanEvent::Warning(warning) => {
                     if let Some(scan) = self.as_mut().rust_mut().directory_scan.as_mut() {
@@ -1849,9 +1862,21 @@ impl qobject::AppController {
             }
         }
 
-        if playlist_changed {
-            self.as_mut().refresh_playback_order();
-            self.as_mut().rebuild_playlist();
+        if scanned_increment > 0 {
+            let scanned = self
+                .as_ref()
+                .rust()
+                .directory_scan_files_scanned
+                .saturating_add(scanned_increment);
+            self.as_mut().set_directory_scan_files_scanned(scanned);
+        }
+        if let Some(path) = last_scanned_path {
+            self.as_mut()
+                .set_directory_scan_current_path(qstring(path.to_string_lossy()));
+        }
+        if let Some(added_count) = last_added_count {
+            self.as_mut()
+                .set_directory_scan_tracks_added(saturating_i32(added_count));
         }
         if disconnected && completion.is_none() {
             if !cancel_requested
@@ -1861,6 +1886,25 @@ impl qobject::AppController {
                     .push_warning("The folder scanner stopped unexpectedly");
             }
             completion = Some(cancel_requested);
+        }
+        let refresh_playlist = self
+            .as_mut()
+            .rust_mut()
+            .directory_scan
+            .as_mut()
+            .is_some_and(|scan| {
+                let due = scan.playlist_dirty
+                    && (completion.is_some()
+                        || scan.last_playlist_refresh.elapsed() >= Duration::from_millis(150));
+                if due {
+                    scan.playlist_dirty = false;
+                    scan.last_playlist_refresh = Instant::now();
+                }
+                due
+            });
+        if refresh_playlist {
+            self.as_mut().refresh_playback_order();
+            self.as_mut().rebuild_playlist();
         }
         if let Some(cancelled) = completion {
             self.as_mut().finish_directory_scan(cancelled);
@@ -2082,7 +2126,11 @@ impl qobject::AppController {
     }
 
     pub fn filter_playlist(mut self: Pin<&mut Self>, query: QString) {
-        self.as_mut().rust_mut().filter = query.to_string().trim().to_lowercase();
+        let query = query.to_string().trim().to_lowercase();
+        if self.as_ref().rust().filter == query {
+            return;
+        }
+        self.as_mut().rust_mut().filter = query;
         self.as_mut().rebuild_playlist();
     }
 
@@ -2526,6 +2574,19 @@ impl qobject::AppController {
         }
         let position = self.as_ref().rust().playback.position().as_secs_f64();
         self.as_mut().set_position_seconds(position);
+    }
+
+    pub fn poll_audio_levels(mut self: Pin<&mut Self>) {
+        let levels = if self.as_ref().rust().playback.state() == PlaybackState::Playing {
+            self.as_ref().rust().playback.audio_levels()
+        } else {
+            [0.0; 5]
+        };
+        self.as_mut().set_audio_level_low(f64::from(levels[0]));
+        self.as_mut().set_audio_level_low_mid(f64::from(levels[1]));
+        self.as_mut().set_audio_level_mid(f64::from(levels[2]));
+        self.as_mut().set_audio_level_high_mid(f64::from(levels[3]));
+        self.as_mut().set_audio_level_high(f64::from(levels[4]));
     }
 
     pub fn equalizer_band_gain(&self, index: i32) -> f64 {
@@ -3420,6 +3481,13 @@ impl qobject::AppController {
             .rust()
             .decoders
             .background_worker(decoder_settings.clone());
+        let known_sources = self
+            .as_ref()
+            .rust()
+            .tracks
+            .iter()
+            .map(|track| track.source.clone())
+            .collect();
         let read_cue_sheets = self.as_ref().rust().read_cue_sheets_in_folders;
         let read_playlists = self.as_ref().rust().read_playlists_in_folders;
         self.as_mut().rust_mut().directory_scan = Some(DirectoryScanState {
@@ -3429,6 +3497,9 @@ impl qobject::AppController {
             behavior,
             first_new_source_index,
             combined: AddPathResult::default(),
+            known_sources,
+            playlist_dirty: false,
+            last_playlist_refresh: Instant::now(),
         });
         self.as_mut().set_directory_scan_files_scanned(0);
         self.as_mut().set_directory_scan_tracks_added(0);
@@ -3490,13 +3561,7 @@ impl qobject::AppController {
     }
 
     fn refresh_playback_order(mut self: Pin<&mut Self>) {
-        let tracks = self.as_ref().rust().tracks.clone();
-        let current = usize::try_from(self.as_ref().rust().current_index).ok();
-        let queue_count = {
-            let mut rust = self.as_mut().rust_mut();
-            rust.playback_order.tracks_changed(&tracks, current);
-            rust.playback_order.queue_count()
-        };
+        let queue_count = self.as_mut().rust_mut().sync_tracks_in_playback_order();
         self.as_mut().set_queue_count(saturating_i32(queue_count));
     }
 
