@@ -296,6 +296,7 @@ mod tests {
     use crate::decoder::{ArchiveOrigin, DecoderRegistry, DecoderSettings, PlaybackSource};
     use crate::gsf::{test_gba_rom, test_gsf_bytes};
     use crate::ncsf::{test_ncsf_bytes, test_sdat_bytes};
+    use crate::playlist::{Playlist, PlaylistEntry, PlaylistLocation};
     use crate::psf::{
         test_psf_bytes, test_psf_executable, test_psf2_bytes, test_psf2_irx, test_snsf_bytes,
         test_snsf_rom, test_twosf_bytes, test_twosf_rom,
@@ -543,6 +544,40 @@ mod tests {
             .expect("probe archived JXS subsong");
         assert_eq!(properties.title.as_deref(), Some("Synthetic JXS B"));
         assert_eq!(properties.track_number, Some(2));
+
+        let playlist_path = fixture.path().join("saved-selection.m3u");
+        Playlist::save(
+            &playlist_path,
+            &[PlaylistEntry {
+                location: PlaylistLocation::Archive {
+                    archive_path: archive_path.canonicalize().unwrap(),
+                    entry_name: "set/song.jxs".to_owned(),
+                },
+                fragment: Some("1".to_owned()),
+            }],
+        )
+        .expect("save archived JXS selection");
+        let restored = registry
+            .expand_detailed(playlist_path)
+            .expect("reopen archived JXS selection");
+        assert_eq!(restored.sources.len(), 1);
+        assert_eq!(restored.sources[0].subsong, Some(1));
+        assert_eq!(
+            restored.sources[0]
+                .archive_origin
+                .as_ref()
+                .expect("restored archive identity")
+                .entry_name,
+            "set/song.jxs"
+        );
+        assert_eq!(
+            registry
+                .probe(&restored.sources[0])
+                .expect("probe restored archived JXS")
+                .title
+                .as_deref(),
+            Some("Synthetic JXS B")
+        );
     }
 
     #[test]

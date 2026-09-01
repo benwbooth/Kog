@@ -965,6 +965,7 @@ dependencies = [
  "lofty",
  "midly",
  "orgorg",
+ "percent-encoding",
  "pkg-config",
  "rfd",
  "rodio",

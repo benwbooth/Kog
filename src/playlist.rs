@@ -1,14 +1,33 @@
 //! Cog-compatible M3U/M3U8 and PLS playlist parsing.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use encoding_rs::{GB18030, WINDOWS_1251};
+use percent_encoding::{AsciiSet, CONTROLS, percent_decode_str, utf8_percent_encode};
 use url::Url;
+
+const UNPACK_COMPONENT_ENCODE_SET: &AsciiSet = &CONTROLS
+    .add(b' ')
+    .add(b'"')
+    .add(b'#')
+    .add(b'%')
+    .add(b'<')
+    .add(b'>')
+    .add(b'?')
+    .add(b'`')
+    .add(b'{')
+    .add(b'|')
+    .add(b'}');
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PlaylistLocation {
     Local(PathBuf),
     Remote(String),
+    Archive {
+        archive_path: PathBuf,
+        entry_name: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -61,6 +80,63 @@ impl Playlist {
         let bytes = std::fs::read(path)
             .map_err(|error| format!("opening playlist {}: {error}", path.display()))?;
         Ok(contains_hls_tag(&decode_text(&bytes).replace('\r', "\n")))
+    }
+
+    pub fn save(path: &Path, entries: &[PlaylistEntry]) -> Result<(), String> {
+        let format = PlaylistFormat::for_path(path)?;
+        let mut body = String::new();
+        match format {
+            PlaylistFormat::M3u => {
+                // Cog deliberately writes a one-character comment instead of
+                // EXTINF metadata. Preserve that small but observable detail.
+                body.push_str("#\n");
+                for entry in entries {
+                    body.push_str(&serialize_entry(path, entry)?);
+                    body.push('\n');
+                }
+            }
+            PlaylistFormat::Pls => {
+                body.push_str(&format!(
+                    "[playlist]\nnumberOfEntries={}\n\n",
+                    entries.len()
+                ));
+                for (index, entry) in entries.iter().enumerate() {
+                    body.push_str(&format!(
+                        "File{}={}\n",
+                        index + 1,
+                        serialize_entry(path, entry)?
+                    ));
+                }
+                body.push_str("\nVERSION=2");
+            }
+        }
+
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let mut temporary = tempfile::Builder::new()
+            .prefix(".kog-playlist-")
+            .tempfile_in(parent)
+            .map_err(|error| {
+                format!(
+                    "creating a temporary playlist beside {}: {error}",
+                    path.display()
+                )
+            })?;
+        temporary.write_all(body.as_bytes()).map_err(|error| {
+            format!("writing temporary playlist for {}: {error}", path.display())
+        })?;
+        temporary.as_file_mut().sync_all().map_err(|error| {
+            format!(
+                "flushing temporary playlist for {}: {error}",
+                path.display()
+            )
+        })?;
+        temporary
+            .persist(path)
+            .map_err(|error| format!("replacing playlist {}: {}", path.display(), error.error))?;
+        Ok(())
     }
 }
 
@@ -120,6 +196,9 @@ fn parse_pls(text: &str) -> Vec<&str> {
 }
 
 fn resolve_entry(playlist_path: &Path, entry: &str) -> Result<PlaylistEntry, String> {
+    if let Some(entry) = resolve_unpack_entry(playlist_path, entry)? {
+        return Ok(entry);
+    }
     if entry.contains("://") {
         let mut url = Url::parse(entry).map_err(|error| {
             format!(
@@ -162,6 +241,230 @@ fn resolve_entry(playlist_path: &Path, entry: &str) -> Result<PlaylistEntry, Str
         location: PlaylistLocation::Local(path),
         fragment,
     })
+}
+
+fn resolve_unpack_entry(
+    playlist_path: &Path,
+    entry: &str,
+) -> Result<Option<PlaylistEntry>, String> {
+    if !entry
+        .get(.."unpack://".len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("unpack://"))
+    {
+        return Ok(None);
+    }
+
+    let (packed, fragment) = split_numeric_fragment(entry);
+    let decoded = percent_decode_str(packed).decode_utf8().map_err(|error| {
+        format!(
+            "{} contains an invalid UTF-8 Cog archive URL {entry:?}: {error}",
+            playlist_path.display()
+        )
+    })?;
+    let rest = decoded
+        .get("unpack://".len()..)
+        .ok_or_else(|| format!("Malformed Cog archive URL {entry:?}"))?;
+    let (kind, rest) = rest
+        .split_once('|')
+        .ok_or_else(|| format!("Malformed Cog archive URL {entry:?}"))?;
+    if kind != "fex" {
+        return Err(format!(
+            "{} contains unsupported Cog archive source type {kind:?}",
+            playlist_path.display()
+        ));
+    }
+    let (length, packed_paths) = rest
+        .split_once('|')
+        .ok_or_else(|| format!("Malformed Cog archive URL {entry:?}"))?;
+    let length = length.parse::<usize>().map_err(|error| {
+        format!(
+            "{} contains invalid Cog archive path length {length:?}: {error}",
+            playlist_path.display()
+        )
+    })?;
+    let (archive, remainder) = split_utf16_prefix(packed_paths, length).ok_or_else(|| {
+        format!(
+            "{} contains a truncated Cog archive path in {entry:?}",
+            playlist_path.display()
+        )
+    })?;
+    let entry_name = remainder
+        .strip_prefix('|')
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            format!(
+                "{} contains an empty Cog archive entry",
+                playlist_path.display()
+            )
+        })?
+        .replace('\\', "/");
+    let archive_path = if archive.contains("://") {
+        let url = Url::parse(archive).map_err(|error| {
+            format!(
+                "{} contains invalid archive URL {archive:?}: {error}",
+                playlist_path.display()
+            )
+        })?;
+        if !url.scheme().eq_ignore_ascii_case("file") {
+            return Err(format!(
+                "{} contains a non-file archive URL {archive:?}",
+                playlist_path.display()
+            ));
+        }
+        url.to_file_path().map_err(|()| {
+            format!(
+                "{} contains an archive URL that is invalid on this platform: {archive}",
+                playlist_path.display()
+            )
+        })?
+    } else {
+        PathBuf::from(archive)
+    };
+    let archive_path = if archive_path.is_absolute() {
+        archive_path
+    } else {
+        playlist_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(archive_path)
+    };
+    Ok(Some(PlaylistEntry {
+        location: PlaylistLocation::Archive {
+            archive_path,
+            entry_name,
+        },
+        fragment,
+    }))
+}
+
+fn split_utf16_prefix(value: &str, units: usize) -> Option<(&str, &str)> {
+    if units == 0 {
+        return Some(("", value));
+    }
+    let mut consumed = 0_usize;
+    for (index, character) in value.char_indices() {
+        consumed += character.len_utf16();
+        if consumed == units {
+            let end = index + character.len_utf8();
+            return Some(value.split_at(end));
+        }
+        if consumed > units {
+            return None;
+        }
+    }
+    None
+}
+
+fn serialize_entry(playlist_path: &Path, entry: &PlaylistEntry) -> Result<String, String> {
+    let fragment = entry
+        .fragment
+        .as_deref()
+        .map(validate_fragment)
+        .transpose()?;
+    let mut value = match &entry.location {
+        PlaylistLocation::Local(path) => serialize_local_path(playlist_path, path, fragment)?,
+        PlaylistLocation::Remote(url) => {
+            validate_line_value(url, "remote playlist URL")?;
+            url.clone()
+        }
+        PlaylistLocation::Archive {
+            archive_path,
+            entry_name,
+        } => {
+            let archive = archive_path.to_str().ok_or_else(|| {
+                format!(
+                    "Archive path is not valid UTF-8 and cannot be saved: {}",
+                    archive_path.display()
+                )
+            })?;
+            validate_line_value(archive, "archive path")?;
+            validate_line_value(entry_name, "archive entry name")?;
+            if entry_name.is_empty() {
+                return Err("Archive entry name cannot be empty".to_owned());
+            }
+            let archive_length = archive.encode_utf16().count();
+            format!(
+                "unpack://fex|{archive_length}|{}|{}",
+                utf8_percent_encode(archive, UNPACK_COMPONENT_ENCODE_SET),
+                utf8_percent_encode(entry_name, UNPACK_COMPONENT_ENCODE_SET)
+            )
+        }
+    };
+    if !matches!(&entry.location, PlaylistLocation::Local(_))
+        && let Some(fragment) = fragment
+    {
+        value.push('#');
+        value.push_str(fragment);
+    }
+    Ok(value)
+}
+
+fn serialize_local_path(
+    playlist_path: &Path,
+    path: &Path,
+    fragment: Option<&str>,
+) -> Result<String, String> {
+    let base = playlist_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let relative = path
+        .strip_prefix(base)
+        .ok()
+        .filter(|path| !path.as_os_str().is_empty());
+    let candidate = relative.unwrap_or(path);
+    let raw = candidate.to_str().ok_or_else(|| {
+        format!(
+            "Playlist entry path is not valid UTF-8 and cannot be saved: {}",
+            path.display()
+        )
+    })?;
+    validate_line_value(raw, "playlist entry path")?;
+    let normalized = raw.replace('\\', "/");
+    let needs_file_url = relative.is_none()
+        || normalized.starts_with('#')
+        || normalized.contains("://")
+        || (fragment.is_none() && split_numeric_fragment(&normalized).1.is_some());
+    let mut value = if needs_file_url {
+        let absolute = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            base.join(path)
+        };
+        Url::from_file_path(&absolute)
+            .map_err(|()| {
+                format!(
+                    "Playlist entry is not a valid local path on this platform: {}",
+                    path.display()
+                )
+            })?
+            .into()
+    } else {
+        normalized
+    };
+    if let Some(fragment) = fragment {
+        value.push('#');
+        value.push_str(fragment);
+    }
+    Ok(value)
+}
+
+fn validate_fragment(fragment: &str) -> Result<&str, String> {
+    if fragment.is_empty() || !fragment.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(format!(
+            "Kog can currently save only numeric playlist fragments, not #{fragment}"
+        ));
+    }
+    Ok(fragment)
+}
+
+fn validate_line_value(value: &str, description: &str) -> Result<(), String> {
+    if value.contains(['\0', '\r', '\n']) {
+        return Err(format!(
+            "Cannot save {description} containing a line break or NUL"
+        ));
+    }
+    Ok(())
 }
 
 fn split_numeric_fragment(value: &str) -> (&str, Option<String>) {
@@ -302,6 +605,69 @@ mod tests {
                 fragment: Some("0".to_owned()),
             }
         );
+    }
+
+    #[test]
+    fn saves_cog_m3u_and_pls_and_roundtrips_every_source_identity() {
+        let fixture = Fixture::new();
+        let archive_path = fixture.path("set 🎵.zip");
+        let entries = vec![
+            PlaylistEntry {
+                location: PlaylistLocation::Local(fixture.path("audio/first.nsf")),
+                fragment: Some("2".to_owned()),
+            },
+            PlaylistEntry {
+                location: PlaylistLocation::Local(fixture.path("audio/literal#7")),
+                fragment: None,
+            },
+            PlaylistEntry {
+                location: PlaylistLocation::Remote(
+                    "https://example.invalid/live.mp3?token=test".to_owned(),
+                ),
+                fragment: None,
+            },
+            PlaylistEntry {
+                location: PlaylistLocation::Archive {
+                    archive_path: archive_path.clone(),
+                    entry_name: "disc/song #1.jxs".to_owned(),
+                },
+                fragment: Some("1".to_owned()),
+            },
+        ];
+
+        for extension in ["m3u", "m3u8", "pls"] {
+            let path = fixture.path(&format!("saved.{extension}"));
+            Playlist::save(&path, &entries).expect("save playlist");
+            assert_eq!(
+                Playlist::open(&path).expect("reopen playlist").entries,
+                entries
+            );
+            let text = std::fs::read_to_string(&path).expect("read saved playlist");
+            if extension == "pls" {
+                assert!(text.starts_with("[playlist]\nnumberOfEntries=4\n\n"));
+                assert!(text.ends_with("\nVERSION=2"));
+            } else {
+                assert!(text.starts_with("#\n"));
+                assert!(text.contains("audio/first.nsf#2\n"));
+            }
+            assert!(text.contains("file://"));
+            assert!(text.contains("unpack://fex|"));
+            assert!(text.contains("#1"));
+        }
+    }
+
+    #[test]
+    fn rejects_malformed_or_unsupported_cog_archive_urls() {
+        let fixture = Fixture::new();
+        let path = fixture.path("bad.m3u");
+        for entry in [
+            "unpack://fex|999|/tmp/archive.zip|song.wav",
+            "unpack://other|4|/tmp|song.wav",
+            "unpack://fex|4|/tmp|",
+        ] {
+            std::fs::write(&path, format!("{entry}\n")).unwrap();
+            assert!(Playlist::open(&path).is_err(), "accepted {entry}");
+        }
     }
 
     #[test]

@@ -8,8 +8,8 @@ tracker modules, chiptunes, and game-audio formats.
 
 The current milestone contains a working Cog-style main window with a
 cross-platform hamburger menu, a lazy expandable filesystem tree, metadata
-playlist, search, inspector, lyrics, and mini-player windows. It uses Qt's
-platform file/folder dialogs and inherits the active Qt palette and control
+playlist, search, inspector, lyrics, and mini-player windows. It uses
+platform-native file/folder dialogs and inherits the active Qt palette and control
 style, including KDE's desktop/Breeze style when available. The milestone also
 has a real conventional-audio playback path with pause, stop, seek, volume,
 and automatic track advance. It also renders format-0/1 MID, MIDI, KAR, and RIFF
@@ -229,8 +229,13 @@ sources, and local or remote HLS manifests route to the linked FFmpeg libraries
 instead of being flattened as ordinary M3U entries. Kog's hamburger menu exposes
 a themed Add URL dialog, and a generated direct HTTP stream plus HLS
 manifest/segment pass an in-process network decode gate without spawning an
-external binary. Remote playlist recursion, richer stream metadata and buffering,
-playlist writing, and non-numeric fragment schemes remain parity work.
+external binary. Cog-style **Save As…** and **Save Selection As…** commands use
+the platform save dialog and write M3U, M3U8, or PLS. They retain relative local
+paths where safe, file and HTTP(S) URLs, numeric subsong/CUE fragments, and Cog's
+`unpack://` identity for a specific archived member instead of persisting Kog's
+temporary extraction path. Deterministic save/reopen gates cover each identity.
+Remote conventional-playlist recursion, richer stream metadata and buffering,
+and non-numeric fragment schemes remain parity work.
 
 ZIP, RAR, 7Z, RSN, VGM7Z, and raw GZ files now expand through the system
 libarchive library before decoder selection. Kog preserves physical archive

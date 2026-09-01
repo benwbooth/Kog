@@ -26,6 +26,7 @@ pub struct Track {
     pub bits_per_sample: Option<u8>,
     pub decoder_warning: Option<String>,
     pub codec: String,
+    pub backend_id: String,
 }
 
 impl Track {
@@ -96,7 +97,8 @@ impl Track {
             }
         }
 
-        if let Ok(properties) = decoders.probe(&track.source) {
+        if let Ok((backend_id, properties)) = decoders.probe_with_backend(&track.source) {
+            track.backend_id = backend_id.to_owned();
             track.duration = properties.duration.or(track.duration);
             track.sample_rate = properties.sample_rate.or(track.sample_rate);
             track.channels = properties.channels.or(track.channels);

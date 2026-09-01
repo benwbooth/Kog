@@ -455,6 +455,26 @@ impl DecoderRegistry {
                         )),
                     }
                 }
+                crate::playlist::PlaylistLocation::Archive {
+                    archive_path,
+                    entry_name,
+                } => match self.expand_archive_entry(
+                    archive_path.clone(),
+                    entry_name,
+                    entry.fragment.as_deref(),
+                    playlist_stack,
+                    depth,
+                ) {
+                    Ok(expansion) => {
+                        result.sources.extend(expansion.sources);
+                        result.warnings.extend(expansion.warnings);
+                    }
+                    Err(error) => result.warnings.push(format!(
+                        "Archive playlist entry {} :: {} was not added: {error}",
+                        archive_path.display(),
+                        entry_name
+                    )),
+                },
                 crate::playlist::PlaylistLocation::Local(entry_path) => {
                     let resolved = match entry_path.canonicalize() {
                         Ok(path) => path,
@@ -496,6 +516,56 @@ impl DecoderRegistry {
         if result.sources.is_empty() && result.warnings.is_empty() {
             return Err(format!("{} contains no playlist entries", path.display()));
         }
+        Ok(result)
+    }
+
+    fn expand_archive_entry(
+        &self,
+        path: PathBuf,
+        entry_name: &str,
+        fragment: Option<&str>,
+        playlist_stack: &mut Vec<PathBuf>,
+        depth: usize,
+    ) -> Result<ExpansionResult, String> {
+        let path = path
+            .canonicalize()
+            .map_err(|error| format!("resolving archive {}: {error}", path.display()))?;
+        let extracted = crate::archive::ExtractedArchive::open(&path)?;
+        let (workspace, entries, warnings) = extracted.into_parts();
+        let workspace_path = workspace.path().to_path_buf();
+        let entry = entries
+            .into_iter()
+            .find(|entry| entry.name == entry_name)
+            .ok_or_else(|| {
+                format!(
+                    "{} has no archive entry named {entry_name:?}",
+                    path.display()
+                )
+            })?;
+        if crate::archive::is_path(&entry.path) {
+            return Err(format!(
+                "nested archive entry {entry_name:?} is not supported"
+            ));
+        }
+        if !crate::playlist::Playlist::is_path(&entry.path) && self.select(&entry.path).is_none() {
+            return Err(unsupported_message(&entry.path));
+        }
+
+        let mut result = self.expand_local(entry.path, fragment, playlist_stack, depth + 1)?;
+        for source in &mut result.sources {
+            let logical_entry = source
+                .path
+                .strip_prefix(&workspace_path)
+                .ok()
+                .map(crate::archive::portable_name)
+                .unwrap_or_else(|| entry_name.to_owned());
+            source.set_archive_origin(path.clone(), logical_entry);
+        }
+        result.warnings.splice(0..0, warnings);
+        self.archive_workspaces
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(workspace);
         Ok(result)
     }
 
@@ -559,11 +629,22 @@ impl DecoderRegistry {
         Ok(result)
     }
 
+    #[cfg(test)]
     pub fn probe(&self, source: &PlaybackSource) -> Result<StreamProperties, String> {
+        self.probe_with_backend(source)
+            .map(|(_, properties)| properties)
+    }
+
+    pub fn probe_with_backend(
+        &self,
+        source: &PlaybackSource,
+    ) -> Result<(&'static str, StreamProperties), String> {
         let backend = self
             .select_source(source)
             .ok_or_else(|| unsupported_message(&source.path))?;
-        backend.probe(source)
+        backend
+            .probe(source)
+            .map(|properties| (backend.id(), properties))
     }
 
     pub fn append(

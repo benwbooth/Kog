@@ -282,6 +282,24 @@ ApplicationWindow {
         }
     }
 
+    Action {
+        id: savePlaylistAction
+        text: qsTr("Save As…")
+        icon.name: "document-save-as"
+        shortcut: StandardKey.Save
+        enabled: appController.playlist_count > 0
+        onTriggered: appController.save_playlist()
+    }
+
+    Action {
+        id: saveSelectionAction
+        text: qsTr("Save Selection As…")
+        icon.name: "document-save-as"
+        enabled: root.selectedRows.length > 0
+        onTriggered: appController.save_playlist_selection(
+            root.selectedRows.join(","))
+    }
+
     Menu {
         id: playlistContextMenu
         MenuItem {
@@ -291,6 +309,8 @@ ApplicationWindow {
             onTriggered: appController.play_index(root.selectedRow)
         }
         MenuItem { action: removeSelectedAction; icon.name: "edit-delete" }
+        MenuSeparator {}
+        MenuItem { action: saveSelectionAction }
         MenuSeparator {}
         MenuItem {
             text: qsTr("Select All")
@@ -329,6 +349,9 @@ ApplicationWindow {
             icon.name: "folder-open"
             onTriggered: root.chooseMusicFolder()
         }
+        MenuSeparator {}
+        MenuItem { action: savePlaylistAction }
+        MenuItem { action: saveSelectionAction }
         MenuSeparator {}
         MenuItem { action: removeSelectedAction; icon.name: "edit-delete" }
         MenuItem {

@@ -65,6 +65,10 @@ pub mod qobject {
         #[qinvokable]
         fn choose_music_folder(self: Pin<&mut AppController>);
         #[qinvokable]
+        fn save_playlist(self: Pin<&mut AppController>);
+        #[qinvokable]
+        fn save_playlist_selection(self: Pin<&mut AppController>, indices: QString);
+        #[qinvokable]
         fn remove_track(self: Pin<&mut AppController>, index: i32);
         #[qinvokable]
         fn remove_tracks(self: Pin<&mut AppController>, indices: QString) -> i32;
@@ -173,6 +177,7 @@ use cxx_qt_lib::{QString, QUrl};
 
 use crate::decoder::{DecoderRegistry, DecoderSettings, ExpansionResult, validate_soundfont};
 use crate::playback::{PlaybackEngine, PlaybackState};
+use crate::playlist::{Playlist, PlaylistEntry, PlaylistLocation};
 use crate::settings::{AppSettings, MidiEngine, OpeningFilesBehavior};
 use crate::track::{Track, canonical_path};
 
@@ -253,6 +258,55 @@ fn parse_row_indices(value: &str, row_count: usize) -> Vec<usize> {
     indices.sort_unstable();
     indices.dedup();
     indices
+}
+
+fn playlist_entry_for_track(track: &Track) -> Result<PlaylistEntry, String> {
+    let location = if let Some(origin) = &track.source.archive_origin {
+        PlaylistLocation::Archive {
+            archive_path: origin.archive_path.clone(),
+            entry_name: origin.entry_name.clone(),
+        }
+    } else if let Some(url) = &track.source.remote_url {
+        PlaylistLocation::Remote(url.clone())
+    } else {
+        PlaylistLocation::Local(track.source.path.clone())
+    };
+    let fragment = match track.source.subsong {
+        None => None,
+        Some(_) if track.backend_id == "cuesheet" => Some(
+            track
+                .track_number
+                .ok_or_else(|| {
+                    format!(
+                        "CueSheet track {} has no declared track number",
+                        track.source.display_label()
+                    )
+                })?
+                .to_string(),
+        ),
+        Some(subsong) => Some(subsong.to_string()),
+    };
+    Ok(PlaylistEntry { location, fragment })
+}
+
+fn normalize_playlist_save_path(mut path: PathBuf) -> Result<PathBuf, String> {
+    let extension = path.extension().and_then(|value| value.to_str());
+    match extension {
+        None => {
+            path.set_extension("m3u");
+            Ok(path)
+        }
+        Some(extension)
+            if ["m3u", "m3u8", "pls"]
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(extension)) =>
+        {
+            Ok(path)
+        }
+        Some(extension) => Err(format!(
+            "Playlist filename must end in .m3u, .m3u8, or .pls, not .{extension}"
+        )),
+    }
 }
 
 fn move_selected_items<T>(
@@ -1042,6 +1096,96 @@ impl qobject::AppController {
             return;
         };
         self.as_mut().set_directory(path);
+    }
+
+    pub fn save_playlist(mut self: Pin<&mut Self>) {
+        let rows = (0..self.as_ref().rust().visible_indices.len()).collect();
+        self.as_mut().save_playlist_rows(rows, false);
+    }
+
+    pub fn save_playlist_selection(mut self: Pin<&mut Self>, indices: QString) {
+        let rows = parse_row_indices(
+            &indices.to_string(),
+            self.as_ref().rust().visible_indices.len(),
+        );
+        if rows.is_empty() {
+            self.as_mut()
+                .set_status(qstring("Select at least one playlist track to save"));
+            return;
+        }
+        self.as_mut().save_playlist_rows(rows, true);
+    }
+
+    fn save_playlist_rows(mut self: Pin<&mut Self>, rows: Vec<usize>, selection: bool) {
+        if rows.is_empty() {
+            self.as_mut()
+                .set_status(qstring("There are no playlist tracks to save"));
+            return;
+        }
+        let entries = {
+            let model_ref = self.as_ref();
+            let model = model_ref.rust();
+            rows.iter()
+                .map(|row| {
+                    let source_index = model
+                        .visible_indices
+                        .get(*row)
+                        .ok_or_else(|| format!("Playlist row {} no longer exists", row + 1))?;
+                    let track = model.tracks.get(*source_index).ok_or_else(|| {
+                        format!("Playlist source {} no longer exists", source_index + 1)
+                    })?;
+                    playlist_entry_for_track(track)
+                })
+                .collect::<Result<Vec<_>, String>>()
+        };
+        let entries = match entries {
+            Ok(entries) => entries,
+            Err(error) => {
+                self.as_mut().set_status(qstring(error));
+                return;
+            }
+        };
+        let directory = self.as_ref().rust().directory.clone();
+        let file_name = if selection {
+            "selection.m3u"
+        } else {
+            "playlist.m3u"
+        };
+        let title = if selection {
+            "Save Selection As Playlist"
+        } else {
+            "Save Playlist As"
+        };
+        let Some(path) = rfd::FileDialog::new()
+            .set_title(title)
+            .set_directory(directory)
+            .set_file_name(file_name)
+            .add_filter("M3U Playlist", &["m3u", "m3u8"])
+            .add_filter("PLS Playlist", &["pls"])
+            .save_file()
+        else {
+            return;
+        };
+        let path = match normalize_playlist_save_path(path) {
+            Ok(path) => path,
+            Err(error) => {
+                self.as_mut().set_status(qstring(error));
+                return;
+            }
+        };
+        match Playlist::save(&path, &entries) {
+            Ok(()) => self.as_mut().set_status(qstring(format!(
+                "Saved {} {} to {}",
+                entries.len(),
+                if entries.len() == 1 {
+                    "track"
+                } else {
+                    "tracks"
+                },
+                path.display()
+            ))),
+            Err(error) => self.as_mut().set_status(qstring(error)),
+        }
     }
 
     pub fn add_file(mut self: Pin<&mut Self>, url: QUrl) {
@@ -2143,10 +2287,14 @@ impl qobject::AppController {
 mod tests {
     use super::{
         AddPathResult, PlaylistSortColumn, add_path_status, compare_tracks, move_selected_items,
-        natural_compare, parse_row_indices, sample_rate_label, sort_visible_indices,
+        natural_compare, normalize_playlist_save_path, parse_row_indices, playlist_entry_for_track,
+        sample_rate_label, sort_visible_indices,
     };
+    use crate::decoder::{ArchiveOrigin, PlaybackSource};
+    use crate::playlist::PlaylistLocation;
     use crate::track::Track;
     use std::cmp::Ordering;
+    use std::path::PathBuf;
 
     #[test]
     fn add_path_status_keeps_every_warning() {
@@ -2167,6 +2315,73 @@ mod tests {
     fn row_index_parser_sorts_deduplicates_and_bounds_input() {
         assert_eq!(parse_row_indices("3, 1,3,garbage,8,0", 5), [0, 1, 3]);
         assert!(parse_row_indices("-1,wrong", 5).is_empty());
+    }
+
+    #[test]
+    fn playlist_export_preserves_cue_archive_remote_and_subsong_identities() {
+        let cue = Track {
+            source: PlaybackSource {
+                path: PathBuf::from("/music/album.cue"),
+                remote_url: None,
+                subsong: Some(1),
+                archive_origin: None,
+            },
+            track_number: Some(7),
+            backend_id: "cuesheet".to_owned(),
+            ..Track::default()
+        };
+        let cue_entry = playlist_entry_for_track(&cue).expect("serialize CueSheet track");
+        assert_eq!(cue_entry.fragment.as_deref(), Some("7"));
+        assert_eq!(
+            cue_entry.location,
+            PlaylistLocation::Local(PathBuf::from("/music/album.cue"))
+        );
+
+        let archived = Track {
+            source: PlaybackSource {
+                path: PathBuf::from("/tmp/kog-archive/song.jxs"),
+                remote_url: None,
+                subsong: Some(1),
+                archive_origin: Some(ArchiveOrigin {
+                    archive_path: PathBuf::from("/music/set.zip"),
+                    entry_name: "disc/song.jxs".to_owned(),
+                }),
+            },
+            backend_id: "syntrax".to_owned(),
+            ..Track::default()
+        };
+        let archived_entry =
+            playlist_entry_for_track(&archived).expect("serialize archived subsong");
+        assert_eq!(archived_entry.fragment.as_deref(), Some("1"));
+        assert_eq!(
+            archived_entry.location,
+            PlaylistLocation::Archive {
+                archive_path: PathBuf::from("/music/set.zip"),
+                entry_name: "disc/song.jxs".to_owned(),
+            }
+        );
+
+        let remote = Track {
+            source: PlaybackSource::from_remote_url(
+                url::Url::parse("https://example.invalid/radio").unwrap(),
+            ),
+            ..Track::default()
+        };
+        assert_eq!(
+            playlist_entry_for_track(&remote).unwrap().location,
+            PlaylistLocation::Remote("https://example.invalid/radio".to_owned())
+        );
+    }
+
+    #[test]
+    fn playlist_save_paths_default_to_m3u_and_reject_unrelated_extensions() {
+        assert_eq!(
+            normalize_playlist_save_path(PathBuf::from("mix")).unwrap(),
+            PathBuf::from("mix.m3u")
+        );
+        assert!(normalize_playlist_save_path(PathBuf::from("mix.M3U8")).is_ok());
+        assert!(normalize_playlist_save_path(PathBuf::from("mix.PLS")).is_ok());
+        assert!(normalize_playlist_save_path(PathBuf::from("mix.txt")).is_err());
     }
 
     #[test]
