@@ -475,6 +475,10 @@ ApplicationWindow {
                     alternatingRows: true
                     selectionBehavior: TableView.SelectRows
                     selectionMode: TableView.SingleSelection
+                    // Route pointer input through the handlers in the delegate.
+                    // Otherwise TreeView's built-in double-tap expansion races
+                    // our file activation and the native DragHandler.
+                    pointerNavigationEnabled: false
                     selectionModel: ItemSelectionModel {
                         model: fileTreeModel
                     }
@@ -514,17 +518,40 @@ ApplicationWindow {
                                 | PointerHandler.ApprovesTakeOverByAnything
                         }
 
-                        onClicked: {
-                            const itemIndex = treeView.index(row, 0)
-                            directoryTree.selectionModel.setCurrentIndex(
-                                itemIndex, ItemSelectionModel.ClearAndSelect)
+                        TapHandler {
+                            id: treeTap
+                            acceptedButtons: Qt.LeftButton
+                            gesturePolicy: TapHandler.DragThreshold
+                            grabPermissions: PointerHandler.CanTakeOverFromAnything
+                                | PointerHandler.ApprovesTakeOverByAnything
+
+                            onTapped: {
+                                const itemIndex = treeView.index(treeDelegate.row, 0)
+                                directoryTree.selectionModel.setCurrentIndex(
+                                    itemIndex, ItemSelectionModel.ClearAndSelect)
+                            }
+                            onDoubleTapped: eventPoint => {
+                                const indicator = treeDelegate.indicator
+                                if (indicator
+                                        && eventPoint.position.x >= indicator.x
+                                        && eventPoint.position.x < indicator.x + indicator.width)
+                                    return
+                                const itemIndex = treeView.index(treeDelegate.row, 0)
+                                if (fileTreeModel.is_directory(itemIndex))
+                                    treeView.toggleExpanded(treeDelegate.row)
+                                else
+                                    appController.add_file(treeDelegate.dragUrl)
+                            }
                         }
-                        onDoubleClicked: {
-                            const itemIndex = treeView.index(row, 0)
-                            if (fileTreeModel.is_directory(itemIndex))
-                                treeView.toggleExpanded(row)
-                            else
-                                appController.add_file(treeDelegate.dragUrl)
+
+                        TapHandler {
+                            parent: treeDelegate.indicator
+                            enabled: treeDelegate.hasChildren
+                            acceptedButtons: Qt.LeftButton
+                            exclusiveSignals: TapHandler.SingleTap | TapHandler.DoubleTap
+
+                            onSingleTapped: treeView.toggleExpanded(treeDelegate.row)
+                            onDoubleTapped: treeView.toggleExpanded(treeDelegate.row)
                         }
                     }
 
