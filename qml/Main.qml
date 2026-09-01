@@ -1260,7 +1260,12 @@ ApplicationWindow {
                     // lockstep.
                     reuseItems: false
                     boundsBehavior: Flickable.StopAtBounds
-                    columnWidthProvider: function(column) { return width }
+                    readonly property real scrollGutter:
+                        directoryScrollBar.visible
+                            ? directoryScrollBar.implicitWidth + 4 : 0
+                    columnWidthProvider: function(column) {
+                        return Math.max(0, width - scrollGutter)
+                    }
 
                     delegate: TreeViewDelegate {
                         id: treeDelegate
@@ -1271,7 +1276,8 @@ ApplicationWindow {
                         required property string fileName
                         required property string filePath
                         readonly property string dragPath: filePath
-                        width: directoryTree.width
+                        width: Math.max(0,
+                            directoryTree.width - directoryTree.scrollGutter)
                         implicitHeight: 26
                         icon.name: fileTreeModel.icon_name(filePath)
                         icon.width: 18
@@ -1396,7 +1402,8 @@ ApplicationWindow {
                     }
 
                     ScrollBar.vertical: ScrollBar {
-                        policy: ScrollBar.AlwaysOff
+                        id: directoryScrollBar
+                        policy: ScrollBar.AsNeeded
                     }
                 }
             }
@@ -1414,6 +1421,7 @@ ApplicationWindow {
                 Item {
                     id: playlistHeaderViewport
                     Layout.fillWidth: true
+                    Layout.rightMargin: playlistView.verticalScrollGutter
                     Layout.preferredHeight: playlistHeader.implicitHeight
                     clip: true
 
@@ -1445,12 +1453,21 @@ ApplicationWindow {
                     clip: true
                     model: appController.playlist_count
                     boundsBehavior: Flickable.StopAtBounds
-                    contentWidth: Math.max(width, playlistHeader.totalWidth)
+                    readonly property real verticalScrollGutter:
+                        playlistVerticalScrollBar.visible
+                            ? playlistVerticalScrollBar.implicitWidth + 4 : 0
+                    readonly property real horizontalScrollGutter:
+                        playlistHorizontalScrollBar.visible
+                            ? playlistHorizontalScrollBar.implicitHeight + 4 : 0
+                    contentWidth: Math.max(width,
+                        playlistHeader.totalWidth + verticalScrollGutter)
                     flickableDirection: Flickable.AutoFlickDirection
                     currentIndex: root.selectedRow
                     keyNavigationEnabled: true
                     focus: true
                     highlightMoveDuration: 0
+                    maximumFlickVelocity: 12000
+                    flickDeceleration: 3000
 
                     Keys.onReturnPressed: if (root.selectedRow >= 0)
                         appController.play_index(root.selectedRow)
@@ -1468,7 +1485,8 @@ ApplicationWindow {
 
                     delegate: PlaylistRow {
                         required property int index
-                        width: playlistView.contentWidth
+                        width: Math.max(0, playlistView.contentWidth
+                            - playlistView.verticalScrollGutter)
                         app: appController
                         columns: playlistHeader
                         theme: root.palette
@@ -1516,10 +1534,39 @@ ApplicationWindow {
                     }
 
                     ScrollBar.vertical: ScrollBar {
-                        policy: ScrollBar.AlwaysOff
+                        id: playlistVerticalScrollBar
+                        policy: ScrollBar.AsNeeded
                     }
                     ScrollBar.horizontal: ScrollBar {
-                        policy: ScrollBar.AlwaysOff
+                        id: playlistHorizontalScrollBar
+                        policy: ScrollBar.AsNeeded
+                    }
+
+                    footer: Item {
+                        width: 1
+                        height: playlistView.horizontalScrollGutter
+                    }
+
+                    // Give discrete mouse wheels a quicker kinetic scroll.
+                    // Trackpad gestures pass through so Qt keeps their native
+                    // pixel precision and platform-provided momentum.
+                    WheelHandler {
+                        target: null
+                        acceptedDevices: PointerDevice.Mouse
+
+                        onWheel: event => {
+                            if (event.pixelDelta.y !== 0
+                                    || event.modifiers & Qt.ShiftModifier) {
+                                event.accepted = false
+                                return
+                            }
+                            if (event.angleDelta.y === 0) {
+                                event.accepted = false
+                                return
+                            }
+                            playlistView.flick(0, event.angleDelta.y * 8)
+                            event.accepted = true
+                        }
                     }
 
                     Item {
@@ -1534,7 +1581,8 @@ ApplicationWindow {
                                 required property int index
                                 x: 6
                                 y: index * 24 + 3
-                                width: parent.width - 12
+                                width: Math.max(0, parent.width - 12
+                                    - playlistView.verticalScrollGutter)
                                 height: 18
                                 radius: 4
                                 visible: index % 2 === 1

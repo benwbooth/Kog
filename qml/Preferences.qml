@@ -650,13 +650,17 @@ Window {
                                 spacing: 8
                                 model: root.filteredFormatGroups
                                 boundsBehavior: Flickable.StopAtBounds
+                                readonly property real scrollGutter:
+                                    formatScrollBar.visible
+                                        ? formatScrollBar.implicitWidth + 4 : 0
 
                                 delegate: PreferenceGroup {
                                     id: formatGroup
 
                                     required property var modelData
 
-                                    width: formatList.width
+                                    width: Math.max(0,
+                                        formatList.width - formatList.scrollGutter)
                                     title: modelData.name + "  ·  "
                                         + qsTr("%1 extensions").arg(modelData.extensions.length)
 
@@ -683,7 +687,8 @@ Window {
                                 }
 
                                 ScrollBar.vertical: ScrollBar {
-                                    policy: ScrollBar.AlwaysOff
+                                    id: formatScrollBar
+                                    policy: ScrollBar.AsNeeded
                                 }
                             }
 
