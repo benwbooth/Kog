@@ -9,12 +9,26 @@ Item {
     required property var theme
     property bool selected: false
     property bool hovered: false
+    property string dragRows: ""
+    readonly property bool playlistDrag: true
     property int revision: app.playlist_revision
 
-    signal pressed(int rowIndex)
+    signal pressed(int rowIndex, int modifiers, int button)
     signal activated(int rowIndex)
+    signal dragStarted(int rowIndex)
 
     implicitHeight: 24
+
+    Drag.active: rowDrag.active
+    Drag.dragType: Drag.Automatic
+    Drag.keys: ["kog-playlist-row"]
+    Drag.supportedActions: Qt.MoveAction
+    Drag.proposedAction: Qt.MoveAction
+    Drag.mimeData: ({
+        "application/x-kog-playlist-rows": root.dragRows
+    })
+    Drag.hotSpot.x: width / 2
+    Drag.hotSpot.y: height / 2
 
     Rectangle {
         anchors.fill: parent
@@ -100,7 +114,16 @@ Item {
         hoverEnabled: true
         onEntered: root.hovered = true
         onExited: root.hovered = false
-        onClicked: root.pressed(root.rowIndex)
+        onClicked: mouse => root.pressed(root.rowIndex, mouse.modifiers, mouse.button)
         onDoubleClicked: root.activated(root.rowIndex)
+    }
+
+    DragHandler {
+        id: rowDrag
+        target: null
+        acceptedButtons: Qt.LeftButton
+        grabPermissions: PointerHandler.CanTakeOverFromAnything
+            | PointerHandler.ApprovesTakeOverByAnything
+        onActiveChanged: if (active) root.dragStarted(root.rowIndex)
     }
 }

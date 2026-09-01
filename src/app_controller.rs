@@ -54,6 +54,14 @@ pub mod qobject {
         #[qinvokable]
         fn remove_track(self: Pin<&mut AppController>, index: i32);
         #[qinvokable]
+        fn remove_tracks(self: Pin<&mut AppController>, indices: QString) -> i32;
+        #[qinvokable]
+        fn move_tracks(
+            self: Pin<&mut AppController>,
+            indices: QString,
+            target_index: i32,
+        ) -> QString;
+        #[qinvokable]
         fn clear_playlist(self: Pin<&mut AppController>);
         #[qinvokable]
         fn filter_playlist(self: Pin<&mut AppController>, query: QString);
@@ -210,6 +218,69 @@ fn shuffled_indices(length: usize, seed: &mut u64) -> Vec<usize> {
         indices.swap(upper, selected);
     }
     indices
+}
+
+fn parse_row_indices(value: &str, row_count: usize) -> Vec<usize> {
+    let mut indices = value
+        .split(',')
+        .filter_map(|value| value.trim().parse::<usize>().ok())
+        .filter(|index| *index < row_count)
+        .collect::<Vec<_>>();
+    indices.sort_unstable();
+    indices.dedup();
+    indices
+}
+
+fn move_selected_items<T>(
+    items: &mut Vec<T>,
+    selected_indices: &[usize],
+    target_slot: usize,
+) -> Vec<usize> {
+    if selected_indices.is_empty() || items.is_empty() {
+        return Vec::new();
+    }
+
+    let item_count = items.len();
+    let target_slot = target_slot.min(item_count);
+    let mut selected = vec![false; item_count];
+    for &index in selected_indices {
+        if let Some(value) = selected.get_mut(index) {
+            *value = true;
+        }
+    }
+
+    let mut moving = Vec::with_capacity(selected_indices.len());
+    let mut remaining = Vec::with_capacity(item_count - selected_indices.len());
+    for (index, item) in std::mem::take(items).into_iter().enumerate() {
+        if selected[index] {
+            moving.push(item);
+        } else {
+            remaining.push(item);
+        }
+    }
+
+    let selected_before_target = selected_indices
+        .iter()
+        .filter(|&&index| index < target_slot)
+        .count();
+    let insertion_index = target_slot
+        .saturating_sub(selected_before_target)
+        .min(remaining.len());
+    let moved_count = moving.len();
+    remaining.splice(insertion_index..insertion_index, moving);
+    *items = remaining;
+
+    (insertion_index..insertion_index + moved_count).collect()
+}
+
+fn encode_row_indices(indices: &[usize]) -> QString {
+    qstring(
+        indices
+            .iter()
+            .map(usize::to_string)
+            .collect::<Vec<_>>()
+            .join(","),
+    )
 }
 
 pub struct AppControllerRust {
@@ -691,21 +762,126 @@ impl qobject::AppController {
     }
 
     pub fn remove_track(mut self: Pin<&mut Self>, index: i32) {
-        let Some(source_index) = visible_source_index(self.as_ref().get_ref(), index) else {
-            return;
+        let _ = self.as_mut().remove_tracks(qstring(index.to_string()));
+    }
+
+    pub fn remove_tracks(mut self: Pin<&mut Self>, indices: QString) -> i32 {
+        let visible_indices = parse_row_indices(
+            &indices.to_string(),
+            self.as_ref().rust().visible_indices.len(),
+        );
+        if visible_indices.is_empty() {
+            return -1;
+        }
+
+        let first_visible_index = visible_indices[0];
+        let mut source_indices = visible_indices
+            .iter()
+            .filter_map(|&index| self.as_ref().rust().visible_indices.get(index).copied())
+            .collect::<Vec<_>>();
+        source_indices.sort_unstable();
+        source_indices.dedup();
+
+        let current_source = {
+            let model = self.as_ref();
+            usize::try_from(model.rust().current_index)
+                .ok()
+                .and_then(|index| model.rust().tracks.get(index))
+                .map(|track| track.source.clone())
         };
-        let removed_current = self.as_ref().rust().current_index == saturating_i32(source_index);
+        let removed_current = usize::try_from(self.as_ref().rust().current_index)
+            .ok()
+            .is_some_and(|index| source_indices.binary_search(&index).is_ok());
+
         if removed_current {
             self.as_mut().stop();
+        }
+        for &source_index in source_indices.iter().rev() {
+            self.as_mut().rust_mut().tracks.remove(source_index);
+        }
+
+        if removed_current {
             self.as_mut().set_current_index(-1);
             self.as_mut().reset_now_playing();
+        } else if let Some(current_source) = current_source {
+            let current_index = self
+                .as_ref()
+                .rust()
+                .tracks
+                .iter()
+                .position(|track| track.source == current_source)
+                .map(saturating_i32)
+                .unwrap_or(-1);
+            self.as_mut().set_current_index(current_index);
         }
-        self.as_mut().rust_mut().tracks.remove(source_index);
-        let current_index = self.as_ref().rust().current_index;
-        if !removed_current && current_index > saturating_i32(source_index) {
-            self.as_mut().set_current_index(current_index - 1);
+        if self.as_ref().rust().shuffle_enabled {
+            self.as_mut().rust_mut().rebuild_shuffle_order();
         }
         self.as_mut().rebuild_playlist();
+        self.as_mut().set_status(qstring(format!(
+            "Removed {} track{}",
+            source_indices.len(),
+            if source_indices.len() == 1 { "" } else { "s" }
+        )));
+
+        let remaining = self.as_ref().rust().visible_indices.len();
+        if remaining == 0 {
+            -1
+        } else {
+            saturating_i32(first_visible_index.min(remaining - 1))
+        }
+    }
+
+    pub fn move_tracks(mut self: Pin<&mut Self>, indices: QString, target_index: i32) -> QString {
+        if !self.as_ref().rust().filter.is_empty() {
+            self.as_mut().set_status(qstring(
+                "Clear the playlist search before reordering tracks",
+            ));
+            return indices;
+        }
+
+        let row_count = self.as_ref().rust().tracks.len();
+        let selected_indices = parse_row_indices(&indices.to_string(), row_count);
+        if selected_indices.is_empty() {
+            return QString::default();
+        }
+        let target_slot = usize::try_from(target_index)
+            .unwrap_or_default()
+            .min(row_count);
+        let current_source = {
+            let model = self.as_ref();
+            usize::try_from(model.rust().current_index)
+                .ok()
+                .and_then(|index| model.rust().tracks.get(index))
+                .map(|track| track.source.clone())
+        };
+        let new_indices = move_selected_items(
+            &mut self.as_mut().rust_mut().tracks,
+            &selected_indices,
+            target_slot,
+        );
+
+        if let Some(current_source) = current_source {
+            let current_index = self
+                .as_ref()
+                .rust()
+                .tracks
+                .iter()
+                .position(|track| track.source == current_source)
+                .map(saturating_i32)
+                .unwrap_or(-1);
+            self.as_mut().set_current_index(current_index);
+        }
+        if self.as_ref().rust().shuffle_enabled {
+            self.as_mut().rust_mut().rebuild_shuffle_order();
+        }
+        self.as_mut().rebuild_playlist();
+        self.as_mut().set_status(qstring(format!(
+            "Moved {} track{}",
+            new_indices.len(),
+            if new_indices.len() == 1 { "" } else { "s" }
+        )));
+        encode_row_indices(&new_indices)
     }
 
     pub fn clear_playlist(mut self: Pin<&mut Self>) {
@@ -1425,7 +1601,7 @@ impl qobject::AppController {
 
 #[cfg(test)]
 mod tests {
-    use super::{AddPathResult, add_path_status};
+    use super::{AddPathResult, add_path_status, move_selected_items, parse_row_indices};
 
     #[test]
     fn add_path_status_keeps_every_warning() {
@@ -1440,5 +1616,29 @@ mod tests {
             add_path_status(&result),
             "No tracks added — remote entry skipped; decoder metadata unavailable"
         );
+    }
+
+    #[test]
+    fn row_index_parser_sorts_deduplicates_and_bounds_input() {
+        assert_eq!(parse_row_indices("3, 1,3,garbage,8,0", 5), [0, 1, 3]);
+        assert!(parse_row_indices("-1,wrong", 5).is_empty());
+    }
+
+    #[test]
+    fn moving_multiple_rows_preserves_their_relative_order() {
+        let mut values = vec!['a', 'b', 'c', 'd', 'e', 'f'];
+        let moved = move_selected_items(&mut values, &[1, 3], 6);
+
+        assert_eq!(values, ['a', 'c', 'e', 'f', 'b', 'd']);
+        assert_eq!(moved, [4, 5]);
+    }
+
+    #[test]
+    fn dropping_inside_a_selection_does_not_scramble_it() {
+        let mut values = vec!['a', 'b', 'c', 'd', 'e'];
+        let moved = move_selected_items(&mut values, &[1, 2], 2);
+
+        assert_eq!(values, ['a', 'b', 'c', 'd', 'e']);
+        assert_eq!(moved, [1, 2]);
     }
 }

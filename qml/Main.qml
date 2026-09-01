@@ -22,6 +22,9 @@ ApplicationWindow {
     property bool sidebarVisible: false
     property bool searchVisible: false
     property int selectedRow: -1
+    property int selectionAnchor: -1
+    property var selectedRows: []
+    property int playlistDropTarget: -1
     property real volumeBeforeMute: 0.75
     readonly property bool compactToolbar: width < 980
     readonly property bool useLightIcons: (0.2126 * palette.window.r
@@ -92,6 +95,97 @@ ApplicationWindow {
         fileTreeModel.set_root_path_text(appController.directory_path)
     }
 
+    function isPlaylistRowSelected(row) {
+        return selectedRows.indexOf(row) !== -1
+    }
+
+    function setPlaylistSelection(rows, current, anchor) {
+        const unique = []
+        for (const row of rows) {
+            if (row >= 0 && row < appController.playlist_count
+                    && unique.indexOf(row) === -1)
+                unique.push(row)
+        }
+        unique.sort((left, right) => left - right)
+        selectedRows = unique
+        selectedRow = unique.length > 0
+            ? (unique.indexOf(current) !== -1 ? current : unique[0])
+            : -1
+        selectionAnchor = unique.length > 0 ? anchor : -1
+    }
+
+    function selectPlaylistRow(row, modifiers) {
+        const extend = (modifiers & Qt.ShiftModifier) !== 0
+        const toggle = (modifiers & (Qt.ControlModifier | Qt.MetaModifier)) !== 0
+        if (extend && selectionAnchor >= 0) {
+            const first = Math.min(selectionAnchor, row)
+            const last = Math.max(selectionAnchor, row)
+            const rows = toggle ? selectedRows.slice() : []
+            for (let index = first; index <= last; ++index) {
+                if (rows.indexOf(index) === -1)
+                    rows.push(index)
+            }
+            setPlaylistSelection(rows, row, selectionAnchor)
+        } else if (toggle) {
+            const rows = selectedRows.slice()
+            const selectedIndex = rows.indexOf(row)
+            if (selectedIndex === -1)
+                rows.push(row)
+            else
+                rows.splice(selectedIndex, 1)
+            setPlaylistSelection(rows, row, row)
+        } else {
+            setPlaylistSelection([row], row, row)
+        }
+        playlistView.forceActiveFocus()
+    }
+
+    function clearPlaylistSelection() {
+        selectedRows = []
+        selectedRow = -1
+        selectionAnchor = -1
+    }
+
+    function removeSelectedTracks() {
+        if (selectedRows.length === 0)
+            return
+        const next = appController.remove_tracks(selectedRows.join(","))
+        if (next >= 0)
+            setPlaylistSelection([next], next, next)
+        else
+            clearPlaylistSelection()
+    }
+
+    function keyboardSelectPlaylistRow(delta, modifiers) {
+        if (appController.playlist_count === 0)
+            return
+        const start = selectedRow >= 0
+            ? selectedRow
+            : (delta > 0 ? -1 : appController.playlist_count)
+        const target = Math.max(0, Math.min(start + delta,
+            appController.playlist_count - 1))
+        selectPlaylistRow(target, modifiers)
+        playlistView.positionViewAtIndex(target, ListView.Contain)
+    }
+
+    function playlistDropIndex(y) {
+        const contentPosition = y + playlistView.contentY
+        const row = playlistView.indexAt(1, contentPosition)
+        if (row < 0)
+            return contentPosition <= 0 ? 0 : appController.playlist_count
+        const item = playlistView.itemAtIndex(row)
+        return item && contentPosition >= item.y + item.height / 2 ? row + 1 : row
+    }
+
+    function applyMovedSelection(encodedRows) {
+        if (encodedRows.length === 0) {
+            clearPlaylistSelection()
+            return
+        }
+        const rows = encodedRows.split(",").map(value => Number(value))
+        setPlaylistSelection(rows, rows[0], rows[0])
+    }
+
     AppController { id: appController }
     FileTreeModel { id: fileTreeModel }
 
@@ -113,10 +207,47 @@ ApplicationWindow {
         id: removeSelectedAction
         text: qsTr("Remove Selected")
         shortcut: StandardKey.Delete
-        enabled: root.selectedRow >= 0
+        enabled: root.selectedRows.length > 0
+        onTriggered: root.removeSelectedTracks()
+    }
+
+    Action {
+        id: selectAllAction
+        text: qsTr("Select All")
+        shortcut: StandardKey.SelectAll
+        enabled: playlistView.activeFocus && appController.playlist_count > 0
         onTriggered: {
-            appController.remove_track(root.selectedRow)
-            root.selectedRow = -1
+            const rows = []
+            for (let index = 0; index < appController.playlist_count; ++index)
+                rows.push(index)
+            root.setPlaylistSelection(rows, rows[0], rows[0])
+        }
+    }
+
+    Menu {
+        id: playlistContextMenu
+        MenuItem {
+            text: qsTr("Play")
+            icon.name: "media-playback-start"
+            enabled: root.selectedRow >= 0
+            onTriggered: appController.play_index(root.selectedRow)
+        }
+        MenuItem { action: removeSelectedAction; icon.name: "edit-delete" }
+        MenuSeparator {}
+        MenuItem {
+            text: qsTr("Select All")
+            icon.name: "edit-select-all"
+            enabled: appController.playlist_count > 0
+            onTriggered: selectAllAction.trigger()
+        }
+        MenuItem {
+            text: qsTr("Clear Playlist")
+            icon.name: "edit-clear-list"
+            enabled: appController.playlist_count > 0
+            onTriggered: {
+                appController.clear_playlist()
+                root.clearPlaylistSelection()
+            }
         }
     }
 
@@ -140,7 +271,10 @@ ApplicationWindow {
             text: qsTr("Clear Playlist")
             icon.name: "edit-clear-list"
             enabled: appController.playlist_count > 0
-            onTriggered: appController.clear_playlist()
+            onTriggered: {
+                appController.clear_playlist()
+                root.clearPlaylistSelection()
+            }
         }
         MenuSeparator {}
 
@@ -365,7 +499,10 @@ ApplicationWindow {
                 visible: root.searchVisible
                 placeholderText: qsTr("Search playlist")
                 selectByMouse: true
-                onTextChanged: appController.filter_playlist(text)
+                onTextChanged: {
+                    appController.filter_playlist(text)
+                    root.clearPlaylistSelection()
+                }
                 onVisibleChanged: if (visible) forceActiveFocus()
                 Keys.onEscapePressed: {
                     text = ""
@@ -592,6 +729,14 @@ ApplicationWindow {
                     Keys.onEnterPressed: if (root.selectedRow >= 0)
                         appController.play_index(root.selectedRow)
                     Keys.onDeletePressed: removeSelectedAction.trigger()
+                    Keys.onUpPressed: event => {
+                        root.keyboardSelectPlaylistRow(-1, event.modifiers)
+                        event.accepted = true
+                    }
+                    Keys.onDownPressed: event => {
+                        root.keyboardSelectPlaylistRow(1, event.modifiers)
+                        event.accepted = true
+                    }
 
                     delegate: PlaylistRow {
                         required property int index
@@ -600,11 +745,26 @@ ApplicationWindow {
                         columns: playlistHeader
                         theme: root.palette
                         rowIndex: index
-                        selected: root.selectedRow === index
-                        onPressed: row => root.selectedRow = row
+                        selected: root.isPlaylistRowSelected(index)
+                        dragRows: root.selectedRows.length > 0
+                            ? root.selectedRows.join(",")
+                            : String(index)
+                        onPressed: (row, modifiers, button) => {
+                            if (button !== Qt.RightButton
+                                    || !root.isPlaylistRowSelected(row))
+                                root.selectPlaylistRow(row, modifiers)
+                            if (button === Qt.RightButton) {
+                                playlistView.forceActiveFocus()
+                                playlistContextMenu.popup()
+                            }
+                        }
                         onActivated: row => {
-                            root.selectedRow = row
+                            root.setPlaylistSelection([row], row, row)
                             appController.play_index(row)
+                        }
+                        onDragStarted: row => {
+                            if (!root.isPlaylistRowSelected(row))
+                                root.setPlaylistSelection([row], row, row)
                         }
                     }
 
@@ -633,9 +793,46 @@ ApplicationWindow {
                 }
             }
 
+            Rectangle {
+                z: 20
+                x: 6
+                width: parent.width - 12
+                height: 2
+                radius: 1
+                color: root.palette.highlight
+                visible: root.playlistDropTarget >= 0
+                y: Math.max(playlistHeader.height,
+                    Math.min(parent.height - height,
+                        playlistHeader.height + root.playlistDropTarget * 24
+                            - playlistView.contentY))
+            }
+
             DropArea {
-                anchors.fill: parent
+                x: 0
+                y: playlistHeader.height
+                width: parent.width
+                height: parent.height - y
+                onEntered: drag => {
+                    if (drag.source && drag.source.playlistDrag)
+                        root.playlistDropTarget = root.playlistDropIndex(drag.y)
+                }
+                onPositionChanged: drag => {
+                    if (drag.source && drag.source.playlistDrag)
+                        root.playlistDropTarget = root.playlistDropIndex(drag.y)
+                }
+                onExited: root.playlistDropTarget = -1
                 onDropped: drop => {
+                    if (drop.source && drop.source.playlistDrag) {
+                        const target = root.playlistDropTarget >= 0
+                            ? root.playlistDropTarget
+                            : root.playlistDropIndex(drop.y)
+                        const moved = appController.move_tracks(
+                            drop.source.dragRows, target)
+                        root.applyMovedSelection(moved)
+                        root.playlistDropTarget = -1
+                        drop.acceptProposedAction()
+                        return
+                    }
                     if (drop.source && drop.source.dragUrl) {
                         appController.add_file(drop.source.dragUrl)
                         drop.acceptProposedAction()
@@ -646,6 +843,7 @@ ApplicationWindow {
                     for (let url of drop.urls)
                         appController.add_file(url)
                     drop.acceptProposedAction()
+                    root.playlistDropTarget = -1
                 }
             }
         }
