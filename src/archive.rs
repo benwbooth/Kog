@@ -299,6 +299,7 @@ mod tests {
     };
     use crate::qsf::{test_qsf_bytes, test_qsf_program};
     use crate::sdsf::{test_sdsf_bytes, test_ssf_program};
+    use crate::syntrax::test_jxs_bytes;
     use crate::usf::{test_usf_bytes, test_usf_reserved};
 
     // Generated with libarchive 3.8.9 from an empty regular file. It exercises
@@ -506,6 +507,35 @@ mod tests {
             archive_origin: expansion.sources[0].archive_origin.clone(),
         };
         assert_eq!(expansion.sources[0], same_logical_source);
+    }
+
+    #[test]
+    fn zip_expands_syntrax_subsongs_and_keeps_logical_identity() {
+        let fixture = tempfile::tempdir().unwrap();
+        let archive_path = fixture.path().join("syntrax-set.zip");
+        let jxs = test_jxs_bytes();
+        write_stored_zip(&archive_path, &[("set/song.jxs", &jxs)]);
+
+        let registry = DecoderRegistry::new(DecoderSettings::default());
+        let expansion = registry
+            .expand_detailed(archive_path.clone())
+            .expect("expand archived JXS");
+        assert_eq!(expansion.sources.len(), 2);
+        assert_eq!(expansion.sources[0].subsong, Some(0));
+        assert_eq!(expansion.sources[1].subsong, Some(1));
+        assert_eq!(
+            expansion.sources[1]
+                .archive_origin
+                .as_ref()
+                .expect("archived JXS identity")
+                .entry_name,
+            "set/song.jxs"
+        );
+        let properties = registry
+            .probe(&expansion.sources[1])
+            .expect("probe archived JXS subsong");
+        assert_eq!(properties.title.as_deref(), Some("Synthetic JXS B"));
+        assert_eq!(properties.track_number, Some(2));
     }
 
     #[test]

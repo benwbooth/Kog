@@ -35,6 +35,8 @@ mod sdsf_decoder;
 mod settings;
 mod sid;
 mod sid_decoder;
+mod syntrax;
+mod syntrax_decoder;
 mod track;
 mod usf;
 mod usf_decoder;

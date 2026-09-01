@@ -105,6 +105,27 @@ the BSD 3-Clause license. The complete source and license are retained in the
 submodule, and the exact license text is copied to
 `LICENSES/HivelyTracker-BSD-3-Clause.txt`.
 
+## syntrax-c and kog-syntrax-helper
+
+The `native/syntrax-c` Git submodule is losnoco's canonical
+[syntrax-c](https://bitbucket.org/losnoco/syntrax-c) source at commit
+`1184fb9ef562d20dab26e419052982d1c3329b76`. Its seven source and header files
+are byte-for-byte identical to the plain-C renderer in Cog commit
+`c17be85654a64170c86bb8bbb4b59fd7b6795722`. Kog compiles that portable library
+into the separate `kog-syntrax-helper` and does not copy or translate Cog's
+Objective-C plugin classes.
+
+syntrax-c is Copyright (c) Reinier van Vliet and Christopher Snowhill and each
+upstream file identifies itself as GPL-3.0-only. The GPL version 3 text is in
+Kog's root `LICENSE`. Kog's adapter under `native/syntrax-helper` is
+GPL-3.0-or-later; the combined helper executable is distributed under GPL
+version 3 only. Its process boundary contains faults from the legacy parser
+and renderer and is not a license workaround. The protocol is documented in
+`native/syntrax-helper/PROTOCOL.md`.
+
+Kog's tests construct a packed two-subsong JXS song with an original synthetic
+wavetable. It contains no third-party song, sample, or recording.
+
 ## orgorg
 
 Kog uses version 0.2.1 of the

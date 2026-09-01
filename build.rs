@@ -10,6 +10,7 @@ fn main() {
     build_psf2_helper();
     build_twosf_helper();
     build_snsf_helper();
+    build_syntrax_helper();
     build_openmpt();
     build_hivelytracker();
     build_vgmstream();
@@ -1272,4 +1273,44 @@ fn build_snsf_helper() {
     );
     println!("cargo:rerun-if-changed=native/snsf-helper");
     println!("cargo:rerun-if-changed=native/libsnsf9x");
+}
+
+fn build_syntrax_helper() {
+    let helper = Path::new("native/syntrax-helper");
+    let syntrax = Path::new("native/syntrax-c");
+    if !helper.join("CMakeLists.txt").is_file() || !syntrax.join("jaytrax.c").is_file() {
+        panic!(
+            "syntrax-c JXS helper sources are missing; run `git submodule update --init --recursive`"
+        );
+    }
+
+    let syntrax = syntrax
+        .canonicalize()
+        .expect("canonicalize the syntrax-c source directory");
+    let output_directory = PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR"))
+        .join("syntrax-helper");
+    let output = cmake::Config::new(helper)
+        .out_dir(output_directory)
+        .profile("Release")
+        .define("SYNTRAX_SOURCE", &syntrax)
+        .build();
+    let executable_name = if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        "kog-syntrax-helper.exe"
+    } else {
+        "kog-syntrax-helper"
+    };
+    let executable = output.join("bin").join(executable_name);
+    if !executable.is_file() {
+        panic!(
+            "syntrax-c JXS helper build did not install {}",
+            executable.display()
+        );
+    }
+
+    println!(
+        "cargo:rustc-env=KOG_BUILD_SYNTRAX_HELPER={}",
+        executable.display()
+    );
+    println!("cargo:rerun-if-changed=native/syntrax-helper");
+    println!("cargo:rerun-if-changed=native/syntrax-c");
 }

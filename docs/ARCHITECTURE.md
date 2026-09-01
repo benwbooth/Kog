@@ -32,6 +32,9 @@ emulator-authentic Roland MIDI synthesis. `libvgm` wraps Cog's exact pinned
 libvgm revision for VGM/VGZ, S98, DRO, and GYM. `libopenmpt` wraps Cog's exact
 0.8.7 release for the 68 extensions returned by that pinned native build.
 `hivelytracker` wraps the official portable 1.9 replayer for AHX and HVL.
+`syntrax` invokes the canonical GPL-3.0-only `syntrax-c` JXS renderer in a
+separate fault-containment helper, preserving native subsongs and synthesis
+without translating Cog's Objective-C wrapper.
 `orgorg` 0.2.1 renders Organya Org-02/Org-03 songs from a user-supplied
 soundbank. `vgmstream` is the final specialist fallback for its large runtime
 extension table, after every narrower backend and excluding its common-format
@@ -128,9 +131,9 @@ absolute paths, parent traversal, duplicate destinations, links/devices, more
 than 16,384 entries, files over 4 GiB, or more than 8 GiB expanded in total.
 Filename decoding follows Cog's UTF-8, GB18030, Windows-1251, then
 byte-preserving Latin-1 fallback. Deterministic ZIP and GZ audio fixtures,
-real 7Z and RAR5 extraction fixtures, a ZIP-contained APL plus WAV, and
-ZIP-contained NCSF, GSF, QSF, SSF, and USF mini/library pairs gate the
-current path.
+real 7Z and RAR5 extraction fixtures, a ZIP-contained APL plus WAV,
+ZIP-contained NCSF, GSF, QSF, SSF, USF, PSF, PSF2, SNSF, and 2SF
+mini/library pairs, and an archived two-subsong JXS gate the current path.
 Passwords, multipart archives, nested archive expansion, broad format corpora,
 and Windows/macOS runtime gates remain separate work.
 
@@ -185,6 +188,22 @@ float stream, applies the fade, and exposes deterministic restart-and-skip
 seeking. The official AHX and HVL examples gate both parsers, while a
 test-only HVL derivative with a second valid start position gates stable
 subsong identities.
+
+The Syntrax adapter pins losnoco's canonical `syntrax-c` revision `1184fb9`,
+which is byte-for-byte identical to the plain-C renderer embedded by the Cog
+reference. Kog does not translate Cog's Objective-C container, metadata, or
+decoder classes. Cargo builds the upstream C files only into a separate
+`kog-syntrax-helper`; before the legacy parser runs, the helper scans the
+packed JXS structure with checked arithmetic and limits file size, object and
+name counts, song/order ranges, synthesis indices, embedded sample ranges, and
+note/arpeggio table access. The Rust owner expands zero-based subsongs, maps
+the native title and track number, converts 44.1 kHz signed-16 stereo to the
+shared float stream, applies Cog's two-loop/eight-second-fade behavior, and
+seeks through a fresh deterministic helper. A generated two-subsong song with
+an original synthetic wavetable gates routing, metadata, audible PCM, seek,
+fade/EOS, malformed counts, and invalid subsong selection. A broad corpus and
+direct Cog PCM comparison remain. A ZIP-contained JXS fixture additionally
+gates archive identity and subsong expansion through the same helper.
 
 The Organya adapter owns the song, normalized wavetable/drum samples, and the
 self-referential `orgorg` player as one safe Rust source. It discovers either

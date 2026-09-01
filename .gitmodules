@@ -52,3 +52,6 @@
 [submodule "native/libsnsf9x"]
 	path = native/libsnsf9x
 	url = https://github.com/Deewiant/libsnsf9x.git
+[submodule "native/syntrax-c"]
+	path = native/syntrax-c
+	url = https://bitbucket.org/losnoco/syntrax-c.git

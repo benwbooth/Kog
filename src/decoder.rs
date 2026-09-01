@@ -236,6 +236,7 @@ impl DecoderRegistry {
                 Box::new(crate::libvgm_decoder::LibVgmBackend),
                 Box::new(crate::openmpt_decoder::OpenMptBackend),
                 Box::new(crate::hively_decoder::HivelyBackend),
+                Box::new(crate::syntrax_decoder::SyntraxBackend),
                 Box::new(crate::organya_decoder::OrganyaBackend),
                 Box::new(crate::gsf_decoder::GsfBackend),
                 Box::new(crate::ncsf_decoder::NcsfBackend),

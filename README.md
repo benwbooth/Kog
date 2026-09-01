@@ -30,7 +30,14 @@ AHX and HVL now route through the official HivelyTracker 1.9 replayer with
 title metadata, subsong expansion, two-loop duration scanning, Cog's default
 eight-second fade, real stereo PCM, and seek. Official AHX/HVL songs plus a
 deterministic two-subsong derivative pass the current routing, PCM, and seek
-gates. Org-02 and Org-03 Organya files now route through the MIT-licensed
+gates. JXS now routes through the canonical portable `syntrax-c` library at
+the same revision embedded by Cog, not through translated Objective-C. A
+separate fault-containment helper validates the legacy packed structure,
+expands subsongs, reports native titles, renders Cog's cubic 44.1 kHz stereo
+path with two-loop/eight-second-fade timing, and supports deterministic seek.
+A generated two-subsong JXS song gates routing, PCM, metadata, malformed input,
+fade, seek, and exact end-of-stream behavior. Org-02 and Org-03 Organya files
+now route through the MIT-licensed
 `orgorg` renderer with real stereo PCM, loop/fade timing, and seek. Kog does not
 redistribute Cave Story's synthesis assets; a deterministic original-format
 fixture and synthetic bank gate the backend. SFM, SGC, and the other chiptune
@@ -249,15 +256,17 @@ cargo run
 For an existing checkout, initialize native sources with
 `git submodule update --init --recursive` before building.
 
-Cargo builds `kog-psf-helper`, `kog-psf2-helper`, `kog-snsf-helper`, and
-`kog-2sf-helper` automatically for local xSF playback. Binary packages must
+Cargo builds `kog-psf-helper`, `kog-psf2-helper`, `kog-snsf-helper`,
+`kog-2sf-helper`, and `kog-syntrax-helper` automatically for local playback.
+Binary packages must
 install the helpers they distribute beside the Kog executable and carry each
 helper's corresponding notices. Isolated tests may override their locations
 with
 `KOG_PSF_HELPER=/path/to/kog-psf-helper` and
 `KOG_PSF2_HELPER=/path/to/kog-psf2-helper`, or
 `KOG_SNSF_HELPER=/path/to/kog-snsf-helper` and
-`KOG_2SF_HELPER=/path/to/kog-2sf-helper`.
+`KOG_2SF_HELPER=/path/to/kog-2sf-helper`. Syntrax tests and packages may use
+`KOG_SYNTRAX_HELPER=/path/to/kog-syntrax-helper`.
 
 Choose RustySynth or OPL3Windows under **Edit → Preferences → MIDI**. RustySynth
 requires an SF2 bank; Kog also accepts `KOG_SOUNDFONT=/path/to/bank.sf2` and

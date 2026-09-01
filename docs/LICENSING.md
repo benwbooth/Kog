@@ -38,6 +38,12 @@ source trees and are summarized in `THIRD_PARTY_NOTICES.md`.
   decision, not a license workaround. Binary distributions must install the
   helper beside Kog and carry the complete corresponding source and upstream
   copyright/license notices. melonDS is not relicensed by Kog.
+- Syntrax playback uses the GPL-3.0-only `syntrax-c` renderer in a separate
+  `kog-syntrax-helper`. GPL-3.0-only is compatible with Kog's GPL-3.0-or-later
+  source, while the combined helper executable is distributed under GPL
+  version 3 only. The boundary contains faults from the legacy trusted-input
+  parser and renderer; it is not a license workaround. Binary distributions
+  must install the helper and retain the pinned source and notices.
 - SNSF playback uses the pinned libsnsf9x library in the optional,
   independently identified `kog-snsf-helper` program. Its Snes9x-derived core
   permits personal/non-commercial use and adds terms incompatible with the
