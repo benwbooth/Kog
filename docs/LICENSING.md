@@ -24,6 +24,12 @@ source trees and are summarized in `THIRD_PARTY_NOTICES.md`.
   combined Kog executable under GPL-3.0-or-later. Kog builds with
   `BUILD_NO_GREY_BANKS=ON`; upstream's separately identified grey-zone bank set
   is not embedded. The retained submodule notices remain authoritative.
+- MT-32/CM-32L playback statically links the pinned Munt 2.8.2 libmt32emu
+  library under LGPL-2.1-or-later. That license is compatible with Kog's
+  GPL-3.0-or-later combined executable. Binary distributors must retain the
+  notices and provide the complete corresponding Munt and Kog source needed to
+  relink a modified library, as required by the LGPL and GPL. Kog builds no
+  Munt frontend and distributes no Roland ROM data.
 - GPL-2.0-only components are not linked into the main application. The
   upstream libvgm tree contains one such YMF278B core; Kog explicitly disables
   it while retaining all other configured libvgm chip families. PSF playback

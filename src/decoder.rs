@@ -12,6 +12,7 @@ use rodio::source::SeekError;
 use rodio::{ChannelCount, Decoder, Player, SampleRate, Source};
 use rustysynth::{MidiFile, MidiFileSequencer, SoundFont, Synthesizer, SynthesizerSettings};
 
+use crate::mt32::Mt32Source;
 use crate::opl3::Opl3WindowsSynth;
 use crate::sc55::Sc55;
 use crate::settings::MidiEngine;
@@ -166,6 +167,7 @@ pub trait DecoderBackend: Send + Sync {
 pub struct DecoderSettings {
     soundfont_path: Arc<RwLock<Option<PathBuf>>>,
     sc55_rom_path: Arc<RwLock<Option<PathBuf>>>,
+    mt32_rom_path: Arc<RwLock<Option<PathBuf>>>,
     midi_engine: Arc<RwLock<MidiEngine>>,
 }
 
@@ -174,12 +176,18 @@ impl DecoderSettings {
         Self {
             soundfont_path: Arc::new(RwLock::new(soundfont_path)),
             sc55_rom_path: Arc::new(RwLock::new(None)),
+            mt32_rom_path: Arc::new(RwLock::new(None)),
             midi_engine: Arc::new(RwLock::new(midi_engine)),
         }
     }
 
     pub fn with_sc55_rom_path(self, path: Option<PathBuf>) -> Self {
         self.set_sc55_rom_path(path);
+        self
+    }
+
+    pub fn with_mt32_rom_path(self, path: Option<PathBuf>) -> Self {
+        self.set_mt32_rom_path(path);
         self
     }
 
@@ -207,6 +215,20 @@ impl DecoderSettings {
     pub fn set_sc55_rom_path(&self, path: Option<PathBuf>) {
         *self
             .sc55_rom_path
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = path;
+    }
+
+    pub fn mt32_rom_path(&self) -> Option<PathBuf> {
+        self.mt32_rom_path
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    pub fn set_mt32_rom_path(&self, path: Option<PathBuf>) {
+        *self
+            .mt32_rom_path
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = path;
     }
@@ -280,6 +302,12 @@ impl DecoderRegistry {
 
     pub fn expand_detailed(&self, path: PathBuf) -> Result<ExpansionResult, String> {
         self.expand_local(path, None, &mut Vec::new(), 0)
+    }
+
+    pub fn accepts_path(&self, path: &Path) -> bool {
+        crate::playlist::Playlist::is_path(path)
+            || crate::archive::is_path(path)
+            || self.select(path).is_some()
     }
 
     fn expand_local(
@@ -634,6 +662,20 @@ impl MidiBackend {
         }
         Sc55::open(path, &rom_directory)
     }
+
+    fn open_mt32(&self, path: &Path) -> Result<Mt32Source, String> {
+        let rom_directory = self.settings.mt32_rom_path().ok_or_else(|| {
+            "MT-32 playback requires user-supplied Roland ROMs. Choose their directory in Preferences > Synthesis."
+                .to_owned()
+        })?;
+        if !rom_directory.is_dir() {
+            return Err(format!(
+                "Selected MT-32 ROM directory is unavailable: {}",
+                rom_directory.display()
+            ));
+        }
+        Mt32Source::open(path, &rom_directory)
+    }
 }
 
 impl DecoderBackend for MidiBackend {
@@ -642,6 +684,7 @@ impl DecoderBackend for MidiBackend {
             MidiEngine::RustySynth => "midi-rustysynth-sf2",
             MidiEngine::Opl3Windows => "midi-opl3windows",
             MidiEngine::Sc55 => "midi-nuked-sc55",
+            MidiEngine::Mt32 => "midi-munt-mt32",
         }
     }
 
@@ -650,6 +693,7 @@ impl DecoderBackend for MidiBackend {
             MidiEngine::RustySynth => "RustySynth SoundFont",
             MidiEngine::Opl3Windows => "OPL3Windows (Nuked OPL3)",
             MidiEngine::Sc55 => "Nuked SC-55 0.6.1",
+            MidiEngine::Mt32 => "Munt MT-32/CM-32L",
         }
     }
 
@@ -693,6 +737,16 @@ impl DecoderBackend for MidiBackend {
                     ..StreamProperties::default()
                 }
             }
+            MidiEngine::Mt32 => {
+                let mt32 = self.open_mt32(&source.path)?;
+                StreamProperties {
+                    duration: Some(mt32.duration()),
+                    sample_rate: Some(mt32.sample_rate_value()),
+                    channels: Some(MIDI_CHANNELS),
+                    codec: Some(format!("Munt MT-32 ({})", mt32.model())),
+                    ..StreamProperties::default()
+                }
+            }
         };
         Ok(properties)
     }
@@ -711,6 +765,9 @@ impl DecoderBackend for MidiBackend {
             }
             MidiEngine::Sc55 => {
                 player.append(Sc55MidiSource::new(self.open_sc55(&source.path)?));
+            }
+            MidiEngine::Mt32 => {
+                player.append(self.open_mt32(&source.path)?);
             }
         }
         Ok(())
@@ -1598,6 +1655,12 @@ mod tests {
             registry.backend_id_for(Path::new("song.mid")),
             Some("midi-nuked-sc55")
         );
+
+        settings.set_midi_engine(MidiEngine::Mt32);
+        assert_eq!(
+            registry.backend_id_for(Path::new("song.mid")),
+            Some("midi-munt-mt32")
+        );
     }
 
     #[test]
@@ -1637,6 +1700,18 @@ mod tests {
         let error = backend
             .probe(&PlaybackSource::from_path(path.clone()))
             .expect_err("missing SC-55 ROM directory");
+        assert!(error.contains("user-supplied Roland ROMs"));
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn mt32_backend_requires_a_configured_rom_directory() {
+        let path = std::env::temp_dir().join(format!("kog-mt32-midi-{}.mid", std::process::id()));
+        write_test_midi(&path);
+        let backend = MidiBackend::new(DecoderSettings::new(None, MidiEngine::Mt32));
+        let error = backend
+            .probe(&PlaybackSource::from_path(path.clone()))
+            .expect_err("missing MT-32 ROM directory");
         assert!(error.contains("user-supplied Roland ROMs"));
         std::fs::remove_file(path).ok();
     }

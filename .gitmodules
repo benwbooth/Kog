@@ -61,3 +61,6 @@
 [submodule "native/nuked-sc55"]
 	path = native/nuked-sc55
 	url = https://github.com/jcmoyer/Nuked-SC55.git
+[submodule "native/munt"]
+	path = native/munt
+	url = https://github.com/munt/munt.git

@@ -4,6 +4,7 @@ use std::path::Path;
 use std::path::PathBuf;
 
 fn main() {
+    build_mt32emu();
     build_game_music_emu();
     let libvgm_output = build_libvgm();
     build_psf_helper();
@@ -55,20 +56,16 @@ fn main() {
 
     println!("cargo:rerun-if-changed=native/opl3w");
 
-    CxxQtBuilder::new_qml_module(
-        QmlModule::new("org.kog.player")
-            .depend("QtQuick.Dialogs")
-            .qml_files([
-                "qml/CogButton.qml",
-                "qml/InfoInspector.qml",
-                "qml/Lyrics.qml",
-                "qml/Main.qml",
-                "qml/MiniPlayer.qml",
-                "qml/PlaylistHeader.qml",
-                "qml/PlaylistRow.qml",
-                "qml/Preferences.qml",
-            ]),
-    )
+    CxxQtBuilder::new_qml_module(QmlModule::new("org.kog.player").qml_files([
+        "qml/CogButton.qml",
+        "qml/InfoInspector.qml",
+        "qml/Lyrics.qml",
+        "qml/Main.qml",
+        "qml/MiniPlayer.qml",
+        "qml/PlaylistHeader.qml",
+        "qml/PlaylistRow.qml",
+        "qml/Preferences.qml",
+    ]))
     // Kog does not export hand-written C++ headers. Avoid recursively tracking
     // the entire repository as an include root, which otherwise makes Cargo
     // rebuild every native decoder after unrelated documentation changes.
@@ -76,8 +73,14 @@ fn main() {
     .qrc_resources([
         "qml/icons/application-menu.svg",
         "qml/icons/application-menu-light.svg",
+        "qml/icons/audio-volume-high.svg",
+        "qml/icons/audio-volume-high-light.svg",
         "qml/icons/audio-x-generic.svg",
         "qml/icons/audio-x-generic-light.svg",
+        "qml/icons/dialog-information.svg",
+        "qml/icons/dialog-information-light.svg",
+        "qml/icons/edit-find.svg",
+        "qml/icons/edit-find-light.svg",
         "qml/icons/folder-open.svg",
         "qml/icons/folder-open-light.svg",
         "qml/icons/folder.svg",
@@ -98,6 +101,8 @@ fn main() {
         "qml/icons/media-skip-backward-light.svg",
         "qml/icons/media-skip-forward.svg",
         "qml/icons/media-skip-forward-light.svg",
+        "qml/icons/view-list-tree.svg",
+        "qml/icons/view-list-tree-light.svg",
     ])
     .files(["src/app_controller.rs", "src/file_tree_model.rs"])
     .qt_module("Gui")
@@ -105,6 +110,42 @@ fn main() {
     .qt_module("Quick")
     .qt_module("QuickControls2")
     .build();
+}
+
+fn build_mt32emu() {
+    let source = Path::new("native/munt/mt32emu");
+    if !source.join("src/c_interface/c_interface.h").is_file() {
+        panic!("Munt submodule is missing; run `git submodule update --init --recursive`");
+    }
+
+    let output = cmake::Config::new(source)
+        .profile("Release")
+        .define("libmt32emu_SHARED", "OFF")
+        .define("libmt32emu_C_INTERFACE", "ON")
+        .define("libmt32emu_CPP_INTERFACE", "ON")
+        .define("libmt32emu_WITH_INTERNAL_RESAMPLER", "ON")
+        .define("libmt32emu_BUILD_TESTING", "OFF")
+        .define("BUILD_TESTING", "OFF")
+        .define("CMAKE_INSTALL_LIBDIR", "lib")
+        .build();
+
+    cc::Build::new()
+        .cpp(true)
+        .std("c++17")
+        .include(output.join("include/mt32emu"))
+        .file("native/mt32emu_bridge.cpp")
+        .warnings(true)
+        .extra_warnings(true)
+        .compile("kog_mt32emu_bridge");
+
+    // Emit Munt after the bridge archive so one-pass static linkers see the
+    // referenced C API before its definitions.
+    println!("cargo:rustc-link-search=native={}/lib", output.display());
+    println!("cargo:rustc-link-lib=static=mt32emu");
+
+    println!("cargo:rerun-if-changed=native/munt/mt32emu");
+    println!("cargo:rerun-if-changed=native/mt32emu_bridge.cpp");
+    println!("cargo:rerun-if-changed=native/mt32emu_bridge.h");
 }
 
 fn build_adlmidi() {

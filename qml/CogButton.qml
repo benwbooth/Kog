@@ -17,6 +17,7 @@ ToolButton {
     implicitWidth: 38
     implicitHeight: 38
     text: glyph
+    icon.name: iconName
     icon.source: iconName.length > 0
         ? Qt.resolvedUrl("icons/" + iconName + (useLightIcon ? "-light" : "") + ".svg")
         : ""
@@ -26,6 +27,7 @@ ToolButton {
     display: iconName.length > 0 ? AbstractButton.IconOnly : AbstractButton.TextOnly
     font.pixelSize: 18
     hoverEnabled: true
+    Accessible.name: toolTip
 
     ToolTip.visible: hovered && toolTip.length > 0
     ToolTip.text: toolTip

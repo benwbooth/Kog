@@ -15,8 +15,13 @@ has a real conventional-audio playback path with pause, stop, seek, volume,
 and automatic track advance. It also renders format-0/1 MID, MIDI, KAR, and RIFF
 RMID files through either a validated, persisted SF2 SoundFont using RustySynth
 or Cog's OPL3Windows synthesizer and its Nuked OPL3 core, with duration probing
-and seeking. An optional third route uses the maintained Nuked SC-55 0.6.1
-backend in an automatically built, bundled companion process, detects supported
+and seeking. A fourth in-process route statically links Munt 2.8.2/libmt32emu
+for MT-32 and CM-32L synthesis. It detects a compatible control/PCM ROM pair
+from a user-selected directory, preserves channel messages and fragmented
+SysEx, renders 48 kHz stereo PCM, and seeks by deterministic reconstruction.
+No Munt program needs to be installed or launched. An optional third route uses
+the maintained Nuked SC-55 0.6.1 backend in an automatically built, bundled
+companion process, detects supported
 Roland models from user-owned ROM hashes, sends complete MIDI/SysEx byte
 streams, and supports deterministic seek. Users do not install Nuked SC-55 or
 any of its frontends separately. Kog does not include Roland ROMs, and the SC-55 path still needs a
@@ -281,13 +286,17 @@ with
 `KOG_SYNTRAX_HELPER=/path/to/kog-syntrax-helper`; SC-55 tests and packages may
 use `KOG_SC55_HELPER=/path/to/kog-sc55-helper`.
 
-Choose RustySynth, OPL3Windows, or Nuked SC-55 under
-**Edit → Preferences → MIDI**. RustySynth requires an SF2 bank. SC-55 requires
+Choose RustySynth, OPL3Windows, Nuked SC-55, or Munt under
+**Hamburger menu → Preferences → Synthesis**. RustySynth requires an SF2 bank.
+SC-55 requires
 a directory containing a complete supported ROM set obtained from hardware
 you own; Kog accepts `KOG_SC55_ROMS=/path/to/rom-directory` and never downloads
-or bundles those files. Isolated tests and packages may also set
+or bundles those files. Munt is linked into Kog and likewise requires a
+user-supplied compatible MT-32 or CM-32L control/PCM ROM pair; select its
+directory in Preferences or set `KOG_MT32_ROMS=/path/to/rom-directory`.
+Isolated tests and packages may also set
 `KOG_SOUNDFONT=/path/to/bank.sf2` and
-`KOG_MIDI_ENGINE=rustysynth-sf2|opl3windows|nuked-sc55`.
+`KOG_MIDI_ENGINE=rustysynth-sf2|opl3windows|nuked-sc55|munt-mt32`.
 
 Organya needs a user-owned synthesis bank. Put `soundbank.wdb` or the
 `wavetable.dat` and `drums.dat` pair beside the `.org` file, put them in Kog's

@@ -8,21 +8,26 @@ Item {
     required property var columns
     required property var theme
     property bool selected: false
+    property bool hovered: false
     property int revision: app.playlist_revision
 
     signal pressed(int rowIndex)
     signal activated(int rowIndex)
 
-    implicitHeight: 29
+    implicitHeight: 24
 
     Rectangle {
         anchors.fill: parent
-        anchors.leftMargin: 3
-        anchors.rightMargin: 3
-        radius: 5
+        anchors.leftMargin: 6
+        anchors.rightMargin: 6
+        anchors.topMargin: 3
+        anchors.bottomMargin: 3
+        radius: 4
         color: root.selected
             ? root.theme.highlight
-            : (root.rowIndex % 2 ? root.theme.alternateBase : root.theme.base)
+            : (root.hovered
+                ? root.theme.button
+                : (root.rowIndex % 2 ? root.theme.alternateBase : "transparent"))
     }
 
     component Cell: Text {
@@ -31,11 +36,10 @@ Item {
 
         width: cellWidth
         height: root.height
-        leftPadding: 7
-        rightPadding: 7
+        leftPadding: 6
+        rightPadding: 6
         color: root.selected ? root.theme.highlightedText : root.theme.text
-        font.pixelSize: 12
-        font.bold: root.selected
+        font.pixelSize: 11
         horizontalAlignment: alignment
         verticalAlignment: Text.AlignVCenter
         elide: Text.ElideRight
@@ -46,18 +50,16 @@ Item {
 
         Cell {
             cellWidth: columns.numberWidth
-            alignment: Text.AlignRight
-            text: { root.revision; return app.track_number_at(root.rowIndex) }
-        }
-        Cell {
-            cellWidth: columns.statusWidth
             alignment: Text.AlignHCenter
-            text: { root.revision; return app.track_status_at(root.rowIndex) }
+            text: {
+                root.revision
+                const status = app.track_status_at(root.rowIndex)
+                return status.length > 0 ? status : app.track_number_at(root.rowIndex)
+            }
         }
         Cell {
-            cellWidth: columns.trackWidth
-            alignment: Text.AlignRight
-            text: { root.revision; return app.track_number_at(root.rowIndex) }
+            cellWidth: columns.ratingWidth
+            text: { root.revision; return app.track_rating_at(root.rowIndex) }
         }
         Cell {
             cellWidth: columns.titleWidth
@@ -85,11 +87,19 @@ Item {
             cellWidth: columns.genreWidth
             text: { root.revision; return app.track_genre_at(root.rowIndex) }
         }
+        Cell {
+            cellWidth: columns.trackWidth
+            alignment: Text.AlignHCenter
+            text: { root.revision; return app.track_metadata_number_at(root.rowIndex) }
+        }
     }
 
     MouseArea {
         anchors.fill: parent
         acceptedButtons: Qt.LeftButton | Qt.RightButton
+        hoverEnabled: true
+        onEntered: root.hovered = true
+        onExited: root.hovered = false
         onClicked: root.pressed(root.rowIndex)
         onDoubleClicked: root.activated(root.rowIndex)
     }

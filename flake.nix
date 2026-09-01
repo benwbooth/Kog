@@ -28,6 +28,7 @@
           ])
           ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
             pkgs.qt6.qtwayland
+            pkgs.kdePackages.plasma-integration
             pkgs.kdePackages.qqc2-desktop-style
             pkgs.kdePackages.breeze-icons
           ];

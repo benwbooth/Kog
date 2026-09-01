@@ -38,6 +38,8 @@ user-selected SF2 SoundFont, and `midi-opl3windows` for the same MIDI containers
 through Cog's OPL3Windows General MIDI engine and Nuked OPL3 1.7.1 core.
 `midi-nuked-sc55` sends those containers to a separately licensed optional
 Nuked SC-55 0.6.1 helper using a user-supplied Roland ROM directory.
+`midi-munt-mt32` renders them in-process through the official Munt 2.8.2
+libmt32emu library using a user-supplied MT-32 or CM-32L ROM directory.
 `adlmidi` links the maintained libADLMIDI revision `d114c31` for HMI, HMP/HMQ,
 DMX MUS, and Miles XMI playback through its Nuked OPL3 implementation.
 `game-music-emu` wraps the pinned upstream libGME 0.6.5 C API for AY, GBS, HES,
@@ -155,8 +157,8 @@ Passwords, multipart archives, nested archive expansion, broad format corpora,
 and Windows/macOS runtime gates remain separate work.
 
 Decoder settings are shared between the probe registry and playback registry.
-The MIDI engine, current SF2 path, and SC-55 ROM directory are persisted in the
-platform configuration directory; the SF2 is validated before it is accepted
+The MIDI engine, current SF2 path, SC-55 ROM directory, and MT-32 ROM directory
+are persisted in the platform configuration directory; the SF2 is validated before it is accepted
 and cached by path and modification time. RustySynth and OPL3Windows render
 interleaved 48 kHz stereo floating-point PCM. The OPL3 path uses a small C ABI around Cog's
 GPL-compatible native engine; Midly merges format-0/1 tracks and schedules
@@ -183,6 +185,18 @@ native-rate signed-16 stereo PCM back to Rust. Seek starts a clean helper and
 suppresses output until the exact target frame. The helper is an optional
 program under the emulator's original noncommercial MAME terms, not a library
 linked into GPL Kog; no Roland ROM data enters the repository or build output.
+
+The MT-32 path pins the official Munt 2.8.2 source at `3b05ec2` and statically
+links libmt32emu plus its internal resampler into Kog. The bridge asks Munt to
+identify up to 256 bounded regular-file ROM candidates, opens the first
+compatible control/PCM pair, selects float output with coarse analog emulation,
+and sends a valid Roland MT-32 reset. Rust parses bounded
+format-0/1 SMF or RMID input, stably merges tracks, applies tempo or SMPTE
+timing, and preserves channel messages plus fragmented SysEx/escape streams.
+Playback emits 48 kHz stereo float PCM; seeking recreates the synth and renders
+discarded frames to the exact target. This route is an in-process library, not
+a command-line frontend or separately installed executable. Model ROMs remain
+user-supplied and are never downloaded, embedded, or copied by Kog.
 
 The libADLMIDI adapter is a thin Rust owner around the upstream C API; Kog does
 not translate Cog's Objective-C MIDI container plugin. It retains input memory

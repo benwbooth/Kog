@@ -40,6 +40,28 @@ The resampler is Copyright (C) 2004-2008 Shay Green and Copyright (C)
 Public License, version 2.1 or (at your option) any later version. A copy is in
 `LICENSES/LGPL-2.1.txt`.
 
+## Munt / libmt32emu
+
+The `native/munt` Git submodule is the official
+[Munt](https://github.com/munt/munt) repository at release 2.8.2, commit
+`3b05ec276f9e605af86b0eaef7f5eda43477a31f`. Kog statically builds only the
+libmt32emu library, C interface, and internal resampler, then calls that API
+through `native/mt32emu_bridge.cpp`. It does not build or invoke Munt's Qt,
+command-line, driver, or daemon frontends.
+
+libmt32emu is Copyright (C) 2003-2009 Dean Beeler and Jerome Fisher, and
+Copyright (C) 2011-2026 Dean Beeler, Jerome Fisher, and Sergey V. Mikayev. It
+is distributed under the GNU Lesser General Public License, version 2.1 or (at
+your option) any later version. Its complete source and exact license texts are
+retained in `native/munt/mt32emu`; a copy of the LGPL-2.1 text is also in
+`LICENSES/LGPL-2.1.txt`.
+
+Munt identifies compatible MT-32, CM-32L, and LAPC-I control/PCM ROM images at
+runtime. Kog does not contain, download, or redistribute Roland firmware or
+sample ROM data; users must supply files obtained from hardware they own.
+Roland product names are used only to identify compatibility and do not imply
+affiliation or endorsement.
+
 ## Nuked SC-55 and kog-sc55-helper
 
 The `native/nuked-sc55` Git submodule is J.C. Moyer's maintained reusable

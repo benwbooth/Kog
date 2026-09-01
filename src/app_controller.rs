@@ -31,16 +31,26 @@ pub mod qobject {
         #[qproperty(f64, position_seconds)]
         #[qproperty(f64, duration_seconds)]
         #[qproperty(f64, volume)]
+        #[qproperty(bool, shuffle_enabled)]
+        #[qproperty(bool, repeat_enabled)]
         #[qproperty(QString, total_duration)]
         #[qproperty(QString, directory_path)]
         #[qproperty(QString, soundfont_path)]
         #[qproperty(QString, sc55_rom_path)]
+        #[qproperty(QString, mt32_rom_path)]
         #[qproperty(QString, midi_engine)]
         #[qproperty(QString, midi_status)]
+        #[qproperty(QString, opening_files_behavior)]
+        #[qproperty(bool, read_cue_sheets_in_folders)]
+        #[qproperty(bool, read_playlists_in_folders)]
         type AppController = super::AppControllerRust;
 
         #[qinvokable]
         fn add_file(self: Pin<&mut AppController>, url: QUrl);
+        #[qinvokable]
+        fn open_audio_files(self: Pin<&mut AppController>);
+        #[qinvokable]
+        fn choose_music_folder(self: Pin<&mut AppController>);
         #[qinvokable]
         fn remove_track(self: Pin<&mut AppController>, index: i32);
         #[qinvokable]
@@ -62,10 +72,16 @@ pub mod qobject {
         #[qinvokable]
         fn set_volume_level(self: Pin<&mut AppController>, volume: f64);
         #[qinvokable]
+        fn set_shuffle_mode(self: Pin<&mut AppController>, enabled: bool);
+        #[qinvokable]
+        fn set_repeat_mode(self: Pin<&mut AppController>, enabled: bool);
+        #[qinvokable]
         fn poll_playback(self: Pin<&mut AppController>);
 
         #[qinvokable]
         fn track_number_at(self: &AppController, index: i32) -> QString;
+        #[qinvokable]
+        fn track_metadata_number_at(self: &AppController, index: i32) -> QString;
         #[qinvokable]
         fn track_status_at(self: &AppController, index: i32) -> QString;
         #[qinvokable]
@@ -90,13 +106,29 @@ pub mod qobject {
         #[qinvokable]
         fn set_soundfont(self: Pin<&mut AppController>, url: QUrl);
         #[qinvokable]
+        fn choose_soundfont_file(self: Pin<&mut AppController>);
+        #[qinvokable]
         fn clear_soundfont(self: Pin<&mut AppController>);
         #[qinvokable]
         fn set_sc55_rom_directory(self: Pin<&mut AppController>, url: QUrl);
         #[qinvokable]
+        fn choose_sc55_rom_folder(self: Pin<&mut AppController>);
+        #[qinvokable]
         fn clear_sc55_rom_directory(self: Pin<&mut AppController>);
         #[qinvokable]
+        fn set_mt32_rom_directory(self: Pin<&mut AppController>, url: QUrl);
+        #[qinvokable]
+        fn choose_mt32_rom_folder(self: Pin<&mut AppController>);
+        #[qinvokable]
+        fn clear_mt32_rom_directory(self: Pin<&mut AppController>);
+        #[qinvokable]
         fn select_midi_engine(self: Pin<&mut AppController>, engine: QString);
+        #[qinvokable]
+        fn select_opening_files_behavior(self: Pin<&mut AppController>, behavior: QString);
+        #[qinvokable]
+        fn set_folder_cue_mode(self: Pin<&mut AppController>, enabled: bool);
+        #[qinvokable]
+        fn set_folder_playlist_mode(self: Pin<&mut AppController>, enabled: bool);
     }
 }
 
@@ -109,8 +141,8 @@ use cxx_qt_lib::{QString, QUrl};
 
 use crate::decoder::{DecoderRegistry, DecoderSettings, validate_soundfont};
 use crate::playback::{PlaybackEngine, PlaybackState};
-use crate::settings::{AppSettings, MidiEngine};
-use crate::track::{Track, canonical_path, duration_label};
+use crate::settings::{AppSettings, MidiEngine, OpeningFilesBehavior};
+use crate::track::{Track, canonical_path};
 
 #[derive(Debug, Default)]
 struct AddPathResult {
@@ -143,6 +175,43 @@ fn add_path_status(result: &AddPathResult) -> String {
     }
 }
 
+fn total_duration_label(duration: Duration) -> String {
+    let total_seconds = duration.as_secs();
+    let hours = total_seconds / 3_600;
+    let minutes = (total_seconds % 3_600) / 60;
+    let seconds = total_seconds % 60;
+    let quantity =
+        |value: u64, unit: &str| format!("{value} {unit}{}", if value == 1 { "" } else { "s" });
+
+    let mut parts = Vec::with_capacity(3);
+    if hours > 0 {
+        parts.push(quantity(hours, "hour"));
+    }
+    if minutes > 0 || hours > 0 {
+        parts.push(quantity(minutes, "minute"));
+    }
+    parts.push(quantity(seconds, "second"));
+    format!("Total duration: {}", parts.join(" "))
+}
+
+fn shuffled_indices(length: usize, seed: &mut u64) -> Vec<usize> {
+    let mut indices: Vec<_> = (0..length).collect();
+    for upper in (1..length).rev() {
+        // xorshift64* gives the UI shuffle mode a small, dependency-free PRNG.
+        // A zero state is avoided because it is a fixed point for xorshift.
+        if *seed == 0 {
+            *seed = 0x9e37_79b9_7f4a_7c15;
+        }
+        *seed ^= *seed >> 12;
+        *seed ^= *seed << 25;
+        *seed ^= *seed >> 27;
+        let random = seed.wrapping_mul(0x2545_f491_4f6c_dd1d);
+        let selected = (random as usize) % (upper + 1);
+        indices.swap(upper, selected);
+    }
+    indices
+}
+
 pub struct AppControllerRust {
     playlist_count: i32,
     playlist_revision: i32,
@@ -165,14 +234,22 @@ pub struct AppControllerRust {
     position_seconds: f64,
     duration_seconds: f64,
     volume: f64,
+    shuffle_enabled: bool,
+    repeat_enabled: bool,
     total_duration: QString,
     directory_path: QString,
     soundfont_path: QString,
     sc55_rom_path: QString,
+    mt32_rom_path: QString,
     midi_engine: QString,
     midi_status: QString,
+    opening_files_behavior: QString,
+    read_cue_sheets_in_folders: bool,
+    read_playlists_in_folders: bool,
     tracks: Vec<Track>,
     visible_indices: Vec<usize>,
+    shuffle_order: Vec<usize>,
+    shuffle_seed: u64,
     filter: String,
     directory: PathBuf,
     decoder_settings: DecoderSettings,
@@ -182,13 +259,17 @@ pub struct AppControllerRust {
 
 impl Default for AppControllerRust {
     fn default() -> Self {
-        let directory = default_music_directory();
         let app_settings = AppSettings::load();
+        let directory = app_settings
+            .music_directory
+            .clone()
+            .unwrap_or_else(default_music_directory);
         let decoder_settings = DecoderSettings::new(
             app_settings.soundfont_path.clone(),
             app_settings.midi_engine,
         )
-        .with_sc55_rom_path(app_settings.sc55_rom_path.clone());
+        .with_sc55_rom_path(app_settings.sc55_rom_path.clone())
+        .with_mt32_rom_path(app_settings.mt32_rom_path.clone());
         let soundfont_path = app_settings
             .soundfont_path
             .as_deref()
@@ -199,14 +280,21 @@ impl Default for AppControllerRust {
             .as_deref()
             .map(|path| qstring(path.to_string_lossy()))
             .unwrap_or_default();
+        let mt32_rom_path = app_settings
+            .mt32_rom_path
+            .as_deref()
+            .map(|path| qstring(path.to_string_lossy()))
+            .unwrap_or_default();
         let midi_engine = qstring(app_settings.midi_engine.setting_value());
         let midi_status = qstring(midi_status(
             app_settings.midi_engine,
             app_settings.soundfont_path.as_deref(),
             app_settings.sc55_rom_path.as_deref(),
+            app_settings.mt32_rom_path.as_deref(),
         ));
         let decoders = DecoderRegistry::new(decoder_settings.clone());
-        let playback = PlaybackEngine::new(DecoderRegistry::new(decoder_settings.clone()));
+        let mut playback = PlaybackEngine::new(DecoderRegistry::new(decoder_settings.clone()));
+        playback.set_volume(app_settings.output_volume as f32);
         let mut controller = Self {
             playlist_count: 0,
             playlist_revision: 0,
@@ -228,15 +316,23 @@ impl Default for AppControllerRust {
             current_bits_per_sample: QString::default(),
             position_seconds: 0.0,
             duration_seconds: 0.0,
-            volume: 0.75,
-            total_duration: qstring("Total Duration: 0:00"),
+            volume: app_settings.output_volume,
+            shuffle_enabled: false,
+            repeat_enabled: false,
+            total_duration: qstring("Total duration: 0 seconds"),
             directory_path: qstring(directory.to_string_lossy()),
             soundfont_path,
             sc55_rom_path,
+            mt32_rom_path,
             midi_engine,
             midi_status,
+            opening_files_behavior: qstring(app_settings.opening_files_behavior.setting_value()),
+            read_cue_sheets_in_folders: app_settings.read_cue_sheets_in_folders,
+            read_playlists_in_folders: app_settings.read_playlists_in_folders,
             tracks: Vec::new(),
             visible_indices: Vec::new(),
+            shuffle_order: Vec::new(),
+            shuffle_seed: 0x4b6f_672d_7368_7566 ^ u64::from(std::process::id()),
             filter: String::new(),
             directory,
             decoder_settings,
@@ -245,18 +341,22 @@ impl Default for AppControllerRust {
         };
 
         if let Some(paths) = std::env::var_os("KOG_OPEN_FILES") {
-            let mut open_issue = None;
+            let mut open_result = AddPathResult::default();
             for path in std::env::split_paths(&paths) {
                 match controller.add_path(path) {
-                    Ok(result) if result.warning.is_some() => open_issue = result.warning,
-                    Ok(_) => {}
-                    Err(error) => open_issue = Some(error),
+                    Ok(result) => {
+                        open_result.added += result.added;
+                        if let Some(warning) = result.warning {
+                            open_result.push_warning(warning);
+                        }
+                    }
+                    Err(error) => open_result.push_warning(error),
                 }
             }
             controller.rebuild_visible_indices();
             controller.refresh_total_duration_value();
-            if let Some(issue) = open_issue {
-                controller.status = qstring(issue);
+            if open_result.added > 0 || open_result.warning.is_some() {
+                controller.status = qstring(add_path_status(&open_result));
             }
         }
         controller
@@ -284,6 +384,7 @@ fn midi_status(
     engine: MidiEngine,
     soundfont_path: Option<&Path>,
     sc55_rom_path: Option<&Path>,
+    mt32_rom_path: Option<&Path>,
 ) -> String {
     match engine {
         MidiEngine::Opl3Windows => {
@@ -307,10 +408,113 @@ fn midi_status(
             ),
             None => "Choose a directory containing your own supported Roland SC-55 ROMs".to_owned(),
         },
+        MidiEngine::Mt32 => match mt32_rom_path {
+            Some(path) if path.is_dir() => format!(
+                "Ready to detect a supported MT-32 or CM-32L ROM pair in {}",
+                path.display()
+            ),
+            Some(path) => format!(
+                "Selected MT-32 ROM directory is unavailable: {}",
+                path.display()
+            ),
+            None => "Choose a directory containing your own MT-32 or CM-32L control and PCM ROMs"
+                .to_owned(),
+        },
     }
 }
 
 impl AppControllerRust {
+    fn rebuild_shuffle_order(&mut self) {
+        self.shuffle_order = shuffled_indices(self.tracks.len(), &mut self.shuffle_seed);
+        let Ok(current) = usize::try_from(self.current_index) else {
+            return;
+        };
+        if let Some(position) = self
+            .shuffle_order
+            .iter()
+            .position(|index| *index == current)
+        {
+            self.shuffle_order.swap(0, position);
+        }
+    }
+
+    fn ensure_shuffle_order(&mut self) {
+        let valid = self.shuffle_order.len() == self.tracks.len()
+            && self
+                .shuffle_order
+                .iter()
+                .all(|index| *index < self.tracks.len());
+        if !valid {
+            self.rebuild_shuffle_order();
+        }
+    }
+
+    fn next_navigation_index(&mut self) -> Option<usize> {
+        let count = self.tracks.len();
+        if count == 0 {
+            return None;
+        }
+        if !self.shuffle_enabled {
+            let current = self.current_index.max(-1);
+            let next = usize::try_from(current + 1).unwrap_or_default();
+            return (next < count)
+                .then_some(next)
+                .or_else(|| self.repeat_enabled.then_some(0));
+        }
+
+        self.ensure_shuffle_order();
+        let current = usize::try_from(self.current_index).ok();
+        let position = current.and_then(|current| {
+            self.shuffle_order
+                .iter()
+                .position(|index| *index == current)
+        });
+        if let Some(next) = position.and_then(|position| self.shuffle_order.get(position + 1)) {
+            return Some(*next);
+        }
+        if position.is_none() {
+            return self.shuffle_order.first().copied();
+        }
+        if !self.repeat_enabled {
+            return None;
+        }
+
+        let previous = current;
+        self.rebuild_shuffle_order();
+        if count > 1 && self.shuffle_order.first().copied() == previous {
+            self.shuffle_order.swap(0, 1);
+        }
+        self.shuffle_order.first().copied()
+    }
+
+    fn previous_navigation_index(&mut self) -> Option<usize> {
+        let count = self.tracks.len();
+        if count == 0 {
+            return None;
+        }
+        if !self.shuffle_enabled {
+            let current = usize::try_from(self.current_index).unwrap_or_default();
+            if current > 0 {
+                return Some(current - 1);
+            }
+            return Some(if self.repeat_enabled { count - 1 } else { 0 });
+        }
+
+        self.ensure_shuffle_order();
+        let current = usize::try_from(self.current_index).ok();
+        let position = current.and_then(|current| {
+            self.shuffle_order
+                .iter()
+                .position(|index| *index == current)
+        });
+        match position {
+            Some(position) if position > 0 => self.shuffle_order.get(position - 1).copied(),
+            Some(_) if self.repeat_enabled => self.shuffle_order.last().copied(),
+            Some(_) => current,
+            None => self.shuffle_order.first().copied(),
+        }
+    }
+
     fn add_path(&mut self, path: PathBuf) -> Result<AddPathResult, String> {
         let path = canonical_path(&path)?;
         if !path.is_file() {
@@ -335,6 +539,60 @@ impl AppControllerRust {
         Ok(result)
     }
 
+    fn add_directory(&mut self, directory: &Path) -> Result<AddPathResult, String> {
+        let directory = canonical_path(directory)?;
+        if !directory.is_dir() {
+            return Err(format!("{} is not a folder", directory.display()));
+        }
+
+        let mut result = AddPathResult::default();
+        let mut pending = vec![directory];
+        while let Some(folder) = pending.pop() {
+            let mut entries = std::fs::read_dir(&folder)
+                .map_err(|error| format!("reading {}: {error}", folder.display()))?
+                .filter_map(Result::ok)
+                .collect::<Vec<_>>();
+            entries.sort_by_key(std::fs::DirEntry::path);
+            for entry in entries.into_iter().rev() {
+                let path = entry.path();
+                let Ok(file_type) = entry.file_type() else {
+                    continue;
+                };
+                if file_type.is_dir() {
+                    pending.push(path);
+                    continue;
+                }
+                if !file_type.is_file() || !self.decoders.accepts_path(&path) {
+                    continue;
+                }
+                let extension = path
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or_default();
+                if extension.eq_ignore_ascii_case("cue") && !self.read_cue_sheets_in_folders {
+                    continue;
+                }
+                if matches!(
+                    extension.to_ascii_lowercase().as_str(),
+                    "m3u" | "m3u8" | "pls"
+                ) && !self.read_playlists_in_folders
+                {
+                    continue;
+                }
+                match self.add_path(path) {
+                    Ok(added) => {
+                        result.added += added.added;
+                        if let Some(warning) = added.warning {
+                            result.push_warning(warning);
+                        }
+                    }
+                    Err(error) => result.push_warning(error),
+                }
+            }
+        }
+        Ok(result)
+    }
+
     fn rebuild_visible_indices(&mut self) {
         self.visible_indices = self
             .tracks
@@ -353,7 +611,7 @@ impl AppControllerRust {
             .iter()
             .filter_map(|track| track.duration)
             .fold(Duration::ZERO, |total, duration| total + duration);
-        self.total_duration = qstring(format!("Total Duration: {}", duration_label(duration)));
+        self.total_duration = qstring(total_duration_label(duration));
     }
 }
 
@@ -371,6 +629,40 @@ fn visible_source_index(model: &qobject::AppController, index: i32) -> Option<us
 }
 
 impl qobject::AppController {
+    pub fn open_audio_files(mut self: Pin<&mut Self>) {
+        let directory = self.as_ref().rust().directory.clone();
+        let Some(paths) = rfd::FileDialog::new()
+            .set_title("Add Audio Files")
+            .set_directory(directory)
+            .pick_files()
+        else {
+            return;
+        };
+        let opening_behavior = OpeningFilesBehavior::from_setting(
+            &self.as_ref().rust().opening_files_behavior.to_string(),
+        )
+        .unwrap_or_default();
+        if opening_behavior == OpeningFilesBehavior::Replace {
+            self.as_mut().clear_playlist();
+        }
+        for path in paths {
+            let url = QUrl::from_local_file(&qstring(path.to_string_lossy()));
+            self.as_mut().add_file(url);
+        }
+    }
+
+    pub fn choose_music_folder(mut self: Pin<&mut Self>) {
+        let directory = self.as_ref().rust().directory.clone();
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Choose Music Folder")
+            .set_directory(directory)
+            .pick_folder()
+        else {
+            return;
+        };
+        self.as_mut().set_directory(path);
+    }
+
     pub fn add_file(mut self: Pin<&mut Self>, url: QUrl) {
         let Some(local_file) = url.to_local_file() else {
             self.as_mut()
@@ -378,11 +670,11 @@ impl qobject::AppController {
             return;
         };
         let path = PathBuf::from(local_file.to_string());
-        if path.is_dir() {
-            self.as_mut().set_directory(path);
-            return;
-        }
-        let result = match self.as_mut().rust_mut().add_path(path) {
+        let result = match if path.is_dir() {
+            self.as_mut().rust_mut().add_directory(&path)
+        } else {
+            self.as_mut().rust_mut().add_path(path)
+        } {
             Ok(result) if result.added == 0 => {
                 self.as_mut()
                     .set_status(qstring("The file is already in the playlist"));
@@ -460,22 +752,16 @@ impl qobject::AppController {
     }
 
     pub fn previous(mut self: Pin<&mut Self>) {
-        if self.as_ref().rust().tracks.is_empty() {
-            return;
+        let target = self.as_mut().rust_mut().previous_navigation_index();
+        if let Some(target) = target {
+            self.as_mut().play_source_index(target);
         }
-        let current = self.as_ref().rust().current_index.max(0) as usize;
-        self.as_mut().play_source_index(current.saturating_sub(1));
     }
 
     pub fn next(mut self: Pin<&mut Self>) {
-        let count = self.as_ref().rust().tracks.len();
-        if count == 0 {
-            return;
-        }
-        let current = self.as_ref().rust().current_index.max(-1);
-        let next = usize::try_from(current + 1).unwrap_or_default();
-        if next < count {
-            self.as_mut().play_source_index(next);
+        let target = self.as_mut().rust_mut().next_navigation_index();
+        if let Some(target) = target {
+            self.as_mut().play_source_index(target);
         } else {
             self.as_mut().stop();
         }
@@ -496,8 +782,43 @@ impl qobject::AppController {
 
     pub fn set_volume_level(mut self: Pin<&mut Self>, volume: f64) {
         let volume = volume.clamp(0.0, 1.0);
+        if let Err(error) = AppSettings::save_output_volume(volume) {
+            self.as_mut().set_status(qstring(error));
+            return;
+        }
         self.as_mut().rust_mut().playback.set_volume(volume as f32);
         self.as_mut().set_volume(volume);
+    }
+
+    pub fn set_shuffle_mode(mut self: Pin<&mut Self>, enabled: bool) {
+        if self.as_ref().rust().shuffle_enabled == enabled {
+            return;
+        }
+        self.as_mut().rust_mut().shuffle_enabled = enabled;
+        if enabled {
+            self.as_mut().rust_mut().rebuild_shuffle_order();
+        } else {
+            self.as_mut().rust_mut().shuffle_order.clear();
+        }
+        self.as_mut().set_shuffle_enabled(enabled);
+        self.as_mut().set_status(qstring(if enabled {
+            "Shuffle enabled"
+        } else {
+            "Shuffle disabled"
+        }));
+    }
+
+    pub fn set_repeat_mode(mut self: Pin<&mut Self>, enabled: bool) {
+        if self.as_ref().rust().repeat_enabled == enabled {
+            return;
+        }
+        self.as_mut().rust_mut().repeat_enabled = enabled;
+        self.as_mut().set_repeat_enabled(enabled);
+        self.as_mut().set_status(qstring(if enabled {
+            "Repeat playlist enabled"
+        } else {
+            "Repeat disabled"
+        }));
     }
 
     pub fn poll_playback(mut self: Pin<&mut Self>) {
@@ -518,6 +839,13 @@ impl qobject::AppController {
             .unwrap_or_default()
     }
 
+    pub fn track_metadata_number_at(&self, index: i32) -> QString {
+        visible_track(self, index)
+            .and_then(|track| track.track_number)
+            .map(|number| qstring(number.to_string()))
+            .unwrap_or_default()
+    }
+
     pub fn track_status_at(&self, index: i32) -> QString {
         let Some(source_index) = visible_source_index(self, index) else {
             return QString::default();
@@ -533,12 +861,10 @@ impl qobject::AppController {
         }
     }
 
-    pub fn track_rating_at(&self, index: i32) -> QString {
-        if visible_track(self, index).is_some() {
-            qstring("☆☆☆☆☆")
-        } else {
-            QString::default()
-        }
+    pub fn track_rating_at(&self, _index: i32) -> QString {
+        // Keep CogX's Rating column in the visual model without inventing
+        // ratings that are not present in Kog's track metadata yet.
+        QString::default()
     }
 
     pub fn track_title_at(&self, index: i32) -> QString {
@@ -639,12 +965,34 @@ impl qobject::AppController {
             .set_soundfont_path(qstring(path.to_string_lossy()));
         let engine = self.as_ref().rust().decoder_settings.midi_engine();
         let sc55_rom_path = self.as_ref().rust().decoder_settings.sc55_rom_path();
+        let mt32_rom_path = self.as_ref().rust().decoder_settings.mt32_rom_path();
         self.as_mut().set_midi_status(qstring(midi_status(
             engine,
             Some(&path),
             sc55_rom_path.as_deref(),
+            mt32_rom_path.as_deref(),
         )));
         self.as_mut().set_status(qstring("MIDI SoundFont updated"));
+    }
+
+    pub fn choose_soundfont_file(mut self: Pin<&mut Self>) {
+        let initial_directory = self
+            .as_ref()
+            .rust()
+            .decoder_settings
+            .soundfont_path()
+            .and_then(|path| path.parent().map(Path::to_path_buf))
+            .unwrap_or_else(|| self.as_ref().rust().directory.clone());
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Choose an SF2 SoundFont")
+            .set_directory(initial_directory)
+            .add_filter("SoundFont 2 banks", &["sf2"])
+            .pick_file()
+        else {
+            return;
+        };
+        let url = QUrl::from_local_file(&qstring(path.to_string_lossy()));
+        self.as_mut().set_soundfont(url);
     }
 
     pub fn clear_soundfont(mut self: Pin<&mut Self>) {
@@ -659,8 +1007,13 @@ impl qobject::AppController {
         self.as_mut().set_soundfont_path(QString::default());
         let engine = self.as_ref().rust().decoder_settings.midi_engine();
         let sc55_rom_path = self.as_ref().rust().decoder_settings.sc55_rom_path();
-        self.as_mut()
-            .set_midi_status(qstring(midi_status(engine, None, sc55_rom_path.as_deref())));
+        let mt32_rom_path = self.as_ref().rust().decoder_settings.mt32_rom_path();
+        self.as_mut().set_midi_status(qstring(midi_status(
+            engine,
+            None,
+            sc55_rom_path.as_deref(),
+            mt32_rom_path.as_deref(),
+        )));
         self.as_mut().set_status(qstring("MIDI SoundFont cleared"));
     }
 
@@ -700,13 +1053,33 @@ impl qobject::AppController {
             .set_sc55_rom_path(qstring(path.to_string_lossy()));
         let engine = self.as_ref().rust().decoder_settings.midi_engine();
         let soundfont_path = self.as_ref().rust().decoder_settings.soundfont_path();
+        let mt32_rom_path = self.as_ref().rust().decoder_settings.mt32_rom_path();
         self.as_mut().set_midi_status(qstring(midi_status(
             engine,
             soundfont_path.as_deref(),
             Some(&path),
+            mt32_rom_path.as_deref(),
         )));
         self.as_mut()
             .set_status(qstring("SC-55 ROM directory updated"));
+    }
+
+    pub fn choose_sc55_rom_folder(mut self: Pin<&mut Self>) {
+        let initial_directory = self
+            .as_ref()
+            .rust()
+            .decoder_settings
+            .sc55_rom_path()
+            .unwrap_or_else(|| self.as_ref().rust().directory.clone());
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Choose the folder containing your Roland ROMs")
+            .set_directory(initial_directory)
+            .pick_folder()
+        else {
+            return;
+        };
+        let url = QUrl::from_local_file(&qstring(path.to_string_lossy()));
+        self.as_mut().set_sc55_rom_directory(url);
     }
 
     pub fn clear_sc55_rom_directory(mut self: Pin<&mut Self>) {
@@ -721,13 +1094,103 @@ impl qobject::AppController {
         self.as_mut().set_sc55_rom_path(QString::default());
         let engine = self.as_ref().rust().decoder_settings.midi_engine();
         let soundfont_path = self.as_ref().rust().decoder_settings.soundfont_path();
+        let mt32_rom_path = self.as_ref().rust().decoder_settings.mt32_rom_path();
         self.as_mut().set_midi_status(qstring(midi_status(
             engine,
             soundfont_path.as_deref(),
             None,
+            mt32_rom_path.as_deref(),
         )));
         self.as_mut()
             .set_status(qstring("SC-55 ROM directory cleared"));
+    }
+
+    pub fn set_mt32_rom_directory(mut self: Pin<&mut Self>, url: QUrl) {
+        let Some(local_directory) = url.to_local_file() else {
+            self.as_mut()
+                .set_midi_status(qstring("Only a local MT-32 ROM directory can be selected"));
+            return;
+        };
+        let path = PathBuf::from(local_directory.to_string());
+        let path = match std::fs::canonicalize(&path) {
+            Ok(path) if path.is_dir() => path,
+            Ok(path) => {
+                self.as_mut().set_midi_status(qstring(format!(
+                    "MT-32 ROM path is not a directory: {}",
+                    path.display()
+                )));
+                return;
+            }
+            Err(error) => {
+                self.as_mut().set_midi_status(qstring(format!(
+                    "Opening MT-32 ROM directory {}: {error}",
+                    path.display()
+                )));
+                return;
+            }
+        };
+        if let Err(error) = AppSettings::save_mt32_rom_path(Some(&path)) {
+            self.as_mut().set_midi_status(qstring(error));
+            return;
+        }
+        self.as_ref()
+            .rust()
+            .decoder_settings
+            .set_mt32_rom_path(Some(path.clone()));
+        self.as_mut()
+            .set_mt32_rom_path(qstring(path.to_string_lossy()));
+        let engine = self.as_ref().rust().decoder_settings.midi_engine();
+        let soundfont_path = self.as_ref().rust().decoder_settings.soundfont_path();
+        let sc55_rom_path = self.as_ref().rust().decoder_settings.sc55_rom_path();
+        self.as_mut().set_midi_status(qstring(midi_status(
+            engine,
+            soundfont_path.as_deref(),
+            sc55_rom_path.as_deref(),
+            Some(&path),
+        )));
+        self.as_mut()
+            .set_status(qstring("MT-32 ROM directory updated"));
+    }
+
+    pub fn choose_mt32_rom_folder(mut self: Pin<&mut Self>) {
+        let initial_directory = self
+            .as_ref()
+            .rust()
+            .decoder_settings
+            .mt32_rom_path()
+            .unwrap_or_else(|| self.as_ref().rust().directory.clone());
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Choose the folder containing your MT-32 or CM-32L ROMs")
+            .set_directory(initial_directory)
+            .pick_folder()
+        else {
+            return;
+        };
+        let url = QUrl::from_local_file(&qstring(path.to_string_lossy()));
+        self.as_mut().set_mt32_rom_directory(url);
+    }
+
+    pub fn clear_mt32_rom_directory(mut self: Pin<&mut Self>) {
+        if let Err(error) = AppSettings::save_mt32_rom_path(None) {
+            self.as_mut().set_midi_status(qstring(error));
+            return;
+        }
+        self.as_ref()
+            .rust()
+            .decoder_settings
+            .set_mt32_rom_path(None);
+        self.as_mut().set_mt32_rom_path(QString::default());
+        let engine = self.as_ref().rust().decoder_settings.midi_engine();
+        let soundfont_path = self.as_ref().rust().decoder_settings.soundfont_path();
+        let sc55_rom_path = self.as_ref().rust().decoder_settings.sc55_rom_path();
+        self.as_mut().set_midi_status(qstring(midi_status(
+            engine,
+            soundfont_path.as_deref(),
+            sc55_rom_path.as_deref(),
+            None,
+        )));
+        self.as_mut()
+            .set_status(qstring("MT-32 ROM directory cleared"));
     }
 
     pub fn select_midi_engine(mut self: Pin<&mut Self>, engine: QString) {
@@ -747,18 +1210,56 @@ impl qobject::AppController {
             .set_midi_engine(engine);
         let soundfont_path = self.as_ref().rust().decoder_settings.soundfont_path();
         let sc55_rom_path = self.as_ref().rust().decoder_settings.sc55_rom_path();
+        let mt32_rom_path = self.as_ref().rust().decoder_settings.mt32_rom_path();
         self.as_mut()
             .set_midi_engine(qstring(engine.setting_value()));
         self.as_mut().set_midi_status(qstring(midi_status(
             engine,
             soundfont_path.as_deref(),
             sc55_rom_path.as_deref(),
+            mt32_rom_path.as_deref(),
         )));
         self.as_mut().set_status(qstring(match engine {
             MidiEngine::RustySynth => "MIDI engine changed to RustySynth SoundFont",
             MidiEngine::Opl3Windows => "MIDI engine changed to OPL3Windows",
             MidiEngine::Sc55 => "MIDI engine changed to Nuked SC-55",
+            MidiEngine::Mt32 => "MIDI engine changed to Munt MT-32/CM-32L",
         }));
+    }
+
+    pub fn select_opening_files_behavior(mut self: Pin<&mut Self>, behavior: QString) {
+        let value = behavior.to_string();
+        let Some(behavior) = OpeningFilesBehavior::from_setting(&value) else {
+            self.as_mut()
+                .set_status(qstring(format!("Unknown file opening behavior: {value}")));
+            return;
+        };
+        if let Err(error) = AppSettings::save_opening_files_behavior(behavior) {
+            self.as_mut().set_status(qstring(error));
+            return;
+        }
+        self.as_mut()
+            .set_opening_files_behavior(qstring(behavior.setting_value()));
+        self.as_mut().set_status(qstring(match behavior {
+            OpeningFilesBehavior::Add => "New files will be added to the playlist",
+            OpeningFilesBehavior::Replace => "New files will replace the playlist",
+        }));
+    }
+
+    pub fn set_folder_cue_mode(mut self: Pin<&mut Self>, enabled: bool) {
+        if let Err(error) = AppSettings::save_read_cue_sheets_in_folders(enabled) {
+            self.as_mut().set_status(qstring(error));
+            return;
+        }
+        self.as_mut().set_read_cue_sheets_in_folders(enabled);
+    }
+
+    pub fn set_folder_playlist_mode(mut self: Pin<&mut Self>, enabled: bool) {
+        if let Err(error) = AppSettings::save_read_playlists_in_folders(enabled) {
+            self.as_mut().set_status(qstring(error));
+            return;
+        }
+        self.as_mut().set_read_playlists_in_folders(enabled);
     }
 
     fn rebuild_playlist(mut self: Pin<&mut Self>) {
@@ -910,6 +1411,10 @@ impl qobject::AppController {
             return;
         };
         if !path.is_dir() {
+            return;
+        }
+        if let Err(error) = AppSettings::save_music_directory(&path) {
+            self.as_mut().set_status(qstring(error));
             return;
         }
         self.as_mut().rust_mut().directory = path.clone();
