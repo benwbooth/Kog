@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*"
+           Name="Kog"
+           Language="1033"
+           Version="$(var.Version)"
+           Manufacturer="Kog contributors"
+           UpgradeCode="30F1494B-7E93-4EF6-9A44-833DCC6A4B31">
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" Platform="x64" />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Kog is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+    <Feature Id="Complete" Title="Kog" Level="1">
+      <ComponentGroupRef Id="KogFiles" />
+    </Feature>
+  </Product>
+  <Fragment>
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLFOLDER" Name="Kog" />
+      </Directory>
+    </Directory>
+  </Fragment>
+</Wix>

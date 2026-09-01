@@ -1,0 +1,80 @@
+app-id: org.kog.player
+runtime: org.kde.Platform
+runtime-version: "6.10"
+sdk: org.kde.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: kog
+
+finish-args:
+  - --share=ipc
+  - --share=network
+  - --socket=fallback-x11
+  - --socket=wayland
+  - --socket=pulseaudio
+  - --device=dri
+  - --filesystem=home:ro
+  - --filesystem=/media:ro
+  - --filesystem=/run/media:ro
+
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    CARGO_HOME: /run/build/kog/cargo
+
+modules:
+  - name: libarchive
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DBUILD_SHARED_LIBS=ON
+      - -DENABLE_TEST=OFF
+      - -DENABLE_TAR=OFF
+      - -DENABLE_CPIO=OFF
+      - -DENABLE_CAT=OFF
+      - -DENABLE_UNZIP=OFF
+    cleanup:
+      - /include
+      - /lib/cmake
+      - /lib/pkgconfig
+    sources:
+      - type: git
+        url: https://github.com/libarchive/libarchive.git
+        commit: 27cbc7827172698143e440801fc0ba39ccb4f1f5
+
+  - name: ffmpeg
+    buildsystem: simple
+    build-commands:
+      - >-
+        ./configure --prefix=/app --disable-static --enable-shared
+        --disable-programs --disable-doc --disable-debug --disable-avdevice
+        --disable-postproc --disable-swscale
+      - make -j${FLATPAK_BUILDER_N_JOBS}
+      - make install
+    cleanup:
+      - /include
+      - /lib/pkgconfig
+      - /share/ffmpeg/examples
+    sources:
+      - type: archive
+        url: https://ffmpeg.org/releases/ffmpeg-9.0.1.tar.xz
+        sha256: cf38e0e28c7e5605942c4a77755349b0145804a397af37eb1fb4c77cb237f635
+
+  - name: kog
+    buildsystem: simple
+    build-commands:
+      - export QMAKE="$(command -v qmake6 || command -v qmake)"; cargo build --release --locked --offline
+      - install -Dm755 target/release/kog /app/bin/kog
+      - >-
+        for helper in kog-sfm-helper kog-psf-helper kog-psf2-helper
+        kog-2sf-helper kog-snsf-helper kog-syntrax-helper kog-sc55-helper;
+        do path="$(find target/release/build -type f -path "*/bin/$helper" -print -quit)";
+        test -n "$path"; install -Dm755 "$path" "/app/bin/$helper"; done
+      - install -Dm644 packaging/linux/org.kog.player.desktop /app/share/applications/org.kog.player.desktop
+      - install -Dm644 packaging/linux/org.kog.player.metainfo.xml /app/share/metainfo/org.kog.player.metainfo.xml
+      - install -Dm644 qml/icons/kog.svg /app/share/icons/hicolor/scalable/apps/org.kog.player.svg
+      - install -Dm644 LICENSE /app/share/licenses/org.kog.player/LICENSE
+    sources:
+      - type: dir
+        path: ../..
+      - cargo-sources.json

@@ -1,0 +1,18 @@
+cask "kog" do
+  version "@VERSION@"
+
+  on_arm do
+    sha256 "@ARM_SHA@"
+    url "https://github.com/benwbooth/Kog/releases/download/@TAG@/Kog-#{version}-macos-arm64.dmg"
+  end
+  on_intel do
+    sha256 "@INTEL_SHA@"
+    url "https://github.com/benwbooth/Kog/releases/download/@TAG@/Kog-#{version}-macos-x86_64.dmg"
+  end
+
+  name "Kog"
+  desc "Format-comprehensive local music player"
+  homepage "https://github.com/benwbooth/Kog"
+
+  app "Kog.app"
+end

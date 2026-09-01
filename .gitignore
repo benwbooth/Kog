@@ -1,4 +1,6 @@
 /target/
+/dist/
+/.flatpak-builder/
 /.direnv/
 /.idea/
 /.vscode/

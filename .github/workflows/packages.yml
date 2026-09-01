@@ -1,0 +1,273 @@
+name: Cross-platform packages
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: packages-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux-appimage:
+    name: Linux AppImage and portable bundle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang cmake curl file libarchive-dev libasound2-dev \
+            libavcodec-dev libavformat-dev libavutil-dev libfuse2t64 \
+            libqt6svg6-dev libswresample-dev ninja-build patchelf pkg-config \
+            qt6-base-dev qt6-declarative-dev qt6-tools-dev qt6-tools-dev-tools \
+            qml6-module-qt-labs-platform qml6-module-qtqml-models \
+            qml6-module-qtquick qml6-module-qtquick-controls \
+            qml6-module-qtquick-layouts qml6-module-qtquick-templates \
+            qml6-module-qtquick-window zlib1g-dev
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-linux-${{ hashFiles('Cargo.lock') }}
+
+      - name: Build release binary
+        env:
+          QMAKE: /usr/bin/qmake6
+        run: cargo build --release --locked
+
+      - name: Build AppImage and portable AppDir
+        env:
+          QMAKE: /usr/bin/qmake6
+        run: packaging/linux/package-appimage.sh
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: kog-linux-appimage
+          if-no-files-found: error
+          path: |
+            dist/linux/Kog-*.AppImage
+            dist/linux/Kog-*-portable.tar.gz
+
+  linux-flatpak:
+    name: Linux Flatpak repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Install Flatpak tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends flatpak flatpak-builder zstd
+          flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+
+      - uses: astral-sh/setup-uv@v7
+
+      - name: Generate locked Cargo sources
+        run: |
+          curl --fail --location --retry 3 \
+            https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/1fc32195e3e60fe5c97f0af646dec7a99df5962b/cargo/flatpak-cargo-generator.py \
+            --output /tmp/flatpak-cargo-generator.py
+          uv run /tmp/flatpak-cargo-generator.py Cargo.lock \
+            --output packaging/linux/cargo-sources.json
+          git diff --exit-code -- packaging/linux/cargo-sources.json
+
+      - name: Install KDE SDK
+        run: |
+          flatpak install --user --noninteractive -y flathub \
+            org.kde.Platform//6.10 org.kde.Sdk//6.10 \
+            org.freedesktop.Sdk.Extension.rust-stable//25.08
+
+      - name: Build Flatpak and OSTree repository
+        run: |
+          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)"
+          mkdir -p dist/flatpak/repo
+          flatpak-builder --user --disable-rofiles-fuse --force-clean \
+            --repo=dist/flatpak/repo flatpak-build \
+            packaging/linux/org.kog.player.yml
+          flatpak build-bundle dist/flatpak/repo \
+            "dist/flatpak/Kog-$version-linux-x86_64.flatpak" org.kog.player
+          tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
+            -C dist/flatpak --zstd \
+            -cf "dist/flatpak/Kog-$version-linux-x86_64-flatpak-repo.tar.zst" repo
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: kog-linux-flatpak
+          if-no-files-found: error
+          path: |
+            dist/flatpak/Kog-*.flatpak
+            dist/flatpak/Kog-*-flatpak-repo.tar.zst
+
+  windows:
+    name: Windows EXE and MSI
+    runs-on: windows-2025
+    timeout-minutes: 240
+    env:
+      VCPKG_DEFAULT_TRIPLET: x64-windows
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.*"
+          arch: win64_msvc2022_64
+          modules: qtsvg
+          cache: true
+
+      - name: Install native dependencies
+        shell: pwsh
+        run: |
+          choco install pkgconfiglite -y --no-progress
+          choco install wixtoolset --version=3.14.1 -y --no-progress
+          & "$env:VCPKG_ROOT\vcpkg.exe" install `
+            "ffmpeg[avcodec,avformat,swresample]:x64-windows" `
+            "libarchive:x64-windows" "zlib:x64-windows"
+          "PKG_CONFIG_PATH=$env:VCPKG_ROOT\installed\x64-windows\lib\pkgconfig" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "CMAKE_PREFIX_PATH=$env:QT_ROOT_DIR;$env:VCPKG_ROOT\installed\x64-windows" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Install Rust
+        shell: pwsh
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-windows-${{ hashFiles('Cargo.lock') }}
+
+      - name: Build release binary
+        shell: pwsh
+        run: cargo build --release --locked
+
+      - name: Build portable EXE bundle and MSI
+        shell: pwsh
+        run: packaging/windows/package.ps1
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: kog-windows
+          if-no-files-found: error
+          path: |
+            dist/windows/Kog-*-portable.zip
+            dist/windows/Kog-*.msi
+
+  macos:
+    name: macOS DMG (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.*"
+          modules: qtsvg
+          cache: true
+
+      - name: Install native dependencies
+        run: brew install cmake dylibbundler ffmpeg libarchive librsvg ninja pkg-config zlib
+
+      - name: Configure dependency paths
+        run: |
+          echo "PKG_CONFIG_PATH=$(brew --prefix ffmpeg)/lib/pkgconfig:$(brew --prefix libarchive)/lib/pkgconfig:$(brew --prefix zlib)/lib/pkgconfig" >> "$GITHUB_ENV"
+          echo "CMAKE_PREFIX_PATH=$QT_ROOT_DIR;$(brew --prefix ffmpeg);$(brew --prefix libarchive);$(brew --prefix zlib)" >> "$GITHUB_ENV"
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-macos-${{ matrix.arch }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Build application DMG
+        run: packaging/macos/package.sh
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: kog-macos-${{ matrix.arch }}
+          if-no-files-found: error
+          path: dist/macos/Kog-*.dmg
+
+  release:
+    name: Publish tagged release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux-appimage, linux-flatpak, windows, macos]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: kog-*
+          path: dist/release
+          merge-multiple: true
+
+      - name: Generate Homebrew cask
+        run: |
+          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)"
+          test "$GITHUB_REF_NAME" = "v$version"
+          arm_dmg="$(find dist/release -name 'Kog-*-macos-arm64.dmg' -print -quit)"
+          intel_dmg="$(find dist/release -name 'Kog-*-macos-x86_64.dmg' -print -quit)"
+          test -n "$arm_dmg" && test -n "$intel_dmg"
+          packaging/macos/render-cask.sh "$GITHUB_REF_NAME" \
+            "$arm_dmg" "$intel_dmg" dist/release/kog.rb
+
+      - name: Create GitHub release and upload packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || \
+            gh release create "$GITHUB_REF_NAME" --verify-tag \
+              --title "Kog ${GITHUB_REF_NAME#v}" --generate-notes
+          find dist/release -maxdepth 1 -type f -print0 | \
+            xargs -0 gh release upload "$GITHUB_REF_NAME" --clobber

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>org.kog.player</id>
+  <name>Kog</name>
+  <summary>Play conventional audio, MIDI, chiptunes, trackers, and game music</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <description>
+    <p>Kog is a cross-platform local music player with a Qt Quick interface and broad format support, including conventional audio, MIDI synthesis, tracker modules, chiptunes, and game-audio formats.</p>
+    <p>Roland MT-32 and SC-55 emulation is supported with compatible user-supplied ROMs. Kog does not distribute proprietary ROM data.</p>
+  </description>
+  <launchable type="desktop-id">org.kog.player.desktop</launchable>
+  <url type="homepage">https://github.com/benwbooth/Kog</url>
+  <url type="bugtracker">https://github.com/benwbooth/Kog/issues</url>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-09-01"/>
+  </releases>
+</component>

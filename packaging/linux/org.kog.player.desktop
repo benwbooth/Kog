@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Kog
+GenericName=Music Player
+Comment=Format-comprehensive local music player
+Exec=kog %U
+Icon=org.kog.player
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+StartupNotify=true
+StartupWMClass=Kog
+MimeType=audio/mpeg;audio/flac;audio/x-wav;audio/ogg;audio/x-midi;audio/x-mod;application/x-mpegURL;application/vnd.apple.mpegurl;
