@@ -28,6 +28,25 @@ pub struct DecoderCapabilities {
     pub companion_files: bool,
 }
 
+impl DecoderCapabilities {
+    pub fn summary(self) -> String {
+        let mut capabilities = Vec::new();
+        if self.seek {
+            capabilities.push("seek");
+        }
+        if self.subsongs {
+            capabilities.push("subsongs");
+        }
+        if self.loop_metadata {
+            capabilities.push("loops");
+        }
+        if self.companion_files {
+            capabilities.push("companion files");
+        }
+        capabilities.join(", ")
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct StreamProperties {
     pub duration: Option<Duration>,
@@ -139,20 +158,7 @@ pub struct SelectedBackend {
 
 impl SelectedBackend {
     pub fn capability_summary(self) -> String {
-        let mut capabilities = Vec::new();
-        if self.capabilities.seek {
-            capabilities.push("seek");
-        }
-        if self.capabilities.subsongs {
-            capabilities.push("subsongs");
-        }
-        if self.capabilities.loop_metadata {
-            capabilities.push("loops");
-        }
-        if self.capabilities.companion_files {
-            capabilities.push("companion files");
-        }
-        capabilities.join(", ")
+        self.capabilities.summary()
     }
 }
 
@@ -167,6 +173,18 @@ pub trait DecoderBackend: Send + Sync {
     fn capabilities(&self) -> DecoderCapabilities;
     fn probe(&self, source: &PlaybackSource) -> Result<StreamProperties, String>;
     fn append(&self, source: &PlaybackSource, player: &Player) -> Result<(), String>;
+
+    /// File extensions this backend can advertise in user-facing format lists.
+    ///
+    /// Most backends use a static allow-list. Native libraries whose accepted
+    /// formats are discovered at runtime override this so the UI cannot drift
+    /// from the library actually bundled into the current build.
+    fn advertised_extensions(&self) -> Vec<String> {
+        self.extensions()
+            .iter()
+            .map(|extension| (*extension).to_owned())
+            .collect()
+    }
 
     fn subsong_count(&self, _path: &Path) -> Result<Option<u32>, String> {
         Ok(None)
@@ -360,6 +378,54 @@ impl DecoderRegistry {
         crate::playlist::Playlist::is_path(path)
             || crate::archive::is_path(path)
             || self.select(path).is_some()
+    }
+
+    pub fn supported_formats_json(&self) -> String {
+        let mut groups = Vec::new();
+        let mut unique_extensions = std::collections::BTreeSet::new();
+
+        let mut add_group = |name: &str, detail: &str, extensions: Vec<String>| {
+            let mut extensions = extensions
+                .into_iter()
+                .map(|extension| extension.trim_start_matches('.').to_ascii_lowercase())
+                .filter(|extension| !extension.is_empty())
+                .collect::<Vec<_>>();
+            extensions.sort_unstable();
+            extensions.dedup();
+            unique_extensions.extend(extensions.iter().cloned());
+            groups.push(serde_json::json!({
+                "name": name,
+                "detail": detail,
+                "extensions": extensions,
+            }));
+        };
+
+        add_group(
+            "Playlists",
+            "M3U, M3U8, and PLS playlists; HTTP(S) streams are also supported",
+            crate::playlist::Playlist::supported_extensions()
+                .iter()
+                .map(|extension| (*extension).to_owned())
+                .collect(),
+        );
+        add_group(
+            "Archives",
+            "Archives are expanded in process and scanned for playable entries",
+            crate::archive::supported_extensions(),
+        );
+        for backend in &self.backends {
+            add_group(
+                backend.display_name(),
+                &backend.capabilities().summary(),
+                backend.advertised_extensions(),
+            );
+        }
+
+        serde_json::json!({
+            "uniqueExtensionCount": unique_extensions.len(),
+            "groups": groups,
+        })
+        .to_string()
     }
 
     fn expand_local(
@@ -1828,6 +1894,43 @@ mod tests {
     use std::io::Write;
 
     use super::*;
+
+    #[test]
+    fn supported_format_catalog_is_registry_driven_and_complete() {
+        let registry = DecoderRegistry::default();
+        let catalog: serde_json::Value = serde_json::from_str(&registry.supported_formats_json())
+            .expect("supported-format catalog JSON");
+        let groups = catalog["groups"].as_array().expect("format groups");
+
+        let extensions_for = |name: &str| {
+            groups
+                .iter()
+                .find(|group| group["name"] == name)
+                .and_then(|group| group["extensions"].as_array())
+                .expect("named format group")
+        };
+        assert!(
+            extensions_for("Playlists")
+                .iter()
+                .any(|value| value == "m3u8")
+        );
+        assert!(
+            extensions_for("Archives")
+                .iter()
+                .any(|value| value == "vgm7z")
+        );
+        assert!(
+            extensions_for("AdPlug (Cog pin) + Nuked OPL3")
+                .iter()
+                .any(|value| value == "cmf")
+        );
+        assert!(
+            extensions_for("vgmstream r2117 (built-in codecs)")
+                .iter()
+                .any(|value| value == "vag")
+        );
+        assert!(catalog["uniqueExtensionCount"].as_u64().unwrap_or_default() > 700);
+    }
 
     // This 484-byte saw-wave SoundFont is the MinimalSoundFont fixture from
     // TinySoundFont's examples/example1.c. See THIRD_PARTY_NOTICES.md.

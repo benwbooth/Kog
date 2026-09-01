@@ -26,11 +26,26 @@ ApplicationWindow {
     property var selectedRows: []
     property int playlistDropTarget: -1
     property real volumeBeforeMute: 0.75
+    readonly property string selectedQueueState: {
+        appController.playlist_revision
+        return selectedRows.length > 0
+            ? appController.queue_selection_state(selectedRows.join(","))
+            : "none"
+    }
+    readonly property string selectedStopAfterState: {
+        appController.playlist_revision
+        return selectedRows.length > 0
+            ? appController.stop_after_selection_state(selectedRows.join(","))
+            : "none"
+    }
     readonly property bool compactToolbar: width < 980
-    readonly property bool useLightIcons: (0.2126 * palette.window.r
-        + 0.7152 * palette.window.g
-        + 0.0722 * palette.window.b) < 0.5
-
+    readonly property bool useMacWindowControls: Qt.platform.os === "osx"
+    readonly property real baseLuminance: 0.2126 * palette.base.r
+        + 0.7152 * palette.base.g
+        + 0.0722 * palette.base.b
+    readonly property color toolbarSurface: baseLuminance < 0.5
+        ? Qt.lighter(palette.base, 1.35)
+        : palette.window
     component WindowButton: AbstractButton {
         id: windowControl
         required property color buttonColor
@@ -72,6 +87,39 @@ ApplicationWindow {
                 ? root.showNormal()
                 : root.showMaximized()
         }
+    }
+
+    component DesktopWindowButton: ToolButton {
+        id: desktopWindowControl
+
+        required property string themedIconName
+        required property string description
+
+        Layout.preferredWidth: 34
+        Layout.preferredHeight: 34
+        icon.name: themedIconName
+        icon.color: root.palette.text
+        icon.width: 16
+        icon.height: 16
+        display: AbstractButton.IconOnly
+        hoverEnabled: true
+        palette.window: root.toolbarSurface
+        palette.button: root.toolbarSurface
+        palette.windowText: root.palette.text
+        palette.buttonText: root.palette.text
+        Accessible.name: description
+        ToolTip.visible: hovered
+        ToolTip.delay: 700
+        ToolTip.text: description
+    }
+
+    component ToolbarButton: CogButton {
+        iconBackground: root.toolbarSurface
+        forceLightIcon: root.baseLuminance < 0.5
+        palette.window: root.toolbarSurface
+        palette.button: root.toolbarSurface
+        palette.windowText: root.palette.text
+        palette.buttonText: root.palette.text
     }
 
     component ResizeHandle: MouseArea {
@@ -175,17 +223,6 @@ ApplicationWindow {
             return contentPosition <= 0 ? 0 : appController.playlist_count
         const item = playlistView.itemAtIndex(row)
         return item && contentPosition >= item.y + item.height / 2 ? row + 1 : row
-    }
-
-    function isPlaylistDrag(drag) {
-        return (drag.source && drag.source.playlistDrag)
-            || drag.formats.indexOf("application/x-kog-playlist-rows") !== -1
-    }
-
-    function playlistDragRows(drop) {
-        if (drop.source && drop.source.playlistDrag)
-            return drop.source.dragRows
-        return drop.getDataAsString("application/x-kog-playlist-rows").trim()
     }
 
     function applyMovedSelection(encodedRows) {
@@ -311,6 +348,40 @@ ApplicationWindow {
         onTriggered: tagEditor.openForRows(root.selectedRows)
     }
 
+    Action {
+        id: toggleQueueAction
+        text: root.selectedQueueState === "all"
+            ? qsTr("Remove from Queue")
+            : (root.selectedQueueState === "mixed"
+                ? qsTr("Toggle Queue")
+                : qsTr("Add to Queue"))
+        icon.name: root.selectedQueueState === "all"
+            ? "list-remove"
+            : "list-add"
+        enabled: root.selectedRows.length > 0
+        onTriggered: appController.toggle_queue(root.selectedRows.join(","))
+    }
+
+    Action {
+        id: stopAfterSelectionAction
+        text: root.selectedStopAfterState === "all"
+            ? qsTr("Clear Stop After")
+            : (root.selectedStopAfterState === "mixed"
+                ? qsTr("Toggle Stop After")
+                : qsTr("Stop After Selection"))
+        icon.name: "media-playback-stop"
+        enabled: root.selectedRows.length > 0
+        onTriggered: appController.toggle_stop_after(root.selectedRows.join(","))
+    }
+
+    Action {
+        id: clearQueueAction
+        text: qsTr("Clear Queue")
+        icon.name: "edit-clear-list"
+        enabled: appController.queue_count > 0
+        onTriggered: appController.clear_queue()
+    }
+
     Menu {
         id: playlistContextMenu
         MenuItem {
@@ -319,6 +390,8 @@ ApplicationWindow {
             enabled: root.selectedRow >= 0
             onTriggered: appController.play_index(root.selectedRow)
         }
+        MenuItem { action: toggleQueueAction }
+        MenuItem { action: stopAfterSelectionAction }
         MenuItem { action: removeSelectedAction; icon.name: "edit-delete" }
         MenuSeparator {}
         MenuItem { action: saveSelectionAction }
@@ -403,6 +476,68 @@ ApplicationWindow {
             MenuSeparator {}
             Action { text: qsTr("Previous"); icon.name: "media-skip-backward"; shortcut: "Ctrl+Left"; onTriggered: appController.previous() }
             Action { text: qsTr("Next"); icon.name: "media-skip-forward"; shortcut: "Ctrl+Right"; onTriggered: appController.next() }
+            MenuSeparator {}
+            Menu {
+                title: qsTr("Shuffle")
+                icon.name: "media-playlist-shuffle"
+                Action {
+                    text: qsTr("Off")
+                    icon.name: "media-playlist-shuffle"
+                    checkable: true
+                    checked: appController.shuffle_mode === "off"
+                    onTriggered: appController.select_shuffle_mode("off")
+                }
+                Action {
+                    text: qsTr("Albums")
+                    icon.name: "media-playlist-shuffle"
+                    checkable: true
+                    checked: appController.shuffle_mode === "albums"
+                    onTriggered: appController.select_shuffle_mode("albums")
+                }
+                Action {
+                    text: qsTr("All Tracks")
+                    icon.name: "media-playlist-shuffle"
+                    checkable: true
+                    checked: appController.shuffle_mode === "all"
+                    onTriggered: appController.select_shuffle_mode("all")
+                }
+            }
+            Menu {
+                title: qsTr("Repeat")
+                icon.name: "media-playlist-repeat"
+                Action {
+                    text: qsTr("Off")
+                    icon.name: "media-playlist-repeat"
+                    checkable: true
+                    checked: appController.repeat_mode === "off"
+                    onTriggered: appController.select_repeat_mode("off")
+                }
+                Action {
+                    text: qsTr("One Track")
+                    icon.name: "media-playlist-repeat"
+                    checkable: true
+                    checked: appController.repeat_mode === "one"
+                    onTriggered: appController.select_repeat_mode("one")
+                }
+                Action {
+                    text: qsTr("Album")
+                    icon.name: "media-playlist-repeat"
+                    checkable: true
+                    checked: appController.repeat_mode === "album"
+                    onTriggered: appController.select_repeat_mode("album")
+                }
+                Action {
+                    text: qsTr("All Tracks")
+                    icon.name: "media-playlist-repeat"
+                    checkable: true
+                    checked: appController.repeat_mode === "all"
+                    onTriggered: appController.select_repeat_mode("all")
+                }
+            }
+            MenuSeparator {}
+            MenuItem { action: toggleQueueAction }
+            MenuItem { action: stopAfterSelectionAction }
+            MenuItem { action: clearQueueAction }
         }
 
         MenuSeparator {}
@@ -411,14 +546,34 @@ ApplicationWindow {
     }
 
     header: ToolBar {
+        id: mainToolbar
+
         implicitHeight: 48
         padding: 5
+        palette.window: root.toolbarSurface
+        palette.button: root.toolbarSurface
+        palette.windowText: root.palette.text
+        palette.buttonText: root.palette.text
+
+        background: Rectangle {
+            color: root.toolbarSurface
+            border.width: 0
+
+            Rectangle {
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                height: 1
+                color: root.palette.mid
+            }
+        }
 
         RowLayout {
             anchors.fill: parent
             spacing: 2
 
             RowLayout {
+                visible: root.useMacWindowControls
                 Layout.leftMargin: 5
                 Layout.rightMargin: 6
                 spacing: 7
@@ -447,7 +602,7 @@ ApplicationWindow {
                 }
             }
 
-            CogButton {
+            ToolbarButton {
                 id: hamburgerButton
                 Layout.preferredWidth: 34
                 Layout.preferredHeight: 34
@@ -456,7 +611,17 @@ ApplicationWindow {
                 toolTip: hamburgerMenu.visible ? "" : qsTr("Kog menu")
                 onClicked: hamburgerMenu.popup(hamburgerButton, 0, hamburgerButton.height)
             }
-            CogButton {
+            ToolbarButton {
+                Layout.preferredWidth: 34
+                Layout.preferredHeight: 34
+                glyph: root.sidebarVisible ? "«" : "»"
+                iconName: "view-list-tree"
+                checkable: true
+                checked: root.sidebarVisible
+                toolTip: root.sidebarVisible ? qsTr("Hide File Tree") : qsTr("Show File Tree")
+                onToggled: root.sidebarVisible = checked
+            }
+            ToolbarButton {
                 Layout.preferredWidth: 34
                 Layout.preferredHeight: 34
                 glyph: "i"
@@ -472,6 +637,7 @@ ApplicationWindow {
                     : appController.now_title
                 font.pixelSize: 14
                 font.bold: true
+                color: root.palette.text
                 elide: Text.ElideRight
 
                 TitleDragArea { anchors.fill: parent }
@@ -479,7 +645,7 @@ ApplicationWindow {
 
             TitleDragArea { Layout.fillWidth: true; Layout.fillHeight: true }
 
-            CogButton {
+            ToolbarButton {
                 Layout.preferredWidth: 34
                 Layout.preferredHeight: 34
                 glyph: "◀"
@@ -488,7 +654,7 @@ ApplicationWindow {
                 enabled: appController.playlist_count > 0
                 onClicked: appController.previous()
             }
-            CogButton {
+            ToolbarButton {
                 Layout.preferredWidth: 34
                 Layout.preferredHeight: 34
                 glyph: appController.playback_state === "playing" ? "Ⅱ" : "▶"
@@ -499,7 +665,7 @@ ApplicationWindow {
                 enabled: appController.playlist_count > 0
                 onClicked: appController.play_pause()
             }
-            CogButton {
+            ToolbarButton {
                 Layout.preferredWidth: 34
                 Layout.preferredHeight: 34
                 glyph: "▶"
@@ -508,7 +674,7 @@ ApplicationWindow {
                 enabled: appController.playlist_count > 0
                 onClicked: appController.next()
             }
-            CogButton {
+            ToolbarButton {
                 id: volumeButton
                 Layout.preferredWidth: 34
                 Layout.preferredHeight: 34
@@ -547,6 +713,7 @@ ApplicationWindow {
                 Label {
                     anchors.centerIn: parent
                     text: root.timeLabel(appController.position_seconds)
+                    color: root.palette.text
                     font.pixelSize: 12
                 }
             }
@@ -560,40 +727,46 @@ ApplicationWindow {
                 Accessible.name: qsTr("Playback position")
                 onMoved: appController.seek(value)
             }
-            CogButton {
+            ToolbarButton {
                 Layout.preferredWidth: 34
                 Layout.preferredHeight: 34
                 glyph: "⇄"
                 iconName: "media-playlist-shuffle"
-                checkable: true
-                checked: appController.shuffle_enabled
-                toolTip: qsTr("Shuffle")
+                modeActive: appController.shuffle_mode !== "off"
+                badgeText: appController.shuffle_mode === "albums" ? "A"
+                    : (appController.shuffle_mode === "all" ? "•" : "")
+                toolTip: appController.shuffle_mode === "off"
+                    ? qsTr("Shuffle Off — click for Albums")
+                    : (appController.shuffle_mode === "albums"
+                        ? qsTr("Shuffle Albums — click for All Tracks")
+                        : qsTr("Shuffle All Tracks — click to turn off"))
                 enabled: appController.playlist_count > 1
-                onToggled: appController.set_shuffle_mode(checked)
+                opacity: enabled ? (modeActive ? 1 : 0.62) : 0.38
+                onClicked: appController.cycle_shuffle_mode()
             }
-            CogButton {
+            ToolbarButton {
                 Layout.preferredWidth: 34
                 Layout.preferredHeight: 34
                 glyph: "↻"
                 iconName: "media-playlist-repeat"
-                checkable: true
-                checked: appController.repeat_enabled
-                toolTip: qsTr("Repeat playlist")
+                modeActive: appController.repeat_mode !== "off"
+                badgeText: appController.repeat_mode === "one" ? "1"
+                    : (appController.repeat_mode === "album" ? "A"
+                        : (appController.repeat_mode === "all" ? "∞" : ""))
+                toolTip: appController.repeat_mode === "off"
+                    ? qsTr("Repeat Off — click for One Track")
+                    : (appController.repeat_mode === "one"
+                        ? qsTr("Repeat One Track — click for Album")
+                        : (appController.repeat_mode === "album"
+                            ? qsTr("Repeat Album — click for All Tracks")
+                            : qsTr("Repeat All Tracks — click to turn off")))
                 enabled: appController.playlist_count > 0
-                onToggled: appController.set_repeat_mode(checked)
+                opacity: enabled ? (modeActive ? 1 : 0.62) : 0.38
+                onClicked: appController.cycle_repeat_mode()
             }
 
             TitleDragArea { Layout.fillWidth: true; Layout.fillHeight: true }
 
-            CogButton {
-                Layout.preferredWidth: 34
-                Layout.preferredHeight: 34
-                glyph: root.sidebarVisible ? "«" : "»"
-                checkable: true
-                checked: root.sidebarVisible
-                toolTip: root.sidebarVisible ? qsTr("Hide File Tree") : qsTr("Show File Tree")
-                onToggled: root.sidebarVisible = checked
-            }
             TextField {
                 id: searchField
                 Layout.preferredWidth: 165
@@ -610,7 +783,7 @@ ApplicationWindow {
                     root.searchVisible = false
                 }
             }
-            CogButton {
+            ToolbarButton {
                 Layout.preferredWidth: 34
                 Layout.preferredHeight: 34
                 glyph: "⌕"
@@ -622,6 +795,35 @@ ApplicationWindow {
                     root.searchVisible = checked
                     if (!checked)
                         searchField.text = ""
+                }
+            }
+
+            RowLayout {
+                visible: !root.useMacWindowControls
+                Layout.leftMargin: 3
+                Layout.rightMargin: 3
+                spacing: 0
+
+                DesktopWindowButton {
+                    themedIconName: "window-minimize"
+                    description: qsTr("Minimize")
+                    onClicked: root.showMinimized()
+                }
+                DesktopWindowButton {
+                    themedIconName: root.visibility === Window.Maximized
+                        ? "window-restore"
+                        : "window-maximize"
+                    description: root.visibility === Window.Maximized
+                        ? qsTr("Restore")
+                        : qsTr("Maximize")
+                    onClicked: root.visibility === Window.Maximized
+                        ? root.showNormal()
+                        : root.showMaximized()
+                }
+                DesktopWindowButton {
+                    themedIconName: "window-close"
+                    description: qsTr("Close")
+                    onClicked: root.close()
                 }
             }
         }
@@ -737,7 +939,6 @@ ApplicationWindow {
                         // and activating the preceding row after expansion.
                         required property string filePath
                         readonly property string dragPath: filePath
-                        readonly property url dragUrl: fileTreeModel.path_url(dragPath)
                         width: directoryTree.width
                         implicitHeight: 26
                         icon.width: 18
@@ -745,68 +946,72 @@ ApplicationWindow {
                         ToolTip.visible: treePointer.containsMouse
                         ToolTip.delay: 700
                         ToolTip.text: treeDelegate.dragPath
-                        Item {
-                            id: treeDragProxy
-                            width: 1
-                            height: 1
-                            opacity: 0
-                            Drag.active: treePointer.drag.active
-                            Drag.dragType: Drag.Automatic
-                            Drag.keys: ["kog-file-tree-entry"]
-                            Drag.supportedActions: Qt.CopyAction
-                            Drag.proposedAction: Qt.CopyAction
-                            Drag.source: treeDelegate
-                            Drag.mimeData: ({
-                                "text/uri-list": treeDelegate.dragUrl.toString() + "\r\n"
-                            })
-                            Drag.hotSpot.x: 0
-                            Drag.hotSpot.y: 0
-                            Drag.onDragFinished: {
-                                treeDragProxy.x = 0
-                                treeDragProxy.y = 0
-                            }
-                        }
-
                         MouseArea {
                             id: treePointer
+                            property real pressX: 0
+                            property real pressY: 0
+                            property bool manualDragging: false
+
                             anchors.fill: parent
                             z: 2
                             acceptedButtons: Qt.LeftButton
                             hoverEnabled: true
                             preventStealing: true
-                            drag.target: treeDragProxy
-                            drag.axis: Drag.XAndYAxis
-                            drag.threshold: Application.styleHints.startDragDistance
-                            drag.smoothed: false
 
-                            onPressed: {
-                                treeDragProxy.x = mouseX
-                                treeDragProxy.y = mouseY
+                            onPressed: mouse => {
+                                pressX = mouse.x
+                                pressY = mouse.y
+                                manualDragging = false
                                 const index = directoryTree.index(
                                     treeDelegate.row, treeDelegate.column)
                                 directoryTree.selectionModel.setCurrentIndex(
                                     index, ItemSelectionModel.ClearAndSelect)
                             }
+                            onPositionChanged: mouse => {
+                                if ((mouse.buttons & Qt.LeftButton) === 0)
+                                    return
+                                if (!manualDragging
+                                        && (Math.abs(mouse.x - pressX)
+                                            >= Application.styleHints.startDragDistance
+                                            || Math.abs(mouse.y - pressY)
+                                            >= Application.styleHints.startDragDistance))
+                                    manualDragging = true
+                                if (!manualDragging)
+                                    return
+                                const point = mapToItem(playlistView,
+                                    mouse.x, mouse.y)
+                                root.playlistDropTarget = point.x >= 0
+                                        && point.x <= playlistView.width
+                                        && point.y >= 0
+                                        && point.y <= playlistView.height
+                                    ? root.playlistDropIndex(point.y)
+                                    : -1
+                            }
                             onClicked: mouse => {
-                                const indicator = treeDelegate.indicator
-                                if (treeDelegate.hasChildren && indicator
-                                        && mouse.x >= indicator.x
-                                        && mouse.x <= indicator.x + indicator.width)
+                                if (fileTreeModel.is_path_directory(
+                                        treeDelegate.dragPath))
                                     directoryTree.toggleExpanded(treeDelegate.row)
                             }
-                            onDoubleClicked: {
-                                if (fileTreeModel.is_path_directory(treeDelegate.dragPath))
-                                    directoryTree.toggleExpanded(treeDelegate.row)
-                                else
-                                    appController.activate_local_path(treeDelegate.dragPath)
-                            }
-                            onReleased: {
-                                treeDragProxy.x = 0
-                                treeDragProxy.y = 0
+                            onDoubleClicked: appController.activate_local_path(
+                                treeDelegate.dragPath)
+                            onReleased: mouse => {
+                                if (manualDragging) {
+                                    const point = mapToItem(playlistView,
+                                        mouse.x, mouse.y)
+                                    if (point.x >= 0
+                                            && point.x <= playlistView.width
+                                            && point.y >= 0
+                                            && point.y <= playlistView.height)
+                                        appController.add_local_path(
+                                            treeDelegate.dragPath)
+                                    mouse.accepted = true
+                                }
+                                manualDragging = false
+                                root.playlistDropTarget = -1
                             }
                             onCanceled: {
-                                treeDragProxy.x = 0
-                                treeDragProxy.y = 0
+                                manualDragging = false
+                                root.playlistDropTarget = -1
                             }
                         }
                     }
@@ -888,9 +1093,6 @@ ApplicationWindow {
                         theme: root.palette
                         rowIndex: index
                         selected: root.isPlaylistRowSelected(index)
-                        dragRows: root.selectedRows.length > 0
-                            ? root.selectedRows.join(",")
-                            : String(index)
                         onPressed: (row, modifiers, button) => {
                             if (button !== Qt.RightButton
                                     || !root.isPlaylistRowSelected(row))
@@ -908,6 +1110,28 @@ ApplicationWindow {
                             if (!root.isPlaylistRowSelected(row))
                                 root.setPlaylistSelection([row], row, row)
                         }
+                        onDragMoved: (viewX, viewY) => {
+                            root.playlistDropTarget = viewX >= 0
+                                    && viewX <= playlistView.width
+                                    && viewY >= 0
+                                    && viewY <= playlistView.height
+                                ? root.playlistDropIndex(viewY)
+                                : -1
+                        }
+                        onDragFinished: (viewX, viewY) => {
+                            if (viewX >= 0 && viewX <= playlistView.width
+                                    && viewY >= 0
+                                    && viewY <= playlistView.height) {
+                                const target = root.playlistDropTarget >= 0
+                                    ? root.playlistDropTarget
+                                    : root.playlistDropIndex(viewY)
+                                const moved = appController.move_tracks(
+                                    root.selectedRows.join(","), target)
+                                root.applyMovedSelection(moved)
+                            }
+                            root.playlistDropTarget = -1
+                        }
+                        onDragCanceled: root.playlistDropTarget = -1
                     }
 
                     ScrollBar.vertical: ScrollBar {}
@@ -956,39 +1180,18 @@ ApplicationWindow {
                 width: parent.width
                 height: parent.height - y
                 onEntered: drag => {
-                    if (root.isPlaylistDrag(drag))
+                    if (drag.hasUrls
+                            || drag.formats.indexOf("text/uri-list") !== -1)
                         root.playlistDropTarget = root.playlistDropIndex(drag.y)
                 }
                 onPositionChanged: drag => {
-                    if (root.isPlaylistDrag(drag))
+                    if (drag.hasUrls
+                            || drag.formats.indexOf("text/uri-list") !== -1)
                         root.playlistDropTarget = root.playlistDropIndex(drag.y)
                 }
                 onExited: root.playlistDropTarget = -1
                 onDropped: drop => {
-                    if (root.isPlaylistDrag(drop)) {
-                        const dragRows = root.playlistDragRows(drop)
-                        if (dragRows.length === 0)
-                            return
-                        const target = root.playlistDropTarget >= 0
-                            ? root.playlistDropTarget
-                            : root.playlistDropIndex(drop.y)
-                        const moved = appController.move_tracks(
-                            dragRows, target)
-                        root.applyMovedSelection(moved)
-                        root.playlistDropTarget = -1
-                        drop.acceptProposedAction()
-                        return
-                    }
-                    if (drop.source && drop.source.dragUrl) {
-                        if (drop.source.dragPath)
-                            appController.add_local_path(drop.source.dragPath)
-                        else
-                            appController.add_file(drop.source.dragUrl)
-                        drop.acceptProposedAction()
-                        return
-                    }
-                    if (!drop.hasUrls)
-                    {
+                    if (!drop.hasUrls) {
                         if (drop.formats.indexOf("text/uri-list") === -1)
                             return
                         const uriList = drop.getDataAsString("text/uri-list")

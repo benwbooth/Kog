@@ -15,8 +15,10 @@ uses a native artwork picker. Kog uses platform-native file/folder dialogs and
 inherits the active Qt palette and control style, including KDE's
 desktop/Breeze style when available. The milestone also
 has a real conventional-audio playback path with pause, stop, seek, volume,
-automatic track advance, and native output-device enumeration. Kog can follow
-the system default or persist a specific output by stable backend ID and name,
+automatic track advance, Cog's album/all shuffle and one/album/all repeat modes,
+an explicit playback queue, per-track Stop After markers, and native
+output-device enumeration. Kog can follow the system default or persist a
+specific output by stable backend ID and name,
 recover from backend ID changes, refresh the device list, and switch a running
 or paused track while retaining its position. Cog's 31-band graphic equalizer
 is live across the shared output path for every decoder, with the original 22 presets and exact

@@ -39,6 +39,10 @@ impl DecoderBackend for VgmstreamBackend {
         &[]
     }
 
+    fn advertised_extensions(&self) -> Vec<String> {
+        Vgmstream::supported_extensions()
+    }
+
     fn capabilities(&self) -> DecoderCapabilities {
         DecoderCapabilities {
             seek: true,

@@ -38,6 +38,10 @@ impl DecoderBackend for AdPlugBackend {
         &[]
     }
 
+    fn advertised_extensions(&self) -> Vec<String> {
+        AdPlug::supported_extensions()
+    }
+
     fn capabilities(&self) -> DecoderCapabilities {
         DecoderCapabilities {
             seek: true,

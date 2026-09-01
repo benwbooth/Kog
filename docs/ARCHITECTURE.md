@@ -174,6 +174,17 @@ GPL-compatible native engine; Midly merges format-0/1 tracks and schedules
 legacy MIDI messages at exact output frames. Seeking recreates the selected
 synthesizer and deterministically advances it to the requested frame.
 
+Playback ordering is a separate deterministic Rust state machine. It implements
+Cog's persisted shuffle cycle (off, albums, all) and repeat cycle (off, one,
+album, all), including disc/track ordering inside shuffled albums. Automatic
+Repeat One is evaluated before the explicit queue, while manual Next ignores
+Repeat One and consumes the queue, matching Cog's controller. Stop After is an
+entry marker checked only at natural end-of-stream. Queue and Stop After indices
+are remapped across playlist moves/removals, and status-column markers expose
+their state without adding a parallel playlist model. These transient entry
+states will move into session persistence when Kog gains Cog's persisted
+playlist store.
+
 The Lyrics window follows Cog's read-only, resizable scrolling-text surface.
 The current playing track exposes lyrics through CXX-Qt; Lofty maps ID3v2 USLT
 and corresponding container fields into Kog's metadata model, with Cog's

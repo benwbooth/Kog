@@ -32,9 +32,7 @@ unsafe extern "C" {
     fn kog_adplug_render(decoder: *mut NativeAdPlug, output: *mut f32, frames: usize) -> i64;
     fn kog_adplug_seek(decoder: *mut NativeAdPlug, frame: u64) -> i64;
     fn kog_adplug_supports_extension(extension: *const c_char) -> c_int;
-    #[cfg(test)]
     fn kog_adplug_extension_count() -> usize;
-    #[cfg(test)]
     fn kog_adplug_extension(index: usize) -> *const c_char;
     #[cfg(test)]
     fn kog_adplug_version() -> *const c_char;
@@ -141,7 +139,6 @@ impl AdPlug {
         Ok(duration_from_frames(actual, self.sample_rate))
     }
 
-    #[cfg(test)]
     pub fn supported_extensions() -> Vec<String> {
         let count = unsafe { kog_adplug_extension_count() };
         (0..count)

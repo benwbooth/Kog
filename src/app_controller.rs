@@ -37,8 +37,10 @@ pub mod qobject {
         #[qproperty(QString, output_device_id)]
         #[qproperty(QString, output_devices_json)]
         #[qproperty(QString, output_device_status)]
-        #[qproperty(bool, shuffle_enabled)]
-        #[qproperty(bool, repeat_enabled)]
+        #[qproperty(QString, supported_formats_json)]
+        #[qproperty(QString, shuffle_mode)]
+        #[qproperty(QString, repeat_mode)]
+        #[qproperty(i32, queue_count)]
         #[qproperty(QString, total_duration)]
         #[qproperty(QString, directory_path)]
         #[qproperty(QString, soundfont_path)]
@@ -118,9 +120,23 @@ pub mod qobject {
         #[qinvokable]
         fn select_output_device(self: Pin<&mut AppController>, id: QString);
         #[qinvokable]
-        fn set_shuffle_mode(self: Pin<&mut AppController>, enabled: bool);
+        fn cycle_shuffle_mode(self: Pin<&mut AppController>);
         #[qinvokable]
-        fn set_repeat_mode(self: Pin<&mut AppController>, enabled: bool);
+        fn select_shuffle_mode(self: Pin<&mut AppController>, mode: QString);
+        #[qinvokable]
+        fn cycle_repeat_mode(self: Pin<&mut AppController>);
+        #[qinvokable]
+        fn select_repeat_mode(self: Pin<&mut AppController>, mode: QString);
+        #[qinvokable]
+        fn toggle_queue(self: Pin<&mut AppController>, indices: QString);
+        #[qinvokable]
+        fn clear_queue(self: Pin<&mut AppController>);
+        #[qinvokable]
+        fn queue_selection_state(self: &AppController, indices: QString) -> QString;
+        #[qinvokable]
+        fn toggle_stop_after(self: Pin<&mut AppController>, indices: QString);
+        #[qinvokable]
+        fn stop_after_selection_state(self: &AppController, indices: QString) -> QString;
         #[qinvokable]
         fn poll_playback(self: Pin<&mut AppController>);
         #[qinvokable]
@@ -146,6 +162,8 @@ pub mod qobject {
         fn track_metadata_number_at(self: &AppController, index: i32) -> QString;
         #[qinvokable]
         fn track_status_at(self: &AppController, index: i32) -> QString;
+        #[qinvokable]
+        fn track_status_message_at(self: &AppController, index: i32) -> QString;
         #[qinvokable]
         fn track_rating_at(self: &AppController, index: i32) -> QString;
         #[qinvokable]
@@ -217,8 +235,11 @@ use crate::equalizer::{
     EqualizerSettings, apply_preset, preset_for_genre, preset_named, preset_names,
 };
 use crate::playback::{OutputDevice, PlaybackEngine, PlaybackState, available_output_devices};
+use crate::playback_order::{PlaybackOrder, SelectionState};
 use crate::playlist::{Playlist, PlaylistEntry, PlaylistLocation};
-use crate::settings::{AppSettings, MidiEngine, OpeningFilesBehavior, OutputDevicePreference};
+use crate::settings::{
+    AppSettings, MidiEngine, OpeningFilesBehavior, OutputDevicePreference, RepeatMode, ShuffleMode,
+};
 use crate::tag_editor::{artwork_file_json, parse_edits, snapshot_json, write_tags};
 use crate::track::{Track, canonical_path};
 
@@ -270,24 +291,6 @@ fn total_duration_label(duration: Duration) -> String {
     }
     parts.push(quantity(seconds, "second"));
     format!("Total duration: {}", parts.join(" "))
-}
-
-fn shuffled_indices(length: usize, seed: &mut u64) -> Vec<usize> {
-    let mut indices: Vec<_> = (0..length).collect();
-    for upper in (1..length).rev() {
-        // xorshift64* gives the UI shuffle mode a small, dependency-free PRNG.
-        // A zero state is avoided because it is a fixed point for xorshift.
-        if *seed == 0 {
-            *seed = 0x9e37_79b9_7f4a_7c15;
-        }
-        *seed ^= *seed >> 12;
-        *seed ^= *seed << 25;
-        *seed ^= *seed >> 27;
-        let random = seed.wrapping_mul(0x2545_f491_4f6c_dd1d);
-        let selected = (random as usize) % (upper + 1);
-        indices.swap(upper, selected);
-    }
-    indices
 }
 
 fn parse_row_indices(value: &str, row_count: usize) -> Vec<usize> {
@@ -692,8 +695,10 @@ pub struct AppControllerRust {
     output_device_id: QString,
     output_devices_json: QString,
     output_device_status: QString,
-    shuffle_enabled: bool,
-    repeat_enabled: bool,
+    supported_formats_json: QString,
+    shuffle_mode: QString,
+    repeat_mode: QString,
+    queue_count: i32,
     total_duration: QString,
     directory_path: QString,
     soundfont_path: QString,
@@ -713,8 +718,7 @@ pub struct AppControllerRust {
     tracks: Vec<Track>,
     visible_indices: Vec<usize>,
     sort_column: PlaylistSortColumn,
-    shuffle_order: Vec<usize>,
-    shuffle_seed: u64,
+    playback_order: PlaybackOrder,
     filter: String,
     directory: PathBuf,
     decoder_settings: DecoderSettings,
@@ -764,6 +768,8 @@ impl Default for AppControllerRust {
             app_settings.mt32_rom_path.as_deref(),
         ));
         let equalizer_settings = app_settings.equalizer.clone();
+        let shuffle_mode = app_settings.shuffle_mode;
+        let repeat_mode = app_settings.repeat_mode;
         let available_output_devices = available_output_devices();
         let output_devices = available_output_devices.clone().unwrap_or_default();
         let requested_output_device = app_settings.output_device.clone();
@@ -809,6 +815,7 @@ impl Default for AppControllerRust {
             ));
         }
         let decoders = DecoderRegistry::new(decoder_settings.clone());
+        let supported_formats_json = qstring(decoders.supported_formats_json());
         let mut playback = PlaybackEngine::with_equalizer_and_output(
             DecoderRegistry::new(decoder_settings.clone()),
             equalizer_settings.clone(),
@@ -848,8 +855,10 @@ impl Default for AppControllerRust {
                 .unwrap_or_default(),
             output_devices_json: qstring(output_devices_json(&output_devices)),
             output_device_status: qstring(output_device_status),
-            shuffle_enabled: false,
-            repeat_enabled: false,
+            supported_formats_json,
+            shuffle_mode: qstring(shuffle_mode.setting_value()),
+            repeat_mode: qstring(repeat_mode.setting_value()),
+            queue_count: 0,
             total_duration: qstring("Total duration: 0 seconds"),
             directory_path: qstring(directory.to_string_lossy()),
             soundfont_path,
@@ -869,8 +878,11 @@ impl Default for AppControllerRust {
             tracks: Vec::new(),
             visible_indices: Vec::new(),
             sort_column: PlaylistSortColumn::Index,
-            shuffle_order: Vec::new(),
-            shuffle_seed: 0x4b6f_672d_7368_7566 ^ u64::from(std::process::id()),
+            playback_order: PlaybackOrder::new(
+                shuffle_mode,
+                repeat_mode,
+                0x4b6f_672d_7368_7566 ^ u64::from(std::process::id()),
+            ),
             filter: String::new(),
             directory,
             decoder_settings,
@@ -899,6 +911,10 @@ impl Default for AppControllerRust {
             if open_result.added > 0 || open_result.warning.is_some() {
                 controller.status = qstring(add_path_status(&open_result));
             }
+        }
+        {
+            let (playback_order, tracks) = (&mut controller.playback_order, &controller.tracks);
+            playback_order.tracks_changed(tracks, None);
         }
         controller
     }
@@ -996,97 +1012,6 @@ fn midi_status(
 }
 
 impl AppControllerRust {
-    fn rebuild_shuffle_order(&mut self) {
-        self.shuffle_order = shuffled_indices(self.tracks.len(), &mut self.shuffle_seed);
-        let Ok(current) = usize::try_from(self.current_index) else {
-            return;
-        };
-        if let Some(position) = self
-            .shuffle_order
-            .iter()
-            .position(|index| *index == current)
-        {
-            self.shuffle_order.swap(0, position);
-        }
-    }
-
-    fn ensure_shuffle_order(&mut self) {
-        let valid = self.shuffle_order.len() == self.tracks.len()
-            && self
-                .shuffle_order
-                .iter()
-                .all(|index| *index < self.tracks.len());
-        if !valid {
-            self.rebuild_shuffle_order();
-        }
-    }
-
-    fn next_navigation_index(&mut self) -> Option<usize> {
-        let count = self.tracks.len();
-        if count == 0 {
-            return None;
-        }
-        if !self.shuffle_enabled {
-            let current = self.current_index.max(-1);
-            let next = usize::try_from(current + 1).unwrap_or_default();
-            return (next < count)
-                .then_some(next)
-                .or_else(|| self.repeat_enabled.then_some(0));
-        }
-
-        self.ensure_shuffle_order();
-        let current = usize::try_from(self.current_index).ok();
-        let position = current.and_then(|current| {
-            self.shuffle_order
-                .iter()
-                .position(|index| *index == current)
-        });
-        if let Some(next) = position.and_then(|position| self.shuffle_order.get(position + 1)) {
-            return Some(*next);
-        }
-        if position.is_none() {
-            return self.shuffle_order.first().copied();
-        }
-        if !self.repeat_enabled {
-            return None;
-        }
-
-        let previous = current;
-        self.rebuild_shuffle_order();
-        if count > 1 && self.shuffle_order.first().copied() == previous {
-            self.shuffle_order.swap(0, 1);
-        }
-        self.shuffle_order.first().copied()
-    }
-
-    fn previous_navigation_index(&mut self) -> Option<usize> {
-        let count = self.tracks.len();
-        if count == 0 {
-            return None;
-        }
-        if !self.shuffle_enabled {
-            let current = usize::try_from(self.current_index).unwrap_or_default();
-            if current > 0 {
-                return Some(current - 1);
-            }
-            return Some(if self.repeat_enabled { count - 1 } else { 0 });
-        }
-
-        self.ensure_shuffle_order();
-        let current = usize::try_from(self.current_index).ok();
-        let position = current.and_then(|current| {
-            self.shuffle_order
-                .iter()
-                .position(|index| *index == current)
-        });
-        match position {
-            Some(position) if position > 0 => self.shuffle_order.get(position - 1).copied(),
-            Some(_) if self.repeat_enabled => self.shuffle_order.last().copied(),
-            Some(_) => current,
-            None => self.shuffle_order.first().copied(),
-        }
-    }
-
     fn add_path(&mut self, path: PathBuf) -> Result<AddPathResult, String> {
         let path = canonical_path(&path)?;
         if !path.is_file() {
@@ -1216,12 +1141,26 @@ fn visible_source_index(model: &qobject::AppController, index: i32) -> Option<us
 }
 
 fn selected_sources(model: &qobject::AppController, indices: &str) -> Vec<PlaybackSource> {
-    parse_row_indices(indices, model.rust().visible_indices.len())
+    selected_source_indices(model, indices)
         .into_iter()
-        .filter_map(|row| model.rust().visible_indices.get(row))
-        .filter_map(|source_index| model.rust().tracks.get(*source_index))
+        .filter_map(|source_index| model.rust().tracks.get(source_index))
         .map(|track| track.source.clone())
         .collect()
+}
+
+fn selected_source_indices(model: &qobject::AppController, indices: &str) -> Vec<usize> {
+    parse_row_indices(indices, model.rust().visible_indices.len())
+        .into_iter()
+        .filter_map(|row| model.rust().visible_indices.get(row).copied())
+        .collect()
+}
+
+const fn selection_state_name(state: SelectionState) -> &'static str {
+    match state {
+        SelectionState::None => "none",
+        SelectionState::Mixed => "mixed",
+        SelectionState::All => "all",
+    }
 }
 
 fn json_result(result: Result<serde_json::Value, String>) -> QString {
@@ -1437,6 +1376,7 @@ impl qobject::AppController {
                 .set_status(qstring("The URL is already in the playlist"));
             return;
         }
+        self.as_mut().refresh_playback_order();
         self.as_mut().rebuild_playlist();
         self.as_mut().set_status(qstring(add_path_status(&result)));
         if behavior.starts_playback() {
@@ -1465,41 +1405,40 @@ impl qobject::AppController {
         source_indices.sort_unstable();
         source_indices.dedup();
 
-        let current_source = {
-            let model = self.as_ref();
-            usize::try_from(model.rust().current_index)
-                .ok()
-                .and_then(|index| model.rust().tracks.get(index))
-                .map(|track| track.source.clone())
-        };
-        let removed_current = usize::try_from(self.as_ref().rust().current_index)
-            .ok()
-            .is_some_and(|index| source_indices.binary_search(&index).is_ok());
+        let old_count = self.as_ref().rust().tracks.len();
+        let old_current = usize::try_from(self.as_ref().rust().current_index).ok();
+        let mut next_index = 0;
+        let old_to_new = (0..old_count)
+            .map(|index| {
+                if source_indices.binary_search(&index).is_ok() {
+                    None
+                } else {
+                    let mapped = next_index;
+                    next_index += 1;
+                    Some(mapped)
+                }
+            })
+            .collect::<Vec<_>>();
+        let removed_current = old_current.is_some_and(|index| old_to_new[index].is_none());
 
         if removed_current {
             self.as_mut().stop();
         }
-        for &source_index in source_indices.iter().rev() {
-            self.as_mut().rust_mut().tracks.remove(source_index);
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.playback_order.remap_tracks(&old_to_new);
+            for &source_index in source_indices.iter().rev() {
+                rust.tracks.remove(source_index);
+            }
         }
 
         if removed_current {
             self.as_mut().set_current_index(-1);
             self.as_mut().reset_now_playing();
-        } else if let Some(current_source) = current_source {
-            let current_index = self
-                .as_ref()
-                .rust()
-                .tracks
-                .iter()
-                .position(|track| track.source == current_source)
-                .map(saturating_i32)
-                .unwrap_or(-1);
-            self.as_mut().set_current_index(current_index);
+        } else if let Some(current) = old_current.and_then(|index| old_to_new[index]) {
+            self.as_mut().set_current_index(saturating_i32(current));
         }
-        if self.as_ref().rust().shuffle_enabled {
-            self.as_mut().rust_mut().rebuild_shuffle_order();
-        }
+        self.as_mut().refresh_playback_order();
         self.as_mut().rebuild_playlist();
         self.as_mut().set_status(qstring(format!(
             "Removed {} track{}",
@@ -1536,33 +1475,27 @@ impl qobject::AppController {
         let target_slot = usize::try_from(target_index)
             .unwrap_or_default()
             .min(row_count);
-        let current_source = {
-            let model = self.as_ref();
-            usize::try_from(model.rust().current_index)
-                .ok()
-                .and_then(|index| model.rust().tracks.get(index))
-                .map(|track| track.source.clone())
-        };
+        let old_current = usize::try_from(self.as_ref().rust().current_index).ok();
+        let mut old_indices = (0..row_count).collect::<Vec<_>>();
         let new_indices = move_selected_items(
             &mut self.as_mut().rust_mut().tracks,
             &selected_indices,
             target_slot,
         );
+        move_selected_items(&mut old_indices, &selected_indices, target_slot);
+        let mut old_to_new = vec![None; row_count];
+        for (new_index, old_index) in old_indices.into_iter().enumerate() {
+            old_to_new[old_index] = Some(new_index);
+        }
+        self.as_mut()
+            .rust_mut()
+            .playback_order
+            .remap_tracks(&old_to_new);
 
-        if let Some(current_source) = current_source {
-            let current_index = self
-                .as_ref()
-                .rust()
-                .tracks
-                .iter()
-                .position(|track| track.source == current_source)
-                .map(saturating_i32)
-                .unwrap_or(-1);
-            self.as_mut().set_current_index(current_index);
+        if let Some(current) = old_current.and_then(|index| old_to_new[index]) {
+            self.as_mut().set_current_index(saturating_i32(current));
         }
-        if self.as_ref().rust().shuffle_enabled {
-            self.as_mut().rust_mut().rebuild_shuffle_order();
-        }
+        self.as_mut().refresh_playback_order();
         self.as_mut().rebuild_playlist();
         self.as_mut().set_status(qstring(format!(
             "Moved {} track{}",
@@ -1574,7 +1507,12 @@ impl qobject::AppController {
 
     pub fn clear_playlist(mut self: Pin<&mut Self>) {
         self.as_mut().stop();
-        self.as_mut().rust_mut().tracks.clear();
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.tracks.clear();
+            rust.playback_order.clear_tracks();
+        }
+        self.as_mut().set_queue_count(0);
         self.as_mut().set_current_index(-1);
         self.as_mut().reset_now_playing();
         self.as_mut().rebuild_playlist();
@@ -1806,19 +1744,21 @@ impl qobject::AppController {
     }
 
     pub fn previous(mut self: Pin<&mut Self>) {
-        let target = self.as_mut().rust_mut().previous_navigation_index();
+        let tracks = self.as_ref().rust().tracks.clone();
+        let current = usize::try_from(self.as_ref().rust().current_index).ok();
+        let target = {
+            self.as_mut()
+                .rust_mut()
+                .playback_order
+                .previous(&tracks, current)
+        };
         if let Some(target) = target {
             self.as_mut().play_source_index(target);
         }
     }
 
     pub fn next(mut self: Pin<&mut Self>) {
-        let target = self.as_mut().rust_mut().next_navigation_index();
-        if let Some(target) = target {
-            self.as_mut().play_source_index(target);
-        } else {
-            self.as_mut().stop();
-        }
+        self.as_mut().advance_playback(false);
     }
 
     pub fn seek(mut self: Pin<&mut Self>, seconds: f64) {
@@ -1908,38 +1848,104 @@ impl qobject::AppController {
         self.as_mut().apply_output_device(selection, &status);
     }
 
-    pub fn set_shuffle_mode(mut self: Pin<&mut Self>, enabled: bool) {
-        if self.as_ref().rust().shuffle_enabled == enabled {
-            return;
-        }
-        self.as_mut().set_shuffle_enabled(enabled);
-        if enabled {
-            self.as_mut().rust_mut().rebuild_shuffle_order();
-        } else {
-            self.as_mut().rust_mut().shuffle_order.clear();
-        }
-        self.as_mut().set_status(qstring(if enabled {
-            "Shuffle enabled"
-        } else {
-            "Shuffle disabled"
-        }));
+    pub fn cycle_shuffle_mode(mut self: Pin<&mut Self>) {
+        let mode = self.as_ref().rust().playback_order.shuffle_mode().next();
+        self.as_mut().apply_shuffle_mode(mode);
     }
 
-    pub fn set_repeat_mode(mut self: Pin<&mut Self>, enabled: bool) {
-        if self.as_ref().rust().repeat_enabled == enabled {
+    pub fn select_shuffle_mode(mut self: Pin<&mut Self>, mode: QString) {
+        let Some(mode) = ShuffleMode::from_setting(&mode.to_string()) else {
+            self.as_mut()
+                .set_status(qstring("That shuffle mode is unavailable"));
+            return;
+        };
+        self.as_mut().apply_shuffle_mode(mode);
+    }
+
+    pub fn cycle_repeat_mode(mut self: Pin<&mut Self>) {
+        let mode = self.as_ref().rust().playback_order.repeat_mode().next();
+        self.as_mut().apply_repeat_mode(mode);
+    }
+
+    pub fn select_repeat_mode(mut self: Pin<&mut Self>, mode: QString) {
+        let Some(mode) = RepeatMode::from_setting(&mode.to_string()) else {
+            self.as_mut()
+                .set_status(qstring("That repeat mode is unavailable"));
+            return;
+        };
+        self.as_mut().apply_repeat_mode(mode);
+    }
+
+    pub fn toggle_queue(mut self: Pin<&mut Self>, indices: QString) {
+        let source_indices = selected_source_indices(self.as_ref().get_ref(), &indices.to_string());
+        if source_indices.is_empty() {
             return;
         }
-        self.as_mut().set_repeat_enabled(enabled);
-        self.as_mut().set_status(qstring(if enabled {
-            "Repeat playlist enabled"
-        } else {
-            "Repeat disabled"
-        }));
+        self.as_mut()
+            .rust_mut()
+            .playback_order
+            .toggle_queue(&source_indices);
+        let count = self.as_ref().rust().playback_order.queue_count();
+        self.as_mut().set_queue_count(saturating_i32(count));
+        self.as_mut().bump_playlist_revision();
+        self.as_mut().set_status(qstring(format!(
+            "Playback queue now contains {count} track{}",
+            if count == 1 { "" } else { "s" }
+        )));
+    }
+
+    pub fn clear_queue(mut self: Pin<&mut Self>) {
+        self.as_mut().rust_mut().playback_order.clear_queue();
+        self.as_mut().set_queue_count(0);
+        self.as_mut().bump_playlist_revision();
+        self.as_mut().set_status(qstring("Playback queue cleared"));
+    }
+
+    pub fn queue_selection_state(&self, indices: QString) -> QString {
+        let source_indices = selected_source_indices(self, &indices.to_string());
+        qstring(selection_state_name(
+            self.rust()
+                .playback_order
+                .queue_selection_state(&source_indices),
+        ))
+    }
+
+    pub fn toggle_stop_after(mut self: Pin<&mut Self>, indices: QString) {
+        let source_indices = selected_source_indices(self.as_ref().get_ref(), &indices.to_string());
+        if source_indices.is_empty() {
+            return;
+        }
+        self.as_mut()
+            .rust_mut()
+            .playback_order
+            .toggle_stop_after(&source_indices);
+        self.as_mut().bump_playlist_revision();
+        self.as_mut().set_status(qstring(format!(
+            "Toggled Stop After for {} track{}",
+            source_indices.len(),
+            if source_indices.len() == 1 { "" } else { "s" }
+        )));
+    }
+
+    pub fn stop_after_selection_state(&self, indices: QString) -> QString {
+        let source_indices = selected_source_indices(self, &indices.to_string());
+        qstring(selection_state_name(
+            self.rust()
+                .playback_order
+                .stop_after_selection_state(&source_indices),
+        ))
     }
 
     pub fn poll_playback(mut self: Pin<&mut Self>) {
         if self.as_ref().rust().playback.finished() {
-            self.as_mut().next();
+            let current = usize::try_from(self.as_ref().rust().current_index).ok();
+            if current
+                .is_some_and(|index| self.as_ref().rust().playback_order.should_stop_after(index))
+            {
+                self.as_mut().stop();
+            } else {
+                self.as_mut().advance_playback(true);
+            }
             return;
         }
         if self.as_ref().rust().playback.state() == PlaybackState::Stopped {
@@ -2088,12 +2094,40 @@ impl qobject::AppController {
         let Some(source_index) = visible_source_index(self, index) else {
             return QString::default();
         };
-        if self.rust().current_index == saturating_i32(source_index) {
+        if self.rust().playback_order.should_stop_after(source_index) {
+            qstring("■")
+        } else if self.rust().current_index == saturating_i32(source_index) {
             match self.rust().playback.state() {
                 PlaybackState::Playing => qstring("▶"),
                 PlaybackState::Paused => qstring("Ⅱ"),
                 PlaybackState::Stopped => QString::default(),
             }
+        } else if self
+            .rust()
+            .playback_order
+            .queue_position(source_index)
+            .is_some()
+        {
+            qstring("+")
+        } else {
+            QString::default()
+        }
+    }
+
+    pub fn track_status_message_at(&self, index: i32) -> QString {
+        let Some(source_index) = visible_source_index(self, index) else {
+            return QString::default();
+        };
+        if self.rust().playback_order.should_stop_after(source_index) {
+            qstring("Playback will stop after this track")
+        } else if self.rust().current_index == saturating_i32(source_index) {
+            qstring(match self.rust().playback.state() {
+                PlaybackState::Playing => "Playing",
+                PlaybackState::Paused => "Paused",
+                PlaybackState::Stopped => "Current track",
+            })
+        } else if let Some(position) = self.rust().playback_order.queue_position(source_index) {
+            qstring(format!("Queued at position {}", position + 1))
         } else {
             QString::default()
         }
@@ -2694,12 +2728,86 @@ impl qobject::AppController {
             return;
         }
 
+        self.as_mut().refresh_playback_order();
         self.as_mut().rebuild_playlist();
         self.as_mut()
             .set_status(qstring(add_path_status(&combined)));
         if behavior.starts_playback() {
             self.as_mut().play_source_index(first_new_source_index);
         }
+    }
+
+    fn refresh_playback_order(mut self: Pin<&mut Self>) {
+        let tracks = self.as_ref().rust().tracks.clone();
+        let current = usize::try_from(self.as_ref().rust().current_index).ok();
+        let queue_count = {
+            let mut rust = self.as_mut().rust_mut();
+            rust.playback_order.tracks_changed(&tracks, current);
+            rust.playback_order.queue_count()
+        };
+        self.as_mut().set_queue_count(saturating_i32(queue_count));
+    }
+
+    fn advance_playback(mut self: Pin<&mut Self>, honor_repeat_one: bool) {
+        let tracks = self.as_ref().rust().tracks.clone();
+        let current = usize::try_from(self.as_ref().rust().current_index).ok();
+        let (target, queue_count) = {
+            let mut rust = self.as_mut().rust_mut();
+            let target = rust.playback_order.next(&tracks, current, honor_repeat_one);
+            (target, rust.playback_order.queue_count())
+        };
+        self.as_mut().set_queue_count(saturating_i32(queue_count));
+        if let Some(target) = target {
+            self.as_mut().play_source_index(target);
+        } else {
+            self.as_mut().stop();
+        }
+    }
+
+    fn apply_shuffle_mode(mut self: Pin<&mut Self>, mode: ShuffleMode) {
+        if self.as_ref().rust().playback_order.shuffle_mode() == mode {
+            return;
+        }
+        if let Err(error) = AppSettings::save_shuffle_mode(mode) {
+            self.as_mut().set_status(qstring(error));
+            return;
+        }
+        let tracks = self.as_ref().rust().tracks.clone();
+        let current = usize::try_from(self.as_ref().rust().current_index).ok();
+        {
+            self.as_mut()
+                .rust_mut()
+                .playback_order
+                .set_shuffle_mode(mode, &tracks, current);
+        }
+        self.as_mut()
+            .set_shuffle_mode(qstring(mode.setting_value()));
+        self.as_mut().set_status(qstring(match mode {
+            ShuffleMode::Off => "Shuffle off",
+            ShuffleMode::Albums => "Shuffle albums",
+            ShuffleMode::All => "Shuffle all tracks",
+        }));
+    }
+
+    fn apply_repeat_mode(mut self: Pin<&mut Self>, mode: RepeatMode) {
+        if self.as_ref().rust().playback_order.repeat_mode() == mode {
+            return;
+        }
+        if let Err(error) = AppSettings::save_repeat_mode(mode) {
+            self.as_mut().set_status(qstring(error));
+            return;
+        }
+        self.as_mut()
+            .rust_mut()
+            .playback_order
+            .set_repeat_mode(mode);
+        self.as_mut().set_repeat_mode(qstring(mode.setting_value()));
+        self.as_mut().set_status(qstring(match mode {
+            RepeatMode::Off => "Repeat off",
+            RepeatMode::One => "Repeat one track",
+            RepeatMode::Album => "Repeat album",
+            RepeatMode::All => "Repeat all tracks",
+        }));
     }
 
     fn play_source_index(mut self: Pin<&mut Self>, source_index: usize) {
@@ -2724,6 +2832,11 @@ impl qobject::AppController {
         }
         match self.as_mut().rust_mut().playback.play_source(&source) {
             Ok(backend) => {
+                let previous = usize::try_from(self.as_ref().rust().current_index).ok();
+                self.as_mut()
+                    .rust_mut()
+                    .playback_order
+                    .clear_stop_after_when_leaving(previous, source_index);
                 self.as_mut()
                     .set_current_index(saturating_i32(source_index));
                 self.as_mut().populate_now_playing(source_index);

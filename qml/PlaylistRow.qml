@@ -1,6 +1,7 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
+import QtQuick.Controls
 
 Item {
     id: root
@@ -11,28 +12,21 @@ Item {
     required property var theme
     property bool selected: false
     property bool hovered: false
-    property string dragRows: ""
-    readonly property bool playlistDrag: true
     property int revision: app.playlist_revision
+    readonly property string statusMessage: {
+        revision
+        return app.track_status_message_at(rowIndex)
+    }
 
     signal pressed(int rowIndex, int modifiers, int button)
     signal activated(int rowIndex)
     signal dragStarted(int rowIndex)
+    signal dragMoved(real viewX, real viewY)
+    signal dragFinished(real viewX, real viewY)
+    signal dragCanceled()
 
     implicitHeight: 24
     height: implicitHeight
-
-    Drag.active: rowDrag.active
-    Drag.dragType: Drag.Automatic
-    Drag.keys: ["kog-playlist-row"]
-    Drag.supportedActions: Qt.MoveAction
-    Drag.proposedAction: Qt.MoveAction
-    Drag.source: root
-    Drag.mimeData: ({
-        "application/x-kog-playlist-rows": root.dragRows
-    })
-    Drag.hotSpot.x: width / 2
-    Drag.hotSpot.y: height / 2
 
     Rectangle {
         anchors.fill: parent
@@ -80,21 +74,66 @@ Item {
     }
 
     MouseArea {
+        id: rowPointer
+        property real pressX: 0
+        property real pressY: 0
+        property bool manualDragging: false
+        property bool suppressNextClick: false
+
         anchors.fill: parent
         acceptedButtons: Qt.LeftButton | Qt.RightButton
         hoverEnabled: true
+        preventStealing: true
         onEntered: root.hovered = true
         onExited: root.hovered = false
-        onClicked: mouse => root.pressed(root.rowIndex, mouse.modifiers, mouse.button)
+        onPressed: mouse => {
+            pressX = mouse.x
+            pressY = mouse.y
+            manualDragging = false
+        }
+        onPositionChanged: mouse => {
+            if ((mouse.buttons & Qt.LeftButton) === 0)
+                return
+            if (!manualDragging
+                    && (Math.abs(mouse.x - pressX)
+                        >= Application.styleHints.startDragDistance
+                        || Math.abs(mouse.y - pressY)
+                        >= Application.styleHints.startDragDistance)) {
+                manualDragging = true
+                root.dragStarted(root.rowIndex)
+            }
+            if (!manualDragging)
+                return
+            const point = root.mapToItem(root.ListView.view,
+                mouse.x, mouse.y)
+            root.dragMoved(point.x, point.y)
+        }
+        onClicked: mouse => {
+            if (suppressNextClick) {
+                suppressNextClick = false
+                return
+            }
+            root.pressed(root.rowIndex, mouse.modifiers, mouse.button)
+        }
         onDoubleClicked: root.activated(root.rowIndex)
+        onReleased: mouse => {
+            if (manualDragging) {
+                const point = root.mapToItem(root.ListView.view,
+                    mouse.x, mouse.y)
+                root.dragFinished(point.x, point.y)
+                suppressNextClick = true
+                mouse.accepted = true
+            }
+            manualDragging = false
+        }
+        onCanceled: {
+            manualDragging = false
+            suppressNextClick = false
+            root.dragCanceled()
+        }
+        ToolTip.visible: containsMouse && root.statusMessage.length > 0
+        ToolTip.delay: 650
+        ToolTip.text: root.statusMessage
     }
 
-    DragHandler {
-        id: rowDrag
-        target: null
-        acceptedButtons: Qt.LeftButton
-        grabPermissions: PointerHandler.CanTakeOverFromAnything
-            | PointerHandler.ApprovesTakeOverByAnything
-        onActiveChanged: if (active) root.dragStarted(root.rowIndex)
-    }
 }

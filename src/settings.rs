@@ -17,6 +17,8 @@ const OUTPUT_DEVICE_SETTING_FILE: &str = "output-device";
 const PLAYLIST_COLUMN_LAYOUT_SETTING_FILE: &str = "playlist-column-layout";
 const PLAYLIST_COLUMN_WIDTHS_SETTING_FILE: &str = "playlist-column-widths";
 const EQUALIZER_SETTING_FILE: &str = "equalizer-settings";
+const SHUFFLE_MODE_SETTING_FILE: &str = "shuffle-mode";
+const REPEAT_MODE_SETTING_FILE: &str = "repeat-mode";
 const PLAYLIST_COLUMN_IDS: [&str; 19] = [
     "index",
     "status",
@@ -45,6 +47,80 @@ pub enum OpeningFilesBehavior {
     Enqueue,
     #[default]
     EnqueueAndPlay,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ShuffleMode {
+    #[default]
+    Off,
+    Albums,
+    All,
+}
+
+impl ShuffleMode {
+    pub const fn setting_value(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Albums => "albums",
+            Self::All => "all",
+        }
+    }
+
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Off => Self::Albums,
+            Self::Albums => Self::All,
+            Self::All => Self::Off,
+        }
+    }
+
+    pub fn from_setting(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "off" | "none" | "0" => Some(Self::Off),
+            "albums" | "album" | "1" => Some(Self::Albums),
+            "all" | "tracks" | "songs" | "2" => Some(Self::All),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RepeatMode {
+    #[default]
+    Off,
+    One,
+    Album,
+    All,
+}
+
+impl RepeatMode {
+    pub const fn setting_value(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::One => "one",
+            Self::Album => "album",
+            Self::All => "all",
+        }
+    }
+
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Off => Self::One,
+            Self::One => Self::Album,
+            Self::Album => Self::All,
+            Self::All => Self::Off,
+        }
+    }
+
+    pub fn from_setting(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "off" | "none" | "0" => Some(Self::Off),
+            "one" | "track" | "1" => Some(Self::One),
+            "album" | "2" => Some(Self::Album),
+            "all" | "playlist" | "3" => Some(Self::All),
+            _ => None,
+        }
+    }
 }
 
 impl OpeningFilesBehavior {
@@ -120,6 +196,8 @@ pub struct AppSettings {
     pub output_device: Option<OutputDevicePreference>,
     pub playlist_column_layout: Option<String>,
     pub equalizer: EqualizerSettings,
+    pub shuffle_mode: ShuffleMode,
+    pub repeat_mode: RepeatMode,
 }
 
 impl AppSettings {
@@ -161,6 +239,12 @@ impl AppSettings {
         let equalizer = load_text(EQUALIZER_SETTING_FILE)
             .and_then(|value| EqualizerSettings::parse(&value))
             .unwrap_or_default();
+        let shuffle_mode = load_text(SHUFFLE_MODE_SETTING_FILE)
+            .and_then(|value| ShuffleMode::from_setting(&value))
+            .unwrap_or_default();
+        let repeat_mode = load_text(REPEAT_MODE_SETTING_FILE)
+            .and_then(|value| RepeatMode::from_setting(&value))
+            .unwrap_or_default();
         Self {
             soundfont_path,
             sc55_rom_path,
@@ -174,6 +258,8 @@ impl AppSettings {
             output_device,
             playlist_column_layout,
             equalizer,
+            shuffle_mode,
+            repeat_mode,
         }
     }
 
@@ -276,6 +362,14 @@ impl AppSettings {
 
     pub fn save_equalizer(settings: &EqualizerSettings) -> Result<(), String> {
         save_text(EQUALIZER_SETTING_FILE, &settings.serialize()?)
+    }
+
+    pub fn save_shuffle_mode(mode: ShuffleMode) -> Result<(), String> {
+        save_text(SHUFFLE_MODE_SETTING_FILE, mode.setting_value())
+    }
+
+    pub fn save_repeat_mode(mode: RepeatMode) -> Result<(), String> {
+        save_text(REPEAT_MODE_SETTING_FILE, mode.setting_value())
     }
 }
 
@@ -483,6 +577,20 @@ mod tests {
         );
         assert!(OpeningFilesBehavior::EnqueueAndPlay.starts_playback());
         assert!(!OpeningFilesBehavior::Enqueue.clears_playlist());
+    }
+
+    #[test]
+    fn playback_order_modes_match_cogs_cycle_and_persisted_values() {
+        assert_eq!(ShuffleMode::Off.next(), ShuffleMode::Albums);
+        assert_eq!(ShuffleMode::Albums.next(), ShuffleMode::All);
+        assert_eq!(ShuffleMode::All.next(), ShuffleMode::Off);
+        assert_eq!(ShuffleMode::from_setting("tracks"), Some(ShuffleMode::All));
+
+        assert_eq!(RepeatMode::Off.next(), RepeatMode::One);
+        assert_eq!(RepeatMode::One.next(), RepeatMode::Album);
+        assert_eq!(RepeatMode::Album.next(), RepeatMode::All);
+        assert_eq!(RepeatMode::All.next(), RepeatMode::Off);
+        assert_eq!(RepeatMode::from_setting("playlist"), Some(RepeatMode::All));
     }
 
     #[test]

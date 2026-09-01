@@ -38,9 +38,7 @@ unsafe extern "C" {
     fn kog_vgmstream_render(decoder: *mut NativeVgmstream, output: *mut f32, frames: usize) -> i64;
     fn kog_vgmstream_seek(decoder: *mut NativeVgmstream, frame: u64) -> u64;
     fn kog_vgmstream_supports_extension(extension: *const c_char) -> c_int;
-    #[cfg(test)]
     fn kog_vgmstream_extension_count() -> usize;
-    #[cfg(test)]
     fn kog_vgmstream_extension(index: usize) -> *const c_char;
     #[cfg(test)]
     fn kog_vgmstream_api_version() -> u32;
@@ -195,7 +193,6 @@ impl Vgmstream {
         Ok(duration_from_frames(actual, self.sample_rate))
     }
 
-    #[cfg(test)]
     pub fn supported_extensions() -> Vec<String> {
         let count = unsafe { kog_vgmstream_extension_count() };
         (0..count)

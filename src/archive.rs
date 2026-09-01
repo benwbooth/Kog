@@ -223,6 +223,14 @@ pub fn is_path(path: &Path) -> bool {
     })
 }
 
+pub fn supported_extensions() -> Vec<String> {
+    GENERAL_ARCHIVE_EXTENSIONS
+        .iter()
+        .chain(COG_OPENMPT_ARCHIVE_EXTENSIONS)
+        .map(|extension| (*extension).to_owned())
+        .collect()
+}
+
 fn extension(path: &Path) -> Option<&str> {
     path.extension().and_then(|value| value.to_str())
 }

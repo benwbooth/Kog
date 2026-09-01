@@ -48,6 +48,8 @@ enum PlaylistFormat {
 }
 
 impl Playlist {
+    pub const SUPPORTED_EXTENSIONS: &'static [&'static str] = &["m3u", "m3u8", "pls"];
+
     pub fn open(path: &Path) -> Result<Self, String> {
         let format = PlaylistFormat::for_path(path)?;
         let bytes = std::fs::read(path)
@@ -71,6 +73,10 @@ impl Playlist {
 
     pub fn is_path(path: &Path) -> bool {
         PlaylistFormat::for_path(path).is_ok()
+    }
+
+    pub fn supported_extensions() -> &'static [&'static str] {
+        Self::SUPPORTED_EXTENSIONS
     }
 
     pub fn is_hls(path: &Path) -> Result<bool, String> {
