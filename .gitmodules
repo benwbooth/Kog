@@ -49,3 +49,6 @@
 [submodule "native/melonds"]
 	path = native/melonds
 	url = https://github.com/melonDS-emu/melonDS.git
+[submodule "native/libsnsf9x"]
+	path = native/libsnsf9x
+	url = https://github.com/Deewiant/libsnsf9x.git

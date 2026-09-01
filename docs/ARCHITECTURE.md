@@ -402,6 +402,40 @@ redistributable corpus, fractional sample-rate and leading-silence comparison,
 performance measurement, Windows/macOS runtime gates, and direct comparison
 with Cog remain.
 
+SNSF and miniSNSF reuse libsnsf9x revision `e53bff5` through the optional
+`kog-snsf-helper`. Kog does not copy or translate Cog's Objective-C++ decoder.
+The helper statically builds the upstream library source list and calls its
+published `IXSFDRV` C interface. One generated compatibility copy changes the
+old framework's `const LPVOID` spelling to `const void *` for current C
+compilers; the pinned submodule remains immutable.
+
+Untrusted xSF parsing is kept out of libsnsf9x's older dependency loader.
+Instead, psflib verifies compressed CRCs and bounded nesting while helper file
+callbacks canonicalize every path under the root file's directory tree and cap
+the unique file set. The adapter merges checked relative ROM mappings up to the
+Snes9x core's 8 MiB maximum, maps at most 128 KiB of SRAM, validates tag and
+duration bounds, and creates one dependency-free SNSF image. Only that
+sanitized image enters libsnsf9x. The helper process is both a legacy-core
+fault boundary and a license boundary; it is not an operating-system sandbox.
+
+The common helper protocol identifies xSF version `0x23` and streams 32 kHz
+stereo signed-16 PCM. Gaussian SPC interpolation matches Cog's setting, while
+libsnsf9x's Hermite rate converter retains its native playback path. Rust owns
+metadata, tagged/default duration and fade, exact EOS, and restart/discard
+seeking. Tests generate an original LoROM whose 65C816 code uploads an original
+SPC700 program through the SNES IPL protocol; that program installs a synthetic
+BRR loop and configures DSP voice zero. Full, mini, and ZIP-contained fixtures
+gate routing, metadata precedence, audible playback after seek, timing/EOS,
+malformed mappings, missing/cyclic dependencies, and companion path
+containment without Nintendo firmware, game code, ROMs, or recorded audio.
+
+The helper retains Snes9x's personal/non-commercial terms and its APU's
+LGPL-2.1 terms. Its Kog adapter is identified as `LicenseRef-Snes9x`, rather
+than GPL, and no libsnsf9x object is linked into Kog's GPL-3.0-or-later
+executable. A broad independently redistributable corpus, newer-core review,
+leading-silence comparison, configurable timing, Windows/macOS runtime gates,
+and direct Cog comparison remain.
+
 ## Decoder contract
 
 `DecoderBackend` is the current executable contract. Every backend supplies:

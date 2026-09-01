@@ -8,7 +8,9 @@ use rodio::{ChannelCount, Player, SampleRate, Source};
 use crate::decoder::{DecoderBackend, DecoderCapabilities, PlaybackSource, StreamProperties};
 use crate::psf::Psf;
 
-const PSF_EXTENSIONS: &[&str] = &["psf", "minipsf", "psf2", "minipsf2", "2sf", "mini2sf"];
+const PSF_EXTENSIONS: &[&str] = &[
+    "psf", "minipsf", "psf2", "minipsf2", "snsf", "minisnsf", "2sf", "mini2sf",
+];
 const PSF_DEFAULT_LENGTH: Duration = Duration::from_secs(150);
 const PSF_DEFAULT_FADE: Duration = Duration::from_secs(8);
 const PSF_RENDER_FRAMES: usize = 2_048;
@@ -27,7 +29,7 @@ impl DecoderBackend for PsfBackend {
     }
 
     fn display_name(&self) -> &'static str {
-        "libupse + Play! + melonDS / xSF family"
+        "libupse + Play! + libsnsf9x + melonDS / xSF family"
     }
 
     fn extensions(&self) -> &'static [&'static str] {
@@ -56,6 +58,7 @@ impl DecoderBackend for PsfBackend {
             year: metadata.date.as_deref().and_then(tag_year),
             codec: Some(match decoder.format_version() {
                 2 => "PlayStation 2 Sound Format (PSF2) / Play! helper".to_owned(),
+                0x23 => "Super Nintendo Sound Format (SNSF) / libsnsf9x helper".to_owned(),
                 0x24 => "Nintendo DS Sound Format (2SF) / melonDS helper".to_owned(),
                 _ => "PlayStation Sound Format (PSF) / libupse helper".to_owned(),
             }),
@@ -171,7 +174,7 @@ mod tests {
     use crate::decoder::{DecoderRegistry, DecoderSettings};
     use crate::psf::{
         test_psf_bytes, test_psf_executable, test_psf_out_of_bounds_executable, test_psf2_bytes,
-        test_psf2_irx, test_twosf_bytes, test_twosf_rom,
+        test_psf2_irx, test_snsf_bytes, test_snsf_rom, test_twosf_bytes, test_twosf_rom,
     };
 
     fn fixture_tags(title: &str) -> String {
@@ -345,6 +348,168 @@ mod tests {
             decoder.metadata().title.as_deref(),
             Some("Mini PSF2 selection")
         );
+    }
+
+    #[test]
+    fn generated_snsf_routes_renders_seeks_and_ends_exactly() {
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path().join("fixture.snsf");
+        std::fs::write(
+            &path,
+            test_snsf_bytes(
+                0,
+                &test_snsf_rom(),
+                &[],
+                "title=Synthetic SNSF\nartist=Kog tests\ngame=Synthetic Super NES sound program\ngenre=Chiptune\ndate=2026-08-31\nlength=0:00.500\nfade=0:00.100\n",
+            ),
+        )
+        .unwrap();
+
+        let registry = DecoderRegistry::new(DecoderSettings::default());
+        assert_eq!(registry.backend_id_for(&path), Some("psf-family"));
+        let source = PlaybackSource::from_path(path.clone());
+        let properties = registry.probe(&source).expect("probe generated SNSF");
+        assert_duration_within_one_frame(properties.duration, Duration::from_millis(600));
+        assert_eq!(properties.sample_rate, Some(32_000));
+        assert_eq!(properties.channels, Some(2));
+        assert_eq!(properties.title.as_deref(), Some("Synthetic SNSF"));
+        assert_eq!(properties.artist.as_deref(), Some("Kog tests"));
+        assert_eq!(
+            properties.album.as_deref(),
+            Some("Synthetic Super NES sound program")
+        );
+        assert_eq!(
+            properties.codec.as_deref(),
+            Some("Super Nintendo Sound Format (SNSF) / libsnsf9x helper")
+        );
+
+        let mut decoder =
+            Psf::open(&path, PSF_DEFAULT_LENGTH, PSF_DEFAULT_FADE).expect("open generated SNSF");
+        let mut pcm = vec![0.0; 512 * 2];
+        assert_eq!(decoder.render(&mut pcm).expect("render SNSF"), 512);
+        assert!(
+            pcm.iter().any(|sample| sample.abs() > 0.000_01),
+            "generated SNSF was silent"
+        );
+        assert_eq!(
+            decoder.seek(Duration::from_millis(250)).unwrap(),
+            Duration::from_millis(250)
+        );
+        pcm.fill(0.0);
+        assert_eq!(
+            decoder.render(&mut pcm).expect("render after SNSF seek"),
+            512
+        );
+        assert!(
+            pcm.iter().any(|sample| sample.abs() > 0.000_01),
+            "generated SNSF was silent after seek"
+        );
+        decoder.seek(Duration::from_secs(10)).unwrap();
+        assert_eq!(decoder.render(&mut pcm).expect("render SNSF at end"), 0);
+    }
+
+    #[test]
+    fn minisnsf_resolves_relative_library_and_outer_tags() {
+        let fixture = tempfile::tempdir().unwrap();
+        let library = fixture.path().join("music.snsflib");
+        let mini = fixture.path().join("selection.minisnsf");
+        std::fs::write(
+            &library,
+            test_snsf_bytes(0, &test_snsf_rom(), &[], "title=Library title\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            &mini,
+            test_snsf_bytes(
+                0,
+                &[],
+                &[],
+                "_lib=music.snsflib\ntitle=Mini SNSF selection\nlength=0:00.250\n",
+            ),
+        )
+        .unwrap();
+
+        let decoder = Psf::open(&mini, PSF_DEFAULT_LENGTH, PSF_DEFAULT_FADE)
+            .expect("open miniSNSF library chain");
+        assert_duration_within_one_frame(Some(decoder.duration()), Duration::from_millis(250));
+        assert_eq!(
+            decoder.metadata().title.as_deref(),
+            Some("Mini SNSF selection")
+        );
+    }
+
+    #[test]
+    fn snsf_defaults_and_malformed_inputs_are_rejected() {
+        let fixture = tempfile::tempdir().unwrap();
+
+        let untimed = fixture.path().join("untimed.snsf");
+        std::fs::write(
+            &untimed,
+            test_snsf_bytes(0, &test_snsf_rom(), &[], "title=Untimed SNSF fixture\n"),
+        )
+        .unwrap();
+        let decoder =
+            Psf::open(&untimed, PSF_DEFAULT_LENGTH, PSF_DEFAULT_FADE).expect("open untimed SNSF");
+        assert_duration_within_one_frame(Some(decoder.duration()), Duration::from_secs(158));
+
+        let short_rom = fixture.path().join("short.snsf");
+        std::fs::write(
+            &short_rom,
+            test_snsf_bytes(0, &[0_u8; 4], &[], "length=0:00.010\n"),
+        )
+        .unwrap();
+        assert!(Psf::open(&short_rom, PSF_DEFAULT_LENGTH, PSF_DEFAULT_FADE).is_err());
+
+        let oversized_mapping = fixture.path().join("oversized.snsf");
+        std::fs::write(
+            &oversized_mapping,
+            test_snsf_bytes(u32::MAX, &[1_u8; 4], &[], ""),
+        )
+        .unwrap();
+        assert!(Psf::open(&oversized_mapping, PSF_DEFAULT_LENGTH, PSF_DEFAULT_FADE).is_err());
+
+        let malformed_reserved = fixture.path().join("malformed-reserved.snsf");
+        let reserved = [0_u8, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0];
+        std::fs::write(
+            &malformed_reserved,
+            test_snsf_bytes(0, &test_snsf_rom(), &reserved, ""),
+        )
+        .unwrap();
+        assert!(Psf::open(&malformed_reserved, PSF_DEFAULT_LENGTH, PSF_DEFAULT_FADE).is_err());
+
+        let missing = fixture.path().join("missing.minisnsf");
+        std::fs::write(
+            &missing,
+            test_snsf_bytes(0, &[], &[], "_lib=does-not-exist.snsflib\n"),
+        )
+        .unwrap();
+        assert!(Psf::open(&missing, PSF_DEFAULT_LENGTH, PSF_DEFAULT_FADE).is_err());
+
+        let cycle_a = fixture.path().join("cycle-a.minisnsf");
+        let cycle_b = fixture.path().join("cycle-b.snsflib");
+        std::fs::write(
+            &cycle_a,
+            test_snsf_bytes(0, &[], &[], "_lib=cycle-b.snsflib\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            &cycle_b,
+            test_snsf_bytes(0, &[], &[], "_lib=cycle-a.minisnsf\n"),
+        )
+        .unwrap();
+        assert!(Psf::open(&cycle_a, PSF_DEFAULT_LENGTH, PSF_DEFAULT_FADE).is_err());
+
+        let nested = fixture.path().join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        let outside = fixture.path().join("outside.snsflib");
+        std::fs::write(&outside, test_snsf_bytes(0, &test_snsf_rom(), &[], "")).unwrap();
+        let traversal = nested.join("traversal.minisnsf");
+        std::fs::write(
+            &traversal,
+            test_snsf_bytes(0, &[], &[], "_lib=../outside.snsflib\n"),
+        )
+        .unwrap();
+        assert!(Psf::open(&traversal, PSF_DEFAULT_LENGTH, PSF_DEFAULT_FADE).is_err());
     }
 
     #[test]

@@ -342,6 +342,43 @@ synthetic PCM waveform, minimal Nintendo DS ROM, and 2SF wrappers. They include
 no Nintendo BIOS, firmware, copyrighted game program, game data, recorded
 audio, or commercial ROM image.
 
+## libsnsf9x and kog-snsf-helper
+
+The `native/libsnsf9x` submodule is Deewiant's dedicated Linux
+[libsnsf9x](https://github.com/Deewiant/libsnsf9x) library at commit
+`e53bff56fbb7c29d5222c60b81a54b762ad9cec7`. It is a stripped and
+Linux-portable SNSF player based on snsf9x 0.04.10 and Snes9x 1.53. Kog calls
+its published `IXSFDRV` C interface from the separately identified optional
+`kog-snsf-helper`; no libsnsf9x object is linked into the main Kog executable.
+The CMake build retains the pinned sources unchanged and creates one generated
+copy of `xsfc/xsfdrv.c` whose `const LPVOID` parameter is spelled
+`const void *`, fixing a current-compiler function-pointer diagnostic without
+changing behavior.
+
+The Snes9x-derived source is Copyright the Snes9x contributors identified in
+its retained headers and permits source and binary use for non-commercial
+purposes while describing Snes9x as freeware for personal use. Its complete
+notice remains at
+`native/libsnsf9x/snsf9x/snes9x/docs/snes9x-license.txt` and is copied to
+`LICENSES/Snes9x.txt`. The S-SMP/S-DSP APU
+source additionally retains GNU Lesser General Public License version 2.1
+terms at `native/libsnsf9x/snsf9x/snes9x/apu/license.txt`; Kog's copy of that
+license is in `LICENSES/LGPL-2.1.txt`. The upstream repository has no single
+top-level license declaration, so Kog conservatively distributes the entire
+optional helper only under the Snes9x non-commercial terms plus every retained
+component notice. The adapter sources under `native/snsf-helper` are marked
+`LicenseRef-Snes9x` for that combined program. Kog's non-commercial project
+intent does not relicense these components or make them GPL-compatible.
+
+Before libsnsf9x runs, the MIT-licensed psflib resolves and verifies a bounded
+SNSF dependency tree. Kog assembles the validated ROM/SRAM state into one
+dependency-free SNSF image, so libsnsf9x's older file loader never receives
+user-controlled companion paths. The helper uses the metadata/PCM protocol in
+`native/snsf-helper/PROTOCOL.md`; its process boundary is fault and license
+isolation, not an operating-system sandbox. Tests generate original 65C816 and
+SPC700 programs plus a synthetic BRR waveform. They include no Nintendo
+firmware, game program, commercial ROM, game data, or recorded audio.
+
 ## SSEQPlayer and psflib
 
 The `native/sseqplayer` submodule is kode54's official

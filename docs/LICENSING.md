@@ -1,8 +1,11 @@
 # Kog license policy
 
 Kog-authored source code is licensed under the GNU General Public License,
-version 3 or (at your option) any later version (`GPL-3.0-or-later`). The full
-license is in the repository root `LICENSE` file.
+version 3 or (at your option) any later version (`GPL-3.0-or-later`), except the
+small `native/snsf-helper` adapter identified as `LicenseRef-Snes9x`. That
+adapter is distributed only with its separately licensed non-commercial SNSF
+helper. The GPL text for the main application is in the repository root
+`LICENSE` file.
 
 Third-party libraries, emulator cores, test fixtures, and user-supplied assets
 are not relicensed. Their copyright notices and license terms remain in their
@@ -35,6 +38,15 @@ source trees and are summarized in `THIRD_PARTY_NOTICES.md`.
   decision, not a license workaround. Binary distributions must install the
   helper beside Kog and carry the complete corresponding source and upstream
   copyright/license notices. melonDS is not relicensed by Kog.
+- SNSF playback uses the pinned libsnsf9x library in the optional,
+  independently identified `kog-snsf-helper` program. Its Snes9x-derived core
+  permits personal/non-commercial use and adds terms incompatible with the
+  main application's GPL-3.0-or-later license; its APU components also retain
+  LGPL-2.1 terms. The helper and its adapter therefore retain those upstream
+  terms, are not linked into Kog, and must be distributed with the complete
+  retained notices and source. psflib and zlib do not alter that boundary.
+  This matches Kog's non-commercial project intent but does not relicense
+  Snes9x or make the two licenses link-compatible.
 - A decoder whose license adds non-commercial or other GPL-incompatible terms
   does not become link-compatible merely because Kog is intended as a
   non-commercial project. Such a component requires an independently reviewed,

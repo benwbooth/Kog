@@ -141,6 +141,19 @@ timing, exact EOS, malformed input, missing/cyclic libraries, and archive
 companion lookup. Broad corpus comparison and Windows/macOS runtime gates
 remain.
 
+SNSF and miniSNSF reuse the dedicated cross-platform libsnsf9x playback
+library at a pinned revision behind a separate `kog-snsf-helper`; Kog does not
+translate Cog's Objective-C++ wrapper. The helper lets psflib resolve and
+validate bounded dependency chains, assembles one sanitized dependency-free
+SNSF image, and passes only that image through libsnsf9x's public C API. It
+streams 32 kHz signed-16 stereo output through the common xSF protocol.
+Generated SNSF/miniSNSF files containing original 65C816, SPC700, DSP, and BRR
+data gate routing, metadata precedence, audible playback after seek,
+tagged/default timing, exact EOS, malformed input, path containment, and
+archive companion lookup. The optional helper retains Snes9x's non-commercial
+terms and is not linked into the GPL-3.0-or-later Kog executable; broad corpus
+and direct Cog comparison plus Windows/macOS runtime gates remain.
+
 2SF and mini2SF reuse the official melonDS 1.1 emulation core behind a
 separate `kog-2sf-helper`; Kog does not translate Cog's Objective-C++ wrapper
 or ship Nintendo BIOS, firmware, ROM, or game assets. The helper combines
@@ -189,8 +202,8 @@ Traversal paths, duplicate destinations, links/devices, oversized entries,
 and oversized archives are rejected or surfaced as warnings. Deterministic
 ZIP and GZ fixtures pass end-to-end WAV playback; real 7Z and RAR5 fixtures
 gate extraction; ZIP-gated APL playback proves relative image lookup; and
-archived NCSF, GSF, QSF, SSF, USF, PSF, and PSF2 mini/library pairs prove PSF
-dependency lookup.
+archived NCSF, GSF, QSF, SSF, USF, PSF, PSF2, SNSF, and 2SF mini/library pairs
+prove xSF dependency lookup.
 Encrypted and multipart archives, nested archives, broad RAR/7Z corpora, and
 Windows/macOS runtime gates remain parity work.
 
@@ -236,12 +249,14 @@ cargo run
 For an existing checkout, initialize native sources with
 `git submodule update --init --recursive` before building.
 
-Cargo builds `kog-psf-helper`, `kog-psf2-helper`, and `kog-2sf-helper`
-automatically for local xSF playback. Binary packages must install all three
-helpers beside the Kog executable; isolated tests may override their locations
+Cargo builds `kog-psf-helper`, `kog-psf2-helper`, `kog-snsf-helper`, and
+`kog-2sf-helper` automatically for local xSF playback. Binary packages must
+install the helpers they distribute beside the Kog executable and carry each
+helper's corresponding notices. Isolated tests may override their locations
 with
 `KOG_PSF_HELPER=/path/to/kog-psf-helper` and
 `KOG_PSF2_HELPER=/path/to/kog-psf2-helper`, or
+`KOG_SNSF_HELPER=/path/to/kog-snsf-helper` and
 `KOG_2SF_HELPER=/path/to/kog-2sf-helper`.
 
 Choose RustySynth or OPL3Windows under **Edit → Preferences → MIDI**. RustySynth
