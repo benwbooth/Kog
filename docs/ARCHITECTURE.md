@@ -23,6 +23,8 @@ The installed backends are `rodio-symphonia` for conventional audio,
 `midi-rustysynth-sf2` for Standard MIDI File and RIFF RMID rendering through a
 user-selected SF2 SoundFont, and `midi-opl3windows` for the same MIDI containers
 through Cog's OPL3Windows General MIDI engine and Nuked OPL3 1.7.1 core.
+`adlmidi` links the maintained libADLMIDI revision `d114c31` for HMI, HMP/HMQ,
+DMX MUS, and Miles XMI playback through its Nuked OPL3 implementation.
 `game-music-emu` wraps the pinned upstream libGME 0.6.5 C API for AY, GBS, HES,
 KSS, NSF/NSFE, SAP, and SPC. These backends provide real playback, pause, stop,
 seek, position, volume, and automatic next-track behavior. Specialist backends
@@ -145,6 +147,22 @@ stereo floating-point PCM. The OPL3 path uses a small C ABI around Cog's
 GPL-compatible native engine; Midly merges format-0/1 tracks and schedules
 legacy MIDI messages at exact output frames. Seeking recreates the selected
 synthesizer and deterministically advances it to the requested frame.
+
+The libADLMIDI adapter is a thin Rust owner around the upstream C API; Kog does
+not translate Cog's Objective-C MIDI container plugin. It retains input memory
+for the native player's lifetime, selects a zero-based subsong before opening
+multi-song XMI data, normalizes libADLMIDI's zero-song sentinel to one logical
+track, and converts native 44.1 kHz signed-16 stereo PCM into the shared float
+stream. Duration and seek come from the library, while Kog bounds input size,
+subsong count, duration, render requests, and early termination. DMX MUS is
+selected by its `MUS` plus `0x1a` signature so the shared `.mus` extension still
+falls through to libopenmpt for tracker modules. Cargo builds only the Nuked
+OPL3 family, MIDI sequencer, XMI converter, and embedded banks; all other
+emulator families, command-line utilities, tests, and the optional HQ resampler
+are disabled. `BUILD_NO_GREY_BANKS=ON` selects upstream's cleared embedded-bank
+database. A generated original DMX score gates routing, audible PCM, seek,
+invalid subsongs, malformed input, and finite EOS; broader HMI/HMP/XMI corpus
+coverage remains.
 
 The GME adapter owns each native emulator handle in one Rust `Source`, converts
 its stereo signed-16 PCM to the shared floating-point stream, and uses 44.1 kHz

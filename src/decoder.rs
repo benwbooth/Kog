@@ -234,6 +234,7 @@ impl DecoderRegistry {
                 Box::new(crate::ffmpeg_decoder::FfmpegBackend),
                 Box::new(crate::gme_decoder::GmeBackend),
                 Box::new(crate::libvgm_decoder::LibVgmBackend),
+                Box::new(crate::adlmidi_decoder::AdlMidiBackend),
                 Box::new(crate::openmpt_decoder::OpenMptBackend),
                 Box::new(crate::hively_decoder::HivelyBackend),
                 Box::new(crate::syntrax_decoder::SyntraxBackend),

@@ -1,3 +1,5 @@
+mod adlmidi;
+mod adlmidi_decoder;
 mod adplug;
 mod adplug_decoder;
 mod apl;

@@ -16,6 +16,14 @@ source trees and are summarized in `THIRD_PARTY_NOTICES.md`.
 - Permissive, LGPL, MPL, GPL-3.0-only, and GPL-2.0-or-later components may be
   linked into the main application when their exact terms are compatible with
   GPL-3.0-or-later and their redistribution requirements are satisfied.
+- Legacy HMI/HMP/HMQ/MUS/XMI playback statically links the pinned libADLMIDI
+  source. Its enabled library, sequencer/converter, Nuked OPL3, structures, and
+  bank components retain their GPL-3.0-or-later, GPL-2.0-or-later,
+  LGPL-2.1-or-later, LGPL-2.0-or-later, MIT, BSD-3-Clause, Boost-1.0,
+  public-domain, and per-bank terms, all compatible with distribution of the
+  combined Kog executable under GPL-3.0-or-later. Kog builds with
+  `BUILD_NO_GREY_BANKS=ON`; upstream's separately identified grey-zone bank set
+  is not embedded. The retained submodule notices remain authoritative.
 - GPL-2.0-only components are not linked into the main application. The
   upstream libvgm tree contains one such YMF278B core; Kog explicitly disables
   it while retaining all other configured libvgm chip families. PSF playback

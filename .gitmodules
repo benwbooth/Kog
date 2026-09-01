@@ -55,3 +55,6 @@
 [submodule "native/syntrax-c"]
 	path = native/syntrax-c
 	url = https://bitbucket.org/losnoco/syntrax-c.git
+[submodule "native/libadlmidi"]
+	path = native/libadlmidi
+	url = https://github.com/Wohlstand/libADLMIDI.git

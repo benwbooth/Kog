@@ -12,7 +12,11 @@ real conventional-audio playback path with pause, stop, seek, volume, and
 automatic track advance. It also renders format-0/1 MID, MIDI, KAR, and RIFF
 RMID files through either a validated, persisted SF2 SoundFont using RustySynth
 or Cog's OPL3Windows synthesizer and its Nuked OPL3 core, with duration probing
-and seeking. The first specialist backend is also live: AY, GBS, HES, KSS,
+and seeking. Legacy HMI, HMP/HMQ, DMX MUS, and Miles XMI files route through
+the maintained libADLMIDI library and its Nuked OPL3 renderer, with native
+subsong expansion, metadata, duration, and seeking. Kog builds libADLMIDI with
+its explicitly cleared embedded-bank database and excludes its grey-zone bank
+set. The first specialist backend is also live: AY, GBS, HES, KSS,
 NSF/NSFE, SAP, and SPC route to pinned Game Music Emu 0.6.5 code with
 multitrack expansion, companion M3U metadata, Cog's loop/fade policy, and seek.
 The NSF path has passed the current real-PCM and live-UI gates; the other GME
@@ -228,8 +232,8 @@ Windows/macOS runtime gates remain parity work.
 - Verify supported formats against a versioned playback corpus.
 
 Likely decoder families include FFmpeg, libopenmpt, Game Music Emu, vgmstream,
-libvgm, libsidplayfp, AdPlug, a SoundFont synthesizer, and an OPL3 MIDI
-synthesizer. Dependencies and redistributable assets are selected under the
+libvgm, libsidplayfp, AdPlug, libADLMIDI, a SoundFont synthesizer, and an OPL3
+MIDI synthesizer. Dependencies and redistributable assets are selected under the
 project's documented license policy. License-restricted decoders retain their
 own terms and require either a compatible replacement or an independently
 reviewed optional-program boundary; Kog's non-commercial intent alone does not

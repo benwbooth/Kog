@@ -11,6 +11,7 @@ fn main() {
     build_twosf_helper();
     build_snsf_helper();
     build_syntrax_helper();
+    build_adlmidi();
     build_openmpt();
     build_hivelytracker();
     build_vgmstream();
@@ -75,6 +76,46 @@ fn main() {
     .qt_module("Quick")
     .qt_module("QuickControls2")
     .build();
+}
+
+fn build_adlmidi() {
+    let source = Path::new("native/libadlmidi");
+    if !source.join("include/adlmidi.h").is_file() {
+        panic!("libADLMIDI submodule is missing; run `git submodule update --init --recursive`");
+    }
+
+    let output = cmake::Config::new(source)
+        .profile("Release")
+        .define("libADLMIDI_STATIC", "ON")
+        .define("libADLMIDI_SHARED", "OFF")
+        .define("WITH_MIDI_SEQUENCER", "ON")
+        .define("WITH_EMBEDDED_BANKS", "ON")
+        .define("BUILD_NO_GREY_BANKS", "ON")
+        .define("WITH_HQ_RESAMPLER", "OFF")
+        .define("WITH_XMI_SUPPORT", "ON")
+        .define("USE_DOSBOX_EMULATOR", "OFF")
+        .define("USE_NUKED_EMULATOR", "ON")
+        .define("USE_OPAL_EMULATOR", "OFF")
+        .define("USE_JAVA_EMULATOR", "OFF")
+        .define("USE_ESFMU_EMULATOR", "OFF")
+        .define("USE_MAME_EMULATOR", "OFF")
+        .define("USE_YMFM_EMULATOR", "OFF")
+        .define("USE_NUKED_OPL2_LLE_EMULATOR", "OFF")
+        .define("USE_NUKED_OPL3_LLE_EMULATOR", "OFF")
+        .define("USE_HW_SERIAL", "OFF")
+        .define("WITH_MIDIPLAY", "OFF")
+        .define("WITH_ADLMIDI2", "OFF")
+        .define("WITH_OLD_UTILS", "OFF")
+        .define("WITH_MUS2MID", "OFF")
+        .define("WITH_XMI2MID", "OFF")
+        .define("WITH_MIDIDUMP", "OFF")
+        .define("WITH_UNIT_TESTS", "OFF")
+        .define("CMAKE_INSTALL_LIBDIR", "lib")
+        .build();
+
+    println!("cargo:rustc-link-search=native={}/lib", output.display());
+    println!("cargo:rustc-link-lib=static=ADLMIDI");
+    println!("cargo:rerun-if-changed=native/libadlmidi");
 }
 
 fn build_ffmpeg() {
