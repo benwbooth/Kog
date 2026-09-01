@@ -43,6 +43,7 @@ mod sfm;
 mod sfm_decoder;
 mod sid;
 mod sid_decoder;
+mod spessasynth_midi;
 mod syntrax;
 mod syntrax_decoder;
 mod track;

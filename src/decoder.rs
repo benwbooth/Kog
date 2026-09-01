@@ -753,7 +753,9 @@ impl DecoderBackend for RodioBackend {
     }
 }
 
-const MIDI_EXTENSIONS: &[&str] = &["kar", "mid", "midi", "rmi"];
+const MIDI_EXTENSIONS: &[&str] = &[
+    "kar", "mid", "midi", "rmi", "mids", "mds", "lds", "xmf", "mxmf",
+];
 const MIDI_SAMPLE_RATE: u32 = 48_000;
 const MIDI_CHANNELS: u16 = 2;
 const MIDI_RENDER_FRAMES: usize = 512;
@@ -855,6 +857,21 @@ impl DecoderBackend for MidiBackend {
 
     fn extensions(&self) -> &'static [&'static str] {
         MIDI_EXTENSIONS
+    }
+
+    fn accepts(&self, path: &Path) -> bool {
+        let Some(extension) = path.extension().and_then(|value| value.to_str()) else {
+            return false;
+        };
+        if extension.eq_ignore_ascii_case("mds") {
+            return file_has_mids_header(path);
+        }
+        if extension.eq_ignore_ascii_case("xmf") {
+            return file_starts_with(path, b"XMF_");
+        }
+        MIDI_EXTENSIONS
+            .iter()
+            .any(|candidate| candidate.eq_ignore_ascii_case(extension))
     }
 
     fn capabilities(&self) -> DecoderCapabilities {
@@ -983,7 +1000,12 @@ fn load_midi_file(path: &Path, bytes: &[u8]) -> Result<(Arc<MidiFile>, Duration)
     Ok((midi_file, Duration::from_secs_f64(length)))
 }
 
-pub(crate) fn read_standard_midi(path: &Path) -> Result<Vec<u8>, String> {
+struct MidiDocument {
+    bytes: Vec<u8>,
+    title: Option<Vec<u8>>,
+}
+
+fn read_midi_document(path: &Path) -> Result<MidiDocument, String> {
     const MAX_MIDI_BYTES: u64 = 256 * 1024 * 1024;
     let metadata = std::fs::metadata(path)
         .map_err(|error| format!("reading MIDI metadata for {}: {error}", path.display()))?;
@@ -1002,7 +1024,7 @@ pub(crate) fn read_standard_midi(path: &Path) -> Result<Vec<u8>, String> {
         ));
     }
     if bytes.starts_with(b"MThd") {
-        return Ok(bytes);
+        return Ok(MidiDocument { bytes, title: None });
     }
     if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"RMID" {
         let mut offset = 12_usize;
@@ -1018,7 +1040,10 @@ pub(crate) fn read_standard_midi(path: &Path) -> Result<Vec<u8>, String> {
                 break;
             };
             if chunk_id == b"data" && bytes[start..end].starts_with(b"MThd") {
-                return Ok(bytes[start..end].to_vec());
+                return Ok(MidiDocument {
+                    bytes: bytes[start..end].to_vec(),
+                    title: None,
+                });
             }
             let Some(next) = end.checked_add(size & 1) else {
                 break;
@@ -1030,8 +1055,16 @@ pub(crate) fn read_standard_midi(path: &Path) -> Result<Vec<u8>, String> {
             path.display()
         ));
     }
+    if is_spessasynth_container_path(path) {
+        return crate::spessasynth_midi::convert(&bytes, path)
+            .map(|converted| MidiDocument {
+                bytes: converted.bytes,
+                title: converted.title,
+            })
+            .map_err(|error| format!("converting MIDI container {}: {error}", path.display()));
+    }
     Err(format!(
-        "MIDI file {} has neither an MThd nor RIFF RMID header",
+        "MIDI file {} has no supported MIDI container header",
         path.display()
     ))
 }
@@ -1047,9 +1080,37 @@ pub(crate) fn read_standard_midi_subsong(
     path: &Path,
     subsong: Option<u32>,
 ) -> Result<StandardMidiSubsong, String> {
-    let bytes = read_standard_midi(path)?;
-    select_standard_midi_subsong(&bytes, subsong)
-        .map_err(|error| format!("preparing MIDI file {}: {error}", path.display()))
+    let document = read_midi_document(path)?;
+    let mut selected = select_standard_midi_subsong(&document.bytes, subsong)
+        .map_err(|error| format!("preparing MIDI file {}: {error}", path.display()))?;
+    if selected.title.is_none() {
+        selected.title = document.title.as_deref().and_then(decode_midi_text);
+    }
+    Ok(selected)
+}
+
+fn is_spessasynth_container_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|extension| {
+            ["mids", "mds", "lds", "xmf", "mxmf"]
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(extension))
+        })
+}
+
+fn file_has_mids_header(path: &Path) -> bool {
+    let mut header = [0_u8; 16];
+    std::fs::File::open(path)
+        .and_then(|mut file| std::io::Read::read_exact(&mut file, &mut header))
+        .is_ok_and(|_| &header[0..4] == b"RIFF" && &header[8..16] == b"MIDSfmt ")
+}
+
+fn file_starts_with(path: &Path, expected: &[u8]) -> bool {
+    let mut header = vec![0_u8; expected.len()];
+    std::fs::File::open(path)
+        .and_then(|mut file| std::io::Read::read_exact(&mut file, &mut header))
+        .is_ok_and(|_| header == expected)
 }
 
 pub(crate) fn select_standard_midi_subsong(
@@ -1820,6 +1881,169 @@ mod tests {
         ]
     }
 
+    fn mids_test_bytes(eight_byte_records: bool) -> Vec<u8> {
+        let mut records = Vec::new();
+        let mut push_record = |delta: u32, event: u32| {
+            records.extend_from_slice(&delta.to_le_bytes());
+            if !eight_byte_records {
+                records.extend_from_slice(&0_u32.to_le_bytes());
+            }
+            records.extend_from_slice(&event.to_le_bytes());
+        };
+        push_record(0, 0x0107_a120); // 500,000 microseconds per quarter note.
+        push_record(0, 0x0000_00c0); // Program 0 on channel 0.
+        push_record(0, 0x0064_3c90); // Note-on: middle C, velocity 100.
+        push_record(480, 0x0040_3c80); // Note-off after one quarter note.
+
+        let mut body = Vec::new();
+        body.extend_from_slice(&1_u32.to_le_bytes()); // One segment.
+        body.extend_from_slice(&0_u32.to_le_bytes()); // Reserved segment word.
+        body.extend_from_slice(&(records.len() as u32).to_le_bytes());
+        body.extend_from_slice(&records);
+
+        let mut mids = Vec::new();
+        mids.extend_from_slice(b"RIFF");
+        mids.extend_from_slice(&0_u32.to_le_bytes());
+        mids.extend_from_slice(b"MIDSfmt ");
+        mids.extend_from_slice(&12_u32.to_le_bytes());
+        mids.extend_from_slice(&480_u32.to_le_bytes());
+        mids.extend_from_slice(&0_u32.to_le_bytes());
+        mids.extend_from_slice(&u32::from(eight_byte_records).to_le_bytes());
+        mids.extend_from_slice(b"data");
+        mids.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        mids.extend_from_slice(&body);
+        let riff_size = (mids.len() - 8) as u32;
+        mids[4..8].copy_from_slice(&riff_size.to_le_bytes());
+        mids
+    }
+
+    fn stored_zlib_test_bytes(data: &[u8]) -> Vec<u8> {
+        assert!(data.len() <= usize::from(u16::MAX));
+        let length = u16::try_from(data.len()).expect("bounded stored zlib length");
+        let mut output = vec![0x78, 0x01, 0x01];
+        output.extend_from_slice(&length.to_le_bytes());
+        output.extend_from_slice(&(!length).to_le_bytes());
+        output.extend_from_slice(data);
+        let mut a = 1_u32;
+        let mut b = 0_u32;
+        for byte in data {
+            a = (a + u32::from(*byte)) % 65_521;
+            b = (b + a) % 65_521;
+        }
+        output.extend_from_slice(&((b << 16) | a).to_be_bytes());
+        output
+    }
+
+    fn xmf_test_bytes(title: &str, compressed: bool) -> Vec<u8> {
+        let midi = minimal_test_midi();
+        let decoded_size = midi.len();
+        let mut metadata = vec![
+            0, 3, // Numeric field: ResourceFormat.
+            0, // No international variants.
+            3, // Format VLQ plus the two-byte payload.
+            4, // Binary metadata.
+            0, 0, // Standard resource, SMF type 0.
+        ];
+        metadata.extend_from_slice(&[
+            0,
+            8, // Numeric field: Title.
+            0, // No international variants.
+            (title.len() + 1) as u8,
+            0, // Visible ASCII metadata.
+        ]);
+        metadata.extend_from_slice(title.as_bytes());
+
+        let payload = if compressed {
+            stored_zlib_test_bytes(&midi)
+        } else {
+            midi
+        };
+        let unpackers = if compressed {
+            vec![
+                4, // Block length, including this byte.
+                0,
+                0, // Standard unpacker and its ID.
+                decoded_size as u8,
+            ]
+        } else {
+            vec![0]
+        };
+        let header_size = 4 + metadata.len() + unpackers.len();
+        let node_length = header_size + 1 + payload.len();
+        let file_length = 11 + node_length;
+        assert!(file_length < 128, "fixture must use one-byte XMF VLQs");
+
+        let mut xmf = Vec::with_capacity(file_length);
+        xmf.extend_from_slice(b"XMF_1.00");
+        xmf.push(file_length as u8);
+        xmf.push(0); // Empty file-level metadata table.
+        xmf.push(11); // Root node absolute offset.
+        xmf.push(node_length as u8);
+        xmf.push(0); // A FileNode has no children.
+        xmf.push(header_size as u8);
+        xmf.push(metadata.len() as u8);
+        xmf.extend_from_slice(&metadata);
+        xmf.extend_from_slice(&unpackers);
+        xmf.push(1); // Inline resource reference.
+        xmf.extend_from_slice(&payload);
+        assert_eq!(xmf.len(), file_length);
+        xmf
+    }
+
+    fn oversized_compressed_xmf_test_bytes() -> Vec<u8> {
+        let metadata = [0, 3, 0, 3, 4, 0, 0];
+        let mut xmf = Vec::new();
+        xmf.extend_from_slice(b"XMF_1.00");
+        xmf.extend_from_slice(&[32, 0, 11]); // File length, metadata size, tree offset.
+        xmf.extend_from_slice(&[21, 0, 19, 7]); // Node, child count, header, metadata.
+        xmf.extend_from_slice(&metadata);
+        xmf.extend_from_slice(&[
+            8, // Eight-byte unpacker block including this length.
+            0, 0, // Standard unpacker and its ID.
+            0x81, 0x80, 0x80, 0x80, 0x01, // 256 MiB plus one byte decoded.
+            1,    // Inline resource reference.
+            0,    // Compressed payload placeholder.
+        ]);
+        assert_eq!(xmf.len(), 32);
+        xmf
+    }
+
+    fn lds_test_bytes() -> Vec<u8> {
+        let mut lds = vec![
+            0, // Mode.
+            0, 0,  // Legacy speed value.
+            10, // Ten simulation ticks per pattern step.
+            2,  // Two pattern steps.
+        ];
+        lds.extend_from_slice(&[0; 9]); // Per-channel note delays.
+        lds.push(0); // BD register.
+        lds.extend_from_slice(&1_u16.to_le_bytes()); // One patch.
+
+        let mut patch = [0_u8; 46];
+        patch[40] = 0; // General MIDI acoustic grand piano.
+        patch[41] = 100; // MIDI velocity.
+        lds.extend_from_slice(&patch);
+        lds.extend_from_slice(&1_u16.to_le_bytes()); // One position.
+
+        for channel in 0_u16..9 {
+            let pattern_word_offset = channel * 2;
+            lds.extend_from_slice(&(pattern_word_offset * 2).to_le_bytes());
+            lds.push(0); // No transpose.
+        }
+        lds.extend_from_slice(&[0, 0]); // Legacy digital-instrument fields.
+
+        for channel in 0..9 {
+            if channel == 0 {
+                lds.extend_from_slice(&0x3c00_u16.to_le_bytes());
+                lds.extend_from_slice(&0xfc00_u16.to_le_bytes());
+            } else {
+                lds.extend_from_slice(&0_u16.to_le_bytes());
+                lds.extend_from_slice(&0_u16.to_le_bytes());
+            }
+        }
+        lds
+    }
+
     fn format_two_test_midi() -> Vec<u8> {
         let mut midi = vec![b'M', b'T', b'h', b'd', 0, 0, 0, 6, 0, 2, 0, 2, 1, 0xe0];
         for (name, note, duration) in [
@@ -2007,6 +2231,180 @@ mod tests {
 
         std::fs::remove_file(midi_path).ok();
         std::fs::remove_file(rmid_path).ok();
+    }
+
+    #[test]
+    fn mids_and_mds_containers_convert_to_audible_seekable_midi() {
+        let fixture = tempfile::tempdir().expect("create MIDS fixture directory");
+        let settings = DecoderSettings::new(None, MidiEngine::Opl3Windows);
+        let registry = DecoderRegistry::new(settings);
+
+        for (name, eight_byte_records) in [("directmusic.mids", true), ("legacy.mds", false)] {
+            let path = fixture.path().join(name);
+            std::fs::write(&path, mids_test_bytes(eight_byte_records)).expect("write MIDS fixture");
+            assert_eq!(registry.backend_id_for(&path), Some("midi-opl3windows"));
+            let sources = registry.expand(path.clone()).expect("expand MIDS fixture");
+            assert_eq!(sources.len(), 1);
+            let properties = registry.probe(&sources[0]).expect("probe MIDS fixture");
+            assert_eq!(properties.duration, Some(Duration::from_millis(500)));
+
+            let converted = read_standard_midi_subsong(&path, None)
+                .expect("convert MIDS fixture to Standard MIDI");
+            let smf = Smf::parse(&converted.bytes).expect("parse converted MIDS stream");
+            assert_eq!(smf.header.format, Format::SingleTrack);
+            assert!(smf.tracks[0].iter().any(|event| matches!(
+                event.kind,
+                TrackEventKind::Midi {
+                    message: MidiMessage::NoteOn { key, .. },
+                    ..
+                } if key.as_int() == 60
+            )));
+
+            let timeline = Arc::new(
+                OplMidiTimeline::parse(&converted.bytes).expect("converted MIDS OPL timeline"),
+            );
+            let mut source = OplMidiSource::new(timeline).expect("MIDS OPL source");
+            assert!(
+                source
+                    .by_ref()
+                    .take(4_800 * 2)
+                    .any(|sample| sample.abs() > 0.000_01),
+                "converted {name} stream was silent"
+            );
+            source
+                .try_seek(Duration::from_millis(250))
+                .expect("seek converted MIDS stream");
+            assert_eq!(source.frames_rendered, 12_000);
+
+            if eight_byte_records {
+                let mut soundfont_bytes = Cursor::new(minimal_test_soundfont());
+                let soundfont = Arc::new(
+                    SoundFont::new(&mut soundfont_bytes).expect("load generated minimal SoundFont"),
+                );
+                let (midi_file, duration) =
+                    load_midi_file(&path, &converted.bytes).expect("load converted MIDS SMF");
+                let mut source =
+                    MidiSource::new(soundfont, midi_file, duration).expect("MIDS SoundFont source");
+                assert!(
+                    source
+                        .by_ref()
+                        .take(4_800 * 2)
+                        .any(|sample| sample.abs() > 0.000_01),
+                    "converted MIDS SoundFont stream was silent"
+                );
+                source
+                    .try_seek(Duration::from_millis(250))
+                    .expect("seek converted MIDS SoundFont stream");
+                assert_eq!(source.frames_rendered, 12_000);
+            }
+        }
+    }
+
+    #[test]
+    fn xmf_and_mxmf_containers_preserve_title_and_render_pcm() {
+        let fixture = tempfile::tempdir().expect("create XMF fixture directory");
+        let registry = DecoderRegistry::new(DecoderSettings::new(None, MidiEngine::Opl3Windows));
+
+        for (name, compressed) in [("collection.xmf", false), ("mobile.mxmf", true)] {
+            let path = fixture.path().join(name);
+            std::fs::write(&path, xmf_test_bytes("XMF Fixture", compressed))
+                .expect("write XMF fixture");
+            assert_eq!(registry.backend_id_for(&path), Some("midi-opl3windows"));
+            let source = PlaybackSource::from_path(path.clone());
+            let properties = registry.probe(&source).expect("probe XMF fixture");
+            assert_eq!(properties.title.as_deref(), Some("XMF Fixture"));
+            assert_eq!(properties.duration, Some(Duration::from_millis(500)));
+
+            let converted = read_standard_midi_subsong(&path, None)
+                .expect("convert XMF fixture to Standard MIDI");
+            let timeline = Arc::new(
+                OplMidiTimeline::parse(&converted.bytes).expect("converted XMF OPL timeline"),
+            );
+            let mut source = OplMidiSource::new(timeline).expect("XMF OPL source");
+            assert!(
+                source
+                    .by_ref()
+                    .take(4_800 * 2)
+                    .any(|sample| sample.abs() > 0.000_01),
+                "converted {name} stream was silent"
+            );
+        }
+    }
+
+    #[test]
+    fn lds_tracker_converts_to_audible_seekable_midi() {
+        let fixture = tempfile::tempdir().expect("create LDS fixture directory");
+        let path = fixture.path().join("tracker.lds");
+        std::fs::write(&path, lds_test_bytes()).expect("write LDS fixture");
+        let registry = DecoderRegistry::new(DecoderSettings::new(None, MidiEngine::Opl3Windows));
+        assert_eq!(registry.backend_id_for(&path), Some("midi-opl3windows"));
+
+        let converted =
+            read_standard_midi_subsong(&path, None).expect("convert LDS fixture to Standard MIDI");
+        let smf = Smf::parse(&converted.bytes).expect("parse converted LDS stream");
+        assert_eq!(smf.header.format, Format::Parallel);
+        assert!(smf.tracks.iter().flatten().any(|event| matches!(
+            event.kind,
+            TrackEventKind::Midi {
+                message: MidiMessage::NoteOn { key, .. },
+                ..
+            } if key.as_int() == 60
+        )));
+
+        let timeline =
+            Arc::new(OplMidiTimeline::parse(&converted.bytes).expect("converted LDS OPL timeline"));
+        let duration = timeline.duration;
+        assert!(duration > Duration::ZERO);
+        let mut source = OplMidiSource::new(timeline).expect("LDS OPL source");
+        assert!(
+            source
+                .by_ref()
+                .take(4_800 * 2)
+                .any(|sample| sample.abs() > 0.000_01),
+            "converted LDS stream was silent"
+        );
+        let seek_position = duration / 2;
+        source
+            .try_seek(seek_position)
+            .expect("seek converted LDS stream");
+        assert_eq!(
+            source.frames_rendered,
+            seek_position.as_secs_f64().mul_add(48_000.0, 0.0) as u64
+        );
+    }
+
+    #[test]
+    fn midi_container_routing_rejects_extension_collisions_and_malformed_data() {
+        let fixture = tempfile::tempdir().expect("create MIDI collision fixture directory");
+        let registry = DecoderRegistry::new(DecoderSettings::new(None, MidiEngine::Opl3Windows));
+        let mds_path = fixture.path().join("disc-image.mds");
+        std::fs::write(&mds_path, b"MEDIA DESCRIPTOR").expect("write colliding MDS fixture");
+        assert_eq!(registry.backend_id_for(&mds_path), Some("vgmstream"));
+
+        let xmf_path = fixture.path().join("tracker.xmf");
+        std::fs::write(&xmf_path, b"Extended Module: unrelated tracker")
+            .expect("write colliding XMF fixture");
+        assert_eq!(registry.backend_id_for(&xmf_path), Some("libopenmpt"));
+
+        let malformed_path = fixture.path().join("broken.mids");
+        let mut zero_division = mids_test_bytes(true);
+        zero_division[20..24].copy_from_slice(&0_u32.to_le_bytes());
+        std::fs::write(&malformed_path, zero_division).expect("write malformed MIDS fixture");
+        let error = read_standard_midi_subsong(&malformed_path, None)
+            .expect_err("reject zero time division");
+        assert!(error.contains("rejected the MIDI container"));
+
+        let mut truncated = mids_test_bytes(false);
+        truncated.truncate(truncated.len() - 2);
+        std::fs::write(&malformed_path, truncated).expect("write truncated MIDS fixture");
+        assert!(read_standard_midi_subsong(&malformed_path, None).is_err());
+
+        let oversized_xmf = fixture.path().join("oversized.mxmf");
+        std::fs::write(&oversized_xmf, oversized_compressed_xmf_test_bytes())
+            .expect("write oversized XMF fixture");
+        let error = read_standard_midi_subsong(&oversized_xmf, None)
+            .expect_err("reject oversized compressed XMF payload");
+        assert!(error.contains("decoded payloads exceed Kog's 256 MiB limit"));
     }
 
     #[test]

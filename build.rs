@@ -4,6 +4,7 @@ use std::path::Path;
 use std::path::PathBuf;
 
 fn main() {
+    build_spessasynth_midi();
     build_mt32emu();
     build_game_music_emu();
     build_sfm_helper();
@@ -112,6 +113,47 @@ fn main() {
     .qt_module("Quick")
     .qt_module("QuickControls2")
     .build();
+}
+
+fn build_spessasynth_midi() {
+    let source = Path::new("native/spessasynth-core/spessasynth_core");
+    if !source.join("include/spessasynth/midi/midi.h").is_file() {
+        panic!(
+            "SpessaSynth Core C submodule is missing; run `git submodule update --init --recursive`"
+        );
+    }
+
+    let output = cmake::Config::new(source)
+        .profile("Release")
+        .define("SS_BUILD_SHARED", "OFF")
+        .define("SS_BUILD_EXAMPLES", "OFF")
+        .define("SS_ENABLE_SF3_VORBIS", "OFF")
+        .define("SS_ENABLE_SF3_FLAC", "OFF")
+        .define("CMAKE_INSTALL_LIBDIR", "lib")
+        .build();
+
+    cc::Build::new()
+        .std("c11")
+        .include(output.join("include"))
+        .file("native/spessasynth_midi_bridge.c")
+        .warnings(true)
+        .extra_warnings(true)
+        .compile("kog_spessasynth_midi_bridge");
+
+    println!("cargo:rustc-link-search=native={}/lib", output.display());
+    println!("cargo:rustc-link-lib=static=spessasynth");
+    pkg_config::Config::new()
+        .cargo_metadata(true)
+        .probe("zlib")
+        .unwrap_or_else(|error| panic!("zlib is required for compressed XMF support: {error}"));
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        println!("cargo:rustc-link-lib=m");
+        println!("cargo:rustc-link-lib=pthread");
+    }
+
+    println!("cargo:rerun-if-changed=native/spessasynth-core/spessasynth_core");
+    println!("cargo:rerun-if-changed=native/spessasynth_midi_bridge.c");
+    println!("cargo:rerun-if-changed=native/spessasynth_midi_bridge.h");
 }
 
 fn build_mt32emu() {

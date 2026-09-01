@@ -64,3 +64,6 @@
 [submodule "native/munt"]
 	path = native/munt
 	url = https://github.com/munt/munt.git
+[submodule "native/spessasynth-core"]
+	path = native/spessasynth-core
+	url = https://github.com/kode54/spessasynth_core_c.git

@@ -101,6 +101,28 @@ The helper locates supported model ROMs by their upstream-known hashes. Kog
 does not contain, download, or redistribute Roland firmware, wave ROMs, or
 other proprietary ROM data; users must supply any required files themselves.
 
+## SpessaSynth Core C
+
+The `native/spessasynth-core` Git submodule is kode54's portable C11
+[SpessaSynth Core C](https://github.com/kode54/spessasynth_core_c) repository,
+pinned to the same revision used by Cog commit `c17be856`, commit
+`28a362aa65a1035e2b5f2730001843f8f81e8564`. Kog statically builds the upstream
+library with its examples and optional SF3 Vorbis/FLAC decoders disabled, then
+uses the file, MIDI loader, EMIDI filter, and writer APIs through
+`native/spessasynth_midi_bridge.c`. Kog currently uses this dependency only to
+convert MIDS/MDS, LDS, and XMF/MXMF containers to Standard MIDI; synthesis
+continues through Kog's separately documented engines. Zlib support remains
+enabled for compressed XMF FileNodes.
+
+SpessaSynth Core C is Copyright (C) Christopher Snowhill, Spessasus, and the
+contributors identified by the upstream repository. It is distributed under
+the Apache License, version 2.0. The complete source and exact license text are
+retained in the pinned submodule at `native/spessasynth-core/LICENSE`.
+
+The MIDS, LDS, and XMF fixtures in `src/decoder.rs` are original deterministic
+test data generated in memory and contain no third-party music, samples, or
+sound banks.
+
 ## libADLMIDI
 
 The `native/libadlmidi` Git submodule is the official

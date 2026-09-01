@@ -40,8 +40,9 @@ controller reopens the active source at its prior position and pause state.
 
 The installed backends are `rodio-symphonia` for conventional audio,
 `ffmpeg` as the broad conventional fallback behind Symphonia,
-`midi-rustysynth-sf2` for Standard MIDI File and RIFF RMID rendering through a
-user-selected SF2 SoundFont, and `midi-opl3windows` for the same MIDI containers
+`midi-rustysynth-sf2` for Standard MIDI File, RIFF RMID, MIDS/MDS, LDS, and
+XMF/MXMF rendering through a user-selected SF2 SoundFont, and
+`midi-opl3windows` for the same MIDI containers
 through Cog's OPL3Windows General MIDI engine and Nuked OPL3 1.7.1 core.
 `midi-nuked-sc55` sends those containers to a separately licensed optional
 Nuked SC-55 0.6.1 helper using a user-supplied Roland ROM directory.
@@ -208,6 +209,23 @@ Playback emits 48 kHz stereo float PCM; seeking recreates the synth and renders
 discarded frames to the exact target. This route is an in-process library, not
 a command-line frontend or separately installed executable. Model ROMs remain
 user-supplied and are never downloaded, embedded, or copied by Kog.
+
+The remaining Cog MIDI-container family uses the same SpessaSynth Core C
+revision as the reference application, pinned at `28a362a`. Cargo builds the
+portable C11 project as a static archive and Kog calls only its in-process file,
+MIDI loader, EMIDI filter, and MIDI writer APIs through a small ownership
+bridge. Static archive linkage includes the reachable parser/writer objects;
+Kog does not use SpessaSynth as a renderer. DirectMusic MIDS/MDS, Loudness LDS,
+and XMF/MXMF become a bounded SMF stream before the selected RustySynth,
+OPL3Windows, SC-55, or MT-32 route sees them. Input and serialized output are
+limited to 256 MiB, XMF title bytes are retained, and Cog's non-GM EMIDI tracks
+are filtered. Zlib is linked for compressed XMF FileNodes. Content checks keep
+unrelated `.mds` and `.xmf` files on vgmstream and OpenMPT respectively.
+Generated fixtures prove both DirectMusic record layouts, LDS/XMF conversion,
+XMF title propagation, malformed/truncated rejection, collision routing,
+audible SF2/OPL3 PCM, and deterministic seek. Broad real-world corpora,
+embedded XMF bank handoff, the rest of RMIDI/XMF metadata, and non-Linux runtime
+gates remain.
 
 The libADLMIDI adapter is a thin Rust owner around the upstream C API; Kog does
 not translate Cog's Objective-C MIDI container plugin. It retains input memory
