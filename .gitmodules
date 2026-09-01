@@ -58,3 +58,6 @@
 [submodule "native/libadlmidi"]
 	path = native/libadlmidi
 	url = https://github.com/Wohlstand/libADLMIDI.git
+[submodule "native/nuked-sc55"]
+	path = native/nuked-sc55
+	url = https://github.com/jcmoyer/Nuked-SC55.git

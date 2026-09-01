@@ -40,6 +40,36 @@ The resampler is Copyright (C) 2004-2008 Shay Green and Copyright (C)
 Public License, version 2.1 or (at your option) any later version. A copy is in
 `LICENSES/LGPL-2.1.txt`.
 
+## Nuked SC-55 and kog-sc55-helper
+
+The `native/nuked-sc55` Git submodule is J.C. Moyer's maintained reusable
+backend fork of [Nuked SC-55](https://github.com/jcmoyer/Nuked-SC55), pinned to
+release 0.6.1 at commit
+`50dcddeacfdf6fcfbcc948ca08cf4ad5fac08980`. The fork attributes the original
+implementation to nukeykt and identifies additional contributors in its
+README and source history.
+
+Nuked SC-55 is distributed under the original MAME license. Its terms prohibit
+selling redistributions and use in commercial products or activity, require
+complete source for modified redistributions subject to the stated system
+component exception, and require preservation of its copyright, conditions,
+and disclaimer. The exact terms are retained in `native/nuked-sc55/LICENSE`
+and copied to `LICENSES/Nuked-SC55-original-MAME.txt`.
+
+Kog compiles only the fork's emulator backend and hash-based ROM loader into
+the separately identified optional `kog-sc55-helper`; it does not build the
+SDL, RtMidi, standard frontend, renderer frontend, or GUI. No Nuked SC-55
+object is linked into the GPL-3.0-or-later Kog executable. Kog's adapter in
+`native/sc55-helper` is marked `LicenseRef-Nuked-SC55` and distributed under
+the same terms as that combined helper. The process boundary and protocol in
+`native/sc55-helper/PROTOCOL.md` do not relicense the emulator. Binary/source
+distributors must retain the complete pinned corresponding source and notices
+and independently review the noncommercial restriction.
+
+The helper locates supported model ROMs by their upstream-known hashes. Kog
+does not contain, download, or redistribute Roland firmware, wave ROMs, or
+other proprietary ROM data; users must supply any required files themselves.
+
 ## libADLMIDI
 
 The `native/libadlmidi` Git submodule is the official

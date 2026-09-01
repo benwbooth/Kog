@@ -13,6 +13,7 @@ use rodio::{ChannelCount, Decoder, Player, SampleRate, Source};
 use rustysynth::{MidiFile, MidiFileSequencer, SoundFont, Synthesizer, SynthesizerSettings};
 
 use crate::opl3::Opl3WindowsSynth;
+use crate::sc55::Sc55;
 use crate::settings::MidiEngine;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -163,6 +164,7 @@ pub trait DecoderBackend: Send + Sync {
 #[derive(Clone, Default)]
 pub struct DecoderSettings {
     soundfont_path: Arc<RwLock<Option<PathBuf>>>,
+    sc55_rom_path: Arc<RwLock<Option<PathBuf>>>,
     midi_engine: Arc<RwLock<MidiEngine>>,
 }
 
@@ -170,8 +172,14 @@ impl DecoderSettings {
     pub fn new(soundfont_path: Option<PathBuf>, midi_engine: MidiEngine) -> Self {
         Self {
             soundfont_path: Arc::new(RwLock::new(soundfont_path)),
+            sc55_rom_path: Arc::new(RwLock::new(None)),
             midi_engine: Arc::new(RwLock::new(midi_engine)),
         }
+    }
+
+    pub fn with_sc55_rom_path(self, path: Option<PathBuf>) -> Self {
+        self.set_sc55_rom_path(path);
+        self
     }
 
     pub fn soundfont_path(&self) -> Option<PathBuf> {
@@ -184,6 +192,20 @@ impl DecoderSettings {
     pub fn set_soundfont_path(&self, path: Option<PathBuf>) {
         *self
             .soundfont_path
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = path;
+    }
+
+    pub fn sc55_rom_path(&self) -> Option<PathBuf> {
+        self.sc55_rom_path
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    pub fn set_sc55_rom_path(&self, path: Option<PathBuf>) {
+        *self
+            .sc55_rom_path
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = path;
     }
@@ -597,6 +619,20 @@ impl MidiBackend {
         cache.soundfont = Some(Arc::clone(&soundfont));
         Ok(soundfont)
     }
+
+    fn open_sc55(&self, path: &Path) -> Result<Sc55, String> {
+        let rom_directory = self.settings.sc55_rom_path().ok_or_else(|| {
+            "SC-55 playback requires user-supplied Roland ROMs. Choose their directory in Edit > Preferences > MIDI."
+                .to_owned()
+        })?;
+        if !rom_directory.is_dir() {
+            return Err(format!(
+                "Selected SC-55 ROM directory is unavailable: {}",
+                rom_directory.display()
+            ));
+        }
+        Sc55::open(path, &rom_directory)
+    }
 }
 
 impl DecoderBackend for MidiBackend {
@@ -604,6 +640,7 @@ impl DecoderBackend for MidiBackend {
         match self.settings.midi_engine() {
             MidiEngine::RustySynth => "midi-rustysynth-sf2",
             MidiEngine::Opl3Windows => "midi-opl3windows",
+            MidiEngine::Sc55 => "midi-nuked-sc55",
         }
     }
 
@@ -611,6 +648,7 @@ impl DecoderBackend for MidiBackend {
         match self.settings.midi_engine() {
             MidiEngine::RustySynth => "RustySynth SoundFont",
             MidiEngine::Opl3Windows => "OPL3Windows (Nuked OPL3)",
+            MidiEngine::Sc55 => "Nuked SC-55 0.6.1",
         }
     }
 
@@ -626,18 +664,36 @@ impl DecoderBackend for MidiBackend {
     }
 
     fn probe(&self, source: &PlaybackSource) -> Result<StreamProperties, String> {
-        let duration = match self.settings.midi_engine() {
-            MidiEngine::RustySynth => load_midi_file(&source.path)?.1,
+        let properties = match self.settings.midi_engine() {
+            MidiEngine::RustySynth => StreamProperties {
+                duration: Some(load_midi_file(&source.path)?.1),
+                sample_rate: Some(MIDI_SAMPLE_RATE),
+                channels: Some(MIDI_CHANNELS),
+                codec: Some("SoundFont 2".to_owned()),
+                ..StreamProperties::default()
+            },
             MidiEngine::Opl3Windows => {
-                OplMidiTimeline::parse(&read_standard_midi(&source.path)?)?.duration
+                let duration = OplMidiTimeline::parse(&read_standard_midi(&source.path)?)?.duration;
+                StreamProperties {
+                    duration: Some(duration),
+                    sample_rate: Some(MIDI_SAMPLE_RATE),
+                    channels: Some(MIDI_CHANNELS),
+                    codec: Some("OPL3Windows / Nuked OPL3".to_owned()),
+                    ..StreamProperties::default()
+                }
+            }
+            MidiEngine::Sc55 => {
+                let sc55 = self.open_sc55(&source.path)?;
+                StreamProperties {
+                    duration: Some(sc55.duration()),
+                    sample_rate: Some(sc55.sample_rate()),
+                    channels: Some(sc55.channels()),
+                    codec: Some(format!("Nuked SC-55 ({})", sc55.model())),
+                    ..StreamProperties::default()
+                }
             }
         };
-        Ok(StreamProperties {
-            duration: Some(duration),
-            sample_rate: Some(MIDI_SAMPLE_RATE),
-            channels: Some(MIDI_CHANNELS),
-            ..StreamProperties::default()
-        })
+        Ok(properties)
     }
 
     fn append(&self, source: &PlaybackSource, player: &Player) -> Result<(), String> {
@@ -651,6 +707,9 @@ impl DecoderBackend for MidiBackend {
                 let timeline =
                     Arc::new(OplMidiTimeline::parse(&read_standard_midi(&source.path)?)?);
                 player.append(OplMidiSource::new(timeline)?);
+            }
+            MidiEngine::Sc55 => {
+                player.append(Sc55MidiSource::new(self.open_sc55(&source.path)?));
             }
         }
         Ok(())
@@ -693,9 +752,24 @@ fn load_midi_file(path: &Path) -> Result<(Arc<MidiFile>, Duration), String> {
     Ok((midi_file, Duration::from_secs_f64(length)))
 }
 
-fn read_standard_midi(path: &Path) -> Result<Vec<u8>, String> {
+pub(crate) fn read_standard_midi(path: &Path) -> Result<Vec<u8>, String> {
+    const MAX_MIDI_BYTES: u64 = 256 * 1024 * 1024;
+    let metadata = std::fs::metadata(path)
+        .map_err(|error| format!("reading MIDI metadata for {}: {error}", path.display()))?;
+    if metadata.len() > MAX_MIDI_BYTES {
+        return Err(format!(
+            "MIDI file {} exceeds Kog's 256 MiB limit",
+            path.display()
+        ));
+    }
     let bytes = std::fs::read(path)
         .map_err(|error| format!("reading MIDI file {}: {error}", path.display()))?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_MIDI_BYTES {
+        return Err(format!(
+            "MIDI file {} grew beyond Kog's 256 MiB limit while it was read",
+            path.display()
+        ));
+    }
     if bytes.starts_with(b"MThd") {
         return Ok(bytes);
     }
@@ -1094,6 +1168,115 @@ impl Source for OplMidiSource {
     }
 }
 
+struct Sc55MidiSource {
+    decoder: Sc55,
+    duration: Duration,
+    sample_rate: u32,
+    interleaved: Vec<f32>,
+    interleaved_index: usize,
+    render_error: Option<String>,
+}
+
+impl Sc55MidiSource {
+    fn new(decoder: Sc55) -> Self {
+        let duration = decoder.duration();
+        let sample_rate = decoder.sample_rate();
+        Self {
+            decoder,
+            duration,
+            sample_rate,
+            interleaved: Vec::with_capacity(MIDI_RENDER_FRAMES * usize::from(MIDI_CHANNELS)),
+            interleaved_index: 0,
+            render_error: None,
+        }
+    }
+
+    fn fill_interleaved(&mut self) {
+        self.interleaved
+            .resize(MIDI_RENDER_FRAMES * usize::from(MIDI_CHANNELS), 0.0);
+        match self.decoder.render(&mut self.interleaved) {
+            Ok(frames) => self
+                .interleaved
+                .truncate(frames * usize::from(MIDI_CHANNELS)),
+            Err(error) => {
+                eprintln!("Kog SC-55 playback stopped: {error}");
+                self.render_error = Some(error);
+                self.interleaved.clear();
+            }
+        }
+        self.interleaved_index = 0;
+    }
+
+    fn remaining_samples(&self) -> u64 {
+        if self.render_error.is_some() {
+            return 0;
+        }
+        self.decoder
+            .total_frames()
+            .saturating_sub(self.decoder.rendered_frames())
+            .saturating_mul(u64::from(MIDI_CHANNELS))
+            .saturating_add(
+                u64::try_from(
+                    self.interleaved
+                        .len()
+                        .saturating_sub(self.interleaved_index),
+                )
+                .unwrap_or(u64::MAX),
+            )
+    }
+}
+
+impl Iterator for Sc55MidiSource {
+    type Item = f32;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.interleaved_index == self.interleaved.len() {
+            if self.render_error.is_some()
+                || self.decoder.rendered_frames() >= self.decoder.total_frames()
+            {
+                return None;
+            }
+            self.fill_interleaved();
+        }
+        let sample = *self.interleaved.get(self.interleaved_index)?;
+        self.interleaved_index += 1;
+        Some(sample)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = usize::try_from(self.remaining_samples()).unwrap_or(usize::MAX);
+        (remaining, Some(remaining))
+    }
+}
+
+impl Source for Sc55MidiSource {
+    fn current_span_len(&self) -> Option<usize> {
+        self.size_hint().1
+    }
+
+    fn channels(&self) -> ChannelCount {
+        NonZeroU16::new(MIDI_CHANNELS).expect("SC-55 output is stereo")
+    }
+
+    fn sample_rate(&self) -> SampleRate {
+        NonZeroU32::new(self.sample_rate).expect("validated SC-55 sample rate is nonzero")
+    }
+
+    fn total_duration(&self) -> Option<Duration> {
+        Some(self.duration)
+    }
+
+    fn try_seek(&mut self, position: Duration) -> Result<(), SeekError> {
+        self.decoder
+            .seek(position)
+            .map_err(|error| SeekError::Other(Arc::new(std::io::Error::other(error))))?;
+        self.interleaved.clear();
+        self.interleaved_index = 0;
+        self.render_error = None;
+        Ok(())
+    }
+}
+
 struct MidiSource {
     soundfont: Arc<SoundFont>,
     midi_file: Arc<MidiFile>,
@@ -1408,6 +1591,12 @@ mod tests {
             registry.backend_id_for(Path::new("song.mid")),
             Some("midi-rustysynth-sf2")
         );
+
+        settings.set_midi_engine(MidiEngine::Sc55);
+        assert_eq!(
+            registry.backend_id_for(Path::new("song.mid")),
+            Some("midi-nuked-sc55")
+        );
     }
 
     #[test]
@@ -1437,6 +1626,18 @@ mod tests {
         let backend = MidiBackend::new(DecoderSettings::default());
         let error = backend.load_soundfont().expect_err("missing SoundFont");
         assert!(error.contains("requires an SF2 SoundFont"));
+    }
+
+    #[test]
+    fn sc55_backend_requires_a_configured_rom_directory() {
+        let path = std::env::temp_dir().join(format!("kog-sc55-midi-{}.mid", std::process::id()));
+        write_test_midi(&path);
+        let backend = MidiBackend::new(DecoderSettings::new(None, MidiEngine::Sc55));
+        let error = backend
+            .probe(&PlaybackSource::from_path(path.clone()))
+            .expect_err("missing SC-55 ROM directory");
+        assert!(error.contains("user-supplied Roland ROMs"));
+        std::fs::remove_file(path).ok();
     }
 
     #[test]

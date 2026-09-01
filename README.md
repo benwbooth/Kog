@@ -12,7 +12,12 @@ real conventional-audio playback path with pause, stop, seek, volume, and
 automatic track advance. It also renders format-0/1 MID, MIDI, KAR, and RIFF
 RMID files through either a validated, persisted SF2 SoundFont using RustySynth
 or Cog's OPL3Windows synthesizer and its Nuked OPL3 core, with duration probing
-and seeking. Legacy HMI, HMP/HMQ, DMX MUS, and Miles XMI files route through
+and seeking. An optional third route uses the maintained Nuked SC-55 0.6.1
+backend in an automatically built, bundled companion process, detects supported
+Roland models from user-owned ROM hashes, sends complete MIDI/SysEx byte
+streams, and supports deterministic seek. Users do not install Nuked SC-55 or
+any of its frontends separately. Kog does not include Roland ROMs, and the SC-55 path still needs a
+real-ROM PCM/corpus gate. Legacy HMI, HMP/HMQ, DMX MUS, and Miles XMI files route through
 the maintained libADLMIDI library and its Nuked OPL3 renderer, with native
 subsong expansion, metadata, duration, and seeking. Kog builds libADLMIDI with
 its explicitly cleared embedded-bank database and excludes its grey-zone bank
@@ -232,8 +237,8 @@ Windows/macOS runtime gates remain parity work.
 - Verify supported formats against a versioned playback corpus.
 
 Likely decoder families include FFmpeg, libopenmpt, Game Music Emu, vgmstream,
-libvgm, libsidplayfp, AdPlug, libADLMIDI, a SoundFont synthesizer, and an OPL3
-MIDI synthesizer. Dependencies and redistributable assets are selected under the
+libvgm, libsidplayfp, AdPlug, libADLMIDI, a SoundFont synthesizer, OPL3 MIDI,
+and optional Roland emulation. Dependencies and redistributable assets are selected under the
 project's documented license policy. License-restricted decoders retain their
 own terms and require either a compatible replacement or an independently
 reviewed optional-program boundary; Kog's non-commercial intent alone does not
@@ -261,21 +266,25 @@ For an existing checkout, initialize native sources with
 `git submodule update --init --recursive` before building.
 
 Cargo builds `kog-psf-helper`, `kog-psf2-helper`, `kog-snsf-helper`,
-`kog-2sf-helper`, and `kog-syntrax-helper` automatically for local playback.
-Binary packages must
-install the helpers they distribute beside the Kog executable and carry each
-helper's corresponding notices. Isolated tests may override their locations
+`kog-2sf-helper`, `kog-syntrax-helper`, and `kog-sc55-helper` automatically for
+local playback; users do not install third-party player or renderer programs.
+Binary packages bundle the companion processes they distribute beside the Kog
+executable and carry each process's corresponding notices. Isolated tests may override their locations
 with
 `KOG_PSF_HELPER=/path/to/kog-psf-helper` and
 `KOG_PSF2_HELPER=/path/to/kog-psf2-helper`, or
 `KOG_SNSF_HELPER=/path/to/kog-snsf-helper` and
 `KOG_2SF_HELPER=/path/to/kog-2sf-helper`. Syntrax tests and packages may use
-`KOG_SYNTRAX_HELPER=/path/to/kog-syntrax-helper`.
+`KOG_SYNTRAX_HELPER=/path/to/kog-syntrax-helper`; SC-55 tests and packages may
+use `KOG_SC55_HELPER=/path/to/kog-sc55-helper`.
 
-Choose RustySynth or OPL3Windows under **Edit → Preferences → MIDI**. RustySynth
-requires an SF2 bank; Kog also accepts `KOG_SOUNDFONT=/path/to/bank.sf2` and
-`KOG_MIDI_ENGINE=rustysynth-sf2|opl3windows` for isolated testing and packaged
-deployments.
+Choose RustySynth, OPL3Windows, or Nuked SC-55 under
+**Edit → Preferences → MIDI**. RustySynth requires an SF2 bank. SC-55 requires
+a directory containing a complete supported ROM set obtained from hardware
+you own; Kog accepts `KOG_SC55_ROMS=/path/to/rom-directory` and never downloads
+or bundles those files. Isolated tests and packages may also set
+`KOG_SOUNDFONT=/path/to/bank.sf2` and
+`KOG_MIDI_ENGINE=rustysynth-sf2|opl3windows|nuked-sc55`.
 
 Organya needs a user-owned synthesis bank. Put `soundbank.wdb` or the
 `wavetable.dat` and `drums.dat` pair beside the `.org` file, put them in Kog's
@@ -285,7 +294,7 @@ MIT-licensed [orgorg player](https://github.com/kpqi5858/orgorg/tree/main/orgorg
 can extract `wavetable.dat` and `drums.dat` from the original freeware
 `Doukutsu.exe` without requiring Kog to redistribute those assets.
 
-The direct Cargo build requires Rust, C and C++ compilers, CMake, `pkg-config`,
+The direct Cargo build requires Rust, C and C++23 compilers, CMake, `pkg-config`,
 FFmpeg development libraries (`libavformat`, `libavcodec`, `libavutil`, and
 `libswresample`), zlib, libarchive 3.2 or newer, and Qt 6 with Qt Quick and Qt
 Quick Controls. FFmpeg must be built under terms compatible with

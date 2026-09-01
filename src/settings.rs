@@ -4,12 +4,14 @@ use directories::ProjectDirs;
 
 const SOUNDFONT_SETTING_FILE: &str = "soundfont-path";
 const MIDI_ENGINE_SETTING_FILE: &str = "midi-engine";
+const SC55_ROM_SETTING_FILE: &str = "sc55-rom-directory";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MidiEngine {
     #[default]
     RustySynth,
     Opl3Windows,
+    Sc55,
 }
 
 impl MidiEngine {
@@ -17,6 +19,7 @@ impl MidiEngine {
         match self {
             Self::RustySynth => "rustysynth-sf2",
             Self::Opl3Windows => "opl3windows",
+            Self::Sc55 => "nuked-sc55",
         }
     }
 
@@ -24,6 +27,7 @@ impl MidiEngine {
         match value.trim().to_ascii_lowercase().as_str() {
             "rustysynth-sf2" | "rustysynth" | "soundfont" => Some(Self::RustySynth),
             "opl3windows" | "opl3w" => Some(Self::Opl3Windows),
+            "nuked-sc55" | "sc55" | "sc-55" => Some(Self::Sc55),
             _ => None,
         }
     }
@@ -32,6 +36,7 @@ impl MidiEngine {
 #[derive(Clone, Debug, Default)]
 pub struct AppSettings {
     pub soundfont_path: Option<PathBuf>,
+    pub sc55_rom_path: Option<PathBuf>,
     pub midi_engine: MidiEngine,
 }
 
@@ -46,8 +51,12 @@ impl AppSettings {
             .and_then(|value| MidiEngine::from_setting(&value))
             .or_else(load_persisted_midi_engine)
             .unwrap_or_default();
+        let sc55_rom_path = std::env::var_os("KOG_SC55_ROMS")
+            .map(PathBuf::from)
+            .or_else(load_persisted_sc55_rom_path);
         Self {
             soundfont_path,
+            sc55_rom_path,
             midi_engine,
         }
     }
@@ -78,6 +87,21 @@ impl AppSettings {
         std::fs::write(&setting_path, engine.setting_value())
             .map_err(|error| format!("writing {}: {error}", setting_path.display()))
     }
+
+    pub fn save_sc55_rom_path(path: Option<&Path>) -> Result<(), String> {
+        let setting_path = setting_path(SC55_ROM_SETTING_FILE)
+            .ok_or_else(|| "The platform configuration directory is unavailable".to_owned())?;
+        let parent = setting_path
+            .parent()
+            .ok_or_else(|| "The Kog configuration directory is unavailable".to_owned())?;
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("creating {}: {error}", parent.display()))?;
+        let value = path
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        std::fs::write(&setting_path, value)
+            .map_err(|error| format!("writing {}: {error}", setting_path.display()))
+    }
 }
 
 fn load_persisted_soundfont() -> Option<PathBuf> {
@@ -91,6 +115,13 @@ fn load_persisted_midi_engine() -> Option<MidiEngine> {
     let setting_path = setting_path(MIDI_ENGINE_SETTING_FILE)?;
     let value = std::fs::read_to_string(setting_path).ok()?;
     MidiEngine::from_setting(&value)
+}
+
+fn load_persisted_sc55_rom_path() -> Option<PathBuf> {
+    let setting_path = setting_path(SC55_ROM_SETTING_FILE)?;
+    let value = std::fs::read_to_string(setting_path).ok()?;
+    let value = value.trim();
+    (!value.is_empty()).then(|| PathBuf::from(value))
 }
 
 fn setting_path(file_name: &str) -> Option<PathBuf> {

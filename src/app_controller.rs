@@ -34,6 +34,7 @@ pub mod qobject {
         #[qproperty(QString, directory_path)]
         #[qproperty(i32, directory_count)]
         #[qproperty(QString, soundfont_path)]
+        #[qproperty(QString, sc55_rom_path)]
         #[qproperty(QString, midi_engine)]
         #[qproperty(QString, midi_status)]
         type AppController = super::AppControllerRust;
@@ -96,6 +97,10 @@ pub mod qobject {
         fn set_soundfont(self: Pin<&mut AppController>, url: QUrl);
         #[qinvokable]
         fn clear_soundfont(self: Pin<&mut AppController>);
+        #[qinvokable]
+        fn set_sc55_rom_directory(self: Pin<&mut AppController>, url: QUrl);
+        #[qinvokable]
+        fn clear_sc55_rom_directory(self: Pin<&mut AppController>);
         #[qinvokable]
         fn select_midi_engine(self: Pin<&mut AppController>, engine: QString);
     }
@@ -176,6 +181,7 @@ pub struct AppControllerRust {
     directory_path: QString,
     directory_count: i32,
     soundfont_path: QString,
+    sc55_rom_path: QString,
     midi_engine: QString,
     midi_status: QString,
     tracks: Vec<Track>,
@@ -196,9 +202,15 @@ impl Default for AppControllerRust {
         let decoder_settings = DecoderSettings::new(
             app_settings.soundfont_path.clone(),
             app_settings.midi_engine,
-        );
+        )
+        .with_sc55_rom_path(app_settings.sc55_rom_path.clone());
         let soundfont_path = app_settings
             .soundfont_path
+            .as_deref()
+            .map(|path| qstring(path.to_string_lossy()))
+            .unwrap_or_default();
+        let sc55_rom_path = app_settings
+            .sc55_rom_path
             .as_deref()
             .map(|path| qstring(path.to_string_lossy()))
             .unwrap_or_default();
@@ -206,6 +218,7 @@ impl Default for AppControllerRust {
         let midi_status = qstring(midi_status(
             app_settings.midi_engine,
             app_settings.soundfont_path.as_deref(),
+            app_settings.sc55_rom_path.as_deref(),
         ));
         let decoders = DecoderRegistry::new(decoder_settings.clone());
         let playback = PlaybackEngine::new(DecoderRegistry::new(decoder_settings.clone()));
@@ -234,6 +247,7 @@ impl Default for AppControllerRust {
             directory_path: qstring(directory.to_string_lossy()),
             directory_count: saturating_i32(directory_entries.len()),
             soundfont_path,
+            sc55_rom_path,
             midi_engine,
             midi_status,
             tracks: Vec::new(),
@@ -282,7 +296,11 @@ fn default_music_directory() -> PathBuf {
     if music.is_dir() { music } else { home }
 }
 
-fn midi_status(engine: MidiEngine, soundfont_path: Option<&Path>) -> String {
+fn midi_status(
+    engine: MidiEngine,
+    soundfont_path: Option<&Path>,
+    sc55_rom_path: Option<&Path>,
+) -> String {
     match engine {
         MidiEngine::Opl3Windows => {
             "Ready to render MIDI with Cog's OPL3Windows / Nuked OPL3 engine".to_owned()
@@ -293,6 +311,17 @@ fn midi_status(engine: MidiEngine, soundfont_path: Option<&Path>) -> String {
             }
             Some(path) => format!("Selected SoundFont is unavailable: {}", path.display()),
             None => "Choose an SF2 SoundFont to enable MIDI playback".to_owned(),
+        },
+        MidiEngine::Sc55 => match sc55_rom_path {
+            Some(path) if path.is_dir() => format!(
+                "Ready to detect a supported Roland ROM set in {}",
+                path.display()
+            ),
+            Some(path) => format!(
+                "Selected SC-55 ROM directory is unavailable: {}",
+                path.display()
+            ),
+            None => "Choose a directory containing your own supported Roland SC-55 ROMs".to_owned(),
         },
     }
 }
@@ -683,8 +712,12 @@ impl qobject::AppController {
         self.as_mut()
             .set_soundfont_path(qstring(path.to_string_lossy()));
         let engine = self.as_ref().rust().decoder_settings.midi_engine();
-        self.as_mut()
-            .set_midi_status(qstring(midi_status(engine, Some(&path))));
+        let sc55_rom_path = self.as_ref().rust().decoder_settings.sc55_rom_path();
+        self.as_mut().set_midi_status(qstring(midi_status(
+            engine,
+            Some(&path),
+            sc55_rom_path.as_deref(),
+        )));
         self.as_mut().set_status(qstring("MIDI SoundFont updated"));
     }
 
@@ -699,9 +732,76 @@ impl qobject::AppController {
             .set_soundfont_path(None);
         self.as_mut().set_soundfont_path(QString::default());
         let engine = self.as_ref().rust().decoder_settings.midi_engine();
+        let sc55_rom_path = self.as_ref().rust().decoder_settings.sc55_rom_path();
         self.as_mut()
-            .set_midi_status(qstring(midi_status(engine, None)));
+            .set_midi_status(qstring(midi_status(engine, None, sc55_rom_path.as_deref())));
         self.as_mut().set_status(qstring("MIDI SoundFont cleared"));
+    }
+
+    pub fn set_sc55_rom_directory(mut self: Pin<&mut Self>, url: QUrl) {
+        let Some(local_directory) = url.to_local_file() else {
+            self.as_mut()
+                .set_midi_status(qstring("Only a local SC-55 ROM directory can be selected"));
+            return;
+        };
+        let path = PathBuf::from(local_directory.to_string());
+        let path = match std::fs::canonicalize(&path) {
+            Ok(path) if path.is_dir() => path,
+            Ok(path) => {
+                self.as_mut().set_midi_status(qstring(format!(
+                    "SC-55 ROM path is not a directory: {}",
+                    path.display()
+                )));
+                return;
+            }
+            Err(error) => {
+                self.as_mut().set_midi_status(qstring(format!(
+                    "Opening SC-55 ROM directory {}: {error}",
+                    path.display()
+                )));
+                return;
+            }
+        };
+        if let Err(error) = AppSettings::save_sc55_rom_path(Some(&path)) {
+            self.as_mut().set_midi_status(qstring(error));
+            return;
+        }
+        self.as_ref()
+            .rust()
+            .decoder_settings
+            .set_sc55_rom_path(Some(path.clone()));
+        self.as_mut()
+            .set_sc55_rom_path(qstring(path.to_string_lossy()));
+        let engine = self.as_ref().rust().decoder_settings.midi_engine();
+        let soundfont_path = self.as_ref().rust().decoder_settings.soundfont_path();
+        self.as_mut().set_midi_status(qstring(midi_status(
+            engine,
+            soundfont_path.as_deref(),
+            Some(&path),
+        )));
+        self.as_mut()
+            .set_status(qstring("SC-55 ROM directory updated"));
+    }
+
+    pub fn clear_sc55_rom_directory(mut self: Pin<&mut Self>) {
+        if let Err(error) = AppSettings::save_sc55_rom_path(None) {
+            self.as_mut().set_midi_status(qstring(error));
+            return;
+        }
+        self.as_ref()
+            .rust()
+            .decoder_settings
+            .set_sc55_rom_path(None);
+        self.as_mut().set_sc55_rom_path(QString::default());
+        let engine = self.as_ref().rust().decoder_settings.midi_engine();
+        let soundfont_path = self.as_ref().rust().decoder_settings.soundfont_path();
+        self.as_mut().set_midi_status(qstring(midi_status(
+            engine,
+            soundfont_path.as_deref(),
+            None,
+        )));
+        self.as_mut()
+            .set_status(qstring("SC-55 ROM directory cleared"));
     }
 
     pub fn select_midi_engine(mut self: Pin<&mut Self>, engine: QString) {
@@ -720,13 +820,18 @@ impl qobject::AppController {
             .decoder_settings
             .set_midi_engine(engine);
         let soundfont_path = self.as_ref().rust().decoder_settings.soundfont_path();
+        let sc55_rom_path = self.as_ref().rust().decoder_settings.sc55_rom_path();
         self.as_mut()
             .set_midi_engine(qstring(engine.setting_value()));
-        self.as_mut()
-            .set_midi_status(qstring(midi_status(engine, soundfont_path.as_deref())));
+        self.as_mut().set_midi_status(qstring(midi_status(
+            engine,
+            soundfont_path.as_deref(),
+            sc55_rom_path.as_deref(),
+        )));
         self.as_mut().set_status(qstring(match engine {
             MidiEngine::RustySynth => "MIDI engine changed to RustySynth SoundFont",
             MidiEngine::Opl3Windows => "MIDI engine changed to OPL3Windows",
+            MidiEngine::Sc55 => "MIDI engine changed to Nuked SC-55",
         }));
     }
 

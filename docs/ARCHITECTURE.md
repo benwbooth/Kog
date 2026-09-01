@@ -18,11 +18,19 @@ backends may use safe Rust, C, or C++ libraries.
 5. **Native library adapters** isolate unsafe FFI and convert library-specific
    streams into interleaved floating-point PCM.
 
+New decoders integrate maintained libraries in-process by default. A companion
+process is reserved for a proven license incompatibility or a narrowly audited
+legacy-core containment need; Cargo builds it from pinned source and release
+packages bundle it, so Kog never depends on a separately installed player or
+renderer executable.
+
 The installed backends are `rodio-symphonia` for conventional audio,
 `ffmpeg` as the broad conventional fallback behind Symphonia,
 `midi-rustysynth-sf2` for Standard MIDI File and RIFF RMID rendering through a
 user-selected SF2 SoundFont, and `midi-opl3windows` for the same MIDI containers
 through Cog's OPL3Windows General MIDI engine and Nuked OPL3 1.7.1 core.
+`midi-nuked-sc55` sends those containers to a separately licensed optional
+Nuked SC-55 0.6.1 helper using a user-supplied Roland ROM directory.
 `adlmidi` links the maintained libADLMIDI revision `d114c31` for HMI, HMP/HMQ,
 DMX MUS, and Miles XMI playback through its Nuked OPL3 implementation.
 `game-music-emu` wraps the pinned upstream libGME 0.6.5 C API for AY, GBS, HES,
@@ -140,13 +148,27 @@ Passwords, multipart archives, nested archive expansion, broad format corpora,
 and Windows/macOS runtime gates remain separate work.
 
 Decoder settings are shared between the probe registry and playback registry.
-The MIDI engine and current SF2 path are persisted in the platform
-configuration directory; the SF2 is validated before it is accepted and cached
-by path and modification time. Both MIDI engines render interleaved 48 kHz
-stereo floating-point PCM. The OPL3 path uses a small C ABI around Cog's
+The MIDI engine, current SF2 path, and SC-55 ROM directory are persisted in the
+platform configuration directory; the SF2 is validated before it is accepted
+and cached by path and modification time. RustySynth and OPL3Windows render
+interleaved 48 kHz stereo floating-point PCM. The OPL3 path uses a small C ABI around Cog's
 GPL-compatible native engine; Midly merges format-0/1 tracks and schedules
 legacy MIDI messages at exact output frames. Seeking recreates the selected
 synthesizer and deterministically advances it to the requested frame.
+
+The SC-55 path pins J.C. Moyer's maintained reusable-backend fork at release
+0.6.1 (`50dcdde`). Cargo compiles only its emulator backend, ROM hash loader,
+and Kog's `kog-sc55-helper`; it excludes SDL, RtMidi, the standard frontend,
+renderer frontend, and GUI. The companion is built and bundled with Kog rather
+than installed as an external dependency. Rust parses bounded SMF/RMID input, stably merges
+tracks, applies tempo or SMPTE timing, preserves channel voice, SysEx, and
+escape byte streams, then writes the versioned schedule described in
+`native/sc55-helper/PROTOCOL.md`. The helper detects complete supported ROM
+sets by hash, performs a GS reset and upstream-style startup, and streams its
+native-rate signed-16 stereo PCM back to Rust. Seek starts a clean helper and
+suppresses output until the exact target frame. The helper is an optional
+program under the emulator's original noncommercial MAME terms, not a library
+linked into GPL Kog; no Roland ROM data enters the repository or build output.
 
 The libADLMIDI adapter is a thin Rust owner around the upstream C API; Kog does
 not translate Cog's Objective-C MIDI container plugin. It retains input memory

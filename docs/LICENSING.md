@@ -2,9 +2,9 @@
 
 Kog-authored source code is licensed under the GNU General Public License,
 version 3 or (at your option) any later version (`GPL-3.0-or-later`), except the
-small `native/snsf-helper` adapter identified as `LicenseRef-Snes9x`. That
-adapter is distributed only with its separately licensed non-commercial SNSF
-helper. The GPL text for the main application is in the repository root
+small `native/snsf-helper` and `native/sc55-helper` adapters identified as
+`LicenseRef-Snes9x` and `LicenseRef-Nuked-SC55`. Those adapters are distributed
+only with their respective separately licensed noncommercial helpers. The GPL text for the main application is in the repository root
 `LICENSE` file.
 
 Third-party libraries, emulator cores, test fixtures, and user-supplied assets
@@ -61,12 +61,22 @@ source trees and are summarized in `THIRD_PARTY_NOTICES.md`.
   retained notices and source. psflib and zlib do not alter that boundary.
   This matches Kog's non-commercial project intent but does not relicense
   Snes9x or make the two licenses link-compatible.
+- SC-55 playback uses the pinned Nuked SC-55 0.6.1 backend and Kog's
+  `LicenseRef-Nuked-SC55` adapter only in the optional `kog-sc55-helper`.
+  Nuked SC-55's original MAME terms prohibit commercial products or activity
+  and require complete source for modified redistributions. Those terms are
+  incompatible with linking the backend into the GPL-3.0-or-later Kog
+  executable, so no emulator object is linked into Kog. The optional helper,
+  its adapter, complete corresponding source, and notices retain the upstream
+  terms. Kog's noncommercial intent does not relicense the emulator or remove
+  its conditions. Distributors remain responsible for reviewing whether and
+  how they may ship this independently identified optional program.
 - A decoder whose license adds non-commercial or other GPL-incompatible terms
   does not become link-compatible merely because Kog is intended as a
   non-commercial project. Such a component requires an independently reviewed,
   clearly identified optional-program boundary or a compatible replacement;
   it is never represented as GPL-covered Kog code.
-- Proprietary console BIOS images, game data, SoundFonts, sample ROMs, and
+- Proprietary console BIOS images, game data, SoundFonts, Roland firmware/sample ROMs, and
   synthesis banks are not redistributed. A backend may load a user-owned asset
   when its format and applicable terms allow that use.
 

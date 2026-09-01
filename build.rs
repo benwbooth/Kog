@@ -11,6 +11,7 @@ fn main() {
     build_twosf_helper();
     build_snsf_helper();
     build_syntrax_helper();
+    build_sc55_helper();
     build_adlmidi();
     build_openmpt();
     build_hivelytracker();
@@ -1354,4 +1355,44 @@ fn build_syntrax_helper() {
     );
     println!("cargo:rerun-if-changed=native/syntrax-helper");
     println!("cargo:rerun-if-changed=native/syntrax-c");
+}
+
+fn build_sc55_helper() {
+    let helper = Path::new("native/sc55-helper");
+    let nuked_sc55 = Path::new("native/nuked-sc55");
+    if !helper.join("CMakeLists.txt").is_file() || !nuked_sc55.join("src/backend/emu.h").is_file() {
+        panic!(
+            "Nuked SC-55 helper sources are missing; run `git submodule update --init --recursive`"
+        );
+    }
+
+    let nuked_sc55 = nuked_sc55
+        .canonicalize()
+        .expect("canonicalize the Nuked SC-55 source directory");
+    let output_directory =
+        PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR")).join("sc55-helper");
+    let output = cmake::Config::new(helper)
+        .out_dir(output_directory)
+        .profile("Release")
+        .define("NUKED_SC55_SOURCE", &nuked_sc55)
+        .build();
+    let executable_name = if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        "kog-sc55-helper.exe"
+    } else {
+        "kog-sc55-helper"
+    };
+    let executable = output.join("bin").join(executable_name);
+    if !executable.is_file() {
+        panic!(
+            "Nuked SC-55 helper build did not install {}",
+            executable.display()
+        );
+    }
+
+    println!(
+        "cargo:rustc-env=KOG_BUILD_SC55_HELPER={}",
+        executable.display()
+    );
+    println!("cargo:rerun-if-changed=native/sc55-helper");
+    println!("cargo:rerun-if-changed=native/nuked-sc55");
 }
