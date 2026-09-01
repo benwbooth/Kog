@@ -46,6 +46,7 @@ mod sid_decoder;
 mod spessasynth_midi;
 mod syntrax;
 mod syntrax_decoder;
+mod tag_editor;
 mod track;
 mod usf;
 mod usf_decoder;

@@ -7,6 +7,7 @@ description = "A cross-platform, format-comprehensive local music player"
 repository = "https://github.com/benwbooth/Kog"
 
 [dependencies]
+base64 = "0.22.1"
 cxx = "1.0.176"
 cxx-qt = "0.10.0"
 cxx-qt-lib = { version = "0.10.0", features = ["full"] }

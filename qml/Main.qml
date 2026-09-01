@@ -210,6 +210,7 @@ ApplicationWindow {
     }
 
     InfoInspector { id: infoInspector; app: appController }
+    TagEditor { id: tagEditor; app: appController }
     Equalizer { id: equalizerWindow; app: appController }
     Lyrics { id: lyricsWindow; app: appController }
     MiniPlayer { id: miniPlayer; app: appController }
@@ -301,6 +302,15 @@ ApplicationWindow {
             root.selectedRows.join(","))
     }
 
+    Action {
+        id: editTagsAction
+        text: qsTr("Edit Tags…")
+        icon.name: "document-edit"
+        shortcut: "Ctrl+Shift+E"
+        enabled: root.selectedRows.length > 0
+        onTriggered: tagEditor.openForRows(root.selectedRows)
+    }
+
     Menu {
         id: playlistContextMenu
         MenuItem {
@@ -312,6 +322,7 @@ ApplicationWindow {
         MenuItem { action: removeSelectedAction; icon.name: "edit-delete" }
         MenuSeparator {}
         MenuItem { action: saveSelectionAction }
+        MenuItem { action: editTagsAction }
         MenuSeparator {}
         MenuItem {
             text: qsTr("Select All")
@@ -353,6 +364,7 @@ ApplicationWindow {
         MenuSeparator {}
         MenuItem { action: savePlaylistAction }
         MenuItem { action: saveSelectionAction }
+        MenuItem { action: editTagsAction }
         MenuSeparator {}
         MenuItem { action: removeSelectedAction; icon.name: "edit-delete" }
         MenuItem {

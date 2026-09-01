@@ -162,6 +162,12 @@ pub mod qobject {
         fn track_genre_at(self: &AppController, index: i32) -> QString;
         #[qinvokable]
         fn track_value_at(self: &AppController, index: i32, column: QString) -> QString;
+        #[qinvokable]
+        fn tag_editor_data(self: &AppController, indices: QString) -> QString;
+        #[qinvokable]
+        fn choose_tag_artwork(self: &AppController) -> QString;
+        #[qinvokable]
+        fn save_tags(self: Pin<&mut AppController>, indices: QString, edits: QString) -> QString;
 
         #[qinvokable]
         fn parent_directory(self: Pin<&mut AppController>);
@@ -204,13 +210,16 @@ use std::time::Duration;
 use cxx_qt::CxxQtType;
 use cxx_qt_lib::{QString, QUrl};
 
-use crate::decoder::{DecoderRegistry, DecoderSettings, ExpansionResult, validate_soundfont};
+use crate::decoder::{
+    DecoderRegistry, DecoderSettings, ExpansionResult, PlaybackSource, validate_soundfont,
+};
 use crate::equalizer::{
     EqualizerSettings, apply_preset, preset_for_genre, preset_named, preset_names,
 };
 use crate::playback::{OutputDevice, PlaybackEngine, PlaybackState, available_output_devices};
 use crate::playlist::{Playlist, PlaylistEntry, PlaylistLocation};
 use crate::settings::{AppSettings, MidiEngine, OpeningFilesBehavior, OutputDevicePreference};
+use crate::tag_editor::{artwork_file_json, parse_edits, snapshot_json, write_tags};
 use crate::track::{Track, canonical_path};
 
 #[derive(Debug, Default)]
@@ -1206,6 +1215,28 @@ fn visible_source_index(model: &qobject::AppController, index: i32) -> Option<us
         .copied()
 }
 
+fn selected_sources(model: &qobject::AppController, indices: &str) -> Vec<PlaybackSource> {
+    parse_row_indices(indices, model.rust().visible_indices.len())
+        .into_iter()
+        .filter_map(|row| model.rust().visible_indices.get(row))
+        .filter_map(|source_index| model.rust().tracks.get(*source_index))
+        .map(|track| track.source.clone())
+        .collect()
+}
+
+fn json_result(result: Result<serde_json::Value, String>) -> QString {
+    qstring(
+        result
+            .unwrap_or_else(|error| {
+                serde_json::json!({
+                    "ok": false,
+                    "error": error,
+                })
+            })
+            .to_string(),
+    )
+}
+
 impl qobject::AppController {
     pub fn open_audio_files(mut self: Pin<&mut Self>) {
         let directory = self.as_ref().rust().directory.clone();
@@ -1626,6 +1657,123 @@ impl qobject::AppController {
             return;
         }
         self.as_mut().set_playlist_column_layout(layout);
+    }
+
+    pub fn tag_editor_data(&self, indices: QString) -> QString {
+        let sources = selected_sources(self, &indices.to_string());
+        json_result(snapshot_json(&sources))
+    }
+
+    pub fn choose_tag_artwork(&self) -> QString {
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Choose Cover Artwork")
+            .set_directory(&self.rust().directory)
+            .add_filter(
+                "Images",
+                &["jpg", "jpeg", "png", "gif", "bmp", "tif", "tiff"],
+            )
+            .pick_file()
+        else {
+            return qstring(serde_json::json!({ "ok": false, "cancelled": true }).to_string());
+        };
+        json_result(artwork_file_json(&path))
+    }
+
+    pub fn save_tags(mut self: Pin<&mut Self>, indices: QString, edits: QString) -> QString {
+        let sources = selected_sources(self.as_ref().get_ref(), &indices.to_string());
+        let edits = match parse_edits(&edits.to_string()) {
+            Ok(edits) => edits,
+            Err(error) => return json_result(Err(error)),
+        };
+        // Stop the decoder before changing the file it may have open. This is
+        // required on Windows and avoids depending on inode replacement
+        // behavior on Unix. The state and exact position are restored below.
+        let current_index = usize::try_from(self.as_ref().rust().current_index).ok();
+        let current_selected = {
+            let model = self.as_ref();
+            current_index
+                .and_then(|index| model.rust().tracks.get(index))
+                .is_some_and(|current| sources.iter().any(|source| source == &current.source))
+        };
+        let prior_state = self.as_ref().rust().playback.state();
+        let prior_position = self.as_ref().rust().playback.position();
+        if current_selected && prior_state != PlaybackState::Stopped {
+            self.as_mut().rust_mut().playback.stop();
+        }
+
+        let outcome = write_tags(&sources, &edits);
+        for path in &outcome.updated_paths {
+            let matching_indices = self
+                .as_ref()
+                .rust()
+                .tracks
+                .iter()
+                .enumerate()
+                .filter_map(|(index, track)| {
+                    (track.source.remote_url.is_none()
+                        && track.source.archive_origin.is_none()
+                        && track.source.subsong.is_none()
+                        && track.source.path.canonicalize().as_ref().ok() == Some(path))
+                    .then_some(index)
+                })
+                .collect::<Vec<_>>();
+            for index in matching_indices {
+                let source = self.as_ref().rust().tracks[index].source.clone();
+                let refreshed = Track::from_source(source, &self.as_ref().rust().decoders);
+                self.as_mut().rust_mut().tracks[index] = refreshed;
+            }
+        }
+        if !outcome.updated_paths.is_empty() {
+            self.as_mut().rebuild_playlist();
+        }
+
+        let mut resume_warning = None;
+        if current_selected && let Some(index) = current_index {
+            if prior_state == PlaybackState::Stopped {
+                self.as_mut().populate_now_playing(index);
+            } else {
+                self.as_mut().play_source_index(index);
+                if self.as_ref().rust().playback.state() == PlaybackState::Stopped {
+                    resume_warning = Some("playback could not be resumed".to_owned());
+                } else {
+                    if !prior_position.is_zero()
+                        && let Err(error) = self.as_ref().rust().playback.seek(prior_position)
+                    {
+                        resume_warning = Some(format!("restoring position failed: {error}"));
+                    } else {
+                        self.as_mut()
+                            .set_position_seconds(prior_position.as_secs_f64());
+                    }
+                    if prior_state == PlaybackState::Paused {
+                        self.as_mut().rust_mut().playback.play_pause();
+                    }
+                    self.as_mut().sync_playback_state();
+                }
+            }
+        }
+
+        let updated_count = outcome.updated_paths.len();
+        let mut status = match &outcome.error {
+            Some(error) => error.clone(),
+            None => format!(
+                "Updated tags for {updated_count} file{}",
+                if updated_count == 1 { "" } else { "s" }
+            ),
+        };
+        if let Some(warning) = &resume_warning {
+            status.push_str(&format!("; {warning}"));
+        }
+        self.as_mut().set_status(qstring(&status));
+        qstring(
+            serde_json::json!({
+                "ok": outcome.error.is_none(),
+                "updatedCount": updated_count,
+                "error": outcome.error,
+                "warning": resume_warning,
+                "message": status,
+            })
+            .to_string(),
+        )
     }
 
     pub fn play_index(mut self: Pin<&mut Self>, index: i32) {

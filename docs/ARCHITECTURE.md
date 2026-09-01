@@ -181,6 +181,24 @@ unsynchronized-lyrics-first and generic-lyrics fallback order. Decoder-native
 lyrics outside Lofty's supported tags and selection-versus-playing policy
 remain separate parity work.
 
+The tag editor uses Lofty's native Rust read/write path rather than translating
+Cog's Objective-C TagLib wrapper. Its service accepts only bounded direct-local
+file selections, canonicalizes and deduplicates their paths, parses every
+requested field and replacement image before the first write, and changes only
+the fields the user actually edited. Empty edited fields remove their mapped
+tag item. Cover replacement or removal targets the front cover (falling back to
+the first image) while retaining other embedded artwork and supported tag
+items. The current multi-file operation is not transactionally rolled back if
+a later filesystem write fails, so that partial-write state is reported
+explicitly instead of hidden.
+
+When the active track is among the edited files, the CXX-Qt controller stops
+the decoder before writing. Successful files are reparsed into the playlist;
+the active source is then reopened at the exact prior position and restored to
+its previous paused or playing state. Remote URLs, extracted archive members,
+CUE entries, and other subsong identities are deliberately read-only until
+their container-specific write semantics can be defined safely.
+
 The SC-55 path pins J.C. Moyer's maintained reusable-backend fork at release
 0.6.1 (`50dcdde`). Cargo compiles only its emulator backend, ROM hash loader,
 and Kog's `kog-sc55-helper`; it excludes SDL, RtMidi, the standard frontend,

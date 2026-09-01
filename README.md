@@ -8,9 +8,12 @@ tracker modules, chiptunes, and game-audio formats.
 
 The current milestone contains a working Cog-style main window with a
 cross-platform hamburger menu, a lazy expandable filesystem tree, metadata
-playlist, search, inspector, lyrics, equalizer, and mini-player windows. It uses
-platform-native file/folder dialogs and inherits the active Qt palette and control
-style, including KDE's desktop/Breeze style when available. The milestone also
+playlist, search, inspector, lyrics, equalizer, mini-player, and multi-track
+tag-editor windows. The editor preserves mixed fields unless changed, writes
+common fields plus lyrics and embedded cover art to direct local files, and
+uses a native artwork picker. Kog uses platform-native file/folder dialogs and
+inherits the active Qt palette and control style, including KDE's
+desktop/Breeze style when available. The milestone also
 has a real conventional-audio playback path with pause, stop, seek, volume,
 automatic track advance, and native output-device enumeration. Kog can follow
 the system default or persist a specific output by stable backend ID and name,

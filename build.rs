@@ -68,6 +68,7 @@ fn main() {
         "qml/PlaylistHeader.qml",
         "qml/PlaylistRow.qml",
         "qml/Preferences.qml",
+        "qml/TagEditor.qml",
     ]))
     // Kog does not export hand-written C++ headers. Avoid recursively tracking
     // the entire repository as an include root, which otherwise makes Cargo
