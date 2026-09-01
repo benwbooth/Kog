@@ -61,6 +61,7 @@ fn main() {
             .qml_files([
                 "qml/CogButton.qml",
                 "qml/InfoInspector.qml",
+                "qml/Lyrics.qml",
                 "qml/Main.qml",
                 "qml/MiniPlayer.qml",
                 "qml/PlaylistHeader.qml",
@@ -72,7 +73,34 @@ fn main() {
     // the entire repository as an include root, which otherwise makes Cargo
     // rebuild every native decoder after unrelated documentation changes.
     .crate_include_root(None)
-    .files(["src/app_controller.rs"])
+    .qrc_resources([
+        "qml/icons/application-menu.svg",
+        "qml/icons/application-menu-light.svg",
+        "qml/icons/audio-x-generic.svg",
+        "qml/icons/audio-x-generic-light.svg",
+        "qml/icons/folder-open.svg",
+        "qml/icons/folder-open-light.svg",
+        "qml/icons/folder.svg",
+        "qml/icons/folder-light.svg",
+        "qml/icons/go-up.svg",
+        "qml/icons/go-up-light.svg",
+        "qml/icons/media-playback-pause.svg",
+        "qml/icons/media-playback-pause-light.svg",
+        "qml/icons/media-playback-start.svg",
+        "qml/icons/media-playback-start-light.svg",
+        "qml/icons/media-playback-stop.svg",
+        "qml/icons/media-playback-stop-light.svg",
+        "qml/icons/media-playlist-repeat.svg",
+        "qml/icons/media-playlist-repeat-light.svg",
+        "qml/icons/media-playlist-shuffle.svg",
+        "qml/icons/media-playlist-shuffle-light.svg",
+        "qml/icons/media-skip-backward.svg",
+        "qml/icons/media-skip-backward-light.svg",
+        "qml/icons/media-skip-forward.svg",
+        "qml/icons/media-skip-forward-light.svg",
+    ])
+    .files(["src/app_controller.rs", "src/file_tree_model.rs"])
+    .qt_module("Gui")
     .qt_module("Network")
     .qt_module("Quick")
     .qt_module("QuickControls2")

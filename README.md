@@ -6,10 +6,13 @@ interface connected through CXX-Qt. Its target is feature parity with
 desktop interface and broad playback support for conventional audio, MIDI,
 tracker modules, chiptunes, and game-audio formats.
 
-The current milestone contains a working Cog-style main window, filesystem
-browser, metadata playlist, search, inspector and mini-player windows, and a
-real conventional-audio playback path with pause, stop, seek, volume, and
-automatic track advance. It also renders format-0/1 MID, MIDI, KAR, and RIFF
+The current milestone contains a working Cog-style main window with a
+cross-platform hamburger menu, a lazy expandable filesystem tree, metadata
+playlist, search, inspector, lyrics, and mini-player windows. It uses Qt's
+platform file/folder dialogs and inherits the active Qt palette and control
+style, including KDE's desktop/Breeze style when available. The milestone also
+has a real conventional-audio playback path with pause, stop, seek, volume,
+and automatic track advance. It also renders format-0/1 MID, MIDI, KAR, and RIFF
 RMID files through either a validated, persisted SF2 SoundFont using RustySynth
 or Cog's OPL3Windows synthesizer and its Nuked OPL3 core, with duration probing
 and seeking. An optional third route uses the maintained Nuked SC-55 0.6.1

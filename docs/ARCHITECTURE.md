@@ -7,9 +7,16 @@ backends may use safe Rust, C, or C++ libraries.
 ## Layers
 
 1. **Qt Quick UI** recreates Cog's windows, toolbar, file tree, playlist,
-   inspectors, menus, keyboard controls, drag-and-drop, and accessibility.
+   inspectors, keyboard controls, drag-and-drop, and accessibility. Kog uses a
+   toolbar hamburger menu as its cross-platform command surface instead of
+   reproducing Cog's macOS application menu bar. Controls and custom surfaces
+   consume the active Qt palette rather than imposing a Kog-only palette, and
+   file/folder selection goes through `QtQuick.Dialogs` so each platform can
+   supply its native dialog.
 2. **CXX-Qt application models** expose only typed state and commands. QML
-   never owns playback or decoder policy.
+   never owns playback or decoder policy. The file pane wraps Qt's
+   cross-platform `QFileSystemModel` and presents it through Qt Quick's real
+   `TreeView`, retaining lazy population and filesystem watching.
 3. **Rust playback core** owns the playlist, decoder selection, transport,
    output device, timing, repeat/shuffle policy, and metadata.
 4. **Decoder backends** probe a source and append decoded PCM to the shared
@@ -155,6 +162,13 @@ interleaved 48 kHz stereo floating-point PCM. The OPL3 path uses a small C ABI a
 GPL-compatible native engine; Midly merges format-0/1 tracks and schedules
 legacy MIDI messages at exact output frames. Seeking recreates the selected
 synthesizer and deterministically advances it to the requested frame.
+
+The Lyrics window follows Cog's read-only, resizable scrolling-text surface.
+The current playing track exposes lyrics through CXX-Qt; Lofty maps ID3v2 USLT
+and corresponding container fields into Kog's metadata model, with Cog's
+unsynchronized-lyrics-first and generic-lyrics fallback order. Decoder-native
+lyrics outside Lofty's supported tags and selection-versus-playing policy
+remain separate parity work.
 
 The SC-55 path pins J.C. Moyer's maintained reusable-backend fork at release
 0.6.1 (`50dcdde`). Cargo compiles only its emulator backend, ROM hash loader,

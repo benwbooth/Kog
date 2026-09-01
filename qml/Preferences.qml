@@ -13,11 +13,7 @@ Window {
     minimumWidth: 500
     minimumHeight: 320
     title: qsTr("Kog Preferences")
-    color: "#f4f4f4"
-    palette.windowText: "#303030"
-    palette.text: "#303030"
-    palette.button: "#f2f2f2"
-    palette.buttonText: "#303030"
+    color: palette.window
 
     FileDialog {
         id: soundfontDialog
@@ -86,7 +82,9 @@ Window {
                         ? root.app.soundfont_path
                         : qsTr("No SoundFont selected")
                     elide: Text.ElideMiddle
-                    color: root.app.soundfont_path.length > 0 ? "#303030" : "#777777"
+                    color: root.app.soundfont_path.length > 0
+                        ? root.palette.text
+                        : root.palette.placeholderText
                 }
 
                 RowLayout {
@@ -113,7 +111,9 @@ Window {
                         ? root.app.sc55_rom_path
                         : qsTr("No ROM directory selected")
                     elide: Text.ElideMiddle
-                    color: root.app.sc55_rom_path.length > 0 ? "#303030" : "#777777"
+                    color: root.app.sc55_rom_path.length > 0
+                        ? root.palette.text
+                        : root.palette.placeholderText
                 }
 
                 RowLayout {
@@ -134,7 +134,7 @@ Window {
                     Layout.fillWidth: true
                     text: root.app.midi_status
                     wrapMode: Text.Wrap
-                    color: "#555555"
+                    color: root.palette.placeholderText
                 }
             }
         }
@@ -143,7 +143,7 @@ Window {
             Layout.fillWidth: true
             text: qsTr("SF2 SoundFonts and OPL3 need no proprietary firmware. Nuked SC-55 runs as a separate optional helper and requires ROM images from hardware you own; Kog does not include Roland ROMs. SF3 and MT-32 remain separate milestones.")
             wrapMode: Text.Wrap
-            color: "#666666"
+            color: root.palette.placeholderText
         }
 
         Item { Layout.fillHeight: true }

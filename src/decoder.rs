@@ -33,6 +33,7 @@ pub struct StreamProperties {
     pub artist: Option<String>,
     pub album: Option<String>,
     pub genre: Option<String>,
+    pub lyrics: Option<String>,
     pub year: Option<u32>,
     pub track_number: Option<u32>,
     pub codec: Option<String>,

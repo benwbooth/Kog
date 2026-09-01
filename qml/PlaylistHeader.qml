@@ -3,6 +3,8 @@ import QtQuick
 Rectangle {
     id: root
 
+    required property var theme
+
     readonly property int numberWidth: 44
     readonly property int statusWidth: 28
     readonly property int trackWidth: 38
@@ -14,8 +16,8 @@ Rectangle {
     readonly property int genreWidth: Math.max(110, width - numberWidth - statusWidth - trackWidth - titleWidth - artistWidth - albumWidth - lengthWidth - yearWidth)
 
     implicitHeight: 27
-    color: "#f6f6f6"
-    border.color: "#d3d3d3"
+    color: theme.button
+    border.color: theme.mid
 
     component HeaderCell: Rectangle {
         required property string label
@@ -23,14 +25,14 @@ Rectangle {
 
         height: root.height
         color: "transparent"
-        border.color: "#dedede"
+        border.color: root.theme.mid
 
         Text {
             anchors.fill: parent
             anchors.leftMargin: 7
             anchors.rightMargin: 7
             text: parent.label
-            color: "#4b4b4b"
+            color: root.theme.buttonText
             font.pixelSize: 12
             font.bold: true
             horizontalAlignment: parent.alignment

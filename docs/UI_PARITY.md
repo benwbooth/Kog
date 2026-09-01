@@ -14,14 +14,14 @@ surface.
 
 | State | Cog surface | Current Kog coverage | Required parity work |
 | --- | --- | --- | --- |
-| Partial | Main window and toolbar | Cog-shaped toolbar, transport, position, volume, search, split content, and duration footer render and operate | Platform-specific chrome, toolbar customization, full shuffle/repeat policy, speed/pitch controls, and reference-image diffs |
-| Partial | File tree | Browsable local directory list with parent navigation and add-on-activate | Hierarchical lazy tree, watched folders, smart folders, expansion persistence, icons, context actions, and Cog drag behavior |
+| Partial | Main window and toolbar | Cog-shaped toolbar, themed transport controls, position, volume, search, split content, duration footer, and the user-selected cross-platform hamburger command menu render and operate without overriding the active Qt/KDE palette | Platform-specific chrome, toolbar customization, full shuffle/repeat policy, speed/pitch controls, and reference-image diffs |
+| Partial | File tree | Real Qt `TreeView` over a lazy, filesystem-watching `QFileSystemModel`, with expandable directories, themed icons, parent/root selection, tooltips, and add-on-file-activate | Smart folders, expansion persistence, context actions, selection actions, and Cog drag behavior |
 | Partial | Playlist table | Metadata rows, alternating backgrounds, selection, double-click playback, live play marker, filtering, removal, drop-add, and decoder-provided subsong expansion | Every Cog column, sorting, column chooser/order/width persistence, multiselect, reordering, queue, ratings, context menu, inline editing, and playlist persistence |
 | Partial | Info Inspector | Real detached window follows the playing track and displays common/technical metadata including length and filename | Album artist, composer, full date semantics, true codec identification, extracted artwork, selection-vs-playing policy, and saved placement |
 | Partial | Mini player | Detached compact transport with title, artist, and seek | Cog's mini/dual mode switching, sizing/chrome, volume and remaining controls, placement persistence, and capture corpus |
 | Partial | Preferences | Real MIDI pane selects and persists RustySynth or OPL3Windows, and selects, validates, clears, and persists an SF2 SoundFont | General, appearance, playlist, output, remaining MIDI engines/options, notifications, shortcuts, Last.fm, remote-control, time-stretch, and platform path panes |
 | Not started | Equalizer | None | Enable/tracking controls, presets, preamp, Cog's complete band surface, editing gestures, persistence, and DSP binding |
-| Not started | Lyrics | None | Lyrics display, update behavior, empty/error states, selection and window persistence |
+| Partial | Lyrics | Cog-sized resizable read-only scrolling window follows the playing track, with ID3v2 USLT and generic tag extraction in Cog's fallback order; the hamburger View submenu exposes it with `Ctrl+Shift+L` | Decoder-native lyrics outside Lofty's tag coverage, selection-vs-playing policy, synchronized lyrics, placement persistence, and deterministic populated/empty captures |
 | Not started | Spectrum and SC-55 visualization | None | Spectrum modes/settings and the Nuked SC-55 visualization window |
 | Not started | Spotlight/library search | None | Search location, result columns/sorting, add-to-playlist, reveal action, and keyboard flow |
 | Not started | Tag editor | None | Multi-track edit states, artwork, save/reload/error behavior, and decoder-safe file updates |
@@ -32,8 +32,8 @@ surface.
 
 | State | Behavior |
 | --- | --- |
-| Partial | File/folder dialogs, local drag-and-drop, search, core transport shortcuts, seek, volume, end-of-track advance |
-| Not started | Full Cog menu hierarchy and enablement rules, playlist save/load, Open Recent, URL playback, queue/stop-after-selection, previous/next album, repeat modes, shuffle modes |
+| Partial | Qt platform-native file/folder dialogs (with Qt's platform fallback), local drag-and-drop, search, core transport shortcuts, seek, volume, end-of-track advance |
+| Partial | Kog deliberately uses one toolbar hamburger menu instead of Cog's macOS menu bar. Implemented file, playlist-removal, View-window, playback, preferences, and quit commands retain shortcuts and state-based enablement; playlist save/load, Open Recent, URL playback, queue/stop-after-selection, previous/next album, repeat modes, and shuffle modes remain |
 | Not started | Media keys, desktop notifications, dock/tray behavior, Now Playing/MPRIS/SMTC/MediaRemote integration, Last.fm, remote control, accessibility pass, localization |
 
 ## Visual verification states

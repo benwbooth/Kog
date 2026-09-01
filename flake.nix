@@ -23,10 +23,13 @@
           (with pkgs.qt6; [
             qtbase
             qtdeclarative
+            qtsvg
             qttools
           ])
           ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
             pkgs.qt6.qtwayland
+            pkgs.kdePackages.qqc2-desktop-style
+            pkgs.kdePackages.breeze-icons
           ];
         qtEnv = pkgs.qt6.env "kog-qt-env" qtModules;
         # Keep a conservative, reproducible LGPL FFmpeg baseline. Kog's

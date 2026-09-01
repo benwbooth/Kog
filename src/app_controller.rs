@@ -19,6 +19,7 @@ pub mod qobject {
         #[qproperty(QString, now_artist)]
         #[qproperty(QString, current_album)]
         #[qproperty(QString, current_genre)]
+        #[qproperty(QString, current_lyrics)]
         #[qproperty(QString, current_file)]
         #[qproperty(QString, current_codec)]
         #[qproperty(QString, current_year)]
@@ -32,7 +33,6 @@ pub mod qobject {
         #[qproperty(f64, volume)]
         #[qproperty(QString, total_duration)]
         #[qproperty(QString, directory_path)]
-        #[qproperty(i32, directory_count)]
         #[qproperty(QString, soundfont_path)]
         #[qproperty(QString, sc55_rom_path)]
         #[qproperty(QString, midi_engine)]
@@ -84,12 +84,6 @@ pub mod qobject {
         fn track_genre_at(self: &AppController, index: i32) -> QString;
 
         #[qinvokable]
-        fn directory_name_at(self: &AppController, index: i32) -> QString;
-        #[qinvokable]
-        fn directory_is_folder_at(self: &AppController, index: i32) -> bool;
-        #[qinvokable]
-        fn activate_directory_entry(self: Pin<&mut AppController>, index: i32);
-        #[qinvokable]
         fn parent_directory(self: Pin<&mut AppController>);
         #[qinvokable]
         fn choose_directory(self: Pin<&mut AppController>, url: QUrl);
@@ -117,13 +111,6 @@ use crate::decoder::{DecoderRegistry, DecoderSettings, validate_soundfont};
 use crate::playback::{PlaybackEngine, PlaybackState};
 use crate::settings::{AppSettings, MidiEngine};
 use crate::track::{Track, canonical_path, duration_label};
-
-#[derive(Clone, Debug)]
-struct DirectoryEntry {
-    name: String,
-    path: PathBuf,
-    is_directory: bool,
-}
 
 #[derive(Debug, Default)]
 struct AddPathResult {
@@ -166,6 +153,7 @@ pub struct AppControllerRust {
     now_artist: QString,
     current_album: QString,
     current_genre: QString,
+    current_lyrics: QString,
     current_file: QString,
     current_codec: QString,
     current_year: QString,
@@ -179,7 +167,6 @@ pub struct AppControllerRust {
     volume: f64,
     total_duration: QString,
     directory_path: QString,
-    directory_count: i32,
     soundfont_path: QString,
     sc55_rom_path: QString,
     midi_engine: QString,
@@ -187,7 +174,6 @@ pub struct AppControllerRust {
     tracks: Vec<Track>,
     visible_indices: Vec<usize>,
     filter: String,
-    directory_entries: Vec<DirectoryEntry>,
     directory: PathBuf,
     decoder_settings: DecoderSettings,
     decoders: DecoderRegistry,
@@ -197,7 +183,6 @@ pub struct AppControllerRust {
 impl Default for AppControllerRust {
     fn default() -> Self {
         let directory = default_music_directory();
-        let directory_entries = read_directory(&directory);
         let app_settings = AppSettings::load();
         let decoder_settings = DecoderSettings::new(
             app_settings.soundfont_path.clone(),
@@ -227,11 +212,12 @@ impl Default for AppControllerRust {
             playlist_revision: 0,
             current_index: -1,
             playback_state: qstring(PlaybackState::Stopped.as_str()),
-            status: qstring("Drop audio files here or use File > Add Files…"),
+            status: qstring("Drop audio files here or use the Kog menu to add files"),
             now_title: qstring("Not Playing"),
             now_artist: QString::default(),
             current_album: QString::default(),
             current_genre: QString::default(),
+            current_lyrics: QString::default(),
             current_file: QString::default(),
             current_codec: QString::default(),
             current_year: QString::default(),
@@ -245,7 +231,6 @@ impl Default for AppControllerRust {
             volume: 0.75,
             total_duration: qstring("Total Duration: 0:00"),
             directory_path: qstring(directory.to_string_lossy()),
-            directory_count: saturating_i32(directory_entries.len()),
             soundfont_path,
             sc55_rom_path,
             midi_engine,
@@ -253,7 +238,6 @@ impl Default for AppControllerRust {
             tracks: Vec::new(),
             visible_indices: Vec::new(),
             filter: String::new(),
-            directory_entries,
             directory,
             decoder_settings,
             decoders,
@@ -324,34 +308,6 @@ fn midi_status(
             None => "Choose a directory containing your own supported Roland SC-55 ROMs".to_owned(),
         },
     }
-}
-
-fn read_directory(path: &Path) -> Vec<DirectoryEntry> {
-    let Ok(entries) = std::fs::read_dir(path) else {
-        return Vec::new();
-    };
-    let mut entries = entries
-        .filter_map(Result::ok)
-        .filter_map(|entry| {
-            let file_type = entry.file_type().ok()?;
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if name.starts_with('.') {
-                return None;
-            }
-            Some(DirectoryEntry {
-                name,
-                path: entry.path(),
-                is_directory: file_type.is_dir(),
-            })
-        })
-        .collect::<Vec<_>>();
-    entries.sort_by(|left, right| {
-        right
-            .is_directory
-            .cmp(&left.is_directory)
-            .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
-    });
-    entries
 }
 
 impl AppControllerRust {
@@ -622,36 +578,6 @@ impl qobject::AppController {
             .unwrap_or_default()
     }
 
-    pub fn directory_name_at(&self, index: i32) -> QString {
-        usize::try_from(index)
-            .ok()
-            .and_then(|index| self.rust().directory_entries.get(index))
-            .map(|entry| qstring(&entry.name))
-            .unwrap_or_default()
-    }
-
-    pub fn directory_is_folder_at(&self, index: i32) -> bool {
-        usize::try_from(index)
-            .ok()
-            .and_then(|index| self.rust().directory_entries.get(index))
-            .is_some_and(|entry| entry.is_directory)
-    }
-
-    pub fn activate_directory_entry(mut self: Pin<&mut Self>, index: i32) {
-        let Some(entry) = usize::try_from(index)
-            .ok()
-            .and_then(|index| self.as_ref().get_ref().rust().directory_entries.get(index))
-            .cloned()
-        else {
-            return;
-        };
-        if entry.is_directory {
-            self.as_mut().set_directory(entry.path);
-        } else {
-            self.as_mut().add_local_path(entry.path);
-        }
-    }
-
     pub fn parent_directory(mut self: Pin<&mut Self>) {
         let parent = self
             .as_ref()
@@ -898,6 +824,7 @@ impl qobject::AppController {
         let artist = qstring(&track.artist);
         let album = qstring(&track.album);
         let genre = qstring(&track.genre);
+        let lyrics = qstring(&track.lyrics);
         let file = qstring(track.source.display_label());
         let codec = qstring(&track.codec);
         let year = track
@@ -930,6 +857,7 @@ impl qobject::AppController {
         self.as_mut().set_now_artist(artist);
         self.as_mut().set_current_album(album);
         self.as_mut().set_current_genre(genre);
+        self.as_mut().set_current_lyrics(lyrics);
         self.as_mut().set_current_file(file);
         self.as_mut().set_current_codec(codec);
         self.as_mut().set_current_year(qstring(year));
@@ -949,6 +877,7 @@ impl qobject::AppController {
         self.as_mut().set_now_artist(QString::default());
         self.as_mut().set_current_album(QString::default());
         self.as_mut().set_current_genre(QString::default());
+        self.as_mut().set_current_lyrics(QString::default());
         self.as_mut().set_current_file(QString::default());
         self.as_mut().set_current_codec(QString::default());
         self.as_mut().set_current_year(QString::default());
@@ -974,19 +903,6 @@ impl qobject::AppController {
         self.as_mut().set_playlist_revision(revision);
     }
 
-    fn add_local_path(mut self: Pin<&mut Self>, path: PathBuf) {
-        match self.as_mut().rust_mut().add_path(path) {
-            Ok(result) if result.added > 0 => {
-                self.as_mut().rebuild_playlist();
-                self.as_mut().set_status(qstring(add_path_status(&result)));
-            }
-            Ok(_) => self
-                .as_mut()
-                .set_status(qstring("The file is already in the playlist")),
-            Err(error) => self.as_mut().set_status(qstring(error)),
-        }
-    }
-
     fn set_directory(mut self: Pin<&mut Self>, path: PathBuf) {
         let Ok(path) = canonical_path(&path) else {
             self.as_mut()
@@ -996,13 +912,9 @@ impl qobject::AppController {
         if !path.is_dir() {
             return;
         }
-        let entries = read_directory(&path);
-        let count = saturating_i32(entries.len());
         self.as_mut().rust_mut().directory = path.clone();
-        self.as_mut().rust_mut().directory_entries = entries;
         self.as_mut()
             .set_directory_path(qstring(path.to_string_lossy()));
-        self.as_mut().set_directory_count(count);
     }
 }
 

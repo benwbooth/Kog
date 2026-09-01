@@ -11,6 +11,7 @@ mod cuesheet_decoder;
 mod decoder;
 mod ffmpeg;
 mod ffmpeg_decoder;
+mod file_tree_model;
 mod gme;
 mod gme_decoder;
 mod gsf;

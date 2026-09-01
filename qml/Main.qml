@@ -14,21 +14,15 @@ ApplicationWindow {
     minimumHeight: 520
     visible: true
     title: appController.now_title === "Not Playing" ? qsTr("Kog") : appController.now_title + " — Kog"
-    color: "#ededed"
-    palette.window: "#f4f4f4"
-    palette.windowText: "#303030"
-    palette.base: "#ffffff"
-    palette.text: "#303030"
-    palette.button: "#f2f2f2"
-    palette.buttonText: "#303030"
-    palette.highlight: "#c95f00"
-    palette.highlightedText: "#ffffff"
-    palette.placeholderText: "#777777"
+    color: palette.window
 
     property bool sidebarVisible: true
     property int selectedRow: -1
     property bool repeatEnabled: false
     property bool shuffleEnabled: false
+    readonly property bool useLightIcons: (0.2126 * palette.window.r
+        + 0.7152 * palette.window.g
+        + 0.0722 * palette.window.b) < 0.5
 
     function timeLabel(seconds) {
         const value = Math.max(0, Math.floor(seconds))
@@ -41,6 +35,9 @@ ApplicationWindow {
     }
 
     AppController { id: appController }
+    FileTreeModel { id: fileTreeModel }
+
+    Component.onCompleted: fileTreeModel.set_root_path_text(appController.directory_path)
 
     Timer {
         interval: 200
@@ -63,61 +60,69 @@ ApplicationWindow {
     FolderDialog {
         id: folderDialog
         title: qsTr("Choose Music Folder")
-        onAccepted: appController.choose_directory(selectedFolder)
+        onAccepted: {
+            appController.choose_directory(selectedFolder)
+            fileTreeModel.set_root_url(selectedFolder)
+        }
     }
 
     InfoInspector { id: infoInspector; app: appController }
+    Lyrics { id: lyricsWindow; app: appController }
     MiniPlayer { id: miniPlayer; app: appController }
     Preferences { id: preferences; app: appController }
 
-    menuBar: MenuBar {
-        background: Rectangle { color: "#f7f7f7"; border.color: "#d3d3d3" }
+    Action {
+        id: removeSelectedAction
+        text: qsTr("Remove Selected")
+        shortcut: StandardKey.Delete
+        enabled: root.selectedRow >= 0
+        onTriggered: {
+            appController.remove_track(root.selectedRow)
+            root.selectedRow = -1
+        }
+    }
+
+    Menu {
+        id: hamburgerMenu
+
+        Action { text: qsTr("Add Files…"); shortcut: StandardKey.Open; onTriggered: addFilesDialog.open() }
+        MenuItem { text: qsTr("Choose Music Folder…"); onTriggered: folderDialog.open() }
+        MenuSeparator {}
+        MenuItem { action: removeSelectedAction }
+        MenuItem { text: qsTr("Clear Playlist"); enabled: appController.playlist_count > 0; onTriggered: appController.clear_playlist() }
+        MenuSeparator {}
 
         Menu {
-            title: qsTr("File")
-            Action { text: qsTr("Add Files…"); shortcut: StandardKey.Open; onTriggered: addFilesDialog.open() }
-            Action { text: qsTr("Choose Music Folder…"); onTriggered: folderDialog.open() }
-            MenuSeparator {}
-            Action { text: qsTr("Clear Playlist"); onTriggered: appController.clear_playlist() }
-            MenuSeparator {}
-            Action { text: qsTr("Quit"); shortcut: StandardKey.Quit; onTriggered: Qt.quit() }
-        }
-        Menu {
-            title: qsTr("Edit")
-            Action {
-                text: qsTr("Remove Selected")
-                shortcut: StandardKey.Delete
-                enabled: root.selectedRow >= 0
-                onTriggered: {
-                    appController.remove_track(root.selectedRow)
-                    root.selectedRow = -1
-                }
-            }
-            MenuSeparator {}
-            Action { text: qsTr("Preferences…"); shortcut: "Ctrl+,"; onTriggered: preferences.show() }
-        }
-        Menu {
             title: qsTr("View")
-            Action { text: qsTr("Show File Tree"); checkable: true; checked: root.sidebarVisible; onTriggered: root.sidebarVisible = checked }
+            Action {
+                text: qsTr("Show File Tree")
+                shortcut: "Ctrl+D"
+                checkable: true
+                checked: root.sidebarVisible
+                onTriggered: root.sidebarVisible = checked
+            }
             Action { text: qsTr("Show Info Inspector"); shortcut: "Ctrl+I"; onTriggered: infoInspector.show() }
-            Action { text: qsTr("Show Mini Player"); onTriggered: miniPlayer.show() }
+            Action { text: qsTr("Show Lyrics"); shortcut: "Ctrl+Shift+L"; onTriggered: lyricsWindow.show() }
+            Action { text: qsTr("Show Mini Player"); shortcut: "Ctrl+Shift+M"; onTriggered: miniPlayer.show() }
         }
+
         Menu {
-            title: qsTr("Control")
+            title: qsTr("Playback")
             Action { text: qsTr("Play/Pause"); shortcut: "Space"; onTriggered: appController.play_pause() }
             Action { text: qsTr("Stop"); shortcut: "Ctrl+."; onTriggered: appController.stop() }
+            MenuSeparator {}
             Action { text: qsTr("Previous"); shortcut: "Ctrl+Left"; onTriggered: appController.previous() }
             Action { text: qsTr("Next"); shortcut: "Ctrl+Right"; onTriggered: appController.next() }
         }
+
+        MenuSeparator {}
+        Action { text: qsTr("Preferences…"); shortcut: "Ctrl+,"; onTriggered: preferences.show() }
+        Action { text: qsTr("Quit Kog"); shortcut: StandardKey.Quit; onTriggered: Qt.quit() }
     }
 
     header: ToolBar {
         implicitHeight: 90
         padding: 8
-        background: Rectangle {
-            color: "#fafafa"
-            border.color: "#d3d3d3"
-        }
 
         ColumnLayout {
             anchors.fill: parent
@@ -128,32 +133,42 @@ ApplicationWindow {
                 Layout.fillHeight: true
                 spacing: 5
 
-                CogButton { glyph: "▣"; toolTip: qsTr("Choose music folder"); onClicked: folderDialog.open() }
+                CogButton {
+                    id: hamburgerButton
+                    glyph: "☰"
+                    iconName: "application-menu"
+                    toolTip: hamburgerMenu.visible ? "" : qsTr("Kog menu")
+                    Accessible.name: qsTr("Kog menu")
+                    onClicked: hamburgerMenu.popup(hamburgerButton, 0, hamburgerButton.height)
+                }
+                CogButton { glyph: "▣"; iconName: "folder-open"; toolTip: qsTr("Choose music folder"); onClicked: folderDialog.open() }
 
                 ColumnLayout {
                     Layout.preferredWidth: 245
                     Layout.minimumWidth: 120
                     spacing: 0
 
-                    Label { Layout.fillWidth: true; text: appController.now_title; color: "#303030"; font.pixelSize: 15; font.bold: true; elide: Text.ElideRight }
-                    Label { Layout.fillWidth: true; text: appController.now_artist; color: "#757575"; elide: Text.ElideRight }
+                    Label { Layout.fillWidth: true; text: appController.now_title; font.pixelSize: 15; font.bold: true; elide: Text.ElideRight }
+                    Label { Layout.fillWidth: true; text: appController.now_artist; color: root.palette.placeholderText; elide: Text.ElideRight }
                 }
 
                 Item { Layout.fillWidth: true }
 
-                CogButton { glyph: "◀"; toolTip: qsTr("Previous"); onClicked: appController.previous() }
+                CogButton { glyph: "◀"; iconName: "media-skip-backward"; toolTip: qsTr("Previous"); onClicked: appController.previous() }
                 CogButton {
                     glyph: appController.playback_state === "playing" ? "Ⅱ" : "▶"
+                    iconName: appController.playback_state === "playing" ? "media-playback-pause" : "media-playback-start"
                     toolTip: qsTr("Play/Pause")
                     onClicked: appController.play_pause()
                 }
-                CogButton { glyph: "■"; toolTip: qsTr("Stop"); onClicked: appController.stop() }
-                CogButton { glyph: "▶"; toolTip: qsTr("Next"); onClicked: appController.next() }
+                CogButton { glyph: "■"; iconName: "media-playback-stop"; toolTip: qsTr("Stop"); onClicked: appController.stop() }
+                CogButton { glyph: "▶"; iconName: "media-skip-forward"; toolTip: qsTr("Next"); onClicked: appController.next() }
 
                 ToolSeparator { Layout.fillHeight: true }
 
                 CogButton {
                     glyph: "⇄"
+                    iconName: "media-playlist-shuffle"
                     checkable: true
                     checked: root.shuffleEnabled
                     toolTip: qsTr("Shuffle")
@@ -161,6 +176,7 @@ ApplicationWindow {
                 }
                 CogButton {
                     glyph: "↻"
+                    iconName: "media-playlist-repeat"
                     checkable: true
                     checked: root.repeatEnabled
                     toolTip: qsTr("Repeat")
@@ -169,16 +185,14 @@ ApplicationWindow {
 
                 Item { Layout.fillWidth: true }
 
-                Rectangle {
+                Frame {
                     Layout.preferredWidth: 78
                     Layout.preferredHeight: 32
-                    color: "#ffffff"
-                    radius: 6
-                    border.color: "#dddddd"
-                    Label { anchors.centerIn: parent; text: root.timeLabel(appController.position_seconds); color: "#303030"; font.pixelSize: 14 }
+                    padding: 5
+                    Label { anchors.centerIn: parent; text: root.timeLabel(appController.position_seconds); font.pixelSize: 14 }
                 }
 
-                Label { text: "🔊"; color: "#606060" }
+                Label { text: qsTr("Volume"); Accessible.name: qsTr("Volume") }
                 Slider {
                     Layout.preferredWidth: 116
                     from: 0
@@ -192,17 +206,7 @@ ApplicationWindow {
                     Layout.preferredWidth: 170
                     placeholderText: qsTr("Search")
                     selectByMouse: true
-                    leftPadding: 27
                     onTextChanged: appController.filter_playlist(text)
-
-                    Label {
-                        anchors.left: parent.left
-                        anchors.leftMargin: 8
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: "⌕"
-                        color: "#777777"
-                        font.pixelSize: 18
-                    }
                 }
             }
 
@@ -220,13 +224,12 @@ ApplicationWindow {
 
     footer: Rectangle {
         implicitHeight: 25
-        color: "#e5e5e5"
-        border.color: "#cfcfcf"
+        color: root.palette.button
+        border.color: root.palette.mid
 
         Label {
             anchors.centerIn: parent
             text: appController.total_duration
-            color: "#454545"
             font.pixelSize: 12
         }
 
@@ -235,7 +238,7 @@ ApplicationWindow {
             anchors.rightMargin: 9
             anchors.verticalCenter: parent.verticalCenter
             text: appController.status
-            color: "#707070"
+            color: root.palette.placeholderText
             font.pixelSize: 11
             elide: Text.ElideLeft
             width: Math.min(360, implicitWidth)
@@ -251,8 +254,8 @@ ApplicationWindow {
             SplitView.minimumWidth: root.sidebarVisible ? 170 : 0
             SplitView.maximumWidth: root.sidebarVisible ? 420 : 0
             visible: root.sidebarVisible
-            color: "#e9e9e9"
-            border.color: "#c8c8c8"
+            color: root.palette.window
+            border.color: root.palette.mid
 
             ColumnLayout {
                 anchors.fill: parent
@@ -260,9 +263,9 @@ ApplicationWindow {
 
                 Rectangle {
                     Layout.fillWidth: true
-                    Layout.preferredHeight: 35
-                    color: "#e1e1e1"
-                    border.color: "#c7c7c7"
+                    Layout.preferredHeight: 40
+                    color: root.palette.button
+                    border.color: root.palette.mid
 
                     RowLayout {
                         anchors.fill: parent
@@ -270,39 +273,62 @@ ApplicationWindow {
                         anchors.rightMargin: 7
                         spacing: 5
 
-                        CogButton { Layout.preferredWidth: 28; Layout.preferredHeight: 28; glyph: "‹"; toolTip: qsTr("Parent folder"); onClicked: appController.parent_directory() }
-                        Label { text: "📁"; font.pixelSize: 16 }
+                        CogButton {
+                            Layout.preferredWidth: 30
+                            Layout.preferredHeight: 30
+                            glyph: "↑"
+                            iconName: "go-up"
+                            toolTip: qsTr("Use parent folder as the tree root")
+                            onClicked: {
+                                appController.parent_directory()
+                                fileTreeModel.set_root_path_text(appController.directory_path)
+                            }
+                        }
+                        CogButton {
+                            Layout.preferredWidth: 30
+                            Layout.preferredHeight: 30
+                            glyph: "▣"
+                            iconName: "folder-open"
+                            toolTip: qsTr("Choose music folder")
+                            onClicked: folderDialog.open()
+                        }
                         Label { Layout.fillWidth: true; text: appController.directory_path; font.bold: true; elide: Text.ElideMiddle }
                     }
                 }
 
-                ListView {
-                    id: directoryList
+                TreeView {
+                    id: directoryTree
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     clip: true
-                    model: appController.directory_count
-                    currentIndex: -1
+                    model: fileTreeModel
+                    rootIndex: fileTreeModel.root_index
+                    alternatingRows: true
+                    selectionBehavior: TableView.SelectRows
                     boundsBehavior: Flickable.StopAtBounds
+                    columnWidthProvider: function(column) { return width }
 
-                    delegate: ItemDelegate {
-                        required property int index
-                        width: directoryList.width
-                        height: 29
-                        leftPadding: 10
-                        text: (appController.directory_is_folder_at(index) ? "📁  " : "♫  ") + appController.directory_name_at(index)
-                        font.pixelSize: 12
-                        contentItem: Text {
-                            text: parent.text
-                            color: "#303030"
-                            font: parent.font
-                            verticalAlignment: Text.AlignVCenter
-                            elide: Text.ElideRight
+                    delegate: TreeViewDelegate {
+                        width: directoryTree.width
+                        implicitHeight: 30
+                        icon.source: {
+                            const iconName = fileTreeModel.is_directory(treeView.index(row, column))
+                                ? "folder"
+                                : "audio-x-generic"
+                            return Qt.resolvedUrl("icons/" + iconName
+                                + (root.useLightIcons ? "-light" : "") + ".svg")
                         }
-                        background: Rectangle {
-                            color: parent.hovered ? "#d9e8f6" : "transparent"
+                        icon.color: "transparent"
+                        icon.width: 18
+                        icon.height: 18
+                        ToolTip.visible: hovered
+                        ToolTip.delay: 700
+                        ToolTip.text: fileTreeModel.file_url(treeView.index(row, column)).toString()
+                        onDoubleClicked: {
+                            const itemIndex = treeView.index(row, column)
+                            if (!fileTreeModel.is_directory(itemIndex))
+                                appController.add_file(fileTreeModel.file_url(itemIndex))
                         }
-                        onDoubleClicked: appController.activate_directory_entry(index)
                     }
 
                     ScrollBar.vertical: ScrollBar {}
@@ -313,7 +339,7 @@ ApplicationWindow {
         Rectangle {
             SplitView.fillWidth: true
             SplitView.minimumWidth: 560
-            color: "white"
+            color: root.palette.base
 
             ColumnLayout {
                 anchors.fill: parent
@@ -322,6 +348,7 @@ ApplicationWindow {
                 PlaylistHeader {
                     id: playlistHeader
                     Layout.fillWidth: true
+                    theme: root.palette
                 }
 
                 ListView {
@@ -338,6 +365,7 @@ ApplicationWindow {
                         width: playlistView.width
                         app: appController
                         columns: playlistHeader
+                        theme: root.palette
                         rowIndex: index
                         selected: root.selectedRow === index
                         onPressed: row => root.selectedRow = row
@@ -352,9 +380,9 @@ ApplicationWindow {
                     Label {
                         anchors.centerIn: parent
                         visible: appController.playlist_count === 0
-                        text: qsTr("Drop music here")
-                        color: "#a0a0a0"
-                        font.pixelSize: 21
+                        text: qsTr("Drop music here or use Add Files")
+                        color: root.palette.placeholderText
+                        font.pixelSize: 18
                     }
                 }
             }

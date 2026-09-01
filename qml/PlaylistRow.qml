@@ -6,6 +6,7 @@ Item {
     required property var app
     required property int rowIndex
     required property var columns
+    required property var theme
     property bool selected: false
     property int revision: app.playlist_revision
 
@@ -19,7 +20,9 @@ Item {
         anchors.leftMargin: 3
         anchors.rightMargin: 3
         radius: 5
-        color: root.selected ? "#c95f00" : (root.rowIndex % 2 ? "#f1f1f1" : "#fafafa")
+        color: root.selected
+            ? root.theme.highlight
+            : (root.rowIndex % 2 ? root.theme.alternateBase : root.theme.base)
     }
 
     component Cell: Text {
@@ -30,7 +33,7 @@ Item {
         height: root.height
         leftPadding: 7
         rightPadding: 7
-        color: root.selected ? "white" : "#303030"
+        color: root.selected ? root.theme.highlightedText : root.theme.text
         font.pixelSize: 12
         font.bold: root.selected
         horizontalAlignment: alignment

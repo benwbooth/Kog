@@ -5,29 +5,30 @@ ToolButton {
     id: control
 
     property string glyph: ""
+    property string iconName: ""
     property string toolTip: ""
+    readonly property color iconBackground: ApplicationWindow.window
+        ? ApplicationWindow.window.palette.window
+        : palette.window
+    readonly property bool useLightIcon: (0.2126 * iconBackground.r
+        + 0.7152 * iconBackground.g
+        + 0.0722 * iconBackground.b) < 0.5
 
     implicitWidth: 38
     implicitHeight: 38
     text: glyph
-    font.pixelSize: 19
+    icon.source: iconName.length > 0
+        ? Qt.resolvedUrl("icons/" + iconName + (useLightIcon ? "-light" : "") + ".svg")
+        : ""
+    icon.color: "transparent"
+    icon.width: 20
+    icon.height: 20
+    display: iconName.length > 0 ? AbstractButton.IconOnly : AbstractButton.TextOnly
+    font.pixelSize: 18
     hoverEnabled: true
 
     ToolTip.visible: hovered && toolTip.length > 0
     ToolTip.text: toolTip
     ToolTip.delay: 450
 
-    contentItem: Text {
-        text: control.text
-        font: control.font
-        color: control.enabled ? (control.down ? "#222222" : "#555555") : "#aaaaaa"
-        horizontalAlignment: Text.AlignHCenter
-        verticalAlignment: Text.AlignVCenter
-    }
-
-    background: Rectangle {
-        radius: 6
-        color: control.down ? "#d5d5d5" : (control.hovered ? "#e9e9e9" : "transparent")
-        border.color: control.activeFocus ? "#6aa9e9" : "transparent"
-    }
 }

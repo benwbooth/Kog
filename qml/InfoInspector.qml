@@ -12,7 +12,7 @@ Window {
     minimumWidth: 280
     minimumHeight: 420
     title: qsTr("Info Inspector")
-    color: "#8c8c8c"
+    color: palette.window
 
     function timeLabel(seconds) {
         const value = Math.max(0, Math.floor(seconds))
@@ -41,13 +41,13 @@ Window {
             Layout.preferredWidth: 112
             horizontalAlignment: Text.AlignRight
             text: parent.name + ":"
-            color: "white"
+            color: root.palette.windowText
             font.bold: true
         }
         Label {
             Layout.fillWidth: true
             text: parent.value
-            color: "white"
+            color: root.palette.windowText
             font.bold: true
             elide: Text.ElideMiddle
         }
@@ -61,7 +61,7 @@ Window {
         Label {
             Layout.alignment: Qt.AlignHCenter
             text: root.app.now_title
-            color: "white"
+            color: root.palette.windowText
             font.pixelSize: 16
             font.bold: true
             elide: Text.ElideRight
@@ -88,12 +88,14 @@ Window {
             Layout.alignment: Qt.AlignHCenter
             Layout.preferredWidth: 176
             Layout.preferredHeight: 176
-            color: "#c8c8c8"
+            color: root.palette.alternateBase
+            radius: 8
+            border.color: root.palette.mid
 
             Text {
                 anchors.centerIn: parent
                 text: "♫"
-                color: "#808080"
+                color: root.palette.placeholderText
                 font.pixelSize: 78
             }
         }
@@ -101,7 +103,7 @@ Window {
         Label {
             Layout.fillWidth: true
             text: root.app.current_file
-            color: "#eeeeee"
+            color: root.palette.placeholderText
             horizontalAlignment: Text.AlignHCenter
             elide: Text.ElideMiddle
         }

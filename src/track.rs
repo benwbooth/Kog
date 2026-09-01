@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use lofty::file::{AudioFile, TaggedFileExt};
-use lofty::tag::Accessor;
+use lofty::tag::{Accessor, ItemKey, Tag};
 
 use crate::decoder::{DecoderRegistry, PlaybackSource};
 
@@ -13,6 +13,7 @@ pub struct Track {
     pub artist: String,
     pub album: String,
     pub genre: String,
+    pub lyrics: String,
     pub year: Option<u32>,
     pub track_number: Option<u32>,
     pub duration: Option<Duration>,
@@ -75,6 +76,7 @@ impl Track {
                     .genre()
                     .map(|value| value.to_string())
                     .unwrap_or_default();
+                track.lyrics = lyrics_from_tag(tag);
                 track.year = tag.date().map(|date| u32::from(date.year));
                 track.track_number = tag.track();
             }
@@ -101,6 +103,9 @@ impl Track {
             }
             if let Some(genre) = properties.genre.filter(|value| !value.is_empty()) {
                 track.genre = genre;
+            }
+            if let Some(lyrics) = properties.lyrics.filter(|value| !value.is_empty()) {
+                track.lyrics = lyrics;
             }
             track.track_number = properties.track_number.or(track.track_number);
             track.decoder_warning = properties.warning;
@@ -131,6 +136,20 @@ impl Track {
     }
 }
 
+fn lyrics_from_tag(tag: &Tag) -> String {
+    for key in [ItemKey::UnsyncLyrics, ItemKey::Lyrics] {
+        let values = tag
+            .get_strings(key)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>();
+        if !values.is_empty() {
+            return values.join("\n");
+        }
+    }
+    String::new()
+}
+
 pub fn duration_label(duration: Duration) -> String {
     let total_seconds = duration.as_secs();
     let hours = total_seconds / 3_600;
@@ -151,11 +170,25 @@ pub fn canonical_path(path: &Path) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lofty::tag::TagType;
 
     #[test]
     fn duration_labels_match_music_player_conventions() {
         assert_eq!(duration_label(Duration::from_secs(0)), "0:00");
         assert_eq!(duration_label(Duration::from_secs(185)), "3:05");
         assert_eq!(duration_label(Duration::from_secs(3_661)), "1:01:01");
+    }
+
+    #[test]
+    fn lyrics_follow_cogs_unsynchronized_then_generic_fallback() {
+        let mut id3 = Tag::new(TagType::Id3v2);
+        assert!(id3.insert_text(ItemKey::UnsyncLyrics, "First line\nSecond line".to_owned()));
+        assert_eq!(lyrics_from_tag(&id3), "First line\nSecond line");
+
+        let mut vorbis = Tag::new(TagType::VorbisComments);
+        assert!(vorbis.insert_text(ItemKey::Lyrics, "Generic lyrics".to_owned()));
+        assert_eq!(lyrics_from_tag(&vorbis), "Generic lyrics");
+
+        assert_eq!(lyrics_from_tag(&Tag::new(TagType::Id3v2)), "");
     }
 }
