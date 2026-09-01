@@ -327,7 +327,7 @@ fn spawn_helper(
 fn validate_header(header: &HelperHeader, path: &Path) -> Result<(), String> {
     let source_version = psf_format_version(path)?;
     if header.format_version != u32::from(source_version)
-        || !matches!(header.format_version, 1 | 2)
+        || !matches!(header.format_version, 1 | 2 | 0x24)
         || header.sample_rate == 0
         || header.channels != 2
         || header.main_frames == 0
@@ -361,6 +361,15 @@ fn helper_path(source: &Path) -> Result<PathBuf, String> {
                 "kog-psf2-helper"
             },
             PathBuf::from(env!("KOG_BUILD_PSF2_HELPER")),
+        ),
+        0x24 => (
+            "KOG_2SF_HELPER",
+            if cfg!(windows) {
+                "kog-2sf-helper.exe"
+            } else {
+                "kog-2sf-helper"
+            },
+            PathBuf::from(env!("KOG_BUILD_2SF_HELPER")),
         ),
         _ => {
             return Err(format!(
@@ -641,6 +650,110 @@ pub fn test_psf2_irx() -> Vec<u8> {
     );
     write_u32_at(&mut elf, iopmod_section + 32, 4);
     elf
+}
+
+#[cfg(test)]
+pub fn test_twosf_bytes(offset: u32, data: &[u8], tags: &str) -> Vec<u8> {
+    let mut mapped = Vec::with_capacity(8 + data.len());
+    mapped.extend_from_slice(&offset.to_le_bytes());
+    mapped.extend_from_slice(&u32::try_from(data.len()).unwrap().to_le_bytes());
+    mapped.extend_from_slice(data);
+    let compressed = stored_zlib(&mapped);
+    let mut output = Vec::new();
+    output.extend_from_slice(b"PSF\x24");
+    output.extend_from_slice(&0_u32.to_le_bytes());
+    output.extend_from_slice(&u32::try_from(compressed.len()).unwrap().to_le_bytes());
+    output.extend_from_slice(&crc32(&compressed).to_le_bytes());
+    output.extend_from_slice(&compressed);
+    output.extend_from_slice(b"[TAG]");
+    output.extend_from_slice(tags.as_bytes());
+    output
+}
+
+#[cfg(test)]
+pub fn test_twosf_rom() -> Vec<u8> {
+    const ROM_BYTES: usize = 0x4000;
+    const ARM9_ROM_OFFSET: usize = 0x1000;
+    const ARM7_ROM_OFFSET: usize = 0x1200;
+    const ARM9_RAM_ADDRESS: u32 = 0x0200_0000;
+    const ARM7_RAM_ADDRESS: u32 = 0x0380_0000;
+    const SAMPLE_OFFSET: usize = 0x100;
+
+    fn arm_program() -> Vec<u8> {
+        let mut words = Vec::<u32>::new();
+        let mut literals = Vec::<(usize, u32, u32)>::new();
+        let load_literal = |words: &mut Vec<u32>,
+                            literals: &mut Vec<(usize, u32, u32)>,
+                            register: u32,
+                            value: u32| {
+            let index = words.len();
+            words.push(0);
+            literals.push((index, register, value));
+        };
+        let store = |words: &mut Vec<u32>, source: u32, base: u32, offset: u32| {
+            words.push(0xe580_0000 | (base << 16) | (source << 12) | offset);
+        };
+
+        load_literal(&mut words, &mut literals, 0, 0x0400_0400); // channel 0 registers
+        load_literal(
+            &mut words,
+            &mut literals,
+            1,
+            ARM7_RAM_ADDRESS + SAMPLE_OFFSET as u32,
+        );
+        store(&mut words, 1, 0, 4); // source address
+        load_literal(&mut words, &mut literals, 1, 0x0000_fe00); // 32.728 kHz, loop at 0
+        store(&mut words, 1, 0, 8); // timer + loop position
+        load_literal(&mut words, &mut literals, 1, 0x40); // 256 bytes in words
+        store(&mut words, 1, 0, 12); // sample length
+        load_literal(&mut words, &mut literals, 1, 0xa840_007f); // PCM16, loop, pan, volume, start
+        store(&mut words, 1, 0, 0);
+        load_literal(&mut words, &mut literals, 0, 0x0400_0500); // master sound control
+        load_literal(&mut words, &mut literals, 1, 0x0000_807f); // enable + full volume
+        store(&mut words, 1, 0, 0);
+        words.push(0xeaff_fffe); // loop forever
+
+        for (instruction, register, value) in literals {
+            let literal_offset = words.len() * 4;
+            let instruction_offset = instruction * 4;
+            let displacement = literal_offset.checked_sub(instruction_offset + 8).unwrap();
+            assert!(displacement <= 0xfff);
+            words[instruction] =
+                0xe59f_0000 | (register << 12) | u32::try_from(displacement).unwrap();
+            words.push(value);
+        }
+        words
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect::<Vec<_>>()
+    }
+
+    let mut rom = vec![0_u8; ROM_BYTES];
+    rom[0..12].copy_from_slice(b"KOG 2SF TEST");
+    rom[12..16].copy_from_slice(b"####");
+    rom[16..18].copy_from_slice(b"KG");
+    write_u32_at(&mut rom, 0x20, ARM9_ROM_OFFSET as u32);
+    write_u32_at(&mut rom, 0x24, ARM9_RAM_ADDRESS);
+    write_u32_at(&mut rom, 0x28, ARM9_RAM_ADDRESS);
+    write_u32_at(&mut rom, 0x2c, 4);
+    write_u32_at(&mut rom, 0x30, ARM7_ROM_OFFSET as u32);
+    write_u32_at(&mut rom, 0x34, ARM7_RAM_ADDRESS);
+    write_u32_at(&mut rom, 0x38, ARM7_RAM_ADDRESS);
+    write_u32_at(&mut rom, 0x3c, 0x200);
+    write_u32_at(&mut rom, 0x80, ROM_BYTES as u32);
+    write_u32_at(&mut rom, 0x84, 0x200);
+    write_u32_at(&mut rom, ARM9_ROM_OFFSET, 0xeaff_fffe);
+
+    let arm7 = arm_program();
+    assert!(arm7.len() <= SAMPLE_OFFSET);
+    rom[ARM7_ROM_OFFSET..ARM7_ROM_OFFSET + arm7.len()].copy_from_slice(&arm7);
+    let waveform = [12_000_i16, -12_000, 6_000, -6_000];
+    for sample in 0..128 {
+        let value = waveform[sample % waveform.len()].to_le_bytes();
+        let offset = ARM7_ROM_OFFSET + SAMPLE_OFFSET + sample * 2;
+        rom[offset..offset + 2].copy_from_slice(&value);
+    }
+    rom
 }
 
 #[cfg(test)]

@@ -379,6 +379,29 @@ and a ZIP-contained mini/library pair. A broad redistributable corpus,
 leading-silence comparison, Windows/macOS runtime gates, and direct comparison
 with Cog remain.
 
+2SF and mini2SF reuse the official melonDS 1.1 core at revision `b86390e`
+through `kog-2sf-helper`. The build disables melonDS's Qt/SDL frontend, JIT,
+OpenGL renderer, and debugger; only its portable interpreter-based Nintendo DS
+core is used. psflib loads relative xSF dependencies into bounded ROM and save
+mappings. Before melonDS sees the result, the helper validates compressed SAVE
+streams and CRCs, aggregate mapping limits, the complete 4 KiB cartridge
+header, and both ARM9 and ARM7 ROM, RAM, entry-point, size, and alignment
+ranges. melonDS supplies generated free BIOS and firmware data, CPU, memory,
+and SPU emulation, so Kog ships no Nintendo BIOS, firmware, game program, or ROM
+asset.
+
+The helper uses the same fixed stream family as the PSF helpers, documented in
+`native/twosf-helper/PROTOCOL.md`, with xSF version `0x24` and 32,728 Hz stereo
+signed-16 PCM. Rust retains common metadata, duration/fade, EOS, and
+restart/discard seeking policy. Tests construct an original ARM7 program and
+synthetic PCM16 waveform in a minimal generated Nintendo DS ROM, then wrap it
+as full and mini2SF. They gate routing, outer-tag precedence, audible playback,
+seek, exact EOS, defaults, malformed mappings and executable ranges,
+missing/cyclic dependencies, and a ZIP-contained mini/library pair. A broad
+redistributable corpus, fractional sample-rate and leading-silence comparison,
+performance measurement, Windows/macOS runtime gates, and direct comparison
+with Cog remain.
+
 ## Decoder contract
 
 `DecoderBackend` is the current executable contract. Every backend supplies:

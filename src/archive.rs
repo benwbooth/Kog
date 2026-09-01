@@ -293,7 +293,10 @@ mod tests {
     use crate::decoder::{ArchiveOrigin, DecoderRegistry, DecoderSettings, PlaybackSource};
     use crate::gsf::{test_gba_rom, test_gsf_bytes};
     use crate::ncsf::{test_ncsf_bytes, test_sdat_bytes};
-    use crate::psf::{test_psf_bytes, test_psf_executable, test_psf2_bytes, test_psf2_irx};
+    use crate::psf::{
+        test_psf_bytes, test_psf_executable, test_psf2_bytes, test_psf2_irx, test_twosf_bytes,
+        test_twosf_rom,
+    };
     use crate::qsf::{test_qsf_bytes, test_qsf_program};
     use crate::sdsf::{test_sdsf_bytes, test_ssf_program};
     use crate::usf::{test_usf_bytes, test_usf_reserved};
@@ -851,6 +854,47 @@ mod tests {
         let duration = properties.duration.expect("archived PSF2 duration");
         let expected = std::time::Duration::from_millis(250);
         let frame = std::time::Duration::from_nanos(1_000_000_000 / 44_100 + 1);
+        assert!(duration.abs_diff(expected) <= frame);
+    }
+
+    #[test]
+    fn zip_preserves_mini2sf_library_resolution() {
+        let fixture = tempfile::tempdir().unwrap();
+        let archive_path = fixture.path().join("twosf-set.zip");
+        let library = test_twosf_bytes(0, &test_twosf_rom(), "title=Library\n");
+        let mini = test_twosf_bytes(
+            0,
+            &[],
+            "_lib=music.2sflib\ntitle=Archive 2SF selection\nlength=0:00.250\n",
+        );
+        write_stored_zip(
+            &archive_path,
+            &[
+                ("set/selection.mini2sf", &mini),
+                ("set/music.2sflib", &library),
+            ],
+        );
+
+        let registry = DecoderRegistry::new(DecoderSettings::default());
+        let expansion = registry
+            .expand_detailed(archive_path.clone())
+            .expect("expand archived 2SF set");
+        assert_eq!(expansion.sources.len(), 1);
+        assert_eq!(
+            expansion.sources[0]
+                .archive_origin
+                .as_ref()
+                .unwrap()
+                .entry_name,
+            "set/selection.mini2sf"
+        );
+        let properties = registry
+            .probe(&expansion.sources[0])
+            .expect("probe archived mini2SF through extracted library");
+        assert_eq!(properties.title.as_deref(), Some("Archive 2SF selection"));
+        let duration = properties.duration.expect("archived 2SF duration");
+        let expected = std::time::Duration::from_millis(250);
+        let frame = std::time::Duration::from_nanos(1_000_000_000 / 32_728 + 1);
         assert!(duration.abs_diff(expected) <= frame);
     }
 

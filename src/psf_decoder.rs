@@ -8,7 +8,7 @@ use rodio::{ChannelCount, Player, SampleRate, Source};
 use crate::decoder::{DecoderBackend, DecoderCapabilities, PlaybackSource, StreamProperties};
 use crate::psf::Psf;
 
-const PSF_EXTENSIONS: &[&str] = &["psf", "minipsf", "psf2", "minipsf2"];
+const PSF_EXTENSIONS: &[&str] = &["psf", "minipsf", "psf2", "minipsf2", "2sf", "mini2sf"];
 const PSF_DEFAULT_LENGTH: Duration = Duration::from_secs(150);
 const PSF_DEFAULT_FADE: Duration = Duration::from_secs(8);
 const PSF_RENDER_FRAMES: usize = 2_048;
@@ -27,7 +27,7 @@ impl DecoderBackend for PsfBackend {
     }
 
     fn display_name(&self) -> &'static str {
-        "libupse + Play! / PSF family"
+        "libupse + Play! + melonDS / xSF family"
     }
 
     fn extensions(&self) -> &'static [&'static str] {
@@ -56,6 +56,7 @@ impl DecoderBackend for PsfBackend {
             year: metadata.date.as_deref().and_then(tag_year),
             codec: Some(match decoder.format_version() {
                 2 => "PlayStation 2 Sound Format (PSF2) / Play! helper".to_owned(),
+                0x24 => "Nintendo DS Sound Format (2SF) / melonDS helper".to_owned(),
                 _ => "PlayStation Sound Format (PSF) / libupse helper".to_owned(),
             }),
             bits_per_sample: Some(16),
@@ -170,7 +171,7 @@ mod tests {
     use crate::decoder::{DecoderRegistry, DecoderSettings};
     use crate::psf::{
         test_psf_bytes, test_psf_executable, test_psf_out_of_bounds_executable, test_psf2_bytes,
-        test_psf2_irx,
+        test_psf2_irx, test_twosf_bytes, test_twosf_rom,
     };
 
     fn fixture_tags(title: &str) -> String {
@@ -181,7 +182,7 @@ mod tests {
 
     fn assert_duration_within_one_frame(actual: Option<Duration>, expected: Duration) {
         let actual = actual.expect("PSF duration");
-        let frame = Duration::from_nanos(1_000_000_000 / 44_100 + 1);
+        let frame = Duration::from_nanos(1_000_000_000 / 32_000 + 1);
         assert!(
             actual.abs_diff(expected) <= frame,
             "{actual:?} != {expected:?}"
@@ -344,6 +345,139 @@ mod tests {
             decoder.metadata().title.as_deref(),
             Some("Mini PSF2 selection")
         );
+    }
+
+    #[test]
+    fn generated_twosf_routes_renders_seeks_and_ends_exactly() {
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path().join("fixture.2sf");
+        std::fs::write(
+            &path,
+            test_twosf_bytes(
+                0,
+                &test_twosf_rom(),
+                "title=Synthetic 2SF\nartist=Kog tests\ngame=Synthetic Nintendo DS sound program\ngenre=Chiptune\ndate=2026-08-31\nlength=0:00.500\nfade=0:00.100\n",
+            ),
+        )
+        .unwrap();
+
+        let registry = DecoderRegistry::new(DecoderSettings::default());
+        assert_eq!(registry.backend_id_for(&path), Some("psf-family"));
+        let source = PlaybackSource::from_path(path.clone());
+        let properties = registry.probe(&source).expect("probe generated 2SF");
+        assert_duration_within_one_frame(properties.duration, Duration::from_millis(600));
+        assert_eq!(properties.sample_rate, Some(32_728));
+        assert_eq!(properties.channels, Some(2));
+        assert_eq!(properties.title.as_deref(), Some("Synthetic 2SF"));
+        assert_eq!(properties.artist.as_deref(), Some("Kog tests"));
+        assert_eq!(
+            properties.album.as_deref(),
+            Some("Synthetic Nintendo DS sound program")
+        );
+        assert_eq!(
+            properties.codec.as_deref(),
+            Some("Nintendo DS Sound Format (2SF) / melonDS helper")
+        );
+
+        let mut decoder =
+            Psf::open(&path, PSF_DEFAULT_LENGTH, PSF_DEFAULT_FADE).expect("open generated 2SF");
+        let mut pcm = vec![0.0; 512 * 2];
+        assert_eq!(decoder.render(&mut pcm).expect("render 2SF"), 512);
+        assert!(
+            pcm.iter().any(|sample| sample.abs() > 0.000_01),
+            "generated 2SF was silent"
+        );
+        assert_eq!(
+            decoder.seek(Duration::from_millis(250)).unwrap(),
+            Duration::from_millis(250)
+        );
+        pcm.fill(0.0);
+        assert_eq!(
+            decoder.render(&mut pcm).expect("render after 2SF seek"),
+            512
+        );
+        assert!(
+            pcm.iter().any(|sample| sample.abs() > 0.000_01),
+            "generated 2SF was silent after seek"
+        );
+        decoder.seek(Duration::from_secs(10)).unwrap();
+        assert_eq!(decoder.render(&mut pcm).expect("render 2SF at end"), 0);
+    }
+
+    #[test]
+    fn mini2sf_resolves_relative_library_and_outer_tags() {
+        let fixture = tempfile::tempdir().unwrap();
+        let library = fixture.path().join("music.2sflib");
+        let mini = fixture.path().join("selection.mini2sf");
+        std::fs::write(
+            &library,
+            test_twosf_bytes(0, &test_twosf_rom(), "title=Library title\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            &mini,
+            test_twosf_bytes(
+                0,
+                &[],
+                "_lib=music.2sflib\ntitle=Mini 2SF selection\nlength=0:00.250\n",
+            ),
+        )
+        .unwrap();
+
+        let decoder = Psf::open(&mini, PSF_DEFAULT_LENGTH, PSF_DEFAULT_FADE)
+            .expect("open mini2SF library chain");
+        assert_duration_within_one_frame(Some(decoder.duration()), Duration::from_millis(250));
+        assert_eq!(
+            decoder.metadata().title.as_deref(),
+            Some("Mini 2SF selection")
+        );
+    }
+
+    #[test]
+    fn twosf_defaults_and_malformed_inputs_are_rejected() {
+        let fixture = tempfile::tempdir().unwrap();
+
+        let untimed = fixture.path().join("untimed.2sf");
+        std::fs::write(
+            &untimed,
+            test_twosf_bytes(0, &test_twosf_rom(), "title=Untimed 2SF fixture\n"),
+        )
+        .unwrap();
+        let decoder =
+            Psf::open(&untimed, PSF_DEFAULT_LENGTH, PSF_DEFAULT_FADE).expect("open untimed 2SF");
+        assert_duration_within_one_frame(Some(decoder.duration()), Duration::from_secs(158));
+
+        let short_rom = fixture.path().join("short.2sf");
+        std::fs::write(&short_rom, test_twosf_bytes(0, &[0_u8; 4], "")).unwrap();
+        assert!(Psf::open(&short_rom, PSF_DEFAULT_LENGTH, PSF_DEFAULT_FADE).is_err());
+
+        let oversized_mapping = fixture.path().join("oversized.2sf");
+        std::fs::write(
+            &oversized_mapping,
+            test_twosf_bytes(u32::MAX, &[1_u8; 4], ""),
+        )
+        .unwrap();
+        assert!(Psf::open(&oversized_mapping, PSF_DEFAULT_LENGTH, PSF_DEFAULT_FADE).is_err());
+
+        let invalid_header = fixture.path().join("invalid-header.2sf");
+        let mut rom = test_twosf_rom();
+        rom[0x2c..0x30].copy_from_slice(&u32::MAX.to_le_bytes());
+        std::fs::write(&invalid_header, test_twosf_bytes(0, &rom, "")).unwrap();
+        assert!(Psf::open(&invalid_header, PSF_DEFAULT_LENGTH, PSF_DEFAULT_FADE).is_err());
+
+        let missing = fixture.path().join("missing.mini2sf");
+        std::fs::write(
+            &missing,
+            test_twosf_bytes(0, &[], "_lib=does-not-exist.2sflib\n"),
+        )
+        .unwrap();
+        assert!(Psf::open(&missing, PSF_DEFAULT_LENGTH, PSF_DEFAULT_FADE).is_err());
+
+        let cycle_a = fixture.path().join("cycle-a.mini2sf");
+        let cycle_b = fixture.path().join("cycle-b.2sflib");
+        std::fs::write(&cycle_a, test_twosf_bytes(0, &[], "_lib=cycle-b.2sflib\n")).unwrap();
+        std::fs::write(&cycle_b, test_twosf_bytes(0, &[], "_lib=cycle-a.mini2sf\n")).unwrap();
+        assert!(Psf::open(&cycle_a, PSF_DEFAULT_LENGTH, PSF_DEFAULT_FADE).is_err());
     }
 
     #[test]

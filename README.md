@@ -141,6 +141,18 @@ timing, exact EOS, malformed input, missing/cyclic libraries, and archive
 companion lookup. Broad corpus comparison and Windows/macOS runtime gates
 remain.
 
+2SF and mini2SF reuse the official melonDS 1.1 emulation core behind a
+separate `kog-2sf-helper`; Kog does not translate Cog's Objective-C++ wrapper
+or ship Nintendo BIOS, firmware, ROM, or game assets. The helper combines
+psflib's dependency traversal with bounded ROM/save mappings, validates the
+Nintendo DS executable ranges, and streams melonDS's 32,728 Hz signed-16
+stereo output through the common xSF protocol. Generated 2SF/mini2SF files
+containing original ARM/SPU code gate routing, metadata precedence, audible
+playback after seek, tagged/default timing, exact EOS, malformed input,
+missing/cyclic libraries, and archive companion lookup. A broad
+redistributable corpus, exact comparison with Cog, and Windows/macOS runtime
+gates remain.
+
 Monkey's Audio Image Link (`.apl`) files now accept the original CRLF or
 portable LF header, resolve their local image path with Cog-compatible relative
 Windows-path handling, and play only the declared start/finish PCM-frame range
@@ -224,11 +236,13 @@ cargo run
 For an existing checkout, initialize native sources with
 `git submodule update --init --recursive` before building.
 
-Cargo builds `kog-psf-helper` and `kog-psf2-helper` automatically for local PSF
-playback. Binary packages must install both helpers beside the Kog executable;
-isolated tests may override their locations with
+Cargo builds `kog-psf-helper`, `kog-psf2-helper`, and `kog-2sf-helper`
+automatically for local xSF playback. Binary packages must install all three
+helpers beside the Kog executable; isolated tests may override their locations
+with
 `KOG_PSF_HELPER=/path/to/kog-psf-helper` and
-`KOG_PSF2_HELPER=/path/to/kog-psf2-helper`.
+`KOG_PSF2_HELPER=/path/to/kog-psf2-helper`, or
+`KOG_2SF_HELPER=/path/to/kog-2sf-helper`.
 
 Choose RustySynth or OPL3Windows under **Edit → Preferences → MIDI**. RustySynth
 requires an SF2 bank; Kog also accepts `KOG_SOUNDFONT=/path/to/bank.sf2` and

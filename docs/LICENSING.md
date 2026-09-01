@@ -28,6 +28,13 @@ source trees and are summarized in `THIRD_PARTY_NOTICES.md`.
   The GPL-3.0-or-later Kog adapter, Play! notices, and dependency notices must
   accompany binary distributions. Play! is not relicensed by Kog, and no root
   license change is required to use its BSD-licensed code.
+- 2SF playback uses the official GPL-3.0-or-later melonDS core plus psflib and
+  system zlib in a separate `kog-2sf-helper`. These terms are compatible with
+  Kog's GPL-3.0-or-later license. The executable boundary keeps a full emulator
+  and untrusted xSF parsing out of Kog's address space; it is a fault-isolation
+  decision, not a license workaround. Binary distributions must install the
+  helper beside Kog and carry the complete corresponding source and upstream
+  copyright/license notices. melonDS is not relicensed by Kog.
 - A decoder whose license adds non-commercial or other GPL-incompatible terms
   does not become link-compatible merely because Kog is intended as a
   non-commercial project. Such a component requires an independently reviewed,

@@ -315,6 +315,33 @@ waveform to emulated SPU2 registers, then wrap it in generated PSF2/miniPSF2
 filesystems. They contain no Sony BIOS, firmware, game code, game data, or
 recorded audio.
 
+## melonDS and kog-2sf-helper
+
+The `native/melonds` submodule is the official cross-platform
+[melonDS](https://github.com/melonDS-emu/melonDS) emulator at the 1.1 release
+commit `b86390e4428bf38ce4c1ce0e9ca446d6d25955e8`. Kog reuses its maintained
+Nintendo DS CPU, memory, free BIOS/firmware generation, cartridge, and SPU
+implementation for 2SF and mini2SF instead of translating Cog's Objective-C++
+wrapper or redistributing Nintendo firmware.
+
+melonDS is Copyright (c) 2016-2026 Arisotura and contributors and is licensed
+under GNU General Public License version 3 or later. The complete license and
+per-file copyright notices remain in the pinned submodule; its GPL text is
+identical to Kog's root `LICENSE`. Kog's GPL-3.0-or-later adapter under
+`native/twosf-helper`, melonDS, psflib, and system zlib are compiled into the
+separate `kog-2sf-helper` executable. This is a fault-containment boundary, not
+a license workaround. Binary distributors must install the helper beside Kog
+and provide the corresponding source and notices under their respective
+terms.
+
+The helper uses the metadata/PCM protocol in
+`native/twosf-helper/PROTOCOL.md`, validates bounded 2SF ROM/save mappings and
+Nintendo DS executable ranges, and builds melonDS without its Qt/SDL frontend,
+JIT, OpenGL renderer, or debugger. Tests create an original ARM program,
+synthetic PCM waveform, minimal Nintendo DS ROM, and 2SF wrappers. They include
+no Nintendo BIOS, firmware, copyrighted game program, game data, recorded
+audio, or commercial ROM image.
+
 ## SSEQPlayer and psflib
 
 The `native/sseqplayer` submodule is kode54's official

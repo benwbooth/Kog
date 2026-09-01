@@ -8,6 +8,7 @@ fn main() {
     let libvgm_output = build_libvgm();
     build_psf_helper();
     build_psf2_helper();
+    build_twosf_helper();
     build_openmpt();
     build_hivelytracker();
     build_vgmstream();
@@ -1174,4 +1175,52 @@ fn build_psf2_helper() {
     );
     println!("cargo:rerun-if-changed=native/psf2-helper");
     println!("cargo:rerun-if-changed=native/play");
+}
+
+fn build_twosf_helper() {
+    let helper = Path::new("native/twosf-helper");
+    let melonds = Path::new("native/melonds");
+    let psflib = Path::new("native/psflib");
+    if !helper.join("CMakeLists.txt").is_file()
+        || !melonds.join("src/NDS.h").is_file()
+        || !psflib.join("psflib.h").is_file()
+    {
+        panic!(
+            "melonDS 2SF helper sources are missing; run `git submodule update --init --recursive`"
+        );
+    }
+
+    let melonds = melonds
+        .canonicalize()
+        .expect("canonicalize the melonDS source directory");
+    let psflib = psflib
+        .canonicalize()
+        .expect("canonicalize the psflib source directory");
+    let output_directory = PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR"))
+        .join("twosf-helper");
+    let output = cmake::Config::new(helper)
+        .out_dir(output_directory)
+        .profile("Release")
+        .define("MELONDS_SOURCE", &melonds)
+        .define("PSFLIB_SOURCE", &psflib)
+        .build();
+    let executable_name = if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        "kog-2sf-helper.exe"
+    } else {
+        "kog-2sf-helper"
+    };
+    let executable = output.join("bin").join(executable_name);
+    if !executable.is_file() {
+        panic!(
+            "melonDS 2SF helper build did not install {}",
+            executable.display()
+        );
+    }
+
+    println!(
+        "cargo:rustc-env=KOG_BUILD_2SF_HELPER={}",
+        executable.display()
+    );
+    println!("cargo:rerun-if-changed=native/twosf-helper");
+    println!("cargo:rerun-if-changed=native/melonds");
 }

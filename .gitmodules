@@ -46,3 +46,6 @@
 [submodule "native/play"]
 	path = native/play
 	url = https://github.com/jpd002/Play-.git
+[submodule "native/melonds"]
+	path = native/melonds
+	url = https://github.com/melonDS-emu/melonDS.git
