@@ -2,6 +2,8 @@ use std::path::{Path, PathBuf};
 
 use directories::ProjectDirs;
 
+use crate::equalizer::EqualizerSettings;
+
 const SOUNDFONT_SETTING_FILE: &str = "soundfont-path";
 const MIDI_ENGINE_SETTING_FILE: &str = "midi-engine";
 const SC55_ROM_SETTING_FILE: &str = "sc55-rom-directory";
@@ -13,6 +15,7 @@ const READ_PLAYLISTS_SETTING_FILE: &str = "read-playlists-in-folders";
 const OUTPUT_VOLUME_SETTING_FILE: &str = "output-volume";
 const PLAYLIST_COLUMN_LAYOUT_SETTING_FILE: &str = "playlist-column-layout";
 const PLAYLIST_COLUMN_WIDTHS_SETTING_FILE: &str = "playlist-column-widths";
+const EQUALIZER_SETTING_FILE: &str = "equalizer-settings";
 const PLAYLIST_COLUMN_IDS: [&str; 19] = [
     "index",
     "status",
@@ -114,6 +117,7 @@ pub struct AppSettings {
     pub read_playlists_in_folders: bool,
     pub output_volume: f64,
     pub playlist_column_layout: Option<String>,
+    pub equalizer: EqualizerSettings,
 }
 
 impl AppSettings {
@@ -150,6 +154,9 @@ impl AppSettings {
                 load_text(PLAYLIST_COLUMN_WIDTHS_SETTING_FILE)
                     .filter(|value| validate_legacy_playlist_column_widths(value))
             });
+        let equalizer = load_text(EQUALIZER_SETTING_FILE)
+            .and_then(|value| EqualizerSettings::parse(&value))
+            .unwrap_or_default();
         Self {
             soundfont_path,
             sc55_rom_path,
@@ -161,6 +168,7 @@ impl AppSettings {
             read_playlists_in_folders,
             output_volume,
             playlist_column_layout,
+            equalizer,
         }
     }
 
@@ -249,6 +257,10 @@ impl AppSettings {
             return Err("Playlist column layout is invalid".to_owned());
         }
         save_text(PLAYLIST_COLUMN_LAYOUT_SETTING_FILE, layout)
+    }
+
+    pub fn save_equalizer(settings: &EqualizerSettings) -> Result<(), String> {
+        save_text(EQUALIZER_SETTING_FILE, &settings.serialize()?)
     }
 }
 
@@ -440,5 +452,26 @@ mod tests {
         assert!(!validate_playlist_column_layout(
             &valid.replace("genre,120,1", "genre,NaN,1")
         ));
+    }
+
+    #[test]
+    fn equalizer_setting_parser_rejects_partial_or_out_of_range_state() {
+        let mut gains_db = [0.0; 31];
+        gains_db[17] = 7.5;
+        let settings = EqualizerSettings {
+            enabled: true,
+            gains_db,
+            ..EqualizerSettings::default()
+        };
+        assert_eq!(
+            EqualizerSettings::parse(&settings.serialize().unwrap()),
+            Some(settings)
+        );
+        assert!(EqualizerSettings::parse("version=1\nenabled=true").is_none());
+        let invalid = EqualizerSettings {
+            preamp_db: 21.0,
+            ..EqualizerSettings::default()
+        };
+        assert!(invalid.serialize().is_err());
     }
 }

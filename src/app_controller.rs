@@ -46,6 +46,12 @@ pub mod qobject {
         #[qproperty(QString, opening_files_behavior)]
         #[qproperty(bool, read_cue_sheets_in_folders)]
         #[qproperty(bool, read_playlists_in_folders)]
+        #[qproperty(bool, equalizer_enabled)]
+        #[qproperty(bool, equalizer_track_genre)]
+        #[qproperty(f64, equalizer_preamp_db)]
+        #[qproperty(QString, equalizer_preset)]
+        #[qproperty(QString, equalizer_preset_names)]
+        #[qproperty(i32, equalizer_revision)]
         type AppController = super::AppControllerRust;
 
         #[qinvokable]
@@ -110,6 +116,22 @@ pub mod qobject {
         fn set_repeat_mode(self: Pin<&mut AppController>, enabled: bool);
         #[qinvokable]
         fn poll_playback(self: Pin<&mut AppController>);
+        #[qinvokable]
+        fn equalizer_band_gain(self: &AppController, index: i32) -> f64;
+        #[qinvokable]
+        fn update_equalizer_enabled(self: Pin<&mut AppController>, enabled: bool);
+        #[qinvokable]
+        fn update_equalizer_tracking(self: Pin<&mut AppController>, enabled: bool);
+        #[qinvokable]
+        fn update_equalizer_preamp(self: Pin<&mut AppController>, gain_db: f64);
+        #[qinvokable]
+        fn update_equalizer_band(self: Pin<&mut AppController>, index: i32, gain_db: f64);
+        #[qinvokable]
+        fn select_equalizer_preset(self: Pin<&mut AppController>, name: QString);
+        #[qinvokable]
+        fn flatten_equalizer(self: Pin<&mut AppController>);
+        #[qinvokable]
+        fn level_equalizer_preamp(self: Pin<&mut AppController>);
 
         #[qinvokable]
         fn track_number_at(self: &AppController, index: i32) -> QString;
@@ -176,6 +198,9 @@ use cxx_qt::CxxQtType;
 use cxx_qt_lib::{QString, QUrl};
 
 use crate::decoder::{DecoderRegistry, DecoderSettings, ExpansionResult, validate_soundfont};
+use crate::equalizer::{
+    EqualizerSettings, apply_preset, preset_for_genre, preset_named, preset_names,
+};
 use crate::playback::{PlaybackEngine, PlaybackState};
 use crate::playlist::{Playlist, PlaylistEntry, PlaylistLocation};
 use crate::settings::{AppSettings, MidiEngine, OpeningFilesBehavior};
@@ -660,6 +685,12 @@ pub struct AppControllerRust {
     opening_files_behavior: QString,
     read_cue_sheets_in_folders: bool,
     read_playlists_in_folders: bool,
+    equalizer_enabled: bool,
+    equalizer_track_genre: bool,
+    equalizer_preamp_db: f64,
+    equalizer_preset: QString,
+    equalizer_preset_names: QString,
+    equalizer_revision: i32,
     tracks: Vec<Track>,
     visible_indices: Vec<usize>,
     sort_column: PlaylistSortColumn,
@@ -670,6 +701,7 @@ pub struct AppControllerRust {
     decoder_settings: DecoderSettings,
     decoders: DecoderRegistry,
     playback: PlaybackEngine,
+    equalizer_settings: EqualizerSettings,
 }
 
 impl Default for AppControllerRust {
@@ -712,8 +744,12 @@ impl Default for AppControllerRust {
             app_settings.sc55_rom_path.as_deref(),
             app_settings.mt32_rom_path.as_deref(),
         ));
+        let equalizer_settings = app_settings.equalizer.clone();
         let decoders = DecoderRegistry::new(decoder_settings.clone());
-        let mut playback = PlaybackEngine::new(DecoderRegistry::new(decoder_settings.clone()));
+        let mut playback = PlaybackEngine::with_equalizer(
+            DecoderRegistry::new(decoder_settings.clone()),
+            equalizer_settings.clone(),
+        );
         playback.set_volume(app_settings.output_volume as f32);
         let mut controller = Self {
             playlist_count: 0,
@@ -752,6 +788,12 @@ impl Default for AppControllerRust {
             opening_files_behavior: qstring(app_settings.opening_files_behavior.setting_value()),
             read_cue_sheets_in_folders: app_settings.read_cue_sheets_in_folders,
             read_playlists_in_folders: app_settings.read_playlists_in_folders,
+            equalizer_enabled: equalizer_settings.enabled,
+            equalizer_track_genre: equalizer_settings.track_genre,
+            equalizer_preamp_db: f64::from(equalizer_settings.preamp_db),
+            equalizer_preset: qstring(&equalizer_settings.preset_name),
+            equalizer_preset_names: qstring(preset_names().join("\n")),
+            equalizer_revision: 0,
             tracks: Vec::new(),
             visible_indices: Vec::new(),
             sort_column: PlaylistSortColumn::Index,
@@ -762,6 +804,7 @@ impl Default for AppControllerRust {
             decoder_settings,
             decoders,
             playback,
+            equalizer_settings,
         };
 
         if let Some(paths) = std::env::var_os("KOG_OPEN_FILES") {
@@ -795,6 +838,10 @@ fn qstring(value: impl AsRef<str>) -> QString {
 
 fn saturating_i32(value: usize) -> i32 {
     i32::try_from(value).unwrap_or(i32::MAX)
+}
+
+fn valid_equalizer_gain(value: f64) -> Option<f32> {
+    (value.is_finite() && (-20.0..=20.0).contains(&value)).then_some(value as f32)
 }
 
 fn default_music_directory() -> PathBuf {
@@ -1600,6 +1647,128 @@ impl qobject::AppController {
         self.as_mut().set_position_seconds(position);
     }
 
+    pub fn equalizer_band_gain(&self, index: i32) -> f64 {
+        usize::try_from(index)
+            .ok()
+            .and_then(|index| self.rust().equalizer_settings.gains_db.get(index))
+            .copied()
+            .map(f64::from)
+            .unwrap_or_default()
+    }
+
+    pub fn update_equalizer_enabled(mut self: Pin<&mut Self>, enabled: bool) {
+        let mut settings = self.as_ref().rust().equalizer_settings.clone();
+        settings.enabled = enabled;
+        self.as_mut().commit_equalizer_settings(
+            settings,
+            if enabled {
+                "Equalizer enabled"
+            } else {
+                "Equalizer disabled"
+            },
+        );
+    }
+
+    pub fn update_equalizer_tracking(mut self: Pin<&mut Self>, enabled: bool) {
+        let mut settings = self.as_ref().rust().equalizer_settings.clone();
+        settings.track_genre = enabled;
+        if enabled {
+            let genre = {
+                let this = self.as_ref();
+                let rust = this.rust();
+                usize::try_from(rust.current_index)
+                    .ok()
+                    .and_then(|index| rust.tracks.get(index))
+                    .map(|track| track.genre.clone())
+                    .unwrap_or_default()
+            };
+            apply_preset(&mut settings, preset_for_genre(&genre));
+        }
+        self.as_mut().commit_equalizer_settings(
+            settings,
+            if enabled {
+                "Equalizer will track genre tags"
+            } else {
+                "Equalizer genre tracking disabled"
+            },
+        );
+    }
+
+    pub fn update_equalizer_preamp(mut self: Pin<&mut Self>, gain_db: f64) {
+        let Some(gain_db) = valid_equalizer_gain(gain_db) else {
+            self.as_mut()
+                .set_status(qstring("Equalizer gain must be between -20 and +20 dB"));
+            return;
+        };
+        let mut settings = self.as_ref().rust().equalizer_settings.clone();
+        settings.preamp_db = gain_db;
+        settings.preset_name = "Custom".to_owned();
+        self.as_mut()
+            .commit_equalizer_settings(settings, "Equalizer preamp adjusted");
+    }
+
+    pub fn update_equalizer_band(mut self: Pin<&mut Self>, index: i32, gain_db: f64) {
+        let Some(index) = usize::try_from(index)
+            .ok()
+            .filter(|index| *index < crate::equalizer::EQUALIZER_FREQUENCIES.len())
+        else {
+            self.as_mut()
+                .set_status(qstring("That equalizer band does not exist"));
+            return;
+        };
+        let Some(gain_db) = valid_equalizer_gain(gain_db) else {
+            self.as_mut()
+                .set_status(qstring("Equalizer gain must be between -20 and +20 dB"));
+            return;
+        };
+        let mut settings = self.as_ref().rust().equalizer_settings.clone();
+        settings.gains_db[index] = gain_db;
+        settings.preset_name = "Custom".to_owned();
+        self.as_mut()
+            .commit_equalizer_settings(settings, "Equalizer curve adjusted");
+    }
+
+    pub fn select_equalizer_preset(mut self: Pin<&mut Self>, name: QString) {
+        let name = name.to_string();
+        let mut settings = self.as_ref().rust().equalizer_settings.clone();
+        if name == "Custom" {
+            settings.preset_name = name.clone();
+        } else if let Some(preset) = preset_named(&name) {
+            apply_preset(&mut settings, preset);
+        } else {
+            self.as_mut()
+                .set_status(qstring(format!("Unknown equalizer preset: {name}")));
+            return;
+        }
+        self.as_mut()
+            .commit_equalizer_settings(settings, &format!("Equalizer preset changed to {name}"));
+    }
+
+    pub fn flatten_equalizer(mut self: Pin<&mut Self>) {
+        let mut settings = self.as_ref().rust().equalizer_settings.clone();
+        apply_preset(
+            &mut settings,
+            preset_named("Flat").expect("bundled equalizer presets include Flat"),
+        );
+        self.as_mut()
+            .commit_equalizer_settings(settings, "Equalizer flattened");
+    }
+
+    pub fn level_equalizer_preamp(mut self: Pin<&mut Self>) {
+        let mut settings = self.as_ref().rust().equalizer_settings.clone();
+        let maximum = settings.gains_db.iter().copied().fold(0.0_f32, f32::max);
+        if maximum <= 0.0 || settings.preamp_db == -maximum {
+            self.as_mut().set_status(qstring(
+                "Equalizer preamp already leaves headroom for the current curve",
+            ));
+            return;
+        }
+        settings.preamp_db = -maximum;
+        settings.preset_name = "Custom".to_owned();
+        self.as_mut()
+            .commit_equalizer_settings(settings, "Equalizer preamp leveled");
+    }
+
     pub fn track_number_at(&self, index: i32) -> QString {
         visible_source_index(self, index)
             .map(|index| qstring((index + 1).to_string()))
@@ -2074,6 +2243,32 @@ impl qobject::AppController {
         self.as_mut().set_read_playlists_in_folders(enabled);
     }
 
+    fn commit_equalizer_settings(
+        mut self: Pin<&mut Self>,
+        settings: EqualizerSettings,
+        status: &str,
+    ) {
+        if let Err(error) = AppSettings::save_equalizer(&settings) {
+            self.as_mut().set_status(qstring(error));
+            return;
+        }
+        self.as_ref()
+            .rust()
+            .playback
+            .set_equalizer(settings.clone());
+        let revision = self.as_ref().rust().equalizer_revision.wrapping_add(1);
+        self.as_mut().rust_mut().equalizer_settings = settings.clone();
+        self.as_mut().set_equalizer_enabled(settings.enabled);
+        self.as_mut()
+            .set_equalizer_track_genre(settings.track_genre);
+        self.as_mut()
+            .set_equalizer_preamp_db(f64::from(settings.preamp_db));
+        self.as_mut()
+            .set_equalizer_preset(qstring(settings.preset_name));
+        self.as_mut().set_equalizer_revision(revision);
+        self.as_mut().set_status(qstring(status));
+    }
+
     fn rebuild_playlist(mut self: Pin<&mut Self>) {
         self.as_mut().rust_mut().rebuild_visible_indices();
         let count = saturating_i32(self.as_ref().rust().visible_indices.len());
@@ -2135,16 +2330,25 @@ impl qobject::AppController {
     }
 
     fn play_source_index(mut self: Pin<&mut Self>, source_index: usize) {
-        let Some(source) = self
+        let Some((source, genre)) = self
             .as_ref()
             .get_ref()
             .rust()
             .tracks
             .get(source_index)
-            .map(|track| track.source.clone())
+            .map(|track| (track.source.clone(), track.genre.clone()))
         else {
             return;
         };
+        if self.as_ref().rust().equalizer_settings.track_genre {
+            let mut settings = self.as_ref().rust().equalizer_settings.clone();
+            apply_preset(&mut settings, preset_for_genre(&genre));
+            let preset_name = settings.preset_name.clone();
+            self.as_mut().commit_equalizer_settings(
+                settings,
+                &format!("Equalizer matched genre with {preset_name}"),
+            );
+        }
         match self.as_mut().rust_mut().playback.play_source(&source) {
             Ok(backend) => {
                 self.as_mut()
@@ -2288,7 +2492,7 @@ mod tests {
     use super::{
         AddPathResult, PlaylistSortColumn, add_path_status, compare_tracks, move_selected_items,
         natural_compare, normalize_playlist_save_path, parse_row_indices, playlist_entry_for_track,
-        sample_rate_label, sort_visible_indices,
+        sample_rate_label, sort_visible_indices, valid_equalizer_gain,
     };
     use crate::decoder::{ArchiveOrigin, PlaybackSource};
     use crate::playlist::PlaylistLocation;
@@ -2445,6 +2649,14 @@ mod tests {
         assert_eq!(sample_rate_label(Some(500)), "500 Hz");
         assert_eq!(sample_rate_label(Some(44_100)), "44.1 kHz");
         assert_eq!(sample_rate_label(Some(48_000)), "48 kHz");
+    }
+
+    #[test]
+    fn equalizer_gain_validation_rejects_nonfinite_and_out_of_range_values() {
+        assert_eq!(valid_equalizer_gain(-20.0), Some(-20.0));
+        assert_eq!(valid_equalizer_gain(20.0), Some(20.0));
+        assert_eq!(valid_equalizer_gain(20.01), None);
+        assert_eq!(valid_equalizer_gain(f64::NAN), None);
     }
 
     #[test]

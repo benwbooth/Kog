@@ -59,6 +59,7 @@ fn main() {
 
     CxxQtBuilder::new_qml_module(QmlModule::new("org.kog.player").qml_files([
         "qml/CogButton.qml",
+        "qml/Equalizer.qml",
         "qml/InfoInspector.qml",
         "qml/Lyrics.qml",
         "qml/Main.qml",

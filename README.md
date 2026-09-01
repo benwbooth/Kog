@@ -8,11 +8,15 @@ tracker modules, chiptunes, and game-audio formats.
 
 The current milestone contains a working Cog-style main window with a
 cross-platform hamburger menu, a lazy expandable filesystem tree, metadata
-playlist, search, inspector, lyrics, and mini-player windows. It uses
+playlist, search, inspector, lyrics, equalizer, and mini-player windows. It uses
 platform-native file/folder dialogs and inherits the active Qt palette and control
 style, including KDE's desktop/Breeze style when available. The milestone also
 has a real conventional-audio playback path with pause, stop, seek, volume,
-and automatic track advance. It also renders format-0/1 MID, MIDI, KAR, and RIFF
+and automatic track advance. Cog's 31-band graphic equalizer is live across the
+shared output path for every decoder, with the original 22 presets and exact
+10-to-31-band interpolation, preamp leveling, genre tracking, right-drag curve
+editing, strict persistence, and live coefficient changes. It also renders
+format-0/1 MID, MIDI, KAR, and RIFF
 RMID files through either a validated, persisted SF2 SoundFont using RustySynth
 or Cog's OPL3Windows synthesizer and its Nuked OPL3 core, with duration probing
 and seeking. A fourth in-process route statically links Munt 2.8.2/libmt32emu

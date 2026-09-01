@@ -21,6 +21,15 @@ a generated 880 Hz sine wave and contains no third-party media. The 992-byte
 MP3 CueSheet fixture is likewise encoded with FFmpeg/libmp3lame from a generated
 880 Hz sine and adds only synthetic ID3v2 CUESHEET metadata.
 
+## Cog equalizer presets
+
+`assets/Cog.q1.json` contains the equalizer preset data from
+[Cog](https://github.com/losnoco/Cog) at commit
+`c17be85654a64170c86bb8bbb4b59fd7b6795722`. The preset names and values are
+distributed with Kog under the GNU General Public License, version 3 or later;
+see `LICENSE`. Kog's Rust interpolation and DSP implementation are new code
+matched to Cog's documented 31-band behavior.
+
 ## Cog OPL3Windows and Nuked OPL3
 
 The source under `native/opl3w`, except Kog's `kog_opl3w.cpp` and

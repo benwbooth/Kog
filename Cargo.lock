@@ -971,6 +971,7 @@ dependencies = [
  "rodio",
  "rustysynth",
  "self_cell",
+ "serde_json",
  "tempfile",
  "url",
 ]

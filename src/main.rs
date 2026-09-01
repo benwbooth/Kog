@@ -9,6 +9,7 @@ mod archive;
 mod cuesheet;
 mod cuesheet_decoder;
 mod decoder;
+mod equalizer;
 mod ffmpeg;
 mod ffmpeg_decoder;
 mod file_tree_model;

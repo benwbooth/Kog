@@ -210,6 +210,7 @@ ApplicationWindow {
     }
 
     InfoInspector { id: infoInspector; app: appController }
+    Equalizer { id: equalizerWindow; app: appController }
     Lyrics { id: lyricsWindow; app: appController }
     MiniPlayer { id: miniPlayer; app: appController }
     Preferences { id: preferences; app: appController }
@@ -377,6 +378,7 @@ ApplicationWindow {
                 onTriggered: root.sidebarVisible = checked
             }
             Action { text: qsTr("Show Info Inspector"); icon.name: "dialog-information"; shortcut: "Ctrl+I"; onTriggered: infoInspector.show() }
+            Action { text: qsTr("Show Equalizer"); icon.name: "audio-equalizer"; shortcut: "Ctrl+E"; onTriggered: equalizerWindow.visible ? equalizerWindow.hide() : equalizerWindow.show() }
             Action { text: qsTr("Show Lyrics"); icon.name: "view-media-lyrics"; shortcut: "Ctrl+Shift+L"; onTriggered: lyricsWindow.show() }
             Action { text: qsTr("Show Mini Player"); icon.name: "view-restore"; shortcut: "Ctrl+Shift+M"; onTriggered: miniPlayer.show() }
         }
@@ -753,15 +755,15 @@ ApplicationWindow {
                                 | PointerHandler.ApprovesTakeOverByAnything
                         }
 
-                        onDoubleClicked: {
-                            const indicatorItem = treeDelegate.indicator
-                            if (indicatorItem
-                                    && treeDelegate.pressX >= indicatorItem.x
-                                    && treeDelegate.pressX < indicatorItem.x
-                                        + indicatorItem.width)
-                                return
-                            if (!fileTreeModel.is_path_directory(treeDelegate.dragPath))
-                                appController.activate_local_path(treeDelegate.dragPath)
+                        TapHandler {
+                            acceptedButtons: Qt.LeftButton
+                            gesturePolicy: TapHandler.ReleaseWithinBounds
+                            onDoubleTapped: {
+                                if (fileTreeModel.is_path_directory(treeDelegate.dragPath))
+                                    directoryTree.toggleExpanded(treeDelegate.row)
+                                else
+                                    appController.activate_local_path(treeDelegate.dragPath)
+                            }
                         }
                     }
 
