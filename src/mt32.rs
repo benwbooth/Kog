@@ -430,14 +430,7 @@ impl Mt32Source {
         })
     }
 
-    pub fn duration(&self) -> Duration {
-        self.timeline.duration
-    }
-
-    pub fn sample_rate_value(&self) -> u32 {
-        self.synth.sample_rate
-    }
-
+    #[cfg(test)]
     pub fn model(&self) -> &str {
         &self.synth.model
     }
@@ -522,6 +515,16 @@ impl Mt32Source {
         self.samples_emitted = target_frames * u64::from(CHANNELS);
         Ok(())
     }
+}
+
+/// Read MIDI timing for playlist metadata without constructing a Munt synth or
+/// loading ROMs. The synth is opened only when playback actually starts.
+pub fn midi_duration(bytes: &[u8]) -> Result<Duration, String> {
+    Mt32Timeline::parse(bytes).map(|timeline| timeline.duration)
+}
+
+pub const fn output_sample_rate() -> u32 {
+    SAMPLE_RATE
 }
 
 impl Iterator for Mt32Source {

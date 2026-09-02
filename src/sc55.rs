@@ -34,6 +34,7 @@ pub struct Sc55 {
     sample_rate: u32,
     total_frames: u64,
     rendered_frames: u64,
+    #[cfg(test)]
     model: String,
     native_bytes: Vec<u8>,
 }
@@ -148,6 +149,7 @@ impl Sc55 {
             sample_rate: header.sample_rate,
             total_frames: header.total_frames,
             rendered_frames: 0,
+            #[cfg(test)]
             model: header.model,
             native_bytes: Vec::new(),
         })
@@ -161,10 +163,6 @@ impl Sc55 {
         self.sample_rate
     }
 
-    pub fn channels(&self) -> u16 {
-        CHANNELS
-    }
-
     pub fn total_frames(&self) -> u64 {
         self.total_frames
     }
@@ -173,6 +171,7 @@ impl Sc55 {
         self.rendered_frames
     }
 
+    #[cfg(test)]
     pub fn model(&self) -> &str {
         &self.model
     }
@@ -246,6 +245,14 @@ impl Sc55 {
         self.rendered_frames = target;
         Ok(duration_from_frames(target, self.sample_rate))
     }
+}
+
+/// Read the duration needed for playlist metadata without starting the
+/// expensive Nuked SC-55 process. Emulator initialization belongs to playback,
+/// not library scanning: starting one helper per MIDI file makes archive and
+/// folder imports appear to hang.
+pub fn midi_duration(midi: &[u8]) -> Result<Duration, String> {
+    Sc55Schedule::parse(midi).map(|schedule| schedule.duration)
 }
 
 impl Drop for Sc55 {

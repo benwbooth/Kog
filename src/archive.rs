@@ -695,6 +695,44 @@ mod tests {
     }
 
     #[test]
+    fn twenty_midi_zip_probes_without_starting_sc55_helpers() {
+        let fixture = tempfile::tempdir().unwrap();
+        let archive_path = fixture.path().join("twenty-midis.zip");
+        let midi = vec![
+            b'M', b'T', b'h', b'd', 0, 0, 0, 6, 0, 0, 0, 1, 1, 0xe0, b'M', b'T', b'r', b'k', 0, 0,
+            0, 16, 0, 0xc0, 0, 0, 0x90, 60, 100, 0x83, 0x60, 0x80, 60, 64, 0, 0xff, 0x2f, 0,
+        ];
+        let names = (1..=20)
+            .map(|index| format!("album/{index:03}.mid"))
+            .collect::<Vec<_>>();
+        let entries = names
+            .iter()
+            .map(|name| (name.as_str(), midi.as_slice()))
+            .collect::<Vec<_>>();
+        write_stored_zip(&archive_path, &entries);
+
+        // The directory intentionally has no ROMs. Playlist metadata should
+        // parse all twenty MIDI timelines without constructing the emulator.
+        let settings = DecoderSettings::new(None, MidiEngine::Sc55)
+            .with_sc55_rom_path(Some(fixture.path().to_owned()));
+        let registry = DecoderRegistry::new(settings);
+        let expansion = registry
+            .expand_detailed(archive_path)
+            .expect("expand twenty-file MIDI archive");
+        assert_eq!(expansion.sources.len(), 20);
+        for source in &expansion.sources {
+            let properties = registry
+                .probe(source)
+                .expect("probe archived MIDI without starting SC-55");
+            assert_eq!(
+                properties.duration,
+                Some(std::time::Duration::from_millis(500))
+            );
+            assert_eq!(properties.codec.as_deref(), Some("Nuked SC-55"));
+        }
+    }
+
+    #[test]
     fn gzip_uses_the_outer_filename_and_decodes_end_to_end() {
         let fixture = tempfile::tempdir().unwrap();
         let archive_path = fixture.path().join("single.wav.gz");

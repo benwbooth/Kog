@@ -903,6 +903,11 @@ impl MidiBackend {
     }
 
     fn open_sc55(&self, path: &Path, midi: &[u8]) -> Result<Sc55, String> {
+        let rom_directory = self.sc55_rom_directory()?;
+        Sc55::open(midi, path, &rom_directory)
+    }
+
+    fn sc55_rom_directory(&self) -> Result<PathBuf, String> {
         let rom_directory = self.settings.sc55_rom_path().ok_or_else(|| {
             "SC-55 playback requires user-supplied Roland ROMs. Choose their directory in Edit > Preferences > MIDI."
                 .to_owned()
@@ -913,10 +918,15 @@ impl MidiBackend {
                 rom_directory.display()
             ));
         }
-        Sc55::open(midi, path, &rom_directory)
+        Ok(rom_directory)
     }
 
     fn open_mt32(&self, midi: &[u8]) -> Result<Mt32Source, String> {
+        let rom_directory = self.mt32_rom_directory()?;
+        Mt32Source::open(midi, &rom_directory)
+    }
+
+    fn mt32_rom_directory(&self) -> Result<PathBuf, String> {
         let rom_directory = self.settings.mt32_rom_path().ok_or_else(|| {
             "MT-32 playback requires user-supplied Roland ROMs. Choose their directory in Preferences > Synthesis."
                 .to_owned()
@@ -927,7 +937,7 @@ impl MidiBackend {
                 rom_directory.display()
             ));
         }
-        Mt32Source::open(midi, &rom_directory)
+        Ok(rom_directory)
     }
 }
 
@@ -1008,26 +1018,25 @@ impl DecoderBackend for MidiBackend {
                 }
             }
             MidiEngine::Sc55 => {
-                let sc55 = self.open_sc55(&source.path, &midi.bytes)?;
+                self.sc55_rom_directory()?;
                 StreamProperties {
-                    duration: Some(sc55.duration()),
-                    sample_rate: Some(sc55.sample_rate()),
-                    channels: Some(sc55.channels()),
+                    duration: Some(crate::sc55::midi_duration(&midi.bytes)?),
+                    channels: Some(MIDI_CHANNELS),
                     title,
                     track_number,
-                    codec: Some(format!("Nuked SC-55 ({})", sc55.model())),
+                    codec: Some("Nuked SC-55".to_owned()),
                     ..StreamProperties::default()
                 }
             }
             MidiEngine::Mt32 => {
-                let mt32 = self.open_mt32(&midi.bytes)?;
+                self.mt32_rom_directory()?;
                 StreamProperties {
-                    duration: Some(mt32.duration()),
-                    sample_rate: Some(mt32.sample_rate_value()),
+                    duration: Some(crate::mt32::midi_duration(&midi.bytes)?),
+                    sample_rate: Some(crate::mt32::output_sample_rate()),
                     channels: Some(MIDI_CHANNELS),
                     title,
                     track_number,
-                    codec: Some(format!("Munt MT-32 ({})", mt32.model())),
+                    codec: Some("Munt MT-32".to_owned()),
                     ..StreamProperties::default()
                 }
             }
@@ -2583,6 +2592,33 @@ mod tests {
             .expect_err("missing MT-32 ROM directory");
         assert!(error.contains("user-supplied Roland ROMs"));
         std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn midi_metadata_probe_does_not_initialize_rom_synthesizers() {
+        let fixture = tempfile::tempdir().expect("create MIDI metadata fixture");
+        let path = fixture.path().join("track.mid");
+        write_test_midi(&path);
+
+        // An existing directory is enough for metadata. These deliberately do
+        // not contain ROMs: probing playlist rows must parse the MIDI timeline
+        // without opening Nuked SC-55 or Munt once per track.
+        for (engine, codec) in [
+            (MidiEngine::Sc55, "Nuked SC-55"),
+            (MidiEngine::Mt32, "Munt MT-32"),
+        ] {
+            let settings = DecoderSettings::new(None, engine)
+                .with_sc55_rom_path(Some(fixture.path().to_owned()))
+                .with_mt32_rom_path(Some(fixture.path().to_owned()));
+            let backend = MidiBackend::new(settings);
+            let properties = backend
+                .probe(&PlaybackSource::from_path(path.clone()))
+                .expect("probe MIDI metadata without initializing a ROM synth");
+
+            assert_eq!(properties.duration, Some(Duration::from_millis(500)));
+            assert_eq!(properties.channels, Some(MIDI_CHANNELS));
+            assert_eq!(properties.codec.as_deref(), Some(codec));
+        }
     }
 
     #[test]
