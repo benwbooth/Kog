@@ -157,6 +157,7 @@ Item {
         acceptedButtons: Qt.LeftButton | Qt.RightButton
         hoverEnabled: true
         preventStealing: true
+        scrollGestureEnabled: false
         onEntered: root.hovered = true
         onExited: root.hovered = false
         onPressed: mouse => {

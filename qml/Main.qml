@@ -1430,6 +1430,7 @@ ApplicationWindow {
                             acceptedButtons: Qt.LeftButton | Qt.RightButton
                             hoverEnabled: true
                             preventStealing: true
+                            scrollGestureEnabled: false
 
                             onPressed: mouse => {
                                 pressX = mouse.x

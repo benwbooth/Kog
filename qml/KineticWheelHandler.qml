@@ -11,9 +11,11 @@ WheelHandler {
     property real impulsePerStep: 1250
     property real deceleration: 2500
     property double lastFrameTime: 0
+    property double lastPixelEventTime: 0
+    property real pixelVelocity: 0
 
     target: null
-    acceptedDevices: PointerDevice.Mouse
+    acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
 
     function minimumContentY() {
         return view.originY - view.topMargin;
@@ -26,7 +28,10 @@ WheelHandler {
     function stop() {
         velocity = 0;
         momentumTimer.stop();
+        pixelGestureEndTimer.stop();
         lastFrameTime = 0;
+        lastPixelEventTime = 0;
+        pixelVelocity = 0;
     }
 
     function start(steps) {
@@ -36,6 +41,46 @@ WheelHandler {
         if (velocity * impulse < 0)
             velocity *= 0.2;
         velocity = Math.max(-maximumVelocity, Math.min(maximumVelocity, velocity + impulse));
+        lastFrameTime = Date.now();
+        momentumTimer.start();
+    }
+
+    function moveTo(position) {
+        const minimum = minimumContentY();
+        const maximum = maximumContentY();
+        view.contentY = Math.max(minimum, Math.min(maximum, position));
+    }
+
+    function applyPixelDelta(pixelDelta) {
+        if (pixelDelta === 0 || maximumContentY() <= minimumContentY())
+            return;
+
+        const now = Date.now();
+        const contentDelta = -pixelDelta;
+        const elapsed = lastPixelEventTime > 0 ? (now - lastPixelEventTime) / 1000 : 0;
+        momentumTimer.stop();
+        velocity = 0;
+        moveTo(view.contentY + contentDelta);
+
+        if (elapsed >= 0.004 && elapsed <= 0.08) {
+            const instantaneousVelocity = contentDelta / elapsed;
+            pixelVelocity = pixelVelocity === 0 ? instantaneousVelocity : pixelVelocity * 0.65 + instantaneousVelocity * 0.35;
+        } else {
+            pixelVelocity = contentDelta * 60;
+        }
+        pixelVelocity = Math.max(-maximumVelocity, Math.min(maximumVelocity, pixelVelocity));
+        lastPixelEventTime = now;
+        pixelGestureEndTimer.restart();
+    }
+
+    function finishPixelGesture() {
+        lastPixelEventTime = 0;
+        velocity = pixelVelocity;
+        pixelVelocity = 0;
+        if (Math.abs(velocity) < 40) {
+            stop();
+            return;
+        }
         lastFrameTime = Date.now();
         momentumTimer.start();
     }
@@ -50,7 +95,7 @@ WheelHandler {
         const maximum = maximumContentY();
         const next = Math.max(minimum, Math.min(maximum, view.contentY + velocity * elapsed));
         const hitBoundary = next === view.contentY && ((velocity < 0 && next <= minimum) || (velocity > 0 && next >= maximum));
-        view.contentY = next;
+        moveTo(next);
 
         const nextSpeed = Math.max(0, Math.abs(velocity) - deceleration * elapsed);
         velocity = Math.sign(velocity) * nextSpeed;
@@ -61,6 +106,12 @@ WheelHandler {
     onWheel: event => {
         if (event.modifiers & Qt.ShiftModifier) {
             event.accepted = false;
+            return;
+        }
+
+        if (event.device.type === PointerDevice.TouchPad && event.pixelDelta.y !== 0) {
+            applyPixelDelta(event.pixelDelta.y);
+            event.accepted = true;
             return;
         }
 
@@ -80,5 +131,11 @@ WheelHandler {
         interval: 16
         repeat: true
         onTriggered: kineticWheel.advance()
+    }
+
+    property Timer pixelGestureEndTimer: Timer {
+        interval: 45
+        repeat: false
+        onTriggered: kineticWheel.finishPixelGesture()
     }
 }
