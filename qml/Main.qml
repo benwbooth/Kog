@@ -1371,6 +1371,8 @@ ApplicationWindow {
                     boundsBehavior: Flickable.StopAtBounds
                     maximumFlickVelocity: 12000
                     flickDeceleration: 2200
+                    onDraggingChanged: if (dragging)
+                        directoryKineticWheel.stop()
                     readonly property real scrollGutter:
                         directoryScrollBar.visible
                             ? directoryScrollBar.implicitWidth + 4 : 0
@@ -1515,30 +1517,13 @@ ApplicationWindow {
                     ScrollBar.vertical: ScrollBar {
                         id: directoryScrollBar
                         policy: ScrollBar.AsNeeded
+                        onPressedChanged: if (pressed)
+                            directoryKineticWheel.stop()
                     }
 
-                    WheelHandler {
-                        target: null
-                        acceptedDevices: PointerDevice.Mouse
-
-                        onWheel: event => {
-                            if (event.pixelDelta.y !== 0
-                                    || event.modifiers & Qt.ShiftModifier
-                                    || event.angleDelta.y === 0) {
-                                event.accepted = false
-                                return
-                            }
-                            const impulse = event.angleDelta.y * 8
-                            let velocity = directoryTree.verticalVelocity
-                            if (velocity * impulse < 0)
-                                velocity *= 0.25
-                            velocity = Math.max(
-                                -directoryTree.maximumFlickVelocity,
-                                Math.min(directoryTree.maximumFlickVelocity,
-                                    velocity + impulse))
-                            directoryTree.flick(0, velocity)
-                            event.accepted = true
-                        }
+                    KineticWheelHandler {
+                        id: directoryKineticWheel
+                        view: directoryTree
                     }
                 }
             }
@@ -1605,6 +1590,8 @@ ApplicationWindow {
                     highlightMoveDuration: 0
                     maximumFlickVelocity: 12000
                     flickDeceleration: 2200
+                    onDraggingChanged: if (dragging)
+                        playlistKineticWheel.stop()
 
                     Keys.onReturnPressed: if (root.selectedRow >= 0)
                         appController.play_index(root.selectedRow)
@@ -1673,6 +1660,8 @@ ApplicationWindow {
                     ScrollBar.vertical: ScrollBar {
                         id: playlistVerticalScrollBar
                         policy: ScrollBar.AsNeeded
+                        onPressedChanged: if (pressed)
+                            playlistKineticWheel.stop()
                     }
                     ScrollBar.horizontal: ScrollBar {
                         id: playlistHorizontalScrollBar
@@ -1684,34 +1673,12 @@ ApplicationWindow {
                         height: playlistView.horizontalScrollGutter
                     }
 
-                    // Give discrete mouse wheels a quicker kinetic scroll.
-                    // Trackpad gestures pass through so Qt keeps their native
-                    // pixel precision and platform-provided momentum.
-                    WheelHandler {
-                        target: null
-                        acceptedDevices: PointerDevice.Mouse
-
-                        onWheel: event => {
-                            if (event.pixelDelta.y !== 0
-                                    || event.modifiers & Qt.ShiftModifier) {
-                                event.accepted = false
-                                return
-                            }
-                            if (event.angleDelta.y === 0) {
-                                event.accepted = false
-                                return
-                            }
-                            const impulse = event.angleDelta.y * 8
-                            let velocity = playlistView.verticalVelocity
-                            if (velocity * impulse < 0)
-                                velocity *= 0.25
-                            velocity = Math.max(
-                                -playlistView.maximumFlickVelocity,
-                                Math.min(playlistView.maximumFlickVelocity,
-                                    velocity + impulse))
-                            playlistView.flick(0, velocity)
-                            event.accepted = true
-                        }
+                    // Physical mouse wheels use Kog's per-frame kinetic
+                    // motion. Touchpad gestures still pass through to Qt so
+                    // the platform can preserve their native pixel precision.
+                    KineticWheelHandler {
+                        id: playlistKineticWheel
+                        view: playlistView
                     }
 
                     Item {

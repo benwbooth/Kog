@@ -62,6 +62,7 @@ fn main() {
         "qml/CogButton.qml",
         "qml/Equalizer.qml",
         "qml/InfoInspector.qml",
+        "qml/KineticWheelHandler.qml",
         "qml/Lyrics.qml",
         "qml/Main.qml",
         "qml/MiniPlayer.qml",
