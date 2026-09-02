@@ -133,6 +133,9 @@ jobs:
     timeout-minutes: 240
     env:
       VCPKG_DEFAULT_TRIPLET: x64-windows
+      # compress-tools' vcpkg crate probes x64-windows-static-md unless told
+      # to use the dynamic triplet that this job installs and packages.
+      VCPKGRS_DYNAMIC: "1"
     steps:
       - uses: actions/checkout@v6
         with:
