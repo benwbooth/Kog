@@ -1,8 +1,12 @@
 //! Process owner for the optional, separately licensed Nuked SC-55 helper.
 
-use std::io::{self, Read, Write};
+use std::fs::File;
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use midly::{Format, Fps, MetaMessage, MidiMessage, Smf, Timing, TrackEventKind};
@@ -18,11 +22,15 @@ const MAX_EVENT_BYTES: usize = 1024 * 1024;
 const MAX_SCHEDULE_BYTES: usize = 256 * 1024 * 1024;
 const MAX_DURATION: Duration = Duration::from_secs(24 * 60 * 60);
 const MAX_MODEL_BYTES: usize = 256;
+const BYTES_PER_FRAME: u64 = CHANNELS as u64 * 2;
+const CACHE_COPY_BYTES: usize = 256 * 1024;
 
 pub struct Sc55 {
-    schedule: NamedTempFile,
-    rom_directory: PathBuf,
-    process: Option<Sc55Process>,
+    _schedule: NamedTempFile,
+    _cache: NamedTempFile,
+    cache_reader: File,
+    cache_state: Arc<Sc55CacheState>,
+    cache_worker: Option<JoinHandle<()>>,
     sample_rate: u32,
     total_frames: u64,
     rendered_frames: u64,
@@ -33,6 +41,20 @@ pub struct Sc55 {
 struct Sc55Process {
     child: Child,
     stdout: ChildStdout,
+}
+
+struct Sc55CacheState {
+    progress: Mutex<Sc55CacheProgress>,
+    ready: Condvar,
+    child: Mutex<Option<Child>>,
+    stopping: AtomicBool,
+}
+
+#[derive(Default)]
+struct Sc55CacheProgress {
+    available_bytes: u64,
+    finished: bool,
+    error: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -80,17 +102,49 @@ impl Sc55 {
             .flush()
             .map_err(|error| format!("flushing SC-55 schedule: {error}"))?;
 
-        let rom_directory = rom_directory.to_path_buf();
-        let (process, header) = spawn_helper(schedule_file.path(), &rom_directory, 0)?;
+        let cache = NamedTempFile::new()
+            .map_err(|error| format!("creating SC-55 PCM seek cache: {error}"))?;
+        let cache_reader = cache
+            .reopen()
+            .map_err(|error| format!("opening SC-55 PCM seek cache for playback: {error}"))?;
+        let cache_writer = cache
+            .reopen()
+            .map_err(|error| format!("opening SC-55 PCM seek cache for rendering: {error}"))?;
+        let (process, header) = spawn_helper(schedule_file.path(), rom_directory, 0)?;
         if let Err(error) = validate_header(&header, 0, path) {
             let mut process = process;
             stop_process(&mut process);
             return Err(error);
         }
+        let expected_bytes = header
+            .total_frames
+            .checked_mul(BYTES_PER_FRAME)
+            .ok_or_else(|| "Nuked SC-55 PCM cache size overflowed".to_owned())?;
+        let Sc55Process { child, stdout } = process;
+        let cache_state = Arc::new(Sc55CacheState {
+            progress: Mutex::new(Sc55CacheProgress::default()),
+            ready: Condvar::new(),
+            child: Mutex::new(Some(child)),
+            stopping: AtomicBool::new(false),
+        });
+        let worker_state = cache_state.clone();
+        let cache_worker = match std::thread::Builder::new()
+            .name("kog-sc55-cache".to_owned())
+            .spawn(move || cache_helper_pcm(stdout, cache_writer, expected_bytes, worker_state))
+        {
+            Ok(worker) => worker,
+            Err(error) => {
+                stop_cache_child(&cache_state);
+                let _ = reap_cache_child(&cache_state);
+                return Err(format!("starting SC-55 PCM cache worker: {error}"));
+            }
+        };
         Ok(Self {
-            schedule: schedule_file,
-            rom_directory,
-            process: Some(process),
+            _schedule: schedule_file,
+            _cache: cache,
+            cache_reader,
+            cache_state,
+            cache_worker: Some(cache_worker),
             sample_rate: header.sample_rate,
             total_frames: header.total_frames,
             rendered_frames: 0,
@@ -138,18 +192,38 @@ impl Sc55 {
             .checked_mul(channels)
             .and_then(|samples| samples.checked_mul(2))
             .ok_or_else(|| "Nuked SC-55 render request exceeds Kog's buffer limit".to_owned())?;
-        self.native_bytes.resize(byte_count, 0);
-        if let Err(error) = self
-            .process
-            .as_mut()
-            .ok_or_else(|| "Nuked SC-55 helper process is not running".to_owned())?
-            .stdout
-            .read_exact(&mut self.native_bytes)
+        let byte_offset = self
+            .rendered_frames
+            .checked_mul(BYTES_PER_FRAME)
+            .ok_or_else(|| "Nuked SC-55 PCM cache offset overflowed".to_owned())?;
+        let byte_end = byte_offset
+            .checked_add(byte_count as u64)
+            .ok_or_else(|| "Nuked SC-55 PCM cache request overflowed".to_owned())?;
+        let mut progress = lock_unpoisoned(&self.cache_state.progress);
+        while progress.available_bytes < byte_end && !progress.finished && progress.error.is_none()
         {
-            return Err(
-                self.process_error(format!("reading PCM from the Nuked SC-55 helper: {error}"))
-            );
+            progress = self
+                .cache_state
+                .ready
+                .wait(progress)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
         }
+        if progress.available_bytes < byte_end {
+            return Err(progress.error.clone().unwrap_or_else(|| {
+                format!(
+                    "Nuked SC-55 helper ended after {} of {byte_end} required PCM bytes",
+                    progress.available_bytes
+                )
+            }));
+        }
+        drop(progress);
+        self.cache_reader
+            .seek(SeekFrom::Start(byte_offset))
+            .and_then(|_| {
+                self.native_bytes.resize(byte_count, 0);
+                self.cache_reader.read_exact(&mut self.native_bytes)
+            })
+            .map_err(|error| format!("reading the Nuked SC-55 PCM seek cache: {error}"))?;
         for (destination, bytes) in output.iter_mut().zip(self.native_bytes.chunks_exact(2)) {
             *destination = f32::from(i16::from_le_bytes([bytes[0], bytes[1]])) / 32768.0;
         }
@@ -163,48 +237,24 @@ impl Sc55 {
         } else {
             frames_from_duration(position, self.sample_rate)?
         };
-        let (process, header) = spawn_helper(self.schedule.path(), &self.rom_directory, target)?;
-        if header.sample_rate != self.sample_rate
-            || header.channels != CHANNELS
-            || header.total_frames != self.total_frames
-            || header.start_frame != target
-            || header.model != self.model
-        {
-            let mut process = process;
-            stop_process(&mut process);
-            return Err(
-                "Nuked SC-55 helper reported different stream properties after seek".to_owned(),
-            );
-        }
-        if let Some(mut old_process) = self.process.replace(process) {
-            stop_process(&mut old_process);
-        }
+        let byte_offset = target
+            .checked_mul(BYTES_PER_FRAME)
+            .ok_or_else(|| "Nuked SC-55 PCM cache seek offset overflowed".to_owned())?;
+        self.cache_reader
+            .seek(SeekFrom::Start(byte_offset))
+            .map_err(|error| format!("seeking the Nuked SC-55 PCM cache: {error}"))?;
         self.rendered_frames = target;
         Ok(duration_from_frames(target, self.sample_rate))
-    }
-
-    fn process_error(&mut self, context: String) -> String {
-        let Some(mut process) = self.process.take() else {
-            return context;
-        };
-        drop(process.stdout);
-        let status = process.child.wait();
-        let stderr = read_stderr(&mut process.child);
-        match (status, stderr.is_empty()) {
-            (Ok(status), false) => format!("{context}; helper exited {status}: {stderr}"),
-            (Ok(status), true) => format!("{context}; helper exited {status}"),
-            (Err(error), false) => {
-                format!("{context}; waiting for helper failed: {error}: {stderr}")
-            }
-            (Err(error), true) => format!("{context}; waiting for helper failed: {error}"),
-        }
     }
 }
 
 impl Drop for Sc55 {
     fn drop(&mut self) {
-        if let Some(mut process) = self.process.take() {
-            stop_process(&mut process);
+        self.cache_state.stopping.store(true, Ordering::Release);
+        self.cache_state.ready.notify_all();
+        stop_cache_child(&self.cache_state);
+        if let Some(worker) = self.cache_worker.take() {
+            let _ = worker.join();
         }
     }
 }
@@ -568,6 +618,97 @@ fn spawn_helper(
     Ok((Sc55Process { child, stdout }, header))
 }
 
+fn cache_helper_pcm(
+    mut stdout: ChildStdout,
+    mut cache: File,
+    expected_bytes: u64,
+    state: Arc<Sc55CacheState>,
+) {
+    let mut copied = 0_u64;
+    let stream_result = (|| -> Result<(), String> {
+        let mut buffer = vec![0_u8; CACHE_COPY_BYTES];
+        loop {
+            if state.stopping.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            let count = stdout
+                .read(&mut buffer)
+                .map_err(|error| format!("reading PCM from the Nuked SC-55 helper: {error}"))?;
+            if count == 0 {
+                break;
+            }
+            let next = copied
+                .checked_add(count as u64)
+                .ok_or_else(|| "Nuked SC-55 PCM cache length overflowed".to_owned())?;
+            if next > expected_bytes {
+                return Err("Nuked SC-55 helper produced more PCM than expected".to_owned());
+            }
+            cache
+                .write_all(&buffer[..count])
+                .map_err(|error| format!("writing the Nuked SC-55 PCM seek cache: {error}"))?;
+            copied = next;
+            lock_unpoisoned(&state.progress).available_bytes = copied;
+            state.ready.notify_all();
+        }
+        if copied != expected_bytes {
+            return Err(format!(
+                "Nuked SC-55 helper produced {copied} of {expected_bytes} expected PCM bytes"
+            ));
+        }
+        Ok(())
+    })();
+
+    if stream_result.is_err() {
+        stop_cache_child(&state);
+    }
+    let process_result = reap_cache_child(&state);
+    if state.stopping.load(Ordering::Acquire) {
+        return;
+    }
+
+    let error = match (stream_result, process_result) {
+        (Ok(()), Ok(())) => None,
+        (Err(stream), Ok(())) => Some(stream),
+        (Ok(()), Err(process)) => Some(process),
+        (Err(stream), Err(process)) => Some(format!("{stream}; {process}")),
+    };
+    let mut progress = lock_unpoisoned(&state.progress);
+    progress.finished = true;
+    progress.error = error;
+    drop(progress);
+    state.ready.notify_all();
+}
+
+fn stop_cache_child(state: &Sc55CacheState) {
+    if let Some(child) = lock_unpoisoned(&state.child).as_mut() {
+        let _ = child.kill();
+    }
+}
+
+fn reap_cache_child(state: &Sc55CacheState) -> Result<(), String> {
+    let Some(mut child) = lock_unpoisoned(&state.child).take() else {
+        return Ok(());
+    };
+    let status = child
+        .wait()
+        .map_err(|error| format!("waiting for the Nuked SC-55 helper: {error}"))?;
+    let stderr = read_stderr(&mut child);
+    if status.success() {
+        return Ok(());
+    }
+    if stderr.is_empty() {
+        Err(format!("Nuked SC-55 helper exited {status}"))
+    } else {
+        Err(format!("Nuked SC-55 helper exited {status}: {stderr}"))
+    }
+}
+
+fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn helper_path() -> Result<PathBuf, String> {
     if let Some(path) = std::env::var_os("KOG_SC55_HELPER") {
         let path = PathBuf::from(path);
@@ -740,5 +881,15 @@ mod tests {
             .expect("render real SC-55 ROM set");
         assert_eq!(frames, samples.len() / 2);
         assert!(samples.iter().any(|sample| sample.abs() > 0.000_01));
+
+        let started = std::time::Instant::now();
+        source
+            .seek(Duration::from_millis(250))
+            .expect("seek real Nuked SC-55 ROM set");
+        assert!(
+            started.elapsed() < Duration::from_millis(100),
+            "SC-55 seek blocked for {:?}",
+            started.elapsed()
+        );
     }
 }

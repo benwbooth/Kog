@@ -2253,6 +2253,21 @@ mod tests {
     }
 
     #[test]
+    fn every_registered_decoder_promises_seek_support() {
+        let registry = DecoderRegistry::default();
+        let missing = registry
+            .backends
+            .iter()
+            .filter(|backend| !backend.capabilities().seek)
+            .map(|backend| backend.id())
+            .collect::<Vec<_>>();
+        assert!(
+            missing.is_empty(),
+            "decoder backends without seek support: {missing:?}"
+        );
+    }
+
+    #[test]
     fn registry_probes_a_real_wave_stream() {
         let path = std::env::temp_dir().join(format!("kog-decoder-{}.wav", std::process::id()));
         write_test_wav(&path);

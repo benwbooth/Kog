@@ -2558,6 +2558,9 @@ impl qobject::AppController {
     }
 
     pub fn poll_playback(mut self: Pin<&mut Self>) {
+        if let Some(Err(error)) = self.as_ref().rust().playback.take_seek_result() {
+            self.as_mut().set_status(qstring(error));
+        }
         if self.as_ref().rust().playback.finished() {
             let current = usize::try_from(self.as_ref().rust().current_index).ok();
             if current

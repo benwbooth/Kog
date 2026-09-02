@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use rodio::cpal;
@@ -94,13 +95,40 @@ impl PlaybackState {
 
 pub struct PlaybackEngine {
     output: Option<MixerDeviceSink>,
-    player: Option<Player>,
+    processing_mixer: Option<mixer::Mixer>,
+    player: Option<Arc<Player>>,
+    seek_worker: AsyncSeekWorker,
     decoders: DecoderRegistry,
     equalizer: EqualizerControl,
     meter: AudioMeter,
     output_device_id: Option<String>,
     volume: f32,
     state: PlaybackState,
+}
+
+struct AsyncSeekWorker {
+    shared: Arc<AsyncSeekShared>,
+    worker: Option<JoinHandle<()>>,
+}
+
+struct AsyncSeekShared {
+    state: Mutex<AsyncSeekState>,
+    ready: Condvar,
+}
+
+#[derive(Default)]
+struct AsyncSeekState {
+    request: Option<AsyncSeekRequest>,
+    latest_generation: u64,
+    pending_target: Option<Duration>,
+    result: Option<Result<Duration, String>>,
+    shutdown: bool,
+}
+
+struct AsyncSeekRequest {
+    player: Arc<Player>,
+    position: Duration,
+    generation: u64,
 }
 
 impl Default for PlaybackEngine {
@@ -125,7 +153,9 @@ impl PlaybackEngine {
     ) -> Self {
         Self {
             output: None,
+            processing_mixer: None,
             player: None,
+            seek_worker: AsyncSeekWorker::new(),
             decoders,
             equalizer: EqualizerControl::new(equalizer),
             meter: AudioMeter::default(),
@@ -137,13 +167,27 @@ impl PlaybackEngine {
 
     pub fn play_source(&mut self, source: &PlaybackSource) -> Result<SelectedBackend, String> {
         self.ensure_output()?;
-        let player = self.player.as_ref().expect("output creates player");
-        player.stop();
+        self.seek_worker.cancel();
+        if let Some(player) = self.player.take() {
+            player.stop();
+        }
+        let player = Arc::new(Player::connect_new(
+            self.processing_mixer
+                .as_ref()
+                .expect("output creates processing mixer"),
+        ));
         self.equalizer.reset();
         self.meter.reset();
-        let backend = self.decoders.append(source, player)?;
+        let backend = match self.decoders.append(source, &player) {
+            Ok(backend) => backend,
+            Err(error) => {
+                player.stop();
+                return Err(error);
+            }
+        };
         player.set_volume(self.volume);
         player.play();
+        self.player = Some(player);
         self.state = PlaybackState::Playing;
         Ok(backend)
     }
@@ -166,6 +210,7 @@ impl PlaybackEngine {
     }
 
     pub fn stop(&mut self) {
+        self.seek_worker.cancel();
         if let Some(player) = self.player.as_ref() {
             player.stop();
             self.equalizer.reset();
@@ -179,12 +224,14 @@ impl PlaybackEngine {
             .player
             .as_ref()
             .ok_or_else(|| "Nothing is loaded".to_owned())?;
-        player
-            .try_seek(position)
-            .map_err(|error| format!("seeking: {error}"))?;
+        self.seek_worker.request(player.clone(), position);
         self.equalizer.reset();
         self.meter.reset();
         Ok(())
+    }
+
+    pub fn take_seek_result(&self) -> Option<Result<Duration, String>> {
+        self.seek_worker.take_result()
     }
 
     pub fn set_volume(&mut self, volume: f32) {
@@ -203,9 +250,13 @@ impl PlaybackEngine {
             return Ok(());
         }
         if self.output.is_some() {
-            let (output, player) = self.create_output(output_device_id.as_deref())?;
+            let (output, processing_mixer) = self.create_output(output_device_id.as_deref())?;
+            self.seek_worker.cancel();
+            if let Some(player) = self.player.take() {
+                player.stop();
+            }
             self.output = Some(output);
-            self.player = Some(player);
+            self.processing_mixer = Some(processing_mixer);
             self.state = PlaybackState::Stopped;
             self.meter.reset();
         }
@@ -214,14 +265,18 @@ impl PlaybackEngine {
     }
 
     pub fn position(&self) -> Duration {
+        if let Some(position) = self.seek_worker.pending_target() {
+            return position;
+        }
         self.player
             .as_ref()
-            .map(Player::get_pos)
+            .map(|player| player.get_pos())
             .unwrap_or_default()
     }
 
     pub fn finished(&self) -> bool {
-        self.state == PlaybackState::Playing && self.player.as_ref().is_some_and(Player::empty)
+        self.state == PlaybackState::Playing
+            && self.player.as_ref().is_some_and(|player| player.empty())
     }
 
     pub fn state(&self) -> PlaybackState {
@@ -237,16 +292,16 @@ impl PlaybackEngine {
             return Ok(());
         }
 
-        let (output, player) = self.create_output(self.output_device_id.as_deref())?;
+        let (output, processing_mixer) = self.create_output(self.output_device_id.as_deref())?;
         self.output = Some(output);
-        self.player = Some(player);
+        self.processing_mixer = Some(processing_mixer);
         Ok(())
     }
 
     fn create_output(
         &self,
         output_device_id: Option<&str>,
-    ) -> Result<(MixerDeviceSink, Player), String> {
+    ) -> Result<(MixerDeviceSink, mixer::Mixer), String> {
         let output = open_output(output_device_id)?;
         let channels = output.config().channel_count();
         let sample_rate = output.config().sample_rate();
@@ -258,8 +313,124 @@ impl PlaybackEngine {
             EqualizerSource::new(processing_source, self.equalizer.clone()),
             self.meter.clone(),
         ));
-        let player = Player::connect_new(&processing_mixer);
-        Ok((output, player))
+        Ok((output, processing_mixer))
+    }
+}
+
+impl AsyncSeekWorker {
+    fn new() -> Self {
+        let shared = Arc::new(AsyncSeekShared {
+            state: Mutex::new(AsyncSeekState::default()),
+            ready: Condvar::new(),
+        });
+        let worker_shared = shared.clone();
+        let worker = std::thread::Builder::new()
+            .name("kog-audio-seek".to_owned())
+            .spawn(move || run_seek_worker(worker_shared))
+            .expect("Kog requires a playback seek worker thread");
+        Self {
+            shared,
+            worker: Some(worker),
+        }
+    }
+
+    fn request(&self, player: Arc<Player>, position: Duration) {
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.latest_generation = state.latest_generation.wrapping_add(1);
+        let generation = state.latest_generation;
+        state.pending_target = Some(position);
+        state.result = None;
+        state.request = Some(AsyncSeekRequest {
+            player,
+            position,
+            generation,
+        });
+        drop(state);
+        self.shared.ready.notify_one();
+    }
+
+    fn cancel(&self) {
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.latest_generation = state.latest_generation.wrapping_add(1);
+        state.request = None;
+        state.pending_target = None;
+        state.result = None;
+    }
+
+    fn pending_target(&self) -> Option<Duration> {
+        self.shared
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .pending_target
+    }
+
+    fn take_result(&self) -> Option<Result<Duration, String>> {
+        self.shared
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .result
+            .take()
+    }
+}
+
+impl Drop for AsyncSeekWorker {
+    fn drop(&mut self) {
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.shutdown = true;
+        state.request = None;
+        drop(state);
+        self.shared.ready.notify_one();
+        // A third-party decoder may already be inside a broken seek call. Do
+        // not make application shutdown wait for code Kog cannot interrupt.
+        let _ = self.worker.take();
+    }
+}
+
+fn run_seek_worker(shared: Arc<AsyncSeekShared>) {
+    loop {
+        let request = {
+            let mut state = shared
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            while state.request.is_none() && !state.shutdown {
+                state = shared
+                    .ready
+                    .wait(state)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+            }
+            if state.shutdown {
+                return;
+            }
+            state.request.take().expect("seek request was checked")
+        };
+        let result = request
+            .player
+            .try_seek(request.position)
+            .map(|()| request.position)
+            .map_err(|error| format!("seeking: {error}"));
+        let mut state = shared
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.latest_generation == request.generation {
+            state.pending_target = None;
+            state.result = Some(result);
+        }
     }
 }
 
@@ -453,10 +624,53 @@ fn open_output(output_device_id: Option<&str>) -> Result<MixerDeviceSink, String
 #[cfg(test)]
 mod tests {
     use std::num::NonZero;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Instant;
 
     use rodio::buffer::SamplesBuffer;
 
     use super::*;
+
+    struct SlowSeekSource {
+        entered_seek: Arc<AtomicBool>,
+        positions: Arc<Mutex<Vec<Duration>>>,
+    }
+
+    impl Iterator for SlowSeekSource {
+        type Item = f32;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            Some(0.0)
+        }
+    }
+
+    impl Source for SlowSeekSource {
+        fn current_span_len(&self) -> Option<usize> {
+            None
+        }
+
+        fn channels(&self) -> ChannelCount {
+            NonZero::new(2).unwrap()
+        }
+
+        fn sample_rate(&self) -> SampleRate {
+            NonZero::new(48_000).unwrap()
+        }
+
+        fn total_duration(&self) -> Option<Duration> {
+            Some(Duration::from_secs(60))
+        }
+
+        fn try_seek(&mut self, position: Duration) -> Result<(), SeekError> {
+            self.entered_seek.store(true, Ordering::Release);
+            std::thread::sleep(Duration::from_millis(150));
+            self.positions
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(position);
+            Ok(())
+        }
+    }
 
     fn measured_sine(frequency: f32) -> [f32; AUDIO_METER_BANDS] {
         let sample_rate = 48_000_u32;
@@ -535,6 +749,61 @@ mod tests {
         );
         assert_eq!(playback.state(), PlaybackState::Stopped);
         assert!(playback.output.is_none());
+    }
+
+    #[test]
+    fn slow_decoder_seeks_never_block_the_caller_and_latest_request_wins() {
+        let entered_seek = Arc::new(AtomicBool::new(false));
+        let positions = Arc::new(Mutex::new(Vec::new()));
+        let (player, mut output) = Player::new();
+        player.append(SlowSeekSource {
+            entered_seek: entered_seek.clone(),
+            positions: positions.clone(),
+        });
+        let player = Arc::new(player);
+        let consuming = Arc::new(AtomicBool::new(true));
+        let consumer_flag = consuming.clone();
+        let consumer = std::thread::spawn(move || {
+            while consumer_flag.load(Ordering::Acquire) {
+                let _ = output.next();
+            }
+        });
+        let worker = AsyncSeekWorker::new();
+
+        let started = Instant::now();
+        worker.request(player.clone(), Duration::from_secs(1));
+        assert!(
+            started.elapsed() < Duration::from_millis(20),
+            "queueing a seek blocked for {:?}",
+            started.elapsed()
+        );
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !entered_seek.load(Ordering::Acquire) && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert!(entered_seek.load(Ordering::Acquire));
+
+        worker.request(player.clone(), Duration::from_secs(2));
+        worker.request(player.clone(), Duration::from_secs(3));
+        assert_eq!(worker.pending_target(), Some(Duration::from_secs(3)));
+
+        let result = loop {
+            if let Some(result) = worker.take_result() {
+                break result;
+            }
+            assert!(Instant::now() < deadline, "asynchronous seek timed out");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(result.unwrap(), Duration::from_secs(3));
+        assert_eq!(
+            *positions
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            [Duration::from_secs(1), Duration::from_secs(3)]
+        );
+
+        consuming.store(false, Ordering::Release);
+        consumer.join().unwrap();
     }
 
     #[test]
