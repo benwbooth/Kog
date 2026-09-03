@@ -66,8 +66,12 @@ target_link_libraries(kog_libsnsf9x PUBLIC ZLIB::ZLIB)
 if(NOT MSVC)
     target_compile_options(kog_libsnsf9x PRIVATE -fwrapv)
 else()
-    # MSVC only implements C++ exception unwinding with /EHsc.
+    # MSVC only implements C++ exception unwinding with /EHsc. The framework
+    # also expects a Unicode windows.h (its wrapper rejects the MBCS default
+    # that CMake's VS projects use) and spells strncasecmp as _strnicmp.
     target_compile_options(kog_libsnsf9x PRIVATE /EHsc)
+    target_compile_definitions(kog_libsnsf9x PRIVATE
+        UNICODE _UNICODE strncasecmp=_strnicmp strcasecmp=_stricmp)
 endif()
 
 add_library(kog_snsf_psflib STATIC "${PSFLIB_SOURCE}/psflib.c")
