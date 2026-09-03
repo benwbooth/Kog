@@ -900,6 +900,9 @@ fn build_mgba() -> PathBuf {
         .define("BUILD_SHARED", "OFF")
         .define("DISABLE_FRONTENDS", "ON")
         .define("DISABLE_DEPS", "ON")
+        // Kog links only the core; upstream's Windows path demands an epoxy
+        // acknowledgement unless the library-only build is selected.
+        .define("LIBMGBA_ONLY", "ON")
         .define("M_CORE_GBA", "ON")
         .define("M_CORE_GB", "OFF")
         .define("ENABLE_DEBUGGERS", "OFF")
