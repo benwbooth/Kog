@@ -4,17 +4,19 @@ use std::path::Path;
 use std::path::PathBuf;
 
 /// Path::canonicalize returns \\?\-prefixed verbatim paths on Windows, which
-/// MSBuild refuses to compile CMake source files from; hand it the plain form.
+/// MSBuild refuses to compile CMake source files from, and raw backslashes
+/// break when CMake re-emits a path into generated project code; hand both
+/// the plain, forward-slash form.
 fn plain_absolute(path: PathBuf) -> PathBuf {
-    let text = path.to_string_lossy().into_owned();
+    let text = path.to_string_lossy();
     let text = if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
         format!(r"\\{rest}")
     } else if let Some(rest) = text.strip_prefix(r"\\?\") {
         rest.to_owned()
     } else {
-        text
+        text.into_owned()
     };
-    PathBuf::from(text)
+    PathBuf::from(text.replace('\\', "/"))
 }
 
 fn main() {
