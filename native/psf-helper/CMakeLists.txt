@@ -78,6 +78,9 @@ if(NOT WIN32)
 endif()
 
 if(MSVC)
+    # The helper calls _wfopen and strerror directly; MSVC's secure-deprecation
+    # notices about them are not worth failing /WX over.
+    target_compile_definitions(kog-psf-helper PRIVATE _CRT_SECURE_NO_WARNINGS)
     target_compile_options(kog-psf-helper PRIVATE /W4 /WX)
 elseif(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(kog-psf-helper PRIVATE -Wall -Wextra -Wpedantic -Werror)

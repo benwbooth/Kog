@@ -84,6 +84,9 @@ target_include_directories(kog-snsf-helper SYSTEM PRIVATE
 )
 target_link_libraries(kog-snsf-helper PRIVATE kog_libsnsf9x kog_snsf_psflib ZLIB::ZLIB)
 if(MSVC)
+    # The helper calls _wfopen directly; MSVC's secure-deprecation notice about
+    # it is not worth failing /WX over.
+    target_compile_definitions(kog-snsf-helper PRIVATE _CRT_SECURE_NO_WARNINGS)
     target_compile_options(kog-snsf-helper PRIVATE /EHsc /W4 /WX)
 else()
     target_compile_options(kog-snsf-helper PRIVATE -Wall -Wextra -Wpedantic -Werror)
