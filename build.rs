@@ -3,6 +3,20 @@ use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 
+/// Path::canonicalize returns \\?\-prefixed verbatim paths on Windows, which
+/// MSBuild refuses to compile CMake source files from; hand it the plain form.
+fn plain_absolute(path: PathBuf) -> PathBuf {
+    let text = path.to_string_lossy().into_owned();
+    let text = if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = text.strip_prefix(r"\\?\") {
+        rest.to_owned()
+    } else {
+        text
+    };
+    PathBuf::from(text)
+}
+
 fn main() {
     build_spessasynth_midi();
     build_mt32emu();
@@ -340,9 +354,9 @@ fn build_sfm_helper() {
         panic!("Cog GME SFM helper sources are missing from the Kog checkout");
     }
 
-    let source = source
+    let source = plain_absolute(source
         .canonicalize()
-        .expect("canonicalize the Cog GME SFM source directory");
+        .expect("canonicalize the Cog GME SFM source directory"));
     let output_directory =
         PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR")).join("sfm-helper");
     let output = cmake::Config::new(helper)
@@ -1322,9 +1336,9 @@ fn build_psf_helper() {
         );
     }
 
-    let libupse = libupse
+    let libupse = plain_absolute(libupse
         .canonicalize()
-        .expect("canonicalize the libupse source directory");
+        .expect("canonicalize the libupse source directory"));
     let output = cmake::Config::new(helper)
         .profile("Release")
         .define("UPSE_SOURCE", &libupse)
@@ -1368,9 +1382,9 @@ fn build_psf2_helper() {
         );
     }
 
-    let play = play
+    let play = plain_absolute(play
         .canonicalize()
-        .expect("canonicalize the Play! source directory");
+        .expect("canonicalize the Play! source directory"));
     let output_directory =
         PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR")).join("psf2-helper");
     let mut config = cmake::Config::new(helper);
@@ -1418,12 +1432,12 @@ fn build_twosf_helper() {
         );
     }
 
-    let melonds = melonds
+    let melonds = plain_absolute(melonds
         .canonicalize()
-        .expect("canonicalize the melonDS source directory");
-    let psflib = psflib
+        .expect("canonicalize the melonDS source directory"));
+    let psflib = plain_absolute(psflib
         .canonicalize()
-        .expect("canonicalize the psflib source directory");
+        .expect("canonicalize the psflib source directory"));
     let output_directory = PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR"))
         .join("twosf-helper");
     let output = cmake::Config::new(helper)
@@ -1466,12 +1480,12 @@ fn build_snsf_helper() {
         );
     }
 
-    let libsnsf9x = libsnsf9x
+    let libsnsf9x = plain_absolute(libsnsf9x
         .canonicalize()
-        .expect("canonicalize the libsnsf9x source directory");
-    let psflib = psflib
+        .expect("canonicalize the libsnsf9x source directory"));
+    let psflib = plain_absolute(psflib
         .canonicalize()
-        .expect("canonicalize the psflib source directory");
+        .expect("canonicalize the psflib source directory"));
     let output_directory =
         PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR")).join("snsf-helper");
     let output = cmake::Config::new(helper)
@@ -1510,9 +1524,9 @@ fn build_syntrax_helper() {
         );
     }
 
-    let syntrax = syntrax
+    let syntrax = plain_absolute(syntrax
         .canonicalize()
-        .expect("canonicalize the syntrax-c source directory");
+        .expect("canonicalize the syntrax-c source directory"));
     let output_directory = PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR"))
         .join("syntrax-helper");
     let output = cmake::Config::new(helper)
@@ -1550,9 +1564,9 @@ fn build_sc55_helper() {
         );
     }
 
-    let nuked_sc55 = nuked_sc55
+    let nuked_sc55 = plain_absolute(nuked_sc55
         .canonicalize()
-        .expect("canonicalize the Nuked SC-55 source directory");
+        .expect("canonicalize the Nuked SC-55 source directory"));
     let output_directory =
         PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR")).join("sc55-helper");
     let output = cmake::Config::new(helper)
