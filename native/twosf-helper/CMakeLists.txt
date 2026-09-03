@@ -16,51 +16,7 @@ set(ENABLE_OGLRENDERER OFF CACHE BOOL "Do not build video OpenGL support" FORCE)
 set(ENABLE_LTO_RELEASE OFF CACHE BOOL "Keep Cargo builds predictable" FORCE)
 set(ENABLE_LTO OFF CACHE BOOL "Keep Cargo builds predictable" FORCE)
 set(USE_VCPKG OFF CACHE BOOL "Use system build dependencies" FORCE)
-# melonDS's non-MinGW Windows path requires a dirent.h on its include path,
-# which MSVC does not ship. Preempt its find_path() with Kog's vendored shim.
-if(MSVC)
-    set(DIRENT_INCLUDE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/dirent"
-        CACHE PATH "dirent.h shim for melonDS" FORCE)
-endif()
 add_subdirectory("${MELONDS_SOURCE}" "${CMAKE_CURRENT_BINARY_DIR}/melonDS")
-
-if(MSVC)
-    # The pin writes designated initializers under C++17, which MSVC only
-    # accepts as C++20, but its filesystem code predates char8_t; /Zc:char8_t-
-    # restores C++17's narrow u8path()/u8string(). GCC builtins and attributes
-    # compile away via the forced compat header.
-    target_compile_options(core PRIVATE
-        /std:c++20 /Zc:char8_t-
-        "/FI${CMAKE_CURRENT_SOURCE_DIR}/msvc/melonds-compat.h")
-
-    # Three of the pin's statements have no MSVC form: an empty asm memory
-    # barrier, and two arrays sized at runtime (a GCC VLA over a bounded blip
-    # buffer, and one over a literal). Build patched copies in the build tree,
-    # like snsf-helper does for xsfdrv.c. The original source directory stays
-    # on the include path so the copies find their siblings.
-    target_include_directories(core PRIVATE "${MELONDS_SOURCE}/src")
-    set(_melonds_msvc_dir "${CMAKE_CURRENT_BINARY_DIR}/melonds-msvc")
-    file(READ "${MELONDS_SOURCE}/src/GPU2D_Soft.cpp" _gpu2d)
-    string(REPLACE "asm volatile (\"\" : : : \"memory\");"
-           "_ReadWriteBarrier();" _gpu2d "${_gpu2d}")
-    file(READ "${MELONDS_SOURCE}/src/DSi_NWifi.cpp" _nwifi)
-    string(REPLACE "int nchan = 11;" "constexpr int nchan = 11;" _nwifi "${_nwifi}")
-    file(READ "${MELONDS_SOURCE}/src/SPU.cpp" _spu)
-    string(REPLACE "s16 temp[avail * 2];"
-           "s16 temp[8192 * 2]; /* patched: blip_new(8192) bounds avail */"
-           _spu "${_spu}")
-    file(MAKE_DIRECTORY "${_melonds_msvc_dir}")
-    file(WRITE "${_melonds_msvc_dir}/GPU2D_Soft.cpp" "${_gpu2d}")
-    file(WRITE "${_melonds_msvc_dir}/DSi_NWifi.cpp" "${_nwifi}")
-    file(WRITE "${_melonds_msvc_dir}/SPU.cpp" "${_spu}")
-    get_target_property(_core_sources core SOURCES)
-    list(REMOVE_ITEM _core_sources GPU2D_Soft.cpp DSi_NWifi.cpp SPU.cpp)
-    list(APPEND _core_sources
-        "${_melonds_msvc_dir}/GPU2D_Soft.cpp"
-        "${_melonds_msvc_dir}/DSi_NWifi.cpp"
-        "${_melonds_msvc_dir}/SPU.cpp")
-    set_target_properties(core PROPERTIES SOURCES "${_core_sources}")
-endif()
 
 find_package(ZLIB REQUIRED)
 
