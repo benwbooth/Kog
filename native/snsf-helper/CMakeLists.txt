@@ -36,11 +36,25 @@ string(REPLACE "${XSFDRV_DLLMAIN}" "" XSFDRV_SOURCE_TEXT "${XSFDRV_SOURCE_TEXT}"
 set(XSFDRV_SOURCE "${CMAKE_CURRENT_BINARY_DIR}/xsfdrv.c")
 file(WRITE "${XSFDRV_SOURCE}" "${XSFDRV_SOURCE_TEXT}")
 
+# drvimpl.cpp typedefs its own DWORD, which collides with windows.h's on MSVC
+# (uint32_t is unsigned int there, windows.h uses unsigned long) once port.h
+# pulls in the framework's windows.h wrapper. Drop just the duplicate name for
+# the MSVC copy; other platforms use the pinned source untouched.
+if(MSVC)
+    file(READ "${LIBSNSF9X_SOURCE}/snsf9x/drvimpl.cpp" DRVIMPL_SOURCE_TEXT)
+    string(REPLACE "typedef uint32_t UINT32, DWORD;" "typedef uint32_t UINT32;"
+           DRVIMPL_SOURCE_TEXT "${DRVIMPL_SOURCE_TEXT}")
+    set(DRVIMPL_SOURCE "${CMAKE_CURRENT_BINARY_DIR}/drvimpl.cpp")
+    file(WRITE "${DRVIMPL_SOURCE}" "${DRVIMPL_SOURCE_TEXT}")
+else()
+    set(DRVIMPL_SOURCE "${LIBSNSF9X_SOURCE}/snsf9x/drvimpl.cpp")
+endif()
+
 # Build the upstream library source list exactly as its GNUmakefile does. The
 # library has no CMake project of its own, apart from the const-correct copy
 # above required by current compilers.
 add_library(kog_libsnsf9x STATIC
-    "${LIBSNSF9X_SOURCE}/snsf9x/drvimpl.cpp"
+    "${DRVIMPL_SOURCE}"
     "${LIBSNSF9X_SOURCE}/snsf9x/snes9x/apu/apu.cpp"
     "${LIBSNSF9X_SOURCE}/snsf9x/snes9x/apu/SNES_SPC.cpp"
     "${LIBSNSF9X_SOURCE}/snsf9x/snes9x/apu/SNES_SPC_misc.cpp"
