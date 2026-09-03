@@ -26,10 +26,11 @@ add_subdirectory("${MELONDS_SOURCE}" "${CMAKE_CURRENT_BINARY_DIR}/melonDS")
 
 if(MSVC)
     # The pin writes designated initializers under C++17, which MSVC only
-    # accepts as C++20, and GNU __attribute syntax that MSVC cannot parse.
-    # Both compile away without changing behavior.
+    # accepts as C++20, and leans on GCC builtins and attributes that MSVC
+    # lacks. Both compile away via the forced compat header without changing
+    # behavior.
     target_compile_options(core PRIVATE
-        /std:c++20 "/D__attribute(x)=" "/D__attribute__(x)=")
+        /std:c++20 "/FI${CMAKE_CURRENT_SOURCE_DIR}/msvc/melonds-compat.h")
 endif()
 
 find_package(ZLIB REQUIRED)
