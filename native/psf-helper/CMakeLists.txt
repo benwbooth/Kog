@@ -43,6 +43,9 @@ set(UPSE_SOURCES
 
 add_library(kog_libupse STATIC ${UPSE_SOURCES})
 target_include_directories(kog_libupse PUBLIC "${UPSE_SOURCE}")
+# upse-internal.h includes zlib.h. MSVC has no default system include path, so
+# the library itself must carry the ZLIB include directories.
+target_link_libraries(kog_libupse PUBLIC ZLIB::ZLIB)
 target_compile_features(kog_libupse PRIVATE c_std_11)
 set_target_properties(kog_libupse PROPERTIES C_EXTENSIONS ON)
 target_compile_definitions(kog_libupse PRIVATE EMU_COMPILE)
