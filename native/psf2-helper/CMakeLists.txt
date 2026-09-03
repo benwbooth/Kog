@@ -18,6 +18,13 @@ set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build static dependencies" FORCE)
 set(WITH_SYSTEM_ZLIB ON CACHE BOOL "Keep the pinned Play! source immutable" FORCE)
 add_subdirectory("${PLAY_SOURCE}/Source" "${CMAKE_CURRENT_BINARY_DIR}/PlayCore")
 
+# vcpkg's dynamic zlib marks consumers with ZLIB_DLL, which turns zlib.h's
+# ZEXTERN declarations into dllimport. zstd's wrapper defines those z_* entry
+# points itself, so it must compile as the zlib-internal side of the DLL.
+if(TARGET libzstd_zlibwrapper_static)
+    target_compile_definitions(libzstd_zlibwrapper_static PRIVATE ZLIB_INTERNAL)
+endif()
+
 # Play! 04bde0d uses memcpy in BasicBlock.cpp without directly including the
 # standard declaration. Force-include the header until that pinned upstream
 # revision is advanced. This changes no emulator behavior.
