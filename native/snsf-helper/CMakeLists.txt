@@ -33,6 +33,10 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
 }
 #endif]=])
 string(REPLACE "${XSFDRV_DLLMAIN}" "" XSFDRV_SOURCE_TEXT "${XSFDRV_SOURCE_TEXT}")
+# The same DLL heritage leaves a 32-bit stdcall export alias pragma that
+# references a symbol which does not exist in this static x64 link.
+string(REPLACE [===[#pragma comment(linker, "/EXPORT:XSFSetup=_XSFSetup@8")]===] ""
+       XSFDRV_SOURCE_TEXT "${XSFDRV_SOURCE_TEXT}")
 set(XSFDRV_SOURCE "${CMAKE_CURRENT_BINARY_DIR}/xsfdrv.c")
 file(WRITE "${XSFDRV_SOURCE}" "${XSFDRV_SOURCE_TEXT}")
 
