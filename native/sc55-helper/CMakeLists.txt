@@ -38,6 +38,8 @@ add_executable(kog-sc55-helper sc55_helper.cpp)
 target_compile_features(kog-sc55-helper PRIVATE cxx_std_23)
 target_link_libraries(kog-sc55-helper PRIVATE kog_sc55_core)
 if(MSVC)
+    # windows.h's min/max macros collide with std::max/std::min below.
+    target_compile_definitions(kog-sc55-helper PRIVATE NOMINMAX)
     target_compile_options(kog-sc55-helper PRIVATE /EHsc /W4 /WX)
 else()
     target_compile_options(kog-sc55-helper PRIVATE

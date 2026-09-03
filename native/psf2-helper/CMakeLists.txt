@@ -61,6 +61,8 @@ target_include_directories(kog-psf2-helper SYSTEM PRIVATE
 )
 target_link_libraries(kog-psf2-helper PRIVATE kog_psf2_play_core)
 if(MSVC)
+    # windows.h's min/max macros collide with std::max/std::min below.
+    target_compile_definitions(kog-psf2-helper PRIVATE NOMINMAX)
     target_compile_options(kog-psf2-helper PRIVATE /EHsc /W4 /WX)
 else()
     target_compile_options(kog-psf2-helper PRIVATE -Wall -Wextra -Wpedantic -Werror)

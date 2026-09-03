@@ -36,9 +36,10 @@ if(CMAKE_DL_LIBS)
     target_link_libraries(kog-2sf-helper PRIVATE ${CMAKE_DL_LIBS})
 endif()
 if(MSVC)
-    # The helper calls _wfopen directly; MSVC's secure-deprecation notice about
-    # it is not worth failing /WX over.
-    target_compile_definitions(kog-2sf-helper PRIVATE _CRT_SECURE_NO_WARNINGS)
+    # The helper calls _wfopen directly, and windows.h's min/max macros collide
+    # with std::max/std::min below; MSVC's notices about the former are not
+    # worth failing /WX over.
+    target_compile_definitions(kog-2sf-helper PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX)
     target_compile_options(kog-2sf-helper PRIVATE /EHsc /W4 /WX)
 else()
     target_compile_options(kog-2sf-helper PRIVATE -Wall -Wextra -Wpedantic -Werror)

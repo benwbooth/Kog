@@ -29,6 +29,8 @@ add_executable(kog-syntrax-helper syntrax_helper.cpp)
 target_compile_features(kog-syntrax-helper PRIVATE cxx_std_17)
 target_link_libraries(kog-syntrax-helper PRIVATE kog_syntrax_core)
 if(MSVC)
+    # windows.h's min/max macros collide with std::max/std::min below.
+    target_compile_definitions(kog-syntrax-helper PRIVATE NOMINMAX)
     target_compile_options(kog-syntrax-helper PRIVATE /EHsc /W4 /WX)
 else()
     target_compile_options(kog-syntrax-helper PRIVATE -Wall -Wextra -Wpedantic -Werror)
