@@ -38,10 +38,18 @@ file(WRITE "${XSFDRV_SOURCE}" "${XSFDRV_SOURCE_TEXT}")
 
 # drvimpl.cpp typedefs its own DWORD, which collides with windows.h's on MSVC
 # (uint32_t is unsigned int there, windows.h uses unsigned long) once port.h
-# pulls in the framework's windows.h wrapper. Drop just the duplicate name for
-# the MSVC copy; other platforms use the pinned source untouched.
+# pulls in the framework's windows.h wrapper. The MSVC-only copy drops the
+# duplicate name and points its snsf9x-relative quoted includes, which no
+# longer resolve from the build directory, back at the pin. Other platforms
+# use the pinned source untouched.
 if(MSVC)
     file(READ "${LIBSNSF9X_SOURCE}/snsf9x/drvimpl.cpp" DRVIMPL_SOURCE_TEXT)
+    string(REPLACE "#include \"snes9x/" "#include \"${LIBSNSF9X_SOURCE}/snsf9x/snes9x/"
+           DRVIMPL_SOURCE_TEXT "${DRVIMPL_SOURCE_TEXT}")
+    string(REPLACE "#include \"../xsfc/" "#include \"${LIBSNSF9X_SOURCE}/xsfc/"
+           DRVIMPL_SOURCE_TEXT "${DRVIMPL_SOURCE_TEXT}")
+    string(REPLACE "#include \"../pversion.h\"" "#include \"${LIBSNSF9X_SOURCE}/pversion.h\""
+           DRVIMPL_SOURCE_TEXT "${DRVIMPL_SOURCE_TEXT}")
     string(REPLACE "typedef uint32_t UINT32, DWORD;" "typedef uint32_t UINT32;"
            DRVIMPL_SOURCE_TEXT "${DRVIMPL_SOURCE_TEXT}")
     set(DRVIMPL_SOURCE "${CMAKE_CURRENT_BINARY_DIR}/drvimpl.cpp")
