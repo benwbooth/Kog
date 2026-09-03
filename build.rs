@@ -20,18 +20,6 @@ fn plain_absolute(path: PathBuf) -> PathBuf {
 }
 
 fn main() {
-    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
-        // Several native bridges compile code that includes windows.h
-        // transitively (mGBA, Play!); its min/max macros collide with
-        // std::min/std::max and numeric_limits. The cc crate merges these
-        // environment flags into every translation unit it builds here.
-        // The build script is single-threaded here, so mutating the process
-        // environment is sound.
-        unsafe {
-            std::env::set_var("CFLAGS", "/DNOMINMAX");
-            std::env::set_var("CXXFLAGS", "/DNOMINMAX");
-        }
-    }
     build_spessasynth_midi();
     build_mt32emu();
     build_game_music_emu();
@@ -1008,6 +996,12 @@ fn build_ncsf(mgba_output: &Path) {
         // SSEQPlayer's pre-C++11 libstdc++ shims conflict with modern GNU
         // libstdc++. libc++ and MSVC select their own standard implementation.
         player_build.define("_LIBCPP_VERSION", "1");
+    }
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        // mGBA's headers pull in windows.h, whose min/max macros collide
+        // with the std:: forms used across these bridges. Every TU here
+        // also compiles without the macro on Linux, so this is safe.
+        player_build.define("NOMINMAX", None);
     }
     player_build.compile("kog_sseqplayer");
 
