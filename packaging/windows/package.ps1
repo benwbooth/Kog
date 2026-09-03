@@ -13,9 +13,12 @@ New-Item -ItemType Directory -Force -Path $stage | Out-Null
 Copy-Item (Join-Path $root "target/release/kog.exe") (Join-Path $stage "Kog.exe")
 Copy-Item (Join-Path $root "LICENSE") $stage
 
+# kog-2sf-helper.exe is not built on Windows: the pinned melonDS core needs
+# GCC-only constructs and is not patched; 2SF playback reports a clear error
+# unless KOG_2SF_HELPER points at a user-supplied helper.
 $helpers = @(
     "kog-sfm-helper.exe", "kog-psf-helper.exe", "kog-psf2-helper.exe",
-    "kog-2sf-helper.exe", "kog-snsf-helper.exe", "kog-syntrax-helper.exe",
+    "kog-snsf-helper.exe", "kog-syntrax-helper.exe",
     "kog-sc55-helper.exe"
 )
 foreach ($helper in $helpers) {

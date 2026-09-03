@@ -1422,6 +1422,25 @@ fn build_psf2_helper() {
 }
 
 fn build_twosf_helper() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        // The pinned melonDS core leans on GCC-only constructs (inline asm,
+        // variable-length arrays, __builtin_*), so it cannot be compiled by
+        // MSVC without patching the submodule. Emit the expected build path so
+        // psf.rs compiles; playback reports a clear error unless the user
+        // supplies a helper via KOG_2SF_HELPER or a sibling binary.
+        let unbuilt = PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR"))
+            .join("twosf-helper")
+            .join("bin")
+            .join("kog-2sf-helper.exe");
+        println!(
+            "cargo:rustc-env=KOG_BUILD_2SF_HELPER={}",
+            unbuilt.display()
+        );
+        println!("cargo:rerun-if-changed=native/twosf-helper");
+        println!("cargo:rerun-if-changed=native/melonds");
+        return;
+    }
+
     let helper = Path::new("native/twosf-helper");
     let melonds = Path::new("native/melonds");
     let psflib = Path::new("native/psflib");
