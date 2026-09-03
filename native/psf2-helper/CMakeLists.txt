@@ -40,6 +40,10 @@ target_include_directories(kog_psf2_play_core SYSTEM PUBLIC
     "${PLAY_SOURCE}/Source"
 )
 target_link_libraries(kog_psf2_play_core PUBLIC PlayCore)
+if(MSVC)
+    # MSVC only implements C++ exception unwinding with /EHsc.
+    target_compile_options(kog_psf2_play_core PRIVATE /EHsc)
+endif()
 
 add_executable(kog-psf2-helper psf2_helper.cpp)
 target_compile_features(kog-psf2-helper PRIVATE cxx_std_17)
@@ -50,7 +54,7 @@ target_include_directories(kog-psf2-helper SYSTEM PRIVATE
 )
 target_link_libraries(kog-psf2-helper PRIVATE kog_psf2_play_core)
 if(MSVC)
-    target_compile_options(kog-psf2-helper PRIVATE /W4 /WX)
+    target_compile_options(kog-psf2-helper PRIVATE /EHsc /W4 /WX)
 else()
     target_compile_options(kog-psf2-helper PRIVATE -Wall -Wextra -Wpedantic -Werror)
 endif()

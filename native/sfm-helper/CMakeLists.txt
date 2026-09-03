@@ -42,6 +42,9 @@ if(NOT MSVC)
     # The original emulator deliberately relies on wrapping integer hardware
     # arithmetic. Preserve that behavior under current optimizing compilers.
     target_compile_options(kog_sfm_core PRIVATE -fwrapv -w)
+else()
+    # MSVC only implements C++ exception unwinding with /EHsc.
+    target_compile_options(kog_sfm_core PRIVATE /EHsc)
 endif()
 
 add_executable(kog-sfm-helper sfm_helper.cpp)
@@ -52,7 +55,7 @@ target_include_directories(kog-sfm-helper SYSTEM PRIVATE
 )
 target_link_libraries(kog-sfm-helper PRIVATE kog_sfm_core)
 if(MSVC)
-    target_compile_options(kog-sfm-helper PRIVATE /W4 /WX)
+    target_compile_options(kog-sfm-helper PRIVATE /EHsc /W4 /WX)
 else()
     target_compile_options(kog-sfm-helper PRIVATE -Wall -Wextra -Wpedantic -Werror)
 endif()

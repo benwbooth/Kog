@@ -25,6 +25,10 @@ add_library(kog_sc55_core STATIC
     "${SC55_COMMON}/rom_loader.cpp"
 )
 target_compile_features(kog_sc55_core PRIVATE cxx_std_23)
+if(MSVC)
+    # MSVC only implements C++ exception unwinding with /EHsc.
+    target_compile_options(kog_sc55_core PRIVATE /EHsc)
+endif()
 target_include_directories(kog_sc55_core SYSTEM PUBLIC
     "${SC55_BACKEND}"
     "${SC55_COMMON}"
@@ -34,7 +38,7 @@ add_executable(kog-sc55-helper sc55_helper.cpp)
 target_compile_features(kog-sc55-helper PRIVATE cxx_std_23)
 target_link_libraries(kog-sc55-helper PRIVATE kog_sc55_core)
 if(MSVC)
-    target_compile_options(kog-sc55-helper PRIVATE /W4 /WX)
+    target_compile_options(kog-sc55-helper PRIVATE /EHsc /W4 /WX)
 else()
     target_compile_options(kog-sc55-helper PRIVATE
         -Wall -Wextra -Wpedantic -Werror)

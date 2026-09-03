@@ -65,6 +65,9 @@ target_include_directories(kog_libsnsf9x SYSTEM PUBLIC
 target_link_libraries(kog_libsnsf9x PUBLIC ZLIB::ZLIB)
 if(NOT MSVC)
     target_compile_options(kog_libsnsf9x PRIVATE -fwrapv)
+else()
+    # MSVC only implements C++ exception unwinding with /EHsc.
+    target_compile_options(kog_libsnsf9x PRIVATE /EHsc)
 endif()
 
 add_library(kog_snsf_psflib STATIC "${PSFLIB_SOURCE}/psflib.c")
@@ -81,7 +84,7 @@ target_include_directories(kog-snsf-helper SYSTEM PRIVATE
 )
 target_link_libraries(kog-snsf-helper PRIVATE kog_libsnsf9x kog_snsf_psflib ZLIB::ZLIB)
 if(MSVC)
-    target_compile_options(kog-snsf-helper PRIVATE /W4 /WX)
+    target_compile_options(kog-snsf-helper PRIVATE /EHsc /W4 /WX)
 else()
     target_compile_options(kog-snsf-helper PRIVATE -Wall -Wextra -Wpedantic -Werror)
 endif()
