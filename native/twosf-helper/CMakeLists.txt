@@ -16,6 +16,12 @@ set(ENABLE_OGLRENDERER OFF CACHE BOOL "Do not build video OpenGL support" FORCE)
 set(ENABLE_LTO_RELEASE OFF CACHE BOOL "Keep Cargo builds predictable" FORCE)
 set(ENABLE_LTO OFF CACHE BOOL "Keep Cargo builds predictable" FORCE)
 set(USE_VCPKG OFF CACHE BOOL "Use system build dependencies" FORCE)
+# melonDS's non-MinGW Windows path requires a dirent.h on its include path,
+# which MSVC does not ship. Preempt its find_path() with Kog's vendored shim.
+if(MSVC)
+    set(DIRENT_INCLUDE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/dirent"
+        CACHE PATH "dirent.h shim for melonDS" FORCE)
+endif()
 add_subdirectory("${MELONDS_SOURCE}" "${CMAKE_CURRENT_BINARY_DIR}/melonDS")
 
 find_package(ZLIB REQUIRED)
