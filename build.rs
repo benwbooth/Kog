@@ -136,21 +136,41 @@ fn build_spessasynth_midi() {
         );
     }
 
-    let output = cmake::Config::new(source)
+    let mut config = cmake::Config::new(source);
+    config
         .profile("Release")
         .define("SS_BUILD_SHARED", "OFF")
         .define("SS_BUILD_EXAMPLES", "OFF")
         .define("SS_ENABLE_SF3_VORBIS", "OFF")
         .define("SS_ENABLE_SF3_FLAC", "OFF")
-        .define("CMAKE_INSTALL_LIBDIR", "lib")
-        .build();
+        .define("CMAKE_INSTALL_LIBDIR", "lib");
 
-    cc::Build::new()
-        .std("c11")
+    let mut bridge = cc::Build::new();
+    bridge.std("c11").warnings(true).extra_warnings(true);
+
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        // The submodule generates spessasynth_exports.h only for shared MSVC
+        // builds, but its public headers include it under _MSC_VER even in the
+        // static build used here. Provide the empty-decoration stand-in that
+        // non-MSVC platforms get from the headers themselves.
+        let exports = PathBuf::from(std::env::var("OUT_DIR").expect("cargo OUT_DIR is set"))
+            .join("spessasynth-exports");
+        fs::create_dir_all(&exports).expect("create spessasynth exports directory");
+        fs::write(
+            exports.join("spessasynth_exports.h"),
+            "#define SPESSASYNTH_EXPORTS\n#define SPESSASYNTH_NO_EXPORT\n",
+        )
+        .expect("write spessasynth_exports.h");
+        let exports = exports.display().to_string();
+        config.cflag(format!("/I{exports}"));
+        bridge.include(exports);
+    }
+
+    let output = config.build();
+
+    bridge
         .include(output.join("include"))
         .file("native/spessasynth_midi_bridge.c")
-        .warnings(true)
-        .extra_warnings(true)
         .compile("kog_spessasynth_midi_bridge");
 
     println!("cargo:rustc-link-search=native={}/lib", output.display());
