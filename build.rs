@@ -1233,14 +1233,21 @@ fn build_ncsf(mgba_output: &Path) {
     let mut usf_build = cc::Build::new();
     if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
         usf_build.std("c11");
+        // cl does not predefine WIN32 (only _WIN32); lazyusf2's m64p API
+        // headers select their MSVC declarations with it, and otherwise
+        // emit GCC __attribute syntax that MSVC cannot parse.
+        usf_build.define("WIN32", None);
     } else {
         // Upstream's CMake build uses compiler extensions and relies on the
         // POSIX strdup declaration exposed by GNU/Clang's gnu11 mode.
         usf_build.std("gnu11");
     }
     usf_build.include(usf_core).warnings(false);
+    let msvc = std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc");
     match target_arch.as_str() {
-        "x86_64" => {
+        // The x86 dynarecs are written in GNU inline assembly, which MSVC
+        // cannot assemble; MSVC takes the portable interpreter instead.
+        "x86_64" if !msvc => {
             usf_build
                 .define("DYNAREC", None)
                 .define("ARCH_MIN_SSE2", None);
@@ -1261,7 +1268,7 @@ fn build_ncsf(mgba_output: &Path) {
                 "r4300/x86_64/rjump.c",
             ]);
         }
-        "x86" => {
+        "x86" if !msvc => {
             usf_build
                 .define("DYNAREC", None)
                 .define("ARCH_MIN_SSE2", None);
