@@ -24,6 +24,14 @@ if(MSVC)
 endif()
 add_subdirectory("${MELONDS_SOURCE}" "${CMAKE_CURRENT_BINARY_DIR}/melonDS")
 
+if(MSVC)
+    # The pin writes designated initializers under C++17, which MSVC only
+    # accepts as C++20, and GNU __attribute syntax that MSVC cannot parse.
+    # Both compile away without changing behavior.
+    target_compile_options(core PRIVATE
+        /std:c++20 "/D__attribute(x)=" "/D__attribute__(x)=")
+endif()
+
 find_package(ZLIB REQUIRED)
 
 add_library(kog_twosf_psflib STATIC "${PSFLIB_SOURCE}/psflib.c")
