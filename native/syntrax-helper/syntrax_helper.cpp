@@ -434,8 +434,8 @@ int run(int argc, char** argv)
             pcmBytes[sample * 2U] = static_cast<uint8_t>(value);
             pcmBytes[sample * 2U + 1U] = static_cast<uint8_t>(value >> 8U);
         }
-        const size_t bytes = samples * sizeof(int16_t);
-        if(std::fwrite(pcmBytes.data(), 1, bytes, stdout) != bytes)
+        const size_t byteCount = samples * sizeof(int16_t);
+        if(std::fwrite(pcmBytes.data(), 1, byteCount, stdout) != byteCount)
             return 0;
         rendered += static_cast<uint32_t>(frames);
     }
