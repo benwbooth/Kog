@@ -150,8 +150,20 @@ jobs:
       - name: Install native dependencies
         shell: pwsh
         run: |
-          choco install pkgconfiglite -y --no-progress
-          choco install wixtoolset -y --no-progress
+          # pkgconfiglite downloads from SourceForge, which intermittently
+          # times out; retry so the failure surfaces here, not 40 minutes
+          # later inside cargo.
+          foreach ($package in @("pkgconfiglite", "wixtoolset")) {
+            for ($attempt = 1; $attempt -le 3; ++$attempt) {
+              choco install $package -y --no-progress
+              if ($LASTEXITCODE -eq 0) { break }
+              if ($attempt -eq 3) { throw "choco install $package failed after 3 attempts" }
+              Start-Sleep -Seconds 20
+            }
+          }
+          if (-not (Get-Command pkg-config -ErrorAction SilentlyContinue)) {
+            throw "pkg-config is not on PATH after installation"
+          }
           $vcpkgRoot = if ($env:VCPKG_INSTALLATION_ROOT) {
             $env:VCPKG_INSTALLATION_ROOT
           } elseif ($env:VCPKG_ROOT) {
