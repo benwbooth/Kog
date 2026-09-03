@@ -26,11 +26,31 @@ add_subdirectory("${MELONDS_SOURCE}" "${CMAKE_CURRENT_BINARY_DIR}/melonDS")
 
 if(MSVC)
     # The pin writes designated initializers under C++17, which MSVC only
-    # accepts as C++20, and leans on GCC builtins and attributes that MSVC
-    # lacks. Both compile away via the forced compat header without changing
-    # behavior.
+    # accepts as C++20, but its filesystem code predates char8_t; /Zc:char8_t-
+    # restores C++17's narrow u8path()/u8string(). GCC builtins and attributes
+    # compile away via the forced compat header.
     target_compile_options(core PRIVATE
-        /std:c++20 "/FI${CMAKE_CURRENT_SOURCE_DIR}/msvc/melonds-compat.h")
+        /std:c++20 /Zc:char8_t-
+        "/FI${CMAKE_CURRENT_SOURCE_DIR}/msvc/melonds-compat.h")
+
+    # Two of the pin's statements have no MSVC form: an empty asm memory
+    # barrier, and an array sized by an initialized local (a GCC VLA). Build
+    # patched copies in the build tree, like snsf-helper does for xsfdrv.c.
+    set(_melonds_msvc_dir "${CMAKE_CURRENT_BINARY_DIR}/melonds-msvc")
+    file(READ "${MELONDS_SOURCE}/src/GPU2D_Soft.cpp" _gpu2d)
+    string(REPLACE "asm volatile (\"\" : : : \"memory\");"
+           "_ReadWriteBarrier();" _gpu2d "${_gpu2d}")
+    file(READ "${MELONDS_SOURCE}/src/DSi_NWifi.cpp" _nwifi)
+    string(REPLACE "int nchan = 11;" "constexpr int nchan = 11;" _nwifi "${_nwifi}")
+    file(MAKE_DIRECTORY "${_melonds_msvc_dir}")
+    file(WRITE "${_melonds_msvc_dir}/GPU2D_Soft.cpp" "${_gpu2d}")
+    file(WRITE "${_melonds_msvc_dir}/DSi_NWifi.cpp" "${_nwifi}")
+    get_target_property(_core_sources core SOURCES)
+    list(REMOVE_ITEM _core_sources GPU2D_Soft.cpp DSi_NWifi.cpp)
+    list(APPEND _core_sources
+        "${_melonds_msvc_dir}/GPU2D_Soft.cpp"
+        "${_melonds_msvc_dir}/DSi_NWifi.cpp")
+    set_target_properties(core PROPERTIES SOURCES "${_core_sources}")
 endif()
 
 find_package(ZLIB REQUIRED)
