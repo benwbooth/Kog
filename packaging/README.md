@@ -16,6 +16,13 @@ Qt Quick platform/QML plugins, FFmpeg, libarchive, desktop portals, and the host
 audio stack. Both the AppImage and the AppDir tarball bundle the required shared
 libraries while preserving the dynamic plugin model Qt requires.
 
+The Nix shell and Flatpak include Layer Shell Qt for positioning custom
+notifications above the panel on supported Wayland desktops. The older Qt
+baseline used by the AppImage does not bundle that optional module; without it,
+Wayland's compositor controls popup placement. Windows, macOS, and X11 use normal
+window positioning. Notification positions are saved independently of playback
+settings; drag the popup header to move it, or right-click it to reset.
+
 The workflows build unsigned development artifacts on branch and pull-request
 runs. Tagged `v*` builds create or update the matching GitHub release. macOS
 artifacts are ad-hoc signed, not Apple-notarized; Windows artifacts are not

@@ -51,6 +51,10 @@ Kog uses the desktop's Qt theme and native file dialogs. Closing the main window
 to the system tray is enabled by default where a tray is available. Tray,
 minimize, and close behavior can be changed under **Preferences → General**.
 
+Optional now-playing popups have playback controls and stay open while hovered.
+Drag the popup's header to move it; Kog remembers the position. Right-click its
+header to reset it to the bottom-right, above the panel.
+
 ## What it can do
 
 - Play local files, playlists, archives, direct HTTP streams, and HLS streams.
@@ -62,7 +66,7 @@ minimize, and close behavior can be changed under **Preferences → General**.
 - Search large playlists, manage an explicit playback queue, and use album/all
   shuffle plus one/album/all repeat modes.
 - Use a 31-band equalizer, lyrics and inspector windows, a mini-player, system
-  tray controls, optional actionable track notifications, Linux MPRIS
+  tray controls, optional themed now-playing popups with playback controls, Linux MPRIS
   lock-screen/media-key controls, and audio-reactive playback indicators.
 - Decode undeclared legacy metadata with Japanese and other regional encoding
   heuristics, including Shift-JIS, EUC-JP, UTF-16, and UTF-32 inputs.
@@ -141,8 +145,10 @@ git submodule update --init --recursive
 
 A direct Cargo build requires Rust, C and C++23 compilers, CMake, `pkg-config`,
 Qt 6 with Qt Quick and Qt Quick Controls, FFmpeg development libraries, zlib,
-and libarchive 3.2 or newer. The Nix shell supplies the dependency versions and
-FFmpeg configuration used by Kog's regression tests.
+and libarchive 3.2 or newer. On Wayland, install KDE's Layer Shell Qt QML module
+for corner-anchored, draggable now-playing popups. The Nix shell supplies it,
+along with the dependency versions and FFmpeg configuration used by Kog's
+regression tests.
 
 Useful project references:
 

@@ -18,6 +18,7 @@ pub mod qobject {
         #[qproperty(i32, current_index)]
         #[qproperty(QString, playback_state)]
         #[qproperty(i32, mpris_raise_serial)]
+        #[qproperty(i32, notification_serial)]
         #[qproperty(f64, audio_level_low)]
         #[qproperty(f64, audio_level_low_mid)]
         #[qproperty(f64, audio_level_mid)]
@@ -169,7 +170,7 @@ pub mod qobject {
         #[qinvokable]
         fn poll_audio_levels(self: Pin<&mut AppController>);
         #[qinvokable]
-        fn show_now_playing_notification(self: &AppController);
+        fn show_now_playing_notification(self: Pin<&mut AppController>);
         #[qinvokable]
         fn equalizer_band_gain(self: &AppController, index: i32) -> f64;
         #[qinvokable]
@@ -290,7 +291,6 @@ use crate::equalizer::{
 use crate::mpris::{
     MprisCommand, MprisLoopStatus, MprisPlaybackStatus, MprisService, MprisSnapshot,
 };
-use crate::notifications::{PlaybackNotificationAction, TrackNotificationService};
 use crate::playback::{OutputDevice, PlaybackEngine, PlaybackState, available_output_devices};
 use crate::playback_order::{PlaybackOrder, SelectionState};
 use crate::playlist::{Playlist, PlaylistEntry, PlaylistLocation};
@@ -1084,6 +1084,7 @@ pub struct AppControllerRust {
     current_index: i32,
     playback_state: QString,
     mpris_raise_serial: i32,
+    notification_serial: i32,
     audio_level_low: f64,
     audio_level_low_mid: f64,
     audio_level_mid: f64,
@@ -1149,7 +1150,6 @@ pub struct AppControllerRust {
     playback: PlaybackEngine,
     equalizer_settings: EqualizerSettings,
     directory_scan: Option<DirectoryScanState>,
-    notifications: TrackNotificationService,
     mpris: MprisService,
 }
 
@@ -1260,6 +1260,7 @@ impl Default for AppControllerRust {
             current_index: -1,
             playback_state: qstring(PlaybackState::Stopped.as_str()),
             mpris_raise_serial: 0,
+            notification_serial: 0,
             audio_level_low: 0.0,
             audio_level_low_mid: 0.0,
             audio_level_mid: 0.0,
@@ -1332,7 +1333,6 @@ impl Default for AppControllerRust {
             playback,
             equalizer_settings,
             directory_scan: None,
-            notifications: TrackNotificationService::default(),
             mpris: MprisService::default(),
         };
 
@@ -2737,19 +2737,6 @@ impl qobject::AppController {
                 .publish(mpris_snapshot(self.as_ref().rust()));
             return;
         }
-        if let Some(action) = self.as_ref().rust().notifications.try_action() {
-            match action {
-                PlaybackNotificationAction::Previous => self.as_mut().previous(),
-                PlaybackNotificationAction::PlayPause => self.as_mut().play_pause(),
-                PlaybackNotificationAction::Stop => self.as_mut().stop(),
-                PlaybackNotificationAction::Next => self.as_mut().next(),
-            }
-            self.as_ref()
-                .rust()
-                .mpris
-                .publish(mpris_snapshot(self.as_ref().rust()));
-            return;
-        }
         if let Some(Err(error)) = self.as_ref().rust().playback.take_seek_result() {
             self.as_mut().set_status(qstring(error));
         }
@@ -2796,14 +2783,15 @@ impl qobject::AppController {
         self.as_mut().set_audio_level_high(f64::from(levels[4]));
     }
 
-    pub fn show_now_playing_notification(&self) {
-        let Some(track) = usize::try_from(self.rust().current_index)
+    pub fn show_now_playing_notification(mut self: Pin<&mut Self>) {
+        let has_track = usize::try_from(self.as_ref().rust().current_index)
             .ok()
-            .and_then(|index| self.rust().tracks.get(index))
-        else {
+            .is_some_and(|index| index < self.as_ref().rust().tracks.len());
+        if !has_track {
             return;
-        };
-        self.rust().notifications.show(&track.title, &track.artist);
+        }
+        let serial = self.as_ref().rust().notification_serial.wrapping_add(1);
+        self.as_mut().set_notification_serial(serial);
     }
 
     pub fn equalizer_band_gain(&self, index: i32) -> f64 {
@@ -3885,8 +3873,7 @@ impl qobject::AppController {
                 let rust = self.as_ref().get_ref().rust();
                 let is_new_start = rust.playback.state() == PlaybackState::Stopped
                     || usize::try_from(rust.current_index).ok() != Some(source_index);
-                let notification = (rust.track_notifications && is_new_start)
-                    .then(|| (track.title.clone(), track.artist.clone()));
+                let notification = rust.track_notifications && is_new_start;
                 (track.source.clone(), track.genre.clone(), notification)
             })
         else {
@@ -3923,8 +3910,8 @@ impl qobject::AppController {
                 self.as_mut().set_status(qstring(status));
                 self.as_mut().sync_playback_state();
                 self.as_mut().bump_playlist_revision();
-                if let Some((title, artist)) = notification {
-                    self.as_ref().rust().notifications.show(&title, &artist);
+                if notification {
+                    self.as_mut().show_now_playing_notification();
                 }
             }
             Err(error) => {

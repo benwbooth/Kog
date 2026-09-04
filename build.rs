@@ -82,6 +82,7 @@ fn main() {
         "qml/Lyrics.qml",
         "qml/Main.qml",
         "qml/MiniPlayer.qml",
+        "qml/NowPlayingNotification.qml",
         "qml/PlaylistHeader.qml",
         "qml/PlaylistRow.qml",
         "qml/Preferences.qml",
@@ -91,6 +92,7 @@ fn main() {
     // header instead of recursively tracking the whole repository.
     .crate_include_root(Some("native".to_owned()))
     .qrc_resources([
+        "qml/NotificationLayerShell.qml",
         "qml/icons/application-menu.svg",
         "qml/icons/application-menu-light.svg",
         "qml/icons/audio-volume-high.svg",
@@ -129,6 +131,8 @@ fn main() {
         "qml/icons/view-list-tree-light.svg",
         "qml/icons/view-restore.svg",
         "qml/icons/view-restore-light.svg",
+        "qml/icons/window-close.svg",
+        "qml/icons/window-close-light.svg",
     ])
     .files([
         "src/app_controller.rs",

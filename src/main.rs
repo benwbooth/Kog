@@ -26,7 +26,6 @@ mod mpris;
 mod mt32;
 mod ncsf;
 mod ncsf_decoder;
-mod notifications;
 mod openmpt;
 mod openmpt_decoder;
 mod opl3;

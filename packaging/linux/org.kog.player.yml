@@ -23,6 +23,18 @@ build-options:
     CARGO_HOME: /run/build/kog/cargo
 
 modules:
+  - name: layer-shell-qt
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DBUILD_TESTING=OFF
+    cleanup:
+      - /include
+      - /lib/cmake
+    sources:
+      - type: git
+        url: https://github.com/KDE/layer-shell-qt.git
+        commit: 76fbe5deb9d9545be98d1900b5d0df868616759e
+
   - name: libarchive
     buildsystem: cmake-ninja
     config-opts:

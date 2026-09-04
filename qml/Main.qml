@@ -29,6 +29,7 @@ ApplicationWindow {
     property int playlistDropTarget: -1
     property real volumeBeforeMute: 0.75
     property int mprisRaiseSerialSeen: 0
+    property int notificationSerialSeen: 0
     property bool applicationQuitRequested: false
     property var treeSelectedPaths: []
     property int treeSelectionAnchorRow: -1
@@ -485,6 +486,10 @@ ApplicationWindow {
         repeat: true
         onTriggered: {
             appController.poll_playback()
+            if (root.notificationSerialSeen !== appController.notification_serial) {
+                root.notificationSerialSeen = appController.notification_serial
+                nowPlayingPopup.present()
+            }
             if (root.mprisRaiseSerialSeen !== appController.mpris_raise_serial) {
                 root.mprisRaiseSerialSeen = appController.mpris_raise_serial
                 root.showFromTray()
@@ -542,6 +547,12 @@ ApplicationWindow {
         mainWindow: root
     }
     Preferences { id: preferences; app: appController }
+    NowPlayingNotification {
+        id: nowPlayingPopup
+        app: appController
+        screen: root.screen
+        onOpenPlayer: root.showFromTray()
+    }
 
     Dialog {
         id: directoryScanDialog

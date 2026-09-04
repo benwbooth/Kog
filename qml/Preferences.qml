@@ -396,7 +396,7 @@ Window {
                             }
                             PreferenceLabel {
                                 Layout.fillWidth: true
-                                text: qsTr("Track notifications include Previous, Pause, Stop, and Next actions when the desktop notification service supports them. Tray behavior is used only when the desktop provides a system tray.")
+                            text: qsTr("A compact now-playing popup includes Previous, Play/Pause, Stop, and Next controls. Hover to keep it open; it otherwise dismisses after eight seconds. Drag its header to move it; your position is remembered. Right-click the header to reset it above the tray.")
                                 wrapMode: Text.Wrap
                                 color: root.palette.placeholderText
                             }

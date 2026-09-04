@@ -31,6 +31,7 @@
             pkgs.kdePackages.plasma-integration
             pkgs.kdePackages.qqc2-desktop-style
             pkgs.kdePackages.breeze-icons
+            pkgs.kdePackages.layer-shell-qt
           ];
         qtEnv = pkgs.qt6.env "kog-qt-env" qtModules;
         # Keep a conservative, reproducible LGPL FFmpeg baseline. Kog's

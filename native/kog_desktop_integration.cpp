@@ -13,7 +13,9 @@ std::unique_ptr<QApplication> kogApplicationNew()
     static std::array<char, 4> executableName { 'k', 'o', 'g', '\0' };
     static char *arguments[] { executableName.data(), nullptr };
     static int argumentCount = 1;
-    return std::make_unique<QApplication>(argumentCount, arguments);
+    auto application = std::make_unique<QApplication>(argumentCount, arguments);
+    application->setOrganizationName(QStringLiteral("Kog"));
+    return application;
 }
 
 void kogApplicationSetName(QApplication &application, const QString &name)
