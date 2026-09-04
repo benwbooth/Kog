@@ -1243,6 +1243,11 @@ fn build_ncsf(mgba_output: &Path) {
         usf_build.std("gnu11");
     }
     usf_build.include(usf_core).warnings(false);
+    // lazyusf2's interpreter tables include zlib.h; MSVC has no default
+    // system include path for it.
+    for include in &zlib.include_paths {
+        usf_build.include(include);
+    }
     let msvc = std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc");
     match target_arch.as_str() {
         // The x86 dynarecs are written in GNU inline assembly, which MSVC
