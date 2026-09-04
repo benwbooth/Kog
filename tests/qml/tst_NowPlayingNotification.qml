@@ -130,7 +130,14 @@ TestCase {
         mousePress(header, 170, 12)
         mouseMove(header, 140, 12, 30)
         mouseMove(header, 100, 12, 30)
-        mouseRelease(header, 100, 12)
+        if (notification.layerPlacement) {
+            const before = notification.rightMargin
+            // Once the surface follows the pointer, it is over the original
+            // grabbed point again. This must not snap the surface back.
+            mouseMove(header, 170, 12, 30)
+            compare(notification.rightMargin, before)
+        }
+        mouseRelease(header, notification.layerPlacement ? 170 : 100, 12)
         verify(notification.rightMargin > 16)
         const movedRight = notification.rightMargin
         if (notification.layerPlacement)

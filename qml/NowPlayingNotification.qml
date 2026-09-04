@@ -183,12 +183,12 @@ Window {
                     acceptedButtons: Qt.LeftButton
                     property real startRight: 0
                     property real startBottom: 0
-                    // Local pointer coordinates move with the layer surface;
-                    // activeTranslation includes that motion without feedback.
+                    property point grabPoint
                     onActiveChanged: {
                         if (active) {
                             startRight = root.rightMargin
                             startBottom = root.bottomMargin
+                            grabPoint = centroid.scenePressPosition
                             dismissTimer.stop()
                         } else {
                             root.savePosition()
@@ -197,13 +197,24 @@ Window {
                         }
                     }
                     onActiveTranslationChanged: {
-                        if (!active)
+                        if (!active || root.layerPlacement)
                             return
                         root.rightMargin = Math.max(0, Math.min(startRight - activeTranslation.x,
                             root.screen.width - root.width))
                         root.bottomMargin = Math.max(0, Math.min(startBottom - activeTranslation.y,
                             root.screen.height - root.height))
                         root.applyPosition()
+                    }
+                    onCentroidChanged: {
+                        if (!active || !root.layerPlacement)
+                            return
+                        // Layer-shell has no global pointer coordinates. Keep
+                        // the grabbed header point under the pointer, using
+                        // the current margins as the moving window's origin.
+                        root.rightMargin = Math.max(0, Math.min(root.rightMargin
+                            - (centroid.scenePosition.x - grabPoint.x), root.screen.width - root.width))
+                        root.bottomMargin = Math.max(0, Math.min(root.bottomMargin
+                            - (centroid.scenePosition.y - grabPoint.y), root.screen.height - root.height))
                     }
                 }
                 TapHandler {
