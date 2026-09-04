@@ -933,6 +933,10 @@ fn build_mgba() -> PathBuf {
         .define("USE_FREETYPE", "OFF")
         .define("USE_LZMA", "OFF")
         .define("USE_DISCORD_RPC", "OFF")
+        // mGBA replaces CMAKE_INSTALL_LIBDIR with "." on native Windows.
+        // Set its project-specific destination so Cargo can find mgba.lib in
+        // the same installed lib directory used on Unix.
+        .define("LIBDIR", "lib")
         .define("CMAKE_INSTALL_LIBDIR", "lib");
     // mGBA's utility CRC function otherwise collides with zlib's public
     // crc32 symbol when both static archives are linked into Kog.

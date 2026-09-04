@@ -147,6 +147,12 @@ jobs:
           arch: win64_msvc2022_64
           cache: true
 
+      - name: Restore vcpkg binary cache
+        uses: actions/cache@v5
+        with:
+          path: ~/AppData/Local/vcpkg/archives
+          key: vcpkg-windows-2025-${{ hashFiles('.github/workflows/packages.yml') }}
+
       - name: Install native dependencies
         shell: pwsh
         run: |
