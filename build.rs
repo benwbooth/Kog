@@ -74,7 +74,7 @@ fn main() {
 
     println!("cargo:rerun-if-changed=native/opl3w");
 
-    CxxQtBuilder::new_qml_module(QmlModule::new("org.kog.player").qml_files([
+    let qt_builder = CxxQtBuilder::new_qml_module(QmlModule::new("org.kog.player").qml_files([
         "qml/CogButton.qml",
         "qml/Equalizer.qml",
         "qml/InfoInspector.qml",
@@ -140,12 +140,53 @@ fn main() {
         "src/file_tree_model.rs",
     ])
     .cpp_file("native/kog_desktop_integration.cpp")
+    .cpp_file("native/kog_window_state.cpp")
     .qt_module("Gui")
     .qt_module("Network")
     .qt_module("Quick")
     .qt_module("QuickControls2")
-    .qt_module("Widgets")
-    .build();
+    .qt_module("Widgets");
+    let session_headers = wayland_session_headers();
+    // SAFETY: only add include paths for the same Qt installation used by
+    // cxx-qt, and a define for our own bridge. Do not alter Qt's ABI flags.
+    let qt_builder = unsafe {
+        qt_builder.cc_builder(|cc| {
+            if !session_headers.is_empty() {
+                cc.includes(&session_headers);
+                cc.define("KOG_WAYLAND_SESSION_RESTORE", None);
+            }
+        })
+    };
+    qt_builder.build();
+}
+
+fn wayland_session_headers() -> Vec<PathBuf> {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("linux") {
+        return Vec::new();
+    }
+    let qmake = std::env::var("QMAKE").unwrap_or_else(|_| "qmake6".to_owned());
+    let query = |key: &str| {
+        std::process::Command::new(&qmake)
+            .args(["-query", key])
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    };
+    let (Some(headers), Some(version)) = (query("QT_INSTALL_HEADERS"), query("QT_VERSION")) else {
+        return Vec::new();
+    };
+    let parts: Vec<u32> = version.split('.').filter_map(|part| part.parse().ok()).collect();
+    if parts.len() < 2 || (parts[0], parts[1]) < (6, 10) {
+        return Vec::new();
+    }
+    let headers = PathBuf::from(headers);
+    let gui = headers.join("QtGui").join(&version);
+    let core = headers.join("QtCore").join(&version);
+    if !gui.join("QtGui/qpa/qplatformwindow_p.h").is_file() {
+        return Vec::new();
+    }
+    vec![gui.join("QtGui"), gui, core.join("QtCore"), core]
 }
 
 fn build_spessasynth_midi() {

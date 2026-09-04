@@ -50,6 +50,8 @@ into the playlist. Shift and Ctrl selection work for adding groups of items.
 Kog uses the desktop's Qt theme and native file dialogs. Closing the main window
 to the system tray is enabled by default where a tray is available. Tray,
 minimize, and close behavior can be changed under **Preferences → General**.
+The main window remembers its size and maximized state. Position is restored
+on Windows, macOS, X11, and supported modern Wayland desktops.
 
 Optional now-playing popups have playback controls and stay open while hovered.
 Drag the popup's header to move it; Kog remembers the position. Right-click its

@@ -23,6 +23,13 @@ Wayland's compositor controls popup placement. Windows, macOS, and X11 use norma
 window positioning. Notification positions are saved independently of playback
 settings; drag the popup header to move it, or right-click it to reset.
 
+Main-window position restoration on Wayland uses Qt's session-restore interface
+when building against Qt 6.10 or newer with the matching private development
+headers, and requires compositor support for that protocol. Other Wayland
+builds still save size and maximized state; positioning remains compositor-owned.
+Windows, macOS, and X11 save and restore normal geometry directly. Geometry tests
+can be run with `nix develop -c bash tests/native/run-window-state.sh`.
+
 The workflows build unsigned development artifacts on branch and pull-request
 runs. Tagged `v*` builds create or update the matching GitHub release. macOS
 artifacts are ad-hoc signed, not Apple-notarized; Windows artifacts are not

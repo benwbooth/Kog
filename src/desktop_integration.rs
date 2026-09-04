@@ -17,6 +17,9 @@ mod ffi {
         #[cxx_name = "kogApplyApplicationIcon"]
         fn apply_application_icon();
 
+        #[cxx_name = "kogRestoreMainWindow"]
+        fn restore_main_window();
+
         include!("cxx-qt-lib/qstring.h");
         type QString = cxx_qt_lib::QString;
     }
@@ -45,4 +48,8 @@ impl DesktopApplication {
 
 pub fn apply_application_icon() {
     ffi::apply_application_icon();
+}
+
+pub fn restore_main_window() {
+    ffi::restore_main_window();
 }

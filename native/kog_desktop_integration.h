@@ -10,3 +10,4 @@ std::unique_ptr<QApplication> kogApplicationNew();
 void kogApplicationSetName(QApplication &application, const QString &name);
 int kogApplicationExec(QApplication &application);
 void kogApplyApplicationIcon();
+void kogRestoreMainWindow();

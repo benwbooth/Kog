@@ -2,6 +2,7 @@
 
 #include <QtCore/QFileInfo>
 #include <QtCore/QMimeDatabase>
+#include <QtCore/QSettings>
 #include <QtGui/QGuiApplication>
 #include <QtGui/QIcon>
 #include <QtGui/QWindow>
@@ -10,11 +11,32 @@
 
 std::unique_ptr<QApplication> kogApplicationNew()
 {
-    static std::array<char, 4> executableName { 'k', 'o', 'g', '\0' };
-    static char *arguments[] { executableName.data(), nullptr };
+    static QByteArray executableName("kog");
+    static QByteArray sessionOption("-session");
+    static QByteArray sessionId;
+    static std::array<char *, 4> arguments { executableName.data(), nullptr, nullptr, nullptr };
     static int argumentCount = 1;
-    auto application = std::make_unique<QApplication>(argumentCount, arguments);
+#ifdef KOG_WAYLAND_SESSION_RESTORE
+    if (qEnvironmentVariable("XDG_SESSION_TYPE") == QStringLiteral("wayland")
+        && !qEnvironmentVariable("QT_QPA_PLATFORM").startsWith(QStringLiteral("xcb"))) {
+        sessionId = QSettings("Kog", "Kog").value("MainWindow/waylandSessionId").toByteArray();
+        if (!sessionId.isEmpty()) {
+            arguments[1] = sessionOption.data();
+            arguments[2] = sessionId.data();
+            argumentCount = 3;
+        }
+    }
+#endif
+    auto application = std::make_unique<QApplication>(argumentCount, arguments.data());
     application->setOrganizationName(QStringLiteral("Kog"));
+#ifdef KOG_WAYLAND_SESSION_RESTORE
+    if (application->platformName().startsWith(QStringLiteral("wayland"))
+        && !application->sessionId().isEmpty()) {
+        QSettings settings("Kog", "Kog");
+        settings.setValue("MainWindow/waylandSessionId", application->sessionId());
+        settings.sync();
+    }
+#endif
     return application;
 }
 

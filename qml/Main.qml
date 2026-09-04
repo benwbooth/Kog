@@ -16,7 +16,9 @@ ApplicationWindow {
     height: 540
     minimumWidth: 800
     minimumHeight: 380
-    visible: true
+    objectName: "kogMainWindow"
+    visible: false // Native window-state restoration shows it after restoring geometry.
+    property bool restoreMaximized: false
     flags: Qt.Window | Qt.FramelessWindowHint
     title: appController.now_title === "Not Playing" ? qsTr("Kog") : appController.now_title + " — Kog"
     color: palette.window
@@ -189,7 +191,10 @@ ApplicationWindow {
     function showFromTray() {
         miniPlayer.hide()
         root.visible = true
-        root.showNormal()
+        if (root.restoreMaximized)
+            root.showMaximized()
+        else
+            root.showNormal()
         Qt.callLater(function() {
             root.raise()
             root.requestActivate()

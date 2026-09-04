@@ -98,6 +98,7 @@ fn main() {
         engine.load(&QUrl::from("qrc:/qt/qml/org/kog/player/qml/Main.qml"));
     }
     desktop_integration::apply_application_icon();
+    desktop_integration::restore_main_window();
 
     application.exec();
 }
