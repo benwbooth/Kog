@@ -465,6 +465,14 @@ fn build_libvgm() -> std::path::PathBuf {
         config.define(device, "ON");
     }
 
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        // libvgm's bundled iconv import library is 32-bit. Use the native
+        // Windows charset converter for both 32-bit and 64-bit builds.
+        config
+            .define("UTIL_CHARCNV_ICONV", "OFF")
+            .define("UTIL_CHARCNV_WINAPI", "ON");
+    }
+
     let output = config.build();
 
     println!("cargo:rerun-if-changed=native/libvgm");
@@ -1250,6 +1258,14 @@ fn build_ncsf(mgba_output: &Path) {
         // headers select their MSVC declarations with it, and otherwise
         // emit GCC __attribute syntax that MSVC cannot parse.
         usf_build.define("WIN32", None);
+        if std::env::var("CARGO_CFG_TARGET_POINTER_WIDTH").as_deref() == Ok("64") {
+            // LazyUSF2 calls __control87_2, which the MSVC CRT does not
+            // provide on 64-bit targets. Force-include Kog's compatible
+            // _controlfp_s wrapper before LazyUSF2's fpu.h.
+            usf_build
+                .include("native")
+                .flag("/FIlazyusf2_msvc_fenv.h");
+        }
     } else {
         // Upstream's CMake build uses compiler extensions and relies on the
         // POSIX strdup declaration exposed by GNU/Clang's gnu11 mode.
@@ -1351,6 +1367,7 @@ fn build_ncsf(mgba_output: &Path) {
     println!("cargo:rerun-if-changed=native/highly-quixotic");
     println!("cargo:rerun-if-changed=native/highly-theoretical");
     println!("cargo:rerun-if-changed=native/lazyusf2");
+    println!("cargo:rerun-if-changed=native/lazyusf2_msvc_fenv.h");
     println!("cargo:rerun-if-changed=native/ncsf_bridge.cpp");
     println!("cargo:rerun-if-changed=native/ncsf_bridge.h");
     println!("cargo:rerun-if-changed=native/gsf_bridge.cpp");
