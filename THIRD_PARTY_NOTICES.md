@@ -579,7 +579,7 @@ transfer artwork previews between Rust and QML as data URLs.
 Both crates are available under MIT or Apache-2.0. Kog uses their MIT license
 option, whose text is in `LICENSES/MIT.txt`.
 
-## chardetng and notify-rust
+## chardetng, notify-rust, and mpris-server
 
 Kog uses version 1.0.0 of
 [chardetng](https://github.com/hsivonen/chardetng) to detect undeclared legacy
@@ -587,10 +587,16 @@ character encodings in user-visible metadata, playlists, CUE sheets, and
 archive entry names. It uses version 4.18.0 of
 [notify-rust](https://github.com/hoodie/notify-rust) to deliver optional native
 track-change notifications and receive transport actions without invoking an
-external notification executable.
+external notification executable. On Linux, Kog uses version 0.10.0 of
+[mpris-server](https://github.com/SeaDve/mpris-server) to expose the standard
+MPRIS2 D-Bus player interface for desktop media controls and hardware media
+keys without invoking an external helper.
 
-Both crates are available under MIT or Apache-2.0. Kog uses their MIT license
-option, whose text is in `LICENSES/MIT.txt`. Their target-specific transitive
+chardetng and notify-rust are available under MIT or Apache-2.0. Kog uses their
+MIT license option, whose text is in `LICENSES/MIT.txt`. mpris-server is
+Copyright Dave Patrick Caberto and is distributed under the Mozilla Public
+License, version 2.0; its complete source and license are available from the
+crate source linked above. These crates' target-specific transitive
 dependencies retain the terms recorded in `Cargo.lock` and their distributed
 crate sources.
 

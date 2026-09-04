@@ -28,6 +28,7 @@ ApplicationWindow {
     property var selectedRows: []
     property int playlistDropTarget: -1
     property real volumeBeforeMute: 0.75
+    property int mprisRaiseSerialSeen: 0
     property bool applicationQuitRequested: false
     property var treeSelectedPaths: []
     property int treeSelectionAnchorRow: -1
@@ -482,7 +483,13 @@ ApplicationWindow {
         interval: 200
         running: true
         repeat: true
-        onTriggered: appController.poll_playback()
+        onTriggered: {
+            appController.poll_playback()
+            if (root.mprisRaiseSerialSeen !== appController.mpris_raise_serial) {
+                root.mprisRaiseSerialSeen = appController.mpris_raise_serial
+                root.showFromTray()
+            }
+        }
     }
 
     Timer {
@@ -1093,6 +1100,16 @@ ApplicationWindow {
                 toolTip: qsTr("Play/Pause")
                 enabled: appController.playlist_count > 0
                 onClicked: appController.play_pause()
+            }
+            ToolbarButton {
+                Layout.preferredWidth: 34
+                Layout.preferredHeight: 34
+                glyph: "■"
+                iconName: "media-playback-stop"
+                toolTip: qsTr("Stop")
+                enabled: appController.current_index >= 0
+                    && appController.playback_state !== "stopped"
+                onClicked: appController.stop()
             }
             ToolbarButton {
                 Layout.preferredWidth: 34

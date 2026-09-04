@@ -17,6 +17,7 @@ pub mod qobject {
         #[qproperty(QString, playlist_column_layout)]
         #[qproperty(i32, current_index)]
         #[qproperty(QString, playback_state)]
+        #[qproperty(i32, mpris_raise_serial)]
         #[qproperty(f64, audio_level_low)]
         #[qproperty(f64, audio_level_low_mid)]
         #[qproperty(f64, audio_level_mid)]
@@ -285,6 +286,9 @@ use crate::decoder::{
 };
 use crate::equalizer::{
     EqualizerSettings, apply_preset, preset_for_genre, preset_named, preset_names,
+};
+use crate::mpris::{
+    MprisCommand, MprisLoopStatus, MprisPlaybackStatus, MprisService, MprisSnapshot,
 };
 use crate::notifications::{PlaybackNotificationAction, TrackNotificationService};
 use crate::playback::{OutputDevice, PlaybackEngine, PlaybackState, available_output_devices};
@@ -1079,6 +1083,7 @@ pub struct AppControllerRust {
     playlist_column_layout: QString,
     current_index: i32,
     playback_state: QString,
+    mpris_raise_serial: i32,
     audio_level_low: f64,
     audio_level_low_mid: f64,
     audio_level_mid: f64,
@@ -1145,6 +1150,7 @@ pub struct AppControllerRust {
     equalizer_settings: EqualizerSettings,
     directory_scan: Option<DirectoryScanState>,
     notifications: TrackNotificationService,
+    mpris: MprisService,
 }
 
 impl Default for AppControllerRust {
@@ -1253,6 +1259,7 @@ impl Default for AppControllerRust {
             playlist_column_layout,
             current_index: -1,
             playback_state: qstring(PlaybackState::Stopped.as_str()),
+            mpris_raise_serial: 0,
             audio_level_low: 0.0,
             audio_level_low_mid: 0.0,
             audio_level_mid: 0.0,
@@ -1326,6 +1333,7 @@ impl Default for AppControllerRust {
             equalizer_settings,
             directory_scan: None,
             notifications: TrackNotificationService::default(),
+            mpris: MprisService::default(),
         };
 
         if let Some(paths) = std::env::var_os("KOG_OPEN_FILES") {
@@ -1353,12 +1361,76 @@ impl Default for AppControllerRust {
             let (playback_order, tracks) = (&mut controller.playback_order, &controller.tracks);
             playback_order.tracks_changed(tracks, None);
         }
+        controller.mpris.publish(mpris_snapshot(&controller));
         controller
     }
 }
 
 fn qstring(value: impl AsRef<str>) -> QString {
     QString::from(value.as_ref())
+}
+
+fn mpris_track_id(source_index: usize) -> String {
+    format!("/org/kog/player/track/{source_index}")
+}
+
+fn mpris_snapshot(controller: &AppControllerRust) -> MprisSnapshot {
+    let current_index = usize::try_from(controller.current_index)
+        .ok()
+        .filter(|index| *index < controller.tracks.len());
+    let track = current_index.and_then(|index| controller.tracks.get(index));
+    let has_tracks = !controller.tracks.is_empty();
+    let playback_status = match controller.playback.state() {
+        PlaybackState::Playing => MprisPlaybackStatus::Playing,
+        PlaybackState::Paused => MprisPlaybackStatus::Paused,
+        PlaybackState::Stopped => MprisPlaybackStatus::Stopped,
+    };
+    let loop_status = match controller.playback_order.repeat_mode() {
+        RepeatMode::Off => MprisLoopStatus::None,
+        RepeatMode::One => MprisLoopStatus::Track,
+        RepeatMode::Album | RepeatMode::All => MprisLoopStatus::Playlist,
+    };
+    let url = track.and_then(|track| {
+        track.source.remote_url.clone().or_else(|| {
+            if track.source.archive_origin.is_some() {
+                None
+            } else {
+                url::Url::from_file_path(&track.source.path)
+                    .ok()
+                    .map(Into::into)
+            }
+        })
+    });
+
+    MprisSnapshot {
+        playback_status,
+        loop_status,
+        shuffle: controller.playback_order.shuffle_mode() != ShuffleMode::Off,
+        volume: controller.volume,
+        position_seconds: controller.position_seconds,
+        duration_seconds: controller.duration_seconds,
+        track_id: current_index.map(mpris_track_id),
+        title: track.map(|track| track.title.clone()).unwrap_or_default(),
+        artist: track.map(|track| track.artist.clone()).unwrap_or_default(),
+        album_artist: track
+            .map(|track| track.album_artist.clone())
+            .unwrap_or_default(),
+        album: track.map(|track| track.album.clone()).unwrap_or_default(),
+        genre: track.map(|track| track.genre.clone()).unwrap_or_default(),
+        composer: track
+            .map(|track| track.composer.clone())
+            .unwrap_or_default(),
+        year: track.and_then(|track| track.year),
+        disc_number: track.and_then(|track| track.disc_number),
+        track_number: track.and_then(|track| track.track_number),
+        url,
+        can_go_next: has_tracks,
+        can_go_previous: has_tracks,
+        can_play: has_tracks,
+        can_pause: track.is_some(),
+        can_seek: track
+            .is_some_and(|track| track.duration.is_some_and(|duration| !duration.is_zero())),
+    }
 }
 
 fn output_devices_json(devices: &[OutputDevice]) -> String {
@@ -2406,7 +2478,10 @@ impl qobject::AppController {
             .playback
             .seek(Duration::from_secs_f64(seconds))
         {
-            Ok(()) => self.as_mut().set_position_seconds(seconds),
+            Ok(()) => {
+                self.as_mut().set_position_seconds(seconds);
+                self.as_ref().rust().mpris.seeked(seconds);
+            }
             Err(error) => self.as_mut().set_status(qstring(error)),
         }
     }
@@ -2573,7 +2648,95 @@ impl qobject::AppController {
         ))
     }
 
+    fn handle_mpris_command(mut self: Pin<&mut Self>, command: MprisCommand) {
+        match command {
+            MprisCommand::Raise => {
+                let serial = self.as_ref().rust().mpris_raise_serial.wrapping_add(1);
+                self.as_mut().set_mpris_raise_serial(serial);
+            }
+            MprisCommand::Next => self.as_mut().next(),
+            MprisCommand::Previous => self.as_mut().previous(),
+            MprisCommand::Pause => {
+                if self.as_ref().rust().playback.state() == PlaybackState::Playing {
+                    self.as_mut().play_pause();
+                }
+            }
+            MprisCommand::PlayPause => self.as_mut().play_pause(),
+            MprisCommand::Stop => self.as_mut().stop(),
+            MprisCommand::Play => {
+                if self.as_ref().rust().playback.state() != PlaybackState::Playing {
+                    self.as_mut().play_pause();
+                }
+            }
+            MprisCommand::SeekBy(offset_seconds) => {
+                let position = self.as_ref().rust().position_seconds;
+                let duration = self.as_ref().rust().duration_seconds;
+                let target = position + offset_seconds;
+                if duration > 0.0 && target > duration {
+                    self.as_mut().next();
+                } else {
+                    self.as_mut().seek(target.max(0.0));
+                }
+            }
+            MprisCommand::SetPosition { track_id, seconds } => {
+                let current_track_id = usize::try_from(self.as_ref().rust().current_index)
+                    .ok()
+                    .map(mpris_track_id);
+                let duration = self.as_ref().rust().duration_seconds;
+                if current_track_id.as_deref() == Some(track_id.as_str())
+                    && seconds >= 0.0
+                    && seconds <= duration
+                {
+                    self.as_mut().seek(seconds);
+                }
+            }
+            MprisCommand::OpenUri(uri) => match url::Url::parse(&uri) {
+                Ok(url) if url.scheme() == "file" => match url.to_file_path() {
+                    Ok(path) => self
+                        .as_mut()
+                        .add_local_paths(vec![path], OpeningFilesBehavior::EnqueueAndPlay),
+                    Err(()) => self
+                        .as_mut()
+                        .set_status(qstring("The MPRIS file URI is not a local path")),
+                },
+                Ok(url) if matches!(url.scheme(), "http" | "https") => self
+                    .as_mut()
+                    .add_remote_url_value(uri, OpeningFilesBehavior::EnqueueAndPlay),
+                Ok(url) => self.as_mut().set_status(qstring(format!(
+                    "MPRIS cannot open the unsupported {} URI scheme",
+                    url.scheme()
+                ))),
+                Err(error) => self
+                    .as_mut()
+                    .set_status(qstring(format!("Opening MPRIS URI: {error}"))),
+            },
+            MprisCommand::SetLoopStatus(status) => self.as_mut().apply_repeat_mode(match status {
+                MprisLoopStatus::None => RepeatMode::Off,
+                MprisLoopStatus::Track => RepeatMode::One,
+                MprisLoopStatus::Playlist => RepeatMode::All,
+            }),
+            MprisCommand::SetShuffle(shuffle) => self.as_mut().apply_shuffle_mode(if shuffle {
+                ShuffleMode::All
+            } else {
+                ShuffleMode::Off
+            }),
+            MprisCommand::SetVolume(volume) => self.as_mut().set_volume_level(volume),
+        }
+    }
+
     pub fn poll_playback(mut self: Pin<&mut Self>) {
+        let mut handled_mpris_command = false;
+        while let Some(command) = self.as_ref().rust().mpris.try_command() {
+            self.as_mut().handle_mpris_command(command);
+            handled_mpris_command = true;
+        }
+        if handled_mpris_command {
+            self.as_ref()
+                .rust()
+                .mpris
+                .publish(mpris_snapshot(self.as_ref().rust()));
+            return;
+        }
         if let Some(action) = self.as_ref().rust().notifications.try_action() {
             match action {
                 PlaybackNotificationAction::Previous => self.as_mut().previous(),
@@ -2581,6 +2744,10 @@ impl qobject::AppController {
                 PlaybackNotificationAction::Stop => self.as_mut().stop(),
                 PlaybackNotificationAction::Next => self.as_mut().next(),
             }
+            self.as_ref()
+                .rust()
+                .mpris
+                .publish(mpris_snapshot(self.as_ref().rust()));
             return;
         }
         if let Some(Err(error)) = self.as_ref().rust().playback.take_seek_result() {
@@ -2595,13 +2762,25 @@ impl qobject::AppController {
             } else {
                 self.as_mut().advance_playback(true);
             }
+            self.as_ref()
+                .rust()
+                .mpris
+                .publish(mpris_snapshot(self.as_ref().rust()));
             return;
         }
         if self.as_ref().rust().playback.state() == PlaybackState::Stopped {
+            self.as_ref()
+                .rust()
+                .mpris
+                .publish(mpris_snapshot(self.as_ref().rust()));
             return;
         }
         let position = self.as_ref().rust().playback.position().as_secs_f64();
         self.as_mut().set_position_seconds(position);
+        self.as_ref()
+            .rust()
+            .mpris
+            .publish(mpris_snapshot(self.as_ref().rust()));
     }
 
     pub fn poll_audio_levels(mut self: Pin<&mut Self>) {

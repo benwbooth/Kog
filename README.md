@@ -62,8 +62,8 @@ minimize, and close behavior can be changed under **Preferences → General**.
 - Search large playlists, manage an explicit playback queue, and use album/all
   shuffle plus one/album/all repeat modes.
 - Use a 31-band equalizer, lyrics and inspector windows, a mini-player, system
-  tray controls, optional actionable track notifications, and audio-reactive
-  playback indicators.
+  tray controls, optional actionable track notifications, Linux MPRIS
+  lock-screen/media-key controls, and audio-reactive playback indicators.
 - Decode undeclared legacy metadata with Japanese and other regional encoding
   heuristics, including Shift-JIS, EUC-JP, UTF-16, and UTF-32 inputs.
 - Follow the system audio output or remember a selected output device.

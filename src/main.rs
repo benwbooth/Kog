@@ -22,6 +22,7 @@ mod hively;
 mod hively_decoder;
 mod libvgm;
 mod libvgm_decoder;
+mod mpris;
 mod mt32;
 mod ncsf;
 mod ncsf_decoder;

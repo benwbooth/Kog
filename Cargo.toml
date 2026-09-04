@@ -31,6 +31,11 @@ self_cell = "1.2.1"
 tempfile = "3.27.0"
 url = "2.5.8"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+async-channel = "2.5.0"
+futures-lite = "2.6.1"
+mpris-server = "0.10.0"
+
 [build-dependencies]
 cc = "1.2.38"
 cmake = "0.1.58"
