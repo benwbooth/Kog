@@ -579,6 +579,21 @@ transfer artwork previews between Rust and QML as data URLs.
 Both crates are available under MIT or Apache-2.0. Kog uses their MIT license
 option, whose text is in `LICENSES/MIT.txt`.
 
+## chardetng and notify-rust
+
+Kog uses version 1.0.0 of
+[chardetng](https://github.com/hsivonen/chardetng) to detect undeclared legacy
+character encodings in user-visible metadata, playlists, CUE sheets, and
+archive entry names. It uses version 4.18.0 of
+[notify-rust](https://github.com/hoodie/notify-rust) to deliver optional native
+track-change notifications and receive transport actions without invoking an
+external notification executable.
+
+Both crates are available under MIT or Apache-2.0. Kog uses their MIT license
+option, whose text is in `LICENSES/MIT.txt`. Their target-specific transitive
+dependencies retain the terms recorded in `Cargo.lock` and their distributed
+crate sources.
+
 ## TinySoundFont minimal SoundFont test fixture
 
 The 484-byte `MinimalSoundFont` data encoded in `src/decoder.rs` is derived

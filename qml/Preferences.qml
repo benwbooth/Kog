@@ -389,9 +389,14 @@ Window {
                                 checked: root.app.minimize_to_tray
                                 onToggled: root.app.update_minimize_to_tray(checked)
                             }
+                            PreferenceCheckBox {
+                                text: qsTr("Show a notification when a new track starts")
+                                checked: root.app.track_notifications
+                                onToggled: root.app.update_track_notifications(checked)
+                            }
                             PreferenceLabel {
                                 Layout.fillWidth: true
-                                text: qsTr("Tray behavior is used only when the desktop provides a system tray.")
+                                text: qsTr("Track notifications include Previous, Pause, and Next actions when the desktop notification service supports them. Tray behavior is used only when the desktop provides a system tray.")
                                 wrapMode: Text.Wrap
                                 color: root.palette.placeholderText
                             }
@@ -555,6 +560,22 @@ Window {
                                     onClicked: root.app.clear_mt32_rom_directory()
                                 }
                                 Item { Layout.fillWidth: true }
+                            }
+
+                            PreferenceCheckBox {
+                                Layout.fillWidth: true
+                                visible: midiEngine.currentIndex === 3
+                                text: qsTr("Map General MIDI programs to MT-32 patches")
+                                checked: root.app.mt32_gm_program_mapping
+                                onToggled: root.app.update_mt32_gm_program_mapping(checked)
+                            }
+
+                            PreferenceLabel {
+                                Layout.fillWidth: true
+                                visible: midiEngine.currentIndex === 3
+                                text: qsTr("Enabled by default for ordinary General MIDI files. Turn this off for music authored specifically for native MT-32 program numbers and custom timbres.")
+                                wrapMode: Text.Wrap
+                                color: root.palette.placeholderText
                             }
 
                             PreferenceLabel {

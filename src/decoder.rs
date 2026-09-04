@@ -9,7 +9,6 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 use std::time::SystemTime;
 
-use encoding_rs::WINDOWS_1252;
 use midly::{Format, Fps, Header, MetaMessage, MidiMessage, Smf, Timing, TrackEventKind};
 use rodio::source::SeekError;
 use rodio::{ChannelCount, Decoder, Player, SampleRate, Source};
@@ -232,12 +231,19 @@ pub trait DecoderBackend: Send + Sync {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct DecoderSettings {
     soundfont_path: Arc<RwLock<Option<PathBuf>>>,
     sc55_rom_path: Arc<RwLock<Option<PathBuf>>>,
     mt32_rom_path: Arc<RwLock<Option<PathBuf>>>,
     midi_engine: Arc<RwLock<MidiEngine>>,
+    mt32_gm_program_mapping: Arc<RwLock<bool>>,
+}
+
+impl Default for DecoderSettings {
+    fn default() -> Self {
+        Self::new(None, MidiEngine::default())
+    }
 }
 
 impl DecoderSettings {
@@ -247,6 +253,7 @@ impl DecoderSettings {
             sc55_rom_path: Arc::new(RwLock::new(None)),
             mt32_rom_path: Arc::new(RwLock::new(None)),
             midi_engine: Arc::new(RwLock::new(midi_engine)),
+            mt32_gm_program_mapping: Arc::new(RwLock::new(true)),
         }
     }
 
@@ -257,6 +264,11 @@ impl DecoderSettings {
 
     pub fn with_mt32_rom_path(self, path: Option<PathBuf>) -> Self {
         self.set_mt32_rom_path(path);
+        self
+    }
+
+    pub fn with_mt32_gm_program_mapping(self, enabled: bool) -> Self {
+        self.set_mt32_gm_program_mapping(enabled);
         self
     }
 
@@ -314,6 +326,20 @@ impl DecoderSettings {
             .midi_engine
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = midi_engine;
+    }
+
+    pub fn mt32_gm_program_mapping(&self) -> bool {
+        *self
+            .mt32_gm_program_mapping
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    pub fn set_mt32_gm_program_mapping(&self, enabled: bool) {
+        *self
+            .mt32_gm_program_mapping
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = enabled;
     }
 }
 
@@ -923,7 +949,11 @@ impl MidiBackend {
 
     fn open_mt32(&self, midi: &[u8]) -> Result<Mt32Source, String> {
         let rom_directory = self.mt32_rom_directory()?;
-        Mt32Source::open(midi, &rom_directory)
+        Mt32Source::open(
+            midi,
+            &rom_directory,
+            self.settings.mt32_gm_program_mapping(),
+        )
     }
 
     fn mt32_rom_directory(&self) -> Result<PathBuf, String> {
@@ -1286,10 +1316,7 @@ fn midi_track_title(track: &[midly::TrackEvent<'_>]) -> Option<String> {
 }
 
 fn decode_midi_text(bytes: &[u8]) -> Option<String> {
-    let decoded = std::str::from_utf8(bytes).map_or_else(
-        |_| WINDOWS_1252.decode_without_bom_handling(bytes).0,
-        Cow::Borrowed,
-    );
+    let decoded = crate::text_encoding::decode(bytes);
     let mut text = String::with_capacity(decoded.len().min(512));
     for character in decoded
         .trim_matches(['\0', ' ', '\t', '\r', '\n'])
@@ -2619,6 +2646,14 @@ mod tests {
             assert_eq!(properties.channels, Some(MIDI_CHANNELS));
             assert_eq!(properties.codec.as_deref(), Some(codec));
         }
+    }
+
+    #[test]
+    fn mt32_general_midi_program_mapping_defaults_on() {
+        let settings = DecoderSettings::new(None, MidiEngine::Mt32);
+        assert!(settings.mt32_gm_program_mapping());
+        settings.set_mt32_gm_program_mapping(false);
+        assert!(!settings.mt32_gm_program_mapping());
     }
 
     #[test]

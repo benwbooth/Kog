@@ -240,7 +240,7 @@ impl HelperHeader {
             main_frames,
             subsong_count,
             selected_subsong,
-            title: String::from_utf8_lossy(&title).trim().to_owned(),
+            title: crate::text_encoding::decode(&title).trim().to_owned(),
         })
     }
 }
@@ -350,7 +350,7 @@ fn read_stderr(child: &mut Child) -> String {
     if let Some(mut stderr) = child.stderr.take() {
         let _ = stderr.read_to_end(&mut bytes);
     }
-    String::from_utf8_lossy(&bytes).trim().to_owned()
+    crate::text_encoding::decode(&bytes).trim().to_owned()
 }
 
 fn read_u32_le(reader: &mut impl Read) -> io::Result<u32> {

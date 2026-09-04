@@ -202,9 +202,7 @@ fn c_string(value: *const c_char) -> String {
     if value.is_null() {
         return "native libvgm error".to_owned();
     }
-    unsafe { CStr::from_ptr(value) }
-        .to_string_lossy()
-        .into_owned()
+    crate::text_encoding::decode(unsafe { CStr::from_ptr(value) }.to_bytes())
 }
 
 fn copy_native_string(value: *const c_char) -> String {

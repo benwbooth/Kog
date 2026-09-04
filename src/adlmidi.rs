@@ -214,8 +214,7 @@ impl AdlMidi {
         if title.is_null() {
             return String::new();
         }
-        unsafe { CStr::from_ptr(title) }
-            .to_string_lossy()
+        crate::text_encoding::decode(unsafe { CStr::from_ptr(title) }.to_bytes())
             .trim()
             .to_owned()
     }
@@ -251,8 +250,7 @@ fn c_string(value: *const c_char) -> String {
     if value.is_null() {
         String::new()
     } else {
-        unsafe { CStr::from_ptr(value) }
-            .to_string_lossy()
+        crate::text_encoding::decode(unsafe { CStr::from_ptr(value) }.to_bytes())
             .trim()
             .to_owned()
     }

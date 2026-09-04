@@ -255,7 +255,7 @@ impl HelperHeader {
         for length in lengths {
             let mut bytes = vec![0_u8; length];
             reader.read_exact(&mut bytes)?;
-            let text = String::from_utf8_lossy(&bytes).trim().to_owned();
+            let text = crate::text_encoding::decode(&bytes).trim().to_owned();
             fields.push((!text.is_empty()).then_some(text));
         }
 
@@ -436,7 +436,7 @@ fn read_stderr(child: &mut Child) -> String {
     if let Some(mut stderr) = child.stderr.take() {
         let _ = stderr.read_to_end(&mut bytes);
     }
-    String::from_utf8_lossy(&bytes).trim().to_owned()
+    crate::text_encoding::decode(&bytes).trim().to_owned()
 }
 
 fn read_u32_le(reader: &mut impl Read) -> io::Result<u32> {

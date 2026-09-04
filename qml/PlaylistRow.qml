@@ -2,6 +2,7 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Controls.impl as ControlsImpl
 
 Item {
     id: root
@@ -21,6 +22,8 @@ Item {
         && Number(app.track_number_at(rowIndex)) === app.current_index + 1
     readonly property bool isPlaying: isCurrentTrack
         && app.playback_state === "playing"
+    readonly property bool isActiveTrack: isCurrentTrack
+        && app.playback_state !== "stopped"
 
     signal pressed(int rowIndex, int modifiers, int button)
     signal activated(int rowIndex)
@@ -66,7 +69,7 @@ Item {
             leftPadding: 6
             rightPadding: 6
             text: cell.text
-            visible: cell.column.id !== "status" || !root.isPlaying
+            visible: cell.column.id !== "status" || !root.isActiveTrack
             color: root.selected ? root.theme.highlightedText : root.theme.text
             font.pixelSize: 11
             horizontalAlignment: cell.column.alignment
@@ -76,51 +79,75 @@ Item {
 
         Loader {
             anchors.centerIn: parent
-            width: 16
+            width: 34
             height: 14
-            active: cell.column.id === "status" && root.isPlaying
+            active: cell.column.id === "status" && root.isActiveTrack
 
             sourceComponent: Item {
-                id: playingWaveform
+                id: playbackIndicator
 
-                readonly property var levels: [
-                    root.app.audio_level_low,
-                    root.app.audio_level_low_mid,
-                    root.app.audio_level_mid,
-                    root.app.audio_level_high_mid,
-                    root.app.audio_level_high
-                ]
-                readonly property var colors: root.selected
-                    ? ["#8cbcff", "#64d8ff", "#47eee7", "#53edb4", "#82ef99"]
-                    : ["#438cf5", "#32b8ed", "#20cbd2", "#27cf9c", "#55d979"]
-
-                Rectangle {
-                    anchors.fill: parent
-                    radius: 4
-                    visible: root.selected
-                    color: Qt.rgba(0.02, 0.08, 0.11, 0.78)
-                    border.width: 1
-                    border.color: Qt.rgba(1, 1, 1, 0.18)
+                ControlsImpl.IconImage {
+                    anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 13
+                    height: 13
+                    sourceSize.width: 13
+                    sourceSize.height: 13
+                    name: root.isPlaying
+                        ? "media-playback-pause"
+                        : "media-playback-start"
+                    color: root.selected
+                        ? root.theme.highlightedText
+                        : root.theme.text
                 }
 
-                Repeater {
-                    model: 5
+                Item {
+                    id: playingWaveform
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 16
+                    height: 14
+                    visible: root.isPlaying
+
+                    readonly property var levels: [
+                        root.app.audio_level_low,
+                        root.app.audio_level_low_mid,
+                        root.app.audio_level_mid,
+                        root.app.audio_level_high_mid,
+                        root.app.audio_level_high
+                    ]
+                    readonly property var colors: root.selected
+                        ? ["#8cbcff", "#64d8ff", "#47eee7", "#53edb4", "#82ef99"]
+                        : ["#438cf5", "#32b8ed", "#20cbd2", "#27cf9c", "#55d979"]
 
                     Rectangle {
-                        required property int index
+                        anchors.fill: parent
+                        radius: 4
+                        visible: root.selected
+                        color: Qt.rgba(0.02, 0.08, 0.11, 0.78)
+                        border.width: 1
+                        border.color: Qt.rgba(1, 1, 1, 0.18)
+                    }
 
-                        x: 1 + index * 3
-                        y: 1 + 12 - height
-                        width: 2
-                        height: 2 + 10 * Math.max(0, Math.min(1,
-                            playingWaveform.levels[index]))
-                        radius: 1
-                        color: playingWaveform.colors[index]
+                    Repeater {
+                        model: 5
 
-                        Behavior on height {
-                            NumberAnimation {
-                                duration: 70
-                                easing.type: Easing.OutCubic
+                        Rectangle {
+                            required property int index
+
+                            x: 1 + index * 3
+                            y: 1 + 12 - height
+                            width: 2
+                            height: 2 + 10 * Math.max(0, Math.min(1,
+                                playingWaveform.levels[index]))
+                            radius: 1
+                            color: playingWaveform.colors[index]
+
+                            Behavior on height {
+                                NumberAnimation {
+                                    duration: 70
+                                    easing.type: Easing.OutCubic
+                                }
                             }
                         }
                     }

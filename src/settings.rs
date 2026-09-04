@@ -8,6 +8,7 @@ const SOUNDFONT_SETTING_FILE: &str = "soundfont-path";
 const MIDI_ENGINE_SETTING_FILE: &str = "midi-engine";
 const SC55_ROM_SETTING_FILE: &str = "sc55-rom-directory";
 const MT32_ROM_SETTING_FILE: &str = "mt32-rom-directory";
+const MT32_GM_PROGRAM_MAPPING_SETTING_FILE: &str = "mt32-gm-program-mapping";
 const MUSIC_DIRECTORY_SETTING_FILE: &str = "music-directory";
 const OPENING_BEHAVIOR_SETTING_FILE: &str = "opening-files-behavior";
 const READ_CUE_SETTING_FILE: &str = "read-cue-sheets-in-folders";
@@ -15,6 +16,7 @@ const READ_PLAYLISTS_SETTING_FILE: &str = "read-playlists-in-folders";
 const SHOW_TRAY_ICON_SETTING_FILE: &str = "show-tray-icon";
 const CLOSE_TO_TRAY_SETTING_FILE: &str = "close-to-tray";
 const MINIMIZE_TO_TRAY_SETTING_FILE: &str = "minimize-to-tray";
+const TRACK_NOTIFICATIONS_SETTING_FILE: &str = "track-notifications";
 const OUTPUT_VOLUME_SETTING_FILE: &str = "output-volume";
 const OUTPUT_DEVICE_SETTING_FILE: &str = "output-device";
 const PLAYLIST_COLUMN_LAYOUT_SETTING_FILE: &str = "playlist-column-layout";
@@ -190,6 +192,7 @@ pub struct AppSettings {
     pub soundfont_path: Option<PathBuf>,
     pub sc55_rom_path: Option<PathBuf>,
     pub mt32_rom_path: Option<PathBuf>,
+    pub mt32_gm_program_mapping: bool,
     pub midi_engine: MidiEngine,
     pub music_directory: Option<PathBuf>,
     pub opening_files_behavior: OpeningFilesBehavior,
@@ -198,6 +201,7 @@ pub struct AppSettings {
     pub show_tray_icon: bool,
     pub close_to_tray: bool,
     pub minimize_to_tray: bool,
+    pub track_notifications: bool,
     pub output_volume: f64,
     pub output_device: Option<OutputDevicePreference>,
     pub playlist_column_layout: Option<String>,
@@ -223,6 +227,11 @@ impl AppSettings {
         let mt32_rom_path = std::env::var_os("KOG_MT32_ROMS")
             .map(PathBuf::from)
             .or_else(|| load_path(MT32_ROM_SETTING_FILE));
+        let mt32_gm_program_mapping = std::env::var("KOG_MT32_GM_PROGRAM_MAPPING")
+            .ok()
+            .and_then(|value| parse_bool(&value))
+            .or_else(|| load_bool(MT32_GM_PROGRAM_MAPPING_SETTING_FILE))
+            .unwrap_or(true);
         let music_directory = load_path(MUSIC_DIRECTORY_SETTING_FILE).filter(|path| path.is_dir());
         let opening_files_behavior = load_text(OPENING_BEHAVIOR_SETTING_FILE)
             .and_then(|value| OpeningFilesBehavior::from_setting(&value))
@@ -232,6 +241,7 @@ impl AppSettings {
         let show_tray_icon = load_bool(SHOW_TRAY_ICON_SETTING_FILE).unwrap_or(true);
         let close_to_tray = load_bool(CLOSE_TO_TRAY_SETTING_FILE).unwrap_or(true);
         let minimize_to_tray = load_bool(MINIMIZE_TO_TRAY_SETTING_FILE).unwrap_or(false);
+        let track_notifications = load_bool(TRACK_NOTIFICATIONS_SETTING_FILE).unwrap_or(false);
         let output_volume = load_text(OUTPUT_VOLUME_SETTING_FILE)
             .and_then(|value| value.parse::<f64>().ok())
             .filter(|value| value.is_finite())
@@ -258,6 +268,7 @@ impl AppSettings {
             soundfont_path,
             sc55_rom_path,
             mt32_rom_path,
+            mt32_gm_program_mapping,
             midi_engine,
             music_directory,
             opening_files_behavior,
@@ -266,6 +277,7 @@ impl AppSettings {
             show_tray_icon,
             close_to_tray,
             minimize_to_tray,
+            track_notifications,
             output_volume,
             output_device,
             playlist_column_layout,
@@ -326,6 +338,10 @@ impl AppSettings {
         )
     }
 
+    pub fn save_mt32_gm_program_mapping(enabled: bool) -> Result<(), String> {
+        save_bool(MT32_GM_PROGRAM_MAPPING_SETTING_FILE, enabled)
+    }
+
     pub fn save_music_directory(path: &Path) -> Result<(), String> {
         save_text(MUSIC_DIRECTORY_SETTING_FILE, &path.to_string_lossy())
     }
@@ -358,6 +374,10 @@ impl AppSettings {
 
     pub fn save_minimize_to_tray(enabled: bool) -> Result<(), String> {
         save_bool(MINIMIZE_TO_TRAY_SETTING_FILE, enabled)
+    }
+
+    pub fn save_track_notifications(enabled: bool) -> Result<(), String> {
+        save_bool(TRACK_NOTIFICATIONS_SETTING_FILE, enabled)
     }
 
     pub fn save_output_volume(volume: f64) -> Result<(), String> {
@@ -513,7 +533,11 @@ fn load_path(file_name: &str) -> Option<PathBuf> {
 }
 
 fn load_bool(file_name: &str) -> Option<bool> {
-    match load_text(file_name)?.to_ascii_lowercase().as_str() {
+    parse_bool(&load_text(file_name)?)
+}
+
+fn parse_bool(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
         "true" | "1" | "yes" | "on" => Some(true),
         "false" | "0" | "no" | "off" => Some(false),
         _ => None,

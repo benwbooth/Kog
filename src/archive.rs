@@ -6,7 +6,6 @@ use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
 use compress_tools::{ArchiveContents, ArchiveIteratorBuilder};
-use encoding_rs::{GB18030, WINDOWS_1251};
 use tempfile::TempDir;
 
 const MAX_ENTRIES: usize = 16_384;
@@ -309,18 +308,7 @@ pub fn portable_name(path: &Path) -> String {
 }
 
 fn decode_archive_name(bytes: &[u8]) -> compress_tools::Result<String> {
-    if let Ok(text) = std::str::from_utf8(bytes) {
-        return Ok(text.to_owned());
-    }
-    let (text, _, errors) = GB18030.decode(bytes);
-    if !errors {
-        return Ok(text.into_owned());
-    }
-    let (text, _, errors) = WINDOWS_1251.decode(bytes);
-    if !errors {
-        return Ok(text.into_owned());
-    }
-    Ok(bytes.iter().map(|byte| char::from(*byte)).collect())
+    Ok(crate::text_encoding::decode(bytes))
 }
 
 #[cfg(test)]

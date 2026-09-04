@@ -333,7 +333,7 @@ fn read_stderr(child: &mut Child) -> String {
     if let Some(mut stderr) = child.stderr.take() {
         let _ = stderr.read_to_end(&mut bytes);
     }
-    String::from_utf8_lossy(&bytes).trim().to_owned()
+    crate::text_encoding::decode(&bytes).trim().to_owned()
 }
 
 fn read_u32_le(reader: &mut impl Read) -> io::Result<u32> {
@@ -359,7 +359,7 @@ fn read_string(reader: &mut impl Read) -> io::Result<String> {
     }
     let mut bytes = vec![0_u8; length];
     reader.read_exact(&mut bytes)?;
-    Ok(String::from_utf8_lossy(&bytes).trim().to_owned())
+    Ok(crate::text_encoding::decode(&bytes).trim().to_owned())
 }
 
 fn frames_from_duration(duration: Duration, sample_rate: u32) -> Result<u64, String> {

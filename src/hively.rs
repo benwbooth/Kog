@@ -87,8 +87,7 @@ impl Hively {
         let title = if title.is_null() {
             String::new()
         } else {
-            unsafe { CStr::from_ptr(title) }
-                .to_string_lossy()
+            crate::text_encoding::decode(unsafe { CStr::from_ptr(title) }.to_bytes())
                 .trim()
                 .to_owned()
         };

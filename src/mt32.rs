@@ -19,6 +19,19 @@ const MAX_EVENT_BYTES: usize = 32 * 1024;
 const MAX_DURATION: Duration = Duration::from_secs(24 * 60 * 60);
 const ERROR_BYTES: usize = 1024;
 
+// Zero-based form of Munt's own GM-emulation program map from
+// mt32emu_alsadrv/src/maps.h. This selects the closest stock MT-32 patch for
+// each General MIDI program without changing native MT-32 scores when the
+// compatibility option is disabled.
+const GM_TO_MT32_PROGRAM: [u8; 128] = [
+    5, 5, 60, 7, 3, 4, 16, 19, 22, 101, 100, 97, 104, 103, 102, 119, 12, 14, 9, 12, 14, 15, 87, 45,
+    59, 60, 71, 59, 65, 62, 48, 63, 64, 64, 65, 70, 68, 69, 28, 30, 52, 53, 54, 56, 49, 51, 57,
+    112, 52, 50, 49, 50, 34, 33, 33, 122, 88, 90, 94, 89, 92, 96, 26, 27, 78, 79, 80, 81, 84, 85,
+    86, 82, 75, 73, 76, 77, 110, 107, 108, 75, 47, 47, 44, 34, 34, 42, 45, 31, 32, 38, 32, 34, 32,
+    38, 33, 34, 41, 36, 35, 37, 37, 39, 43, 46, 63, 59, 59, 59, 59, 111, 53, 53, 100, 103, 103,
+    117, 116, 112, 111, 118, 124, 110, 110, 124, 123, 110, 110, 117,
+];
+
 #[repr(C)]
 struct KogMt32(c_void);
 
@@ -200,7 +213,7 @@ struct Mt32Timeline {
 }
 
 impl Mt32Timeline {
-    fn parse(bytes: &[u8]) -> Result<Self, String> {
+    fn parse(bytes: &[u8], gm_program_mapping: bool) -> Result<Self, String> {
         let smf = Smf::parse(bytes).map_err(|error| format!("parsing MIDI for Munt: {error}"))?;
         if smf.header.format == Format::Sequential {
             return Err(
@@ -219,7 +232,7 @@ impl Mt32Timeline {
                     .ok_or_else(|| "MIDI tick position overflowed".to_owned())?;
                 let kind = match &event.kind {
                     TrackEventKind::Midi { channel, message } => Some(TimelineInputKind::Message(
-                        midi_message_bytes(channel.as_int(), *message),
+                        midi_message_bytes(channel.as_int(), *message, gm_program_mapping),
                     )),
                     TrackEventKind::SysEx(data) => {
                         let mut message = Vec::with_capacity(data.len() + 1);
@@ -284,7 +297,7 @@ impl Mt32Timeline {
     }
 }
 
-fn midi_message_bytes(channel: u8, message: MidiMessage) -> Vec<u8> {
+fn midi_message_bytes(channel: u8, message: MidiMessage, gm_program_mapping: bool) -> Vec<u8> {
     let (status, first, second) = match message {
         MidiMessage::NoteOff { key, vel } => (0x80, key.as_int(), Some(vel.as_int())),
         MidiMessage::NoteOn { key, vel } => (0x90, key.as_int(), Some(vel.as_int())),
@@ -292,7 +305,14 @@ fn midi_message_bytes(channel: u8, message: MidiMessage) -> Vec<u8> {
         MidiMessage::Controller { controller, value } => {
             (0xb0, controller.as_int(), Some(value.as_int()))
         }
-        MidiMessage::ProgramChange { program } => (0xc0, program.as_int(), None),
+        MidiMessage::ProgramChange { program } => {
+            let program = if gm_program_mapping && channel != 9 {
+                GM_TO_MT32_PROGRAM[usize::from(program.as_int())]
+            } else {
+                program.as_int()
+            };
+            (0xc0, program, None)
+        }
         MidiMessage::ChannelAftertouch { vel } => (0xd0, vel.as_int(), None),
         MidiMessage::PitchBend { bend } => {
             let raw = bend.0.as_int();
@@ -414,8 +434,12 @@ pub struct Mt32Source {
 }
 
 impl Mt32Source {
-    pub fn open(bytes: &[u8], rom_directory: &Path) -> Result<Self, String> {
-        let timeline = Arc::new(Mt32Timeline::parse(bytes)?);
+    pub fn open(
+        bytes: &[u8],
+        rom_directory: &Path,
+        gm_program_mapping: bool,
+    ) -> Result<Self, String> {
+        let timeline = Arc::new(Mt32Timeline::parse(bytes, gm_program_mapping)?);
         let synth = Mt32Synth::open(rom_directory)?;
         Ok(Self {
             timeline,
@@ -520,7 +544,7 @@ impl Mt32Source {
 /// Read MIDI timing for playlist metadata without constructing a Munt synth or
 /// loading ROMs. The synth is opened only when playback actually starts.
 pub fn midi_duration(bytes: &[u8]) -> Result<Duration, String> {
-    Mt32Timeline::parse(bytes).map(|timeline| timeline.duration)
+    Mt32Timeline::parse(bytes, false).map(|timeline| timeline.duration)
 }
 
 pub const fn output_sample_rate() -> u32 {
@@ -612,7 +636,7 @@ mod tests {
 
     #[test]
     fn timeline_preserves_messages_and_duration() {
-        let timeline = Mt32Timeline::parse(&minimal_midi()).expect("parse generated MIDI");
+        let timeline = Mt32Timeline::parse(&minimal_midi(), false).expect("parse generated MIDI");
         assert_eq!(timeline.duration, Duration::from_millis(500));
         assert_eq!(timeline.total_frames, 24_000);
         assert_eq!(timeline.events.len(), 3);
@@ -623,10 +647,30 @@ mod tests {
     }
 
     #[test]
+    fn general_midi_program_mapping_is_optional_and_skips_rhythm_channel() {
+        let mut midi = minimal_midi();
+        let program_event = midi
+            .windows(2)
+            .position(|bytes| bytes == [0xc0, 0])
+            .expect("generated program change");
+        midi[program_event + 1] = 2; // GM Electric Grand -> MT-32 E.Piano 3.
+
+        let native = Mt32Timeline::parse(&midi, false).expect("parse native programs");
+        let mapped = Mt32Timeline::parse(&midi, true).expect("parse mapped programs");
+        assert_eq!(native.events[0].bytes, [0xc0, 2]);
+        assert_eq!(mapped.events[0].bytes, [0xc0, 60]);
+
+        midi[program_event] = 0xc9;
+        let rhythm = Mt32Timeline::parse(&midi, true).expect("parse rhythm program");
+        assert_eq!(rhythm.events[0].bytes, [0xc9, 2]);
+    }
+
+    #[test]
     fn timeline_renders_only_the_selected_format_two_subsong() {
         let selected = crate::decoder::select_standard_midi_subsong(&format_two_midi(), Some(1))
             .expect("select second format 2 song");
-        let timeline = Mt32Timeline::parse(&selected.bytes).expect("parse selected Munt song");
+        let timeline =
+            Mt32Timeline::parse(&selected.bytes, false).expect("parse selected Munt song");
 
         assert_eq!(selected.title.as_deref(), Some("Second"));
         assert_eq!(selected.subsong_count, Some(2));
@@ -664,7 +708,7 @@ mod tests {
                 value => value,
             };
         }
-        let mut source = Mt32Source::open(&midi, &path).expect("open real Munt ROM set");
+        let mut source = Mt32Source::open(&midi, &path, true).expect("open real Munt ROM set");
         assert!(
             source.model().contains("MT-32"),
             "model: {}",

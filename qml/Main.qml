@@ -406,7 +406,14 @@ ApplicationWindow {
         visible: appController.show_tray_icon && available
         tooltip: appController.now_title === "Not Playing"
             ? qsTr("Kog — Not Playing")
-            : appController.now_title + " — Kog"
+            : appController.now_title
+                + (appController.now_artist.length > 0
+                    ? "\n" + appController.now_artist : "")
+                + "\n" + (appController.playback_state === "playing"
+                    ? qsTr("Playing")
+                    : (appController.playback_state === "paused"
+                        ? qsTr("Paused") : qsTr("Stopped")))
+                + qsTr(" — right-click for playback controls")
         icon.source: Qt.resolvedUrl("icons/kog-symbolic.svg")
         icon.mask: false
         onActivated: function(reason) {
@@ -423,6 +430,14 @@ ApplicationWindow {
                 onTriggered: Qt.callLater(function() {
                     root.toggleFromTray()
                 })
+            }
+            Platform.MenuSeparator {}
+            Platform.MenuItem {
+                text: qsTr("Show Now Playing Notification")
+                icon.name: "dialog-information"
+                enabled: appController.current_index >= 0
+                    && appController.playback_state !== "stopped"
+                onTriggered: appController.show_now_playing_notification()
             }
             Platform.MenuSeparator {}
             Platform.MenuItem {

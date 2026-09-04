@@ -2,8 +2,6 @@
 
 use std::path::{Path, PathBuf};
 
-use encoding_rs::WINDOWS_1252;
-
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ReplayGain {
     pub album_gain_db: Option<f32>,
@@ -305,8 +303,7 @@ fn decode_text(path: &Path, bytes: &[u8]) -> Result<String, String> {
     if let Ok(text) = std::str::from_utf8(bytes) {
         return Ok(text.to_owned());
     }
-    let (text, _, _) = WINDOWS_1252.decode(bytes);
-    Ok(text.into_owned())
+    Ok(crate::text_encoding::decode(bytes))
 }
 
 fn decode_utf16(path: &Path, bytes: &[u8], order: fn([u8; 2]) -> u16) -> Result<String, String> {

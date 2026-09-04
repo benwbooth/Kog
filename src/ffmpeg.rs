@@ -190,8 +190,7 @@ fn native_text(value: *const c_char) -> Option<String> {
     if value.is_null() {
         return None;
     }
-    let value = unsafe { CStr::from_ptr(value) }
-        .to_string_lossy()
+    let value = crate::text_encoding::decode(unsafe { CStr::from_ptr(value) }.to_bytes())
         .trim()
         .to_owned();
     (!value.is_empty()).then_some(value)

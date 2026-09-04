@@ -62,7 +62,10 @@ minimize, and close behavior can be changed under **Preferences → General**.
 - Search large playlists, manage an explicit playback queue, and use album/all
   shuffle plus one/album/all repeat modes.
 - Use a 31-band equalizer, lyrics and inspector windows, a mini-player, system
-  tray controls, and audio-reactive playback indicators.
+  tray controls, optional actionable track notifications, and audio-reactive
+  playback indicators.
+- Decode undeclared legacy metadata with Japanese and other regional encoding
+  heuristics, including Shift-JIS, EUC-JP, UTF-16, and UTF-32 inputs.
 - Follow the system audio output or remember a selected output device.
 
 ## Format support
@@ -95,6 +98,11 @@ Choose a MIDI engine under **Hamburger menu → Preferences → Synthesis**.
 | Nuked SC-55 | A complete supported SC-55-family ROM set from hardware you own |
 | Munt MT-32/CM-32L | A compatible control ROM and PCM ROM pair from hardware you own |
 
+Munt playback maps General MIDI program numbers to the closest stock MT-32
+patches by default. Disable **Map General MIDI programs to MT-32 patches** for
+scores authored specifically for the MT-32 or CM-32L, especially files that
+load custom timbres with SysEx.
+
 Kog does not include or download Roland ROMs. You can select a ROM folder or
 import a ZIP, 7Z, RAR, TAR, gzip, bzip2, xz, or other libarchive-supported
 archive. ROMs are identified by their contents, so they do not need special
@@ -106,6 +114,7 @@ For scripted setups, Kog also understands:
 KOG_SOUNDFONT=/path/to/bank.sf2
 KOG_SC55_ROMS=/path/to/sc55-rom-directory
 KOG_MT32_ROMS=/path/to/mt32-rom-directory
+KOG_MT32_GM_PROGRAM_MAPPING=true|false
 KOG_MIDI_ENGINE=rustysynth-sf2|opl3windows|nuked-sc55|munt-mt32
 ```
 

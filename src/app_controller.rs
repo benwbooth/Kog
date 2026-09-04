@@ -51,6 +51,7 @@ pub mod qobject {
         #[qproperty(QString, soundfont_path)]
         #[qproperty(QString, sc55_rom_path)]
         #[qproperty(QString, mt32_rom_path)]
+        #[qproperty(bool, mt32_gm_program_mapping)]
         #[qproperty(QString, midi_engine)]
         #[qproperty(QString, midi_status)]
         #[qproperty(QString, opening_files_behavior)]
@@ -59,6 +60,7 @@ pub mod qobject {
         #[qproperty(bool, show_tray_icon)]
         #[qproperty(bool, close_to_tray)]
         #[qproperty(bool, minimize_to_tray)]
+        #[qproperty(bool, track_notifications)]
         #[qproperty(bool, directory_scan_active)]
         #[qproperty(i32, directory_scan_files_scanned)]
         #[qproperty(i32, directory_scan_tracks_added)]
@@ -166,6 +168,8 @@ pub mod qobject {
         #[qinvokable]
         fn poll_audio_levels(self: Pin<&mut AppController>);
         #[qinvokable]
+        fn show_now_playing_notification(self: &AppController);
+        #[qinvokable]
         fn equalizer_band_gain(self: &AppController, index: i32) -> f64;
         #[qinvokable]
         fn update_equalizer_enabled(self: Pin<&mut AppController>, enabled: bool);
@@ -244,6 +248,8 @@ pub mod qobject {
         #[qinvokable]
         fn clear_mt32_rom_directory(self: Pin<&mut AppController>);
         #[qinvokable]
+        fn update_mt32_gm_program_mapping(self: Pin<&mut AppController>, enabled: bool);
+        #[qinvokable]
         fn select_midi_engine(self: Pin<&mut AppController>, engine: QString);
         #[qinvokable]
         fn select_opening_files_behavior(self: Pin<&mut AppController>, behavior: QString);
@@ -257,6 +263,8 @@ pub mod qobject {
         fn update_close_to_tray(self: Pin<&mut AppController>, enabled: bool);
         #[qinvokable]
         fn update_minimize_to_tray(self: Pin<&mut AppController>, enabled: bool);
+        #[qinvokable]
+        fn update_track_notifications(self: Pin<&mut AppController>, enabled: bool);
     }
 }
 
@@ -278,6 +286,7 @@ use crate::decoder::{
 use crate::equalizer::{
     EqualizerSettings, apply_preset, preset_for_genre, preset_named, preset_names,
 };
+use crate::notifications::{PlaybackNotificationAction, TrackNotificationService};
 use crate::playback::{OutputDevice, PlaybackEngine, PlaybackState, available_output_devices};
 use crate::playback_order::{PlaybackOrder, SelectionState};
 use crate::playlist::{Playlist, PlaylistEntry, PlaylistLocation};
@@ -1104,6 +1113,7 @@ pub struct AppControllerRust {
     soundfont_path: QString,
     sc55_rom_path: QString,
     mt32_rom_path: QString,
+    mt32_gm_program_mapping: bool,
     midi_engine: QString,
     midi_status: QString,
     opening_files_behavior: QString,
@@ -1112,6 +1122,7 @@ pub struct AppControllerRust {
     show_tray_icon: bool,
     close_to_tray: bool,
     minimize_to_tray: bool,
+    track_notifications: bool,
     directory_scan_active: bool,
     directory_scan_files_scanned: i32,
     directory_scan_tracks_added: i32,
@@ -1133,6 +1144,7 @@ pub struct AppControllerRust {
     playback: PlaybackEngine,
     equalizer_settings: EqualizerSettings,
     directory_scan: Option<DirectoryScanState>,
+    notifications: TrackNotificationService,
 }
 
 impl Default for AppControllerRust {
@@ -1147,7 +1159,8 @@ impl Default for AppControllerRust {
             app_settings.midi_engine,
         )
         .with_sc55_rom_path(app_settings.sc55_rom_path.clone())
-        .with_mt32_rom_path(app_settings.mt32_rom_path.clone());
+        .with_mt32_rom_path(app_settings.mt32_rom_path.clone())
+        .with_mt32_gm_program_mapping(app_settings.mt32_gm_program_mapping);
         let soundfont_path = app_settings
             .soundfont_path
             .as_deref()
@@ -1277,6 +1290,7 @@ impl Default for AppControllerRust {
             soundfont_path,
             sc55_rom_path,
             mt32_rom_path,
+            mt32_gm_program_mapping: app_settings.mt32_gm_program_mapping,
             midi_engine,
             midi_status,
             opening_files_behavior: qstring(app_settings.opening_files_behavior.setting_value()),
@@ -1285,6 +1299,7 @@ impl Default for AppControllerRust {
             show_tray_icon: app_settings.show_tray_icon,
             close_to_tray: app_settings.close_to_tray,
             minimize_to_tray: app_settings.minimize_to_tray,
+            track_notifications: app_settings.track_notifications,
             directory_scan_active: false,
             directory_scan_files_scanned: 0,
             directory_scan_tracks_added: 0,
@@ -1310,6 +1325,7 @@ impl Default for AppControllerRust {
             playback,
             equalizer_settings,
             directory_scan: None,
+            notifications: TrackNotificationService::default(),
         };
 
         if let Some(paths) = std::env::var_os("KOG_OPEN_FILES") {
@@ -2558,6 +2574,14 @@ impl qobject::AppController {
     }
 
     pub fn poll_playback(mut self: Pin<&mut Self>) {
+        if let Some(action) = self.as_ref().rust().notifications.try_action() {
+            match action {
+                PlaybackNotificationAction::Previous => self.as_mut().previous(),
+                PlaybackNotificationAction::PlayPause => self.as_mut().play_pause(),
+                PlaybackNotificationAction::Next => self.as_mut().next(),
+            }
+            return;
+        }
         if let Some(Err(error)) = self.as_ref().rust().playback.take_seek_result() {
             self.as_mut().set_status(qstring(error));
         }
@@ -2590,6 +2614,16 @@ impl qobject::AppController {
         self.as_mut().set_audio_level_mid(f64::from(levels[2]));
         self.as_mut().set_audio_level_high_mid(f64::from(levels[3]));
         self.as_mut().set_audio_level_high(f64::from(levels[4]));
+    }
+
+    pub fn show_now_playing_notification(&self) {
+        let Some(track) = usize::try_from(self.rust().current_index)
+            .ok()
+            .and_then(|index| self.rust().tracks.get(index))
+        else {
+            return;
+        };
+        self.rust().notifications.show(&track.title, &track.artist);
     }
 
     pub fn equalizer_band_gain(&self, index: i32) -> f64 {
@@ -3247,6 +3281,23 @@ impl qobject::AppController {
             .set_status(qstring("MT-32 ROM directory cleared"));
     }
 
+    pub fn update_mt32_gm_program_mapping(mut self: Pin<&mut Self>, enabled: bool) {
+        if let Err(error) = AppSettings::save_mt32_gm_program_mapping(enabled) {
+            self.as_mut().set_midi_status(qstring(error));
+            return;
+        }
+        self.as_ref()
+            .rust()
+            .decoder_settings
+            .set_mt32_gm_program_mapping(enabled);
+        self.as_mut().set_mt32_gm_program_mapping(enabled);
+        self.as_mut().set_status(qstring(if enabled {
+            "General MIDI programs will be mapped to compatible MT-32 patches"
+        } else {
+            "MT-32 MIDI will use its original program numbers"
+        }));
+    }
+
     pub fn select_midi_engine(mut self: Pin<&mut Self>, engine: QString) {
         let value = engine.to_string();
         let Some(engine) = MidiEngine::from_setting(&value) else {
@@ -3341,6 +3392,19 @@ impl qobject::AppController {
             return;
         }
         self.as_mut().set_minimize_to_tray(enabled);
+    }
+
+    pub fn update_track_notifications(mut self: Pin<&mut Self>, enabled: bool) {
+        if let Err(error) = AppSettings::save_track_notifications(enabled) {
+            self.as_mut().set_status(qstring(error));
+            return;
+        }
+        self.as_mut().set_track_notifications(enabled);
+        self.as_mut().set_status(qstring(if enabled {
+            "Track change notifications enabled"
+        } else {
+            "Track change notifications disabled"
+        }));
     }
 
     fn commit_equalizer_settings(
@@ -3631,13 +3695,20 @@ impl qobject::AppController {
     }
 
     fn play_source_index(mut self: Pin<&mut Self>, source_index: usize) {
-        let Some((source, genre)) = self
+        let Some((source, genre, notification)) = self
             .as_ref()
             .get_ref()
             .rust()
             .tracks
             .get(source_index)
-            .map(|track| (track.source.clone(), track.genre.clone()))
+            .map(|track| {
+                let rust = self.as_ref().get_ref().rust();
+                let is_new_start = rust.playback.state() == PlaybackState::Stopped
+                    || usize::try_from(rust.current_index).ok() != Some(source_index);
+                let notification = (rust.track_notifications && is_new_start)
+                    .then(|| (track.title.clone(), track.artist.clone()));
+                (track.source.clone(), track.genre.clone(), notification)
+            })
         else {
             return;
         };
@@ -3672,6 +3743,9 @@ impl qobject::AppController {
                 self.as_mut().set_status(qstring(status));
                 self.as_mut().sync_playback_state();
                 self.as_mut().bump_playlist_revision();
+                if let Some((title, artist)) = notification {
+                    self.as_ref().rust().notifications.show(&title, &artist);
+                }
             }
             Err(error) => {
                 self.as_mut().set_status(qstring(error));

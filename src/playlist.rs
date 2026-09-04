@@ -3,7 +3,6 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use encoding_rs::{GB18030, WINDOWS_1251};
 use percent_encoding::{AsciiSet, CONTROLS, percent_decode_str, utf8_percent_encode};
 use url::Url;
 
@@ -485,28 +484,16 @@ fn split_numeric_fragment(value: &str) -> (&str, Option<String>) {
 }
 
 fn decode_text(bytes: &[u8]) -> String {
-    let bytes = bytes.split(|byte| *byte == 0).next().unwrap_or_default();
-    if let Some(bytes) = bytes.strip_prefix(&[0xef, 0xbb, 0xbf]) {
-        return String::from_utf8_lossy(bytes).into_owned();
-    }
-    if let Ok(text) = std::str::from_utf8(bytes) {
-        return text.to_owned();
-    }
-    let (text, _, errors) = GB18030.decode(bytes);
-    if !errors {
-        return text.into_owned();
-    }
-    let (text, _, errors) = WINDOWS_1251.decode(bytes);
-    if !errors {
-        return text.into_owned();
-    }
-    bytes.iter().map(|byte| char::from(*byte)).collect()
+    crate::text_encoding::decode(bytes)
+        .trim_end_matches('\0')
+        .to_owned()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::decoder::{DecoderRegistry, DecoderSettings};
+    use encoding_rs::{GB18030, WINDOWS_1251};
     use std::io::Write;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -677,7 +664,7 @@ mod tests {
     }
 
     #[test]
-    fn decodes_cogs_gb18030_cp1251_and_latin1_fallback_order() {
+    fn detects_chinese_cyrillic_and_western_legacy_playlists() {
         let fixture = Fixture::new();
         let playlist_path = fixture.path("encoded.m3u");
 
@@ -700,13 +687,13 @@ mod tests {
         std::fs::write(&playlist_path, b"caf\xe9.mp3\n").unwrap();
         assert_eq!(
             Playlist::open(&playlist_path).unwrap().entries[0].location,
-            PlaylistLocation::Local(fixture.path("cafй.mp3"))
+            PlaylistLocation::Local(fixture.path("café.mp3"))
         );
 
         std::fs::write(&playlist_path, b"latin\x98.mp3\n").unwrap();
         assert_eq!(
             Playlist::open(&playlist_path).unwrap().entries[0].location,
-            PlaylistLocation::Local(fixture.path("latin\u{98}.mp3"))
+            PlaylistLocation::Local(fixture.path("latin˜.mp3"))
         );
     }
 
