@@ -6,6 +6,7 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 pub enum PlaybackNotificationAction {
     Previous,
     PlayPause,
+    Stop,
     Next,
 }
 
@@ -44,6 +45,7 @@ impl TrackNotificationService {
                     .icon("org.kog.player")
                     .action("previous", "Previous")
                     .action("play-pause", "Pause")
+                    .action("stop", "Stop")
                     .action("next", "Next")
                     .timeout(8_000)
                     .show();
@@ -85,6 +87,7 @@ fn action_from_identifier(identifier: &str) -> Option<PlaybackNotificationAction
     match identifier {
         "previous" => Some(PlaybackNotificationAction::Previous),
         "play-pause" => Some(PlaybackNotificationAction::PlayPause),
+        "stop" => Some(PlaybackNotificationAction::Stop),
         "next" => Some(PlaybackNotificationAction::Next),
         _ => None,
     }
@@ -103,6 +106,10 @@ mod tests {
         assert_eq!(
             action_from_identifier("play-pause"),
             Some(PlaybackNotificationAction::PlayPause)
+        );
+        assert_eq!(
+            action_from_identifier("stop"),
+            Some(PlaybackNotificationAction::Stop)
         );
         assert_eq!(
             action_from_identifier("next"),

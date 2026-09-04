@@ -2578,6 +2578,7 @@ impl qobject::AppController {
             match action {
                 PlaybackNotificationAction::Previous => self.as_mut().previous(),
                 PlaybackNotificationAction::PlayPause => self.as_mut().play_pause(),
+                PlaybackNotificationAction::Stop => self.as_mut().stop(),
                 PlaybackNotificationAction::Next => self.as_mut().next(),
             }
             return;

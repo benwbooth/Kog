@@ -449,6 +449,13 @@ ApplicationWindow {
                 onTriggered: appController.play_pause()
             }
             Platform.MenuItem {
+                text: qsTr("Stop")
+                icon.name: "media-playback-stop"
+                enabled: appController.current_index >= 0
+                    && appController.playback_state !== "stopped"
+                onTriggered: appController.stop()
+            }
+            Platform.MenuItem {
                 text: qsTr("Previous")
                 icon.name: "media-skip-backward"
                 enabled: appController.playlist_count > 0

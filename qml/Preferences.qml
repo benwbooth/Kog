@@ -396,7 +396,7 @@ Window {
                             }
                             PreferenceLabel {
                                 Layout.fillWidth: true
-                                text: qsTr("Track notifications include Previous, Pause, and Next actions when the desktop notification service supports them. Tray behavior is used only when the desktop provides a system tray.")
+                                text: qsTr("Track notifications include Previous, Pause, Stop, and Next actions when the desktop notification service supports them. Tray behavior is used only when the desktop provides a system tray.")
                                 wrapMode: Text.Wrap
                                 color: root.palette.placeholderText
                             }
