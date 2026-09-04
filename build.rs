@@ -474,14 +474,23 @@ fn build_libvgm() -> std::path::PathBuf {
 
 fn link_libvgm(output: &Path) {
     println!("cargo:rustc-link-search=native={}/lib", output.display());
-    println!("cargo:rustc-link-lib=static=vgm-player");
-    println!("cargo:rustc-link-lib=static=vgm-emu");
-    println!("cargo:rustc-link-lib=static=vgm-utils");
-
     let target = std::env::var("TARGET").unwrap_or_default();
-    if target.contains("windows") {
-        println!("cargo:rustc-link-lib=zlib");
+    let msvc_suffix = if target.contains("msvc") {
+        match std::env::var("CARGO_CFG_TARGET_POINTER_WIDTH").as_deref() {
+            Ok("64") => "_Win64",
+            Ok("32") => "_Win32",
+            value => panic!("unsupported MSVC pointer width for libvgm: {value:?}"),
+        }
     } else {
+        ""
+    };
+    for library in ["vgm-player", "vgm-emu", "vgm-utils"] {
+        println!("cargo:rustc-link-lib=static={library}{msvc_suffix}");
+    }
+
+    if !target.contains("windows") {
+        // zlib is already discovered through pkg-config for SpessaSynth and
+        // the PSF decoders. Its MSVC archive is named z.lib, not zlib.lib.
         println!("cargo:rustc-link-lib=z");
         println!("cargo:rustc-link-lib=m");
     }
