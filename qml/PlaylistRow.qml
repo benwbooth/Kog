@@ -94,8 +94,8 @@ Item {
                     sourceSize.width: 13
                     sourceSize.height: 13
                     name: root.isPlaying
-                        ? "media-playback-pause"
-                        : "media-playback-start"
+                        ? "media-playback-start"
+                        : "media-playback-pause"
                     color: root.selected
                         ? root.theme.highlightedText
                         : root.theme.text
