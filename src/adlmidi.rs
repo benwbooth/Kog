@@ -68,8 +68,10 @@ impl AdlMidi {
         let selected_native = c_int::try_from(selected_subsong)
             .map_err(|_| "libADLMIDI subsong exceeds the native API limit".to_owned())?;
 
-        let handle = NonNull::new(unsafe { adl_init(c_long::from(SAMPLE_RATE)) })
-            .ok_or_else(global_error)?;
+        let native_sample_rate =
+            c_long::try_from(SAMPLE_RATE).expect("Kog's sample rate fits in a C long");
+        let handle =
+            NonNull::new(unsafe { adl_init(native_sample_rate) }).ok_or_else(global_error)?;
         let mut decoder = Self {
             handle,
             _file_bytes: file_bytes,
