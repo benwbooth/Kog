@@ -20,9 +20,13 @@ extension or drawing a static background would not implement the skin.
   Kog's normal interface would remain QML and its Rust decoder core would still
   perform playback. This would be experimental compatibility, not all-skin parity.
 
-The user has been asked whether the larger bundled browser dependency is
-acceptable or whether Kog should stay native. No engine has been vendored or
-enabled pending that choice.
+The user approved the Qt WebEngine route. Webamp source is pinned at
+`88ed5815d968c201962f6549915579b3d2f93c5e` in `native/webamp`, and the Nix
+development shell supplies Qt WebEngine, Qt WebChannel, and Node.js for building
+the renderer bundle. This is dependency preparation only: no browser runtime,
+MAKI bridge, or modern archive importer is enabled in Kog yet. The acceptance
+requirements below still gate exposing modern skins in the gallery and shipping
+the larger browser dependency in platform packages.
 
 ## Acceptance requirements for either route
 

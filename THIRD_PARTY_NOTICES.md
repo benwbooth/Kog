@@ -1,5 +1,15 @@
 # Third-party notices
 
+## Webamp Modern (integration source; not shipped in the player yet)
+
+`native/webamp` pins [Webamp](https://github.com/captbaritone/webamp) at
+`88ed5815d968c201962f6549915579b3d2f93c5e` for its modern skin renderer and
+reimplemented MAKI interpreter. Its source license is MIT, Copyright (c) 2015
+Jordan Eldredge; the full notice is in `native/webamp/LICENSE.txt`. Kog does not
+currently bundle this renderer, its JavaScript dependencies, or its example
+skins into the executable. Those dependencies and their notices must be audited
+when the renderer bundle is integrated.
+
 ## Layer Shell Qt
 
 Linux builds can load KDE's [Layer Shell Qt](https://github.com/KDE/layer-shell-qt)

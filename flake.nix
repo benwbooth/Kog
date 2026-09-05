@@ -25,6 +25,8 @@
             qtdeclarative
             qtsvg
             qttools
+            qtwebengine
+            qtwebchannel
           ])
           ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
             pkgs.qt6.qtwayland
@@ -56,6 +58,7 @@
               cmake
               libarchive
               ninja
+              nodejs
               pkg-config
               rust-analyzer
               rustc

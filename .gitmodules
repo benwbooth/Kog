@@ -67,3 +67,6 @@
 [submodule "native/spessasynth-core"]
 	path = native/spessasynth-core
 	url = https://github.com/kode54/spessasynth_core_c.git
+[submodule "native/webamp"]
+	path = native/webamp
+	url = https://github.com/captbaritone/webamp.git
