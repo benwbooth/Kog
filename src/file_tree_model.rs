@@ -14,14 +14,14 @@ pub mod qobject {
     }
 
     unsafe extern "C++Qt" {
-        include!(<QtGui/QFileSystemModel>);
+        include!("kog/kog_file_tree_search.h");
         #[qobject]
-        type QFileSystemModel;
+        type KogFileTreeSearch;
     }
 
     unsafe extern "RustQt" {
         #[qobject]
-        #[base = QFileSystemModel]
+        #[base = KogFileTreeSearch]
         #[qml_element]
         #[qproperty(QModelIndex, root_index)]
         #[qproperty(QString, root_path)]

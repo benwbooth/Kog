@@ -46,6 +46,9 @@ Use the hamburger menu to add individual files, a music folder, a playlist, an
 archive, or an HTTP(S) URL. The file browser can be re-rooted to any folder;
 single-click a folder to expand it, then double-click or drag files and folders
 into the playlist. Shift and Ctrl selection work for adding groups of items.
+The search box above the file tree finds file and folder names throughout the
+current folder and its subfolders, including folders you haven't opened yet.
+Clear the search (or press Escape in the box) to return to normal browsing.
 
 Kog uses the desktop's Qt theme and native file dialogs. Closing the main window
 to the system tray is enabled by default where a tray is available. Tray,

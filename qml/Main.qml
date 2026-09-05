@@ -1405,6 +1405,74 @@ ApplicationWindow {
                     }
                 }
 
+                RowLayout {
+                    Layout.fillWidth: true
+                    Layout.margins: 6
+                    spacing: 4
+                    TextField {
+                        id: treeSearchField
+                        objectName: "treeSearchField"
+                        Layout.fillWidth: true
+                        placeholderText: qsTr("Search files and folders…")
+                        Accessible.name: qsTr("Search music folder and subfolders")
+                        selectByMouse: true
+                        maximumLength: 200
+                        onTextChanged: {
+                            root.clearTreeSelection()
+                            if (text.trim().length === 0) {
+                                treeSearchDebounce.stop()
+                                fileTreeModel.searchText = ""
+                            } else {
+                                treeSearchDebounce.restart()
+                            }
+                        }
+                        Keys.onEscapePressed: clear()
+                    }
+                    CogButton {
+                        Layout.preferredWidth: 28
+                        Layout.preferredHeight: 28
+                        iconName: "edit-clear"
+                        glyph: "×"
+                        enabled: treeSearchField.text.length > 0
+                        toolTip: qsTr("Clear folder search")
+                        onClicked: treeSearchField.clear()
+                    }
+                }
+                Timer {
+                    id: treeSearchDebounce
+                    interval: 250
+                    onTriggered: fileTreeModel.searchText = treeSearchField.text
+                }
+                Connections {
+                    target: fileTreeModel
+                    function onSearchResultsChanged() {
+                        root.clearTreeSelection()
+                        if (fileTreeModel.searchText.trim().length > 0
+                                && !fileTreeModel.searching)
+                            Qt.callLater(function() {
+                                if (!fileTreeModel.searchText.trim().length
+                                        || fileTreeModel.searching) return
+                                directoryTree.forceLayout()
+                                // Qt's -1 expands model roots, ignoring the
+                                // custom rootIndex used by this folder browser.
+                                for (let row = directoryTree.rows - 1; row >= 0; --row)
+                                    if (directoryTree.depth(row) === 0)
+                                        directoryTree.expandRecursively(row)
+                            })
+                    }
+                }
+                Label {
+                    Layout.fillWidth: true
+                    Layout.leftMargin: 8
+                    Layout.rightMargin: 8
+                    Layout.bottomMargin: visible ? 5 : 0
+                    visible: fileTreeModel.searchStatus.length > 0
+                    text: fileTreeModel.searchStatus
+                    font.pointSize: root.font.pointSize * 0.9
+                    wrapMode: Text.Wrap
+                    opacity: 0.75
+                }
+
                 ItemDelegate {
                     id: parentDirectoryRow
 
@@ -1434,7 +1502,7 @@ ApplicationWindow {
                     Layout.fillHeight: true
                     clip: true
                     model: fileTreeModel
-                    rootIndex: fileTreeModel.root_index
+                    rootIndex: fileTreeModel.viewRootIndex
                     alternatingRows: true
                     selectionBehavior: TableView.SelectRows
                     selectionMode: TableView.ExtendedSelection
