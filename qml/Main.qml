@@ -1441,7 +1441,7 @@ ApplicationWindow {
                         objectName: "treeSearchSpinner"
                         Layout.preferredWidth: 22
                         Layout.preferredHeight: 22
-                        visible: fileTreeModel.searching
+                        visible: fileTreeModel.searching || treeSearchLayout.busy
                         running: visible
                         Accessible.name: qsTr("Searching files and archives")
                     }
@@ -1542,11 +1542,12 @@ ApplicationWindow {
                         // and activating the preceding row after expansion.
                         required property string fileName
                         required property string filePath
+                        required property string fileIcon
                         readonly property string dragPath: filePath
                         width: Math.max(0,
                             directoryTree.width - directoryTree.scrollGutter)
                         implicitHeight: 26
-                        icon.name: fileTreeModel.icon_name(filePath)
+                        icon.name: fileIcon
                         icon.width: 18
                         icon.height: 18
                         contentItem: RowLayout {

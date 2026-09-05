@@ -7,6 +7,8 @@
 #include <QtCore/QFile>
 #include <QtCore/QTemporaryDir>
 #include <QtCore/QThread>
+#include <QtCore/QTimer>
+#include <QtGui/QKeyEvent>
 #include <QtQml/QQmlComponent>
 #include <QtQml/QQmlContext>
 #include <QtQml/QQmlEngine>
@@ -127,9 +129,12 @@ int main(int argc, char **argv)
                 model: testModel
                 rootIndex: testModel.viewRootIndex
                 opacity: searchLayout.ready ? 1 : 0
+                reuseItems: false
                 delegate: TreeViewDelegate {
                     required property string fileName
                     required property string filePath
+                    required property string fileIcon
+                    icon.name: fileIcon
                     objectName: filePath
                     text: fileName
                 }
@@ -142,14 +147,54 @@ int main(int argc, char **argv)
             }
             BusyIndicator {
                 objectName: "searchSpinner"
-                running: testModel.searching
+                running: testModel.searching || searchLayout.busy
                 visible: running
+            }
+            TextField {
+                objectName: "typingField"
+                anchors.bottom: parent.bottom
+                width: parent.width
+                focus: true
             }
         }
     )", QUrl::fromLocalFile(QFileInfo(QString::fromUtf8(__FILE__)).dir().absoluteFilePath("../../qml/TreeSearchHarness.qml")));
     std::unique_ptr<QObject> view(component.create());
     if (!view) std::fprintf(stderr, "%s\n", qPrintable(component.errorString()));
     check(bool(view), "Create real QML TreeView with the search model");
+    if (argc == 4 && QString::fromUtf8(argv[1]) == "--ui-benchmark") {
+        auto *layout = view->findChild<QObject *>("searchLayout");
+        auto *field = view->findChild<QObject *>("typingField");
+        QMetaObject::invokeMethod(field, "forceActiveFocus");
+        model.setRootPath(QString::fromUtf8(argv[2]));
+        QElapsedTimer elapsed, gap;
+        elapsed.start(); gap.start();
+        qint64 maxGap = 0;
+        int keys = 0;
+        QTimer input;
+        input.setInterval(10);
+        QObject::connect(&input, &QTimer::timeout, [&] {
+            maxGap = qMax(maxGap, gap.restart());
+            QKeyEvent press(QEvent::KeyPress, Qt::Key_X, Qt::NoModifier, "x");
+            QKeyEvent release(QEvent::KeyRelease, Qt::Key_X, Qt::NoModifier, "x");
+            QCoreApplication::sendEvent(view.get(), &press);
+            QCoreApplication::sendEvent(view.get(), &release);
+            ++keys;
+        });
+        input.start();
+        model.setSearchText(QString::fromUtf8(argv[3]));
+        while (elapsed.elapsed() < 180000) {
+            QCoreApplication::processEvents();
+            QThread::msleep(2);
+            if (elapsed.elapsed() >= 1000 && !model.searching() && layout->property("ready").toBool()
+                && (!layout->property("busy").isValid() || !layout->property("busy").toBool())) break;
+        }
+        check(!model.searching() && !layout->property("busy").toBool(), "UI benchmark completes all result batches");
+        check(field->property("text").toString().size() == keys, "No typed keys are lost while results render");
+        std::printf("UI search: complete=%lld ms; longest input gap=%lld ms; keys=%d; rows=%d\n",
+                    static_cast<long long>(elapsed.elapsed()), static_cast<long long>(maxGap), keys,
+                    view->findChild<QObject *>("tree")->property("rows").toInt());
+        return 0;
+    }
     model.setSearchText("THEME");
     check(model.searching(), "Search must run asynchronously");
     settle(model);
@@ -165,6 +210,10 @@ int main(int argc, char **argv)
           "Search index maps to the real path for activation and drag-and-drop");
     check(song.data(QFileSystemModel::FileNameRole).toString() == QString::fromUtf8("日本語 Theme.mid"),
           "File name role for QML and MIME icons");
+    const int iconRole = model.roleNames().key("fileIcon");
+    check(iconRole != 0 && album.data(iconRole).toString() == "folder"
+              && !song.data(iconRole).toString().isEmpty(),
+          "Workers supply folder and MIME icons without delegate filesystem calls");
     auto *tree = view->findChild<QObject *>("tree");
     auto *layout = view->findChild<QObject *>("searchLayout");
     QElapsedTimer layoutTimer;
@@ -246,10 +295,49 @@ int main(int argc, char **argv)
         QFile file(base.filePath(QString("Other/limit-%1.mid").arg(i)));
         check(file.open(QIODevice::WriteOnly), "Create limit fixture");
     }
+    auto *typingField = view->findChild<QObject *>("typingField");
+    QMetaObject::invokeMethod(typingField, "forceActiveFocus");
+    typingField->setProperty("text", "");
+    int typedKeys = 0;
+    int partialInputTicks = 0;
+    QTimer typing;
+    typing.setInterval(1);
+    QObject::connect(&typing, &QTimer::timeout, [&] {
+        if (model.searching() && model.rowCount(model.viewRootIndex()) > 0)
+            ++partialInputTicks;
+        QKeyEvent press(QEvent::KeyPress, Qt::Key_X, Qt::NoModifier, "x");
+        QKeyEvent release(QEvent::KeyRelease, Qt::Key_X, Qt::NoModifier, "x");
+        QCoreApplication::sendEvent(view.get(), &press);
+        QCoreApplication::sendEvent(view.get(), &release);
+        ++typedKeys;
+    });
+    typing.start();
     model.setSearchText("limit-");
     settle(model);
+    waitFor([&] { return !layout->property("busy").toBool(); }, "Large result layout finishes");
+    typing.stop();
+    check(partialInputTicks > 1, "Keyboard input runs between partial result insertion batches");
+    check(typedKeys > 0 && typingField->property("text").toString().size() == typedKeys,
+          "The focused search field accepts every key during a large result update");
     check(model.rowCount(model.viewRootIndex()) == 2000, "Search result bound");
     check(model.searchStatus().contains("narrow"), "Result limit is explained");
+    bool replacedPartialQuery = false;
+    QTimer replacement;
+    replacement.setInterval(1);
+    QObject::connect(&replacement, &QTimer::timeout, [&] {
+        const int rows = model.rowCount(model.viewRootIndex());
+        if (model.searching() && rows > 0 && rows < 2000) {
+            replacement.stop();
+            replacedPartialQuery = true;
+            model.setSearchText("no-such-new-query");
+        }
+    });
+    replacement.start();
+    model.setSearchText("limit- ");
+    settle(model);
+    replacement.stop();
+    check(replacedPartialQuery && model.rowCount(model.viewRootIndex()) == 0,
+          "A new query interrupts a partially applied snapshot without stale rows");
     model.setRootPath(base.absolutePath());
     model.setSearchText("Other");
     settle(model);
@@ -362,7 +450,23 @@ int main(int argc, char **argv)
     check(earlyIndex.isValid() && model.filePath(earlyIndex) == early.fileName(),
           "Streaming archive results preserve existing indexes/selections");
     check(model.rowCount(model.viewRootIndex()) == 2, "Archive matches append to ordinary results");
-    check(!view->findChild<QObject *>("searchSpinner")->property("running").toBool(), "Spinner stops when search completes");
+    waitFor([&] { return !view->findChild<QObject *>("searchSpinner")->property("running").toBool(); },
+            "Spinner stops after scanning and incremental layout complete");
+    QTemporaryDir branched;
+    QDir branches(branched.path());
+    for (int i = 0; i < 80; ++i) {
+        const auto path = QString("branch-%1/deep").arg(i);
+        check(branches.mkpath(path), "Create ancestors spanning insertion batches");
+        QFile song(branches.filePath(path + "/needle.mid"));
+        check(song.open(QIODevice::WriteOnly), "Create nested search match");
+    }
+    model.setRootPath(branched.path());
+    model.setSearchText("needle");
+    settle(model);
+    waitFor([&] { return !layout->property("busy").toBool() && layout->property("ready").toBool(); },
+            "Batched nested result layout completes");
+    check(tree->property("rows").toInt() == 240,
+          "Every ancestor expands even when its children arrive in a later batch");
     model.setSearchText("limit"); // Destruction during a scan is safe.
     std::puts("File tree search tests passed");
 }

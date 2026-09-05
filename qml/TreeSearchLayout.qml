@@ -7,9 +7,16 @@ QtObject {
     required property var view
     required property var model
     property bool ready: true
-    property int generation: 0
+    property bool busy: false
+    property int nextRow: -1
+    property bool anotherPass: false
     property int settlingFrames: 0
     property var openedAncestors: ({})
+    property Timer work: Timer {
+        interval: 16
+        repeat: true
+        onTriggered: layout.expandBatch()
+    }
 
     property Connections results: Connections {
         target: layout.model
@@ -28,43 +35,56 @@ QtObject {
     }
 
     function prepare(reset) {
-        const current = ++generation
         if (reset) {
+            work.stop()
+            busy = false
+            nextRow = -1
             ready = false
             openedAncestors = ({})
+            settlingFrames = 0
         }
-        settlingFrames = 0
         if (reset && model.searching) return
-        Qt.callLater(function() { expandBatch(current, 0) })
+        anotherPass = true
+        busy = true
+        work.start()
     }
 
-    function expandBatch(current, firstRow) {
-        if (current !== generation) return
+    function expandBatch() {
+        // Polish once per frame, never once per expanded ancestor. Walking
+        // backwards keeps newly inserted descendants below unvisited rows.
         view.forceLayout()
-        let row = firstRow
-        // Yield during large batches. Never reset existing rows or reopen an
-        // ancestor the user has deliberately collapsed between batches.
-        for (let count = 0; row < view.rows && count < 64; ++row, ++count) {
+        if (nextRow < 0) {
+            nextRow = view.rows - 1
+            anotherPass = false
+        }
+        const started = Date.now()
+        for (let count = 0; nextRow >= 0 && count < 512 && Date.now() - started < 3; ++count) {
+            const row = nextRow--
             if (model.searchText.trim().length && model.isSearchAncestor(view.index(row, 0))) {
                 const key = model.filePath(view.index(row, 0))
                 if (!openedAncestors[key]) {
-                    openedAncestors[key] = true
                     view.expand(row)
-                    view.forceLayout()
+                    // A batch can end with a parent whose children arrive in
+                    // the next batch. Retry it then if expansion was premature.
+                    if (view.isExpanded(row)) {
+                        openedAncestors[key] = true
+                        anotherPass = true
+                    }
                 }
             }
         }
-        if (row < view.rows) {
-            Qt.callLater(function() { expandBatch(current, row) })
-            return
-        }
-        view.forceLayout()
+        // Reveal the first stable frame while expansion continues. New
+        // streamed batches do not restart a pass or hide existing matches.
         const window = view.Window.window
-        if (window && window.visible) {
+        if (!ready && settlingFrames === 0 && window && window.visible) {
             settlingFrames = 2
             window.update()
-        } else {
+        } else if (!window || !window.visible) {
             ready = true
+        }
+        if (nextRow < 0 && !anotherPass) {
+            busy = false
+            work.stop()
         }
     }
 }
