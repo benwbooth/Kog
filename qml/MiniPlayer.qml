@@ -7,12 +7,13 @@ Window {
 
     required property var app
     required property var mainWindow
+    objectName: "kogMiniPlayer"
 
     width: 540
-    height: 154
+    height: 144
     minimumWidth: 460
-    minimumHeight: 154
-    maximumHeight: 154
+    minimumHeight: 144
+    maximumHeight: 144
     flags: Qt.Window | Qt.FramelessWindowHint
     title: root.app.now_title === "Not Playing"
         ? qsTr("Kog Mini Player")
@@ -52,6 +53,7 @@ Window {
     }
 
     function restoreFullPlayer() {
+        root.hide()
         root.mainWindow.showFromTray()
     }
 
@@ -62,20 +64,26 @@ Window {
         }
     }
 
-    component MiniButton: ToolButton {
+    component MiniButton: CogButton {
         id: button
 
-        required property string iconName
         property bool primary: false
 
-        implicitWidth: primary ? 38 : 32
-        implicitHeight: primary ? 38 : 32
-        display: AbstractButton.IconOnly
-        hoverEnabled: true
-        icon.name: iconName
+        implicitWidth: primary ? 40 : 34
+        implicitHeight: primary ? 40 : 34
+        iconBackground: primary ? palette.highlight : root.palette.window
         icon.width: primary ? 20 : 18
         icon.height: primary ? 20 : 18
-        icon.color: primary ? palette.highlightedText : palette.buttonText
+
+        // As in the notification controls, draw the bundled SVG explicitly.
+        // Some desktop styles drop ToolButton's icon with a custom background.
+        contentItem: Image {
+            objectName: "miniButtonIcon"
+            source: button.icon.source
+            sourceSize: Qt.size(button.icon.width, button.icon.height)
+            fillMode: Image.Pad
+            opacity: button.enabled ? 1 : 0.4
+        }
 
         background: Rectangle {
             radius: button.primary ? height / 2 : 7
@@ -88,11 +96,8 @@ Window {
             border.color: button.primary
                 ? Qt.lighter(button.palette.highlight, 1.18)
                 : "transparent"
+            opacity: button.enabled ? 1 : 0.4
         }
-
-        ToolTip.visible: hovered
-        ToolTip.delay: 550
-        ToolTip.text: Accessible.name
     }
 
     Rectangle {
@@ -106,72 +111,6 @@ Window {
     ColumnLayout {
         anchors.fill: parent
         spacing: 0
-
-        Item {
-            Layout.fillWidth: true
-            Layout.preferredHeight: 34
-
-            RowLayout {
-                anchors.fill: parent
-                anchors.leftMargin: 10
-                anchors.rightMargin: 7
-                spacing: 7
-
-                Image {
-                    Layout.preferredWidth: 20
-                    Layout.preferredHeight: 20
-                    source: Qt.resolvedUrl("icons/kog.svg")
-                    sourceSize.width: 40
-                    sourceSize.height: 40
-                    fillMode: Image.PreserveAspectFit
-                    mipmap: true
-                }
-                Label {
-                    text: qsTr("Kog")
-                    color: root.palette.text
-                    font.pixelSize: 12
-                    font.bold: true
-                }
-                Item {
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-
-                    DragHandler {
-                        target: null
-                        acceptedButtons: Qt.LeftButton
-                        onActiveChanged: if (active)
-                            root.startSystemMove()
-                    }
-                }
-                ToolButton {
-                    Layout.preferredWidth: 28
-                    Layout.preferredHeight: 28
-                    display: AbstractButton.IconOnly
-                    hoverEnabled: true
-                    icon.name: "view-restore"
-                    icon.width: 16
-                    icon.height: 16
-                    Accessible.name: qsTr("Return to full player")
-                    ToolTip.visible: hovered
-                    ToolTip.delay: 500
-                    ToolTip.text: Accessible.name
-                    onClicked: root.restoreFullPlayer()
-
-                    background: Rectangle {
-                        radius: 6
-                        color: parent.down ? root.palette.mid
-                            : (parent.hovered ? root.raisedSurface : "transparent")
-                    }
-                }
-            }
-        }
-
-        Rectangle {
-            Layout.fillWidth: true
-            Layout.preferredHeight: 1
-            color: root.outlineColor
-            opacity: 0.72
-        }
 
         RowLayout {
             Layout.fillWidth: true
@@ -190,6 +129,12 @@ Window {
                 border.width: 1
                 border.color: root.outlineColor
 
+                DragHandler {
+                    target: null
+                    acceptedButtons: Qt.LeftButton
+                    onActiveChanged: if (active) root.startSystemMove()
+                }
+
                 Image {
                     anchors.centerIn: parent
                     width: 47
@@ -207,20 +152,32 @@ Window {
                 Layout.fillHeight: true
                 spacing: 1
 
-                Label {
+                ColumnLayout {
                     Layout.fillWidth: true
-                    text: root.app.now_title
-                    color: root.palette.text
-                    font.pixelSize: 14
-                    font.bold: true
-                    elide: Text.ElideRight
-                }
-                Label {
-                    Layout.fillWidth: true
-                    text: root.subtitle
-                    color: root.palette.placeholderText
-                    font.pixelSize: 11
-                    elide: Text.ElideRight
+                    spacing: 3
+                    Label {
+                        objectName: "miniTitle"
+                        Layout.fillWidth: true
+                        text: root.app.now_title
+                        textFormat: Text.PlainText
+                        color: root.palette.text
+                        font.pixelSize: 14
+                        font.bold: true
+                        elide: Text.ElideRight
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        text: root.subtitle
+                        textFormat: Text.PlainText
+                        color: root.palette.placeholderText
+                        font.pixelSize: 11
+                        elide: Text.ElideRight
+                    }
+                    DragHandler {
+                        target: null
+                        acceptedButtons: Qt.LeftButton
+                        onActiveChanged: if (active) root.startSystemMove()
+                    }
                 }
 
                 RowLayout {
@@ -252,32 +209,43 @@ Window {
                     spacing: 3
 
                     MiniButton {
+                        objectName: "miniPrevious"
                         iconName: "media-skip-backward"
                         enabled: root.app.playlist_count > 0
-                        Accessible.name: qsTr("Previous")
+                        toolTip: qsTr("Previous")
                         onClicked: root.app.previous()
                     }
                     MiniButton {
+                        objectName: "miniPlayPause"
                         primary: true
                         iconName: root.app.playback_state === "playing"
                             ? "media-playback-pause"
                             : "media-playback-start"
                         enabled: root.app.playlist_count > 0
-                        Accessible.name: root.app.playback_state === "playing"
+                        toolTip: root.app.playback_state === "playing"
                             ? qsTr("Pause") : qsTr("Play")
                         onClicked: root.app.play_pause()
                     }
                     MiniButton {
+                        objectName: "miniStop"
                         iconName: "media-playback-stop"
                         enabled: root.app.current_index >= 0
-                        Accessible.name: qsTr("Stop")
+                            && root.app.playback_state !== "stopped"
+                        toolTip: qsTr("Stop")
                         onClicked: root.app.stop()
                     }
                     MiniButton {
+                        objectName: "miniNext"
                         iconName: "media-skip-forward"
                         enabled: root.app.playlist_count > 0
-                        Accessible.name: qsTr("Next")
+                        toolTip: qsTr("Next")
                         onClicked: root.app.next()
+                    }
+                    MiniButton {
+                        objectName: "miniRestore"
+                        iconName: "view-restore"
+                        toolTip: qsTr("Return to full player")
+                        onClicked: root.restoreFullPlayer()
                     }
 
                     Item { Layout.fillWidth: true }
