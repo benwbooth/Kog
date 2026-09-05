@@ -2,9 +2,24 @@
 set -euo pipefail
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 test_dir="$(mktemp -d -t kog-window-state.XXXXXX)"
+qt_version="$(pkg-config --modversion Qt6Core)"
+IFS=. read -r qt_major qt_minor qt_patch <<< "$qt_version"
+session_flags=()
+# Match build.rs: the private interface's session method first exists in 6.11.
+if (( qt_major > 6 || (qt_major == 6 && qt_minor >= 11) )); then
+  qt_qmake="${QMAKE:-$(command -v qmake6 || command -v qmake)}"
+  qt_headers="$("$qt_qmake" -query QT_INSTALL_HEADERS)"
+  if [[ -f "$qt_headers/QtGui/$qt_version/QtGui/qpa/qplatformwindow_p.h" ]]; then
+    session_flags=(-DKOG_WAYLAND_SESSION_RESTORE
+      -I"$qt_headers/QtGui/$qt_version/QtGui" -I"$qt_headers/QtGui/$qt_version"
+      -I"$qt_headers/QtCore/$qt_version/QtCore" -I"$qt_headers/QtCore/$qt_version")
+  fi
+fi
+echo "Testing window restoration with Qt $qt_version (${#session_flags[@]} private API compiler flags)"
 # Qt flags are intentionally word-split into individual compiler arguments.
 # shellcheck disable=SC2046
 c++ -std=c++17 -fPIC -I"$repo_dir/native" \
+  "${session_flags[@]}" \
   $(pkg-config --cflags Qt6Widgets Qt6Test) \
   "$repo_dir/tests/native/window_state.cpp" \
   "$repo_dir/native/kog_desktop_integration.cpp" \

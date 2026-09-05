@@ -187,7 +187,9 @@ fn wayland_session_headers() -> Vec<PathBuf> {
         return Vec::new();
     };
     let parts: Vec<u32> = version.split('.').filter_map(|part| part.parse().ok()).collect();
-    if parts.len() < 2 || (parts[0], parts[1]) < (6, 10) {
+    // QWaylandWindow exists in 6.10, but setSessionRestoreId was added in
+    // 6.11. The Flatpak KDE 6.10 SDK must use geometry-only restoration.
+    if parts.len() < 2 || (parts[0], parts[1]) < (6, 11) {
         return Vec::new();
     }
     let headers = PathBuf::from(headers);

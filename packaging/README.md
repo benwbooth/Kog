@@ -24,7 +24,7 @@ window positioning. Notification positions are saved independently of playback
 settings; drag the popup header to move it, or right-click it to reset.
 
 Main-window position restoration on Wayland uses Qt's session-restore interface
-when building against Qt 6.10 or newer with the matching private development
+when building against Qt 6.11 or newer with the matching private development
 headers, and requires compositor support for that protocol. Other Wayland
 builds still save size and maximized state; positioning remains compositor-owned.
 Windows, macOS, and X11 save and restore normal geometry directly. Geometry tests
