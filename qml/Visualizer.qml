@@ -13,6 +13,15 @@ ApplicationWindow {
     minimumHeight: 300
     color: "#10191f"
     property string settingsFile: ""
+    readonly property var modeIds: ["spectrum", "waveform", "spectrogram", "radial", "mirrored", "trails"]
+    readonly property var modeDescriptions: [
+        qsTr("40 logarithmic frequency bands • bass to treble"),
+        qsTr("Oscilloscope • recent decoded PCM samples"),
+        qsTr("Spectrogram • recent time left to right, bass to treble bottom to top"),
+        qsTr("Radial spectrum • frequency bands clockwise from the top"),
+        qsTr("Mirrored spectrum • frequency bands with a reflected display"),
+        qsTr("Waveform trails • ten recent PCM traces")
+    ]
     Settings {
         category: "Visualizer"
         fileName: root.settingsFile
@@ -25,8 +34,15 @@ ApplicationWindow {
             anchors.fill: parent
             anchors.leftMargin: 12
             anchors.rightMargin: 12
-            Label { text: qsTr("Visualizations"); font.bold: true; Layout.fillWidth: true }
-            ComboBox { id: mode; objectName: "visualizerMode"; model: [qsTr("Spectrum"), qsTr("Oscilloscope")] }
+            Label { text: qsTr("Visualizations"); font.bold: true; Layout.fillWidth: true; elide: Text.ElideRight }
+            ComboBox {
+                id: mode
+                objectName: "visualizerMode"
+                model: [qsTr("Spectrum"), qsTr("Oscilloscope"), qsTr("Spectrogram"),
+                        qsTr("Radial spectrum"), qsTr("Mirrored spectrum"), qsTr("Waveform trails")]
+                Layout.preferredWidth: root.width < 560 ? 160 : 190
+                onCurrentIndexChanged: if (currentIndex < 0 || currentIndex >= root.modeIds.length) currentIndex = 0
+            }
             ToolButton {
                 text: qsTr("Full screen")
                 icon.name: "view-fullscreen"
@@ -43,8 +59,18 @@ ApplicationWindow {
             app: root.app
             active: root.visible && root.visibility !== Window.Minimized
             waveform: mode.currentIndex === 1
+            mode: root.modeIds[mode.currentIndex] || "spectrum"
             Layout.fillWidth: true
             Layout.fillHeight: true
+        }
+        Label {
+            text: root.modeDescriptions[mode.currentIndex] || ""
+            color: "#98afb9"
+            font.pixelSize: 11
+            wrapMode: Text.WordWrap
+            Layout.fillWidth: true
+            Layout.leftMargin: 20
+            Layout.rightMargin: 20
         }
         RowLayout {
             Layout.fillWidth: true

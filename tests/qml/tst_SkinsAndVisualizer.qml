@@ -85,4 +85,26 @@ TestCase {
         wait(100)
         compare(browser.items.length, 0)
     }
+    function test_all_visualizer_modes_and_bounded_history() {
+        visualizer.show()
+        const plot = findChild(visualizer, "audioVisualization")
+        const selector = findChild(visualizer, "visualizerMode")
+        compare(selector.count, 6)
+        for (let i = 0; i < selector.count; ++i) {
+            selector.currentIndex = i
+            compare(plot.mode, visualizer.modeIds[i])
+            plot.updateFrame()
+            wait(50)
+            verify(plot.available)
+        }
+        selector.currentIndex = 2
+        for (let i = 0; i < 150; ++i) plot.updateFrame()
+        compare(plot.spectrumHistory.length, plot.historyLimit)
+        selector.currentIndex = 5
+        compare(plot.spectrumHistory.length, 0)
+        for (let i = 0; i < 25; ++i) plot.updateFrame()
+        compare(plot.waveHistory.length, 10)
+        visualizer.hide()
+        compare(plot.waveHistory.length, 0)
+    }
 }

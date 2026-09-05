@@ -47,8 +47,12 @@ Kog's playback volume and equalizer, but precedes output-device buffering; it
 is not a microphone/loopback feed.
 
 The Qt Quick Canvas renderer works with Qt's graphics backend on each platform;
-it does not force OpenGL. It renders blue/green bars or an oscilloscope, and offers
-full-screen display. Paused/stopped playback publishes silence; bars decay.
+it does not force OpenGL. Six blue/green views are available: spectrum,
+oscilloscope, scrolling spectrogram, radial spectrum, mirrored spectrum, and
+waveform trails. Each offers full-screen display. Paused/stopped playback
+publishes silence; bars decay. The spectrogram keeps at most 96 spectrum frames
+and the trails keep ten PCM traces. Histories clear when the mode changes or
+the window is hidden. No random or synthetic signal drives these views.
 
 ## Next backend: projectM
 

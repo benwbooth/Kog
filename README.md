@@ -70,8 +70,9 @@ skins, windowshade/shaped windows, and legacy visualizer plugins are not support
 Skin downloads retain their source and attribution; their artwork is not
 covered by Kog's license. Kog does not run scripts or executables from skins.
 
-**View → Visualizer** (**Ctrl+Shift+V**) offers a blue/green spectrum and an
-oscilloscope driven by the actual decoded audio. **F11** toggles full screen;
+**View → Visualizer** (**Ctrl+Shift+V**) offers six blue/green views driven by the
+actual decoded audio: spectrum, oscilloscope, scrolling spectrogram, radial
+spectrum, mirrored spectrum, and waveform trails. **F11** toggles full screen;
 **Escape** leaves full screen or closes the visualizer. No extra programs or
 preset downloads are needed. MilkDrop/projectM effects are not included yet.
 
