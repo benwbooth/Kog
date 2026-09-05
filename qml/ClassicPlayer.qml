@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import Qt.labs.settings
 
 ApplicationWindow {
     id: root
@@ -8,15 +9,24 @@ ApplicationWindow {
     required property var mainWindow
     property var skin: ({assets: {}})
     property int scaleFactor: 2
+    property bool toolbarVisible: false
+    property bool playlistVisible: true
+    property string settingsFile: ""
+    Settings {
+        category: "ClassicPlayer"
+        fileName: root.settingsFile
+        property alias toolbarVisible: root.toolbarVisible
+        property alias playlistVisible: root.playlistVisible
+    }
     readonly property var assets: skin.assets || ({})
     readonly property var textColors: (skin.textColors || "#000000,#71f5b0").split(",")
     title: qsTr("Kog Classic — ") + (skin.title || "")
     width: 275 * scaleFactor
-    height: 116 * scaleFactor + 44
+    height: (116 + (playlistVisible ? 232 : 0)) * scaleFactor + (toolbarVisible ? 44 : 0)
     minimumWidth: 275 * scaleFactor
     maximumWidth: 275 * scaleFactor
-    minimumHeight: 116 * scaleFactor + 44
-    maximumHeight: 116 * scaleFactor + 44
+    minimumHeight: (116 + (playlistVisible ? 232 : 0)) * scaleFactor + (toolbarVisible ? 44 : 0)
+    maximumHeight: minimumHeight
     signal openGallery()
     signal openEqualizer()
     signal openVisualizer()
@@ -28,6 +38,16 @@ ApplicationWindow {
         }
     }
     function restoreQueue() { root.hide(); mainWindow.showFromTray() }
+    Menu {
+        id: skinMenu
+        MenuItem { text: qsTr("Show playlist"); checkable: true; checked: root.playlistVisible; onTriggered: root.playlistVisible = !root.playlistVisible }
+        MenuItem { objectName: "classicToolbarToggle"; text: qsTr("Show Kog toolbar"); checkable: true; checked: root.toolbarVisible; onTriggered: root.toolbarVisible = !root.toolbarVisible }
+        MenuSeparator {}
+        MenuItem { text: qsTr("Skins…"); icon.name: "preferences-desktop-theme"; onTriggered: root.openGallery() }
+        MenuItem { text: qsTr("Equalizer…"); icon.name: "preferences-desktop-sound"; onTriggered: root.openEqualizer() }
+        MenuItem { text: qsTr("Visualizer…"); icon.name: "audio-equalizer"; onTriggered: root.openVisualizer() }
+        MenuItem { text: qsTr("Return to Kog"); icon.name: "view-restore"; onTriggered: root.restoreQueue() }
+    }
     function buttonAction(index) {
         if (index === 0) app.previous()
         else if (index === 1 && app.playback_state !== "playing") app.play_pause()
@@ -52,7 +72,7 @@ ApplicationWindow {
         }
         SkinSprite {
             x: 6; y: 3; width: 9; height: 9; source: root.assets.titlebar || ""
-            MouseArea { anchors.fill: parent; onClicked: root.openGallery() }
+            MouseArea { anchors.fill: parent; onClicked: skinMenu.popup() }
         }
         Rectangle { x: 111; y: 23; width: 153; height: 11; color: root.textColors[0] }
         Text {
@@ -128,15 +148,14 @@ ApplicationWindow {
                 ToolTip.visible: containsMouse; ToolTip.text: qsTr("Volume: %1%").arg(Math.round(root.app.volume * 100))
             }
         }
-        // Keep access to Kog's full equalizer and queue rather than present
-        // inactive controls or pretend to implement skinned secondary windows.
+        // The playlist uses the skin's PLEDIT artwork; EQ opens Kog's equalizer.
         SkinSprite {
             x: 219; y: 58; width: 23; height: 12; source: root.assets.shufrep || ""; sheetY: 61
             MouseArea { anchors.fill: parent; onClicked: root.openEqualizer() }
         }
         SkinSprite {
             x: 242; y: 58; width: 23; height: 12; source: root.assets.shufrep || ""; sheetX: 23; sheetY: 61
-            MouseArea { anchors.fill: parent; onClicked: root.restoreQueue() }
+            MouseArea { anchors.fill: parent; onClicked: root.playlistVisible = !root.playlistVisible }
         }
         SkinSprite {
             x: 164; y: 89; width: 47; height: 15; source: root.assets.shufrep || ""; sheetX: 28
@@ -149,11 +168,29 @@ ApplicationWindow {
             MouseArea { anchors.fill: parent; onClicked: root.app.select_repeat_mode(root.app.repeat_mode === "off" ? "playlist" : "off") }
         }
     }
+    ClassicPlaylist {
+        x: 0; y: 116 * root.scaleFactor
+        width: 275; height: 232
+        scale: root.scaleFactor
+        transformOrigin: Item.TopLeft
+        visible: root.playlistVisible
+        app: root.app
+        skin: root.skin
+        onCloseRequested: root.playlistVisible = false
+    }
+    MouseArea {
+        width: parent.width
+        height: 116 * root.scaleFactor
+        acceptedButtons: Qt.RightButton
+        onClicked: skinMenu.popup()
+    }
     footer: ToolBar {
-        height: 44
+        objectName: "classicToolbar"
+        visible: root.toolbarVisible
+        height: visible ? 44 : 0
         RowLayout {
             anchors.fill: parent
-            ToolButton { text: qsTr("Queue"); icon.name: "view-list-details"; display: root.scaleFactor === 1 ? AbstractButton.IconOnly : AbstractButton.TextOnly; onClicked: root.restoreQueue() }
+            ToolButton { text: qsTr("Queue"); icon.name: "view-list-details"; display: root.scaleFactor === 1 ? AbstractButton.IconOnly : AbstractButton.TextOnly; onClicked: root.playlistVisible = !root.playlistVisible }
             ToolButton { text: qsTr("Skins"); icon.name: "preferences-desktop-theme"; display: root.scaleFactor === 1 ? AbstractButton.IconOnly : AbstractButton.TextOnly; onClicked: root.openGallery() }
             ToolButton { text: qsTr("Visualize"); icon.name: "audio-equalizer"; display: root.scaleFactor === 1 ? AbstractButton.IconOnly : AbstractButton.TextOnly; onClicked: root.openVisualizer() }
             Item { Layout.fillWidth: true }

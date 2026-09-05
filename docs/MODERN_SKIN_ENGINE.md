@@ -1,6 +1,6 @@
 # Modern Winamp skin integration: engine decision
 
-Modern `.wal` skins remain unsupported until an engine is integrated and tested.
+Modern `.wal` skins use an experimental Qt WebEngine integration.
 They contain XML layouts, images, fonts, and MAKI bytecode. Supporting the file
 extension or drawing a static background would not implement the skin.
 
@@ -23,10 +23,12 @@ extension or drawing a static background would not implement the skin.
 The user approved the Qt WebEngine route. Webamp source is pinned at
 `88ed5815d968c201962f6549915579b3d2f93c5e` in `native/webamp`, and the Nix
 development shell supplies Qt WebEngine, Qt WebChannel, and Node.js for building
-the renderer bundle. This is dependency preparation only: no browser runtime,
-MAKI bridge, or modern archive importer is enabled in Kog yet. The acceptance
-requirements below still gate exposing modern skins in the gallery and shipping
-the larger browser dependency in platform packages.
+the renderer bundle. `web/modern` contains the adapter and committed bundle;
+`ModernPlayer.qml` exposes a narrow WebChannel command interface. The normal
+player remains QML, and all audio continues through Kog's decoder/playback core.
+Modern imports and the separate gallery filter are enabled. Native plugins,
+some upstream MAKI APIs, balance, and playback-rate controls remain unsupported.
+See `web/modern/README.md` for build instructions and current limits.
 
 ## Acceptance requirements for either route
 
@@ -43,5 +45,6 @@ the larger browser dependency in platform packages.
 - Reproducible Windows, macOS, AppImage, and Flatpak packaging, with appropriate
   third-party notices. No unlicensed sample skins bundled with Kog.
 
-MilkDrop-style rendering is a separate integration. Native libprojectM and the
-browser-based Butterchurn are candidates, not currently shipped backends.
+MilkDrop-style rendering is a separate integration. Modern skins' visualization
+slots currently use Kog's PCM spectrum, not a claimed MilkDrop implementation.
+Native libprojectM and browser-based Butterchurn remain candidates.

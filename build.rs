@@ -78,6 +78,8 @@ fn main() {
         "qml/CogButton.qml",
         "qml/AudioVisualization.qml",
         "qml/ClassicPlayer.qml",
+        "qml/ClassicPlaylist.qml",
+        "qml/ModernPlayer.qml",
         "qml/SkinBrowser.qml",
         "qml/SkinSprite.qml",
         "qml/Visualizer.qml",
@@ -99,6 +101,7 @@ fn main() {
     // Keep the bridge include root limited to Kog's hand-written integration
     // header instead of recursively tracking the whole repository.
     .crate_include_root(Some("native".to_owned()))
+    .qrc("web/modern/runtime.qrc")
     .qrc_resources([
         "qml/NotificationLayerShell.qml",
         "qml/icons/application-menu.svg",
@@ -151,6 +154,8 @@ fn main() {
     .cpp_file("native/kog_desktop_integration.cpp")
     .cpp_file("native/kog_window_state.cpp")
     .cpp_file("native/kog_skin_network.cpp")
+    .cpp_file("native/kog_modern_skin.h")
+    .cpp_file("native/kog_modern_skin.cpp")
     .cpp_file("native/kog_file_tree_search.h")
     .cpp_file("native/kog_file_tree_search.cpp")
     .cpp_file("native/kog_tree_archive.cpp")
@@ -160,7 +165,10 @@ fn main() {
     .qt_module("Network")
     .qt_module("Quick")
     .qt_module("QuickControls2")
-    .qt_module("Widgets");
+    .qt_module("Widgets")
+    .qt_module("WebEngineQuick")
+    .qt_module("WebEngineCore")
+    .qt_module("WebChannel");
     let session_headers = wayland_session_headers();
     // The archive tree uses the same in-process libarchive as compress-tools.
     let archive = pkg_config::Config::new()

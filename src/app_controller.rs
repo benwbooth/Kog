@@ -173,6 +173,10 @@ pub mod qobject {
         #[qinvokable]
         fn visualizer_frame(self: &AppController) -> QString;
         #[qinvokable]
+        fn skin_state(self: &AppController, include_tracks: bool) -> QString;
+        #[qinvokable]
+        fn update_skin_equalizer_band(self: Pin<&mut AppController>, index: i32, gain_db: f64);
+        #[qinvokable]
         fn show_now_playing_notification(self: Pin<&mut AppController>);
         #[qinvokable]
         fn equalizer_band_gain(self: &AppController, index: i32) -> f64;
@@ -1477,6 +1481,77 @@ fn saturating_i32(value: usize) -> i32 {
 
 fn valid_equalizer_gain(value: f64) -> Option<f32> {
     (value.is_finite() && (-20.0..=20.0).contains(&value)).then_some(value as f32)
+}
+
+const SKIN_EQ_FREQUENCIES: [f32; 10] = [
+    60.0, 170.0, 310.0, 600.0, 1000.0, 3000.0, 6000.0, 12000.0, 14000.0, 16000.0,
+];
+
+#[test]
+fn skin_equalizer_interpolates_in_log_frequency() {
+    assert_eq!(interpolate_eq(&[1000.0, 2000.0], &[0.0, 10.0], 1000.0), 0.0);
+    assert_eq!(
+        interpolate_eq(&[1000.0, 2000.0], &[0.0, 10.0], 2000.0),
+        10.0
+    );
+    assert!(
+        (interpolate_eq(&[1000.0, 2000.0], &[0.0, 10.0], 1000.0 * 2.0_f32.sqrt()) - 5.0).abs()
+            < 0.0001
+    );
+    assert_eq!(
+        interpolate_eq(&[1000.0, 2000.0], &[0.0, 10.0], 2500.0),
+        10.0
+    );
+    let mut gains = [0.0; 31];
+    set_interpolated_eq_gain(
+        &crate::equalizer::EQUALIZER_FREQUENCIES,
+        &mut gains,
+        14000.0,
+        6.0,
+    );
+    assert!(
+        (interpolate_eq(&crate::equalizer::EQUALIZER_FREQUENCIES, &gains, 14000.0) - 6.0).abs()
+            < 0.0001
+    );
+    assert!(gains[28] > 0.0 && gains[29] > 0.0);
+    assert_eq!(gains[27], 0.0);
+}
+
+// Read the native curve on a logarithmic frequency axis.
+fn interpolate_eq(frequencies: &[f32], gains: &[f32], hz: f32) -> f32 {
+    if hz <= frequencies[0] {
+        return gains[0];
+    }
+    for i in 1..frequencies.len() {
+        if hz <= frequencies[i] {
+            let fraction =
+                (hz / frequencies[i - 1]).ln() / (frequencies[i] / frequencies[i - 1]).ln();
+            return gains[i - 1] + fraction * (gains[i] - gains[i - 1]);
+        }
+    }
+    gains[gains.len() - 1]
+}
+
+// Project a skin control's requested gain onto its two neighboring native
+// bands. Sampling a ten-band curve only at native centers would otherwise
+// drop the 14 kHz control entirely (Kog has 12 kHz and 16 kHz centers).
+fn set_interpolated_eq_gain(frequencies: &[f32], gains: &mut [f32], hz: f32, target: f32) {
+    if hz <= frequencies[0] {
+        gains[0] = target;
+        return;
+    }
+    for i in 1..frequencies.len() {
+        if hz <= frequencies[i] {
+            let right = (hz / frequencies[i - 1]).ln() / (frequencies[i] / frequencies[i - 1]).ln();
+            let left = 1.0 - right;
+            let delta =
+                (target - (left * gains[i - 1] + right * gains[i])) / (left * left + right * right);
+            gains[i - 1] = (gains[i - 1] + left * delta).clamp(-20.0, 20.0);
+            gains[i] = (gains[i] + right * delta).clamp(-20.0, 20.0);
+            return;
+        }
+    }
+    gains[gains.len() - 1] = target;
 }
 
 fn default_music_directory() -> PathBuf {
@@ -2796,6 +2871,53 @@ impl qobject::AppController {
 
     pub fn visualizer_frame(&self) -> QString {
         QString::from(self.rust().playback.visualizer_frame())
+    }
+
+    pub fn skin_state(&self, include_tracks: bool) -> QString {
+        let state = self.rust();
+        let current = usize::try_from(state.current_index)
+            .ok()
+            .and_then(|source| state.visible_indices.iter().position(|i| *i == source))
+            .map(|i| i as i64)
+            .unwrap_or(-1);
+        // Only metadata is exposed to the renderer, never local audio paths.
+        let mut snapshot = serde_json::json!({
+            "playback": state.playback_state.to_string(), "position": state.position_seconds,
+            "duration": state.duration_seconds, "volume": state.volume,
+            "songInfo": ([state.current_codec.to_string(), state.current_sample_rate.to_string(),
+                state.current_channels.to_string(), state.current_bitrate.to_string()]
+                .into_iter().filter(|text| !text.is_empty()).collect::<Vec<_>>().join(" · ")),
+            "currentIndex": current, "revision": state.playlist_revision,
+            "shuffle": state.shuffle_mode.to_string(), "repeat": state.repeat_mode.to_string(),
+            "eqEnabled": state.equalizer_enabled, "eqPreamp": state.equalizer_preamp_db,
+            "eq": SKIN_EQ_FREQUENCIES.map(|hz| interpolate_eq(&crate::equalizer::EQUALIZER_FREQUENCIES, &state.equalizer_settings.gains_db, hz)),
+            "visualization": serde_json::from_str::<serde_json::Value>(&state.playback.visualizer_frame()).unwrap_or_default()
+        });
+        if include_tracks {
+            snapshot["tracks"] = state.visible_indices.iter().filter_map(|i| state.tracks.get(*i).map(|track| {
+                serde_json::json!({"id":i.to_string(), "title":track.title, "artist":track.artist,
+                    "album":track.album, "duration":track.duration.map(|d| d.as_secs_f64()).unwrap_or(0.0)})
+            })).collect::<Vec<_>>().into();
+        }
+        QString::from(snapshot.to_string())
+    }
+
+    pub fn update_skin_equalizer_band(mut self: Pin<&mut Self>, index: i32, gain_db: f64) {
+        let Some(index) = usize::try_from(index).ok().filter(|i| *i < 10) else {
+            return;
+        };
+        let Some(gain) = valid_equalizer_gain(gain_db) else {
+            return;
+        };
+        let mut settings = self.rust().equalizer_settings.clone();
+        set_interpolated_eq_gain(
+            &crate::equalizer::EQUALIZER_FREQUENCIES,
+            &mut settings.gains_db,
+            SKIN_EQ_FREQUENCIES[index],
+            gain,
+        );
+        self.as_mut()
+            .commit_equalizer_settings(settings, "Modern skin equalizer updated");
     }
 
     pub fn show_now_playing_notification(mut self: Pin<&mut Self>) {

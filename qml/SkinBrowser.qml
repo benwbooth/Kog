@@ -6,7 +6,7 @@ ApplicationWindow {
     id: root
     required property var library
     signal openClassic()
-    title: qsTr("Kog — Classic skins")
+    title: qsTr("Kog — Winamp skins")
     width: 880
     height: 670
     minimumWidth: 600
@@ -28,14 +28,14 @@ ApplicationWindow {
             Layout.fillWidth: true
             ColumnLayout {
                 Layout.fillWidth: true
-                Label { text: qsTr("Classic skins"); font.pixelSize: 23; font.bold: true }
-                Label { text: qsTr("Winamp 2 artwork. Kog playback."); opacity: 0.7 }
+                Label { text: qsTr("Winamp skins"); font.pixelSize: 23; font.bold: true }
+                Label { text: qsTr("Classic and modern artwork. Kog playback."); opacity: 0.7 }
             }
-            Button { text: qsTr("Import .wsz / .zip…"); icon.name: "document-open"; enabled: !root.library.busy; onClicked: root.library.import_file() }
+            Button { text: qsTr("Import .wsz / .wal / .zip…"); icon.name: "document-open"; enabled: !root.library.busy; onClicked: root.library.import_file() }
         }
         Label {
             Layout.fillWidth: true
-            text: qsTr("Optional classic main-player skins; queue and equalizer keep Kog’s native interface. Modern .wal skins are not supported yet.")
+            text: qsTr("Classic skins include a skinned playlist. Modern .wal support is experimental; native plugins and some MAKI features are unsupported.")
             wrapMode: Text.WordWrap
             opacity: 0.75
         }
@@ -46,6 +46,12 @@ ApplicationWindow {
                 TabButton { text: qsTr("Installed") }
             }
             Item { Layout.fillWidth: true }
+            ComboBox {
+                visible: !root.installedTab
+                model: [qsTr("Classic"), qsTr("Modern (experimental)")]
+                enabled: !root.library.busy
+                onActivated: { root.library.modern = currentIndex === 1; root.page = 1; root.search() }
+            }
             TextField {
                 id: query
                 visible: !root.installedTab
@@ -95,7 +101,7 @@ ApplicationWindow {
                                 anchors.fill: parent
                                 anchors.margins: 4
                                 asynchronous: true
-                                source: root.installedTab ? (card.modelData.assets.main || "") : "https://archive.org/services/img/" + card.modelData.id
+                                source: root.installedTab ? (card.modelData.assets ? card.modelData.assets.main || "" : "") : "https://archive.org/services/img/" + card.modelData.id
                                 sourceSize.width: 550
                                 sourceSize.height: 232
                                 fillMode: Image.PreserveAspectFit
@@ -161,8 +167,8 @@ ApplicationWindow {
                 font.pixelSize: 11
             }
             Button {
-                text: qsTr("Open classic player")
-                enabled: !!JSON.parse(root.library.active_json).assets
+                text: qsTr("Open player")
+                enabled: { const skin = JSON.parse(root.library.active_json); return !!skin.assets || !!skin.archivePath }
                 onClicked: root.openClassic()
             }
         }

@@ -1,4 +1,5 @@
 #include "kog_desktop_integration.h"
+#include "kog_modern_skin.h"
 
 #include <QtCore/QFileInfo>
 #include <QtCore/QMimeDatabase>
@@ -11,6 +12,7 @@
 
 std::unique_ptr<QApplication> kogApplicationNew()
 {
+    kogInitializeModernSkins();
     static QByteArray executableName("kog");
     static QByteArray sessionOption("-session");
     static QByteArray sessionId;
@@ -28,6 +30,7 @@ std::unique_ptr<QApplication> kogApplicationNew()
     }
 #endif
     auto application = std::make_unique<QApplication>(argumentCount, arguments.data());
+    kogRegisterModernSkinTypes();
     application->setOrganizationName(QStringLiteral("Kog"));
 #ifdef KOG_WAYLAND_SESSION_RESTORE
     if (application->platformName().startsWith(QStringLiteral("wayland"))

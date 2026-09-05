@@ -59,6 +59,23 @@ export LDAI_OUTPUT="$output_dir/Kog-$version-linux-x86_64.AppImage"
 # In that mode linuxdeploy runs from a cache directory and cannot discover a
 # plugin that is adjacent to the original AppImage.
 "$qt_plugin" --appdir "$app_dir"
+
+# Qt WebEngine's Chromium child process, resource packs, and locales live
+# outside the shared libraries. linuxdeploy-plugin-qt deploys them when it
+# sees QtWebEngineCore; fail the package job rather than publishing an AppImage
+# that can only use a system Qt installation.
+for required_path in \
+  "$app_dir/usr/libexec/QtWebEngineProcess" \
+  "$app_dir/usr/resources/qtwebengine_resources.pak" \
+  "$app_dir/usr/resources/qtwebengine_devtools_resources.pak" \
+  "$app_dir/usr/resources/qtwebengine_resources_100p.pak" \
+  "$app_dir/usr/resources/qtwebengine_resources_200p.pak" \
+  "$app_dir/usr/translations/qtwebengine_locales/en-US.pak"; do
+  if [[ ! -f "$required_path" ]]; then
+    echo "missing deployed Qt WebEngine runtime file: $required_path" >&2
+    exit 1
+  fi
+done
 "$linuxdeploy" --appdir "$app_dir" --output appimage
 
 while IFS= read -r executable; do

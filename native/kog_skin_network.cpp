@@ -2,6 +2,8 @@
 #include <QtCore/QEventLoop>
 #include <QtCore/QTimer>
 #include <QtCore/QHash>
+#include <QtCore/QFile>
+#include <QtCore/QXmlStreamReader>
 #include <QtGui/QImageReader>
 #include <QtNetwork/QNetworkAccessManager>
 #include <QtNetwork/QNetworkReply>
@@ -14,6 +16,33 @@ static bool allowed(const QUrl &url)
         && (url.port() == -1 || url.port() == 443)
         && (url.host() == QStringLiteral("archive.org")
             || url.host().endsWith(QStringLiteral(".archive.org")));
+}
+
+bool kogValidateModernSkin(const QString &path)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly) || file.size() > 2 * 1024 * 1024) return false;
+    QXmlStreamReader xml(&file);
+    bool root = false;
+    while (!xml.atEnd()) {
+        const auto token = xml.readNext();
+        if (token == QXmlStreamReader::DTD) return false;
+        if (!root && token == QXmlStreamReader::StartElement) {
+            if (xml.name().compare(QStringLiteral("WinampAbstractionLayer"), Qt::CaseInsensitive) != 0
+                && xml.name().compare(QStringLiteral("WasabiXML"), Qt::CaseInsensitive) != 0) return false;
+            root = true;
+        }
+    }
+    return root && !xml.hasError();
+}
+
+bool kogValidateModernImage(const QString &path)
+{
+    QImageReader reader(path);
+    const auto size = reader.size();
+    if (size.width() <= 0 || size.height() <= 0 || size.width() > 16384 || size.height() > 16384
+        || qint64(size.width()) * size.height() > 16 * 1024 * 1024) return false;
+    return !reader.read().isNull();
 }
 
 // Runs on the import worker. Never nests an event loop on the GUI thread.

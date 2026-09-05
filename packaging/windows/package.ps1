@@ -39,9 +39,28 @@ if ($env:VCPKG_ROOT) {
 }
 
 $deployQt = (Get-Command windeployqt.exe).Source
-& $deployQt --release --compiler-runtime --qmldir (Join-Path $root "qml") (Join-Path $stage "Kog.exe")
+& $deployQt --release --compiler-runtime --webengine --webenginecore --webchannel `
+    --qmldir (Join-Path $root "qml") (Join-Path $stage "Kog.exe")
 if ($LASTEXITCODE -ne 0) {
     throw "windeployqt failed"
+}
+
+$webEngineRuntime = @(
+    "Qt6WebChannel.dll",
+    "Qt6WebEngineCore.dll",
+    "Qt6WebEngineQuick.dll",
+    "QtWebEngineProcess.exe",
+    "resources/qtwebengine_resources.pak",
+    "resources/qtwebengine_devtools_resources.pak",
+    "resources/qtwebengine_resources_100p.pak",
+    "resources/qtwebengine_resources_200p.pak",
+    "resources/v8_context_snapshot.bin",
+    "translations/qtwebengine_locales/en-US.pak"
+)
+foreach ($relativePath in $webEngineRuntime) {
+    if (-not (Test-Path (Join-Path $stage $relativePath))) {
+        throw "Missing deployed Qt WebEngine runtime file: $relativePath"
+    }
 }
 
 $process = Start-Process -FilePath (Join-Path $stage "Kog.exe") -PassThru

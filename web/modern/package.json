@@ -1,0 +1,19 @@
+{
+  "name": "kog-modern-skin-runtime",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test test/*.test.mjs",
+    "check": "npm test && npm run build"
+  },
+  "dependencies": {
+    "@rgrove/parse-xml": "3.0.0",
+    "butterchurn": "2.6.7",
+    "butterchurn-presets": "2.4.7",
+    "id3-parser": "2.0.0",
+    "jszip": "3.10.1"
+  },
+  "devDependencies": { "esbuild": "0.25.12" }
+}

@@ -64,6 +64,7 @@ ApplicationWindow {
             && miniPlayer.visibility !== Window.Hidden
             && miniPlayer.visibility !== Window.Minimized)
         || (classicPlayer.visible && classicPlayer.visibility !== Window.Minimized)
+        || (!!modernLoader.item && modernLoader.item.visible && modernLoader.item.visibility !== Window.Minimized)
     readonly property real baseLuminance: 0.2126 * palette.base.r
         + 0.7152 * palette.base.g
         + 0.0722 * palette.base.b
@@ -197,6 +198,7 @@ ApplicationWindow {
     }
 
     function showFromTray() {
+        if (modernLoader.item) modernLoader.item.hide()
         miniPlayer.hide()
         classicPlayer.hide()
         root.visible = true
@@ -215,12 +217,14 @@ ApplicationWindow {
             root.hide()
             miniPlayer.hide()
             classicPlayer.hide()
+            if (modernLoader.item) modernLoader.item.hide()
             return
         }
         root.showFromTray()
     }
 
     function showMiniPlayer() {
+        if (modernLoader.item) modernLoader.item.hide()
         classicPlayer.hide()
         miniPlayer.show()
         miniPlayer.raise()
@@ -229,8 +233,22 @@ ApplicationWindow {
     }
 
     function showClassicPlayer() {
-        classicPlayer.skin = JSON.parse(skinLibrary.active_json)
+        const skin = JSON.parse(skinLibrary.active_json)
+        if (skin.kind === "modern") {
+            modernLoader.setSource("ModernPlayer.qml", { app: appController, mainWindow: root, skin: skin })
+            if (!modernLoader.item) return
+            modernLoader.item.skin = skin
+            modernLoader.item.show()
+            modernLoader.item.raise()
+            modernLoader.item.requestActivate()
+            classicPlayer.hide()
+            miniPlayer.hide()
+            root.hide()
+            return
+        }
+        classicPlayer.skin = skin
         if (!classicPlayer.skin.assets) return
+        if (modernLoader.item) modernLoader.item.hide()
         miniPlayer.hide()
         classicPlayer.show()
         classicPlayer.raise()
@@ -577,6 +595,13 @@ ApplicationWindow {
     SkinLibrary { id: skinLibrary }
     Timer { interval: 100; running: skinLibrary.busy; repeat: true; onTriggered: skinLibrary.poll() }
     SkinBrowser { id: skinBrowser; library: skinLibrary; onOpenClassic: root.showClassicPlayer() }
+    Loader { id: modernLoader }
+    Connections {
+        target: modernLoader.item
+        function onOpenGallery() { skinBrowser.show() }
+        function onOpenEqualizer() { equalizerWindow.show() }
+        function onOpenVisualizer() { visualizerWindow.show() }
+    }
     ClassicPlayer {
         id: classicPlayer
         app: appController
@@ -877,7 +902,7 @@ ApplicationWindow {
             Action { text: qsTr("Show Equalizer"); icon.name: "audio-equalizer"; shortcut: "Ctrl+E"; onTriggered: equalizerWindow.visible ? equalizerWindow.hide() : equalizerWindow.show() }
             Action { text: qsTr("Show Lyrics"); icon.name: "view-media-lyrics"; shortcut: "Ctrl+Shift+L"; onTriggered: lyricsWindow.show() }
             Action { text: qsTr("Show Mini Player"); icon.name: "view-restore"; shortcut: "Ctrl+Shift+M"; onTriggered: root.showMiniPlayer() }
-            Action { text: qsTr("Classic Skins…"); icon.name: "preferences-desktop-theme"; onTriggered: skinBrowser.show() }
+            Action { text: qsTr("Winamp Skins…"); icon.name: "preferences-desktop-theme"; onTriggered: skinBrowser.show() }
             Action { text: qsTr("Visualizer"); icon.name: "view-media-visualization"; shortcut: "Ctrl+Shift+V"; onTriggered: visualizerWindow.visible ? visualizerWindow.hide() : visualizerWindow.show() }
         }
 

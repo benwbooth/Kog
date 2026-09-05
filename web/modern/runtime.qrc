@@ -1,0 +1,9 @@
+<!DOCTYPE RCC>
+<RCC version="1.0">
+  <qresource prefix="/kog/modern">
+    <file alias="index.html">dist/index.html</file>
+    <file alias="runtime.js">dist/runtime.js</file>
+    <file alias="runtime.css">dist/runtime.css</file>
+    <file alias="THIRD_PARTY_NOTICES.txt">dist/THIRD_PARTY_NOTICES.txt</file>
+  </qresource>
+</RCC>

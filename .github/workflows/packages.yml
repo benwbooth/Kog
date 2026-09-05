@@ -36,7 +36,9 @@ jobs:
             libqt6svg6-dev libswresample-dev libwayland-dev libxkbcommon-dev \
             ninja-build patchelf pkg-config \
             qt6-base-dev qt6-declarative-dev qt6-tools-dev qt6-tools-dev-tools \
+            qt6-webengine-dev qt6-webchannel-dev \
             qml6-module-qt-labs-platform qml6-module-qt-labs-settings qml6-module-qtqml-models \
+            qml6-module-qtwebchannel qml6-module-qtwebengine \
             qml6-module-qtquick qml6-module-qtquick-controls \
             qml6-module-qtquick-layouts qml6-module-qtquick-templates \
             qml6-module-qtquick-window zlib1g-dev
@@ -104,12 +106,36 @@ jobs:
         run: |
           flatpak install --user --noninteractive -y flathub \
             org.kde.Platform//6.10 org.kde.Sdk//6.10 \
+            io.qt.qtwebengine.BaseApp//6.10 \
             org.freedesktop.Sdk.Extension.rust-stable//25.08
 
-      - name: Check Qt compatibility in the Flatpak SDK
+      - name: Check Qt compatibility in the Flatpak WebEngine SDK
         run: |
-          flatpak run --user --filesystem="$GITHUB_WORKSPACE":ro --command=bash \
-            org.kde.Sdk//6.10 "$GITHUB_WORKSPACE/tests/native/run-window-state.sh"
+          # kog_desktop_integration now includes the modern-skin bridge, whose
+          # headers and .pc files come from the WebEngine BaseApp rather than
+          # org.kde.Sdk.  --devel selects that BaseApp's SDK environment.
+          flatpak run --user --devel --filesystem="$GITHUB_WORKSPACE":ro --command=bash \
+            io.qt.qtwebengine.BaseApp//6.10 -ec '
+              export PKG_CONFIG_PATH="/app/lib/$(gcc -print-multiarch)/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+              # BaseApp keeps WebEngine's private shared-library dependencies
+              # in /app/lib while its Qt .pc files use the multiarch libdir.
+              export KOG_QTWEBENGINE_RPATH_LINK=/app/lib
+              bash "$1/tests/native/run-window-state.sh"
+            ' bash "$GITHUB_WORKSPACE"
+
+      - name: Check Qt WebEngine BaseApp payload
+        run: |
+          flatpak run --user --command=bash io.qt.qtwebengine.BaseApp//6.10 -ec '
+            test -f /app/lib/libQt6WebEngineCore.so
+            test -f /app/lib/libQt6WebEngineQuick.so
+            test -x /app/bin/QtWebEngineProcess
+            test -f /app/resources/qtwebengine_resources.pak
+            test -f /app/resources/qtwebengine_resources_100p.pak
+            test -f /app/resources/qtwebengine_resources_200p.pak
+            test -f /app/translations/qtwebengine_locales/en-US.pak
+            test -f /app/lib/qml/QtWebEngine/qmldir
+            find /usr/lib -name "libQt6WebChannel.so*" -type f -print -quit | grep -q .
+          '
 
       - name: Build Flatpak and OSTree repository
         run: |
@@ -150,6 +176,7 @@ jobs:
         with:
           version: "6.8.*"
           arch: win64_msvc2022_64
+          modules: "qtwebchannel qtwebengine"
           cache: true
 
       - name: Restore vcpkg binary cache
@@ -250,6 +277,7 @@ jobs:
       - uses: jurplel/install-qt-action@v4
         with:
           version: "6.8.*"
+          modules: "qtwebchannel qtwebengine"
           cache: true
 
       - name: Install native dependencies

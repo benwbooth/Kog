@@ -50,6 +50,29 @@ brew_search=(
 macdeployqt "$app" -qmldir="$root_dir/qml" -always-overwrite -verbose=2 \
   "${extra_executables[@]}" "${brew_search[@]}"
 
+# macdeployqt is Qt's supported WebEngine deployment path. Keep the bundle
+# check explicit because the browser helper, Chromium resource packs, and
+# locales are not ordinary application-library dependencies.
+for required_framework in QtWebChannel QtWebEngineCore QtWebEngineQuick; do
+  if [[ ! -d "$contents/Frameworks/$required_framework.framework" ]]; then
+    echo "missing deployed Qt framework: $required_framework" >&2
+    exit 1
+  fi
+done
+for required_path in \
+  '*/QtWebEngineProcess.app/Contents/MacOS/QtWebEngineProcess' \
+  '*/qtwebengine_resources.pak' \
+  '*/qtwebengine_devtools_resources.pak' \
+  '*/qtwebengine_resources_100p.pak' \
+  '*/qtwebengine_resources_200p.pak' \
+  '*/v8_context_snapshot*.bin' \
+  '*/qtwebengine_locales/en-US.pak'; do
+  if ! find "$contents" -path "$required_path" -type f -print -quit | grep -q .; then
+    echo "missing deployed Qt WebEngine runtime file matching: $required_path" >&2
+    exit 1
+  fi
+done
+
 # macdeployqt includes every Qt SQL driver even though Kog does not use QtSql.
 # Several of those optional drivers reference database SDKs absent from Qt's
 # distribution, so do not ship unusable plugins with dangling dependencies.

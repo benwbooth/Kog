@@ -16,6 +16,15 @@ TestCase {
         property real position_seconds: 42
         property real duration_seconds: 180
         property real volume: 0.5
+        property int playlist_count: 3
+        property int playlist_revision: 0
+        property int current_index: 0
+        property int activatedRow: -1
+        property string removedRows: ""
+        function track_number_at(row) { return String(row + 1) }
+        function track_value_at(row, column) { return column === "length" ? "3:00" : "Track " + row }
+        function activate_playlist_index(row) { activatedRow = row }
+        function remove_tracks(rows) { removedRows = rows }
         property int nextCount: 0
         property int frameCount: 0
         function next() { nextCount++ }
@@ -43,13 +52,29 @@ TestCase {
         function search(query, page) {}
     }
     Kog.Visualizer { id: visualizer; app: app; settingsFile: "/tmp/kog-visualizer-qml-test.ini" }
-    Kog.ClassicPlayer { id: classic; app: app; mainWindow: main }
+    Kog.ClassicPlayer { id: classic; app: app; mainWindow: main; settingsFile: "/tmp/kog-classic-qml-test.ini" }
     Kog.SkinBrowser { id: browser; library: library }
     function init() {
         failOnWarning(/TypeError|ReferenceError|Unable to assign|Binding loop/)
         app.playback_state = "playing"
     }
     function cleanup() { visualizer.hide(); classic.hide(); browser.hide() }
+    function test_classic_bitmap_playlist() {
+        const assets = {}
+        for (const name of ["main", "cbuttons", "titlebar", "numbers", "playpaus", "posbar", "volume", "shufrep", "text", "pledit"])
+            assets[name] = Qt.resolvedUrl("../../native/webamp/packages/webamp/assets/skins/base-2.91/" + name.toUpperCase() + ".BMP").toString()
+        classic.skin = {title: "Classic fixture", assets: assets}
+        classic.toolbarVisible = false
+        classic.playlistVisible = true
+        classic.show()
+        wait(150)
+        grabImage(classic.contentItem).save("/tmp/kog-classic-playlist-test.png")
+        const list = findChild(classic, "classicPlaylist")
+        compare(list.count, 3)
+        mouseDoubleClickSequence(list, 35, 19)
+        compare(app.activatedRow, 1)
+        classic.skin = {assets: {}}
+    }
     function test_transport_semantics() {
         classic.show()
         classic.buttonAction(1)
@@ -65,6 +90,27 @@ TestCase {
         const restored = main.restored
         classic.close()
         compare(main.restored, restored + 1)
+    }
+    function test_classic_playlist_and_toolbar() {
+        classic.toolbarVisible = false
+        classic.playlistVisible = true
+        classic.show()
+        const list = findChild(classic, "classicPlaylist")
+        compare(list.count, 3)
+        compare(classic.height, (116 + 232) * classic.scaleFactor)
+        compare(findChild(classic, "classicToolbar").visible, false)
+        findChild(classic, "classicToolbarToggle").triggered()
+        compare(classic.toolbarVisible, true)
+        compare(classic.height, (116 + 232) * classic.scaleFactor + 44)
+        const playlist = list.parent
+        playlist.selectRow(0, Qt.NoModifier)
+        playlist.selectRow(2, Qt.ShiftModifier)
+        compare(playlist.selectedRows.join(","), "0,1,2")
+        playlist.removeSelected()
+        compare(app.removedRows, "0,1,2")
+        classic.playlistVisible = false
+        compare(classic.height, 116 * classic.scaleFactor + 44)
+        classic.toolbarVisible = false
     }
     function test_visualizer_only_samples_while_visible() {
         visualizer.show()
