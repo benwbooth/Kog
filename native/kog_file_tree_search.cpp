@@ -1,4 +1,5 @@
 #include "kog_file_tree_search.h"
+#include "kog_tree_archive.h"
 
 #include <QtConcurrent/QtConcurrentRun>
 #include <QtCore/QDirIterator>
@@ -6,19 +7,27 @@
 #include <QtCore/QRegularExpression>
 #include <QtCore/QSet>
 #include <QtCore/QTimer>
+#include <QtCore/QFileSystemWatcher>
 #include <algorithm>
 
 namespace {
 constexpr int directoryRole = Qt::UserRole + 100;
 constexpr int browseRole = directoryRole + 1;
 constexpr int fetchStateRole = directoryRole + 2;
+constexpr int containerRole = directoryRole + 3;
 constexpr int matchLimit = 2000;
 constexpr int nodeLimit = 12000;
+struct TreeEntry {
+    QString path;
+    bool directory = false;
+    bool container = false;
+};
 struct SearchResult {
-    QMap<QString, bool> paths;
+    QMap<QString, TreeEntry> paths;
     QSet<QString> matchingDirectories;
     int matches = 0;
     bool limited = false;
+    int unreadableArchives = 0;
 };
 
 SearchResult scan(const QString &root, const QString &query,
@@ -28,29 +37,47 @@ SearchResult scan(const QString &root, const QString &query,
     const auto words = query.normalized(QString::NormalizationForm_KC).toCaseFolded().split(
         QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
     const QDir base(root);
+    auto match = [&](const QString &relative, const QString &name, const TreeEntry &entry,
+                     const QString &archiveRelative = QString()) {
+        const auto folded = name.normalized(QString::NormalizationForm_KC).toCaseFolded();
+        if (!std::all_of(words.begin(), words.end(), [&](const auto &word) { return folded.contains(word); }))
+            return;
+        result.paths.insert(relative, entry);
+        if (entry.container) result.matchingDirectories.insert(relative);
+        auto parent = QFileInfo(relative).path();
+        while (parent != "." && !parent.isEmpty()) {
+            if (!archiveRelative.isEmpty() && parent.startsWith(archiveRelative + '/')) {
+                result.paths.insert(parent, {kogArchiveUrl(base.filePath(archiveRelative),
+                    parent.mid(archiveRelative.size() + 1), true), true, true});
+            } else {
+                const auto path = base.filePath(parent);
+                const bool directory = parent != archiveRelative;
+                result.paths.insert(parent, {path, directory, true});
+            }
+            parent = QFileInfo(parent).path();
+        }
+        ++result.matches;
+        result.limited = result.matches >= matchLimit || result.paths.size() >= nodeLimit;
+    };
     QDirIterator entries(root, QDir::AllEntries | QDir::NoDotAndDotDot,
                          QDirIterator::Subdirectories); // Never follow directory symlinks.
     while (!cancel->load(std::memory_order_relaxed) && entries.hasNext()) {
         entries.next();
         const auto info = entries.fileInfo();
-        const auto name = info.fileName().normalized(QString::NormalizationForm_KC).toCaseFolded();
-        if (!std::all_of(words.begin(), words.end(), [&](const auto &word) {
-                return name.contains(word);
-            }))
-            continue;
         const auto relative = base.relativeFilePath(info.absoluteFilePath());
-        result.paths.insert(relative, info.isDir());
-        if (info.isDir()) result.matchingDirectories.insert(relative);
-        auto parent = QFileInfo(relative).path();
-        while (parent != QStringLiteral(".") && !parent.isEmpty()) {
-            result.paths.insert(parent, true);
-            parent = QFileInfo(parent).path();
+        const bool archive = !info.isDir() && kogIsArchive(info.absoluteFilePath());
+        match(relative, info.fileName(), {info.absoluteFilePath(), info.isDir(), info.isDir() || archive});
+        if (result.limited) break;
+        if (archive) {
+            const auto listing = kogListArchive(info.absoluteFilePath(), cancel);
+            if (!listing.error.isEmpty()) ++result.unreadableArchives;
+            for (auto it = listing.entries.cbegin(); it != listing.entries.cend() && !cancel->load(); ++it) {
+                match(relative + '/' + it.key(), QFileInfo(it.key()).fileName(),
+                      {kogArchiveUrl(info.absoluteFilePath(), it.key(), it.value()), it.value(), it.value()}, relative);
+                if (result.limited) break;
+            }
         }
-        ++result.matches;
-        if (result.matches >= matchLimit || result.paths.size() >= nodeLimit) {
-            result.limited = true;
-            break;
-        }
+        if (result.limited) break;
     }
     return result;
 }
@@ -60,13 +87,33 @@ SearchResult scan(const QString &root, const QString &query,
 // inside it, can lazily expose their real contents without a recursive rescan.
 class KogSearchResults : public QStandardItemModel {
 public:
-    KogSearchResults() : m_cancel(std::make_shared<std::atomic_bool>(false)) {}
+    KogSearchResults() : m_cancel(std::make_shared<std::atomic_bool>(false))
+    {
+        auto roles = roleNames();
+        roles.insert(QFileSystemModel::FileNameRole, "fileName");
+        roles.insert(QFileSystemModel::FilePathRole, "filePath");
+        setItemRoleNames(roles);
+        auto changed = [this](const QString &path) {
+            const auto target = watched.value(path);
+            if (target.isValid()) load(target, true);
+        };
+        connect(&watcher, &QFileSystemWatcher::directoryChanged, this, changed);
+        connect(&watcher, &QFileSystemWatcher::fileChanged, this, [this, changed](const QString &path) {
+            const auto target = watched.value(path);
+            if (target.isValid()) removeRows(0, rowCount(target), target);
+            changed(path);
+        });
+    }
     ~KogSearchResults() override { m_cancel->store(true); }
+    std::function<void(const QString &)> reportError;
 
     void resetResults(QStandardItem *root)
     {
         m_cancel->store(true);
         m_cancel = std::make_shared<std::atomic_bool>(false);
+        const auto watchPaths = watcher.directories() + watcher.files();
+        if (!watchPaths.isEmpty()) watcher.removePaths(watchPaths);
+        watched.clear();
         clear();
         if (root) appendRow(root);
     }
@@ -86,64 +133,101 @@ public:
     void fetchMore(const QModelIndex &parent) override
     {
         if (!canFetchMore(parent)) return;
+        load(parent, false);
+    }
+
+private:
+    struct Entries {
+        QMap<QString, TreeEntry> rows;
+        QString error;
+    };
+    std::shared_ptr<std::atomic_bool> m_cancel;
+    QFileSystemWatcher watcher;
+    QHash<QString, QPersistentModelIndex> watched;
+
+    void load(const QModelIndex &parent, bool refresh)
+    {
+        if (parent.data(fetchStateRole).toInt() == 1) return;
         setData(parent, 1, fetchStateRole);
         const QPersistentModelIndex target(parent);
         const auto cancel = m_cancel;
         const auto path = parent.data(QFileSystemModel::FilePathRole).toString();
-        QSet<QString> existing;
-        for (int row = 0; row < rowCount(parent); ++row)
-            existing.insert(index(row, 0, parent).data(QFileSystemModel::FileNameRole).toString());
-        auto *watcher = new QFutureWatcher<Entries>(this);
-        connect(watcher, &QFutureWatcher<Entries>::finished, this,
-                [this, watcher, target, cancel] {
-            watcher->deleteLater();
+        auto *job = new QFutureWatcher<Entries>(this);
+        connect(job, &QFutureWatcher<Entries>::finished, this,
+                [this, job, target, cancel, path, refresh] {
+            job->deleteLater();
             if (cancel->load() || !target.isValid()) return;
-            appendBatch(target, std::make_shared<Entries>(watcher->result()), 0, cancel);
+            auto entries = std::make_shared<Entries>(job->result());
+            if (!entries->error.isEmpty()) {
+                setData(target, 2, fetchStateRole);
+                if (reportError) reportError(QFileInfo(path).fileName() + ": " + entries->error);
+                return;
+            }
+            for (int row = rowCount(target) - 1; row >= 0; --row) {
+                const auto name = index(row, 0, target).data(QFileSystemModel::FileNameRole).toString();
+                if (refresh && !entries->rows.contains(name)) removeRow(row, target);
+                else entries->rows.remove(name);
+            }
+            if (!path.startsWith("kog-archive:")) {
+                watcher.addPath(path);
+                watched.insert(path, target);
+            }
+            appendBatch(target, entries, cancel);
         });
-        watcher->setFuture(QtConcurrent::run([path, existing, cancel] {
+        job->setFuture(QtConcurrent::run([path, cancel] {
             Entries entries;
+            auto location = kogArchiveLocation(path);
+            if (kogIsArchive(path)) location = {path, {}, true};
+            if (!location.archive.isEmpty()) {
+                const auto listing = kogListArchive(location.archive, cancel);
+                entries.error = listing.error;
+                const auto prefix = location.entry.isEmpty() ? QString() : location.entry + '/';
+                for (auto it = listing.entries.cbegin(); it != listing.entries.cend(); ++it) {
+                    if (!it.key().startsWith(prefix)) continue;
+                    const auto name = it.key().mid(prefix.size());
+                    if (name.isEmpty() || name.contains('/')) continue;
+                    entries.rows.insert(name, {kogArchiveUrl(location.archive, it.key(), it.value()),
+                                               it.value(), it.value()});
+                }
+                return entries;
+            }
             QDirIterator dir(path, QDir::AllEntries | QDir::NoDotAndDotDot);
             while (!cancel->load() && dir.hasNext()) {
                 dir.next();
                 const auto info = dir.fileInfo();
-                if (!existing.contains(info.fileName()))
-                    entries.append({info.fileName(), info.isDir()});
+                entries.rows.insert(info.fileName(), {info.absoluteFilePath(), info.isDir(),
+                    info.isDir() || kogIsArchive(info.absoluteFilePath())});
             }
-            std::sort(entries.begin(), entries.end(), [](const auto &a, const auto &b) {
-                return a.first < b.first;
-            });
             return entries;
         }));
     }
 
-private:
-    using Entries = QList<QPair<QString, bool>>;
-    std::shared_ptr<std::atomic_bool> m_cancel;
-
     void appendBatch(const QPersistentModelIndex &target,
-                     const std::shared_ptr<Entries> &entries, qsizetype offset,
+                     const std::shared_ptr<Entries> &entries,
                      const std::shared_ptr<std::atomic_bool> &cancel)
     {
         if (cancel->load() || !target.isValid()) return;
         auto *parent = itemFromIndex(target);
-        const QDir dir(target.data(QFileSystemModel::FilePathRole).toString());
         QList<QStandardItem *> batch;
-        const auto end = std::min(offset + 256, entries->size());
-        for (; offset < end; ++offset) {
-            const auto &[name, isDir] = entries->at(offset);
+        for (int count = 0; count < 256 && !entries->rows.isEmpty(); ++count) {
+            auto first = entries->rows.begin();
+            const auto name = first.key();
+            const auto entry = first.value();
+            entries->rows.erase(first);
             auto *item = new QStandardItem(name);
             item->setData(name, QFileSystemModel::FileNameRole);
-            item->setData(dir.filePath(name), QFileSystemModel::FilePathRole);
-            item->setData(isDir, directoryRole);
-            item->setData(isDir, browseRole);
+            item->setData(entry.path, QFileSystemModel::FilePathRole);
+            item->setData(entry.directory, directoryRole);
+            item->setData(entry.container, containerRole);
+            item->setData(entry.container, browseRole);
             item->setEditable(false);
             batch.append(item);
         }
         parent->appendRows(batch);
-        if (offset < entries->size()) {
+        if (!entries->rows.isEmpty()) {
             // Yield between batches so a large folder does not monopolize the UI.
-            QTimer::singleShot(0, this, [this, target, entries, offset, cancel] {
-                appendBatch(target, entries, offset, cancel);
+            QTimer::singleShot(0, this, [this, target, entries, cancel] {
+                appendBatch(target, entries, cancel);
             });
         } else {
             parent->sortChildren(0);
@@ -153,10 +237,13 @@ private:
 };
 
 KogFileTreeSearch::KogFileTreeSearch(QObject *parent)
-    : QSortFilterProxyModel(parent), m_results(std::make_unique<KogSearchResults>())
+    : QSortFilterProxyModel(parent), m_files(std::make_unique<KogSearchResults>()),
+      m_results(std::make_unique<KogSearchResults>())
 {
-    m_results->setItemRoleNames(m_files.roleNames());
-    setSourceModel(&m_files);
+    auto error = [this](const QString &message) { m_status = message; emit searchStateChanged(); };
+    m_files->reportError = error;
+    m_results->reportError = error;
+    setSourceModel(m_files.get());
     setDynamicSortFilter(false);
 }
 
@@ -168,20 +255,25 @@ KogFileTreeSearch::~KogFileTreeSearch()
 QModelIndex KogFileTreeSearch::setRootPath(const QString &path)
 {
     m_root = QDir::cleanPath(path);
-    m_files.setRootPath(m_root);
+    auto *root = new QStandardItem(QFileInfo(m_root).fileName());
+    root->setData(m_root, QFileSystemModel::FilePathRole);
+    root->setData(true, directoryRole);
+    root->setData(true, containerRole);
+    root->setData(true, browseRole);
+    m_files->resetResults(root);
+    m_files->fetchMore(m_files->index(0, 0));
     startSearch();
     return viewRootIndex();
 }
 
 QModelIndex KogFileTreeSearch::viewRootIndex() const
 {
-    return mapFromSource(sourceModel() == &m_files
-        ? m_files.index(m_root) : m_results->index(0, 0));
+    return mapFromSource(sourceModel()->index(0, 0));
 }
 
 bool KogFileTreeSearch::isSearchAncestor(const QModelIndex &index) const
 {
-    return sourceModel() == m_results.get() && index.data(directoryRole).toBool()
+    return sourceModel() == m_results.get() && index.data(containerRole).toBool()
         && !index.data(browseRole).toBool();
 }
 
@@ -190,10 +282,15 @@ QString KogFileTreeSearch::filePath(const QModelIndex &index) const
     return index.data(QFileSystemModel::FilePathRole).toString();
 }
 
+QString KogFileTreeSearch::displayPath(const QString &path) const
+{
+    const auto location = kogArchiveLocation(path);
+    return location.archive.isEmpty() ? path : location.archive + " :: " + location.entry;
+}
+
 bool KogFileTreeSearch::isDir(const QModelIndex &index) const
 {
-    return sourceModel() == &m_files ? m_files.isDir(mapToSource(index))
-                                   : index.data(directoryRole).toBool();
+    return index.data(containerRole).toBool();
 }
 
 void KogFileTreeSearch::setSearchText(const QString &query)
@@ -209,7 +306,7 @@ void KogFileTreeSearch::startSearch()
     if (m_cancel) m_cancel->store(true, std::memory_order_relaxed);
     const auto generation = ++m_generation;
     if (m_query.trimmed().isEmpty() || m_root.isEmpty()) {
-        setSourceModel(&m_files);
+        setSourceModel(m_files.get());
         m_results->resetResults(nullptr);
         m_searching = false;
         m_status.clear();
@@ -243,9 +340,10 @@ void KogFileTreeSearch::startSearch()
             const QFileInfo relative(it.key());
             auto *item = new QStandardItem(relative.fileName());
             item->setData(relative.fileName(), QFileSystemModel::FileNameRole);
-            item->setData(QDir(m_root).filePath(it.key()), QFileSystemModel::FilePathRole);
-            item->setData(it.value(), directoryRole);
-            item->setData(it.value() && (result.matchingDirectories.contains(it.key())
+            item->setData(it->path, QFileSystemModel::FilePathRole);
+            item->setData(it->directory, directoryRole);
+            item->setData(it->container, containerRole);
+            item->setData(it->container && (result.matchingDirectories.contains(it.key())
                 || parents.value(relative.path())->data(browseRole).toBool()), browseRole);
             item->setEditable(false);
             parents.value(relative.path())->appendRow(item);
@@ -258,6 +356,8 @@ void KogFileTreeSearch::startSearch()
         m_status = result.matches == 0 ? tr("No matching files or folders")
             : result.limited ? tr("%1 matches — narrow your search for more").arg(result.matches)
                              : tr("%n matching file(s) or folder(s)", nullptr, result.matches);
+        if (result.unreadableArchives)
+            m_status += tr(" — %n archive(s) could not be searched", nullptr, result.unreadableArchives);
         emit viewRootIndexChanged();
         emit searchStateChanged();
         emit searchResultsChanged();

@@ -464,7 +464,11 @@ fn prepare_scan_file(
         return prepared;
     }
 
-    let path = match canonical_path(&path) {
+    let path = match if crate::archive::is_tree_location(&path) {
+        Ok(path)
+    } else {
+        canonical_path(&path)
+    } {
         Ok(path) => path,
         Err(error) => {
             prepared.warnings.push(error);
@@ -502,6 +506,10 @@ fn scan_directory_paths(
     'roots: for root in paths {
         if cancel.load(AtomicOrdering::Relaxed) {
             break;
+        }
+        if crate::archive::is_tree_location(&root) {
+            files.push(root);
+            continue;
         }
         let root = match std::fs::canonicalize(&root) {
             Ok(root) => root,
@@ -4159,6 +4167,55 @@ mod tests {
             ]
         );
         assert!(local_paths_from_json(r#"{"path":"/music/01.flac"}"#).is_err());
+    }
+
+    #[test]
+    fn archive_tree_selection_flows_through_background_import() {
+        let fixture = tempfile::tempdir().unwrap();
+        let archive = fixture.path().join("songs.zip");
+        let wav = crate::archive::tests::wav_bytes(100);
+        crate::archive::tests::write_stored_zip(
+            &archive,
+            &[("Disc/b.wav", &wav), ("Disc/a.wav", &wav)],
+        );
+        let paths = vec![crate::archive::tests::tree_url(&archive, "Disc", true)];
+        let (sender, receiver) = std::sync::mpsc::sync_channel(64);
+        scan_directory_paths(
+            paths,
+            sender,
+            Arc::new(AtomicBool::new(false)),
+            DecoderRegistry::default(),
+            DecoderSettings::default(),
+            true,
+            true,
+        );
+        let prepared = receiver
+            .try_iter()
+            .find_map(|event| match event {
+                DirectoryScanEvent::Prepared(prepared) => Some(prepared),
+                _ => None,
+            })
+            .expect("Archive tree selection reaches import preparation");
+        assert!(prepared.warnings.is_empty(), "{:?}", prepared.warnings);
+        assert_eq!(prepared.tracks.len(), 2);
+        assert_eq!(
+            prepared.tracks[0]
+                .source
+                .archive_origin
+                .as_ref()
+                .unwrap()
+                .entry_name,
+            "Disc/a.wav"
+        );
+        assert_eq!(
+            prepared.tracks[1]
+                .source
+                .archive_origin
+                .as_ref()
+                .unwrap()
+                .entry_name,
+            "Disc/b.wav"
+        );
     }
 
     #[test]

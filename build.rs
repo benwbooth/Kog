@@ -92,6 +92,7 @@ fn main() {
         "qml/PlaylistRow.qml",
         "qml/Preferences.qml",
         "qml/TagEditor.qml",
+        "qml/TreeSearchLayout.qml",
     ]))
     // Keep the bridge include root limited to Kog's hand-written integration
     // header instead of recursively tracking the whole repository.
@@ -150,6 +151,8 @@ fn main() {
     .cpp_file("native/kog_skin_network.cpp")
     .cpp_file("native/kog_file_tree_search.h")
     .cpp_file("native/kog_file_tree_search.cpp")
+    .cpp_file("native/kog_tree_archive.cpp")
+    .cpp_file("native/kog_tree_archive_bridge.cpp")
     .qt_module("Concurrent")
     .qt_module("Gui")
     .qt_module("Network")
@@ -157,10 +160,15 @@ fn main() {
     .qt_module("QuickControls2")
     .qt_module("Widgets");
     let session_headers = wayland_session_headers();
+    // The archive tree uses the same in-process libarchive as compress-tools.
+    let archive = pkg_config::Config::new()
+        .probe("libarchive")
+        .expect("libarchive development headers are required for archive browsing");
     // SAFETY: only add include paths for the same Qt installation used by
     // cxx-qt, and a define for our own bridge. Do not alter Qt's ABI flags.
     let qt_builder = unsafe {
         qt_builder.cc_builder(|cc| {
+            cc.includes(&archive.include_paths);
             if !session_headers.is_empty() {
                 cc.includes(&session_headers);
                 cc.define("KOG_WAYLAND_SESSION_RESTORE", None);

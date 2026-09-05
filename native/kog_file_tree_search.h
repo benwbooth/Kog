@@ -8,9 +8,8 @@
 
 class KogSearchResults;
 
-// Normal browsing retains QFileSystemModel's lazy loading and file watching.
-// Search uses a bounded snapshot assembled off the GUI thread, including the
-// ancestors of each match so unopened subfolders are searchable too.
+// Lazy filesystem/archive browsing with filesystem watches. Search uses a
+// bounded background snapshot, including ancestors of files inside archives.
 class KogFileTreeSearch : public QSortFilterProxyModel {
     Q_OBJECT
     Q_PROPERTY(QString searchText READ searchText WRITE setSearchText NOTIFY searchTextChanged)
@@ -29,6 +28,7 @@ public:
     QString searchStatus() const { return m_status; }
     QModelIndex viewRootIndex() const;
     Q_INVOKABLE bool isSearchAncestor(const QModelIndex &index) const;
+    Q_INVOKABLE QString displayPath(const QString &path) const;
 signals:
     void searchTextChanged();
     void searchStateChanged();
@@ -36,7 +36,7 @@ signals:
     void searchResultsChanged();
 private:
     void startSearch();
-    QFileSystemModel m_files;
+    std::unique_ptr<KogSearchResults> m_files;
     std::unique_ptr<KogSearchResults> m_results;
     QString m_root;
     QString m_query;

@@ -48,6 +48,11 @@ single-click a folder to expand it, then double-click or drag files and folders
 into the playlist. Shift and Ctrl selection work for adding groups of items.
 The search box above the file tree finds file and folder names throughout the
 current folder and its subfolders, including folders you haven't opened yet.
+Archives such as ZIP, 7z, and RAR expand like folders, and search includes their
+contents. You can add individual archived tracks or internal folders to the
+playlist. Browsing only reads the archive index; extraction happens when adding
+music, with companion files kept together. Archives inside other archives are
+not supported yet.
 Clear the search (or press Escape in the box) to return to normal browsing.
 
 Kog uses the desktop's Qt theme and native file dialogs. Closing the main window

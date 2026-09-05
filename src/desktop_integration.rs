@@ -1,6 +1,9 @@
 #[cxx::bridge]
 mod ffi {
     unsafe extern "C++" {
+        include!("kog/kog_tree_archive_bridge.h");
+        #[cxx_name = "kogConfigureArchiveDecoder"]
+        fn configure_archive_decoder(decoder: fn(bytes: &[u8]) -> String);
         include!("kog/kog_desktop_integration.h");
 
         type QApplication;
@@ -29,6 +32,7 @@ pub struct DesktopApplication(cxx::UniquePtr<ffi::QApplication>);
 
 impl DesktopApplication {
     pub fn new() -> Self {
+        ffi::configure_archive_decoder(crate::text_encoding::decode);
         Self(ffi::application_new())
     }
 

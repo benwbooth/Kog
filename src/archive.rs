@@ -33,7 +33,52 @@ pub struct ExtractedArchive {
     temporary_directory: TempDir,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub struct TreeLocation {
+    pub archive: PathBuf,
+    pub entry: String,
+    pub directory: bool,
+}
+
+pub fn is_tree_location(path: &Path) -> bool {
+    path.to_str()
+        .is_some_and(|path| path.starts_with("kog-archive:"))
+}
+
+pub fn tree_location(path: &Path) -> Result<Option<TreeLocation>, String> {
+    if !is_tree_location(path) {
+        return Ok(None);
+    }
+    let url = url::Url::parse(path.to_str().unwrap()).map_err(|e| e.to_string())?;
+    let mut archive = None;
+    let mut entry = None;
+    let mut directory = None;
+    for (key, value) in url.query_pairs() {
+        match key.as_ref() {
+            "archive" if archive.is_none() => archive = Some(PathBuf::from(value.as_ref())),
+            "entry" if entry.is_none() => entry = Some(value.into_owned()),
+            "directory" if directory.is_none() && matches!(value.as_ref(), "0" | "1") => {
+                directory = Some(value == "1")
+            }
+            _ => return Err("Invalid archive tree location".into()),
+        }
+    }
+    let archive = archive
+        .filter(|p| p.is_absolute() && is_path(p))
+        .ok_or("Invalid archive tree source")?;
+    let entry = entry.ok_or("Missing archive entry")?;
+    let entry = portable_name(&safe_relative_path(&entry)?);
+    Ok(Some(TreeLocation {
+        archive,
+        entry,
+        directory: directory.ok_or("Missing archive entry type")?,
+    }))
+}
+
 impl ExtractedArchive {
+    pub fn root(&self) -> &Path {
+        self.temporary_directory.path()
+    }
     pub fn open(path: &Path) -> Result<Self, String> {
         if !is_path(path) {
             return Err(format!(
@@ -359,7 +404,7 @@ pub(crate) mod tests {
         0x03, 0x05, 0x04, 0x00,
     ];
 
-    fn wav_bytes(seed: i16) -> Vec<u8> {
+    pub(crate) fn wav_bytes(seed: i16) -> Vec<u8> {
         const SAMPLE_RATE: u32 = 8_000;
         const FRAMES: u32 = 80;
         let data_size = FRAMES * 2;
@@ -491,6 +536,84 @@ pub(crate) mod tests {
             assert!(is_path(Path::new(&format!("music.{extension}"))));
         }
         assert!(!is_path(Path::new("music.tar")));
+    }
+
+    pub(crate) fn tree_url(archive: &Path, entry: &str, directory: bool) -> PathBuf {
+        let mut url = url::Url::parse("kog-archive:").unwrap();
+        url.query_pairs_mut()
+            .append_pair("archive", archive.to_str().unwrap())
+            .append_pair("entry", entry)
+            .append_pair("directory", if directory { "1" } else { "0" });
+        PathBuf::from(url.as_str())
+    }
+
+    #[test]
+    fn tree_archive_selection_keeps_identity_companions_and_shared_workspace() {
+        let fixture = tempfile::tempdir().unwrap();
+        let archive = fixture.path().join("Set + 日本語.zip");
+        let wav = wav_bytes(100);
+        write_stored_zip(
+            &archive,
+            &[
+                ("Disc/b + #%.wav", &wav),
+                ("Disc/a.wav", &wav),
+                ("Disc/companion.txt", b"keep me"),
+                ("Other/c.wav", &wav),
+            ],
+        );
+        let registry = DecoderRegistry::default();
+        let selected = tree_url(&archive, "Disc/b + #%.wav", false);
+        assert_eq!(
+            tree_location(&selected).unwrap().unwrap().entry,
+            "Disc/b + #%.wav"
+        );
+        let one = registry.expand_detailed(selected).unwrap();
+        assert_eq!(one.sources.len(), 1);
+        let source = &one.sources[0];
+        assert_eq!(
+            source.archive_origin.as_ref().unwrap().entry_name,
+            "Disc/b + #%.wav"
+        );
+        assert!(
+            source
+                .path
+                .parent()
+                .unwrap()
+                .join("companion.txt")
+                .is_file()
+        );
+        assert!(registry.probe(source).is_ok());
+        let worker = registry.background_worker(DecoderSettings::default());
+        let folder = worker
+            .expand_detailed(tree_url(&archive, "Disc", true))
+            .unwrap();
+        assert_eq!(folder.sources.len(), 2);
+        assert_eq!(
+            folder.sources[0]
+                .archive_origin
+                .as_ref()
+                .unwrap()
+                .entry_name,
+            "Disc/a.wav"
+        );
+        assert_eq!(
+            folder.sources[1].path, source.path,
+            "Selections reuse one extracted workspace"
+        );
+        drop(worker);
+        assert!(
+            source.path.is_file(),
+            "Queued tracks outlive the import worker"
+        );
+        assert!(
+            registry
+                .expand_detailed(tree_url(&archive, "Dis", true))
+                .is_err(),
+            "Directory selection uses a path boundary"
+        );
+        for name in ["../outside.wav", "/absolute.wav", "C:/absolute.wav"] {
+            assert!(tree_location(&tree_url(&archive, name, false)).is_err());
+        }
     }
 
     #[test]

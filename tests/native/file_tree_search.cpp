@@ -1,4 +1,7 @@
 #include "kog_file_tree_search.h"
+#include "kog_tree_archive.h"
+#include <archive.h>
+#include <archive_entry.h>
 #include <QtCore/QCoreApplication>
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QFile>
@@ -49,6 +52,27 @@ static QModelIndex childNamed(KogFileTreeSearch &model, const QModelIndex &paren
     return {};
 }
 
+static void writeArchive(const QString &path, bool sevenZip = false)
+{
+    auto *writer = archive_write_new();
+    check((sevenZip ? archive_write_set_format_7zip(writer) : archive_write_set_format_zip(writer)) == ARCHIVE_OK,
+          "Create real archive fixture with libarchive");
+    const auto filename = QFile::encodeName(path);
+    check(archive_write_open_filename(writer, filename.constData()) == ARCHIVE_OK, "Open archive fixture");
+    for (const auto &name : {"Disc/Hidden Tune.mid", "Disc/日本語 + #%.mid", "Other/song.flac", "../escape.mid"}) {
+        auto *entry = archive_entry_new();
+        archive_entry_set_pathname_utf8(entry, name);
+        archive_entry_set_filetype(entry, AE_IFREG);
+        archive_entry_set_perm(entry, 0644);
+        archive_entry_set_size(entry, 4);
+        check(archive_write_header(writer, entry) >= ARCHIVE_WARN, "Write archive header");
+        check(archive_write_data(writer, "test", 4) == 4, "Write archive data");
+        archive_entry_free(entry);
+    }
+    check(archive_write_close(writer) == ARCHIVE_OK, "Close archive fixture");
+    archive_write_free(writer);
+}
+
 int main(int argc, char **argv)
 {
     QApplication app(argc, argv);
@@ -78,6 +102,7 @@ int main(int argc, char **argv)
                 anchors.fill: parent
                 model: testModel
                 rootIndex: testModel.viewRootIndex
+                opacity: searchLayout.ready && !testModel.searching ? 1 : 0
                 delegate: TreeViewDelegate {
                     required property string fileName
                     required property string filePath
@@ -85,24 +110,14 @@ int main(int argc, char **argv)
                     text: fileName
                 }
             }
-            Connections {
-                target: testModel
-                function onSearchResultsChanged() {
-                    if (testModel.searchText.length && !testModel.searching)
-                        Qt.callLater(function() {
-                            tree.forceLayout()
-                            if (!testModel.searchText.length || testModel.searching) return
-                            for (let row = 0; row < tree.rows; ++row) {
-                                if (testModel.isSearchAncestor(tree.index(row, 0))) {
-                                    tree.expand(row)
-                                    tree.forceLayout()
-                                }
-                            }
-                        })
-                }
+            TreeSearchLayout {
+                id: searchLayout
+                objectName: "searchLayout"
+                view: tree
+                model: testModel
             }
         }
-    )", QUrl("file:///kog-file-tree-search-test.qml"));
+    )", QUrl::fromLocalFile(QFileInfo(QString::fromUtf8(__FILE__)).dir().absoluteFilePath("../../qml/TreeSearchHarness.qml")));
     std::unique_ptr<QObject> view(component.create());
     if (!view) std::fprintf(stderr, "%s\n", qPrintable(component.errorString()));
     check(bool(view), "Create real QML TreeView with the search model");
@@ -122,6 +137,7 @@ int main(int argc, char **argv)
     check(song.data(QFileSystemModel::FileNameRole).toString() == QString::fromUtf8("日本語 Theme.mid"),
           "File name role for QML and MIME icons");
     auto *tree = view->findChild<QObject *>("tree");
+    auto *layout = view->findChild<QObject *>("searchLayout");
     QElapsedTimer layoutTimer;
     layoutTimer.start();
     while (tree->property("rows").toInt() != 4 && layoutTimer.elapsed() < 5000) {
@@ -134,7 +150,10 @@ int main(int argc, char **argv)
                      tree->property("rootIndex").value<QModelIndex>().isValid(),
                      model.rowCount(model.viewRootIndex()));
     check(tree->property("rows").toInt() == 4, "QML auto-expands matching ancestors");
+    waitFor([&] { return layout->property("ready").toBool(); }, "Results become visible after layout frames settle");
+    check(tree->property("opacity").toDouble() == 1, "Stable results are visible");
     model.setSearchText(QString::fromUtf8("日本語 theme"));
+    check(tree->property("opacity").toDouble() == 0, "Intermediate search/model resets are never painted");
     settle(model);
     check(model.rowCount(model.viewRootIndex()) == 1, "Unicode and multiple search terms");
 
@@ -162,7 +181,7 @@ int main(int argc, char **argv)
     check(QMetaObject::invokeMethod(tree, "toggleExpanded", Q_ARG(int, 0)), "Reopen folder");
     check(model.rowCount(matchedAlbum) == 2 && !model.canFetchMore(matchedAlbum),
           "Reopening a folder does not duplicate its children");
-    auto empty = childNamed(model, matchedAlbum, "Empty");
+    QPersistentModelIndex empty(childNamed(model, matchedAlbum, "Empty"));
     model.fetchMore(empty);
     waitFor([&] { return !model.hasChildren(empty); }, "Empty folders finish loading without phantom children");
 
@@ -193,7 +212,7 @@ int main(int argc, char **argv)
     check(model.rowCount(model.viewRootIndex()) == 0, "Changing root cancels old search");
     model.setSearchText("");
     check(!model.searching() && model.searchStatus().isEmpty(), "Clear cancels search and restores browsing");
-    check(qobject_cast<QFileSystemModel *>(model.sourceModel()), "Live filesystem restored");
+    check(model.filePath(model.viewRootIndex()) == base.filePath("Other"), "Live filesystem restored");
     for (int i = 0; i < 2010; ++i) {
         QFile file(base.filePath(QString("Other/limit-%1.mid").arg(i)));
         check(file.open(QIODevice::WriteOnly), "Create limit fixture");
@@ -214,7 +233,63 @@ int main(int argc, char **argv)
     model.fetchMore(model.index(0, 0, model.viewRootIndex()));
     model.setSearchText("");
     QCoreApplication::processEvents();
-    check(qobject_cast<QFileSystemModel *>(model.sourceModel()), "Clearing search cancels pending folder expansion");
+    check(model.filePath(model.viewRootIndex()) == base.absolutePath(), "Clearing search restores the actual browse root");
+
+    const auto zip = base.filePath(QString::fromUtf8("Pack + 日本語.zip"));
+    writeArchive(zip);
+    waitFor([&] { return childNamed(model, model.viewRootIndex(), QFileInfo(zip).fileName()).isValid(); },
+            "Live directory watcher discovers a newly created archive");
+    QPersistentModelIndex zipIndex(childNamed(model, model.viewRootIndex(), QFileInfo(zip).fileName()));
+    check(model.hasChildren(zipIndex) && model.canFetchMore(zipIndex), "Archives expand in normal browsing");
+    model.fetchMore(zipIndex);
+    waitFor([&] { return model.rowCount(zipIndex) == 2; }, "Archive exposes implied internal directories");
+    QPersistentModelIndex zipDisc(childNamed(model, zipIndex, "Disc"));
+    model.fetchMore(zipDisc);
+    waitFor([&] { return model.rowCount(zipDisc) == 2; }, "Internal archive directories expand lazily");
+    auto encoded = childNamed(model, zipDisc, QString::fromUtf8("日本語 + #%.mid"));
+    auto location = kogArchiveLocation(model.filePath(encoded));
+    check(location.archive == zip && location.entry == QString::fromUtf8("Disc/日本語 + #%.mid")
+              && !location.directory, "Archive identities round-trip Unicode and URL punctuation");
+    auto listing = kogListArchive(zip, std::make_shared<std::atomic_bool>(false));
+    check(!listing.entries.contains("../escape.mid") && !listing.entries.contains("escape.mid"),
+          "Unsafe archive paths never enter the tree");
+    model.setSearchText("Hidden Tune");
+    settle(model);
+    waitFor([&] { return tree->property("rows").toInt() == 3; },
+            "Searching inside a closed archive reveals the archive, directory, and matching file");
+    auto foundZip = model.index(0, 0, model.viewRootIndex());
+    auto foundDisc = model.index(0, 0, foundZip);
+    auto foundSong = model.index(0, 0, foundDisc);
+    check(kogArchiveLocation(model.filePath(foundSong)).entry == "Disc/Hidden Tune.mid",
+          "Search results preserve playable archive-member identities");
+    model.setSearchText("Pack");
+    settle(model);
+    QPersistentModelIndex pack(model.index(0, 0, model.viewRootIndex()));
+    check(model.canFetchMore(pack), "An archive-name match remains expandable");
+    model.fetchMore(pack);
+    waitFor([&] { return model.rowCount(pack) == 2; }, "Browse all contents of an archive-name match");
+    const auto sevenZip = base.filePath("compressed.7z");
+    writeArchive(sevenZip, true);
+    check(kogListArchive(sevenZip, std::make_shared<std::atomic_bool>(false)).entries.contains("Disc/Hidden Tune.mid"),
+          "7z archives use the same real in-process reader");
+    check(base.mkpath("directory.zip"), "Create a directory with an archive suffix");
+    check(!kogIsArchive(base.filePath("directory.zip")), "Real directories are never mistaken for archives");
+    QFile broken(base.filePath("broken.zip"));
+    check(broken.open(QIODevice::WriteOnly), "Create damaged archive fixture");
+    broken.write("not an archive");
+    broken.close();
+    model.setSearchText("no such song");
+    settle(model);
+    check(model.searchStatus().contains("could not be searched"), "Unsearchable archives are reported without hanging");
+    model.setSearchText("");
+    QFile live(base.filePath("Live.mid"));
+    check(live.open(QIODevice::WriteOnly), "Create live directory entry");
+    live.close();
+    waitFor([&] { return childNamed(model, model.viewRootIndex(), "Live.mid").isValid(); },
+            "Normal browsing retains live filesystem updates");
+    check(live.remove(), "Remove temporary test entry");
+    waitFor([&] { return !childNamed(model, model.viewRootIndex(), "Live.mid").isValid(); },
+            "Removed files disappear without resetting the whole tree");
     model.setSearchText("limit"); // Destruction during a scan is safe.
     std::puts("File tree search tests passed");
 }

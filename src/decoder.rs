@@ -5,7 +5,7 @@ use std::io::Cursor;
 use std::num::{NonZeroU16, NonZeroU32};
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::Duration;
 use std::time::SystemTime;
 
@@ -343,9 +343,15 @@ impl DecoderSettings {
     }
 }
 
+type ArchiveTreeCache = std::collections::HashMap<
+    (PathBuf, SystemTime, u64),
+    Arc<OnceLock<Result<Arc<crate::archive::ExtractedArchive>, String>>>,
+>;
+
 pub struct DecoderRegistry {
     backends: Vec<Box<dyn DecoderBackend>>,
     archive_workspaces: Arc<Mutex<Vec<tempfile::TempDir>>>,
+    archive_tree_cache: Arc<Mutex<ArchiveTreeCache>>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -388,6 +394,7 @@ impl DecoderRegistry {
                 Box::new(crate::vgmstream_decoder::VgmstreamBackend),
             ],
             archive_workspaces: Arc::new(Mutex::new(Vec::new())),
+            archive_tree_cache: Arc::new(Mutex::new(ArchiveTreeCache::new())),
         }
     }
 
@@ -396,6 +403,7 @@ impl DecoderRegistry {
     pub fn background_worker(&self, settings: DecoderSettings) -> Self {
         let mut worker = Self::new(settings);
         worker.archive_workspaces = Arc::clone(&self.archive_workspaces);
+        worker.archive_tree_cache = Arc::clone(&self.archive_tree_cache);
         worker
     }
 
@@ -405,7 +413,87 @@ impl DecoderRegistry {
     }
 
     pub fn expand_detailed(&self, path: PathBuf) -> Result<ExpansionResult, String> {
+        if let Some(location) = crate::archive::tree_location(&path)? {
+            return self.expand_archive_tree(location);
+        }
         self.expand_local(path, None, &mut Vec::new(), 0)
+    }
+
+    fn expand_archive_tree(
+        &self,
+        location: crate::archive::TreeLocation,
+    ) -> Result<ExpansionResult, String> {
+        let path = location.archive.canonicalize().map_err(|e| e.to_string())?;
+        let metadata = path.metadata().map_err(|e| e.to_string())?;
+        let key = (
+            path.clone(),
+            metadata.modified().map_err(|e| e.to_string())?,
+            metadata.len(),
+        );
+        let slot = self
+            .archive_tree_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(key)
+            .or_default()
+            .clone();
+        // Concurrent selections share one extraction, including companion
+        // files. Different archives can still extract on separate workers.
+        let extracted = slot
+            .get_or_init(|| crate::archive::ExtractedArchive::open(&path).map(Arc::new))
+            .as_ref()
+            .map_err(Clone::clone)?;
+        let prefix = format!("{}/", location.entry);
+        let mut entries = extracted
+            .entries
+            .iter()
+            .filter(|entry| {
+                if location.directory {
+                    entry.name.starts_with(&prefix)
+                } else {
+                    entry.name == location.entry
+                }
+            })
+            .collect::<Vec<_>>();
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        let mut result = ExpansionResult {
+            sources: Vec::new(),
+            warnings: extracted.warnings.clone(),
+        };
+        for entry in entries {
+            if crate::archive::is_path(&entry.path) {
+                result
+                    .warnings
+                    .push(format!("Nested archive {} is not supported", entry.name));
+                continue;
+            }
+            if !self.accepts_path(&entry.path) {
+                continue;
+            }
+            match self.expand_local(entry.path.clone(), None, &mut Vec::new(), 0) {
+                Ok(mut expansion) => {
+                    for source in &mut expansion.sources {
+                        let logical = source
+                            .path
+                            .strip_prefix(extracted.root())
+                            .map(crate::archive::portable_name)
+                            .unwrap_or_else(|_| entry.name.clone());
+                        source.set_archive_origin(path.clone(), logical);
+                    }
+                    result.sources.extend(expansion.sources);
+                    result.warnings.extend(expansion.warnings);
+                }
+                Err(error) => result.warnings.push(error),
+            }
+        }
+        if result.sources.is_empty() {
+            return Err(format!(
+                "No playable entries in {} :: {}",
+                path.display(),
+                location.entry
+            ));
+        }
+        Ok(result)
     }
 
     pub fn expand_remote_url(&self, value: &str) -> Result<ExpansionResult, String> {
@@ -426,7 +514,8 @@ impl DecoderRegistry {
     }
 
     pub fn accepts_path(&self, path: &Path) -> bool {
-        crate::playlist::Playlist::is_path(path)
+        crate::archive::is_tree_location(path)
+            || crate::playlist::Playlist::is_path(path)
             || crate::archive::is_path(path)
             || self.select(path).is_some()
     }

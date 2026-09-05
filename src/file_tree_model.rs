@@ -121,6 +121,12 @@ impl qobject::FileTreeModel {
     }
 
     pub fn icon_name(&self, path: QString) -> QString {
+        if let Ok(Some(location)) = crate::archive::tree_location(Path::new(&path.to_string())) {
+            if location.directory {
+                return QString::from("folder");
+            }
+            return qobject::themed_file_icon_name(&QString::from(location.entry.as_str()));
+        }
         qobject::themed_file_icon_name(&path)
     }
 

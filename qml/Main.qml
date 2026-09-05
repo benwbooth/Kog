@@ -1414,7 +1414,7 @@ ApplicationWindow {
                         objectName: "treeSearchField"
                         Layout.fillWidth: true
                         placeholderText: qsTr("Search files and folders…")
-                        Accessible.name: qsTr("Search music folder and subfolders")
+                        Accessible.name: qsTr("Search music folder, subfolders, and archive contents")
                         selectByMouse: true
                         maximumLength: 200
                         onTextChanged: {
@@ -1447,23 +1447,12 @@ ApplicationWindow {
                     target: fileTreeModel
                     function onSearchResultsChanged() {
                         root.clearTreeSelection()
-                        if (fileTreeModel.searchText.trim().length > 0
-                                && !fileTreeModel.searching)
-                            Qt.callLater(function() {
-                                if (!fileTreeModel.searchText.trim().length
-                                        || fileTreeModel.searching) return
-                                directoryTree.forceLayout()
-                                // Reveal matching descendants, but leave actual
-                                // folder matches collapsed for on-demand browsing.
-                                for (let row = 0; row < directoryTree.rows; ++row) {
-                                    if (fileTreeModel.isSearchAncestor(
-                                            directoryTree.index(row, 0))) {
-                                        directoryTree.expand(row)
-                                        directoryTree.forceLayout()
-                                    }
-                                }
-                            })
                     }
+                }
+                TreeSearchLayout {
+                    id: treeSearchLayout
+                    view: directoryTree
+                    model: fileTreeModel
                 }
                 Label {
                     Layout.fillWidth: true
@@ -1502,6 +1491,8 @@ ApplicationWindow {
 
                 TreeView {
                     id: directoryTree
+                    opacity: treeSearchLayout.ready && !fileTreeModel.searching ? 1 : 0
+                    enabled: opacity === 1
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     clip: true
@@ -1572,7 +1563,7 @@ ApplicationWindow {
                         }
                         ToolTip.visible: treePointer.containsMouse
                         ToolTip.delay: 700
-                        ToolTip.text: treeDelegate.dragPath
+                        ToolTip.text: fileTreeModel.displayPath(treeDelegate.dragPath)
                         MouseArea {
                             id: treePointer
                             property real pressX: 0
@@ -1637,8 +1628,8 @@ ApplicationWindow {
                                         & (Qt.ControlModifier
                                             | Qt.MetaModifier
                                             | Qt.ShiftModifier)) === 0
-                                        && fileTreeModel.is_path_directory(
-                                            treeDelegate.dragPath))
+                                        && fileTreeModel.is_directory(
+                                            directoryTree.index(treeDelegate.row, 0)))
                                     directoryTree.toggleExpanded(treeDelegate.row)
                             }
                             onDoubleClicked: mouse => {

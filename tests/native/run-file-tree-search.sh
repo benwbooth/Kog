@@ -11,8 +11,9 @@ fi
 # Qt pkg-config flags intentionally expand into separate compiler arguments.
 # shellcheck disable=SC2046
 c++ -std=c++17 -fPIC -pthread -I"$repo_dir/native" \
-  $(pkg-config --cflags Qt6Widgets Qt6Quick Qt6Concurrent) \
+  $(pkg-config --cflags Qt6Widgets Qt6Quick Qt6Concurrent libarchive) \
   "$repo_dir/tests/native/file_tree_search.cpp" "$repo_dir/native/kog_file_tree_search.cpp" \
+  "$repo_dir/native/kog_tree_archive.cpp" \
   "$test_dir/moc_search.cpp" \
-  $(pkg-config --libs Qt6Widgets Qt6Quick Qt6Concurrent) -o "$test_dir/file-tree-search"
+  $(pkg-config --libs Qt6Widgets Qt6Quick Qt6Concurrent libarchive) -o "$test_dir/file-tree-search"
 QT_QPA_PLATFORM=offscreen "$test_dir/file-tree-search"
