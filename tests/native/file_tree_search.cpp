@@ -76,6 +76,30 @@ static void writeArchive(const QString &path, bool sevenZip = false)
 int main(int argc, char **argv)
 {
     QApplication app(argc, argv);
+    if (argc == 4 && QString::fromUtf8(argv[1]) == "--benchmark") {
+        KogFileTreeSearch benchmark;
+        benchmark.setRootPath(QString::fromUtf8(argv[2]));
+        for (int pass = 0; pass < 3; ++pass) {
+            if (pass == 1) kogClearArchiveMemoryCache(); // Measure persistent-cache reuse too.
+            QElapsedTimer time;
+            time.start();
+            qint64 first = -1;
+            const auto connection = QObject::connect(&benchmark, &KogFileTreeSearch::searchBatchChanged, [&] {
+                if (first < 0 && benchmark.rowCount(benchmark.viewRootIndex())) first = time.elapsed();
+            });
+            benchmark.setSearchText(QString::fromUtf8(argv[3]) + QString(pass, ' '));
+            while (benchmark.searching() && time.elapsed() < 180000) {
+                QCoreApplication::processEvents();
+                QThread::msleep(2);
+            }
+            check(!benchmark.searching(), "Benchmark completes");
+            std::printf("Search pass %d: first results=%lld ms; complete=%lld ms; %s\n", pass,
+                        static_cast<long long>(first), static_cast<long long>(time.elapsed()),
+                        qPrintable(benchmark.searchStatus()));
+            QObject::disconnect(connection);
+        }
+        return 0;
+    }
     QTemporaryDir fixture;
     check(fixture.isValid(), "Temporary fixture directory");
     QDir base(fixture.path());
@@ -102,7 +126,7 @@ int main(int argc, char **argv)
                 anchors.fill: parent
                 model: testModel
                 rootIndex: testModel.viewRootIndex
-                opacity: searchLayout.ready && !testModel.searching ? 1 : 0
+                opacity: searchLayout.ready ? 1 : 0
                 delegate: TreeViewDelegate {
                     required property string fileName
                     required property string filePath
@@ -115,6 +139,11 @@ int main(int argc, char **argv)
                 objectName: "searchLayout"
                 view: tree
                 model: testModel
+            }
+            BusyIndicator {
+                objectName: "searchSpinner"
+                running: testModel.searching
+                visible: running
             }
         }
     )", QUrl::fromLocalFile(QFileInfo(QString::fromUtf8(__FILE__)).dir().absoluteFilePath("../../qml/TreeSearchHarness.qml")));
@@ -290,6 +319,50 @@ int main(int argc, char **argv)
     check(live.remove(), "Remove temporary test entry");
     waitFor([&] { return !childNamed(model, model.viewRootIndex(), "Live.mid").isValid(); },
             "Removed files disappear without resetting the whole tree");
+
+    const auto cacheArchive = base.filePath("cache-test.zip");
+    writeArchive(cacheArchive);
+    const auto notCancelled = std::make_shared<std::atomic_bool>(false);
+    const auto cold = kogListArchive(cacheArchive, notCancelled);
+    check(!cold.fromCache && cold.error.isEmpty(), "First read builds an archive index");
+    check(kogListArchive(cacheArchive, notCancelled).fromCache, "Memory cache reuses the index");
+    kogClearArchiveMemoryCache();
+    const auto disk = kogListArchive(cacheArchive, notCancelled);
+    check(disk.fromCache && disk.entries == cold.entries, "Disk cache survives memory-cache eviction/restarts");
+    QFile changed(cacheArchive);
+    check(changed.open(QIODevice::WriteOnly | QIODevice::Append), "Modify archive fingerprint");
+    changed.write("padding");
+    changed.close();
+    check(!kogListArchive(cacheArchive, notCancelled).fromCache, "Changed archives invalidate cached indexes");
+
+    // Pace a real cold archive read with a test-only barrier. This verifies
+    // streaming and cancellation without relying on storage speed or sleeps.
+    QTemporaryDir streaming;
+    writeArchive(streaming.filePath("slow.zip"));
+    QFile early(streaming.filePath("Hidden Tune.mid"));
+    check(early.open(QIODevice::WriteOnly), "Create ordinary early result");
+    early.close();
+    std::atomic_bool entered{false}, release{false};
+    kogSetArchiveReadTestHook([&] {
+        entered.store(true);
+        while (!release.load()) QThread::msleep(1);
+    });
+    model.setRootPath(streaming.path());
+    model.setSearchText("Hidden Tune");
+    waitFor([&] { return entered.load() && model.rowCount(model.viewRootIndex()) == 1
+        && layout->property("ready").toBool(); }, "Ordinary matches appear before archive scanning finishes");
+    check(model.searching() && tree->property("opacity").toDouble() == 1,
+          "Partial results remain visible and interactive during search");
+    check(view->findChild<QObject *>("searchSpinner")->property("running").toBool(), "Spinner remains active for partial results");
+    check(model.searchStatus().contains("Archives 0 of 1"), "Archive progress is reported");
+    QPersistentModelIndex earlyIndex(model.index(0, 0, model.viewRootIndex()));
+    release.store(true);
+    settle(model);
+    kogSetArchiveReadTestHook({});
+    check(earlyIndex.isValid() && model.filePath(earlyIndex) == early.fileName(),
+          "Streaming archive results preserve existing indexes/selections");
+    check(model.rowCount(model.viewRootIndex()) == 2, "Archive matches append to ordinary results");
+    check(!view->findChild<QObject *>("searchSpinner")->property("running").toBool(), "Spinner stops when search completes");
     model.setSearchText("limit"); // Destruction during a scan is safe.
     std::puts("File tree search tests passed");
 }

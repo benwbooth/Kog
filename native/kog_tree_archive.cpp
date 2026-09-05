@@ -10,13 +10,83 @@
 #include <QtCore/QSet>
 #include <QtCore/QUrl>
 #include <QtCore/QUrlQuery>
+#include <QtCore/QCryptographicHash>
+#include <QtCore/QDir>
+#include <QtCore/QJsonArray>
+#include <QtCore/QJsonDocument>
+#include <QtCore/QJsonObject>
+#include <QtCore/QStandardPaths>
 
 namespace {
 std::function<QString(const QByteArray &)> decodeName = [](const QByteArray &bytes) {
     return QString::fromUtf8(bytes);
 };
 QMutex cacheMutex;
-QCache<QString, KogArchiveListing> cache(32768);
+QString safeName(QString name);
+#ifdef KOG_TREE_TESTS
+std::function<void()> beforeRead;
+#endif
+// Bound by approximate bytes, not entry count: the old 32K-entry cache could
+// evict the start of a music library before the next keystroke searched it.
+QCache<QString, KogArchiveListing> cache(64 * 1024 * 1024);
+int cacheCost(const KogArchiveListing &listing)
+{
+    int bytes = 256;
+    for (auto it = listing.entries.cbegin(); it != listing.entries.cend(); ++it)
+        bytes += 96 + int(it.key().size()) * 2;
+    return bytes;
+}
+QString indexPath(const QString &path)
+{
+    const auto root = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+    if (root.isEmpty()) return {};
+    const auto name = QCryptographicHash::hash(path.toUtf8(), QCryptographicHash::Sha256).toHex();
+    return root + "/archive-index-v1/" + QString::fromLatin1(name) + ".json";
+}
+bool readIndex(const QString &fileName, const QString &key, KogArchiveListing &listing)
+{
+    QFile file(fileName);
+    if (!file.open(QIODevice::ReadOnly) || file.size() > 8 * 1024 * 1024) return false;
+    const auto object = QJsonDocument::fromJson(file.readAll()).object();
+    if (object.value("fingerprint").toString() != key || !object.value("entries").isArray()) return false;
+    const auto entries = object.value("entries").toArray();
+    if (entries.size() > 32768) return false;
+    for (const auto &entry : entries) {
+        const auto pair = entry.toArray();
+        if (pair.size() != 2 || !pair[0].isString() || !pair[1].isBool()) return false;
+        const auto name = pair[0].toString();
+        if (name.isEmpty() || name.size() > 4096 || safeName(name) != name) return false;
+        listing.entries.insert(name, pair[1].toBool());
+    }
+    listing.fromCache = true;
+    return true;
+}
+void writeIndex(const QString &fileName, const QString &key, const KogArchiveListing &listing)
+{
+    if (fileName.isEmpty() || !QDir().mkpath(QFileInfo(fileName).path())) return;
+    QJsonArray entries;
+    for (auto it = listing.entries.cbegin(); it != listing.entries.cend(); ++it)
+        entries.append(QJsonArray{it.key(), it.value()});
+    const auto bytes = QJsonDocument(QJsonObject{{"fingerprint", key}, {"entries", entries}}).toJson(QJsonDocument::Compact);
+    if (bytes.size() > 8 * 1024 * 1024) return;
+    // This is a disposable index, not user data. QSaveFile::commit fsyncs each
+    // archive and turned a sub-second scan into tens of seconds. An interrupted
+    // cache write simply fails JSON validation and is rebuilt on the next read.
+    QFile file(fileName);
+    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) file.write(bytes);
+    file.close();
+    // Cache files are disposable. Amortize housekeeping across writes and cap
+    // the on-disk index so browsing a large library cannot grow it indefinitely.
+    static std::atomic_uint writes{0};
+    if (++writes % 32 == 0) {
+        const auto files = QDir(QFileInfo(fileName).path()).entryInfoList({"*.json"}, QDir::Files, QDir::Time);
+        qint64 total = 0;
+        for (const auto &entry : files) {
+            total += entry.size();
+            if (total > 256LL * 1024 * 1024) QFile::remove(entry.absoluteFilePath());
+        }
+    }
+}
 QString safeName(QString name)
 {
     name.replace('\\', '/');
@@ -28,7 +98,13 @@ QString safeName(QString name)
     }
     return parts.join('/');
 }
+
 }
+
+#ifdef KOG_TREE_TESTS
+void kogClearArchiveMemoryCache() { QMutexLocker lock(&cacheMutex); cache.clear(); }
+void kogSetArchiveReadTestHook(std::function<void()> hook) { beforeRead = std::move(hook); }
+#endif
 
 void kogSetArchiveNameDecoder(std::function<QString(const QByteArray &)> decoder)
 {
@@ -69,9 +145,19 @@ KogArchiveListing kogListArchive(const QString &path,
         + QString::number(info.lastModified().toMSecsSinceEpoch());
     {
         QMutexLocker lock(&cacheMutex);
-        if (auto *hit = cache.object(key)) return *hit;
+        if (auto *hit = cache.object(key)) { auto result = *hit; result.fromCache = true; return result; }
     }
     KogArchiveListing result;
+    const auto diskIndex = indexPath(path);
+    if (readIndex(diskIndex, key, result)) {
+        QMutexLocker lock(&cacheMutex);
+        cache.insert(key, new KogArchiveListing(result), cacheCost(result));
+        return result;
+    }
+    result = {};
+#ifdef KOG_TREE_TESTS
+    if (beforeRead) beforeRead();
+#endif
     std::unique_ptr<struct archive, decltype(&archive_read_free)> reader(archive_read_new(), archive_read_free);
     archive_read_support_filter_all(reader.get());
     archive_read_support_format_zip(reader.get());
@@ -133,8 +219,9 @@ KogArchiveListing kogListArchive(const QString &path,
         result.error = QString::fromUtf8(archive_error_string(reader.get()));
     if (!result.error.isEmpty()) result.entries.clear();
     if (!cancel->load() && result.error.isEmpty()) {
+        writeIndex(diskIndex, key, result);
         QMutexLocker lock(&cacheMutex);
-        cache.insert(key, new KogArchiveListing(result), qMax(1, int(result.entries.size())));
+        cache.insert(key, new KogArchiveListing(result), cacheCost(result));
     }
     return result;
 }

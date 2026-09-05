@@ -14,7 +14,12 @@ struct KogArchiveLocation {
 struct KogArchiveListing {
     QMap<QString, bool> entries;
     QString error;
+    bool fromCache = false;
 };
+#ifdef KOG_TREE_TESTS
+void kogClearArchiveMemoryCache();
+void kogSetArchiveReadTestHook(std::function<void()> hook);
+#endif
 
 bool kogIsArchive(const QString &path);
 QString kogArchiveUrl(const QString &archive, const QString &entry, bool directory);

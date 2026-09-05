@@ -1,7 +1,7 @@
 import QtQuick
 
-// Keep intermediate model resets/ancestor expansion out of the rendered pane.
-// Opacity (not visibility) lets TreeView finish polishing while it is covered.
+// Hide query resets until the first layout settles, then keep existing rows
+// visible while new matches arrive. Opacity allows hidden layouts to polish.
 QtObject {
     id: layout
     required property var view
@@ -9,10 +9,12 @@ QtObject {
     property bool ready: true
     property int generation: 0
     property int settlingFrames: 0
+    property var openedAncestors: ({})
 
     property Connections results: Connections {
         target: layout.model
-        function onSearchResultsChanged() { layout.prepare() }
+        function onSearchResultsChanged() { layout.prepare(true) }
+        function onSearchBatchChanged() { layout.prepare(false) }
     }
     property Connections frames: Connections {
         target: layout.view ? layout.view.Window.window : null
@@ -25,24 +27,31 @@ QtObject {
         }
     }
 
-    function prepare() {
+    function prepare(reset) {
         const current = ++generation
-        ready = false
+        if (reset) {
+            ready = false
+            openedAncestors = ({})
+        }
         settlingFrames = 0
-        if (model.searching) return
+        if (reset && model.searching) return
         Qt.callLater(function() { expandBatch(current, 0) })
     }
 
     function expandBatch(current, firstRow) {
-        if (current !== generation || model.searching) return
+        if (current !== generation) return
         view.forceLayout()
         let row = firstRow
-        // Yield during large searches, keeping the partially expanded tree
-        // hidden while the search field and the rest of Kog remain responsive.
+        // Yield during large batches. Never reset existing rows or reopen an
+        // ancestor the user has deliberately collapsed between batches.
         for (let count = 0; row < view.rows && count < 64; ++row, ++count) {
             if (model.searchText.trim().length && model.isSearchAncestor(view.index(row, 0))) {
-                view.expand(row)
-                view.forceLayout()
+                const key = model.filePath(view.index(row, 0))
+                if (!openedAncestors[key]) {
+                    openedAncestors[key] = true
+                    view.expand(row)
+                    view.forceLayout()
+                }
             }
         }
         if (row < view.rows) {

@@ -20,7 +20,7 @@ public:
     explicit KogFileTreeSearch(QObject *parent = nullptr);
     ~KogFileTreeSearch() override;
     QModelIndex setRootPath(const QString &path);
-    QString filePath(const QModelIndex &index) const;
+    Q_INVOKABLE QString filePath(const QModelIndex &index) const;
     bool isDir(const QModelIndex &index) const;
     QString searchText() const { return m_query; }
     void setSearchText(const QString &query);
@@ -34,6 +34,7 @@ signals:
     void searchStateChanged();
     void viewRootIndexChanged();
     void searchResultsChanged();
+    void searchBatchChanged();
 private:
     void startSearch();
     std::unique_ptr<KogSearchResults> m_files;

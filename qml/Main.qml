@@ -1437,6 +1437,14 @@ ApplicationWindow {
                         toolTip: qsTr("Clear folder search")
                         onClicked: treeSearchField.clear()
                     }
+                    BusyIndicator {
+                        objectName: "treeSearchSpinner"
+                        Layout.preferredWidth: 22
+                        Layout.preferredHeight: 22
+                        visible: fileTreeModel.searching
+                        running: visible
+                        Accessible.name: qsTr("Searching files and archives")
+                    }
                 }
                 Timer {
                     id: treeSearchDebounce
@@ -1491,7 +1499,7 @@ ApplicationWindow {
 
                 TreeView {
                     id: directoryTree
-                    opacity: treeSearchLayout.ready && !fileTreeModel.searching ? 1 : 0
+                    opacity: treeSearchLayout.ready ? 1 : 0
                     enabled: opacity === 1
                     Layout.fillWidth: true
                     Layout.fillHeight: true

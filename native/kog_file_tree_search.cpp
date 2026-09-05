@@ -8,6 +8,9 @@
 #include <QtCore/QSet>
 #include <QtCore/QTimer>
 #include <QtCore/QFileSystemWatcher>
+#include <QtCore/QElapsedTimer>
+#include <QtCore/QMutex>
+#include <optional>
 #include <algorithm>
 
 namespace {
@@ -28,20 +31,38 @@ struct SearchResult {
     int matches = 0;
     bool limited = false;
     int unreadableArchives = 0;
+    int filesScanned = 0;
+    int archivesScanned = 0;
+    int archiveCount = 0;
+    bool scanningArchives = false;
+};
+struct SearchProgress {
+    QMutex mutex;
+    std::optional<SearchResult> latest;
 };
 
 SearchResult scan(const QString &root, const QString &query,
-                  const std::shared_ptr<std::atomic_bool> &cancel)
+                  const std::shared_ptr<std::atomic_bool> &cancel,
+                  const std::shared_ptr<SearchProgress> &progress)
 {
     SearchResult result;
+    QElapsedTimer throttle;
+    throttle.start();
+    auto publish = [&](bool force = false) {
+        if (!force && throttle.elapsed() < 100) return;
+        QMutexLocker lock(&progress->mutex);
+        progress->latest = result; // One coalesced snapshot, never an unbounded GUI event queue.
+        throttle.restart();
+    };
     const auto words = query.normalized(QString::NormalizationForm_KC).toCaseFolded().split(
         QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
     const QDir base(root);
-    auto match = [&](const QString &relative, const QString &name, const TreeEntry &entry,
-                     const QString &archiveRelative = QString()) {
+    auto matches = [&](const QString &name) {
         const auto folded = name.normalized(QString::NormalizationForm_KC).toCaseFolded();
-        if (!std::all_of(words.begin(), words.end(), [&](const auto &word) { return folded.contains(word); }))
-            return;
+        return std::all_of(words.begin(), words.end(), [&](const auto &word) { return folded.contains(word); });
+    };
+    auto match = [&](const QString &relative, const TreeEntry &entry,
+                     const QString &archiveRelative = QString()) {
         result.paths.insert(relative, entry);
         if (entry.container) result.matchingDirectories.insert(relative);
         auto parent = QFileInfo(relative).path();
@@ -61,23 +82,40 @@ SearchResult scan(const QString &root, const QString &query,
     };
     QDirIterator entries(root, QDir::AllEntries | QDir::NoDotAndDotDot,
                          QDirIterator::Subdirectories); // Never follow directory symlinks.
+    QStringList archives;
     while (!cancel->load(std::memory_order_relaxed) && entries.hasNext()) {
         entries.next();
         const auto info = entries.fileInfo();
         const auto relative = base.relativeFilePath(info.absoluteFilePath());
-        const bool archive = !info.isDir() && kogIsArchive(info.absoluteFilePath());
-        match(relative, info.fileName(), {info.absoluteFilePath(), info.isDir(), info.isDir() || archive});
+        const bool archive = info.isFile() && kogIsArchive(info.absoluteFilePath());
+        if (matches(info.fileName()))
+            match(relative, {info.absoluteFilePath(), info.isDir(), info.isDir() || archive});
         if (result.limited) break;
-        if (archive) {
-            const auto listing = kogListArchive(info.absoluteFilePath(), cancel);
-            if (!listing.error.isEmpty()) ++result.unreadableArchives;
-            for (auto it = listing.entries.cbegin(); it != listing.entries.cend() && !cancel->load(); ++it) {
-                match(relative + '/' + it.key(), QFileInfo(it.key()).fileName(),
-                      {kogArchiveUrl(info.absoluteFilePath(), it.key(), it.value()), it.value(), it.value()}, relative);
-                if (result.limited) break;
-            }
+        if (archive) archives.append(info.absoluteFilePath());
+        ++result.filesScanned;
+        publish();
+    }
+    // Ordinary files must not wait behind a slow solid archive. Search the
+    // filesystem first, then stream archive matches into the same stable tree.
+    result.archiveCount = archives.size();
+    result.scanningArchives = true;
+    publish(true);
+    for (const auto &path : archives) {
+        if (cancel->load() || result.limited) break;
+        const auto relative = base.relativeFilePath(path);
+        const auto listing = kogListArchive(path, cancel);
+        if (!listing.error.isEmpty()) ++result.unreadableArchives;
+        for (auto it = listing.entries.cbegin(); it != listing.entries.cend() && !cancel->load(); ++it) {
+            // Comparing names is cheap. Only construct encoded member URLs
+            // and ancestor paths for actual matches, not every indexed entry.
+            if (matches(QFileInfo(it.key()).fileName()))
+                match(relative + '/' + it.key(),
+                    {kogArchiveUrl(path, it.key(), it.value()), it.value(), it.value()}, relative);
+            if (result.limited) break;
+            publish();
         }
-        if (result.limited) break;
+        ++result.archivesScanned;
+        publish();
     }
     return result;
 }
@@ -326,42 +364,81 @@ void KogFileTreeSearch::startSearch()
     emit searchStateChanged();
     emit searchResultsChanged();
     m_cancel = std::make_shared<std::atomic_bool>(false);
-    auto *watcher = new QFutureWatcher<SearchResult>(this);
-    connect(watcher, &QFutureWatcher<SearchResult>::finished, this, [this, watcher, generation] {
-        watcher->deleteLater();
+    const auto progress = std::make_shared<SearchProgress>();
+    const auto known = std::make_shared<QHash<QString, QPersistentModelIndex>>();
+    auto apply = [this, generation, known](const SearchResult &result, bool complete) {
         if (generation != m_generation) return;
-        const auto result = watcher->result();
-        auto *resultRoot = new QStandardItem(QFileInfo(m_root).fileName());
-        resultRoot->setData(m_root, QFileSystemModel::FilePathRole);
         QHash<QString, QStandardItem *> parents;
-        parents.insert(QStringLiteral("."), resultRoot);
+        parents.insert(QStringLiteral("."), m_results->item(0));
+        QHash<QStandardItem *, QList<QStandardItem *>> insertions;
+        bool changed = false;
         // QMap's path ordering puts each parent before its descendants.
         for (auto it = result.paths.cbegin(); it != result.paths.cend(); ++it) {
             const QFileInfo relative(it.key());
-            auto *item = new QStandardItem(relative.fileName());
-            item->setData(relative.fileName(), QFileSystemModel::FileNameRole);
-            item->setData(it->path, QFileSystemModel::FilePathRole);
-            item->setData(it->directory, directoryRole);
-            item->setData(it->container, containerRole);
-            item->setData(it->container && (result.matchingDirectories.contains(it.key())
-                || parents.value(relative.path())->data(browseRole).toBool()), browseRole);
-            item->setEditable(false);
-            parents.value(relative.path())->appendRow(item);
+            auto *parent = parents.value(relative.path());
+            auto *item = m_results->itemFromIndex(known->value(it.key()));
+            // A user may have already expanded a matching folder while the
+            // search was running. Merge with its lazy children, never duplicate.
+            if (!item) {
+                for (int row = 0; row < parent->rowCount(); ++row) {
+                    auto *child = parent->child(row);
+                    if (child->data(QFileSystemModel::FilePathRole).toString() == it->path) {
+                        item = child;
+                        break;
+                    }
+                }
+            }
+            if (!item) {
+                item = new QStandardItem(relative.fileName());
+                item->setData(relative.fileName(), QFileSystemModel::FileNameRole);
+                item->setData(it->path, QFileSystemModel::FilePathRole);
+                item->setData(it->directory, directoryRole);
+                item->setData(it->container, containerRole);
+                item->setEditable(false);
+                if (parent->model()) insertions[parent].append(item);
+                else parent->appendRow(item); // Detached subtree: no per-row QML updates.
+                changed = true;
+            }
+            const bool browse = it->container && (result.matchingDirectories.contains(it.key())
+                || parent->data(browseRole).toBool());
+            if (item->data(browseRole).toBool() != browse) {
+                item->setData(browse, browseRole);
+                changed = true;
+            }
             parents.insert(it.key(), item);
         }
-        // Attach the completed tree once, rather than dispatching thousands of
-        // incremental proxy/QML layout updates during a large result set.
-        m_results->resetResults(resultRoot);
-        m_searching = false;
-        m_status = result.matches == 0 ? tr("No matching files or folders")
+        for (auto it = insertions.cbegin(); it != insertions.cend(); ++it)
+            it.key()->appendRows(it.value());
+        for (auto it = parents.cbegin(); it != parents.cend(); ++it)
+            known->insert(it.key(), it.value()->index());
+        m_searching = !complete;
+        m_status = !complete
+            ? (result.scanningArchives
+                ? tr("%1 matches · Archives %2 of %3").arg(result.matches).arg(result.archivesScanned).arg(result.archiveCount)
+                : tr("%1 matches · Searching folders (%2 items)").arg(result.matches).arg(result.filesScanned))
+            : result.matches == 0 ? tr("No matching files or folders")
             : result.limited ? tr("%1 matches — narrow your search for more").arg(result.matches)
                              : tr("%n matching file(s) or folder(s)", nullptr, result.matches);
         if (result.unreadableArchives)
             m_status += tr(" — %n archive(s) could not be searched", nullptr, result.unreadableArchives);
-        emit viewRootIndexChanged();
         emit searchStateChanged();
-        emit searchResultsChanged();
+        if (changed || complete) emit searchBatchChanged();
+    };
+    auto *watcher = new QFutureWatcher<SearchResult>(this);
+    auto *updates = new QTimer(watcher);
+    updates->setInterval(100);
+    connect(updates, &QTimer::timeout, this, [this, generation, progress, apply] {
+        if (generation != m_generation) return;
+        std::optional<SearchResult> result;
+        { QMutexLocker lock(&progress->mutex); result.swap(progress->latest); }
+        if (result) apply(*result, false);
+    });
+    connect(watcher, &QFutureWatcher<SearchResult>::finished, this, [watcher, updates, apply] {
+        updates->stop();
+        apply(watcher->result(), true);
+        watcher->deleteLater();
     });
     // The worker owns only value data and a cancellation flag, never the model.
-    watcher->setFuture(QtConcurrent::run(scan, m_root, m_query, m_cancel));
+    watcher->setFuture(QtConcurrent::run(scan, m_root, m_query, m_cancel, progress));
+    updates->start();
 }
