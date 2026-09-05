@@ -1453,11 +1453,15 @@ ApplicationWindow {
                                 if (!fileTreeModel.searchText.trim().length
                                         || fileTreeModel.searching) return
                                 directoryTree.forceLayout()
-                                // Qt's -1 expands model roots, ignoring the
-                                // custom rootIndex used by this folder browser.
-                                for (let row = directoryTree.rows - 1; row >= 0; --row)
-                                    if (directoryTree.depth(row) === 0)
-                                        directoryTree.expandRecursively(row)
+                                // Reveal matching descendants, but leave actual
+                                // folder matches collapsed for on-demand browsing.
+                                for (let row = 0; row < directoryTree.rows; ++row) {
+                                    if (fileTreeModel.isSearchAncestor(
+                                            directoryTree.index(row, 0))) {
+                                        directoryTree.expand(row)
+                                        directoryTree.forceLayout()
+                                    }
+                                }
                             })
                     }
                 }

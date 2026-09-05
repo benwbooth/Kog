@@ -6,6 +6,8 @@
 #include <atomic>
 #include <memory>
 
+class KogSearchResults;
+
 // Normal browsing retains QFileSystemModel's lazy loading and file watching.
 // Search uses a bounded snapshot assembled off the GUI thread, including the
 // ancestors of each match so unopened subfolders are searchable too.
@@ -26,6 +28,7 @@ public:
     bool searching() const { return m_searching; }
     QString searchStatus() const { return m_status; }
     QModelIndex viewRootIndex() const;
+    Q_INVOKABLE bool isSearchAncestor(const QModelIndex &index) const;
 signals:
     void searchTextChanged();
     void searchStateChanged();
@@ -34,7 +37,7 @@ signals:
 private:
     void startSearch();
     QFileSystemModel m_files;
-    QStandardItemModel m_results;
+    std::unique_ptr<KogSearchResults> m_results;
     QString m_root;
     QString m_query;
     QString m_status;

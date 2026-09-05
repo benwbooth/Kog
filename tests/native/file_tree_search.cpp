@@ -10,6 +10,7 @@
 #include <QtWidgets/QApplication>
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
 
 static void check(bool value, const char *message)
 {
@@ -27,6 +28,27 @@ static void settle(KogFileTreeSearch &model)
     check(!model.searching(), "Search failed to complete");
 }
 
+static void waitFor(const std::function<bool()> &ready, const char *message)
+{
+    QElapsedTimer timer;
+    timer.start();
+    while (!ready() && timer.elapsed() < 10000) {
+        QCoreApplication::processEvents();
+        QThread::msleep(2);
+    }
+    check(ready(), message);
+}
+
+static QModelIndex childNamed(KogFileTreeSearch &model, const QModelIndex &parent,
+                              const QString &name)
+{
+    for (int row = 0; row < model.rowCount(parent); ++row) {
+        auto child = model.index(row, 0, parent);
+        if (child.data(QFileSystemModel::FileNameRole).toString() == name) return child;
+    }
+    return {};
+}
+
 int main(int argc, char **argv)
 {
     QApplication app(argc, argv);
@@ -35,6 +57,7 @@ int main(int argc, char **argv)
     QDir base(fixture.path());
     check(base.mkpath("Album/Disc 1"), "Create nested unopened folders");
     check(base.mkpath("Other"), "Create other folder");
+    check(base.mkpath("Album/Empty"), "Create empty folder");
     for (const auto &name : {"Album/Disc 1/日本語 Theme.mid", "Other/unrelated.mp3", "Root Theme.flac"}) {
         QFile file(base.filePath(QString::fromUtf8(name)));
         check(file.open(QIODevice::WriteOnly), "Create fixture file");
@@ -68,9 +91,13 @@ int main(int argc, char **argv)
                     if (testModel.searchText.length && !testModel.searching)
                         Qt.callLater(function() {
                             tree.forceLayout()
-                            for (let row = tree.rows - 1; row >= 0; --row)
-                                if (tree.depth(row) === 0)
-                                    tree.expandRecursively(row)
+                            if (!testModel.searchText.length || testModel.searching) return
+                            for (let row = 0; row < tree.rows; ++row) {
+                                if (testModel.isSearchAncestor(tree.index(row, 0))) {
+                                    tree.expand(row)
+                                    tree.forceLayout()
+                                }
+                            }
                         })
                 }
             }
@@ -110,6 +137,52 @@ int main(int argc, char **argv)
     model.setSearchText(QString::fromUtf8("日本語 theme"));
     settle(model);
     check(model.rowCount(model.viewRootIndex()) == 1, "Unicode and multiple search terms");
+
+    model.setSearchText("Album");
+    settle(model);
+    waitFor([&] { return tree->property("rows").toInt() == 1; },
+            "A matching folder starts collapsed, without enumerating its descendants");
+    QPersistentModelIndex matchedAlbum(model.index(0, 0, model.viewRootIndex()));
+    check(model.hasChildren(matchedAlbum) && model.canFetchMore(matchedAlbum),
+          "Folder-name match must advertise expandable, lazy contents");
+    check(QMetaObject::invokeMethod(tree, "toggleExpanded", Q_ARG(int, 0)),
+          "Use the same single-click expansion as the production tree");
+    waitFor([&] { return tree->property("rows").toInt() == 3; },
+            "Expanding a search result loads nonmatching child folders");
+    QPersistentModelIndex matchedDisc(childNamed(model, matchedAlbum, "Disc 1"));
+    check(matchedDisc.isValid() && model.hasChildren(matchedDisc), "Nested folders are also expandable");
+    check(QMetaObject::invokeMethod(tree, "toggleExpanded", Q_ARG(int, 1)), "Expand nested folder");
+    waitFor([&] { return tree->property("rows").toInt() == 4; },
+            "Nested expansion reveals nonmatching songs in the real QML view");
+    auto browsedSong = model.index(0, 0, matchedDisc);
+    check(model.filePath(browsedSong) == base.filePath(QString::fromUtf8("Album/Disc 1/日本語 Theme.mid"))
+              && !model.isDir(browsedSong),
+          "Lazy results retain actual paths and directory roles for drag/drop and MIME icons");
+    check(QMetaObject::invokeMethod(tree, "toggleExpanded", Q_ARG(int, 0)), "Collapse folder");
+    check(QMetaObject::invokeMethod(tree, "toggleExpanded", Q_ARG(int, 0)), "Reopen folder");
+    check(model.rowCount(matchedAlbum) == 2 && !model.canFetchMore(matchedAlbum),
+          "Reopening a folder does not duplicate its children");
+    auto empty = childNamed(model, matchedAlbum, "Empty");
+    model.fetchMore(empty);
+    waitFor([&] { return !model.hasChildren(empty); }, "Empty folders finish loading without phantom children");
+
+    // Both the directory and an existing child match: merging lazy contents
+    // must retain the original child index and avoid duplicate rows.
+    check(base.mkpath("Album/Album bonus"), "Create nested matching folder");
+    model.setSearchText("album ");
+    settle(model);
+    QPersistentModelIndex mergeAlbum(model.index(0, 0, model.viewRootIndex()));
+    QPersistentModelIndex bonus(childNamed(model, mergeAlbum, "Album bonus"));
+    check(bonus.isValid(), "Initial snapshot includes the matching descendant");
+    model.fetchMore(mergeAlbum);
+    waitFor([&] { return model.rowCount(mergeAlbum) == 3; }, "Merge existing matches and unfiltered contents");
+    check(bonus.isValid() && model.filePath(bonus) == base.filePath("Album/Album bonus"),
+          "Existing result indexes survive lazy insertion and sorting");
+    model.fetchMore(bonus);
+    model.setSearchText("missing");
+    settle(model);
+    QCoreApplication::processEvents();
+    check(model.rowCount(model.viewRootIndex()) == 0, "Cancelled folder load cannot leak into a new search");
     model.setSearchText("unrelated");
     model.setSearchText("missing");
     settle(model);
@@ -129,6 +202,19 @@ int main(int argc, char **argv)
     settle(model);
     check(model.rowCount(model.viewRootIndex()) == 2000, "Search result bound");
     check(model.searchStatus().contains("narrow"), "Result limit is explained");
+    model.setRootPath(base.absolutePath());
+    model.setSearchText("Other");
+    settle(model);
+    QPersistentModelIndex other(model.index(0, 0, model.viewRootIndex()));
+    model.fetchMore(other);
+    waitFor([&] { return model.rowCount(other) == 2011; },
+            "Explicit expansion browses all children in batches, independently of search match limits");
+    model.setSearchText("Album");
+    settle(model);
+    model.fetchMore(model.index(0, 0, model.viewRootIndex()));
+    model.setSearchText("");
+    QCoreApplication::processEvents();
+    check(qobject_cast<QFileSystemModel *>(model.sourceModel()), "Clearing search cancels pending folder expansion");
     model.setSearchText("limit"); // Destruction during a scan is safe.
     std::puts("File tree search tests passed");
 }
