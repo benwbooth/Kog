@@ -93,6 +93,8 @@ fn main() {
         "qml/Preferences.qml",
         "qml/TagEditor.qml",
         "qml/TreeSearchLayout.qml",
+        "qml/SearchHighlightLabel.qml",
+        "qml/PlaybackTitle.qml",
     ]))
     // Keep the bridge include root limited to Kog's hand-written integration
     // header instead of recursively tracking the whole repository.

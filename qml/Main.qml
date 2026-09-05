@@ -20,11 +20,18 @@ ApplicationWindow {
     visible: false // Native window-state restoration shows it after restoring geometry.
     property bool restoreMaximized: false
     flags: Qt.Window | Qt.FramelessWindowHint
-    title: appController.now_title === "Not Playing" ? qsTr("Kog") : appController.now_title + " — Kog"
+    title: playbackTitle.windowTitle
+
+    PlaybackTitle {
+        id: playbackTitle
+        playbackState: appController.playback_state
+        trackTitle: appController.now_title
+    }
     color: palette.window
 
     property bool sidebarVisible: false
     property bool searchVisible: false
+    property string playlistHighlightQuery: ""
     property int selectedRow: -1
     property int selectionAnchor: -1
     property var selectedRows: []
@@ -530,6 +537,7 @@ ApplicationWindow {
         repeat: false
         onTriggered: {
             appController.filter_playlist(searchField.text)
+            root.playlistHighlightQuery = searchField.text
             root.clearPlaylistSelection()
         }
     }
@@ -1052,8 +1060,7 @@ ApplicationWindow {
                 id: nowPlayingTitle
 
                 readonly property string displayTitle:
-                    appController.now_title === "Not Playing"
-                        ? qsTr("Kog") : appController.now_title
+                    playbackTitle.text
                 readonly property bool overflowing:
                     nowPlayingLabel.implicitWidth > width
 
@@ -1113,9 +1120,9 @@ ApplicationWindow {
                     hoverEnabled: true
                 }
                 ToolTip.visible: nowPlayingHover.containsMouse
-                    && appController.now_title !== "Not Playing"
+                    && playbackTitle.active
                 ToolTip.delay: 500
-                ToolTip.text: appController.now_title
+                ToolTip.text: playbackTitle.text
 
                 TitleDragArea { anchors.fill: parent }
             }
@@ -1283,6 +1290,7 @@ ApplicationWindow {
                     if (text.length === 0) {
                         playlistSearchTimer.stop()
                         appController.filter_playlist("")
+                        root.playlistHighlightQuery = ""
                         root.clearPlaylistSelection()
                     } else {
                         playlistSearchTimer.restart()
@@ -1561,10 +1569,11 @@ ApplicationWindow {
                                 sourceSize.height: 18
                                 fillMode: Image.PreserveAspectFit
                             }
-                            Label {
+                            SearchHighlightLabel {
                                 Layout.fillWidth: true
-                                text: treeDelegate.fileName
-                                elide: Text.ElideRight
+                                sourceText: treeDelegate.fileName
+                                query: fileTreeModel.searchText
+                                searchModel: fileTreeModel
                                 color: treeDelegate.selected
                                     ? treeDelegate.palette.highlightedText
                                     : treeDelegate.palette.text
@@ -1769,6 +1778,8 @@ ApplicationWindow {
                             - playlistView.verticalScrollGutter)
                         app: appController
                         columns: playlistHeader
+                        searchModel: fileTreeModel
+                        searchQuery: root.playlistHighlightQuery
                         theme: root.palette
                         rowIndex: index
                         selected: root.isPlaylistRowSelected(index)

@@ -11,6 +11,7 @@
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QMutex>
 #include <QtCore/QMimeDatabase>
+#include <QtCore/QTextBoundaryFinder>
 #include <optional>
 #include <algorithm>
 
@@ -353,6 +354,60 @@ QString KogFileTreeSearch::displayPath(const QString &path) const
 {
     const auto location = kogArchiveLocation(path);
     return location.archive.isEmpty() ? path : location.archive + " :: " + location.entry;
+}
+
+QString KogFileTreeSearch::highlightedName(const QString &name, const QString &query,
+                                         const QString &elidedName, bool wholeQuery) const
+{
+    const auto fold = [wholeQuery](const QString &text) {
+        return wholeQuery ? text.toLower()
+            : text.normalized(QString::NormalizationForm_KC).toCaseFolded();
+    };
+    // Match the scanner's Unicode normalization, but retain offsets into the
+    // original spelling. Grapheme boundaries keep accents, kana and emoji intact
+    // when normalization changes the length of a character sequence.
+    QString folded;
+    QList<QPair<int, int>> original;
+    QTextBoundaryFinder graphemes(QTextBoundaryFinder::Grapheme, name);
+    int start = 0;
+    for (int end = graphemes.toNextBoundary(); end >= 0; end = graphemes.toNextBoundary()) {
+        const auto part = fold(name.mid(start, end - start));
+        folded += part;
+        for (qsizetype i = 0; i < part.size(); ++i) original.append({start, end});
+        start = end;
+    }
+    QList<bool> marked(name.size(), false);
+    const auto words = wholeQuery ? QStringList{fold(query).trimmed()}
+        : fold(query).split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+    for (const auto &word : words) {
+        if (word.isEmpty()) continue;
+        qsizetype from = 0;
+        while ((from = folded.indexOf(word, from)) >= 0) {
+            const int begin = original[from].first;
+            const int end = original[from + word.size() - 1].second;
+            for (int i = begin; i < end; ++i) marked[i] = true;
+            ++from; // Include repeated and overlapping occurrences.
+        }
+    }
+    // Elide plain text first: Qt's rich-text renderer does not provide elision.
+    // Retain highlighting on the visible part of a truncated match, but never
+    // on the ellipsis. Only visible delegates request this, not the entire tree.
+    qsizetype visible = 0;
+    while (visible < name.size() && visible < elidedName.size()
+           && name[visible] == elidedName[visible]) ++visible;
+    QString html = QStringLiteral("<span style=\"white-space: pre;\">");
+    for (qsizetype at = 0; at < visible;) {
+        const bool highlight = marked[at];
+        qsizetype end = at + 1;
+        while (end < visible && marked[end] == highlight) ++end;
+        if (highlight)
+            html += QStringLiteral("<span style=\"background-color: #f6d65a; color: #1b1b1b;\">");
+        html += name.mid(at, end - at).toHtmlEscaped();
+        if (highlight) html += QStringLiteral("</span>");
+        at = end;
+    }
+    html += elidedName.mid(visible).toHtmlEscaped();
+    return html + QStringLiteral("</span>");
 }
 
 bool KogFileTreeSearch::isDir(const QModelIndex &index) const

@@ -11,6 +11,8 @@ Item {
     required property int rowIndex
     required property var columns
     required property var theme
+    required property var searchModel
+    property string searchQuery: ""
     property bool selected: false
     property bool hovered: false
     property int revision: app.playlist_revision
@@ -64,17 +66,19 @@ Item {
         width: column.width
         height: root.height
 
-        Text {
+        SearchHighlightLabel {
             anchors.fill: parent
             leftPadding: 6
             rightPadding: 6
-            text: cell.text
+            sourceText: cell.text
+            query: root.searchQuery
+            searchModel: root.searchModel
+            wholeQuery: true
             visible: cell.column.id !== "status" || !root.isActiveTrack
             color: root.selected ? root.theme.highlightedText : root.theme.text
             font.pixelSize: 11
             horizontalAlignment: cell.column.alignment
             verticalAlignment: Text.AlignVCenter
-            elide: Text.ElideRight
         }
 
         Loader {

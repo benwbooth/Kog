@@ -9,6 +9,10 @@
 #include <QtCore/QThread>
 #include <QtCore/QTimer>
 #include <QtGui/QKeyEvent>
+#include <QtGui/QTextDocument>
+#include <QtGui/QTextCursor>
+#include <QtQuick/QQuickWindow>
+#include <QtQuick/QQuickItem>
 #include <QtQml/QQmlComponent>
 #include <QtQml/QQmlContext>
 #include <QtQml/QQmlEngine>
@@ -113,9 +117,70 @@ int main(int argc, char **argv)
         check(file.open(QIODevice::WriteOnly), "Create fixture file");
     }
     KogFileTreeSearch model;
+    auto highlightCheck = [&](const QString &name, const QString &query,
+                              const QString &shown, const QList<QPair<int, int>> &ranges, bool wholeQuery = false) {
+        QTextDocument document;
+        document.setHtml(model.highlightedName(name, query, shown, wholeQuery));
+        check(document.toPlainText() == shown, "Highlight markup preserves literal filename text");
+        for (int i = 0; i < shown.size(); ++i) {
+            bool expected = false;
+            for (const auto &range : ranges) expected |= i >= range.first && i < range.first + range.second;
+            QTextCursor cursor(&document);
+            cursor.setPosition(i);
+            cursor.setPosition(i + 1, QTextCursor::KeepAnchor);
+            const auto format = cursor.charFormat();
+            check((format.background().color() == QColor("#f6d65a")) == expected,
+                  "Only matching characters have a yellow background");
+            if (expected) check(format.foreground().color() == QColor("#1b1b1b"),
+                                "Yellow highlights use legible dark foreground text");
+        }
+    };
+    highlightCheck("Theme theme THEME.mid", "theme", "Theme theme THEME.mid", {{0, 5}, {6, 5}, {12, 5}});
+    highlightCheck("banana.mid", "ana nan", "banana.mid", {{1, 5}});
+    highlightCheck("日本語 テーマ 日本語.mid", "日本語", "日本語 テーマ 日本語.mid", {{0, 3}, {8, 3}});
+    highlightCheck("Ｔｈｅｍｅ ｶﾞ Café 🎵.mid", "theme ガ café 🎵", "Ｔｈｅｍｅ ｶﾞ Café 🎵.mid",
+                   {{0, 5}, {6, 2}, {9, 5}, {15, 2}});
+    highlightCheck("x<& x<&.mid", "<&", "x<& x<&.mid", {{1, 2}, {5, 2}});
+    highlightCheck("<img src='file:///missing'>.mid", "", "<img src='file:///missing'>.mid", {});
+    highlightCheck("The Theme.mid", "theme", "The Th…", {{4, 2}});
+    highlightCheck("Theme.mid", "unmatched", "Theme.mid", {});
+    highlightCheck("", "theme", "", {});
+    highlightCheck("Duck Tales — Duck & Tales", "duck tales", "Duck Tales — Duck & Tales", {{0, 10}}, true);
+    highlightCheck("Theme  Theme.mid", "theme", "Theme  Theme.mid", {{0, 5}, {7, 5}});
     model.setRootPath(base.absolutePath());
     QQmlEngine engine;
     engine.rootContext()->setContextProperty("testModel", &model);
+    if (argc == 3 && QString::fromUtf8(argv[1]) == "--highlight-preview") {
+        QQmlComponent preview(&engine, QUrl::fromLocalFile(QFileInfo(QString::fromUtf8(__FILE__))
+            .dir().absoluteFilePath("HighlightPreview.qml")));
+        std::unique_ptr<QObject> window(preview.create());
+        if (!window) std::fprintf(stderr, "%s\n", qPrintable(preview.errorString()));
+        check(bool(window), "Create highlight visual test");
+        QElapsedTimer frames;
+        frames.start();
+        while (frames.elapsed() < 600) { QCoreApplication::processEvents(); QThread::msleep(5); }
+        std::function<void(QQuickItem *)> inspect = [&](QQuickItem *item) {
+            if (item->property("sourceText").isValid() && item->width() > 500) {
+                QTextDocument rendered;
+                if (item->property("highlighting").toBool()) rendered.setHtml(item->property("text").toString());
+                else rendered.setPlainText(item->property("text").toString());
+                check(rendered.toPlainText() == item->property("sourceText").toString(),
+                      "Wide highlight labels retain the complete text without an unnecessary ellipsis");
+            }
+            if (item->property("sourceText").isValid() && item->width() == 78) {
+                QTextDocument rendered;
+                rendered.setHtml(item->property("text").toString());
+                check(rendered.toPlainText().endsWith(QChar(0x2026))
+                          && rendered.toPlainText() != item->property("sourceText").toString(),
+                      "Narrow highlight labels elide instead of clipping away the ellipsis");
+            }
+            for (auto *child : item->childItems()) inspect(child);
+        };
+        inspect(qobject_cast<QQuickWindow *>(window.get())->contentItem());
+        check(qobject_cast<QQuickWindow *>(window.get())->grabWindow().save(QString::fromUtf8(argv[2])),
+              "Save rendered highlight preview");
+        return 0;
+    }
     QQmlComponent component(&engine);
     component.setData(R"(
         import QtQuick
@@ -131,12 +196,19 @@ int main(int argc, char **argv)
                 opacity: searchLayout.ready ? 1 : 0
                 reuseItems: false
                 delegate: TreeViewDelegate {
+                    id: entry
                     required property string fileName
                     required property string filePath
                     required property string fileIcon
                     icon.name: fileIcon
                     objectName: filePath
                     text: fileName
+                    contentItem: SearchHighlightLabel {
+                        sourceText: entry.fileName
+                        query: testModel.searchText
+                        searchModel: testModel
+                        color: entry.selected ? entry.palette.highlightedText : entry.palette.text
+                    }
                 }
             }
             TreeSearchLayout {

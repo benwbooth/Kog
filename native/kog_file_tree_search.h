@@ -29,6 +29,8 @@ public:
     QModelIndex viewRootIndex() const;
     Q_INVOKABLE bool isSearchAncestor(const QModelIndex &index) const;
     Q_INVOKABLE QString displayPath(const QString &path) const;
+    Q_INVOKABLE QString highlightedName(const QString &name, const QString &query,
+                                       const QString &elidedName, bool wholeQuery = false) const;
 signals:
     void searchTextChanged();
     void searchStateChanged();
