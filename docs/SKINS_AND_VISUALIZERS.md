@@ -42,8 +42,9 @@ The UI requests frames at 30 Hz only while a visualization is visible. Each
 request performs a Hann-windowed 2048-point FFT for 40 logarithmic spectrum bands
 and supplies 256 recent PCM frames for the oscilloscope. Snapshots may straddle
 audio callback blocks; they are display data, not a recording API. Stereo is
-averaged to mono, so out-of-phase stereo material can cancel. The tap precedes
-output-device buffering and output volume; it is not a microphone/loopback feed.
+averaged to mono, so out-of-phase stereo material can cancel. The tap follows
+Kog's playback volume and equalizer, but precedes output-device buffering; it
+is not a microphone/loopback feed.
 
 The Qt Quick Canvas renderer works with Qt's graphics backend on each platform;
 it does not force OpenGL. It renders blue/green bars or an oscilloscope, and offers
