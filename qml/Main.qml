@@ -56,6 +56,7 @@ ApplicationWindow {
         || (miniPlayer.visible
             && miniPlayer.visibility !== Window.Hidden
             && miniPlayer.visibility !== Window.Minimized)
+        || (classicPlayer.visible && classicPlayer.visibility !== Window.Minimized)
     readonly property real baseLuminance: 0.2126 * palette.base.r
         + 0.7152 * palette.base.g
         + 0.0722 * palette.base.b
@@ -190,6 +191,7 @@ ApplicationWindow {
 
     function showFromTray() {
         miniPlayer.hide()
+        classicPlayer.hide()
         root.visible = true
         if (root.restoreMaximized)
             root.showMaximized()
@@ -205,15 +207,27 @@ ApplicationWindow {
         if (root.playerShowing) {
             root.hide()
             miniPlayer.hide()
+            classicPlayer.hide()
             return
         }
         root.showFromTray()
     }
 
     function showMiniPlayer() {
+        classicPlayer.hide()
         miniPlayer.show()
         miniPlayer.raise()
         miniPlayer.requestActivate()
+        root.hide()
+    }
+
+    function showClassicPlayer() {
+        classicPlayer.skin = JSON.parse(skinLibrary.active_json)
+        if (!classicPlayer.skin.assets) return
+        miniPlayer.hide()
+        classicPlayer.show()
+        classicPlayer.raise()
+        classicPlayer.requestActivate()
         root.hide()
     }
 
@@ -552,6 +566,18 @@ ApplicationWindow {
         mainWindow: root
     }
     Preferences { id: preferences; app: appController }
+    SkinLibrary { id: skinLibrary }
+    Timer { interval: 100; running: skinLibrary.busy; repeat: true; onTriggered: skinLibrary.poll() }
+    SkinBrowser { id: skinBrowser; library: skinLibrary; onOpenClassic: root.showClassicPlayer() }
+    ClassicPlayer {
+        id: classicPlayer
+        app: appController
+        mainWindow: root
+        onOpenGallery: skinBrowser.show()
+        onOpenEqualizer: equalizerWindow.show()
+        onOpenVisualizer: visualizerWindow.show()
+    }
+    Visualizer { id: visualizerWindow; app: appController }
     NowPlayingNotification {
         id: nowPlayingPopup
         app: appController
@@ -843,6 +869,8 @@ ApplicationWindow {
             Action { text: qsTr("Show Equalizer"); icon.name: "audio-equalizer"; shortcut: "Ctrl+E"; onTriggered: equalizerWindow.visible ? equalizerWindow.hide() : equalizerWindow.show() }
             Action { text: qsTr("Show Lyrics"); icon.name: "view-media-lyrics"; shortcut: "Ctrl+Shift+L"; onTriggered: lyricsWindow.show() }
             Action { text: qsTr("Show Mini Player"); icon.name: "view-restore"; shortcut: "Ctrl+Shift+M"; onTriggered: root.showMiniPlayer() }
+            Action { text: qsTr("Classic Skins…"); icon.name: "preferences-desktop-theme"; onTriggered: skinBrowser.show() }
+            Action { text: qsTr("Visualizer"); icon.name: "view-media-visualization"; shortcut: "Ctrl+Shift+V"; onTriggered: visualizerWindow.visible ? visualizerWindow.hide() : visualizerWindow.show() }
         }
 
         Menu {

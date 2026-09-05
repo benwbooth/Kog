@@ -76,6 +76,11 @@ fn main() {
 
     let qt_builder = CxxQtBuilder::new_qml_module(QmlModule::new("org.kog.player").qml_files([
         "qml/CogButton.qml",
+        "qml/AudioVisualization.qml",
+        "qml/ClassicPlayer.qml",
+        "qml/SkinBrowser.qml",
+        "qml/SkinSprite.qml",
+        "qml/Visualizer.qml",
         "qml/Equalizer.qml",
         "qml/InfoInspector.qml",
         "qml/KineticWheelHandler.qml",
@@ -138,9 +143,11 @@ fn main() {
         "src/app_controller.rs",
         "src/desktop_integration.rs",
         "src/file_tree_model.rs",
+        "src/skin_library.rs",
     ])
     .cpp_file("native/kog_desktop_integration.cpp")
     .cpp_file("native/kog_window_state.cpp")
+    .cpp_file("native/kog_skin_network.cpp")
     .qt_module("Gui")
     .qt_module("Network")
     .qt_module("Quick")

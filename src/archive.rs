@@ -54,6 +54,10 @@ impl ExtractedArchive {
         )
     }
 
+    pub fn open_skin(path: &Path) -> Result<Self, String> {
+        Self::open_with_limits(path, 512, 8 * 1024 * 1024, 32 * 1024 * 1024)
+    }
+
     fn open_with_limits(
         path: &Path,
         max_entries: usize,
@@ -312,7 +316,7 @@ fn decode_archive_name(bytes: &[u8]) -> compress_tools::Result<String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::decoder::{ArchiveOrigin, DecoderRegistry, DecoderSettings, PlaybackSource};
     use crate::gsf::{test_gba_rom, test_gsf_bytes};
@@ -408,7 +412,7 @@ mod tests {
         !crc
     }
 
-    fn write_stored_zip(path: &Path, entries: &[(&str, &[u8])]) {
+    pub(crate) fn write_stored_zip(path: &Path, entries: &[(&str, &[u8])]) {
         let mut output = Vec::new();
         let mut central = Vec::new();
         for (name, data) in entries {

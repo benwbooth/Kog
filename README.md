@@ -57,6 +57,24 @@ Optional now-playing popups have playback controls and stay open while hovered.
 Drag the popup's header to move it; Kog remembers the position. Right-click its
 header to reset it to the bottom-right, above the panel.
 
+### Skins and visualizers
+
+**View → Classic Skins** opens a read-only Internet Archive gallery with search,
+previews, and downloads. You can also import a classic Winamp `.wsz` or `.zip`.
+Installed skins stay available offline. Choose **Use skin** to open the classic
+player, and **Queue** to return to the normal Kog window.
+
+This first version skins the main transport panel, with 1×/2×/3× scaling.
+The playlist and equalizer still use Kog's native interface. Modern `.wal`
+skins, windowshade/shaped windows, and legacy visualizer plugins are not supported.
+Skin downloads retain their source and attribution; their artwork is not
+covered by Kog's license. Kog does not run scripts or executables from skins.
+
+**View → Visualizer** (**Ctrl+Shift+V**) offers a blue/green spectrum and an
+oscilloscope driven by the actual decoded audio. **F11** toggles full screen;
+**Escape** leaves full screen or closes the visualizer. No extra programs or
+preset downloads are needed. MilkDrop/projectM effects are not included yet.
+
 ## What it can do
 
 - Play local files, playlists, archives, direct HTTP streams, and HLS streams.

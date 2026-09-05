@@ -287,6 +287,10 @@ impl PlaybackEngine {
         self.meter.levels()
     }
 
+    pub fn visualizer_frame(&self) -> String {
+        self.meter.tap.frame(self.state() == PlaybackState::Playing)
+    }
+
     fn ensure_output(&mut self) -> Result<(), String> {
         if self.output.is_some() {
             return Ok(());
@@ -441,12 +445,14 @@ const AUDIO_METER_GAIN: [f32; AUDIO_METER_BANDS] = [1.35, 1.2, 1.0, 1.05, 1.2];
 #[derive(Clone)]
 struct AudioMeter {
     levels: Arc<[AtomicU32; AUDIO_METER_BANDS]>,
+    tap: crate::visualizer::AudioTap,
 }
 
 impl Default for AudioMeter {
     fn default() -> Self {
         Self {
             levels: Arc::new(std::array::from_fn(|_| AtomicU32::new(0))),
+            tap: crate::visualizer::AudioTap::default(),
         }
     }
 }
@@ -464,6 +470,7 @@ impl AudioMeter {
 
     fn reset(&self) {
         self.publish([0.0; AUDIO_METER_BANDS]);
+        self.tap.reset();
     }
 }
 
@@ -487,6 +494,7 @@ impl<S: Source<Item = f32>> AudioMeterSource<S> {
         let channels = input.channels();
         let sample_rate = input.sample_rate();
         let rate = sample_rate.get() as f32;
+        meter.tap.set_rate(sample_rate.get());
         let low_pass_alpha = AUDIO_METER_SPLITS_HZ.map(|frequency| {
             let frequency = frequency.min(rate * 0.45);
             1.0 - (-2.0 * std::f32::consts::PI * frequency / rate).exp()
@@ -508,6 +516,7 @@ impl<S: Source<Item = f32>> AudioMeterSource<S> {
     }
 
     fn observe_frame(&mut self, sample: f32) {
+        self.meter.tap.push(sample);
         for (low_pass, alpha) in self.low_pass.iter_mut().zip(self.low_pass_alpha) {
             *low_pass += alpha * (sample - *low_pass);
         }

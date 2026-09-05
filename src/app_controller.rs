@@ -169,6 +169,9 @@ pub mod qobject {
         fn poll_playback(self: Pin<&mut AppController>);
         #[qinvokable]
         fn poll_audio_levels(self: Pin<&mut AppController>);
+
+        #[qinvokable]
+        fn visualizer_frame(self: &AppController) -> QString;
         #[qinvokable]
         fn show_now_playing_notification(self: Pin<&mut AppController>);
         #[qinvokable]
@@ -2781,6 +2784,10 @@ impl qobject::AppController {
         self.as_mut().set_audio_level_mid(f64::from(levels[2]));
         self.as_mut().set_audio_level_high_mid(f64::from(levels[3]));
         self.as_mut().set_audio_level_high(f64::from(levels[4]));
+    }
+
+    pub fn visualizer_frame(&self) -> QString {
+        QString::from(self.rust().playback.visualizer_frame())
     }
 
     pub fn show_now_playing_notification(mut self: Pin<&mut Self>) {

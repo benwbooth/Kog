@@ -57,6 +57,8 @@ mod usf;
 mod usf_decoder;
 mod vgmstream;
 mod vgmstream_decoder;
+mod visualizer;
+mod skin_library;
 
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QString, QUrl};
 
