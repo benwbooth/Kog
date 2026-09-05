@@ -11,7 +11,8 @@ Window {
 
     width: 540
     height: 144
-    minimumWidth: 460
+    minimumWidth: 540
+    maximumWidth: 540
     minimumHeight: 144
     maximumHeight: 144
     flags: Qt.Window | Qt.FramelessWindowHint

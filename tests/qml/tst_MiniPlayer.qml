@@ -44,7 +44,6 @@ TestCase {
         playback.playback_state = "playing"
         playback.playlist_count = 3
         playback.current_index = 0
-        mini.width = 540
         mini.show()
         verify(waitForRendering(mini.contentItem))
     }
@@ -79,12 +78,11 @@ TestCase {
 
     function test_icons_and_layout_data() {
         return [
-            {tag: "dark-minimum", width: 460, background: "#202428", highlight: "#296f9d"},
-            {tag: "light-normal", width: 540, background: "#f4f4f4", highlight: "#83c4f1"}
+            {tag: "dark-fixed", background: "#202428", highlight: "#296f9d"},
+            {tag: "light-fixed", background: "#f4f4f4", highlight: "#83c4f1"}
         ]
     }
     function test_icons_and_layout(data) {
-        mini.width = data.width
         mini.palette.window = data.background
         mini.palette.highlight = data.highlight
         const dark = data.tag.indexOf("dark") === 0
@@ -96,7 +94,10 @@ TestCase {
         compare(mini.height, 144)
         verify((mini.flags & Qt.FramelessWindowHint) !== 0)
         const title = findChild(mini, "miniTitle")
-        verify(title.mapToItem(mini.contentItem, 0, 0).y < 25, "No title bar above the track")
+        // Leave room for different Qt/KDE font metrics, but not a separate
+        // title-bar row above the track information.
+        verify(title.mapToItem(mini.contentItem, 0, 0).y < mini.height / 4,
+            "No title bar above the track")
         let captured = false
         mini.contentItem.grabToImage(function(result) {
             verify(result.saveToFile("/tmp/kog-mini-" + data.tag + ".png"))
@@ -138,6 +139,15 @@ TestCase {
         for (const name of buttons.slice(0, 4))
             compare(findChild(mini, name).enabled, false)
         compare(findChild(mini, "miniRestore").enabled, true)
+    }
+
+    function test_fixed_window_size() {
+        compare(mini.width, 540)
+        compare(mini.height, 144)
+        compare(mini.minimumWidth, mini.width)
+        compare(mini.maximumWidth, mini.width)
+        compare(mini.minimumHeight, mini.height)
+        compare(mini.maximumHeight, mini.height)
     }
 
     function test_close_restores_full_player() {
