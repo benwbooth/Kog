@@ -114,14 +114,17 @@ jobs:
           # kog_desktop_integration now includes the modern-skin bridge, whose
           # headers and .pc files come from the WebEngine BaseApp rather than
           # org.kde.Sdk.  --devel selects that BaseApp's SDK environment.
-          flatpak run --user --devel --filesystem="$GITHUB_WORKSPACE":ro --command=bash \
-            io.qt.qtwebengine.BaseApp//6.10 -ec '
+          # Expand the quoted script inside the sandbox, not on the runner.
+          # shellcheck disable=SC2016
+          flatpak run --user --devel --filesystem="$GITHUB_WORKSPACE":ro \
+            --env=KOG_CI_WORKSPACE="$GITHUB_WORKSPACE" --command=bash \
+            io.qt.qtwebengine.BaseApp//6.10 -euc '
               export PKG_CONFIG_PATH="/app/lib/$(gcc -print-multiarch)/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
-              # BaseApp keeps WebEngine's private shared-library dependencies
+              # BaseApp keeps private WebEngine shared-library dependencies
               # in /app/lib while its Qt .pc files use the multiarch libdir.
               export KOG_QTWEBENGINE_RPATH_LINK=/app/lib
-              bash "$1/tests/native/run-window-state.sh"
-            ' bash "$GITHUB_WORKSPACE"
+              bash "${KOG_CI_WORKSPACE:?}/tests/native/run-window-state.sh"
+            '
 
       - name: Check Qt WebEngine BaseApp payload
         run: |
@@ -176,7 +179,7 @@ jobs:
         with:
           version: "6.8.*"
           arch: win64_msvc2022_64
-          modules: "qtwebchannel qtwebengine"
+          modules: "qtpositioning qtwebchannel qtwebengine"
           cache: true
 
       - name: Restore vcpkg binary cache
@@ -277,7 +280,7 @@ jobs:
       - uses: jurplel/install-qt-action@v4
         with:
           version: "6.8.*"
-          modules: "qtwebchannel qtwebengine"
+          modules: "qtpositioning qtwebchannel qtwebengine"
           cache: true
 
       - name: Install native dependencies

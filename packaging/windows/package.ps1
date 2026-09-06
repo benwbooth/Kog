@@ -39,7 +39,11 @@ if ($env:VCPKG_ROOT) {
 }
 
 $deployQt = (Get-Command windeployqt.exe).Source
-& $deployQt --release --compiler-runtime --webengine --webenginecore --webchannel `
+# Qt 6.8.3 derives deployment switches from installed modules/*.json. QtWebEngine
+# is a QML import rather than a deployable Qt6WebEngine module, while
+# Qt6WebEngineCore and Qt6WebChannel provide the valid switches below. Forcing
+# WebEngineCore makes windeployqt deploy its process, resources, and locales.
+& $deployQt --release --compiler-runtime --webenginecore --webchannel `
     --qmldir (Join-Path $root "qml") (Join-Path $stage "Kog.exe")
 if ($LASTEXITCODE -ne 0) {
     throw "windeployqt failed"
