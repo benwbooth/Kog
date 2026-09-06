@@ -90,7 +90,26 @@ modules:
         # cxx-qt accepts one qmake prefix for every requested module. Present
         # the KDE SDK's Qt modules alongside the BaseApp's WebEngine modules
         # under /app, then remove development metadata after the build below.
-        ln -sf "$platform_lib"/libQt6*.so* "$platform_lib"/libQt6*.prl /app/lib/
+        platform_qt_found=false
+        for platform_qt in "$platform_lib"/libQt6*.so* "$platform_lib"/libQt6*.prl; do
+          test -e "$platform_qt" || continue
+          ln -sf "$platform_qt" /app/lib/
+          platform_qt_found=true
+        done
+        test "$platform_qt_found" = true
+        # BaseApp's QtWebEngine libraries are canonical in /app/lib, but its
+        # real qmake metadata is multiarch. qt-build-utils only checks the
+        # qmake-reported libdir (/app/lib), so link the supplied metadata; do
+        # not manufacture .prl files or infer their contents.
+        baseapp_webengine_prl="$(find /app/lib -mindepth 2 -maxdepth 2 -type f -name libQt6WebEngineCore.prl -print -quit)"
+        test -n "$baseapp_webengine_prl"
+        baseapp_prl_dir="$(dirname "$baseapp_webengine_prl")"
+        find "$baseapp_prl_dir" -maxdepth 1 -type f -name 'libQt6*.prl' -exec ln -sf {} /app/lib/ \;
+        for module in WebEngineCore WebEngineQuick; do
+          test -f "/app/lib/libQt6${module}.so"
+          test -f "/app/lib/libQt6${module}.prl"
+          test "$(readlink -f "/app/lib/libQt6${module}.prl")" = "$baseapp_prl_dir/libQt6${module}.prl"
+        done
         for header in "$platform_include"/Qt*; do
           name="$(basename "$header")"
           test -e "/app/include/$name" || ln -s "$header" "/app/include/$name"
