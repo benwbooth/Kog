@@ -309,7 +309,9 @@ jobs:
         run: cargo build --release --locked
 
       - name: Build application DMG
-        run: packaging/macos/package.sh
+        run: |
+          bash tests/test-dmg-retry.sh
+          packaging/macos/package.sh
 
       - uses: actions/upload-artifact@v7
         with:

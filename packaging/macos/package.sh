@@ -88,4 +88,5 @@ codesign --force --deep --sign - "$app"
 codesign --verify --deep --strict --verbose=2 "$app"
 
 dmg="$output_dir/Kog-$version-macos-$architecture.dmg"
-hdiutil create -volname "Kog $version" -srcfolder "$app" -ov -format UDZO "$dmg"
+source "$root_dir/packaging/macos/create-dmg.sh"
+create_dmg -volname "Kog $version" -srcfolder "$app" -ov -format UDZO "$dmg"
