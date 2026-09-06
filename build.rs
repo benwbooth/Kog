@@ -88,6 +88,7 @@ fn main() {
         "qml/KineticWheelHandler.qml",
         "qml/Lyrics.qml",
         "qml/Main.qml",
+        "qml/MainWindowSettings.qml",
         "qml/MiniPlayer.qml",
         "qml/NowPlayingNotification.qml",
         "qml/PlaylistHeader.qml",

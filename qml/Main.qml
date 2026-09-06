@@ -29,7 +29,8 @@ ApplicationWindow {
     }
     color: palette.window
 
-    property bool sidebarVisible: false
+    property alias sidebarVisible: mainWindowSettings.sidebarVisible
+    MainWindowSettings { id: mainWindowSettings }
     property bool searchVisible: false
     property string playlistHighlightQuery: ""
     property int selectedRow: -1
