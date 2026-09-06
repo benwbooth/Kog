@@ -1,0 +1,18 @@
+<!-- 
+	<Layout:ThumbList/>
+
+	Layout that positions all child elements in a thumlist like style as you are known from Windows explorer.
+
+	@author mpdeimos
+	@date	09/04/16
+
+	@param	content={id} Id of a groupdef.
+	@param	spacing={uint} Spacing between the thumbs.
+
+	@action update [No Params] Updates the layout.
+-->
+
+<groupdef id="sc.layout.thumblist" xuitag="Layout:ThumbList">
+	<customobject id="content" fitparent="1"/>
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\xui\Layouts\ThumbList.maki"/>
+</groupdef>

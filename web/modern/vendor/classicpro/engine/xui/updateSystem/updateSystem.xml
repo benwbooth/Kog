@@ -1,0 +1,10 @@
+<groupdef id="sc.updatesystem.xuidef" xuitag="SC:UpdateSystem">
+
+	<browser
+		id="brw"
+		fitparent="1"
+	/>
+
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\xui\updateSystem\updateSystem.maki" />
+
+</groupdef>

@@ -1,1 +1,3 @@
 native/cog-gme-sfm/** -whitespace
+web/modern/vendor/classicpro/** -text -whitespace
+web/modern/dist/ClassicPro-LICENSE.rtf -text -whitespace

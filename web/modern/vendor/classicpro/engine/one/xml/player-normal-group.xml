@@ -1,0 +1,426 @@
+<groupdef id="beatvisB.left">
+	<layer id="beatvisB.left.layer" x="-150" y="0" h="45" relatx="1" image="beat.left.b" tile="1" alpha="253"/>
+</groupdef>
+<groupdef id="beatvisB.right">
+	<layer id="beatvisB.right.layer" x="0" y="0" h="45" image="beat.right.b" tile="1" alpha="253"/>
+</groupdef>
+<groupdef id="beatvis">
+	<AnimatedLayer id="beatvis.left" x="0" y="0" w="150" h="45" image="beat.0.left" autoplay="0" autoreplay="1" ghost="1" frameheight="45"/>
+	<AnimatedLayer id="beatvis.right" x="150" y="0" w="150" h="45" image="beat.0.right" autoplay="0" autoreplay="1" ghost="1" frameheight="45"/>
+	<layer id="beatvisC.left" x="0" y="0" h="45" image="beat.left.c" tile="1" visible="0" alpha="253"/>
+	<layer id="beatvisC.right" x="0" y="0" h="45" relatx="0" image="beat.right.c" tile="1" visible="0" alpha="253"/>
+	<group id="beatvisB.left" x="0" y="0" w="0" h="45" visible="0"/>
+	<group id="beatvisB.right" x="150" y="0" w="0" h="45" visible="0"/>
+	<layer id="beat.overlay" x="0" y="0" h="45" relatx="0" image="beatvis.overlay" tile="1" ghost="1" alpha="253"/>
+</groupdef>
+<groupdef id="beatpromo">
+	<layer id="beat.promo" x="0" y="0" image="cPro.promo.1" alpha="253"/>
+</groupdef>
+
+<groupdef id="cpro.screen">
+	<layer id="cpro.bg.title" x="0" y="0" image="player.center.title" ghost="1" visible="0" alpha="253"/>
+
+	<group id="beatvis" x="200" y="47" w="300" h="45"/>
+	<group id="beatpromo" x="200" y="47" w="300" h="45" visible="0"/>
+	<layer id="beat.mousetrap" x="143" y="47" w="-317" h="45" relatw="1"/>
+</groupdef>
+
+<groupdef id="equalizer.sliders">
+	<slider id="preamp" action="EQ_BAND" param="preamp" x="0" y="0" w="14" h="55" thumb="eq.slider.v.1" hoverThumb="eq.slider.v.2" downThumb="eq.slider.v.3" tooltip="Preamp" orientation="v" cursor="IDC_HAND"/>
+	<slider id="eq1" action="EQ_BAND" param="1" x="57" y="0" w="14" h="55" thumb="eq.slider.v.1" hoverThumb="eq.slider.v.2" downThumb="eq.slider.v.3" tooltip="70 Hz" orientation="v" cursor="IDC_HAND"/>
+	<slider id="eq2" action="EQ_BAND" param="2" x="79" y="0" w="14" h="55" thumb="eq.slider.v.1" hoverThumb="eq.slider.v.2" downThumb="eq.slider.v.3" tooltip="180 Hz" orientation="v" cursor="IDC_HAND"/>
+	<slider id="eq3" action="EQ_BAND" param="3" x="101" y="0" w="14" h="55" thumb="eq.slider.v.1" hoverThumb="eq.slider.v.2" downThumb="eq.slider.v.3" tooltip="320 Hz" orientation="v" cursor="IDC_HAND"/>
+	<slider id="eq4" action="EQ_BAND" param="4" x="123" y="0" w="14" h="55" thumb="eq.slider.v.1" hoverThumb="eq.slider.v.2" downThumb="eq.slider.v.3" tooltip="600 Hz" orientation="v" cursor="IDC_HAND"/>
+	<slider id="eq5" action="EQ_BAND" param="5" x="145" y="0" w="14" h="55" thumb="eq.slider.v.1" hoverThumb="eq.slider.v.2" downThumb="eq.slider.v.3" tooltip="1 KHz" orientation="v" cursor="IDC_HAND"/>
+	<slider id="eq6" action="EQ_BAND" param="6" x="167" y="0" w="14" h="55" thumb="eq.slider.v.1" hoverThumb="eq.slider.v.2" downThumb="eq.slider.v.3" tooltip="3 KHz" orientation="v" cursor="IDC_HAND"/>
+	<slider id="eq7" action="EQ_BAND" param="7" x="189" y="0" w="14" h="55" thumb="eq.slider.v.1" hoverThumb="eq.slider.v.2" downThumb="eq.slider.v.3" tooltip="6 KHz" orientation="v" cursor="IDC_HAND"/>
+	<slider id="eq8" action="EQ_BAND" param="8" x="211" y="0" w="14" h="55" thumb="eq.slider.v.1" hoverThumb="eq.slider.v.2" downThumb="eq.slider.v.3" tooltip="12 KHz" orientation="v" cursor="IDC_HAND"/>
+	<slider id="eq9" action="EQ_BAND" param="9" x="233" y="0" w="14" h="55" thumb="eq.slider.v.1" hoverThumb="eq.slider.v.2" downThumb="eq.slider.v.3" tooltip="14 KHz" orientation="v" cursor="IDC_HAND"/>
+	<slider id="eq10" action="EQ_BAND" param="10" x="255" y="0" w="14" h="55" thumb="eq.slider.v.1" hoverThumb="eq.slider.v.2" downThumb="eq.slider.v.3" tooltip="16 KHz" orientation="v" cursor="IDC_HAND"/>
+</groupdef>
+
+
+
+<groupdef id="equalizer.content">
+	<layer x="1" y="0" image="eq.bg"/>
+	<layer id="equalizer.freq" x="1" y="82" image="eq.bg"/>
+	<slider
+		id="Balance"
+		action="PAN"
+		x="307" y="57"
+		w="57" h="14"
+		thumb="eq.slider.h.1"
+		hoverThumb="eq.slider.h.2"
+		downThumb="eq.slider.h.3"
+		tooltip="Balance" cursor="IDC_HAND"
+	/>
+	<slider
+		id="sCrossfade"
+		cfgattrib="{F1239F09-8CC6-4081-8519-C2AE99FCB14C};Crossfade time"
+		high="20" ghost="1" visible="0"
+		x="3" y="3"
+		w="2" h="2"
+	/>
+
+	<togglebutton
+		id="Crossfade"
+		x="300" y="19"
+		image="eq.xfade.1"
+		hoverImage="eq.xfade.2"
+		downImage="eq.xfade.3"
+		activeImage="eq.xfade.4"
+		tooltip="Toggle Crossfading Between Tracks"
+		cfgattrib="{FC3EAF78-C66E-4ED2-A0AA-1494DFCC13FF};Enable crossfading"
+	/>
+	<button
+		id="CrossfadeDecrease"
+		image="eq.xftime.less.1"
+		hoverImage="eq.xftime.less.2"
+		downImage="eq.xftime.less.3"
+		x="327" y="19"
+		tooltip="Decrease Crossfade Time"
+	/>
+	<button
+		id="CrossfadeIncrease"
+		image="eq.xftime.more.1"
+		hoverImage="eq.xftime.more.2"
+		downImage="eq.xftime.more.3"
+		x="358" y="19"
+		tooltip="Increase Crossfade Time"
+	/>
+
+	<text
+		id="CFDisplay"
+		x="339" y="19" w="17" h="14"
+		align="center"
+		valign="center"
+		fontsize="14" color="Eq.xfade.Text"
+		text="15" antialias="1"
+	/>
+
+	<group id="equalizer.sliders" x="7" y="18" w="269" h="100"/>
+
+	<button id="eq.set.top" x="30" y="12" w="25" h="20" rectrgn="1"/>
+	<button id="eq.set.cen" x="30" y="35" w="25" h="20" rectrgn="1"/>
+	<button id="eq.set.bot" x="30" y="58" w="25" h="20" rectrgn="1"/>
+	<group id="cpro.drawer.eq.content.overlay" fitparent="1"/>
+</groupdef>
+
+<groupdef id="equalizer.content.holder">
+	<group id="equalizer.content" x="0" y="0" w="377" h="100"/>
+</groupdef>
+
+<groupdef id="drawer.equalizer" name="Equalizer">
+	<group id="equalizer.content.holder" x="2" y="1" w="-4" h="100" relatw="1"/>
+	<togglebutton
+		x="1" y="-18" relaty="1"
+		image="eq.on.1"
+		hoverImage="eq.on.2"
+		downImage="eq.on.3"
+		activeImage="eq.on.4"
+		action="EQ_TOGGLE"
+		tooltip="EQ on/off"
+	/>
+	<togglebutton
+		id="eqauto"
+		image="eq.auto.1"
+		hoverImage="eq.auto.2"
+		downImage="eq.auto.3"
+		activeImage="eq.auto.4"
+		action="EQ_AUTO"
+		x="32" y="-18" relaty="1"
+		tooltip="EQ auto"
+	/>
+	<button
+		id="eqpresets"
+		image="eq.preset.1"
+		hoverImage="eq.preset.2"
+		downImage="eq.preset.3"
+		activeImage="eq.auto.4"		action="MENU" param="presets"
+		x="71" y="-18" relaty="1"
+		tooltip="Open presets"
+	/>
+
+	<group id="cpro.drawer.eq.overlay" fitparent="1"/>
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\one\scripts\eq.maki"/>
+</groupdef>
+
+<groupdef id="drawer.tagviewer.bottomleft" h="27">
+	<layer x="0" y="0" image="player.gframe.7.alt"/>
+</groupdef>
+
+<groupdef id="infodisplay.line.rating" h="15">
+	<Text id="infodisplay.line.rating.text" 
+		x="0" y="0" w="0" relatw="1" h="12"
+		text="Rating:"
+		color="Tag.Info.Text" bold="1" fontsize="13" alpha="180" valign="bottom" antialias="0"
+	/>
+	<Wasabi:Ratings id="infodisplay.line.rating.xui" x="50" y="1" w="55" h="13" image_nostar="ratings.none" image_star="ratings.normal" image_hoverstar="ratings.hover"/>
+</groupdef>
+<groupdef id="bento.infodisplay.line" embed_xui="text" xuitag="Bento:InfoLine">
+	<Text id="label" 
+		x="0" y="0" w="0" relatw="1" h="12"
+		text="Error:"
+		color="Tag.Info.Text" bold="1" fontsize="13" alpha="180" valign="bottom" antialias="0"
+	/>
+
+	<Text id="text" 
+		x="0" y="0" w="0" relatw="1" h="12"
+		color="Tag.Info.Text" bold="2" fontsize="13" valign="bottom" antialias="0" ticker="1" translate="0" alpha="253"
+	/>
+
+	<layer id="link" x="0" y="0" h="15" w="0" relatw="1" rectrgn="1" move="0" cursor="IDC_HAND"/>
+
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\one\scripts\infoline.maki" />
+</groupdef>
+<groupdef id="info.component.infodisplay">
+	
+	<group id="infodisplay.line.rating" x="0" y="0" w="0" relatw="1" h="15" visible="0"/>
+	
+	<Bento:InfoLine id="infodisplay.line.title" x="0" y="0" w="0" relatw="1" h="15" visible="0" 
+		shift="-2" link="Click to Search Title" label="Title:"/>
+
+	<Bento:InfoLine id="infodisplay.line.artist" x="0" y="0" w="0" relatw="1" h="15" visible="0" 
+		shift="-2" link="Click to Search Artist" label="Artist:"/>
+
+	<Bento:InfoLine id="infodisplay.line.album" x="0" y="0" w="0" relatw="1" h="15" visible="0" 
+		shift="-2" link="Click to Search Album" label="Album:"/>
+
+	<Bento:InfoLine id="infodisplay.line.track" x="0" y="0" w="0" relatw="1" h="15" visible="0" 
+		shift="-2" link="Click to Show More Information" label="Track:"/>
+
+	<Bento:InfoLine id="infodisplay.line.year" x="0" y="0" w="0" relatw="1" h="15" visible="0" 
+		shift="-2" link="Click to Show More Information" label="Year:"/>
+
+	<Bento:InfoLine id="infodisplay.line.genre" x="0" y="0" w="0" relatw="1" h="15" visible="0" 
+		shift="-2" link="Click to Show More Information" label="Genre:"/>
+
+	<Bento:InfoLine id="infodisplay.line.publisher" x="0" y="0" w="0" relatw="1" h="15" visible="0" 
+		shift="-2" link="Click to Show More Information" label="Publisher:"/>
+
+	<Bento:InfoLine id="infodisplay.line.composer" x="0" y="0" w="0" relatw="1" h="15" visible="0" 
+		shift="-2" link="Click to Show More Information" label="Composer:"/>
+
+	<Bento:InfoLine id="infodisplay.line.format" x="0" y="0" w="0" relatw="1" h="15" visible="0" 
+		shift="-2" link="Click to Show More Information" label="Decoder:"/>
+
+	<Bento:InfoLine id="infodisplay.line.sname" x="0" y="0" w="0" relatw="1" h="15" visible="0" 
+		shift="-2" link="Visit Station Homepage" label="Stream:"/>
+
+	<Bento:InfoLine id="infodisplay.line.surl" x="0" y="0" w="0" relatw="1" h="15" visible="0" 
+		shift="-2" link="Visit Station Homepage" label="Homepage:"/>
+
+	<Bento:InfoLine id="infodisplay.line.albumartist" x="0" y="0" w="0" relatw="1" h="15" visible="0" 
+		shift="-2" link="Click to Show More Information" label="Album Artist:"/>
+
+	<Bento:InfoLine id="infodisplay.line.disc" x="0" y="0" w="0" relatw="1" h="15" visible="0" 
+		shift="-2" link="Click to Show More Information" label="Disc:"/>
+</groupdef>
+
+<groupdef id="info.component.infodisplay.holder">
+	<group id="info.component.infodisplay" x="130" y="4" w="-132" h="-8" relatw="1" relath="1"/>
+</groupdef>
+
+<groupdef id="drawer.tagviewer" name="File Info">
+	<!--<group id="drawer.tagviewer.bottomleft" x="0" y="-27" w="-6" relatw="1" relaty="1"/>-->
+
+	<Wasabi:AlbumArt id="tagviewer.cover" x="6" y="4" w="111" h="111" move="1"/>
+	<group id="info.component.infodisplay.holder" x="0" y="0" w="0" h="-15" relatw="1" relath="1"/>
+	<button id="tagviewmenu" x="-64" y="-18" relatx="1" relaty="1"
+		image="component.menu2.1"
+		hoverImage="component.menu2.2"
+		downImage="component.menu2.3"
+		tooltip="File Info Components"
+	/>
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\one\scripts\tagviewer.maki" param="6"/>
+</groupdef>
+
+
+<groupdef id="drawer.savedpl" name="Stored Playlists">
+	<PlaylistDirectory x="2" y="2" w="-4" h="-21" relatw="1" relath="1" antialias="0"/>
+</groupdef>
+
+<groupdef id="drawer.avs" inherit_group="centro.playlist.directory.vis" name="Visualization">
+	<!--<windowholder x="2" y="2" w="-4" h="-21" relatw="1" relath="1" autofocus="1" wantfocus="0" autoclose="1" autoopen="1" autoavailable="1" visible="1" hold="guid:{0000000A-000C-0010-FF7B-01014263450C}"/>
+	<button	x="1" y="-18" relaty="1" image="component.avs.opt.1" hoverImage="component.avs.opt.2" downImage="component.avs.opt.3" action="VIS_Menu" tooltip="Configure Visualizer"/>
+	<button	x="33" y="-18" relaty="1" image="component.avs.prev.1" hoverImage="component.avs.prev.2" downImage="component.avs.prev.3" action="VIS_Prev" tooltip="Previous Visualization Preset"/>
+	<togglebutton x="64" y="-18" relaty="1" image="component.avs.ran.1" hoverImage="component.avs.ran.2" downImage="component.avs.ran.3" activeimage="component.avs.ran.4" tooltip="Randomly change Visualization Presets"	cfgattrib="{0000000A-000C-0010-FF7B-01014263450C};Random"/>
+	<button	x="95" y="-18" relaty="1" image="component.avs.next.1" hoverImage="component.avs.next.2" downImage="component.avs.next.3"	action="VIS_Next" tooltip="Next Visualization Preset"/>-->
+</groupdef>
+
+<groupdef id="drawer.colortheme" name="Color Themes">
+	<layer visible="0" id="drawer.ct.fakelayer" image="component.ct.prev.1" w="0" h="0"/>
+	<ColorThemes:List id="colorthemes"
+		x="2" y="2" w="-4" h="-21" relatw="1" relath="1" antialias="0"
+		nohscroll="1" nocolheader="1" fontsize="13"
+	/>
+	<button
+		action="colorthemes_previous"
+		action_target="colorthemes"
+		x="1"  y="-18" relaty="1"
+		image="component.ct.prev.1"
+		hoverImage="component.ct.prev.2"
+		downImage="component.ct.prev.3"
+		tooltip="Previous Color Theme"
+	/>
+
+	<button
+	    action="colorthemes_switch"
+		action_target="colorthemes"
+		x="33" y="-18" relaty="1"
+		image="component.ct.set.1"
+		hoverImage="component.ct.set.2"
+		downImage="component.ct.set.3"
+		tooltip="Switch to selected Color Theme"
+	/>
+
+	<button
+		id="Cpro.theme.next"
+		action="colorthemes_next"
+		action_target="colorthemes"
+		x="64" y="-18" relaty="1"
+		image="component.ct.next.1"
+		hoverImage="component.ct.next.2"
+		downImage="component.ct.next.3"
+		tooltip="Next Color Theme"
+	/>
+</groupdef>
+
+<!--
+<groupdef id="drawer.skinchooser" name="Skin Chooser">
+    <List id="skinlist" x="2" y="2" w="-4" h="-21" relatw="1" relath="1" antialias="0" 
+        numcolumns="2" columnwidths="-1;-1" columnlabels="Name;Type" 
+    />
+    <button    id="switch" x="-64" y="-18" relatx="1" relaty="1"
+        image="component.menu2.1"
+        hoverImage="component.menu2.2"
+        downImage="component.menu2.3"
+        tooltip="Switch to Skin"
+    />
+    <script file="@WINAMPPATH@\Plugins\classicPro\engine\one\scripts\skinlist.maki" param="@SKINPATH@"/>
+</groupdef>
+-->
+
+<groupdef id="drawer.playlist" name="Playlist">
+	<PlaylistPro id="centro.windowholder.playlist1" x="1" y="1" h="-19" w="-2" relath="1" relatw="1"/>
+	<group id="centro.playlist.bottombuttons" x="1" y="-18" w="-1" relaty="1" relatw="1"/>
+    <text id="centro.playlist.pltext2" ticker="1" display="PE_Info" x="126" y="-16" h="13" w="-192" relaty="1" relatw="1" align="center" fontsize="13" antialias="0" color="Playlist.Status.Text" font="cpro.status.font" move="1"/>
+	<button id="tagviewmenu" x="-64" y="-18" relatx="1" relaty="1" action="PE_List" image="component.menu2.1" hoverImage="component.menu2.2" downImage="component.menu2.3" tooltip="Manage Playlist"/>
+</groupdef>
+
+<groupdef id="drawer.video" inherit_group="centro.playlist.directory.vid" name="Video">
+	<!--<group id="centro.playlist.directory.vid" x="0" y="0" w="0" h="0" relatw="1" relath="1"/>-->
+	<!--<windowholder x="3" y="3" w="-6" h="-22" relatw="1" relath="1" autofocus="1" wantfocus="0" autoclose="1" autoopen="1" autoavailable="1" visible="1" hold="guid:{F0816D7B-FFFC-4343-80F2-E8199AA15CC3}"/>
+	<text display="VID_Info" move="1" x="34" y="-17" relaty="1" h="13" w="-70" relatw="1" align="center" color="Playlist.Status.Text" font="cpro.status.font"/>
+	<button x="1" y="-18" relaty="1" action="VID_Misc" image="component.menu.1" hoverimage="component.menu.2" downimage="component.menu.3" tooltip="Video Options"/>-->
+</groupdef>
+
+<groupdef id="centro.blf">
+	<layer id="centro.blf.1" x="0" y="0" image="player.gframe.7" move="1"/>
+	<layer id="centro.blf.2" x="6" y="0" w="-6" relatw="1" image="player.gframe.8" move="1"/>
+	<layer id="centro.blf.1a" x="0" y="0" image="player.gframe.7.alt" visible="0" move="1"/>
+	<layer id="centro.blf.1a.overlay" x="1" y="9" image="player.gframe.7.alt.overlay" visible="0" move="1"/>
+</groupdef>
+<groupdef id="centro.multidrawer">
+	<grid id="centro.gadget.grid" fitparent="1" h="-27" move="1"
+		topleft="player.gframe.1" top="player.gframe.2" topright="player.gframe.3"
+		left="player.gframe.4" middle="player.gframe.5" right="player.gframe.6"
+	/>
+	<layer id="centro.blf.3" x="-6" y="-27" relatx="1" relaty="1" image="player.gframe.9"/>
+	<group id="centro.blf" x="0" y="-27" w="-6" h="27" relaty="1" relatw="1" wantfocus="1"/>
+
+	<grid id="centro.gadget.grid.eq" fitparent="1" visible="0"
+		topleft="player.gframe.1.alt" top="player.gframe.2.alt" topright="player.gframe.3.alt"
+		regionop="1" move="1"
+	/>
+	<group id="cpro.drawer.overlay" fitparent="1"/>
+
+
+	<group id="drawer.equalizer" fitparent="1" visible="0"/>
+	<group id="drawer.tagviewer" fitparent="1" visible="0"/>
+	<group id="drawer.savedpl" fitparent="1" visible="0"/>
+	<group id="drawer.avs" fitparent="1" visible="0"/>
+	<group id="drawer.colortheme" fitparent="1" visible="0"/>
+	<!--<group id="drawer.skinchooser" fitparent="1" visible="0"/>-->
+	<group id="drawer.playlist" fitparent="1" visible="0"/>
+	<group id="drawer.video" fitparent="1" visible="0"/>
+
+	<!-- This one is the dummyloader -->
+	<componentbucket id="widget.loader" x="0" y="0" h="20" w="20" wndtype="centro.widgets.drawer" visible="0" />
+	<customobject id="widget.holder" fitparent="1" visible="0" /> <!-- this one holds our widgets -->
+
+	<button id="drawer.menulist" x="-33" y="-18" relatx="1" relaty="1" image="component.goto.1" hoverimage="component.goto.2" downimage="component.goto.3" tooltip="Select Drawer"/>
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\one\scripts\drawer.maki"  param="@SKINPATH@"/>
+</groupdef>
+
+
+
+
+
+
+<!-- Player:Titlebar -->
+
+<groupdef id="player.mainmenu.file" autowidthsource="menu.layer.file.label" h="21">
+	<layer id="menu.layer.file.normal" x="0" y="0" h="21" w="0" relatw="1" image="window.titlebar.menu.1" visible="1"/>
+	<layer id="menu.layer.file.hover" x="0" y="0" h="21" w="0" relatw="1" image="window.titlebar.menu.2" visible="0"/>
+	<layer id="menu.layer.file.down" x="0" y="0" h="21" w="0" relatw="1" image="window.titlebar.menu.3" visible="0"/>
+	<text id="menu.layer.file.label" x="0" y="0" h="21" antialias="0" leftpadding="6" rightpadding="3" color="Menu.Text" text="File" font="cpro.menu.font"/>
+	<Menu id="File.menu" menugroup="main" next="Play.menu" prev="Help.menu" x="0" y="0" h="21" w="0" relatw="1" menu="WA5:File" normal="menu.layer.file.normal" hover="menu.layer.file.hover" down="menu.layer.file.down" />
+</groupdef> 
+<groupdef id="player.mainmenu.play" autowidthsource="menu.layer.play.label" h="21">
+	<layer id="menu.layer.play.normal" x="0" y="0" h="21" w="0" relatw="1" image="window.titlebar.menu.1" visible="1"/>
+	<layer id="menu.layer.play.hover" x="0" y="0" h="21" w="0" relatw="1" image="window.titlebar.menu.2" visible="0"/>
+	<layer id="menu.layer.play.down" x="0" y="0" h="21" w="0" relatw="1" image="window.titlebar.menu.3" visible="0"/>
+	<text id="menu.layer.play.label" x="0" y="0" h="21" antialias="0" leftpadding="6" rightpadding="3" color="Menu.Text" text="Play" font="cpro.menu.font"/>
+	<Menu id="Play.menu" menugroup="main" next="Options.menu" prev="File.menu" x="0" y="0" h="21" w="0" relatw="1" menu="WA5:Play" normal="menu.layer.play.normal" hover="menu.layer.play.hover" down="menu.layer.play.down" />
+</groupdef> 
+<groupdef id="player.mainmenu.options" autowidthsource="menu.layer.options.label" h="21">
+	<layer id="menu.layer.options.normal" x="0" y="0" h="21" w="0" relatw="1" image="window.titlebar.menu.1" visible="1"/>
+	<layer id="menu.layer.options.hover" x="0" y="0" h="21" w="0" relatw="1" image="window.titlebar.menu.2" visible="0"/>
+	<layer id="menu.layer.options.down" x="0" y="0" h="21" w="0" relatw="1" image="window.titlebar.menu.3" visible="0"/>
+	<text id="menu.layer.options.label" x="0" y="0" h="21" antialias="0" leftpadding="6" rightpadding="3" color="Menu.Text" text="Options" font="cpro.menu.font"/>
+	<Menu id="Options.menu" menugroup="main" next="View.menu" prev="Play.menu" x="0" y="0" h="21" w="0" relatw="1" menu="WA5:Options" normal="menu.layer.options.normal" hover="menu.layer.options.hover" down="menu.layer.options.down" />
+</groupdef> 
+<groupdef id="player.mainmenu.view" autowidthsource="menu.layer.view.label" h="21">
+	<layer id="menu.layer.view.normal" x="0" y="0" h="21" w="0" relatw="1" image="window.titlebar.menu.1" visible="1"/>
+	<layer id="menu.layer.view.hover" x="0" y="0" h="21" w="0" relatw="1" image="window.titlebar.menu.2" visible="0"/>
+	<layer id="menu.layer.view.down" x="0" y="0" h="21" w="0" relatw="1" image="window.titlebar.menu.3" visible="0"/>
+	<text id="menu.layer.view.label" x="0" y="0" h="21" antialias="0" leftpadding="6" rightpadding="3" color="Menu.Text" text="View" font="cpro.menu.font"/>
+	<Menu id="View.menu" menugroup="main" next="Help.menu" prev="Options.menu" x="0" y="0" h="21" w="0" relatw="1" menu="WA5:Windows" normal="menu.layer.view.normal" hover="menu.layer.view.hover" down="menu.layer.view.down" />
+</groupdef> 
+<groupdef id="player.mainmenu.help" autowidthsource="menu.layer.help.label" h="21">
+	<layer id="menu.layer.help.normal" x="0" y="0" h="21" w="0" relatw="1" image="window.titlebar.menu.1" visible="1"/>
+	<layer id="menu.layer.help.hover" x="0" y="0" h="21" w="0" relatw="1" image="window.titlebar.menu.2" visible="0"/>
+	<layer id="menu.layer.help.down" x="0" y="0" h="21" w="0" relatw="1" image="window.titlebar.menu.3" visible="0"/>
+	<text id="menu.layer.help.label" x="0" y="0" h="21" antialias="0" leftpadding="6" rightpadding="3" color="Menu.Text" text="Help" font="cpro.menu.font"/>
+	<Menu id="Help.menu" menugroup="main" next="File.menu" prev="View.menu" x="0" y="0" h="21" w="0" relatw="1" menu="WA5:Help" normal="menu.layer.help.normal" hover="menu.layer.help.hover" down="menu.layer.help.down" />
+</groupdef> 
+<groupdef id="player.mainmenu" rectrgn="1">
+	<group id="player.mainmenu.file" x="0" y="0" h="21"/>
+	<group id="player.mainmenu.play" x="0" y="0" h="21"/>
+	<group id="player.mainmenu.options" x="0" y="0" h="21"/>
+	<group id="player.mainmenu.view" x="0" y="0" h="21"/>
+	<group id="player.mainmenu.help" x="0" y="0" h="21"/>
+</groupdef> 
+
+<groupdef id="fileinfo.mode.1" w="138" h="15">
+	<SC:Channels
+		x="-61" y="0" w="49" h="5" relatx="1"
+		id="info.channels"
+		ch_1="channels.1"
+		ch_2="channels.2"
+		ch_6="channels.s"
+	/>
+	<layer id="info.layer" x="29" y="0" image="size.khzkbps"/>
+	<text id="info.kbps" x="-138" y="0" w="30" h="5" relatx="1" text="128" font="bitmapfont.songinfo"	align="right" valign="top"/>
+	<text id="info.khz" x="-138" y="10" w="30" h="5" relatx="1" text="48" font="bitmapfont.songinfo"	align="right" valign="top"/>
+	<text id="info.size" x="-90" y="10" w="61" h="5" relatx="1" text="999.8" font="bitmapfont.songinfo"	align="right" valign="top"/>
+	<layer id="info.size.layer" x="-27" y="10" relatx="1" image="size.mb"/>
+</groupdef>
+<groupdef id="fileinfo.mode.2" w="124" h="15">
+	<text id="fileinfo.mode.2.text" 
+		x="0" y="0" h="20" w="0" relatw="1" font="cpro.songinfo2.font"
+		rightclickaction="trackmenu" align="right" move="1"
+		color="Player.SongTicker.Text" fontsize="12" valign="top" antialias="0"  dblclickaction="WA5:Prefs" dblclickparam="42"
+	/>
+</groupdef>

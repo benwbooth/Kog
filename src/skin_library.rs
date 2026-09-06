@@ -667,16 +667,31 @@ mod tests {
     }
 
     #[test]
-    fn rejects_modern_skins_requiring_external_classicpro() {
+    fn imports_modern_skins_using_bundled_classicpro() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("cpro.wal");
         crate::archive::tests::write_stored_zip(&path, &[
             ("skin.xml", br#"<WasabiXML><include file="@COLORTHEMESPATH@/../../Plugins/classicPro/engine/load.xml"/></WasabiXML>"#),
         ]);
         let installed = dir.path().join("installed");
+        let skin = install_archive_in(&path, "cPro", "", &Value::Null, &installed).unwrap();
+        assert_eq!(skin["kind"], "modern");
+        assert!(Path::new(skin["archivePath"].as_str().unwrap()).exists());
+    }
+
+    #[test]
+    fn rejects_classicpro_paths_outside_the_bundled_engine() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cpro.wal");
+        crate::archive::tests::write_stored_zip(&path, &[
+            ("skin.xml", br#"<WasabiXML><include file="@WINAMPPATH@/Plugins/classicPro/engine/../../other/plugin.xml"/></WasabiXML>"#),
+        ]);
+        let installed = dir.path().join("installed");
         let error = install_archive_in(&path, "cPro", "", &Value::Null, &installed).unwrap_err();
-        assert!(error.contains("ClassicPro"), "{error}");
-        assert!(error.contains("standalone"), "{error}");
+        assert!(
+            error.contains("Unsupported ClassicPro resource path"),
+            "{error}"
+        );
         assert!(!installed.exists());
     }
 

@@ -1,0 +1,22 @@
+<elements>
+    <bitmap id="icon.google" file="@COLORTHEMESPATH@\..\..\Plugins\classicPro\engine\xui\CentroSUI\_v2\Reader\icons\google.png"/>
+    <bitmap id="icon.wikipedia" file="@COLORTHEMESPATH@\..\..\Plugins\classicPro\engine\xui\CentroSUI\_v2\Reader\icons\wikipedia.png"/>
+    <bitmap id="icon.yahoomusic" file="@COLORTHEMESPATH@\..\..\Plugins\classicPro\engine\xui\CentroSUI\_v2\Reader\icons\yahoomusic.png"/>
+    <bitmap id="icon.lyricplugin" file="@COLORTHEMESPATH@\..\..\Plugins\classicPro\engine\xui\CentroSUI\_v2\Reader\icons\lyricplugin.png"/>
+    <bitmap id="icon.explorer" file="@COLORTHEMESPATH@\..\..\Plugins\classicPro\engine\xui\CentroSUI\_v2\Reader\icons\explorer.png"/>
+    <bitmap id="icon.youtube" file="@COLORTHEMESPATH@\..\..\Plugins\classicPro\engine\xui\CentroSUI\_v2\Reader\icons\youtube.png"/>
+    <bitmap id="icon.yahoo" file="@COLORTHEMESPATH@\..\..\Plugins\classicPro\engine\xui\CentroSUI\_v2\Reader\icons\yahoo.png"/>
+    <bitmap id="icon.metalstorm" file="@COLORTHEMESPATH@\..\..\Plugins\classicPro\engine\xui\CentroSUI\_v2\Reader\icons\metalstorm.png"/>
+	<bitmap id="icon.swisscharts" file="@COLORTHEMESPATH@\..\..\Plugins\classicPro\engine\xui\CentroSUI\_v2\Reader\icons\swisscharts.png"/>
+	<bitmap id="icon.songfacts" file="@COLORTHEMESPATH@\..\..\Plugins\classicPro\engine\xui\CentroSUI\_v2\Reader\icons\songfacts.png"/>
+	<bitmap id="icon.rateyourmusic" file="@COLORTHEMESPATH@\..\..\Plugins\classicPro\engine\xui\CentroSUI\_v2\Reader\icons\rateyourmusic.png"/>
+	<bitmap id="icon.discogs" file="@COLORTHEMESPATH@\..\..\Plugins\classicPro\engine\xui\CentroSUI\_v2\Reader\icons\discogs.png"/>
+	<bitmap id="icon.songbook.lyrics" file="@COLORTHEMESPATH@\..\..\Plugins\classicPro\engine\xui\CentroSUI\_v2\Reader\icons\songbook-lyrics.png"/>
+	<bitmap id="icon.lastfm" file="@COLORTHEMESPATH@\..\..\Plugins\classicPro\engine\xui\CentroSUI\_v2\Reader\icons\lastfm.png"/>
+	<bitmap id="icon.soundcloud" file="@COLORTHEMESPATH@\..\..\Plugins\classicPro\engine\xui\CentroSUI\_v2\Reader\icons\soundcloud.png"/>
+	<bitmap id="icon.facebook" file="@COLORTHEMESPATH@\..\..\Plugins\classicPro\engine\xui\CentroSUI\_v2\Reader\icons\facebook.png"/>
+	<bitmap id="icon.twitter" file="@COLORTHEMESPATH@\..\..\Plugins\classicPro\engine\xui\CentroSUI\_v2\Reader\icons\twitter.png"/>
+	<bitmap id="icon.readingmode" file="@COLORTHEMESPATH@\..\..\Plugins\classicPro\engine\xui\CentroSUI\_v2\Reader\icons\readingmode.png"/>
+	<bitmap id="icon.albumartx" file="@COLORTHEMESPATH@\..\..\Plugins\classicPro\engine\xui\CentroSUI\_v2\Reader\icons\albumartx.png"/>
+	<bitmap id="icon.metrolyrics" file="@COLORTHEMESPATH@\..\..\Plugins\classicPro\engine\xui\CentroSUI\_v2\Reader\icons\metrolyrics.png"/>
+</elements>

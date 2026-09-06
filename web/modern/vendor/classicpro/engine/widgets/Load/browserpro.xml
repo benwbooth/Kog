@@ -1,0 +1,103 @@
+<groupdef id="centro.widgets.browserpro.dummy.main" name="BrowserPro;BPR" userdata="centro.widgets.browserpro;0" windowtype="centro.widgets.main">
+	<guiobject	id="@author"		userdata="Pieter Niewoudt"/>
+	<guiobject	id="@version"		userdata="1.00"/>
+</groupdef>
+<elements>
+    <bitmap id="centro.widgets.browserpro.thumbnail" file="@WINAMPPATH@\Plugins\classicPro\engine\widgets\Data\BrowserPro\thumbnail.png"/>
+</elements>
+
+<include file="..\..\xui\CentroSUI\_v2\Reader\icons.xml"/>
+
+<groupdef id="BrowserPro.list.group" minimum_h="64" background="studio.BaseTexture">
+	<grid
+		fitparent="1"
+		topleft="wasabi.dropdownlist.list.top.left"
+		top="wasabi.dropdownlist.list.top"
+		topright="wasabi.dropdownlist.list.top.right"
+		left="wasabi.dropdownlist.list.left"
+		middle="wasabi.dropdownlist.list.center"
+		right="wasabi.dropdownlist.list.right"
+		bottomleft="wasabi.dropdownlist.list.bottom.left"
+		bottom="wasabi.dropdownlist.list.bottom"
+		bottomright="wasabi.dropdownlist.list.bottom.right"
+		sysregion="1"
+	/>
+	<list id="BrowserPro.list" x="2" y="2" w="-4" h="-4" relatw="1" relath="1" antialias="0" numcolumns="2" columnwidths="150,-1"	multiselect="0" autodeselect="1" nocolheader="1" columnlabels="Provider Name;Comment"/>
+</groupdef>
+<container id="browserpro" name="BrowserPro Providers" dynamic="1" default_visible="0" nomenu="1" nofocusapponclose="1">
+	<layout id="normal" noparent="1" ontop="1" h="200" w="200" noactivation="1" nodock="1" move="0">
+		<group id="BrowserPro.list.group" fitparent="1"/>
+	</layout>
+</container>
+
+
+
+
+<groupdef id="browserpro.ddlist">
+	<rect x="19" y="1" w="-39" h="-2" relatw="1" relath="1" filled="1" color="wasabi.list.background"/>
+	<layer id="browserpro.ddl.icon" x="0" y="1" w="16" h="16"/>
+	<text 
+		id="browserpro.ddl.text"
+		x="22" y="1"
+		w="-25" h="-1" text="" valign="middle"
+		relatw="1" relath="1" color="wasabi.list.text"
+	/>
+	<layer id="browserpro.ddl.mousetrap" rectrgn="1" fitparent="1"/>
+  	<Wasabi:button
+		id="dropdownlist.button"
+		x="-18" y="1"
+		w="17" h="-2"
+		relatx="1" relath="1"
+		image="wasabi.button.label.arrow.down"
+		center_image="1" wantfocus="0" mytooltip="Select your service"
+	/>
+</groupdef>
+
+<groupdef id="browserpro.ddlist.group">
+	<grid x="0" y="0" h="22" w="0" relatw="1"
+		left="browser.editframe.left"
+		middle="browser.editframe.center"
+		right="browser.editframe.right"
+	/>
+	<group id="browserpro.ddlist" x="4" h="18" w="-7" relatw="1" y="2" navbuttons="0" wantfocus="0" antialias="0" maxitems="10"/>
+</groupdef>
+
+
+
+<groupdef id="centro.widgets.browserpro">
+	<rect color="wasabi.window.background" filled="1" x="1" y="1" w="-2" h="-2" relath="1" relatw="1"/>
+
+	<Button id="browser.back"
+		x="4" h="27" w="21" y="2" rectrgn="1"
+		image="browser.button.back.normal"
+		hoverImage="browser.button.back.hover"
+		downImage="browser.button.back.down"
+		tooltip="Go Back"
+	/>
+	<Button id="browser.fwd"
+		x="25" h="27" w="21" y="2" rectrgn="1"
+		image="browser.button.forth.normal"
+		hoverImage="browser.button.forth.hover"
+		downImage="browser.button.forth.down"
+		tooltip="Go Forward"
+	/>
+	<Button id="browser.refresh"
+		x="46" h="27" w="21" y="2" rectrgn="1"
+		image="browser.button.reload.normal"
+		hoverImage="browser.button.reload.hover"
+		downImage="browser.button.reload.down"
+		tooltip="Reload Page"
+	/>
+	<Button id="browser.stop"
+		x="67" h="27" w="21" y="2" rectrgn="1"
+		image="browser.button.stop.normal"
+		hoverImage="browser.button.stop.hover"
+		downImage="browser.button.stop.down"
+		tooltip="Cancel Loading"
+	/>
+
+	<Browser id="browserpro.browser" x="1" y="30" w="-2" h="-33" relath="1" relatw="1" url="C:/"/>
+	<group id="browserpro.ddlist.group" x="95" y="4" h="22" w="-99" relatw="1" />
+
+	<script file="@WINAMPPATH@\Plugins\ClassicPro\engine\widgets\Data\BrowserPro\main.maki"/>
+</groupdef>

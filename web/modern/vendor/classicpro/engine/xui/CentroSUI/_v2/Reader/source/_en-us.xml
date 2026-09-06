@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<WasabiXML>
+	<BrowserPro>
+		<!--<sourceitem name="SongBook Lyrics" comment="Shows the lyrics for the current playing song. Very big database." url="http://www.songbook.me/tmp/lyrics.php?bg=%COLOR:LBG%%AND%txt=%COLOR:LTXT%%AND%artist=%ARTIST%%AND%title=%TITLE%%AND%album=%ALBUM%" icon="icon.songbook.lyrics"/>-->
+		<sourceitem name="AlbumArtExchange" comment="Find a quality cover for this album" url="http://www.albumartexchange.com/covers.php?bgc=%COLOR:LBG%%AND%q=%ARTIST%+%ALBUM%" icon="icon.albumartx"/>
+		<sourceitem name="Discogs (Artist)" comment="Discogs shows information about this artist" url="http://www.discogs.com/artist/%ARTIST%" icon="icon.discogs"/>
+		<sourceitem name="Explorer View" comment="This will browse to the folder of the current playing item" url="%PATH%" icon="icon.explorer"/>
+		<sourceitem name="Google Search (Song)" comment="Search with Google for this song" url="http://www.google.com/search?client=classicpro%AND%hl=en%AND%q=%ARTIST% %TITLE%" icon="icon.google"/>
+		<sourceitem name="Last.fm (Artist)" comment="See more information about your artist on Last.fm" url="http://www.last.fm/music/%ARTIST%" icon="icon.lastfm"/>
+		<sourceitem name="Facebook (Artist)" comment="Shows the Facebook page for the artist" url="http://www.google.com/search?btnI=I%27m+Feeling+Lucky%AND%sourceid=navclient%AND%ie=UTF-8%AND%oe=UTF-8%AND%q=%ARTIST% official page music site:facebook.com" icon="icon.facebook"/>
+		<sourceitem name="Twitter (Artist)" comment="Shows the Twitter page for the artist" url="http://www.google.com/search?btnI=I%27m+Feeling+Lucky%AND%sourceid=navclient%AND%ie=UTF-8%AND%oe=UTF-8%AND%q=%ARTIST% official page music site:twitter.com" icon="icon.twitter"/>
+		<sourceitem name="Metalstorm (Album)" comment="Search www.metalstorm.ee for this album" url="http://www.metalstorm.ee/home/search.php?search_what=%ALBUM%%AND%search_where=album" icon="icon.metalstorm"/>
+		<sourceitem name="Metalstorm (Artist)" comment="Search www.metalstorm.ee for this artist" url="http://www.metalstorm.ee/home/search.php?search_what=%ARTIST%%AND%search_where=band2" icon="icon.metalstorm"/>
+		<sourceitem name="MetroLyrics (Song)" comment="The World's #1 Lyric Site" url="http://www.metrolyrics.com/widgets/winamp/winamp.php?artist=%ARTIST%%AND%title=%TITLE%" icon="icon.metrolyrics"/>
+		<sourceitem name="RateYourMusic (Artist)" comment="Search RateYourMusic for this artist" url="http://rateyourmusic.com/search?searchterm=%ARTIST%%AND%searchtype=a" icon="icon.rateyourmusic"/>
+		<sourceitem name="Songfacts (Artist)" comment="For more info like artist lyrics and trivia" url="http://www.songfacts.com/search_fact.php?combinedartists=%ARTIST%" icon="icon.songfacts"/>
+		<sourceitem name="Songfacts (Song)" comment="For more info like song meanings, lyrics and trivia" url="http://www.google.com/search?btnI=I%27m+Feeling+Lucky%AND%sourceid=navclient%AND%ie=UTF-8%AND%oe=UTF-8%AND%q=%ARTIST% %TITLE% site:songfacts.com" icon="icon.songfacts"/>
+		<sourceitem name="SoundCloud (Song)" comment="Search SoundCloud for this song" url="http://soundcloud.com/search?q%5Bfulltext%5D=%ARTIST% - %TITLE%" icon="icon.soundcloud"/>
+		<sourceitem name="Swisscharts (Album)" comment="Search Swisscharts for this album" url="http://www.swisscharts.com/search.asp?cat=a%AND%search=%ALBUM%" icon="icon.swisscharts"/>
+		<sourceitem name="Swisscharts (Song)" comment="Show this song on Swisscharts" url="http://www.swisscharts.com/showitem.asp?interpret=%ARTIST%%AND%titel=%TITLE%" icon="icon.swisscharts"/>
+		<sourceitem name="Wikipedia (Artist)" comment="Shows the wikipedia page for this artist" url="http://www.google.com/search?btnI=I%27m+Feeling+Lucky%AND%ie=UTF-8%AND%oe=UTF-8%AND%q=%ARTIST% band site:wikipedia.org" icon="icon.wikipedia"/>
+		<sourceitem name="Yahoo! Music (Artist)" comment="Search with Yahoo Music for this song" url="http://new.music.yahoo.com/%ARTIST%/" icon="icon.yahoomusic"/>
+		<sourceitem name="Yahoo! Search" comment="Search with Yahoo for this song" url="http://search.yahoo.com/search?p=%ARTIST% %TITLE%%AND%ei=UTF-8%AND%fr=winampclassicpro" icon="icon.yahoo"/>
+		<sourceitem name="YouTube Video" comment="Play the Youtube video of the file playing" url="http://www.google.com/search?btnI=I%27m+Feeling+Lucky%AND%sourceid=navclient%AND%ie=UTF-8%AND%oe=UTF-8%AND%tbm=vid%AND%q=%ARTIST% - %TITLE% site:youtube.com" icon="icon.youtube"/>
+	</BrowserPro>
+</WasabiXML>

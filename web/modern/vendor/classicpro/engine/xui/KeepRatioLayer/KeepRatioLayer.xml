@@ -1,0 +1,17 @@
+<!-- 
+	<SC:KeepRatioLayer/>
+
+	Simple Layer Object that keeps the aspect ratio.
+	in scripts you cannot reference to this this object as Layer. Use GuiObject instead.
+
+	@author mpdeimos
+	@date	09/04/17
+
+	@param	valign="center"|"top"|"bottom"
+	@param	align="center"|"left"|"right"
+-->
+
+<groupdef id="sc.xui.keepratiolayer" xuitag="SC:KeepRatioLayer" >
+	<layer id="layer" x="0" y="0" h="0" w="0"/>
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\xui\KeepRatioLayer\KeepRatioLayer.maki"/>
+</groupdef>

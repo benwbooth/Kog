@@ -12,6 +12,7 @@ import {
 import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
+import { adaptMakiResolver, adaptMakiSource } from "./maki-compat.mjs";
 
 const projectDir = path.dirname(fileURLToPath(import.meta.url));
 const repositoryDir = path.resolve(projectDir, "../..");
@@ -23,9 +24,39 @@ const interpreterPath = path.join(
 );
 const execFileAsync = promisify(execFile);
 
+const classicProAssetsPlugin = {
+  name: "kog-classicpro-assets",
+  setup(context) {
+    context.onResolve({ filter: /^classicpro:assets$/ }, () => ({ path: "assets", namespace: "classicpro" }));
+    context.onLoad({ filter: /.*/, namespace: "classicpro" }, async () => {
+      const files = {};
+      const root = path.join(projectDir, "vendor/classicpro/engine");
+      async function visit(directory, prefix = "") {
+        for (const entry of (await readdir(directory, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
+          const relative = prefix + entry.name;
+          if (entry.isDirectory()) await visit(path.join(directory, entry.name), relative + "/");
+          else if (/\.(xml|maki|png|jpg|jpeg|gif|bmp)$/i.test(entry.name)) {
+            files[relative.toLowerCase()] = (await readFile(path.join(directory, entry.name))).toString("base64");
+          }
+        }
+      }
+      await visit(root);
+      await visit(path.join(webampDir, "packages/webamp-modern/assets/freeform/xml/wasabi/xml/xui/browser"), "__wasabi__/xml/xui/browser/");
+      return { contents: `export default ${JSON.stringify(files)};`, loader: "js" };
+    });
+  },
+};
+
 const makiInstructionBudgetPlugin = {
   name: "kog-maki-instruction-budget",
   setup(buildContext) {
+    buildContext.onLoad({ filter: /[/\\]maki[/\\](constants|parser)\.ts$/ }, async (args) => ({
+      contents: adaptMakiSource(path.basename(args.path, ".ts"), await readFile(args.path, "utf8")), loader: "ts",
+    }));
+    buildContext.onLoad({ filter: /[/\\]skin[/\\]resolver\.ts$/ }, async (args) => {
+      const contents = adaptMakiResolver(await readFile(args.path, "utf8"), path.join(projectDir, "src/classicpro-services.ts"));
+      return { contents, loader: "ts" };
+    });
     buildContext.onLoad({ filter: /[/\\]maki[/\\]interpreter\.ts$/ }, async (args) => {
       let contents = await readFile(args.path, "utf8");
       if (path.resolve(args.path) !== interpreterPath) {
@@ -45,6 +76,7 @@ const makiInstructionBudgetPlugin = {
         throw new Error("Pinned Webamp MAKI interpreter changed; refusing to build without its instruction budget");
       }
       contents = contents.replace(original, bounded);
+      contents = adaptMakiSource("interpreter", contents, path.join(projectDir, "src/maki-members.js"));
       return { contents, loader: "ts" };
     });
   },
@@ -82,6 +114,7 @@ async function generateNotices(metafile) {
       .filter(Boolean),
   );
   const sections = [];
+  sections.push("ClassicPro 2.01 engine resources\n\n" + (await readFile(path.join(projectDir, "vendor/classicpro/LICENSE.txt"), "utf8")).trim());
 
   const webampLicense = await readFile(path.join(webampDir, "LICENSE.txt"), "utf8");
   const { stdout: webampRevisionOutput } = await execFileAsync(
@@ -154,10 +187,11 @@ const result = await build({
   define: {
     "process.env.NODE_ENV": '"production"',
   },
-  plugins: [makiInstructionBudgetPlugin],
+  plugins: [makiInstructionBudgetPlugin, classicProAssetsPlugin],
 });
 
 await cp(path.join(projectDir, "index.html"), path.join(distDir, "index.html"));
+await cp(path.join(projectDir, "vendor/classicpro/License.rtf"), path.join(distDir, "ClassicPro-LICENSE.rtf"));
 await generateNotices(result.metafile);
 
 const qrcFiles = [
@@ -165,6 +199,7 @@ const qrcFiles = [
   "runtime.js",
   "runtime.css",
   "THIRD_PARTY_NOTICES.txt",
+  "ClassicPro-LICENSE.rtf",
 ];
 for (const filename of qrcFiles) {
   await stat(path.join(distDir, filename));

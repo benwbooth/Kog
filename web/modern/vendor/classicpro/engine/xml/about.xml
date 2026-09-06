@@ -1,0 +1,139 @@
+<elements>
+	<bitmap id="about.gfx.skinner" file="about_skinner.png"/>
+	<bitmap id="about.gfx.martin" file="@WINAMPPATH@\Plugins\classicPro\engine\image\mugshot-martin.png"/>
+	<bitmap id="about.gfx.quad" file="@WINAMPPATH@\Plugins\classicPro\engine\image\mugshot-quad.png"/>
+	<bitmap id="about.gfx.pjn" file="@WINAMPPATH@\Plugins\classicPro\engine\image\mugshot-pjn.png"/>
+	<bitmap id="about.gfx.slob" file="@WINAMPPATH@\Plugins\classicPro\engine\image\mugshot-slob.png"/>
+	<bitmap id="about.gfx.pawel" file="@WINAMPPATH@\Plugins\classicPro\engine\image\mugshot-pawel.png"/>
+	<bitmap id="about.gfx.victor" file="@WINAMPPATH@\Plugins\classicPro\engine\image\mugshot-victor.png"/>
+	<bitmap id="paypal.donate" file="@WINAMPPATH@\Plugins\classicPro\engine\image\donate.png"/>
+	<bitmap id="about.hbd" file="@WINAMPPATH@\Plugins\classicPro\engine\image\hbd.png"/>
+</elements>
+
+<groupdef id="cpro.about.xui" xuitag="cPro:About">
+	<layer id="about.mugshot" ghost="1"/>
+
+	<text id="about.country" x="130" y="2" h="16" text="-" color="255,255,255" alpha="255" shadowcolor="0,0,0" shadowx="1" shadowy="1" font="Tahoma" ghost="1"/>
+
+	<text x="70" y="23" h="16" text="Name:" color="255,255,255" alpha="200" shadowcolor="0,0,0" shadowx="1" shadowy="1" font="Tahoma" ghost="1"/>
+	<text id="about.name" x="130" y="23" text="-" color="255,255,255" shadowcolor="0,0,0" shadowx="1" shadowy="1" font="Tahoma" ghost="1"/>
+
+	<text id="about.age.tag" x="70" y="38" h="16" text="Birthday:" color="255,255,255" alpha="200" shadowcolor="0,0,0" shadowx="1" shadowy="1" font="Tahoma" ghost="1"/>
+	<text id="about.age" x="130" y="38" text="-" color="255,255,255" shadowcolor="0,0,0" shadowx="1" shadowy="1" font="Tahoma" ghost="1"/>
+
+	<text x="70" y="53" h="16" text="Alias:" color="255,255,255" alpha="200" shadowcolor="0,0,0" shadowx="1" shadowy="1" font="Tahoma" ghost="1"/>
+	<text id="about.alias" x="130" y="53" h="16" text="-" color="255,255,255" shadowcolor="0,0,0" shadowx="1" shadowy="1" font="Tahoma" ghost="1"/>
+
+	<text id="about.credits" x="10" y="74" h="400" text="-" color="255,255,255" shadowcolor="0,0,0" shadowx="1" shadowy="1" font="Tahoma" ghost="1" valign="top"/>
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\scripts\cproabout.maki"/>
+</groupdef>
+
+<groupdef id="about.7">
+	<text x="20" y="30" text="Translators... (1/2)" fontsize="26" color="255,255,255" shadowcolor="0,0,0" shadowx="1" shadowy="1" font="Tahoma"/>
+	<group id="about.7.names" x="50" y="20" h="350"/>
+</groupdef>
+<groupdef id="about.7.names">
+	<text fitparent="1" ghost="1" text="Danish\n- Andreas Brandenborg (and1945)\n\nDutch\n- Mohamed Dahhouch (Muhda)\n\nFrench\n- Julien Victor (Veekee)\n\nGerman\n- Marko Egger (Mynameisnobody)\n- Christoph Grether (Koopa)\n\nPolish\n- Pawel Porwisz (Pepe)" color="255,255,255" shadowcolor="0,0,0" shadowx="1" shadowy="1" font="Tahoma"/>
+</groupdef>
+
+<groupdef id="about.8">
+	<text x="20" y="30" text="Translators... (2/2)" fontsize="26" color="255,255,255" shadowcolor="0,0,0" shadowx="1" shadowy="1" font="Tahoma"/>
+	<group id="about.8.names" x="50" y="20" h="350"/>
+</groupdef>
+<groupdef id="about.8.names">
+	<text fitparent="1" ghost="1" text="PortugueseBR\n- Anderson Silva (Candiba)\n\nRomanian\n- Catalin Zamfirescu (x10winamp)\n\nRussian\n- Aleksey Potashnikoff (NickMikh)\n- Alexander Nureyev (VIPer)\n\nSpanish (International)\n- Manuel Fernando Gutierrez\n\nTurkish\n- Mertcan Kaya (MerTcaN)\n- Ali Saryodlu" color="255,255,255" shadowcolor="0,0,0" shadowx="1" shadowy="1" font="Tahoma"/>
+</groupdef>
+
+<groupdef id="about.9">
+	<text x="20" y="30" text="Special thanks to... (1/2)" fontsize="26" color="255,255,255" shadowcolor="0,0,0" shadowx="1" shadowy="1" font="Tahoma"/>
+	<group id="about.9.names" x="5" y="60" h="320"/>
+</groupdef>
+<groupdef id="about.9.names">
+	<text fitparent="1" ghost="1" text="- iron2000 (made the first cPro skin and much more)\n\n- Veroka (helped with implementing ColorTheme support and\n     created some awesome skins since!)\n\n- Egor Petrov [E-Trance] (Widget engine co-developer\n      and Suggestions ;)\n\n- Zarko Jovic (helped with implementing ColorTheme support)\n\n- Wilian and Veroka (creating a template for cPro skins)\n\n- and1945 (beta testing and spreading the word ;)\n\n- leechbite (widgets, great skins, good 'hacking' examples\n     for other skinners and who can forget DUI ;)" color="255,255,255" shadowcolor="0,0,0" shadowx="1" shadowy="1" font="Tahoma" valign="top"/>
+</groupdef>
+
+<groupdef id="about.10">
+	<text x="20" y="30" text="Special thanks to... (2/2)" fontsize="26" color="255,255,255" shadowcolor="0,0,0" shadowx="1" shadowy="1" font="Tahoma"/>
+	<group id="about.10.names" x="5" y="60" h="320"/>
+</groupdef>
+<groupdef id="about.10.names">
+	<text fitparent="1" ghost="1" text="- Wildrose-Wally (helped with publising and spreading the word)\n- fille1000 (widgets and skins ;)\n- TheElusiveMelon (ClassicPro clock)\n- Koogle (always full of new ideas.. :P)\n- Paparazzi (ideas and testing)\n- Taber Buhl (Original Big Bento gfx)\n- Benski (Winamp gen_ff developments)\n- Winamp Development team\n- MerTcaN (beta testing and active forum member ;)\n- mynameisnobody (beta testing and active forum member ;)\n- osmosis (beta testing ;)\n- pouldam (beta testing 8)" color="255,255,255" valign="top" shadowcolor="0,0,0" shadowx="1" shadowy="1" font="Tahoma"/>
+</groupdef>
+<!--
+Victhor (Created the default skin for cPro2\n     Testing, ideas and promo for ClassicPro 2
+-->
+
+<groupdef id="skin.about.credits">
+	<cPro:About id="about.0"
+		x="0" y="0" visible="0"
+		about_name="Test" about_alias="Test" about_age="1;1;1911"
+		about_country="Test" about_image="about.gfx.skinner"
+		credits="Test"
+	/>
+	<cPro:About id="about.1"
+		x="0" y="0" visible="0"
+		about_name="Pieter Nieuwoudt" about_alias="pjn123" about_age="8;1;1986"
+		about_country="SOUTH-AFRICA" about_image="about.gfx.pjn"
+		credits="Credits:\n - Main Coder (cPro::One + cPro::Two)\n - Design and Layout\n - File Info Viewer (cPro::Two)\n - Reader Tab (cPro::Two)\n - About animations"
+	/>
+	<cPro:About id="about.2"
+		x="0" y="0" visible="0"
+		about_name="Martin Poehlmann" about_alias="martin.deimos" about_age="10;9;1987"
+		about_country="GERMANY"	about_image="about.gfx.martin"
+		credits="Credits:\n - Dynamic Tabs\n - Widgets\n - Notifier\n - Browser (cPro::One)\n - File Info Viewer (cPro::One)\n - Website construction\n - cPro NSIS Install Builder"
+	/>
+
+	<cPro:About id="about.3"
+		x="0" y="0" visible="0"
+		about_name="Ralph Barber" about_alias="QuadHelix" about_age="22;2;1967"
+		about_country="USA"	about_image="about.gfx.quad"
+		credits="Credits:\n - General gfx and promotions (v1)\n - Website uploads\n - Quality Assurance"
+	/>
+
+	<cPro:About id="about.4"
+		x="0" y="0" visible="0"
+		about_name="Kev Jaques" about_alias="SLoB" about_age="11;9;1967"
+		about_country="UNITED KINGDOM"	about_image="about.gfx.slob"
+		credits="Credits:\n - AlbumArt with reflection tab\n - Help and suggestions\n - ColorTheme development"
+	/>
+	
+	<cPro:About id="about.5"
+		x="0" y="0" visible="0"
+		about_name="Victor Brocaz" about_alias="Victhor" about_age="14;3;1982"
+		about_country="ARGENTINA"	about_image="about.gfx.victor"
+		credits="Credits:\n - Created the default skin for cPro2\n - General gfx, promotional material (v2)\n - Testing, ideas and a lot of help with cPro2"
+	/>
+
+	<cPro:About id="about.6"
+		x="0" y="0" visible="0"
+		about_name="Pawel Porwisz" about_alias="Pepe" about_age="5;1;1979"
+		about_country="POLAND"	about_image="about.gfx.pawel"
+		credits="Credits:\n - cPro Installer\n - Translator\n - Beta testing"
+	/>
+
+	<group id="about.7" visible="0" fitparent="1"/>
+	<group id="about.8" visible="0" fitparent="1"/>	
+	<group id="about.9" visible="0" fitparent="1"/>
+	<group id="about.10" visible="0" fitparent="1"/>
+	<layer id="mousetrap" fitparent="1" rectrgn="1" tooltip="Double-Click to toggle the credits on/off (Scroll credits with mousewheel)"/>
+</groupdef>
+
+<groupdef id="skin.about.group" w="0" h="0" relatw="1" relath="1" rectrgn="1">
+	<rect fitparent="1" filled="1" color="250,250,255"/>
+	<layer id="about.gfx4ani" tile="1" fitparent="1" image="about.gfx"/>
+	<text id="hbd.message" x="0" y="50" w="0" relatw="1" align="center" fontsize="40" visible="0" color="0,0,0" bolt="1"/>
+	<text id="hbd.message2" x="0" y="80" w="0" relatw="1" align="center" fontsize="40" visible="0" color="0,0,0" bolt="1"/>
+
+	<layer fitparent="1" id="animationscreen" image="about.gfx" ghost="1" visible="0"/>
+	<layer fitparent="1" id="about.layer" tile="1" image="about.gfx" ghost="1"/>
+
+
+	<group id="skin.about.credits" fitparent="1"/>
+
+	<button id="donate" x="-60" y="-38" relatx="1" relaty="1" image="paypal.donate" alpha="160" cursor="IDC_HAND" tooltip="If you like ClassicPro and would like thank us for our hard work, please click here to donate ;)"/>
+	<layer id="about.peak" tile="1" relatx="2" relaty="2" relatw="2" relath="2" x="-101" w="100" h="100" image="about.gfx"/>
+	<Wasabi:Button id="peak" visible="1" x="0" y="-60" w="18" h="18" relatx="1" relaty="1" text="+" alpha="100" mytooltip="Peek at picture"/>
+
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\scripts\donate.maki" param="ClassicPro"/>
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\scripts\about.maki" param="@SKINPATH@"/>
+</groupdef>

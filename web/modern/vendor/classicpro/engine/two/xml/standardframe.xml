@@ -1,0 +1,111 @@
+<groupdef id="wasabi.statusbar" default_h="12">
+  <!-- nonmodal progress bar -->
+  <rect id="wasabi.statusbar.progress.outline" x="-104" relatx="1" y="3" w="100" h="8" filled="0" color="0,128,128" visible="0"/>
+  <rect id="wasabi.statusbar.progress.inside" x="-104" relatx="1" y="3" w="1" h="8" filled="1" color="0,192,192" visible="0"/>
+
+  <!-- text line -->
+  <text id="wasabi.statusbar.text" x="8" y="0" w="-16" h="0" relatw="1" relath="1" font="standardframe.title" fontsize="26" alpha="100"/>
+</groupdef>
+
+<!-- =======================================================================================================
+
+  This group serves as a template for all the Wasabi:StandardFrame objects
+
+======================================================================================================== -->
+
+<groupdef id="wasabi.frame.layout.titlebar.1">
+	<grid
+		id="cpro2.window.titlebar.1"
+		fitparent="1" x="8" ghost="1"
+		topleft="cpro2.genframe.titlebar.1"	top="cpro2.genframe.titlebar.2"	topright="cpro2.genframe.titlebar.3"
+	/>
+</groupdef>
+<groupdef id="wasabi.frame.layout.titlebar.2">
+	<grid
+		id="cpro2.window.titlebar.2"
+		fitparent="1" ghost="1"
+		topleft="cpro2.genframe.titlebar.1"	top="cpro2.genframe.titlebar.2"	topright="cpro2.genframe.titlebar.3"
+	/>
+</groupdef>
+
+<groupdef id="wasabi.frame.layout">
+	<!-- Window region -->
+	<grid
+		fitparent="1"
+		sysregion="1" move="1"
+		topleft="cpro2.genframe.1"
+		top="cpro2.genframe.2"
+		topright="cpro2.genframe.3"
+		left="cpro2.genframe.4"
+		middle="cpro2.genframe.5"
+		right="cpro2.genframe.6"
+		bottomleft="cpro2.genframe.7"
+		bottom="cpro2.genframe.8"
+		bottomright="cpro2.genframe.9"
+	/>
+	<!--<rect x="3" y="18" w="-6" h="-22" relatw="1" relath="1" color="wasabi.window.background" filled="1"/>
+	<rect x="4" y="19" w="-8" h="-24" relatw="1" relath="1" color="wasabi.list.background" filled="1"/>
+-->
+	<!-- Window resizers -->
+	<layer id="window.top" x="0" y="17" w="6" h="-27" relath="1" resize="left"/>
+	<layer id="window.right" x="-7" y="7" w="7" h="-17" relatx="1" relath="1" resize="right"/>
+	<layer id="window.top" x="23" y="0" w="-30" h="5" relatw="1" resize="top"/>
+	<layer id="window.bottom" x="10" y="-6" w="-20" h="6" relaty="1" relatw="1" resize="bottom"/>
+	<layer id="window.top.left" x="0" y="0" w="23" h="17" resize="topleft"/>
+	<layer id="window.top.right" x="-7" y="0" w="7" h="7"  relatx="1" resize="topright"/>
+	<layer id="window.bottom.left" x="0" y="-10" w="10" h="10" relaty="1" resize="bottomleft"/>
+	<layer id="window.bottom.right" x="-10" y="-10" w="10" h="10" relatx="1" relaty="1" resize="bottomright"/>
+
+	<!-- Window title -->
+	<text id="window.titlebar.title" x="10" y="0" w="-20" h="29" relatw="1" default=":componentname" bold="1" antialias="1" align="left" fontsize="14" forceuppercase="0" color="cpro2.color.genwin.name" move="1"/>
+
+	<group id="wasabi.frame.layout.titlebar.1" x="0" w="50" relath="1" relatw="2" visible="0"/> 
+	<group id="wasabi.frame.layout.titlebar.2" x="50" w="50" relatx="2" relath="1" relatw="2" visible="0"/> 
+
+	<button x="-33" y="0" relatx="1" action="CLOSE" tooltip="Close Window" rectrgn="1" image="cpro2.genframe.close.1" hoverimage="cpro2.genframe.close.2" downimage="cpro2.genframe.close.3"/>
+</groupdef>
+
+
+
+<!-- =======================================================================================================
+  <Wasabi:StandardFrame:Status /> implementation
+======================================================================================================== -->
+
+ <groupdef id="wasabi.standardframe.statusbar" xuitag="Wasabi:StandardFrame:Status">
+	<group id="wasabi.frame.layout" fitparent="1"/>
+	<LayoutStatus id="standardframe.layoutstatus" x="13" y="-33" relaty="1" w="-30" relatw="1" h="20" exclude="{system}" />
+	<script id="standardframe.script" file="@WINAMPPATH@\Plugins\classicPro\engine\two\scripts\standardframe.maki" param="8,26,-16,-34,0,0,1,1" />
+</groupdef>
+
+
+
+
+<!-- =======================================================================================================
+  <Wasabi:StandardFrame:NoStatus /> implementation
+======================================================================================================== -->
+
+<groupdef id="wasabi.standardframe.nostatusbar" xuitag="Wasabi:StandardFrame:NoStatus">
+	<group id="wasabi.frame.layout" fitparent="1"/>
+	<script id="standardframe.script" file="@WINAMPPATH@\Plugins\classicPro\engine\two\scripts\standardframe.maki" param="8,26,-16,-34,0,0,1,1" />
+</groupdef>
+
+
+
+
+
+<!-- =======================================================================================================
+  <Wasabi:StandardFrame:Modal /> implementation
+======================================================================================================== -->
+
+<groupdef id="wasabi.standardframe.modal" inherit_group="wasabi.standardframe.nostatusbar" sysregion="1" xuitag="Wasabi:StandardFrame:Modal">
+  <sendparams target="window.top.left;window.top;window.top.right;window.left;window.right;window.bottom.left.top;window.bottom.left;window.bottom.left.bottom;window.bottom.top;window.bottom;window.bottom.bottom;window.bottom.right.top;window.bottom.right;window.bottom.right.bottom" resize="0" />
+</groupdef>
+
+
+<!-- =======================================================================================================
+  <Wasabi:StandardFrame:Static /> implementation
+======================================================================================================== -->
+
+<groupdef id="wasabi.standardframe.static" inherit_group="wasabi.standardframe.nostatusbar" sysregion="1" xuitag="Wasabi:StandardFrame:Static">
+  <sendparams target="window.top.left;window.top;window.top.right;window.left;window.right;window.bottom.left.top;window.bottom.left;window.bottom.left.bottom;window.bottom.top;window.bottom;window.bottom.bottom;window.bottom.right.top;window.bottom.right;window.bottom.right.bottom" resize="0" />
+</groupdef>

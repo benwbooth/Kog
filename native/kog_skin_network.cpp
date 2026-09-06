@@ -3,6 +3,7 @@
 #include <QtCore/QTimer>
 #include <QtCore/QHash>
 #include <QtCore/QFile>
+#include <QtCore/QRegularExpression>
 #include <QtCore/QXmlStreamReader>
 #include <QtGui/QImageReader>
 #include <QtNetwork/QNetworkAccessManager>
@@ -56,8 +57,19 @@ QString kogModernSkinDependencyError(const QString &path)
             || xml.name().compare(QStringLiteral("include"), Qt::CaseInsensitive) != 0) continue;
         const auto include = xml.attributes().value(QStringLiteral("file")).toString()
             .replace(QLatin1Char('\\'), QLatin1Char('/')).toLower();
-        if (include.contains(QStringLiteral("/plugins/classicpro/")))
-            return QStringLiteral("This skin requires the external ClassicPro engine, which Kog does not support. Choose a standalone modern .wal skin.");
+        if (include.contains(QStringLiteral("plugins/classicpro/"))) {
+            // These are virtual references into Kog's bundled engine, not
+            // permission to read the Winamp installation or another plugin.
+            static const QRegularExpression bundledClassicPro(QStringLiteral(
+                "^(?:@colorthemespath@/\\.\\./\\.\\./|@winamppath@/|)plugins/classicpro/engine/(.+)$"));
+            const auto match = bundledClassicPro.match(include);
+            const QString relative = match.captured(1);
+            const auto parts = relative.split(QLatin1Char('/'));
+            if (match.hasMatch() && !relative.contains(QRegularExpression(QStringLiteral("[:?#%]")))
+                && !parts.contains(QString()) && !parts.contains(QStringLiteral("."))
+                && !parts.contains(QStringLiteral(".."))) continue;
+            return QStringLiteral("Unsupported ClassicPro resource path. Only Kog's bundled ClassicPro engine is available.");
+        }
         if (include.contains(QStringLiteral("/plugins/")) && include.contains(QStringLiteral("../")))
             return QStringLiteral("This skin requires an external Winamp plugin engine. Choose a standalone modern .wal skin.");
     }

@@ -1,0 +1,51 @@
+<groupdef id="bento.infodisplay.line" embed_xui="text" xuitag="Centro:InfoLine">
+	<!--<rect fitparent="1" color="0,255,0"/>-->
+	<Text id="label" 
+		fitparent="1"
+		text="Error:" font="cpro2.font.fileinfo.text"
+		color="cpro2.color.fileinfo.name" valign="top" alpha="253"
+	/>
+
+	<Text id="text" 
+		fitparent="1" font="cpro2.font.fileinfo.text"
+		color="cpro2.color.fileinfo.tag" valign="top" translate="0" alpha="253"
+	/>
+
+	<layer id="link" fitparent="1" rectrgn="1" move="1" alpha="253" dblclickaction="trackinfo"/>
+
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\xui\CentroSUI\_v2\InfoViewer\infoline.maki" />
+</groupdef>
+<groupdef id="cpro2.tags.114" embed_xui="fileinfo.rating.text" >
+	<Text id="fileinfo.rating.text" 
+		fitparent="1"
+		text="Rating:" font="cpro2.font.fileinfo.text"
+		color="cpro2.color.fileinfo.name" valign="bottom" move="1" alpha="253"
+	/>
+	<Wasabi:Ratings id="fileinfo.rating.xui" image_nostar="ratings.1.none" image_star="ratings.1.normal" image_hoverstar="ratings.1.hover"/>
+</groupdef>
+
+
+<groupdef id="info.component.infodisplay">
+	<!-- ID3 info -->
+	<Centro:InfoLine label="Track:" y="2" id="cpro2.tags.105" text="" w="300" relatw="0" visible="0"/>
+	<Centro:InfoLine label="Disk:" id="cpro2.tags.106" text="" w="300" relatw="0" visible="0"/>
+	<Centro:InfoLine label="Title:" id="cpro2.tags.101" text="" w="300" relatw="0" visible="0"/>
+	<Centro:InfoLine label="Artist:" id="cpro2.tags.100" text="" w="300" relatw="0" visible="0"/>
+	<Centro:InfoLine label="Album:" id="cpro2.tags.103" text="" w="300" relatw="0" visible="0"/>
+	<Centro:InfoLine label="Year:" id="cpro2.tags.108" text="" w="300" relatw="0" visible="0"/>
+	<Centro:InfoLine label="Genre:" id="cpro2.tags.107" text="" w="300" relatw="0" visible="0"/>
+	<Centro:InfoLine label="Comment:" id="cpro2.tags.115" text="" w="300" relatw="0" visible="0"/>
+	<Centro:InfoLine label="Album Artist:" id="cpro2.tags.104" text="" w="300" relatw="0" visible="0"/>
+	<Centro:InfoLine label="Composer:" id="cpro2.tags.102" text="" w="300" relatw="0" visible="0"/>
+	<Centro:InfoLine label="Publisher:" id="cpro2.tags.109" text="" w="300" relatw="0" visible="0"/>
+
+	<group id="cpro2.tags.114"/>
+
+	<!-- Other file info -->
+	<Centro:InfoLine label="Decoder:" id="cpro2.tags.110" text="" w="300" relatw="0" visible="0"/>
+	<Centro:InfoLine label="Filesize:" id="cpro2.tags.111" text="" w="300" relatw="0" visible="0"/>
+	<Centro:InfoLine label="Filename:" id="cpro2.tags.112" text="" w="300" relatw="0" visible="0"/>
+	<Centro:InfoLine label="Format:" id="cpro2.tags.113" text="" w="300" relatw="0" visible="0"/>
+
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\xui\CentroSUI\_v2\InfoViewer\auto_arange.maki" />
+</groupdef>

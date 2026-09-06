@@ -1,0 +1,23 @@
+XUI Object: <ModernSongticker/>
+Build: 001 (2-JUN-2008)
+
+
+Please remember to give the id_layout="" param first!
+
+	<ModernSongticker
+		x="100" y="0" h="20" w="-230" relatw="1"
+		id_layout="main;normal"
+		id_volume="Volume"
+		id_seeker="seeker"
+		id_prev="previous.track"
+		id_next="next.track"
+		id_open="open.tracks"
+		id_shuf="shuffle"
+		id_rep="repeat"
+		id_mute="mute"
+	/>
+
+todo list:
+
+- add sendaction listener for non normal news items.. like maybe "Balance:"...
+- add param for "Classic songticker scrolling, modern scrolling, disable scrolling"

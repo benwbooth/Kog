@@ -1,0 +1,50 @@
+<include file="icons.xml"/>
+
+<groupdef id="BrowserPro.list.group" minimum_h="64" background="studio.BaseTexture">
+	<grid
+		fitparent="1"
+		topleft="cpro2.reader.dropbg.1"
+		top="cpro2.reader.dropbg.2"
+		topright="cpro2.reader.dropbg.3"
+		left="cpro2.reader.dropbg.4"
+		middle="cpro2.reader.dropbg.5"
+		right="cpro2.reader.dropbg.6"
+		bottomleft="cpro2.reader.dropbg.7"
+		bottom="cpro2.reader.dropbg.8"
+		bottomright="cpro2.reader.dropbg.9"
+		sysregion="1"
+	/>
+	<list id="BrowserPro.list" x="2" y="2" w="-4" h="-4" relatw="1" relath="1" antialias="0" numcolumns="2" columnwidths="150,-1"	multiselect="0" autodeselect="1" nocolheader="1" columnlabels="Provider Name;Comment"/>
+</groupdef>
+<container id="browserpro" name="BrowserPro Providers" dynamic="1" default_visible="0" nomenu="1" nofocusapponclose="1">
+	<layout id="normal" noparent="1" ontop="1" h="200" w="200" noactivation="1" nodock="1" move="0">
+		<group id="BrowserPro.list.group" fitparent="1"/>
+	</layout>
+</container>
+
+
+
+
+<groupdef id="browserpro.ddlist">
+	<!---<rect id="browserpro.ddl.rect" x="23" y="5" w="-39" h="16" relatw="1" filled="1" color="wasabi.list.background"/>-->
+	<layer id="browserpro.ddl.icon" x="3" y="5" w="16" h="16"/>
+	<text 
+		id="browserpro.ddl.text"
+		x="26" y="4"
+		w="-25" h="16" text="" valign="middle"
+		relatw="1" color="wasabi.list.text"
+	/>
+	<edit id="browserpro.ddl.editbox" x="23" y="5" w="-24" h="16" text="" relatw="1" visible="0"/>
+	<layer id="browserpro.ddl.mousetrap" rectrgn="1" fitparent="1" tooltip="Right-Click to Open Current Website in your Default Browser"/>
+  	<button
+		id="dropdownlist.button"
+		x="-15" y="0"
+		relatx="1"
+		image="cpro2.reader.drop.1" hoverimage="cpro2.reader.drop.2" downimage="cpro2.reader.drop.3"
+		wantfocus="0" tooltip="Select your service" rectrgn="1"
+	/>
+</groupdef>
+
+<groupdef id="browserpro.ddlist.group">
+	<group id="browserpro.ddlist" fitparent="1" navbuttons="0" wantfocus="0" antialias="0" maxitems="10"/>
+</groupdef>

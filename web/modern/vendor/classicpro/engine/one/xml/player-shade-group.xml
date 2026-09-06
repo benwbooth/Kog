@@ -1,0 +1,88 @@
+<!-- TODO (mpdeimos) change all groups w/ background to a grid/layer, since otherwise customability is lost! deleting the background in shade.png will not show the group anymore and this is not desired if u have a skin using a tiled background -->
+
+<groupdef id="shade.visgroup" background="shade.vis">
+	<layer x="0" y="0" image="shade.o.vis" ghost="1"/>
+	<layer fitparent="1" dblClickAction="SWITCH;normal"/>
+	<vis
+		id="shade.vis"
+		x="4" y="7"
+		w="54" h="10"
+		gammagroup="s.Vis"
+	/>
+</groupdef>
+
+<groupdef id="shade.volgroup" background="shade.volume.bg">
+	<layer x="0" y="0" image="shade.o.volume.bg" ghost="1"/>
+	<layer fitparent="1" dblClickAction="SWITCH;normal"/>
+	<NStatesButton id="mute2" x="5" y="4" image="s.mute.1." hoverimage="s.mute.2." downimage="s.mute.3." rectrgn="1" nstates="2" tooltip="Mute Volume" cfgvals="0;1"/>
+
+	<layer id="shade.volfg" x="21" y="5" image="shade.volume.fg" tile="1"/>
+	<Slider
+		id="shade.volume"
+		action="Volume"
+		x="21" y="7" h="8" w="40"
+		thumb="s.vol.thumb.1"
+		hoverThumb="s.vol.thumb.2"
+		downThumb="s.vol.thumb.3"
+		tooltip="Volume" cursor="IDC_Hand"
+	/>
+
+</groupdef>
+
+<groupdef id="shade.seekticker1">
+	<grid x="0" y="0" w="0" h="23" relatw="1" topleft="shade.ticker.bg.1" top="shade.ticker.bg.2" topright="shade.ticker.bg.3"/>
+	<grid x="0" y="0" w="0" h="23" relatw="1" topleft="shade.o.ticker.bg.1" top="shade.o.ticker.bg.2" topright="shade.o.ticker.bg.3"/>
+	<layer fitparent="1" dblClickAction="SWITCH;normal" move="1"/>
+	<text id="SongTime"
+		x="3" y="5" h="12" w="35" relatw="0" timeroffstyle="1" timecolonwidth="6" font="cpro.winshade.font"
+		display="time" align="left" color="Shade.SongTicker.Text" fontsize="12" bold="2" valign="top"
+	/>
+	<ModernSongticker id="Songticker"
+		x="38" y="5" h="12" w="-42" relatw="1" move="1" antialias="1"
+		id_layout="main;shade"
+		id_volume="Volume"
+		id_seeker="seeker"
+		id_prev="previous.track"
+		id_next="next.track"
+		id_open="open.tracks"
+		id_shuf="shuffle"
+		id_rep="repeat"
+		id_mute="mute2"
+		fontsize="12"
+		font="cpro.winshade.font"
+		color="Shade.SongTicker.Text"
+	/>
+	<layer id="Songticker.trap" x="38" y="0" h="0" w="-42" relatw="1" relath="1" move="1" dblClickAction="SWITCH;normal"/>
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\one\scripts\playlistmenu.maki" param="Songticker.trap;40"/>
+</groupdef>
+<groupdef id="shade.seekticker2">
+	<grid x="0" y="0" w="0" h="23" relatw="1" topleft="shade.seek.bg.1" top="shade.seek.bg.2" topright="shade.seek.bg.3"/>
+	<grid x="0" y="0" w="0" h="23" relatw="1" topleft="shade.o.seek.bg.1" top="shade.o.seek.bg.2" topright="shade.o.seek.bg.3"/>
+	<ProgressGrid id="progressbar" x="0" y="0" h="23" w="0" relatw="1" orientation="right" left="shade.seek.fg.1" middle="shade.seek.fg.2"/>
+	<layer fitparent="1" dblClickAction="SWITCH;normal" move="1"/>
+
+	<Slider
+		action="SEEK"
+		x="1" y="7" h="8" w="-2" relatw="1"
+		thumb="s.seek.thumb.1"
+		hoverThumb="s.seek.thumb.2"
+		downThumb="s.seek.thumb.3"
+		ghost="1"
+		visible="0"
+		tooltip="Seeker"
+	/>
+
+	<Slider
+		id="seeker"
+		action="SEEK"
+		x="1" y="7" h="8" w="-2" relatw="1"
+		thumb="s.seek.thumb.1"
+		hoverThumb="s.seek.thumb.2"
+		downThumb="s.seek.thumb.3"
+		tooltip="Seeker" cursor="IDC_Hand"
+	/>
+</groupdef>
+<groupdef id="shade.seekticker">
+	<group id="shade.seekticker1" x="0" y="0" w="100" h="23" relatw="2"/>
+	<group id="shade.seekticker2" x="70" y="0" w="30" h="23" relatx="2" relatw="2" visible="0"/>
+</groupdef>

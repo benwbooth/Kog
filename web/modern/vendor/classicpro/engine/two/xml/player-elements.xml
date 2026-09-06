@@ -1,0 +1,222 @@
+<elements>
+	<!--
+	ClassicPro Two skins elements
+	-->
+	
+	<!-- Frame Section -->
+	<bitmap id="frame.topleft" file="frame_player.png" x="0" y="0" w="105" gammagroup="n.frame.player"/>
+	<bitmap id="frame.top" file="frame_player.png" x="106" y="0" w="10" gammagroup="n.frame.player"/>
+	<bitmap id="frame.top.center" file="frame_player.png" x="1033" y="0" w="200" gammagroup="n.frame.player"/>
+	<bitmap id="frame.topright" file="frame_player.png" x="117" y="0" w="135" gammagroup="n.frame.player"/>
+	<bitmap id="frame.left" file="frame_player.png" x="979" y="0" w="8" gammagroup="n.frame.player.bottom"/>
+	<bitmap id="frame.right" file="frame_player.png" x="988" y="0" w="8" gammagroup="n.frame.player.bottom"/>
+	<bitmap id="frame.bottomleft" file="frame_player.png" x="997" y="0" w="8" h="8" gammagroup="n.frame.player.bottom"/>
+	<bitmap id="frame.bottom" file="frame_player.png" x="1006" y="0" w="8" h="8" gammagroup="n.frame.player.bottom"/>
+	<bitmap id="frame.bottomright" file="frame_player.png" x="1015" y="0" w="8" h="8" gammagroup="n.frame.player.bottom"/>
+	<bitmap id="frame.center" file="frame_player.png" x="1024" y="0" w="8" h="8" gammagroup="n.frame.player.bottom"/>
+	
+	<bitmap id="frame.1menu.1" file="frame_player.png" x="253" y="0" w="85" gammagroup="n.frame.menu.normal"/>
+	<bitmap id="frame.1menu.2" file="frame_player.png" x="339" y="0" w="85" gammagroup="n.frame.menu.hoverdown"/>
+	<bitmap id="frame.1menu.3" file="frame_player.png" x="425" y="0" w="85" gammagroup="n.frame.menu.hoverdown"/>
+	
+	<bitmap id="frame.button.aot.1.0" file="frame_player.png" x="511" y="0" w="25" gammagroup="n.frame.control.normal"/>
+	<bitmap id="frame.button.aot.2.0" file="frame_player.png" x="537" y="0" w="25" gammagroup="n.frame.control.hoverdown"/>
+	<bitmap id="frame.button.aot.3.0" file="frame_player.png" x="563" y="0" w="25" gammagroup="n.frame.control.hoverdown"/>
+	<bitmap id="frame.button.aot.1.1" file="frame_player.png" x="589" y="0" w="25" gammagroup="n.frame.control.normal"/>
+	<bitmap id="frame.button.aot.2.1" file="frame_player.png" x="615" y="0" w="25" gammagroup="n.frame.control.hoverdown"/>
+	<bitmap id="frame.button.aot.3.1" file="frame_player.png" x="641" y="0" w="25" gammagroup="n.frame.control.hoverdown"/>
+	<bitmap id="frame.button.min.1" file="frame_player.png" x="667" y="0" w="25" gammagroup="n.frame.control.normal"/>
+	<bitmap id="frame.button.min.2" file="frame_player.png" x="693" y="0" w="25" gammagroup="n.frame.control.hoverdown"/>
+	<bitmap id="frame.button.min.3" file="frame_player.png" x="719" y="0" w="25" gammagroup="n.frame.control.hoverdown"/>
+	<bitmap id="frame.button.gobig.1" file="frame_player.png" x="745" y="0" w="25" gammagroup="n.frame.control.normal"/>
+	<bitmap id="frame.button.gobig.2" file="frame_player.png" x="771" y="0" w="25" gammagroup="n.frame.control.hoverdown"/>
+	<bitmap id="frame.button.gobig.3" file="frame_player.png" x="797" y="0" w="25" gammagroup="n.frame.control.hoverdown"/>
+	<bitmap id="frame.button.shade.1" file="frame_player.png" x="823" y="0" w="25" gammagroup="n.frame.control.normal"/>
+	<bitmap id="frame.button.shade.2" file="frame_player.png" x="849" y="0" w="25" gammagroup="n.frame.control.hoverdown"/>
+	<bitmap id="frame.button.shade.3" file="frame_player.png" x="875" y="0" w="25" gammagroup="n.frame.control.hoverdown"/>
+	<bitmap id="frame.button.close.1" file="frame_player.png" x="901" y="0" w="25" gammagroup="n.frame.close.normal"/>
+	<bitmap id="frame.button.close.2" file="frame_player.png" x="927" y="0" w="25" gammagroup="n.frame.close.hoverdown"/>
+	<bitmap id="frame.button.close.3" file="frame_player.png" x="953" y="0" w="25" gammagroup="n.frame.close.hoverdown"/>
+
+	<!-- Frame Section (Fullscreen) -->
+	<bitmap id="frame.topleft.fs" file="frame_player_fs.png" x="0" y="0" w="138" gammagroup="n.frame.player"/>
+	<bitmap id="frame.top.fs" file="frame_player_fs.png" x="139" y="0" w="10" gammagroup="n.frame.player"/>
+	<bitmap id="frame.top.center.fs" file="frame_player_fs.png" x="1021" y="0" w="200" gammagroup="n.frame.player"/>
+	<bitmap id="frame.topright.fs" file="frame_player_fs.png" x="150" y="0" w="138" gammagroup="n.frame.player"/>
+	
+	<bitmap id="frame.menu.fs.1" file="frame_player_fs.png" x="289" y="0" w="85" gammagroup="n.frame.menu.normal"/>
+	<bitmap id="frame.menu.fs.2" file="frame_player_fs.png" x="375" y="0" w="85" gammagroup="n.frame.menu.hoverdown"/>
+	<bitmap id="frame.menu.fs.3" file="frame_player_fs.png" x="461" y="0" w="85" gammagroup="n.frame.menu.hoverdown"/>
+	
+	<bitmap id="frame.button.aot.fs.1.0" file="frame_player_fs.png" x="547" y="0" w="25" gammagroup="n.frame.control.normal"/>
+	<bitmap id="frame.button.aot.fs.2.0" file="frame_player_fs.png" x="573" y="0" w="25" gammagroup="n.frame.control.hoverdown"/>
+	<bitmap id="frame.button.aot.fs.3.0" file="frame_player_fs.png" x="599" y="0" w="25" gammagroup="n.frame.control.hoverdown"/>
+	<bitmap id="frame.button.aot.fs.1.1" file="frame_player_fs.png" x="625" y="0" w="25" gammagroup="n.frame.control.normal"/>
+	<bitmap id="frame.button.aot.fs.2.1" file="frame_player_fs.png" x="651" y="0" w="25" gammagroup="n.frame.control.hoverdown"/>
+	<bitmap id="frame.button.aot.fs.3.1" file="frame_player_fs.png" x="677" y="0" w="25" gammagroup="n.frame.control.hoverdown"/>
+	<bitmap id="frame.button.min.fs.1" file="frame_player_fs.png" x="703" y="0" w="25" gammagroup="n.frame.control.normal"/>
+	<bitmap id="frame.button.min.fs.2" file="frame_player_fs.png" x="729" y="0" w="25" gammagroup="n.frame.control.hoverdown"/>
+	<bitmap id="frame.button.min.fs.3" file="frame_player_fs.png" x="755" y="0" w="25" gammagroup="n.frame.control.hoverdown"/>
+	<bitmap id="frame.button.gobig.fs.1" file="frame_player_fs.png" x="781" y="0" w="25" gammagroup="n.frame.control.normal"/>
+	<bitmap id="frame.button.gobig.fs.2" file="frame_player_fs.png" x="807" y="0" w="25" gammagroup="n.frame.control.hoverdown"/>
+	<bitmap id="frame.button.gobig.fs.3" file="frame_player_fs.png" x="833" y="0" w="25" gammagroup="n.frame.control.hoverdown"/>
+	<bitmap id="frame.button.shade.fs.1" file="frame_player_fs.png" x="859" y="0" w="25" gammagroup="n.frame.control.normal"/>
+	<bitmap id="frame.button.shade.fs.2" file="frame_player_fs.png" x="885" y="0" w="25" gammagroup="n.frame.control.hoverdown"/>
+	<bitmap id="frame.button.shade.fs.3" file="frame_player_fs.png" x="911" y="0" w="25" gammagroup="n.frame.control.hoverdown"/>
+	
+	<bitmap id="frame.button.close.fs.1" file="frame_player_fs.png" x="937" y="0" w="27" gammagroup="n.frame.close.normal"/>
+	<bitmap id="frame.button.close.fs.2" file="frame_player_fs.png" x="965" y="0" w="27" gammagroup="n.frame.close.hoverdown"/>
+	<bitmap id="frame.button.close.fs.3" file="frame_player_fs.png" x="993" y="0" w="27" gammagroup="n.frame.close.hoverdown"/>
+
+	<!-- Playback Section -->
+	<bitmap id="playback.bg.left.0" file="playback_area.png" x="225" y="0" w="8" h="30" gammagroup="n.playback.frame"/>
+	<bitmap id="playback.bg.left.1" file="playback_area.png" x="234" y="0" w="113" h="30" gammagroup="n.playback.vis"/>
+	<bitmap id="playback.bg.left.2" file="playback_area.png" x="234" y="31" w="83" h="30" gammagroup="n.playback.vis"/>
+	<bitmap id="playback.bg.left.3" file="playback_area.png" x="234" y="62" w="47" h="30" gammagroup="n.playback.vis"/>
+	<bitmap id="playback.bg.fill" file="playback_area.png" x="348" y="0" w="10" h="30" gammagroup="n.playback.background"/>
+	<bitmap id="playback.bg.right.0" file="playback_area.png" x="473" y="0" w="8" h="30" gammagroup="n.playback.frame"/>
+	<bitmap id="playback.bg.right.1" file="playback_area.png" x="359" y="0" w="113" h="30" gammagroup="n.playback.volume"/>
+	<bitmap id="playback.bg.right.2" file="playback_area.png" x="389" y="31" w="83" h="30" gammagroup="n.playback.volume"/>
+	<bitmap id="playback.bg.right.3" file="playback_area.png" x="425" y="62" w="47" h="30" gammagroup="n.playback.volume"/>
+	<bitmap id="vis.overlay1" file="playback_area.png" x="240" y="6" w="71" h="17" gammagroup="n.playback.vis"/>
+	<bitmap id="vis.overlay2" file="playback_area.png" x="240" y="37" w="71" h="17" gammagroup="n.playback.vis"/>
+	<bitmap id="vis.overlay3" file="playback_area.png" x="240" y="68" w="35" h="17" gammagroup="n.playback.vis"/>
+
+	<bitmap id="playback.bg.buttons" file="playback_area.png" x="0" y="0" w="224" h="30" gammagroup="n.playback.buttons.bg"/>
+	<bitmap id="playback.bg.buttons.vol" file="playback_area.png" x="222" y="124" w="33" h="30" gammagroup="n.playback.buttons.bg"/>
+	
+	<bitmap id="playback.vol.small" file="playback_area.png" x="191" y="124" w="30" h="30" gammagroup="n.playback.button.normal"/>
+	<bitmap id="playback.vol.small.1" file="playback_area.png" x="194" y="155" w="24" h="30" gammagroup="n.playback.volume.active"/>
+	<bitmap id="playback.vol.small.2" file="playback_area.png" x="194" y="186" w="24" h="30" gammagroup="n.playback.volume.active"/>
+	
+	<bitmap id="playback.vol.med.1" file="playback_area.png" x="389" y="155" w="41" h="30" gammagroup="n.playback.volume.active"/>
+	<bitmap id="playback.vol.med.2" file="playback_area.png" x="389" y="186" w="41" h="30" gammagroup="n.playback.volume.active"/>
+	<bitmap id="playback.vol.large.1" file="playback_area.png" x="389" y="93" w="77" h="30" gammagroup="n.playback.volume.active"/>
+	<bitmap id="playback.vol.large.2" file="playback_area.png" x="389" y="124" w="77" h="30" gammagroup="n.playback.volume.active"/>
+	
+	<bitmap id="playback.button.prev.1" file="playback_area.png" x="63" y="31" w="32" h="30" gammagroup="n.playback.button.normal"/>
+	<bitmap id="playback.button.prev.2" file="playback_area.png" x="63" y="62" w="32" h="30" gammagroup="n.playback.button.hoverdown"/>
+	<bitmap id="playback.button.prev.3" file="playback_area.png" x="63" y="93" w="32" h="30" gammagroup="n.playback.button.hoverdown"/>
+	<bitmap id="playback.button.play.1" file="playback_area.png" x="95" y="31" w="34" h="30" gammagroup="n.playback.button.normal"/>
+	<bitmap id="playback.button.play.2" file="playback_area.png" x="95" y="62" w="34" h="30" gammagroup="n.playback.button.hoverdown"/>
+	<bitmap id="playback.button.play.3" file="playback_area.png" x="95" y="93" w="34" h="30" gammagroup="n.playback.button.hoverdown"/>
+	<bitmap id="playback.button.paus.1" file="playback_area.png" x="95" y="124" w="34" h="30" gammagroup="n.playback.button.normal"/>
+	<bitmap id="playback.button.paus.2" file="playback_area.png" x="95" y="155" w="34" h="30" gammagroup="n.playback.button.hoverdown"/>
+	<bitmap id="playback.button.paus.3" file="playback_area.png" x="95" y="186" w="34" h="30" gammagroup="n.playback.button.hoverdown"/>
+	<bitmap id="playback.button.next.1" file="playback_area.png" x="129" y="31" w="32" h="30" gammagroup="n.playback.button.normal"/>
+	<bitmap id="playback.button.next.2" file="playback_area.png" x="129" y="62" w="32" h="30" gammagroup="n.playback.button.hoverdown"/>
+	<bitmap id="playback.button.next.3" file="playback_area.png" x="129" y="93" w="32" h="30" gammagroup="n.playback.button.hoverdown"/>
+	<bitmap id="playback.button.stop.1" file="playback_area.png" x="161" y="31" w="30" h="30" gammagroup="n.playback.button.normal"/>
+	<bitmap id="playback.button.stop.2" file="playback_area.png" x="161" y="62" w="30" h="30" gammagroup="n.playback.button.hoverdown"/>
+	<bitmap id="playback.button.stop.3" file="playback_area.png" x="161" y="93" w="30" h="30" gammagroup="n.playback.button.hoverdown"/>
+	<bitmap id="playback.button.open.1" file="playback_area.png" x="191" y="31" w="30" h="30" gammagroup="n.playback.button.normal"/>
+	<bitmap id="playback.button.open.2" file="playback_area.png" x="191" y="62" w="30" h="30" gammagroup="n.playback.button.hoverdown"/>
+	<bitmap id="playback.button.open.3" file="playback_area.png" x="191" y="93" w="30" h="30" gammagroup="n.playback.button.hoverdown"/>
+	<bitmap id="playback.button.shuf.1.0" file="playback_area.png" x="3" y="31" w="30" h="30" gammagroup="n.playback.button.normal"/>
+	<bitmap id="playback.button.shuf.2.0" file="playback_area.png" x="3" y="62" w="30" h="30" gammagroup="n.playback.button.hoverdown"/>
+	<bitmap id="playback.button.shuf.3.0" file="playback_area.png" x="3" y="93" w="30" h="30" gammagroup="n.playback.button.hoverdown"/>
+	<bitmap id="playback.button.shuf.1.1" file="playback_area.png" x="3" y="124" w="30" h="30" gammagroup="n.playback.button.normal"/>
+	<bitmap id="playback.button.shuf.2.1" file="playback_area.png" x="3" y="155" w="30" h="30" gammagroup="n.playback.button.hoverdown"/>
+	<bitmap id="playback.button.shuf.3.1" file="playback_area.png" x="3" y="186" w="30" h="30" gammagroup="n.playback.button.hoverdown"/>
+	<bitmap id="playback.button.rep.1.0" file="playback_area.png" x="33" y="31" w="30" h="30" gammagroup="n.playback.button.normal"/>
+	<bitmap id="playback.button.rep.2.0" file="playback_area.png" x="33" y="62" w="30" h="30" gammagroup="n.playback.button.hoverdown"/>
+	<bitmap id="playback.button.rep.3.0" file="playback_area.png" x="33" y="93" w="30" h="30" gammagroup="n.playback.button.hoverdown"/>
+	<bitmap id="playback.button.rep.1.1" file="playback_area.png" x="33" y="124" w="30" h="30" gammagroup="n.playback.button.normal"/>
+	<bitmap id="playback.button.rep.2.1" file="playback_area.png" x="33" y="155" w="30" h="30" gammagroup="n.playback.button.hoverdown"/>
+	<bitmap id="playback.button.rep.3.1" file="playback_area.png" x="33" y="186" w="30" h="30" gammagroup="n.playback.button.hoverdown"/>
+	<bitmap id="playback.button.rep.1.2" file="playback_area.png" x="63" y="124" w="30" h="30" gammagroup="n.playback.button.normal"/>
+	<bitmap id="playback.button.rep.2.2" file="playback_area.png" x="63" y="155" w="30" h="30" gammagroup="n.playback.button.hoverdown"/>
+	<bitmap id="playback.button.rep.3.2" file="playback_area.png" x="63" y="186" w="30" h="30" gammagroup="n.playback.button.hoverdown"/>
+	
+	<bitmap id="playback.button.mute.1.0" file="playback_area.png" x="358" y="31" w="30" h="30" gammagroup="n.playback.mute.normal"/>
+	<bitmap id="playback.button.mute.2.0" file="playback_area.png" x="358" y="62" w="30" h="30" gammagroup="n.playback.mute.hoverdown"/>
+	<bitmap id="playback.button.mute.3.0" file="playback_area.png" x="358" y="93" w="30" h="30" gammagroup="n.playback.mute.hoverdown"/>
+	<bitmap id="playback.button.mute.1.1" file="playback_area.png" x="358" y="124" w="30" h="30" gammagroup="n.playback.mute.normal"/>
+	<bitmap id="playback.button.mute.2.1" file="playback_area.png" x="358" y="155" w="30" h="30" gammagroup="n.playback.mute.hoverdown"/>
+	<bitmap id="playback.button.mute.3.1" file="playback_area.png" x="358" y="186" w="30" h="30" gammagroup="n.playback.mute.hoverdown"/>
+	
+	<bitmap id="playback.button.bolt.1" file="playback_area.png" x="318" y="31" w="30" h="30" gammagroup="n.playback.bolt.normal"/>
+	<bitmap id="playback.button.bolt.2" file="playback_area.png" x="318" y="62" w="30" h="30" gammagroup="n.playback.bolt.hoverdown"/>
+	<bitmap id="playback.button.bolt.3" file="playback_area.png" x="318" y="93" w="30" h="30" gammagroup="n.playback.bolt.hoverdown"/>
+	
+	<bitmap id="cpro2.color.read" file="playback_area.png" x="282" y="62" w="3" h="18"/>
+	<bitmap id="vis.region" file="@WINAMPPATH@\Plugins\classicPro\engine\two\images\vis-overlay.png"/>
+
+	<bitmap id="playback.button.shuf.over.1" file="overlay_activebuttons.png" x="0" y="0" w="30" h="30" gammagroup="n.playback.button.active"/>
+	<bitmap id="playback.button.rep.over.1" file="overlay_activebuttons.png" x="31" y="0" w="30" h="30" gammagroup="n.playback.button.active"/>
+	<bitmap id="playback.button.rep.over.2" file="overlay_activebuttons.png" x="62" y="0" w="30" h="30" gammagroup="n.playback.button.active"/>
+	<bitmap id="playback.button.mute.over.1" file="overlay_activebuttons.png" x="93" y="0" w="30" h="30" gammagroup="n.playback.button.active"/>
+
+	<!-- Playback Section: Volume thumbs (Can be any width) -->
+	<bitmap id="playback.volume.big.1" file="playback_vol.png" x="0" y="94" h="30" gammagroup="n.playback.volume.thumb"/>
+	<bitmap id="playback.volume.big.2" file="playback_vol.png" x="0" y="125" h="30" gammagroup="n.playback.volume.thumb"/>
+	<bitmap id="playback.volume.big.3" file="playback_vol.png" x="0" y="156" h="30" gammagroup="n.playback.volume.thumb"/>
+	
+	<!-- Info/Seeker Section -->
+	<bitmap id="info.bg.0" file="infoseek.png" x="0" y="0" w="8" h="40" gammagroup="n.infoseek.frame"/>
+	<bitmap id="info.bg.1" file="infoseek.png" x="9" y="0" w="2" h="40" gammagroup="n.infoseek.background"/>
+	<bitmap id="info.bg.2" file="infoseek.png" x="235" y="0" w="2" h="40" gammagroup="n.infoseek.background"/>
+	<bitmap id="info.bg.3" file="infoseek.png" x="238" y="0" w="8" h="40" gammagroup="n.infoseek.frame"/>
+	<bitmap id="info.bg.seeker.0.1" file="infoseek.png" x="12" y="0" w="105" h="40" gammagroup="n.infoseek.seek.inactive"/>
+	<bitmap id="info.bg.seeker.0.2" file="infoseek.png" x="118" y="0" w="10" h="40" gammagroup="n.infoseek.seek.inactive"/>
+	<bitmap id="info.bg.seeker.0.3" file="infoseek.png" x="129" y="0" w="105" h="40" gammagroup="n.infoseek.seek.inactive"/>
+	<bitmap id="info.bg.seeker.1.1" file="infoseek.png" x="12" y="41" w="105" h="40" gammagroup="n.infoseek.seek.active"/>
+	<bitmap id="info.bg.seeker.1.2" file="infoseek.png" x="118" y="41" w="10" h="40" gammagroup="n.infoseek.seek.active"/>
+	<bitmap id="info.bg.seeker.1.3" file="infoseek.png" x="129" y="41" w="105" h="40" gammagroup="n.infoseek.seek.active"/>
+	<bitmap id="info.bg.seeker.2.1" file="infoseek.png" x="12" y="82" w="105" h="40" gammagroup="n.infoseek.seek.hover"/>
+	<bitmap id="info.bg.seeker.2.2" file="infoseek.png" x="118" y="82" w="10" h="40" gammagroup="n.infoseek.seek.hover"/>
+	<bitmap id="info.bg.seeker.2.3" file="infoseek.png" x="129" y="82" w="105" h="40" gammagroup="n.infoseek.seek.hover"/>
+	<bitmap id="info.bg.seeker.3.1" file="infoseek.png" x="12" y="123" w="105" h="40" gammagroup="n.infoseek.seek.down"/>
+	<bitmap id="info.bg.seeker.3.2" file="infoseek.png" x="118" y="123" w="10" h="40" gammagroup="n.infoseek.seek.down"/>
+	<bitmap id="info.bg.seeker.3.3" file="infoseek.png" x="129" y="123" w="105" h="40" gammagroup="n.infoseek.seek.down"/>
+	<bitmap id="info.bg.seeker.4.1" file="infoseek.png" x="12" y="164" w="105" h="40" gammagroup="n.infoseek.background"/>
+	<bitmap id="info.bg.seeker.4.2" file="infoseek.png" x="118" y="164" w="10" h="40" gammagroup="n.infoseek.background"/>
+	<bitmap id="info.bg.seeker.4.3" file="infoseek.png" x="129" y="164" w="105" h="40" gammagroup="n.infoseek.background"/>
+	<bitmap id="info.bg.seeker.5.1" file="infoseek.png" x="12" y="205" w="105" h="40" gammagroup="n.infoseek.overlay"/>
+	<bitmap id="info.bg.seeker.5.2" file="infoseek.png" x="118" y="205" w="10" h="40" gammagroup="n.infoseek.overlay"/>
+	<bitmap id="info.bg.seeker.5.3" file="infoseek.png" x="129" y="205" w="105" h="40" gammagroup="n.infoseek.overlay"/>
+	
+	<bitmap id="info.bg.seeker.light" file="infoseek_light.png" gammagroup="n.infoseek.light"/>
+	
+	<!--<bitmap id="info.bg.time" file="infoseek.png" x="0" y="0" w="56" gammagroup="n.Info"/>
+	<bitmap id="info.bg.time.play" file="infoseek.png" x="57" y="0" w="56" gammagroup="n.Info"/>
+	<bitmap id="info.bg.time.pause" file="infoseek.png" x="114" y="0" w="56" gammagroup="n.Info"/>
+	<bitmap id="info.bg.time.stop" file="infoseek.png" x="171" y="0" w="56" gammagroup="n.Info"/>
+	
+	<bitmap id="info.bg.other" file="infoseek.png" x="272" y="0" w="56" gammagroup="n.Info"/>-->
+
+	<bitmap id="info.seeker.thumb" file="@WINAMPPATH@\Plugins\classicPro\engine\two\images\seekerthumb.png"/>
+
+	<!-- Info/Seeker Section: Promo image-->
+	<bitmap id="cPro.promo.1" file="infoseek_promo.png" x="100" y="82" w="100" h="40" gammagroup="n.infoseek.promo"/>
+	<bitmap id="cPro.promo.2" file="infoseek_promo.png" x="50" y="41" w="200" h="40" gammagroup="n.infoseek.promo"/>
+	<bitmap id="cPro.promo.3" file="infoseek_promo.png" x="0" y="0" w="300" h="40" gammagroup="n.infoseek.promo"/>
+
+	<!-- Info/Seeker Section: Beatvis animation-->
+	<bitmap id="beat.0.left" file="beat_left.png" gammagroup="n.beatvis"/>
+	<bitmap id="beat.0.right" file="beat_right.png" gammagroup="n.beatvis"/>
+	<bitmap id="beat.left.b" file="beat_left.png" x="0" y="0" h="45" gammagroup="n.beatvis"/>
+	<bitmap id="beat.right.b" file="beat_right.png" x="0" y="0" h="45" gammagroup="n.beatvis"/>
+	<bitmap id="beat.left.c" file="beat_left.png" x="0" y="45" h="45" gammagroup="n.beatvis"/>
+	<bitmap id="beat.right.c" file="beat_right.png" x="0" y="45" h="45" gammagroup="n.beatvis"/>
+	<!-- SLoB - added beatvis overlay - optional 
+	<bitmap id="beatvis.overlay" file="vis_overlay.png" gammagroup="n.Background.Overlay"/>-->
+
+	<!-- Info/Seeker Section: Playback Status-->
+	<bitmap id="cpro.status.playing" file="infoseek.png" x="247" y="0" w="20" h="20" gammagroup="n.infoseek.status"/>
+	<bitmap id="cpro.status.paused" file="infoseek.png" x="247" y="21" w="20" h="20" gammagroup="n.infoseek.status"/>
+	<bitmap id="cpro.status.stopped" file="infoseek.png" x="247" y="42" w="20" h="20" gammagroup="n.infoseek.status"/>
+	<bitmap id="channels.1" file="infoseek.png" x="247" y="63" w="20" h="20" gammagroup="n.infoseek.status"/>
+	<bitmap id="channels.2" file="infoseek.png" x="247" y="84" w="20" h="20" gammagroup="n.infoseek.status"/>
+	<bitmap id="channels.s" file="infoseek.png" x="247" y="105" w="20" h="20" gammagroup="n.infoseek.status"/>
+
+	<!-- AeroSnap for Winamp Section -->
+	<bitmap id="cpro2.aerosnap.1" file="@WINAMPPATH@\Plugins\classicPro\engine\two\images\aerosnap.png" x="0" y="0" w="4" h="4"/>
+	<bitmap id="cpro2.aerosnap.2" file="@WINAMPPATH@\Plugins\classicPro\engine\two\images\aerosnap.png" x="5" y="0" w="4" h="4"/>
+	<bitmap id="cpro2.aerosnap.3" file="@WINAMPPATH@\Plugins\classicPro\engine\two\images\aerosnap.png" x="10" y="0" w="4" h="4"/>
+	<bitmap id="cpro2.aerosnap.4" file="@WINAMPPATH@\Plugins\classicPro\engine\two\images\aerosnap.png" x="0" y="5" w="4" h="4"/>
+	<bitmap id="cpro2.aerosnap.6" file="@WINAMPPATH@\Plugins\classicPro\engine\two\images\aerosnap.png" x="10" y="5" w="4" h="4"/>
+	<bitmap id="cpro2.aerosnap.7" file="@WINAMPPATH@\Plugins\classicPro\engine\two\images\aerosnap.png" x="0" y="10" w="4" h="4"/>
+	<bitmap id="cpro2.aerosnap.8" file="@WINAMPPATH@\Plugins\classicPro\engine\two\images\aerosnap.png" x="5" y="10" w="4" h="4"/>
+	<bitmap id="cpro2.aerosnap.9" file="@WINAMPPATH@\Plugins\classicPro\engine\two\images\aerosnap.png" x="10" y="10" w="4" h="4"/>
+</elements>

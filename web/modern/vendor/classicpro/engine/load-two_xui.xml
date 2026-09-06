@@ -1,0 +1,15 @@
+<scripts>
+	<script file="@COLORTHEMESPATH@\..\..\Plugins\classicPro\engine\scripts\WinampVersionCheck.maki" param="2405;5.55"/>
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\two\scripts\loadattribs_xui.maki"/>
+</scripts>
+
+<include file="xui\xui-files_twoxui.xml"/>
+<include file="widgets\load\v2\*.xml"/>
+<include file="xml\notifier.xml"/>
+<include file="two\xml\files-twoxui.xml"/>
+<include file="xml\about.xml"/>
+
+<groupdef id="ClassicPro.xui" xuitag="ClassicPro2:SUI">
+	<SC:UpdateSystem x="0" y="0" h="0" w="0" skinname="classicpro" skinversion="2.01" />
+	<Centro:SUI id="cpro.sui" fitparent="1"/>
+</groupdef>

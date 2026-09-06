@@ -1,0 +1,11 @@
+<!-- =======================================================================================================
+
+  <Wasabi:EditBox /> implementation
+
+======================================================================================================== -->
+
+<groupdef id="wasabi.edit" inherit_group="wasabi.objectframe.group" xuitag="Wasabi:EditBox" embed_xui="wasabi.edit.box" h="20">
+	<rect filled="1" fitparent="1" color="wasabi.window.background"/>
+	<layer image="browser.editframe.center.2" x="0" y="0" w="0" relatw="1"/>
+	<edit id="wasabi.edit.box" x="1" y="1" w="-2" h="-2" relatw="1" relath="1" autoselect="1"/>
+</groupdef>

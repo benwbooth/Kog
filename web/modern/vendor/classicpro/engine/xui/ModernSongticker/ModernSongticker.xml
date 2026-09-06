@@ -1,0 +1,16 @@
+<groupdef id="m.songticker" xuitag="ModernSongticker">
+	<text id="m.st.news" 
+		fitparent="1"
+		visible="0"
+		rightclickaction="trackmenu" dblclickaction="trackinfo" align="right"
+		color="Player.SongTicker.Text" fontsize="16" valign="top" antialias="0"
+	/>
+	<SongTicker id="m.st.ticker" 
+		fitparent="1"
+		showlen="1"
+		rightclickaction="trackmenu" dblclickaction="trackinfo" align="right"
+		color="Player.SongTicker.Text" fontsize="16" valign="top" antialias="0"
+	/>
+	
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\xui\ModernSongticker\ModernSongticker.maki" param=""/>
+</groupdef>

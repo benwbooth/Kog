@@ -1,0 +1,23 @@
+<!-- 
+	<Layout:QuadSplit/>
+
+	Layout that splits the client into two areas: The quadgroup, a quadractic group located always at the topleft, and the modalgroup, located either at the bottom or at the left depending on where more space is available and what @param modalpreferred is set to.
+
+	@author mpdeimos
+	@date	09/04/16
+
+	@param	quadgroup={id} Id of a groupdef.
+	@param	modalgroup={id} Id of a groupdef.
+	@param	modalpreferred="smooth"|"bottom"|"bottomfixed"|"right"|"rightfixed" Preferred position of the modal group.
+	@param	spacing={uint} Spacing between the modal group a the quad group.
+	@param	modalminw={uint} Minimum width of the modal group.
+	@param	modalminh={uint} Minimum height of the modal group.
+
+	@action update [No Params] Updates the layout.
+-->
+
+<groupdef id="sc.layout.quadsplit" xuitag="Layout:QuadSplit">
+	<customobject id="quad" x="0" y="0" visible="0"/>
+	<customobject id="modal" x="0" y="0" visible="0"/>
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\xui\Layouts\QuadSplit.maki"/>
+</groupdef>

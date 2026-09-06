@@ -1,0 +1,90 @@
+<include file="player-shade-group.xml"/>
+
+<layout id="shade" minimum_h="23" minimum_w="317" maximum_h="23" h="23" w="500" appbar="top|bottom" wantfocus="1" linkwidth="normal">
+	<group id="cpro.shade.background" fitparent="1" sysregion="1"/>
+
+	<layer fitparent="1" dblClickAction="SWITCH;normal"/>
+	<layer x="0" y="0" regionop="1" image="shade.bg.1" wantfocus="1" ghost="1"/>
+	<layer x="90" y="0" w="-280" relatw="1" regionop="1" image="shade.bg.2" wantfocus="1" ghost="1"/>
+	<layer x="-191" y="0" relatx="1" regionop="1" image="shade.bg.3" wantfocus="1" ghost="1"/>
+
+	<group id="cpro.shade.underlay" fitparent="1" sysregion="1"/>
+
+	<!-- Overlay -->
+	<layer x="0" y="0" image="shade.o.bg.1" wantfocus="1" ghost="1"/>
+	<layer x="90" y="0" w="-280" relatw="1" image="shade.o.bg.2" wantfocus="1" ghost="1"/>
+	<layer x="-191" y="0" relatx="1" image="shade.o.bg.3" wantfocus="1" ghost="1"/>
+	<!-- Overlay -->
+	
+	
+	<layer id="shade.resize6" x="-7" y="0" w="7" h="23" relatx="1" cursor="IDC_SIZEWE" move="0"/>
+
+
+	<button id="shade.mlmenu.visible" x="6" y="3" image="s.menu.1" hoverImage="s.menu.2" downImage="s.menu.3" rectrgn="1" tooltip="Library's Playlists"/>
+	<button id="shade.mlmenu.fake" x="6" y="20" w="1" h="1" visible="0" action="PE_ListOfLists"/>
+
+	<Button id="previous.track"
+		x="-186" y="4" relatx="1"
+		image="s.prev.1"
+		hoverImage="s.prev.2"
+		downImage="s.prev.3"
+		rectrgn="1" action="PREV" tooltip="Previous Track"
+	/>
+
+	<Button id="Play"
+		x="-173" y="4" relatx="1"
+		image="s.play.1"
+		hoverImage="s.play.2"
+		downImage="s.play.3"
+		rectrgn="1" action="PLAY" tooltip="Play"
+	/>
+
+	<Button id="Pause"
+		x="-160" y="4" relatx="1"
+		image="s.pause.1"
+		hoverImage="s.pause.2"
+		downImage="s.pause.3"
+		rectrgn="1" action="PAUSE" tooltip="Pause Playback"
+	/>
+
+	<Button id="Stop"
+		x="-147" y="4" relatx="1"
+		image="s.stop.1"
+		hoverImage="s.stop.2"
+		downImage="s.stop.3"
+		rectrgn="1" action="STOP" tooltip="Stop Playback"
+	/>
+
+	<Button id="next.track"
+		x="-134" y="4" relatx="1"
+		image="s.next.1"
+		hoverImage="s.next.2"
+		downImage="s.next.3"
+		rectrgn="1" action="NEXT" tooltip="Next Track"
+	/>
+
+	<Button id="open.tracks"
+		x="-114" y="4" relatx="1"
+		image="s.eject.1"
+		hoverImage="s.eject.2"
+		downImage="s.eject.3"
+		rectrgn="1" action="EJECT" tooltip="Open File(s)"
+	/>
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\scripts\extendedbuttons.maki" param="open.tracks"/>
+
+	<group id="shade.visgroup" x="91" y="0" w="63" h="23" move="1" visible="0"/>
+	<group id="shade.volgroup" x="154" y="0" w="69" h="23" move="1" visible="0"/>
+	<group id="shade.seekticker" x="223" y="0" w="-414" h="23" relatw="1" move="1" visible="0"/>
+
+
+	<NStatesButton id="shade.aot" x="-91" y="3" relatx="1" image="s.aot.1." hoverimage="s.aot.2." downimage="s.aot.3." rectrgn="1" cfgattrib="{280876CF-48C0-40BC-8E86-73CE6BB462E5};Always on top" nstates="2" tooltip="Toggle Always on top" cfgvals="0;1"/>
+	<layer id="shade.aot.docked" x="-91" y="3" relatx="1" image="s.aot.1.1" visible="0" ghost="1"/>
+
+	<button x="-64" relatx="1" y="3" id="player.button.minimize" action="MINIMIZE" image="s.min.1" hoverImage="s.min.2" downImage="s.min.3" rectrgn="1" tooltip="Minimize Winamp"/>
+	<button id="player.button.switch" x="-44" relatx="1" y="3" action="SWITCH" param="normal" image="s.mode.1" hoverImage="s.mode.2" downImage="s.mode.3" rectrgn="1" tooltip="Main Mode"/>
+	<button id="player.button.close" x="-24" relatx="1" y="3" action="CLOSE" image="s.close.1" hoverImage="s.close.2" downImage="s.close.3" rectrgn="1" tooltip="Exit Winamp"/>
+
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\one\scripts\shade.maki" param="@SKINPATH@"/>
+
+	<group id="cpro.shade.overlay" fitparent="1" sysregion="1"/>
+</layout>

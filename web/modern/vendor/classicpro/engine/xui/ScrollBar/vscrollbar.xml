@@ -1,0 +1,20 @@
+<!-- 
+	<SC:VScrollBar/>
+
+	Layout that positions all child elements in a thumlist like style as you are known from Windows explorer.
+
+	@author mpdeimos
+	@date	09/04/16
+
+	@param	content={id} Id of a groupdef.
+	@param	spacing={uint} Spacing between the thumbs.
+
+	@action update [No Params] Updates the layout.
+-->
+
+<groupdef id="sc.xui.vscrollbar" xuitag="SC:VScrollBar" embed_xui="slider">
+	<slider id="slider" x="0" y="14" w="13" h="-28" relath="1" orientation="v" thumb="wasabi.scrollbar.vertical.button" hoverthumb="wasabi.scrollbar.vertical.button.hover" downThumb="wasabi.scrollbar.vertical.button.pressed" barmiddle="wasabi.scrollbar.vertical.background.middle"/>
+	<button id="up" x="0" y="0" h="14" w="13" image="wasabi.scrollbar.vertical.left" hoverimage="wasabi.scrollbar.vertical.left.hover" downimage="wasabi.scrollbar.vertical.left.pressed"/>
+	<button id="down" x="0" y="-14" relaty="1" h="14" w="13" image="wasabi.scrollbar.vertical.right" hoverimage="wasabi.scrollbar.vertical.right.hover" downimage="wasabi.scrollbar.vertical.right.pressed"/>
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\xui\Scrollbar\vscrollbar.maki"/>
+</groupdef>

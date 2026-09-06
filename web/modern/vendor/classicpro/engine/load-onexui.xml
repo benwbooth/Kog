@@ -1,0 +1,14 @@
+<scripts>
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\one\scripts\loadattribs-cproxui.maki"/>
+</scripts>
+
+<include file="xui\xui-files_onexui.xml"/>
+<include file="widgets\load\*.xml"/>
+<include file="one\xml\files-onexui.xml"/>
+
+<groupdef id="ClassicPro.xui" xuitag="ClassicPro:SUI">
+	<SC:UpdateSystem x="0" y="0" h="0" w="0" skinname="classicpro" skinversion="2.01" />
+	<Centro:SUI id="cpro.sui" fitparent="1" drawer_h="119" guid_blacklist="{D6201408-476A-4308-BF1B-7BACA1124B12};{5F8D8373-EAA7-4390-B5AB-402E86A5F9DD};{00000000-0000-0000-0000-000000000000}"/>
+</groupdef>
+
+<include file="xml\about.xml"/>

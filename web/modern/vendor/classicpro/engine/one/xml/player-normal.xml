@@ -1,0 +1,159 @@
+<include file="player-normal-group.xml"/>
+
+<groupdef id="modsic.suiarea">
+	<Centro:SUI id="cpro.sui" fitparent="1"/>
+</groupdef>
+
+<layout id="normal" minimum_h="168" minimum_w="317" h="168" w="317" default_w="500" default_h="500" appbar="top|bottom|left|right" wantfocus="1" linkwidth="shade">
+
+	<group id="cpro.normal.background" fitparent="1" sysregion="1"/>
+
+	<layer id="read.bg.top" x="0" y="0" w="0" image="player.top.alt" visible="0"/>
+	<layer id="read.bg.left" x="0" y="0" h="0" image="player.left.alt" visible="0"/>
+
+	<!-- Background: Base -->
+	<layer x="6" y="99" w="-12" h="-166" relatw="1" relath="1" regionop="1" tile="1" image="player.center" wantfocus="1"/>
+	<layer id="cpro.bg.top" x="143" y="0" w="-315" relatw="1" regionop="1" tile="1" image="player.top" wantfocus="1"/>
+	<layer id="cpro.bg.bottom" x="157" y="-68" w="-316" relaty="1" relatw="1" tile="1" regionop="1" image="player.bottom" wantfocus="1"/>
+	<layer id="cpro.bg.left" x="0" y="99" h="-165" relath="1" regionop="1" tile="1" image="player.left" wantfocus="1"/>
+	<layer id="cpro.bg.right" x="-6" y="99" h="-165" relatx="1" relath="1" tile="1" regionop="1" image="player.right" wantfocus="1"/>
+	<layer x="0" y="0" regionop="1" image="player.topleft" wantfocus="1"/>
+	<layer x="-174" y="0" relatx="1" regionop="1" image="player.topright" wantfocus="1"/>
+	<layer x="0" y="-68" relaty="1" regionop="1" image="player.bottomleft" wantfocus="1"/>
+	<layer x="-160" y="-68" relatx="1" relaty="1" regionop="1" image="player.bottomright" wantfocus="1"/>
+
+	<group id="cpro.normal.underlay" fitparent="1" sysregion="1"/>
+
+	<!-- Background: Overlay -->
+	<layer x="143" y="0" w="-317" relatw="1" tile="1" image="player.o.top" wantfocus="1"/>
+	<layer x="157" y="-68" w="-317" relaty="1" relatw="1" tile="1" image="player.o.bottom" wantfocus="1"/>
+	<layer x="0" y="99" h="-166" relath="1" tile="1" image="player.o.left" wantfocus="1"/>
+	<layer x="-6" y="99" h="-166" relatx="1" relath="1" tile="1" image="player.o.right" wantfocus="1"/>
+	<layer x="0" y="0" image="player.o.topleft" wantfocus="1"/>
+	<layer x="-174" y="0" relatx="1" image="player.o.topright" wantfocus="1"/>
+	<layer x="0" y="-68" relaty="1" image="player.o.bottomleft" wantfocus="1"/>
+	<layer x="-160" y="-68" relatx="1" relaty="1" image="player.o.bottomright" wantfocus="1"/>
+	<layer x="6" y="100" w="-12" h="-168" relatw="1" relath="1" tile="1" image="player.o.center" wantfocus="1"/>
+
+
+	<layer id="doubleclick" x="0" y="0" w="0" h="27" relatw="1" wantfocus="1"/>
+
+	<group id="cpro.screen" x="0" y="0" w="0" h="92" relatw="1" wantfocus="1"/>
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\one\scripts\beat.maki" param="@SKINPATH@"/>
+
+
+
+	<!-- Resizers -->
+	
+	<!--
+	<layer id="resizer.1" x="0" y="0" w="10" h="10" cursor="IDC_SIZENWSE" move="0"/>
+	<layer id="resizer.2" x="10" y="0" w="-20" h="3" relatw="1" cursor="IDC_SIZENS" move="0"/>
+	<layer id="resizer.3" x="-10" y="0" w="10" h="10"  relatx="1" cursor="IDC_SIZENESW" move="0"/>
+	<layer id="resizer.4" x="0" y="10" w="5" h="-20" relath="1" cursor="IDC_SIZEWE" move="0"/>
+	<layer id="resizer.7" x="0" y="-10" w="10" h="10" relaty="1" cursor="IDC_SIZENESW" move="0"/>
+	-->
+	<layer id="resizer.6" x="-5" y="10" w="5" h="-28" relatx="1" relath="1" cursor="IDC_SIZEWE" move="0"/>
+	<layer id="resizer.8" x="10" y="-5" w="-38" h="5" relaty="1" relatw="1" cursor="IDC_SIZENS" move="0"/>
+	<layer id="resizer.9" x="-28" y="-18" w="28" h="18" relatx="1" relaty="1" cursor="IDC_SIZENWSE" move="0"/>
+
+	<layer id="hidden.tracktime" x="0" y="0" w="0" h="0" visible="0" image="player.bitmapfont.nums.source"/>
+	<text id="SongTime"
+		x="16" y="37" h="31" w="110"
+		font="player.bitmapfont.nums" timecolonwidth="6" color="Player.SongTicker.Text"
+		display="time" align="left" valign="top" alpha="253" fontsize="30"
+	/>
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\one\scripts\cProClock.maki"/>
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\one\scripts\pauseblink.maki"/>
+
+	<status	id="status"	x="-165" y="51" relatx="1"	w="24" h="16" stopBitmap="cpro.status.stopped" playBitmap="cpro.status.playing" pauseBitmap="cpro.status.paused"/>
+
+	<group id="fileinfo.mode.1" x="-138" y="51" relatx="1" visible="0"/>
+	<group id="fileinfo.mode.2" x="-138" y="51" relatx="1" visible="0"/>
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\one\scripts\fileinfo.maki"/>
+	
+	<vis
+		id="main.vis"
+		x="20" y="74"
+		w="108" h="16"
+		bandwidth="thin"
+		gammagroup="n.Vis"
+	/>
+	<layer id="vis.overlay" x="20" y="75" w="108" h="16" image="vis.overlay1"/>
+	<layer id="vis.overlay.2" x="20" y="75" w="108" h="16" image="vis.overlay2"/>
+	<layer
+		id="vis.mousetrap"
+		x="20" y="74"
+		w="108" h="16"
+	/>
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\one\scripts\classicVis.maki"/>
+
+	<grid id="progressbar.bg" left="seeker.bg.left.1" middle="seeker.bg.center.1" right="seeker.bg.right.1" x="10" y="-66" h="20" w="-20" relaty="1" relatw="1"/>
+	<SC:ProgressGrid id="progressbar" x="10" y="-66" h="20" w="-20" relaty="1" relatw="1" orientation="right"/>
+	<Slider	id="seeker2" interval="50" action="SEEK" x="10" y="-66" h="20" w="-20" relaty="1" relatw="1" thumb="seeker.thumb.1" hoverThumb="seeker.thumb.2" downThumb="seeker.thumb.3" ghost="1" alpha="253"/>
+	<Slider	id="seeker"  interval="50" action="SEEK" x="10" y="-66" h="20" w="-20" relaty="1" relatw="1" thumb="seeker.thumb.1" hoverThumb="seeker.thumb.2" downThumb="seeker.thumb.3"	tooltip="Seeker" cursor="IDC_HAND" alpha="253"/>
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\scripts/sc_liveSeeker.maki" param="seeker"/>
+
+	<layer id="volume.bg" x="-109" y="82" relatx="1" tile="1" image="volume.bg" visible="0"/>
+	<layer id="volume.bg2" x="0" y="0" w="0" h="0" image="volume.bg2" visible="0"/>
+	<images id="volume.images" source="volume" x="-109" y="82" w="97" h="15" relatx="1" visible="0" images="volume.bg2" imagesspacing="16"/>
+
+	<Slider	id="Volume" action="volume" x="-109" y="82" h="15" w="97" relatx="1" thumb="volume.thumb.1" hoverThumb="volume.thumb.2" downThumb="volume.thumb.3" tooltip="Volume" cursor="IDC_HAND"/>
+	<NStatesButton id="mute" x="-155" y="72" relatx="1" image="mute.1." hoverimage="mute.2." downimage="mute.3." rectrgn="1" nstates="2" tooltip="Mute Volume"/>
+	<layer id="mute.warning" x="-155" y="72" relatx="1" image="mute.2.1" visible="0" alpha="0" ghost="1"/>
+	
+	<text id="infodisplay" visible="0" alpha="0" x="0" y="0" w="0" h="0"/>
+	<ModernSongticker id="infosongticker"
+		x="114" y="30" h="20" w="-126" relatw="1"
+		id_layout="main;normal"
+		id_volume="Volume"
+		id_seeker="seeker"
+		id_prev="previous.track"
+		id_next="next.track"
+		id_open="open.tracks"
+		id_shuf="shuffle"
+		id_rep="repeat"
+		id_mute="mute"
+		font="cpro.songname.font"
+	/>
+	
+	<button id="previous.track" x="11" y="-45" relaty="1" action="PREV" image="player.prev.1" hoverimage="player.prev.2" downimage="player.prev.3" rectrgn="1" tooltip="Previous Track"/>
+	<button id="play.track" x="38" y="-45" relaty="1" action="PLAY" image="player.play.1" hoverimage="player.play.2" downimage="player.play.3" rectrgn="1" tooltip="Play"/>
+	<button id="pause.track" x="65" y="-45" relaty="1" action="PAUSE" image="player.pause.1" hoverimage="player.pause.2" downimage="player.pause.3" rectrgn="1" tooltip="Pause Playback"/>
+	<button id="stop.track" x="92" y="-45" relaty="1" action="STOP" image="player.stop.1" hoverimage="player.stop.2" downimage="player.stop.3" rectrgn="1" tooltip="Stop Playback"/>
+	<button id="next.track" x="119" y="-45" relaty="1" action="NEXT" image="player.next.1" hoverimage="player.next.2" downimage="player.next.3" rectrgn="1" tooltip="Next Track"/>
+
+	<button id="open.tracks" x="-160" y="-44" relatx="1" relaty="1" action="EJECT" image="player.eject.1" hoverimage="player.eject.2" downimage="player.eject.3" rectrgn="1" tooltip="Open File(s)"/>
+	<NStatesButton id="shuffle" x="-114" y="-44" relatx="1" relaty="1" image="shuf.1." hoverimage="shuf.2." downimage="shuf.3." rectrgn="1" nstates="2" tooltip="Toggle Playlist Shuffling" cfgattrib="{45F3F7C1-A6F3-4EE6-A15E-125E92FC3F8D};Shuffle"/>
+	<NStatesButton id="repeat" x="-74" y="-44" relatx="1" relaty="1" image="rep.1." hoverimage="rep.2." downimage="rep.3." rectrgn="1" nstates="3" tooltip="Toggle Playlist/Song Repeating" cfgattrib="{45F3F7C1-A6F3-4EE6-A15E-125E92FC3F8D};Repeat" cfgvals="0;1;-1"/>
+	<group id="modsic.suiarea" x="6" y="100" w="-12" h="-168" relatw="1" relath="1"/>
+
+	<group id="player.mainmenu" x="106" y="1" w="300" h="20" move="1"/>
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\one\scripts\mainmenu.maki"/>
+
+
+	<button id="player.sysmenu.fake" x="6" y="22" action="SYSMENU"/>
+	<button id="player.sysmenu" x="6" y="3" image="menu.1"	hoverImage="menu.2"	downImage="menu.3" rectrgn="1" tooltip="Main Menu"/>
+
+	<NStatesButton id="player.aot" x="-111" y="3" relatx="1" image="aot.1." hoverimage="aot.2." downimage="aot.3." rectrgn="1" cfgattrib="{280876CF-48C0-40BC-8E86-73CE6BB462E5};Always on top" nstates="2" tooltip="Toggle Always on top" cfgvals="0;1"/>
+	<layer id="player.aot.docked" x="-111" y="3" relatx="1" image="aot.1.1" visible="0" ghost="1"/>
+	
+	<button x="-84" relatx="1" y="3" id="player.button.minimize" action="MINIMIZE" image="min.1" hoverImage="min.2" downImage="min.3" rectrgn="1" tooltip="Minimize Winamp"/>
+	<button x="-64" relatx="1" y="3" id="main.goSmall" image="ismax.1" hoverImage="ismax.2" downImage="ismax.3" rectrgn="1" tooltip="Restore Winamp"/>
+	<button x="-64" relatx="1" y="3" id="main.goBig" image="gomax.1" hoverImage="gomax.2" downImage="gomax.3" rectrgn="1" tooltip="Maximize Winamp"/>
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\one\scripts\maximize.maki"/>
+	<button id="player.button.switch" x="-44" relatx="1" y="3" action="SWITCH" param="shade" image="mode.1" hoverImage="mode.2" downImage="mode.3" rectrgn="1" tooltip="Windowshade Mode"/>
+	<button id="player.button.close" x="-24" relatx="1" y="3" action="CLOSE" image="close.1" hoverImage="close.2" downImage="close.3" rectrgn="1" tooltip="Exit Winamp"/>
+
+	<button id="aboutwinamp.hidden" x="0" y="0" w="0" h="0" relatx="1" relaty="1" action="TOGGLE" param="guid:{D6201408-476A-4308-BF1B-7BACA1124B12}"/>
+
+	<button id="winampbolt" x="-38" y="-49" w="34" h="34" relatx="1" relaty="1" hoverImage="winamp.logo.2" rectrgn="1" tooltip="Multi-Button (right-click for Options)"/>
+
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\one\scripts\player.maki" param="@SKINPATH@"/>
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\one\scripts\presetpos.maki"/>
+	
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\scripts\extendedbuttons.maki" param="previous.track;next.track;open.tracks"/>
+	
+	<SC:UpdateSystem x="0" y="0" h="0" w="0" skinname="classicpro" skinversion="2.01" ofvalue="ClassicPro"/>
+
+	<group id="cpro.normal.overlay" fitparent="1" sysregion="1"/>
+</layout>

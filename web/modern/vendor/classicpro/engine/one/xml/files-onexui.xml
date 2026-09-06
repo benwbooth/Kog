@@ -1,0 +1,4 @@
+<include file="internal-colors.xml"/>
+<include file="player-normal-group.xml"/>
+<include file="standardframe.xml"/>
+<include file="window-overrides.xml"/>

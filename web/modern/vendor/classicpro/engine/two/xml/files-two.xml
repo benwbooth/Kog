@@ -1,0 +1,15 @@
+<include file="internal-colors.xml"/>
+<include file="player-elements.xml"/>
+<include file="player-elements-sui.xml"/>
+<include file="player-shade-elements.xml"/>
+<include file="player.xml"/>
+<include file="standardframe.xml"/>
+<include file="window-overrides.xml"/> <!-- The Winamp component handling code is a strange one - Here we stop all the unwanted windows from opening -->
+
+<!--
+Central place to read all the ClassicPro.xml text settings.
+PS: Beat.m also reads some stuff
+-->
+<scripts>
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\two\scripts\read-classicpro.maki" param="@SKINPATH@"/>
+</scripts>

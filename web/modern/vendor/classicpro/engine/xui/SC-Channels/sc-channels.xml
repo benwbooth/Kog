@@ -1,0 +1,19 @@
+<!-- =======================================================================================================
+					BUILD 005	02-Desember-2007
+	<SC:Channels
+		ch_1=""
+		ch_2=""
+		ch_6=""
+	/>
+
+============================================================================================================
+by Pieter Nieuwoudt (pjn123) > sylvester@skinconsortium.com
+======================================================================================================== -->
+
+<groupdef id="SC.Channels" xuitag="SC:Channels" embed_xui="sc.main.ch" h="50">
+	<layer id="mono" fitparent="1" visible="0"/>
+	<layer id="stereo" fitparent="1" visible="0"/>
+	<layer id="6ch" fitparent="1" visible="0"/>
+	<layer id="sccoverlay" fitparent="1" dblclickaction="WA5:Prefs" dblclickparam="42"/>
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\xui\SC-Channels\scchannels.maki"/>
+</groupdef>

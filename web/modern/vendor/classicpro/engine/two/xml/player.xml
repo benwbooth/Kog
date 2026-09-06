@@ -1,0 +1,29 @@
+<container id="main" name="Main Window" primarycomponent="guid:player">
+
+	<include file="player-normal.xml"/>
+	<include file="player-shade.xml"/>
+
+</container>
+
+<container id="main.aerosnap" name="Aerosnap" noMenu="1" dynamic="1" default_visible="0" noparent="1" ontop="1">
+	<layout id="normal" desktopalpha="1" noactivation="1" nodock="1" move="0">
+		<grid
+			fitparent="1"
+			topleft="cpro2.aerosnap.1"
+			top="cpro2.aerosnap.2"
+			topright="cpro2.aerosnap.3"
+			left="cpro2.aerosnap.4"
+			right="cpro2.aerosnap.6"
+			bottomleft="cpro2.aerosnap.7"
+			bottom="cpro2.aerosnap.8"
+			bottomright="cpro2.aerosnap.9"
+			sysregion="1"
+		/>
+	</layout>
+</container>
+
+<container id="main.tooltip" name="Tooltip" noMenu="1" dynamic="1" default_visible="0" noparent="1" ontop="1">
+	<layout id="normal" desktopalpha="1" noactivation="1" nodock="1" move="0">
+		<group id="wasabi.tooltip.group" fitparent="1"/>
+	</layout>
+</container>

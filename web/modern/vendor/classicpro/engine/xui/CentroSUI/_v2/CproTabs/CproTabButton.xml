@@ -1,0 +1,8 @@
+<groupdef id="cpro.tab" xuitag="Cpro:Tab" embed_xui="cpro.tab.button" h="25">
+	<grid id="cpro.tab.grid" x="0" y="0" w="-1" h="0" relatw="1" relath="1" topleft="sui.tab.left.2" top="sui.tab.center.2" topright="sui.tab.right.2" alpha="253"/>
+	<text id="cpro.tab.text" default=" " x="21" y="0" w="-26" relatw="1" h="25" font="cpro2.font.tab.text" bold="0" fontsize="14" color="cpro2.color.tab.off" alpha="253" valign="center"/>
+	
+	<layer id="cpro.tab.icon" x="0" y="0" w="22" h="25" image=""/>
+	<togglebutton id="cpro.tab.button" fitparent="1" rectrgn="1"/>
+	<script file="@WINAMPPATH@\Plugins\ClassicPro\engine\xui\CentroSUI\_v2\CproTabs\CproTabButton.maki" />
+</groupdef>

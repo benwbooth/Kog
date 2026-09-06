@@ -1,0 +1,61 @@
+<!-- 
+
+Winamp playback string resources
+version: 0.1
+date: 2008/10/26
+
+-->
+
+<StringTable id="winamp.global">
+	<StringEntry id="0"		string="Main Menu"/>
+	<StringEntry id="1"		string="Minimize Winamp"/>
+	<StringEntry id="2"		string="Restore Winamp"/>
+	<StringEntry id="3"		string="Maximize Winamp"/>
+	<StringEntry id="4"		string="Exit Winamp"/>
+	<StringEntry id="5"		string="Windowshade Mode"/>
+</StringTable>
+
+<StringTable id="winamp.playback">
+
+	<!-- cbuttons -->
+	<StringEntry id="0"		string="Previous Track"/>
+	<StringEntry id="1"		string="Start Playback"/>
+	<StringEntry id="2"		string="Pause Playback"/>
+	<StringEntry id="3"		string="Stop Playback"/>
+	<StringEntry id="4"		string="Next Track"/>
+	<StringEntry id="5"		string="Open file(s)"/>
+	<StringEntry id="6"		string="Resume Playback"/>
+	<StringEntry id="7"		string="Restart Playback"/>
+
+	<!-- volume -->
+	<StringEntry id="10"	string="Volume"/>
+	<StringEntry id="11"	string="Mute Volume"/>
+	<StringEntry id="12"	string="Turn Volume On"/>
+	<StringEntry id="13"	string="Mute: 0ff"/> <!-- Songticker Message -->
+	<StringEntry id="14"	string="Mute: 0n"/> <!-- Songticker Message -->
+	<StringEntry id="15"	string="Volume"/> <!-- Songticker Message -->
+
+	<!-- seek -->
+	<StringEntry id="20"	string="Seeker"/>
+	<StringEntry id="21"	string="Seek"/> <!-- Songticker Message -->
+
+	<!-- pbuttons -->
+	<StringEntry id="30"	string="Toggle Playlist Shuffling"/>
+	<StringEntry id="31"	string="Shuffle: Off"/> <!-- Songticker Message -->
+	<StringEntry id="32"	string="Shuffle: On"/> <!-- Songticker Message -->
+	<StringEntry id="33"	string="Toggle Playlist/Song Repeating"/>
+	<StringEntry id="34"	string="Repeat: Off"/> <!-- Songticker Message -->
+	<StringEntry id="35"	string="Repeat: Playlist"/> <!-- Songticker Message -->
+	<StringEntry id="36"	string="Repeat: Track"/> <!-- Songticker Message -->
+
+</StringTable>
+
+<StringTable id="winamp.components">
+
+	<StringEntry id="0"		string="Playlist Editor"/>
+	<StringEntry id="1"		string="Equalizer"/>
+	<StringEntry id="2"		string="Media Library"/>
+	<StringEntry id="3"		string="Visualization"/>
+	<StringEntry id="10"	string="Installed Components"/>
+
+</StringTable>

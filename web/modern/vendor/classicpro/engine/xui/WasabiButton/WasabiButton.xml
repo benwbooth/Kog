@@ -1,0 +1,31 @@
+<!-- =======================================================================================================
+
+  <Wasabi:Button /> implementation
+
+    Available parameters : 
+
+      - Everything from Group class
+      - Everything from Button class
+
+    Required objects :
+
+      - Button id="wasabi.button"
+
+======================================================================================================== -->
+
+<groupdef id="wasabi.button.group" xuitag="Wasabi:Button" embed_xui="wasabi.button" h="21" autowidthsource="wasabi.button">
+	<grid id="wasabi.button.grid" fitparent="1" topleft="wasabi.button.top.left" top="wasabi.button.top" topright="wasabi.button.top.right" left="wasabi.button.left" middle="wasabi.button.middle" right="wasabi.button.right" bottomleft="wasabi.button.bottom.left" bottom="wasabi.button.bottom" bottomright="wasabi.button.bottom.right" move="1"/>
+ 	<button id="wasabi.button" x="0" y="0" w="0" h="0" relatw="1" relath="1" borders="0" wantfocus="1" rectrgn="1"/>
+	<script file="@WINAMPPATH@\Plugins\ClassicPro\engine\xui\WasabiButton\WasabiButton.maki"/>
+</groupdef>
+
+<groupdef id="wasabi.togglebutton.group" xuitag="Wasabi:ToggleButton" embed_xui="wasabi.button" h="21" autowidthsource="wasabi.button">
+  <Togglebutton
+    id="wasabi.button" 
+    x="0" y="0"
+    w="0" h="0"
+    relatw="1" relath="1"
+    borders="1"
+    wantfocus="1"
+  />
+</groupdef>

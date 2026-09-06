@@ -1,0 +1,17 @@
+<include file="FadeText/FadeText.xml"/>
+<include file="WasabiButton/WasabiButton.xml"/>
+<include file="SC-ProgressGrid/SC-ProgressGrid.xml"/>
+<include file="AlbumArt/AlbumArt.xml"/>
+<include file="SC-Channels/sc-channels.xml"/>
+<include file="Ratings/Ratings.xml"/>
+<!--
+<include file="historyeditbox/historyeditbox.xml"/>
+<include file="editbox/editbox.xml"/>
+-->
+<include file="PlaylistPro/_v2/PlaylistPro.xml"/>
+<include file="CentroSUI/_v2/CentroSUI.xml"/>
+
+<!--<include file="ModernSongticker/ModernSongticker.xml"/> -->
+<include file="updateSystem/updateSystem.xml"/>
+<include file="ScrollBar/vscrollbar.xml"/>
+<include file="SC-Channels/sc-channels.xml"/>

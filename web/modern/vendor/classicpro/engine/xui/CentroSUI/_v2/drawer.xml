@@ -1,0 +1,280 @@
+<include file="InfoViewer/InfoViewer.xml"/>
+
+<groupdef id="centro2.group.video.buttons">
+	<button id="vid.fs" action="VID_FS"	x="-33" y="0" relatx="1" rectrgn="1" image="cpro2.avs.fs.1" hoverImage="cpro2.avs.fs.2" downImage="cpro2.avs.fs.3" tooltip="Fullscreen"/>
+</groupdef>
+
+<groupdef id="centro2.group.vis.buttons">
+	<button id="vis.prev" action="VIS_Prev" x="1" y="0" rectrgn="1" image="cpro2.avs.prev.1" hoverImage="cpro2.avs.prev.2" downImage="cpro2.avs.prev.3" tooltip="Previous Visualization Preset"/>
+	<NStatesButton id="vis.random" x="33" y="0" rectrgn="1" image="cpro2.avs.ran.1." hoverImage="cpro2.avs.ran.2." downImage="cpro2.avs.ran.3." tooltip="Randomly change Visualization Presets" cfgattrib="{0000000A-000C-0010-FF7B-01014263450C};Random" nstates="2" cfgvals="0;1"/>
+	<NStatesButton id="vis.random.overlay" x="33" y="0" w="31" h="19" rectrgn="1" image="cpro2.avs.ran.overlay." cfgattrib="{0000000A-000C-0010-FF7B-01014263450C};Random" nstates="2" cfgvals="0;1" ghost="1"/>
+	<button id="vis.next" action="VIS_Next" x="65" y="0" rectrgn="1" image="cpro2.avs.next.1" hoverImage="cpro2.avs.next.2" downImage="cpro2.avs.next.3" tooltip="Next Visualization Preset"/>
+	<button id="vis.fs" action="VIS_FS" x="-33" y="0" relatx="1" rectrgn="1" image="cpro2.avs.fs.1" hoverImage="cpro2.avs.fs.2" downImage="cpro2.avs.fs.3" tooltip="Fullscreen"/>
+</groupdef>
+
+<groupdef id="centro2.group.pl.buttons">
+	<button id="pl.search.add" action="PE_Add"	x="1" y="0" rectrgn="1" image="cpro2.pl.add.1" hoverImage="cpro2.pl.add.2" downImage="cpro2.pl.add.3" tooltip="Add Files to Playlist"/>
+	<button id="pl.search.rem" action="PE_Rem" x="33" y="0" rectrgn="1" image="cpro2.pl.rem.1" hoverImage="cpro2.pl.rem.2" downImage="cpro2.pl.rem.3" tooltip="Remove Files from Playlist"/>
+	<button id="pl.search.sel" action="PE_Sel" x="65" y="0" rectrgn="1" image="cpro2.pl.sel.1" hoverImage="cpro2.pl.sel.2" downImage="cpro2.pl.sel.3" tooltip="Select Files from Playlist"/>
+	<button id="pl.search.misc" action="PE_Misc" x="97" y="0" rectrgn="1" image="cpro2.pl.misc.1" hoverImage="cpro2.pl.misc.2" downImage="cpro2.pl.misc.3" tooltip="Misc Actions"/>
+
+	<NStatesButton id="pl.search.toggle" x="-64" y="0" relatx="1" rectrgn="1" image="cpro2.pl.search.1." hoverImage="cpro2.pl.search.2." downImage="cpro2.pl.search.3." tooltip="Toggle playlist search bar" nstates="2" cfgvals="0;1"/>
+	<NStatesButton id="pl.search.toggle.overlay" x="-64" y="0" w="31" h="19" relatx="1" rectrgn="1" image="cpro2.pl.search.overlay." ghost="1" nstates="2" cfgvals="0;1" cfgattrib="{0167CFD9-5D35-404a-8F03-80ED5B89DEDF};Show Playlist Search"/>
+
+	<button action="PE_List" x="-32" y="0" relatx="1" rectrgn="1" image="cpro2.pl.man.1" hoverImage="cpro2.pl.man.2" downImage="cpro2.pl.man.3" tooltip="Manage Playlist"/>
+
+	<grid id="centro.playlist.textgrid" x="129" y="0" h="19" w="-194" relatw="1" ghost="1" topleft="sui.status.box.1" top="sui.status.box.2" topright="sui.status.box.3"/>
+	<text id="centro.playlist.pltext1" display="PE_Info" x="131" y="1" h="19" w="-200" relatw="1" align="center" color="cpro2.color.status" font="cpro2.font.status.text" move="1" alpha="253"/>
+</groupdef>
+
+<groupdef id="centro.playlist.directory.tag" inherit_group="drawer.tagviewer">
+</groupdef>
+
+<groupdef id="centro.playlist.directory.cov">
+	<!--<Wasabi:AlbumArt x="2" y="2" w="-4" h="-21" relatw="1" relath="1" move="1"/>-->
+	<Wasabi:AlbumArt id="centro.playlist.wasabicover" x="1" y="1" w="-2" h="-2" relatw="1" relath="1" move="1"/>
+	<grid id="centro.playlist.wasabicover.status" x="-50" y="-19" w="50" relaty="1" relatx="1" ghost="1" topleft="sui.status.fade" top="sui.status"/> <!-- fade = 20, button = 30 -->
+</groupdef>
+
+
+<groupdef id="drawer.savedpl" name="Stored Playlists">
+	<layer x="0" y="-19" w="0" relaty="1" relatw="1" image="sui.status"/>
+	<PlaylistDirectory x="0" y="0" w="0" h="-19" relatw="1" relath="1" antialias="0"/>
+</groupdef>
+
+<groupdef id="centro.playlist.directory.spl" inherit_group="drawer.savedpl">
+</groupdef>
+
+
+
+
+
+
+<groupdef id="drawer.colortheme" name="Color Themes">
+	<layer visible="0" id="drawer.ct.fakelayer" image="component.ct.set.1" w="0" h="0"/>
+	<layer x="0" y="-19" w="0" relaty="1" relatw="1" image="sui.status"/>
+	<ColorThemes:List id="colorthemes"
+		x="2" y="2" w="-4" h="-21" relatw="1" relath="1" antialias="0"
+		nohscroll="1" nocolheader="1" fontsize="13"
+	/>
+	<button
+		id="Cpro.theme.prev"
+		action="colorthemes_previous"
+		action_target="colorthemes"
+		x="1"  y="-19" relaty="1"
+		image="cpro2.avs.prev.1"
+		hoverImage="cpro2.avs.prev.2"
+		downImage="cpro2.avs.prev.3"
+		tooltip="Previous Color Theme" rectrgn="1" 
+	/>
+
+	<button
+		id="Cpro.theme.set"
+	    action="colorthemes_switch"
+		action_target="colorthemes"
+		x="33" y="-19" relaty="1"
+		image="component.ct.set.1"
+		hoverImage="component.ct.set.2"
+		downImage="component.ct.set.3"
+		tooltip="Switch to selected Color Theme" rectrgn="1" 
+	/>
+
+	<button
+		id="Cpro.theme.next"
+		action="colorthemes_next"
+		action_target="colorthemes"
+		x="65" y="-19" relaty="1"
+		image="cpro2.avs.next.1"
+		hoverImage="cpro2.avs.next.2"
+		downImage="cpro2.avs.next.3"
+		tooltip="Next Color Theme" rectrgn="1" 
+	/>
+</groupdef>
+
+
+
+
+
+<groupdef id="drawer.avs" inherit_group="centro.playlist.directory.vis" name="Visualization">
+</groupdef>
+
+
+
+
+
+
+
+
+
+
+
+<groupdef id="equalizer.sliders">
+	<slider id="preamp" action="EQ_BAND" param="preamp" x="0" y="0" w="14" h="55" thumb="eq.slider.v.1" hoverThumb="eq.slider.v.2" downThumb="eq.slider.v.3" tooltip="Preamp" orientation="v" cursor="IDC_HAND"/>
+	<slider id="eq1" action="EQ_BAND" param="1" x="57" y="0" w="14" h="55" thumb="eq.slider.v.1" hoverThumb="eq.slider.v.2" downThumb="eq.slider.v.3" tooltip="70 Hz" orientation="v" cursor="IDC_HAND"/>
+	<slider id="eq2" action="EQ_BAND" param="2" x="79" y="0" w="14" h="55" thumb="eq.slider.v.1" hoverThumb="eq.slider.v.2" downThumb="eq.slider.v.3" tooltip="180 Hz" orientation="v" cursor="IDC_HAND"/>
+	<slider id="eq3" action="EQ_BAND" param="3" x="101" y="0" w="14" h="55" thumb="eq.slider.v.1" hoverThumb="eq.slider.v.2" downThumb="eq.slider.v.3" tooltip="320 Hz" orientation="v" cursor="IDC_HAND"/>
+	<slider id="eq4" action="EQ_BAND" param="4" x="123" y="0" w="14" h="55" thumb="eq.slider.v.1" hoverThumb="eq.slider.v.2" downThumb="eq.slider.v.3" tooltip="600 Hz" orientation="v" cursor="IDC_HAND"/>
+	<slider id="eq5" action="EQ_BAND" param="5" x="145" y="0" w="14" h="55" thumb="eq.slider.v.1" hoverThumb="eq.slider.v.2" downThumb="eq.slider.v.3" tooltip="1 KHz" orientation="v" cursor="IDC_HAND"/>
+	<slider id="eq6" action="EQ_BAND" param="6" x="167" y="0" w="14" h="55" thumb="eq.slider.v.1" hoverThumb="eq.slider.v.2" downThumb="eq.slider.v.3" tooltip="3 KHz" orientation="v" cursor="IDC_HAND"/>
+	<slider id="eq7" action="EQ_BAND" param="7" x="189" y="0" w="14" h="55" thumb="eq.slider.v.1" hoverThumb="eq.slider.v.2" downThumb="eq.slider.v.3" tooltip="6 KHz" orientation="v" cursor="IDC_HAND"/>
+	<slider id="eq8" action="EQ_BAND" param="8" x="211" y="0" w="14" h="55" thumb="eq.slider.v.1" hoverThumb="eq.slider.v.2" downThumb="eq.slider.v.3" tooltip="12 KHz" orientation="v" cursor="IDC_HAND"/>
+	<slider id="eq9" action="EQ_BAND" param="9" x="233" y="0" w="14" h="55" thumb="eq.slider.v.1" hoverThumb="eq.slider.v.2" downThumb="eq.slider.v.3" tooltip="14 KHz" orientation="v" cursor="IDC_HAND"/>
+	<slider id="eq10" action="EQ_BAND" param="10" x="255" y="0" w="14" h="55" thumb="eq.slider.v.1" hoverThumb="eq.slider.v.2" downThumb="eq.slider.v.3" tooltip="16 KHz" orientation="v" cursor="IDC_HAND"/>
+</groupdef>
+
+
+
+<groupdef id="equalizer.content">
+	<layer x="0" y="0" image="eq.bg"/>
+	<layer id="equalizer.freq" x="0" y="82" image="eq.bg"/>
+	<slider
+		id="Balance"
+		action="PAN"
+		x="306" y="57"
+		w="57" h="14"
+		thumb="eq.slider.h.1"
+		hoverThumb="eq.slider.h.2"
+		downThumb="eq.slider.h.3"
+		tooltip="Balance" cursor="IDC_HAND"
+	/>
+	<slider
+		id="sCrossfade"
+		cfgattrib="{F1239F09-8CC6-4081-8519-C2AE99FCB14C};Crossfade time"
+		high="20" ghost="1" visible="0"
+		x="2" y="3"
+		w="2" h="2"
+	/>
+
+	<NStatesButton
+		id="Crossfade"
+		x="297" y="19"
+		image="eq.xfade.1."
+		hoverImage="eq.xfade.2."
+		downImage="eq.xfade.3." rectrgn="1" 
+		cfgattrib="{FC3EAF78-C66E-4ED2-A0AA-1494DFCC13FF};Enable crossfading"
+		tooltip="Toggle Crossfading Between Tracks" nstates="2" cfgvals="0;1"
+	/>
+	<NStatesButton
+		x="297" y="19" w="27" h="14"
+		image="cpro2.xfade.overlay."
+		cfgattrib="{FC3EAF78-C66E-4ED2-A0AA-1494DFCC13FF};Enable crossfading"
+		ghost="1" nstates="2" cfgvals="0;1" 
+	/>
+
+	<button
+		id="CrossfadeDecrease"
+		image="eq.xftime.less.1"
+		hoverImage="eq.xftime.less.2"
+		downImage="eq.xftime.less.3"
+		x="327" y="19" rectrgn="1" 
+		tooltip="Decrease Crossfade Time"
+	/>
+	<button
+		id="CrossfadeIncrease"
+		image="eq.xftime.more.1"
+		hoverImage="eq.xftime.more.2"
+		downImage="eq.xftime.more.3"
+		x="358" y="19" rectrgn="1" 
+		tooltip="Increase Crossfade Time"
+	/>
+
+	<text
+		id="CFDisplay"
+		x="339" y="19" w="17" h="14"
+		align="center"
+		valign="center"
+		fontsize="14" color="cpro2.color.eqxfade"
+		text="15" antialias="1"
+	/>
+
+	<group id="equalizer.sliders" x="6" y="18" w="269" h="100"/>
+
+	<button id="eq.set.top" x="29" y="12" w="25" h="20" rectrgn="1"/>
+	<button id="eq.set.cen" x="29" y="35" w="25" h="20" rectrgn="1"/>
+	<button id="eq.set.bot" x="29" y="58" w="25" h="20" rectrgn="1"/>
+	<!--<group id="cpro.drawer.eq.content.overlay" fitparent="1"/>-->
+</groupdef>
+
+<groupdef id="equalizer.content.holder">
+	<group id="equalizer.content" x="0" y="0" w="377" h="99"/>
+</groupdef>
+
+<groupdef id="drawer.equalizer" name="Equalizer">
+	<layer x="0" y="-19" w="0" relaty="1" relatw="1" image="sui.status"/>
+	<group id="equalizer.content.holder" x="0" y="0" w="377" h="99"/>
+
+	<NStatesButton
+		x="1" y="-19" relaty="1"
+		image="cpro2.eq.on.1."
+		hoverImage="cpro2.eq.on.2."
+		downImage="cpro2.eq.on.3."
+		action="EQ_TOGGLE" rectrgn="1"
+		tooltip="EQ on/off" nstates="2" cfgvals="0;1"
+	/>
+	<NStatesButton x="1" y="-19" w="31" h="19" relaty="1" image="cpro2.eq.on.overlay." action="EQ_TOGGLE" ghost="1" nstates="2" cfgvals="0;1"/>
+
+	<NStatesButton
+		id="eqauto"
+		image="cpro2.eq.auto.1."
+		hoverImage="cpro2.eq.auto.2."
+		downImage="cpro2.eq.auto.3."
+		action="EQ_AUTO"
+		x="33" y="-19" relaty="1" rectrgn="1"
+		tooltip="EQ auto" nstates="2" cfgvals="0;1"
+	/>
+	<NStatesButton image="cpro2.eq.auto.overlay." action="EQ_AUTO" x="33" y="-19" w="31" h="19" relaty="1" ghost="1" nstates="2" cfgvals="0;1"/>
+
+	<button
+		id="eqpresets"
+		image="cpro2.avs.pre.1"
+		hoverImage="cpro2.avs.pre.2"
+		downImage="cpro2.avs.pre.3"
+		action="MENU" param="presets"
+		x="65" y="-19" relaty="1"
+		tooltip="Open presets" rectrgn="1"
+	/>
+
+	<!--<group id="cpro.drawer.eq.overlay" fitparent="1"/>-->
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\xui\CentroSUI\_v2\scripts\eq.maki"/>
+</groupdef>
+
+
+<!--
+File Info viewer
+-->
+
+<!--
+<groupdef id="drawer.tagviewer.bottomleft" h="27">
+	<layer x="0" y="0" image="player.gframe.7.alt"/>
+</groupdef>
+-->
+
+<groupdef id="info.component.infodisplay.holder">
+	<group id="info.component.infodisplay" fitparent="1" alpha="0"/>
+</groupdef>
+
+<groupdef id="tagviewer.status.box">
+	<grid id="tagviewer.status.box.grid" fitparent="1" ghost="1" topleft="sui.status.box.1" top="sui.status.box.2" topright="sui.status.box.3"/>
+	<text id="tagviewer.status.box.text" ticker="1" display="SONGNAME" x="5" w="-10" y="1" h="19" relatw="1" align="left" color="cpro2.color.status" font="cpro2.font.status.text" move="1" alpha="253"/>
+</groupdef>
+
+<groupdef id="tagviewer.status" h="19">
+	<grid id="tagviewer.status.grid" fitparent="1" topleft="sui.status.fade" top="sui.status"/>
+	<group id="tagviewer.status.box" fitparent="1" x="20" w="-85"/>
+</groupdef>
+
+<groupdef id="drawer.tagviewer" name="File Info">
+	<group id="tagviewer.status" x="0" y="-19" w="0" relaty="1" relatw="1"/>
+	<Wasabi:AlbumArt id="tagviewer.cover" x="1" y="2" w="111" h="111" move="1"/>
+	<group id="info.component.infodisplay.holder" x="120" y="1" w="-120" h="-20" relatw="1" relath="1"/>
+	<button id="tagviewmenu" x="-64" y="-19" relatx="1" relaty="1"
+		image="cpro2.gen.menu.1"
+		hoverImage="cpro2.gen.menu.2"
+		downImage="cpro2.gen.menu.3"
+		tooltip="Options" rectrgn="1"
+	/>
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\xui\CentroSUI\_v2\InfoViewer\cover_resize.maki" />
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\xui\CentroSUI\_v2\InfoViewer\tagviewer.maki" />
+</groupdef>
+
+

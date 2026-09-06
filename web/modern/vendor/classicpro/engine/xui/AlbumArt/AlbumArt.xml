@@ -1,0 +1,9 @@
+<groupdef id="Wasabi.AlbumArt" xuitag="Wasabi:AlbumArt" embed_xui="main.albumart">
+	<!--
+	<Rect fitparent="1" filled="1"/>
+	-->
+	<AlbumArt id="main.albumart" fitparent="1" notfoundimage="cover.notfound" wantfocus="1" alpha="253"/>
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\xui\AlbumArt\AlbumArt.maki"/>
+	
+	<!--<text fitparent="1" ghost="1" text="Title:  Blood, Church On Sunday\nArtist:  Green Day" color="black"/>-->
+</groupdef>

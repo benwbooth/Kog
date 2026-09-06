@@ -10,6 +10,7 @@
 #include <QtGui/QImage>
 #include <QtQml/QQmlComponent>
 #include <QtQml/QQmlEngine>
+#include <QtQml/QQmlContext>
 #include <QtQml/QJSValue>
 #include <QtQuick/QQuickWindow>
 #include <QtWidgets/QApplication>
@@ -20,6 +21,16 @@
 #include <memory>
 
 namespace {
+class StatusObserver final : public QObject {
+    Q_OBJECT
+public:
+    QObject *player = nullptr;
+public slots:
+    void changed() {
+        if (player) std::fprintf(stderr, "SKIN STATUS: %s\n", qPrintable(player->property("rendererStatus").toString()));
+    }
+};
+
 [[noreturn]] void fail(const QString &message)
 {
     std::fprintf(stderr, "FAIL: %s\n", qPrintable(message));
@@ -154,7 +165,8 @@ void checkRenderedTitle(QObject *web, QObject *player, const QString &title)
     runJavaScript(web, QStringLiteral(
         "(() => { const expected = %1[0].replace(/\\s/g, '').toLowerCase(); let attempts = 0; "
         "const inspect = () => { const ticker = [...document.querySelectorAll('[id]')].find(el => "
-        "el.id.toLowerCase() === 'songticker' && el.getBoundingClientRect().width > 0); "
+        "['songticker', 'm.st.ticker'].includes(el.id.toLowerCase()) && (() => { const r = el.getBoundingClientRect(); "
+        "return r.width > 0 && r.height > 0 && r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight; })()); "
         "const visible = (ticker?.innerText || '').replace(/\\s/g, '').toLowerCase(); "
         "if (visible.includes(expected)) { window.kogModern.commands.send('error', 'rendered title verified; vu=' + "
         "(window.kogModern.root.audio._vuMeter > 0.1)); } else if (++attempts < 80) { setTimeout(inspect, 100); } "
@@ -211,6 +223,11 @@ int main(int argc, char **argv)
     };
     std::unique_ptr<QObject> player(component.createWithInitialProperties(properties));
     require(bool(player), "create ModernPlayer.qml: " + component.errorString());
+    StatusObserver observer;
+    if (qEnvironmentVariableIsSet("KOG_MODERN_DUMP_DIAGNOSTICS")) {
+        observer.player = player.get();
+        QObject::connect(player.get(), SIGNAL(rendererStatusChanged()), &observer, SLOT(changed()));
+    }
 
     auto *profile = player->findChild<KogModernProfile *>();
     require(profile != nullptr, "ModernPlayer created KogModernProfile");
@@ -239,9 +256,12 @@ int main(int argc, char **argv)
     }
 
     require(waitFor([&player] {
-                return player->property("rendererStatus").toString().startsWith("Experimental modern skin");
+                const auto status = player->property("rendererStatus").toString();
+                return status.startsWith("Experimental modern skin") || status.startsWith("Skin error:");
             }, 60'000, "renderer ready command"),
             "renderer sent ready through WebChannel; status was: " + player->property("rendererStatus").toString());
+    require(player->property("rendererStatus").toString().startsWith("Experimental modern skin"),
+            "renderer loaded successfully: " + player->property("rendererStatus").toString());
     require(app.fullStateRequests() > 0, "ready command requested playlist-bearing host state");
     QElapsedTimer settle;
     settle.start();
@@ -251,6 +271,10 @@ int main(int argc, char **argv)
     }
     const QImage screenshot = window->grabWindow();
     require(!screenshot.isNull() && screenshot.save(screenshotPath), "capture modern-skin screenshot");
+    if (qEnvironmentVariableIsSet("KOG_MODERN_DUMP_DIAGNOSTICS")) {
+        runJavaScript(web, QStringLiteral("if (window.kogModern) window.kogModern.scriptDiagnostics.forEach((message, index) => window.kogModern.commands.send('error', 'MAKI ' + index + ': ' + message)); else new QWebChannel(qt.webChannelTransport, channel => channel.objects.kog.request('error', JSON.stringify('Runtime not ready: ' + document.getElementById('runtime-status')?.textContent)));"));
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
+    }
     runJavaScript(web, QStringLiteral(
         "window.kogModern.commands.send('next'); (() => { let attempts = 0; const inspect = () => { try { "
         "const state = window.kogModern.state.state; if (state.tracks.length && state.tracks[0]) { "

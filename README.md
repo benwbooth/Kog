@@ -75,10 +75,16 @@ Installed skins stay available offline. Choose **Use skin** to open the classic
 player, and **Queue** to return to the normal Kog window.
 
 This first version skins the main transport panel, with 1×/2×/3× scaling.
-The playlist and equalizer still use Kog's native interface. Modern `.wal`
-skins, windowshade/shaped windows, and legacy visualizer plugins are not supported.
+The classic skin's playlist and equalizer still use Kog's native interface.
+Modern `.wal` skins have experimental support through the embedded Webamp/MAKI
+runtime, including bundled ClassicPro 2.01 engine resources. MMD3, Winamp Modern,
+and a ClassicPro skin are covered by native rendering and playback-state smoke
+tests. This is not full Winamp compatibility: Media Library/browser plugin
+panels, legacy visualizers, and some skin controls and window layouts remain
+unsupported. Use the **Kog** button to return to the native player.
 Skin downloads retain their source and attribution; their artwork is not
-covered by Kog's license. Kog does not run scripts or executables from skins.
+covered by Kog's license. Modern skins run MAKI bytecode in the restricted browser
+runtime; Kog does not load native Winamp plugins or execute programs from skins.
 
 **View → Visualizer** (**Ctrl+Shift+V**) offers six blue/green views driven by the
 actual decoded audio: spectrum, oscilloscope, scrolling spectrogram, radial

@@ -1,0 +1,14 @@
+<include file="CproTabButton.xml"/>
+
+<groupdef id="cprotabs.buttons">
+	<!--
+	All the Tab Buttons are created in this group
+	So dont place any objects in this group!
+	 -->
+</groupdef>
+
+<groupdef id="cprotabs.xui" xuitag="Cpro:Tabs">
+	<componentbucket id="widget.loader" x="0" y="0" h="20" w="20" wndtype="centro.widgets.main" visible="0" />
+	<group id="cprotabs.buttons" x="4" y="4" w="-4" h="29" relatw="1"/>
+	<script file="@WINAMPPATH@\Plugins\ClassicPro\engine\xui\CentroSUI\_v1\CproTabs\CproTabs.maki" />
+</groupdef>

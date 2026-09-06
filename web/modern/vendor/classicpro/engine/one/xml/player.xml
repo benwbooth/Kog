@@ -1,0 +1,6 @@
+<container id="main" name="Main Window" component="guid:{45F3F7C1-A6F3-4ee6-A15E-125E92FC3F8D}" primarycomponent="guid:player" canclose="0">
+
+	<include file="player-normal.xml"/>
+	<include file="player-shade.xml"/>
+
+</container>

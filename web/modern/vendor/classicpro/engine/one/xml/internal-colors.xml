@@ -1,0 +1,22 @@
+<elements>
+	<color id="browser.text" value="Browser.MediaMonitor"/>
+	<color id="browser.text.active" value="wasabi.window.text" gammagroup="Color.GenericText"/>
+	<color id="wasabi.text.color" value="wasabi.list.text"/>
+
+	<elementalias id="wasabi.basetexture" target="wasabi.list.background"/>
+	<elementalias id="wasabi.tree.background" target="wasabi.list.background"/>
+	<elementalias id="wasabi.tree.text" target="wasabi.list.text"/>
+	<elementalias id="wasabi.button.hiliteText" target="wasabi.list.text"/>
+	<elementalias id="wasabi.list.column.empty" target="wasabi.window.background"/>
+	<elementalias id="wasabi.tree.selected" target="wasabi.list.text.selected"/>
+	<elementalias id="wasabi.tree.hiliteddrop" target="wasabi.list.text.selected"/>
+	<elementalias id="studio.list.item.selected" target="wasabi.list.text.selected"/>
+	<elementalias id="studio.list.item.focused" target="wasabi.list.text.selected.background"/>
+	<elementalias id="wasabi.scrollbar.foreground" target="wasabi.scrollbar.background"/>
+	<elementalias id="wasabi.scrollbar.background" target="wasabi.scrollbar.background"/>
+	<elementalias id="wasabi.scrollbar.foreground.inverted" target="wasabi.scrollbar.background"/>
+	<elementalias id="wasabi.scrollbar.background.inverted" target="wasabi.scrollbar.background"/>
+
+	<!-- Temp Fix for 5.541 -->
+	<elementalias id="color.display.bg" target="wasabi.list.background"/>
+</elements>

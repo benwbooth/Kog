@@ -16,6 +16,20 @@ import { registerAction } from "../../../native/webamp/packages/webamp-modern/sr
 import standardFrameXml from "../../../native/webamp/packages/webamp-modern/assets/freeform/xml/wasabi/xml/xui/standardframe/standardframe.xml";
 import standardFrameElementsXml from "../../../native/webamp/packages/webamp-modern/assets/freeform/xml/wasabi/xml/xui/standardframe/standardframe-elements.xml";
 import wasabiTextXml from "../../../native/webamp/packages/webamp-modern/assets/freeform/xml/wasabi/xml/xui/text/text.xml";
+import classicProAssets from "classicpro:assets";
+import { CPRO_ROOT, classicProPath, prepareClassicProXml } from "./classicpro.js";
+import { installClassicProServices } from "./classicpro-services";
+import { notifyClassicProBeforeLoadingElements, notifyClassicProGuiLoaded, notifyClassicProLoaded } from "./classicpro-colors";
+import { installClassicProFileApi } from "./classicpro-files";
+import { installClassicProGraphics } from "./classicpro-graphics";
+import { installClassicProControls } from "./classicpro-controls";
+import { installMakiActionEvents } from "./maki-events";
+import { installMakiDynamicContainers } from "./maki-containers";
+import { installMakiFrames } from "./maki-frames";
+import { installMakiGeometry } from "./maki-geometry";
+import { installMakiConfigBindings } from "./maki-config";
+import { installMakiDispatch } from "./maki-dispatch";
+import { beginMakiStartup, finishMakiStartup, resumeMakiTimers, installMakiStartup } from "./maki-startup";
 import {
   CommandGateway,
   findSkinPrefix,
@@ -36,6 +50,7 @@ declare global {
       root: UIRoot;
       state: StateStore;
       commands: CommandGateway;
+      scriptDiagnostics: string[];
     };
   }
 }
@@ -60,6 +75,24 @@ type Track = {
 };
 
 const store = new StateStore();
+const scriptDiagnostics: string[] = [];
+const originalWarn = console.warn.bind(console);
+console.warn = (...args) => {
+  const message = args.map(String).join(" ");
+  if (/^(Stopped executing|error call:|MAKI lookup:)/.test(message) && scriptDiagnostics.length < 100) scriptDiagnostics.push(message);
+  originalWarn(...args);
+};
+installClassicProServices();
+installClassicProGraphics();
+installClassicProControls();
+installMakiActionEvents();
+installMakiDynamicContainers();
+installMakiFrames();
+installMakiGeometry();
+installMakiConfigBindings();
+installMakiDispatch();
+installMakiStartup();
+installClassicProFileApi((root: any, path: string) => root._fileExtractor?.resource(path) ?? null);
 let gateway: CommandGateway | null = null;
 let trustedInputTurn = false;
 
@@ -116,7 +149,7 @@ function hideLoading() {
 }
 
 function reportError(error: unknown) {
-  const message = errorText(error).slice(0, 2_048);
+  const message = (error instanceof Error ? error.stack || error.message : errorText(error)).slice(0, 2_048);
   console.error(error);
   gateway?.send("error", message);
   return message;
@@ -144,6 +177,7 @@ function connectWebChannel(): Promise<KogBridge> {
 
 class NormalizedZipFileExtractor extends ZipFileExtractor {
   prefix = "";
+  resources = new Map<string, Uint8Array>();
   getSkinDirectory: () => string;
   builtInXml = new Map([
     ["xml/xui/standardframe/standardframe.xml", standardFrameXml],
@@ -162,6 +196,19 @@ class NormalizedZipFileExtractor extends ZipFileExtractor {
       .filter((entry) => !entry.dir)
       .map((entry) => normalizeArchivePath(entry.name));
     this.prefix = findSkinPrefix(paths);
+    if (paths.length > 512) throw new Error("Modern skin archive entry limit exceeded");
+    let totalBytes = 0;
+    for (const entry of Object.values(this._zip.files)) {
+      if (entry.dir) continue;
+      const expectedBytes = (entry as any)._data?.uncompressedSize;
+      if (expectedBytes > 8 * 1024 * 1024 || totalBytes + expectedBytes > 32 * 1024 * 1024)
+        throw new Error("Modern skin expanded size limit exceeded");
+      const bytes = await entry.async("uint8array");
+      totalBytes += bytes.length;
+      if (bytes.length > 8 * 1024 * 1024 || totalBytes > 32 * 1024 * 1024)
+        throw new Error("Modern skin expanded size limit exceeded");
+      this.resources.set(normalizeArchivePath(entry.name), bytes);
+    }
     // Also check previously installed skins, which predate importer validation.
     // An external ClassicPro include cannot supply a UI from the archive alone.
     for (const entry of Object.values(this._zip.files)) {
@@ -169,15 +216,46 @@ class NormalizedZipFileExtractor extends ZipFileExtractor {
       const xml = new DOMParser().parseFromString(await entry.async("text"), "application/xml");
       for (const element of Array.from(xml.getElementsByTagName("*"))) {
         if (element.localName.toLowerCase() !== "include") continue;
-        const error = skinDependencyError(element.getAttribute("file"));
+        const reference = element.getAttribute("file");
+        const error = classicProPath(reference) ? "" : skinDependencyError(reference);
         if (error) throw new Error(error);
       }
     }
   }
 
   resolve(filePath: string) {
+    const enginePath = classicProPath(filePath);
+    if (enginePath) return enginePath;
     const withoutDefault = filePath.replaceAll("@DEFAULTSKINPATH@", "");
     return this.prefix + normalizeArchivePath(withoutDefault);
+  }
+
+  engineBytes(filePath: string) {
+    const path = classicProPath(filePath);
+    if (!path) return null;
+    const encoded = classicProAssets[path.slice(CPRO_ROOT.length)];
+    if (encoded == null) throw new Error(`Missing ClassicPro resource: ${path}`);
+    return Uint8Array.from(atob(encoded), character => character.charCodeAt(0));
+  }
+
+  resource(filePath: string) {
+    const engine = classicProPath(filePath);
+    if (engine) {
+      return classicProAssets[engine.slice(CPRO_ROOT.length)] == null ? null : this.engineBytes(engine);
+    }
+    try {
+      const path = String(filePath).replace(/^@SKINPATH@[/\\]?/i, "");
+      return this.resources.get(this.resolve(path)) || null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  prepareXml(text: string, filePath: string) {
+    if (filePath.includes("__wasabi__/xml/xui/browser/")) {
+      text = text.replaceAll('file="xml/xui/browser/', `file="${CPRO_ROOT}__wasabi__/xml/xui/browser/`);
+    }
+    return prepareClassicProXml(text, filePath, classicProAssets);
   }
 
   async getFileAsString(filePath: string) {
@@ -186,17 +264,25 @@ class NormalizedZipFileExtractor extends ZipFileExtractor {
       const builtIn = this.builtInXml.get(normalizeArchivePath(filePath));
       if (builtIn != null) return builtIn;
     }
-    return super.getFileAsString(this.resolve(filePath));
+    const engine = this.engineBytes(filePath);
+    const text = engine ? new TextDecoder().decode(engine) : await super.getFileAsString(this.resolve(filePath));
+    return text == null ? null : this.prepareXml(text, filePath);
   }
 
   async getFileAsBytes(filePath: string) {
     if (!filePath) return null;
-    return super.getFileAsBytes(this.resolve(filePath));
+    const engine = this.engineBytes(filePath);
+    return engine ? engine.buffer : super.getFileAsBytes(this.resolve(filePath));
   }
 
   async getFileAsBlob(filePath: string) {
     if (!filePath) return null;
-    return super.getFileAsBlob(this.resolve(filePath));
+    const path = classicProPath(filePath);
+    // ClassicPro's distribution references optional widget icons it does not
+    // ship. An absent bitmap stays absent, just like one missing from a WAL.
+    if (path && classicProAssets[path.slice(CPRO_ROOT.length)] == null) return null;
+    const engine = this.engineBytes(filePath);
+    return engine ? new Blob([engine]) : super.getFileAsBlob(this.resolve(filePath));
   }
 }
 
@@ -295,8 +381,17 @@ class KogSkinEngine extends SkinEngineWAL {
   private includeRequests = 0;
   private guiObjects = 0;
 
+  async script(node: any, parent: any) {
+    try {
+      return await super.script(node, parent);
+    } catch (error) {
+      throw new Error(`MAKI ${node.attributes.file}: ${errorText(error)}`);
+    }
+  }
+
   async include(node: any, parent: any) {
     if (++this.includeRequests > 4096) throw new Error("Modern skin XML include limit exceeded");
+    if (classicProPath(node.attributes.file)) node.attributes.parent_path = "";
     return super.include(node, parent);
   }
 
@@ -707,7 +802,13 @@ async function loadSkin(root: UIRoot, skinUrl: string) {
   root.SkinEngineClass = KogSkinEngine;
 
   const engine = new KogSkinEngine(root);
+  await notifyClassicProBeforeLoadingElements(root);
+  beginMakiStartup(root);
   await engine.buildUI();
+  await finishMakiStartup(root);
+  await notifyClassicProGuiLoaded(root);
+  await notifyClassicProLoaded(root);
+  await resumeMakiTimers(root);
   if (!root.getContainers().length) {
     throw new Error("This skin did not provide a player layout. It may require an unsupported external skin engine.");
   }
@@ -745,7 +846,7 @@ async function main() {
   await loadSkin(root, skinUrl);
   publishInitialPlayback();
   hideLoading();
-  window.kogModern = { root, state: store, commands: gateway };
+  window.kogModern = { root, state: store, commands: gateway, scriptDiagnostics };
   gateway.send("ready");
 }
 

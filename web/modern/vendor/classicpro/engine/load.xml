@@ -1,0 +1,11 @@
+<scripts>
+	<script file="@COLORTHEMESPATH@\..\..\Plugins\classicPro\engine\scripts\WinampVersionCheck.maki" param="2405;5.55"/>
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\one\scripts\loadattribs.maki"/>
+</scripts>
+
+<include file="xui\xui-files_one.xml"/>
+<include file="widgets\load\*.xml"/>
+<include file="xml\notifier.xml"/>
+<include file="one\xml\files-one.xml"/>
+<include file="xml\widgets-manager.xml"/>
+<include file="xml\about.xml"/>

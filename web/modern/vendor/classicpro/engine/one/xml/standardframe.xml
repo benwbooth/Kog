@@ -1,0 +1,114 @@
+<groupdef id="wasabi.statusbar" default_h="12">
+  <!-- nonmodal progress bar -->
+  <rect id="wasabi.statusbar.progress.outline" x="-104" relatx="1" y="3" w="100" h="8" filled="0" color="0,128,128" visible="0"/>
+  <rect id="wasabi.statusbar.progress.inside" x="-104" relatx="1" y="3" w="1" h="8" filled="1" color="0,192,192" visible="0"/>
+
+  <!-- text line -->
+  <text id="wasabi.statusbar.text" x="8" y="0" w="-16" h="0" relatw="1" relath="1" font="standardframe.title" fontsize="26" alpha="100"/>
+</groupdef>
+
+<!-- =======================================================================================================
+
+  This group serves as a template for all the Wasabi:StandardFrame objects
+
+======================================================================================================== -->
+
+<groupdef id="wasabi.frame.layout">
+	<!-- Window region -->
+	<!--<grid
+		fitparent="1"
+		topleft="wasabi.dropdownlist.list.top.left"
+		top="wasabi.dropdownlist.list.top"
+		topright="wasabi.dropdownlist.list.top.right"
+		left="wasabi.dropdownlist.list.left"
+		middle="wasabi.dropdownlist.list.center"
+		right="wasabi.dropdownlist.list.right"
+		bottomleft="wasabi.dropdownlist.list.bottom.left"
+		bottom="wasabi.dropdownlist.list.bottom"
+		bottomright="wasabi.dropdownlist.list.bottom.right"
+		sysregion="1" move="1"
+	/>-->
+	<grid
+		fitparent="1"
+		sysregion="1" move="1"
+		relatw="1" relath="1"
+		topleft="wasabi.tooltip.top.left"
+		top="wasabi.tooltip.top"
+		topright="wasabi.tooltip.top.right"
+		left="wasabi.tooltip.left"
+		middle="wasabi.tooltip.center"
+		right="wasabi.tooltip.right"
+		bottomleft="wasabi.tooltip.bottom.left"
+		bottom="wasabi.tooltip.bottom"
+		bottomright="wasabi.tooltip.bottom.right"
+	/>
+	<rect x="3" y="18" w="-6" h="-22" relatw="1" relath="1" color="wasabi.window.background" filled="1"/>
+	<rect x="4" y="19" w="-8" h="-24" relatw="1" relath="1" color="wasabi.list.background" filled="1"/>
+
+	<!-- Window resizers -->
+	<layer x="0" y="17" w="6" h="-27" relath="1" resize="left"/>
+	<layer x="-7" y="7" w="7" h="-17" relatx="1" relath="1" resize="right"/>
+	<layer x="23" y="0" w="-30" h="5" relatw="1" resize="top"/>
+	<layer x="10" y="-6" w="-20" h="6" relaty="1" relatw="1" resize="bottom"/>
+	<layer x="0" y="0" w="23" h="17" resize="topleft"/>
+	<layer x="-7" y="0" w="7" h="7"  relatx="1" resize="topright"/>
+	<layer x="0" y="-10" w="10" h="10" relaty="1" resize="bottomleft"/>
+	<layer x="-10" y="-10" w="10" h="10" relatx="1" relaty="1" resize="bottomright"/>
+
+	<!-- Window title -->
+	<text x="11" y="2" w="-29" h="14" relatw="1" default=":componentname" bold="0" antialias="1" align="center" fontsize="14" forceuppercase="1" color="wasabi.tooltips.textcolor" alpha="220" move="1"/>
+
+	<text x="-20" y="2" w="18" relatx="1" default="x" bold="1" align="center" antialias="1" fontsize="14" ghost="1" color="wasabi.tooltips.textcolor" alpha="220"/>
+	<button x="-20" y="2" w="18" h="16" relatx="1" action="CLOSE" tooltip="Close Window" rectrgn="1" cursor="IDC_HAND"/>
+
+	<text x="2" y="2" w="18" default="~" bold="1" align="center" antialias="1" fontsize="14" ghost="1" color="wasabi.tooltips.textcolor" alpha="220"/>
+	<button x="2" y="2" w="18" h="16" action="SYSMENU" tooltip="Main Menu" rectrgn="1" cursor="IDC_HAND"/>
+</groupdef>
+
+
+
+
+<!-- =======================================================================================================
+  <Wasabi:StandardFrame:Status /> implementation
+======================================================================================================== -->
+
+ <groupdef id="wasabi.standardframe.statusbar" xuitag="Wasabi:StandardFrame:Status">
+	<group id="wasabi.frame.layout" fitparent="1"/>
+	<LayoutStatus id="standardframe.layoutstatus" x="13" y="-33" relaty="1" w="-30" relatw="1" h="20" exclude="{system}" />
+	<script id="standardframe.script" file="@WINAMPPATH@\Plugins\classicPro\engine\one\scripts\standardframe.maki" param="4,19,-8,-24,0,0,1,1" />
+</groupdef>
+
+
+
+
+<!-- =======================================================================================================
+  <Wasabi:StandardFrame:NoStatus /> implementation
+======================================================================================================== -->
+
+<groupdef id="wasabi.standardframe.nostatusbar" xuitag="Wasabi:StandardFrame:NoStatus">
+	<group id="wasabi.frame.layout" fitparent="1"/>
+	<script id="standardframe.script" file="@WINAMPPATH@\Plugins\classicPro\engine\one\scripts\standardframe.maki" param="4,19,-8,-24,0,0,1,1" />
+</groupdef>
+
+
+
+
+
+<!-- =======================================================================================================
+  <Wasabi:StandardFrame:Modal /> implementation
+======================================================================================================== -->
+
+<groupdef id="wasabi.standardframe.modal" inherit_group="wasabi.standardframe.nostatusbar" sysregion="1" xuitag="Wasabi:StandardFrame:Modal">
+ <sendparams target="wasabi.titlebar" x="4" w="-22" relatw="1" />
+  <hideobject target="MainMenu;MainMenu.inactive.inactive;MainMenu.button.bg"/>
+  <sendparams target="window.top.left;window.top;window.top.right;window.left;window.right;window.bottom.left.top;window.bottom.left;window.bottom.left.bottom;window.bottom.top;window.bottom;window.bottom.bottom;window.bottom.right.top;window.bottom.right;window.bottom.right.bottom" resize="0" />
+</groupdef>
+
+
+<!-- =======================================================================================================
+  <Wasabi:StandardFrame:Static /> implementation
+======================================================================================================== -->
+
+<groupdef id="wasabi.standardframe.static" inherit_group="wasabi.standardframe.nostatusbar" sysregion="1" xuitag="Wasabi:StandardFrame:Static">
+  <sendparams target="window.top.left;window.top;window.top.right;window.left;window.right;window.bottom.left.top;window.bottom.left;window.bottom.left.bottom;window.bottom.top;window.bottom;window.bottom.bottom;window.bottom.right.top;window.bottom.right;window.bottom.right.bottom" resize="0" />
+</groupdef>

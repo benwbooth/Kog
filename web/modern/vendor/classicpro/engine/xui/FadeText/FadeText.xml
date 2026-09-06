@@ -1,0 +1,38 @@
+<groupdef id="sc.FadeText" xuitag="SC:FadeText">
+	<text id="FadeText.2" fitparent="1" color="wasabi.list.text"/>
+	<text id="FadeText.1" fitparent="1" color="wasabi.list.text"/>
+
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\xui\FadeText\FadeText.maki"/>
+</groupdef>
+
+
+
+
+
+
+<!-- =======================================================================================================
+
+  <Wasabi:Text /> implementation
+
+    Available parameters : 
+
+      - Everything from Group class
+      - Everything from Text class
+
+    Required objects :
+
+      - Text id="wasabi.text"
+
+======================================================================================================== -->
+
+<groupdef id="wasabi.text.group" xuitag="Wasabi:Text" embed_xui="wasabi.text" h="12">
+  <text
+    x="0" y="0"
+    w="0" h="0"
+    relatw="1" relath="1"
+    id="wasabi.text" font="tahoma"
+    color="wasabi.text.color" fontsize="14"
+    display="ERROR" wrap="1" valign="top"
+  />
+
+</groupdef>

@@ -1,0 +1,11 @@
+<groupdef id="sc.progressgrid">
+	<layer id="sc.pg.left" x="0" y="0" image="seeker.bg.left.2"/>
+	<layer id="sc.pg.center" x="10" y="0" w="-20" relatw="1" image="seeker.bg.center.2"/>
+	<layer id="sc.pg.right" x="-10" y="0" relatx="1" image="seeker.bg.right.2"/>
+</groupdef>
+
+<groupdef id="sc.seekProgress" xuitag="SC:ProgressGrid" embed_xui="main.albumart">
+	<slider	id="sc.seeker" interval="50" action="SEEK" fitparent="1" ghost="1" visible="0" thumb="fake.seeker"/>
+	<group id="sc.progressgrid"  x="0" y="0" h="0" relath="1"/>
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\xui\SC-ProgressGrid\SC-ProgressGrid.maki"/>
+</groupdef>

@@ -1,0 +1,275 @@
+<groupdef id="shade.seeker.active">
+	<grid id="shade.seeker.active.layer" x="0" y="0" w="550" h="40" topleft="shade.seeker.1.1" top="shade.seeker.1.2" topright="shade.seeker.1.3" alpha="253"/>
+	<grid id="shade.seeker.hover.layer" x="0" y="0" w="550" h="40" topleft="shade.seeker.2.1" top="shade.seeker.2.2" topright="shade.seeker.2.3" alpha="0"/>
+	<layer id="shade.seeker.active.light" x="0" y="0" visible="0" image="shade.seeker.light" alpha="253"/>
+</groupdef>
+<groupdef id="shade.seeker.finder">
+	<grid id="shade.seeker.finder.layer" x="0" y="0" w="550" h="40" topleft="shade.seeker.3.1" top="shade.seeker.3.2" topright="shade.seeker.3.3" alpha="253"/>
+</groupdef>
+
+
+<groupdef id="shade.sect.stop"> <!-- 1 -->
+	<layer x="0" y="0" image="shade.bg.4" wantfocus="1" ghost="1"/>
+	<button id="shade.stop" x="0" y="0" action="STOP" image="s.stop.1" downimage="s.stop.3" tooltip="Stop Playback"/>
+	<layer id="shade.stop.fade" x="0" y="0" image="s.stop.2" ghost="1" alpha="0"/>
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\two\scripts\buttonfade.maki" param="shade.stop;shade.stop.fade"/>
+</groupdef>
+
+<groupdef id="shade.sect.shuf"> <!-- 2 -->
+	<layer x="0" y="0" image="shade.bg.5" wantfocus="1" ghost="1"/>
+	<NStatesButton id="shade.shuf" x="0" y="0" image="s.shuf.1." hoverimage="s.shuf.2." downimage="s.shuf.3." rectrgn="1" nstates="2" tooltip="Toggle Playlist Shuffling" cfgattrib="{45F3F7C1-A6F3-4EE6-A15E-125E92FC3F8D};Shuffle"/>
+	<layer id="shade.shuf.fade" x="0" y="0" ghost="1" alpha="0"/>
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\two\scripts\buttonfade.maki" param="shade.shuf;shade.shuf.fade;s.shuf.2."/>
+	<NStatesButton id="overlay.shuf" x="0" y="0" w="20" h="22" visible="0" image="s.button.shuf.over." rectrgn="1" nstates="2" ghost="1" cfgattrib="{45F3F7C1-A6F3-4EE6-A15E-125E92FC3F8D};Shuffle"/>
+</groupdef>
+<groupdef id="shade.sect.rep"> <!-- 3 -->
+	<layer x="0" y="0" image="shade.bg.6" wantfocus="1" ghost="1"/>
+	<NStatesButton id="shade.rep" x="0" y="0" image="s.rep.1." hoverimage="s.rep.2." downimage="s.rep.3." rectrgn="1" nstates="3" tooltip="Toggle Playlist/Song Repeating" cfgattrib="{45F3F7C1-A6F3-4EE6-A15E-125E92FC3F8D};Repeat" cfgvals="0;1;-1"/>
+	<layer id="shade.rep.fade" x="0" y="0" ghost="1" alpha="0"/>
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\two\scripts\buttonfade.maki" param="shade.rep;shade.rep.fade;s.rep.2."/>
+	<NStatesButton id="overlay.rep" x="0" y="0" w="20" h="22" visible="0" image="s.button.rep.over." rectrgn="1" nstates="3" ghost="1" cfgattrib="{45F3F7C1-A6F3-4EE6-A15E-125E92FC3F8D};Repeat" cfgvals="0;1;-1"/>
+</groupdef>
+<groupdef id="shade.sect.open"> <!-- 4 -->
+	<layer x="0" y="0" image="shade.bg.7" wantfocus="1" ghost="1"/>
+	<button id="shade.open" x="0" y="0" action="EJECT" image="s.open.1" downimage="s.open.3" tooltip="Open File(s)"/>
+	<layer id="shade.open.fade" x="0" y="0" image="s.open.2" ghost="1" alpha="0"/>
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\two\scripts\buttonfade.maki" param="shade.open;shade.open.fade"/>
+</groupdef>
+<groupdef id="shade.sect.volume"> 
+	<layer x="0" y="0" image="shade.bg.8" wantfocus="1" ghost="1"/>
+	
+	<NStatesButton id="shade.mute" x="4" image="s.mute.1." hoverimage="s.mute.2." downimage="s.mute.3." rectrgn="1" nstates="2" cfgvals="0;1"/>
+	<layer id="shade.mute.overlay" x="4" ghost="1" image="s.mute.2.1" alpha="0"/>
+	<layer id="shade.mute.fade" x="4" ghost="1" alpha="0"/>
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\two\scripts\buttonfade.maki" param="shade.mute;shade.mute.fade;s.mute.2."/>
+	<NStatesButton id="mute.icon.overlay" x="4" w="20" h="22" visible="1" image="s.button.mute.over." ghost="1" rectrgn="1" nstates="2" cfgvals="0;1"/>
+
+
+	<layer id="two.shade.volslider.bar.1" x="26" y="0" w="0" image="s.vol.bg.1" tile="1"/>
+	<layer id="two.shade.volslider.bar.2" x="26" y="0" w="0" image="s.vol.bg.2" tile="1" alpha="0"/>
+	<slider id="two.shade.volslider" x="26" y="4" w="77" h="14" action="VOLUME" thumb="s.vol.thumb.1" hoverthumb="s.vol.thumb.2" downthumb="s.vol.thumb.3" cursor="IDC_HAND" tooltip="Volume"/>
+	
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\two\scripts\sc_mute.maki" param="two.shade.volslider;shade.mute;shade.mute.overlay;mute.icon.overlay;s.button.mute.over.1"/>
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\two\scripts\sc_sliderbar.maki" param="two.shade.volslider;two.shade.volslider.bar.;77"/>
+</groupdef>
+<groupdef id="shade.sect.vis"> 
+	<layer regionop="1" image="shade.bg.9" wantfocus="1" move="1"/>
+	<vis id="shade.vis" x="6" y="4" w="39" h="14" bandwidth="thin" ghost="1" gammagroup="n.playback.vis.object"/>
+	<layer id="shade.vis.overlay" x="5" y="4" image="shade.vis.overlay1" ghost="1"/>
+	<layer
+		id="vis.mousetrap"
+		x="6" y="4" w="40" h="14" move="1"
+	/>
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\two\scripts\classicVis.maki" param="shade.vis;shade.vis.overlay;vis.mousetrap;shade.vis.region;1"/>
+</groupdef>
+
+<groupdef id="shade.text.time">
+	<status	id="status"	x="0" y="0" w="20" h="22" stopBitmap="shade.status.stopped" playBitmap="shade.status.playing" pauseBitmap="shade.status.paused" ghost="1"/>
+
+	<!--<rect fitparent="1"/>-->
+	<text id="shade.text.time.tracktime" x="21" y="2" h="22" align="left" valign="top" text="" fontsize="18" color="cpro2.color.infoseek.numbig" font="cpro2.font.shade.numbig" ghost="1"/>
+	<text id="shade.text.time.totaltime" x="0" y="3" h="22" align="left" valign="top" text="" fontsize="16" color="cpro2.color.infoseek.numsmall" font="cpro2.font.shade.numsmall" ghost="1"/>
+
+	<text id="shade.text.time.trackevent" x="0" y="0" w="0" h="0" display="TIMEELAPSED" visible="0"/>
+</groupdef>
+
+<groupdef id="shade.st">
+	<text id="shade.st.news" 
+		fitparent="1" y="2"
+		visible="0" font="cpro2.font.shade.news"
+		rightclickaction="trackmenu" dblclickaction="trackinfo" align="left"
+		color="cpro2.color.shade.title" fontsize="16" valign="top" antialias="1" ghost="1"
+	/>
+	<text id="shade.st.title" 
+		fitparent="1" y="2"
+		showlen="0" font="cpro2.font.shade.songname"
+		rightclickaction="trackmenu" dblclickaction="trackinfo" align="left" display="songname"
+		color="cpro2.color.shade.title" fontsize="16" valign="top" antialias="1" ghost="1"
+	/>
+	
+	<group id="shade.text.time" h="22" relatx="1"/>
+	
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\two\scripts\shade-info.maki" param=""/>
+</groupdef>
+<groupdef id="shade.sect.seek">
+	<grid fitparent="1" topleft="shade.seeker.0.1" top="shade.seeker.0.2" topright="shade.seeker.0.3" wantfocus="1" ghost="1"/>
+
+	<group id="shade.seeker.active" x="0" y="0" w="0" h="40"/>
+	<group id="shade.seeker.finder" x="0" y="0" w="0" h="40" alpha="175"/> <!-- Remove alpha l@r... image can do it-->
+
+	<slider id="shade.seeker.slider.0" x="0" y="0" w="0" h="0" relatw="1" relath="1" action="SEEK" thumb="info.seeker.thumb" interval="50"/>
+	<slider id="shade.seeker.slider.1" x="0" y="0" w="0" h="0" relatw="1" relath="1" action="SEEK" thumb="info.seeker.thumb" cursor="IDC_HAND"/>
+
+	<group
+		id="shade.st"
+		x="4" y="0" h="0" w="-8" relatw="1" relath="1"
+		
+	/>
+	<!--
+	<text id="two.info.text.tracktime" x="10" y="1" h="22" align="left" text="1:43" fontsize="18" color="cpro2.color.infoseek.numbig" font="Calibri" ghost="1"/>
+	<text id="two.info.text.totaltime" x="38" y="4" h="16" align="left" text="/ 16:25" fontsize="15" color="cpro2.color.infoseek.numsmall" font="Calibri" ghost="1"/>
+	<text id="two.info.text.trackevent" x="0" y="0" w="0" h="0" display="TIMEELAPSED" visible="0"/>
+	-->
+
+	<grid fitparent="1" topleft="shade.seeker.4.1" top="shade.seeker.4.2" topright="shade.seeker.4.3" ghost="1"/>
+	
+	
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\two\scripts\shade-seeker.maki"/>
+</groupdef>
+
+<groupdef id="shade.sect.aot">
+	<NStatesButton id="shade.aot" x="-25" relatx="1" image="s.aot.1." hoverimage="s.aot.2." downimage="s.aot.3." rectrgn="1" cfgattrib="{280876CF-48C0-40BC-8E86-73CE6BB462E5};Always on top" nstates="2" tooltip="Toggle Always on top" cfgvals="0;1"/>
+	<!--<layer id="shade.aot.docked" x="-25" relatx="1" image="s.aot.1.1" visible="0" ghost="1"/>-->
+
+	<layer id="shade.aot.fade" x="-25" y="0" relatx="1" ghost="1" alpha="0"/>
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\two\scripts\buttonfade.maki" param="shade.aot;shade.aot.fade;s.aot.2."/>
+
+</groupdef>
+
+
+<layout id="shade" minimum_h="22" minimum_w="240" maximum_h="22" h="22" w="800" default_w="800" appbar="top|bottom" wantfocus="1">
+	<group id="cpro.shade.background" fitparent="1" sysregion="1"/>
+
+	<layer fitparent="1" dblClickAction="SWITCH;normal"/>
+	
+	<layer x="0" y="0" regionop="1" image="shade.bg.1" wantfocus="1" ghost="1"/>
+	<layer x="90" y="0" w="-173" relatw="1" regionop="1" image="shade.bg.2" wantfocus="1" ghost="1"/>
+	<layer x="-83" y="0" relatx="1" regionop="1" image="shade.bg.11" wantfocus="1" ghost="1"/>
+
+	<layer x="90" y="0" image="shade.bg.3" wantfocus="1" ghost="1"/>
+	<layer x="37" image="shade.logo" wantfocus="1" ghost="1"/>
+
+
+	<button id="shade.prev" x="90" y="0" action="PREV" image="s.prev.1" downimage="s.prev.3" tooltip="Previous Track"/>
+	<layer id="shade.prev.fade" x="90" y="0" image="s.prev.2" ghost="1" alpha="0"/>
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\two\scripts\buttonfade.maki" param="shade.prev;shade.prev.fade"/>
+
+	<button id="shade.play" x="110" y="0" action="PLAY" image="s.play.1" downimage="s.play.3" tooltip="Play"/>
+	<layer id="shade.play.fade" x="110" y="0" image="s.play.2" ghost="1" alpha="0"/>
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\two\scripts\buttonfade.maki" param="shade.play;shade.play.fade"/>
+
+	<button id="shade.pause" x="110" y="0" action="PAUSE" image="s.pause.1" downimage="s.pause.3" visible="0" tooltip="Pause Playback"/>
+	<layer id="shade.pause.fade" x="110" y="0" image="s.pause.2" ghost="1" alpha="0"/>
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\two\scripts\buttonfade.maki" param="shade.pause;shade.pause.fade"/>
+
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\two\scripts\shade-layout.maki"/>
+
+	<button id="shade.next" x="130" y="0" action="NEXT" image="s.next.1" downimage="s.next.3" tooltip="Next Track"/>
+	<layer id="shade.next.fade" x="130" y="0" image="s.next.2" ghost="1" alpha="0"/>
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\two\scripts\buttonfade.maki" param="shade.next;shade.next.fade"/>
+
+
+	<button id="shade.mlmenu" x="8" image="s.menu.1" hoverImage="s.menu.2" downImage="s.menu.3" rectrgn="1" tooltip="Library's Playlists"/>
+	<button id="shade.mlmenu.fake" x="8" y="22" w="1" h="1" visible="0" action="PE_ListOfLists"/>
+	<layer id="shade.mlmenu.fade" x="8" image="s.menu.2" ghost="1" alpha="0"/>
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\two\scripts\buttonfade.maki" param="shade.mlmenu;shade.mlmenu.fade"/>
+
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\scripts\extendedbuttons.maki" param="shade.prev;shade.next;shade.open"/>
+
+
+	<group id="shade.sect.stop" x="150" y="0" w="20" h="22"/>				<!-- 1 -->
+	<group id="shade.sect.shuf" x="170" y="0" w="20" h="22"/>				<!-- 2 -->
+	<group id="shade.sect.rep" x="190" y="0" w="20" h="22"/>				<!-- 3 -->
+	<group id="shade.sect.open" x="210" y="0" w="20" h="22"/>				<!-- 4 -->
+	<group id="shade.sect.seek" x="212" y="0" w="-388" h="22" relatw="1"/>	<!-- 5 -->
+	<group id="shade.sect.aot" x="-108" y="0" w="25" h="22" relatx="1"/>	<!-- 6 -->
+	<group id="shade.sect.vis" x="345" y="0" w="51" h="22"/>				<!-- 7 -->
+	<group id="shade.sect.volume" x="234" y="0" w="107" h="22"/>			<!-- 8 -->
+
+
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\two\scripts\shade.maki"/>
+	
+
+	
+	<button x="-83" relatx="1" id="player.button.minimize" action="MINIMIZE" image="s.min.1" hoverImage="s.min.2" downImage="s.min.3" rectrgn="1" tooltip="Minimize Winamp"/>
+	<layer id="shade.min.fade" x="-83" y="0" relatx="1" image="s.min.2" ghost="1" alpha="0"/>
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\two\scripts\buttonfade.maki" param="player.button.minimize;shade.min.fade"/>
+
+	<button id="player.button.switch" x="-58" relatx="1" action="SWITCH" param="normal" image="s.mode.1" hoverImage="s.mode.2" downImage="s.mode.3" rectrgn="1" tooltip="Main Mode"/>
+	<layer id="shade.switch.fade" x="-58" y="0" relatx="1" image="s.mode.2" ghost="1" alpha="0"/>
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\two\scripts\buttonfade.maki" param="player.button.switch;shade.switch.fade"/>
+
+	<button id="player.button.close" x="-33" relatx="1" action="CLOSE" image="s.close.1" hoverImage="s.close.2" downImage="s.close.3" rectrgn="1" tooltip="Exit Winamp"/>
+	<layer id="shade.close.fade" x="-33" y="0" relatx="1" image="s.close.2" ghost="1" alpha="0"/>
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\two\scripts\buttonfade.maki" param="player.button.close;shade.close.fade"/>
+
+	
+	
+	<layer id="resizer.6" x="-8" y="0" w="8" h="22" relatx="1" cursor="IDC_SIZEWE" move="0"/>
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\two\scripts\shade-resizer.maki"/>
+
+
+	<!--<group id="cpro.shade.underlay" fitparent="1" sysregion="1"/>
+
+
+	<layer x="0" y="0" image="shade.o.bg.1" wantfocus="1" ghost="1"/>
+	<layer x="90" y="0" w="-280" relatw="1" image="shade.o.bg.2" wantfocus="1" ghost="1"/>
+	<layer x="-191" y="0" relatx="1" image="shade.o.bg.3" wantfocus="1" ghost="1"/>
+	
+	
+
+
+	<button id="shade.mlmenu.visible" x="6" y="3" image="s.menu.1" hoverImage="s.menu.2" downImage="s.menu.3" rectrgn="1" tooltip="Library's Playlists"/>
+	<button id="shade.mlmenu.fake" x="6" y="20" w="1" h="1" visible="0" action="PE_ListOfLists"/>
+
+	<Button id="previous.track"
+		x="-186" y="4" relatx="1"
+		image="s.prev.1"
+		hoverImage="s.prev.2"
+		downImage="s.prev.3"
+		rectrgn="1" action="PREV" tooltip="Previous Track"
+	/>
+
+	<Button id="Play"
+		x="-173" y="4" relatx="1"
+		image="s.play.1"
+		hoverImage="s.play.2"
+		downImage="s.play.3"
+		rectrgn="1" action="PLAY" tooltip="Play"
+	/>
+
+	<Button id="Pause"
+		x="-160" y="4" relatx="1"
+		image="s.pause.1"
+		hoverImage="s.pause.2"
+		downImage="s.pause.3"
+		rectrgn="1" action="PAUSE" tooltip="Pause Playback"
+	/>
+
+	<Button id="Stop"
+		x="-147" y="4" relatx="1"
+		image="s.stop.1"
+		hoverImage="s.stop.2"
+		downImage="s.stop.3"
+		rectrgn="1" action="STOP" tooltip="Stop Playback"
+	/>
+
+	<Button id="next.track"
+		x="-134" y="4" relatx="1"
+		image="s.next.1"
+		hoverImage="s.next.2"
+		downImage="s.next.3"
+		rectrgn="1" action="NEXT" tooltip="Next Track"
+	/>
+
+	<Button id="open.tracks"
+		x="-114" y="4" relatx="1"
+		image="s.eject.1"
+		hoverImage="s.eject.2"
+		downImage="s.eject.3"
+		rectrgn="1" action="EJECT" tooltip="Open File(s)"
+	/>
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\one\scripts\extendedbuttons.maki"/>
+
+	<group id="shade.visgroup" x="91" y="0" w="63" h="23" move="1" visible="0"/>
+	<group id="shade.volgroup" x="154" y="0" w="69" h="23" move="1" visible="0"/>
+	<group id="shade.seekticker" x="223" y="0" w="-414" h="23" relatw="1" move="1" visible="0"/>
+
+
+
+
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\one\scripts\shade.maki" param="@SKINPATH@"/>
+
+	<group id="cpro.shade.overlay" fitparent="1" sysregion="1"/>
+	-->
+</layout>

@@ -1,0 +1,26 @@
+<!-- Example:
+
+	<Wasabi:Ratings
+		x="175" y="82" w="55" h="13"
+		image_nostar="ratings.none"
+		image_star="ratings.normal"
+		image_hoverstar="ratings.hover"
+	/>
+
+
+	Please remember that you must set the object to the height of the rating picture... and the width to 5*imagesize.
+	Each param bitmapid star must only be a single star.
+-->
+
+<groupdef id="Wasabi.Ratings" xuitag="Wasabi:Ratings">
+	<layer id="ratings.nostars" tile="1" w="100" h="0" relatw="2" relath="1"/>
+	<layer id="ratings.stars" tile="1" w="0" h="0" relatw="2" relath="1"/>
+	<layer id="ratings.hoverstars" tile="1" w="0" h="0" relatw="2" relath="1"/>
+	
+	<button id="rate.1" x="0" y="0" w="21" h="0" relatw="2" relath="1" rectrgn="1" cursor="IDC_HAND"/>
+	<button id="rate.2" x="20" y="0" w="21" h="0" relatx="2" relatw="2" relath="1" rectrgn="1" cursor="IDC_HAND"/>
+	<button id="rate.3" x="40" y="0" w="21" h="0" relatx="2" relatw="2" relath="1" rectrgn="1" cursor="IDC_HAND"/>
+	<button id="rate.4" x="60" y="0" w="21" h="0" relatx="2" relatw="2" relath="1" rectrgn="1" cursor="IDC_HAND"/>
+	<button id="rate.5" x="80" y="0" w="21" h="0" relatx="2" relatw="2" relath="1" rectrgn="1" cursor="IDC_HAND"/>
+	<script file="@WINAMPPATH@\Plugins\classicPro\engine\xui\Ratings\Ratings.maki"/>
+</groupdef>

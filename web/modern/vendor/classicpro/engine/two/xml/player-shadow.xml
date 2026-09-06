@@ -1,0 +1,51 @@
+<!-- 
+******************************************************
+	shadow.xml file
+	classicPro add-on shadow XML
+	
+	by Leechbite
+******************************************************
+-->
+
+<elements>
+	<bitmap id="shadow.1" file="frame_alpha.png" x="0" y="0" w="45" h="45"/>
+	<bitmap id="shadow.2" file="frame_alpha.png" x="46" y="0" w="10" h="45"/>
+	<bitmap id="shadow.3" file="frame_alpha.png" x="57" y="0" w="45" h="45"/>
+	<bitmap id="shadow.4" file="frame_alpha.png" x="0" y="46" w="23" h="10"/>
+	<bitmap id="shadow.6" file="frame_alpha.png" x="79" y="46" w="23" h="10"/>
+	<bitmap id="shadow.7" file="frame_alpha.png" x="0" y="57" w="23" h="23"/>
+	<bitmap id="shadow.8" file="frame_alpha.png" x="24" y="57" w="8" h="23"/>
+	<bitmap id="shadow.9" file="frame_alpha.png" x="79" y="57" w="23" h="23"/>
+</elements>
+
+<container id="main.shadow" name="Shadow" noMenu="1" dynamic="1" default_visible="0">
+
+<layout id="normal" desktopalpha="1" owner="main,normal" noactivation="1" nodock="1" move="0">
+	<grid id="shadow"
+		fitparent="1"
+		topleft="shadow.1"
+		top="shadow.2"
+		topright="shadow.3"
+		left="shadow.4"
+		right="shadow.6"
+		bottomleft="shadow.7"
+		bottom="shadow.8"
+		bottomright="shadow.9"
+	/>
+</layout>
+</container>
+
+
+<script file="@WINAMPPATH@\Plugins\classicPro\engine\two\scripts\shadow.maki" param="main,normal,main.shadow,0,0,0,0,-15,-15,30,30"/>
+<!-- 
+	script,param guide:
+
+	param = "containerID,layoutID,shadowContID,snapLeft,snapTop,snapRight,snapBottom,offsetX,offsetY,offsetW,offsetH"  
+	
+	containerID - id of main container;
+	layoutID - id of main layout;
+	shadowContID - id of shadow container;
+	snapLeft,snapTop,snapRight,snapBottom - used snapAdjust the main layout;
+	offsetX,offsetY,offsetW,offsetH - added(or subtracted) to main layout coordinates for the shadow coordinates;
+	
+-->

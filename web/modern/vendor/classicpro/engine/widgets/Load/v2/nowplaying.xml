@@ -1,0 +1,13 @@
+<groupdef id="centro.widgets.nowplaying.dummy.main" name="Now Playing;cpro.tab.icon.now" userdata="centro.widgets.nowplaying;0" windowtype="centro.widgets.main">
+	<guiobject id="@author"			userdata="Pieter Niewoudt"/>
+	<guiobject id="@version"		userdata="1.01"/>
+	<guiobject id="@uninstaller"	userdata="1.01"/>
+</groupdef>
+<elements>
+    <bitmap id="centro.widgets.nowplaying.thumbnail" file="@WINAMPPATH@\Plugins\classicPro\engine\widgets\Data\NowPlaying\thumbnail.png"/>
+</elements>
+
+<include file="..\..\Data\NowPlaying\NowPlaying2.xml"/>
+<groupdef id="centro.widgets.nowplaying">
+	<SC:NowPlaying id="nowplaying.component" fitparent="1" reflectionheightpercentage="35"/>
+</groupdef>
