@@ -84,8 +84,9 @@ modules:
     buildsystem: simple
     build-commands:
       - |
-        platform_lib="/usr/lib/$(gcc -print-multiarch)"
-        platform_include="/usr/include/$(gcc -print-multiarch)/qt6"
+        platform_lib="$(qmake6 -query QT_INSTALL_LIBS)"
+        platform_include="$(qmake6 -query QT_INSTALL_HEADERS)"
+        test -f "$platform_include/QtCore/QtGlobal"
         # cxx-qt accepts one qmake prefix for every requested module. Present
         # the KDE SDK's Qt modules alongside the BaseApp's WebEngine modules
         # under /app, then remove development metadata after the build below.
@@ -94,6 +95,7 @@ modules:
           name="$(basename "$header")"
           test -e "/app/include/$name" || ln -s "$header" "/app/include/$name"
         done
+        test -f /app/include/QtCore/QtGlobal
         chmod +x packaging/linux/qmake-flatpak-webengine.sh
         export QMAKE="$PWD/packaging/linux/qmake-flatpak-webengine.sh"
         cargo build --release --locked --offline
