@@ -1,18 +1,28 @@
 #include "kog_modern_skin.h"
+#include "kog_file_tree_search.h"
+#include "kog_tree_archive.h"
 
+#include <archive.h>
+#include <archive_entry.h>
 #include <QtCore/QCoreApplication>
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QFile>
+#include <QtCore/QDir>
 #include <QtCore/QJsonArray>
 #include <QtCore/QJsonDocument>
 #include <QtCore/QJsonObject>
+#include <QtCore/QTemporaryDir>
 #include <QtCore/QThread>
 #include <QtGui/QImage>
+#include <QtGui/QFileSystemModel>
 #include <QtQml/QQmlComponent>
 #include <QtQml/QQmlEngine>
 #include <QtQml/QQmlContext>
 #include <QtQml/QJSValue>
+#include <QtQuick/QQuickItem>
 #include <QtQuick/QQuickWindow>
+#include <QtWebChannelQuick/QQmlWebChannel>
+#include <QtTest/QTest>
 #include <QtWidgets/QApplication>
 
 #include <cstdio>
@@ -61,6 +71,7 @@ class MockApp final : public QObject {
     Q_PROPERTY(double duration_seconds READ durationSeconds NOTIFY stateChanged)
     Q_PROPERTY(int playlist_count READ playlistCount NOTIFY stateChanged)
     Q_PROPERTY(int playlist_revision READ playlistRevision NOTIFY stateChanged)
+    Q_PROPERTY(QString directory_path READ directoryPath NOTIFY directory_pathChanged)
 public:
     QString playbackState() const { return m_playback; }
     double durationSeconds() const { return 245; }
@@ -69,6 +80,16 @@ public:
     int stateRequests() const { return m_stateRequests; }
     int fullStateRequests() const { return m_fullStateRequests; }
     int nextRequests() const { return m_nextRequests; }
+    QString directoryPath() const { return m_directoryPath; }
+    const QStringList &addedPaths() const { return m_addedPaths; }
+    const QStringList &activatedPaths() const { return m_activatedPaths; }
+
+    void setDirectoryPath(const QString &path)
+    {
+        if (m_directoryPath == path) return;
+        m_directoryPath = path;
+        emit directory_pathChanged();
+    }
 
     Q_INVOKABLE QString skin_state(bool includeTracks)
     {
@@ -125,6 +146,9 @@ public:
     Q_INVOKABLE void update_skin_equalizer_band(int, double) {}
     Q_INVOKABLE void update_equalizer_preamp(double) {}
     Q_INVOKABLE void update_equalizer_enabled(bool) {}
+    Q_INVOKABLE void choose_music_folder() { ++m_chooseMusicFolderRequests; }
+    Q_INVOKABLE void add_local_path(const QString &path) { m_addedPaths.append(path); }
+    Q_INVOKABLE void activate_local_path(const QString &path) { m_activatedPaths.append(path); }
 
     void advancePlaylist()
     {
@@ -134,6 +158,7 @@ public:
     }
 signals:
     void stateChanged();
+    void directory_pathChanged();
 private:
     QString m_playback = "playing";
     int m_revision = 7;
@@ -141,6 +166,10 @@ private:
     int m_fullStateRequests = 0;
     int m_nextRequests = 0;
     bool m_secondState = false;
+    QString m_directoryPath;
+    QStringList m_addedPaths;
+    QStringList m_activatedPaths;
+    int m_chooseMusicFolderRequests = 0;
 };
 
 class MockMainWindow final : public QObject {
@@ -191,6 +220,191 @@ void checkAllowlist()
     require(!kogModernRequestAllowed(QUrl("kogskin://current/other.wal")), "block other skin path");
     require(!kogModernRequestAllowed(QUrl("qrc:/not-kog/index.html")), "block unrelated resource URL");
 }
+
+void checkNativeWebChannelBoundary(QObject *player, KogFileTreeSearch *libraryModel)
+{
+    auto *channel = player->findChild<QQmlWebChannel *>();
+    require(channel != nullptr, "ModernPlayer created the QML WebChannel");
+    const auto objects = static_cast<QWebChannel *>(channel)->registeredObjects();
+    require(objects.size() == 1 && objects.contains("kog"), "WebChannel registers only the kog bridge");
+    QObject *bridge = objects.value("kog");
+    require(bridge != nullptr && bridge != libraryModel, "WebChannel bridge is not the native library model");
+    const QStringList forbidden {"libraryModel", "filePath", "setRootPath", "isDir", "directory_path"};
+    for (const auto &name : forbidden) {
+        require(bridge->metaObject()->indexOfProperty(name.toUtf8().constData()) < 0,
+                "WebChannel bridge has no native library property: " + name);
+        for (int index = 0; index < bridge->metaObject()->methodCount(); ++index)
+            require(!QString::fromLatin1(bridge->metaObject()->method(index).methodSignature()).contains(name,
+                    Qt::CaseInsensitive), "WebChannel bridge has no native library API: " + name);
+    }
+    const QStringList bridgeProperties {"stateJson", "tracksJson", "skinUrl"};
+    for (const auto &name : bridgeProperties)
+        require(bridge->metaObject()->indexOfProperty(name.toUtf8().constData()) >= 0,
+                "WebChannel bridge exposes " + name);
+    require(bridge->metaObject()->indexOfMethod("request(QVariant,QVariant)") >= 0
+                || bridge->metaObject()->indexOfMethod("request(QString,QString)") >= 0,
+            "WebChannel bridge exposes its request command API");
+}
+
+void writeArchiveFixture(const QString &path)
+{
+    auto *writer = archive_write_new();
+    require(archive_write_set_format_zip(writer) == ARCHIVE_OK, "create zip archive fixture");
+    const auto encoded = QFile::encodeName(path);
+    require(archive_write_open_filename(writer, encoded.constData()) == ARCHIVE_OK, "open zip archive fixture");
+    auto *entry = archive_entry_new();
+    archive_entry_set_pathname_utf8(entry, "Archive Disc/Inside Archive Track.mid");
+    archive_entry_set_filetype(entry, AE_IFREG);
+    archive_entry_set_perm(entry, 0644);
+    archive_entry_set_size(entry, 4);
+    require(archive_write_header(writer, entry) >= ARCHIVE_WARN, "write archive fixture header");
+    require(archive_write_data(writer, "test", 4) == 4, "write archive fixture data");
+    archive_entry_free(entry);
+    require(archive_write_close(writer) == ARCHIVE_OK, "close archive fixture");
+    archive_write_free(writer);
+}
+
+QModelIndex modelIndexForPath(const QAbstractItemModel *model, const QString &path,
+                              const QModelIndex &parent = {})
+{
+    for (int row = 0; row < model->rowCount(parent); ++row) {
+        const auto index = model->index(row, 0, parent);
+        if (index.data(QFileSystemModel::FilePathRole).toString() == path) return index;
+        if (const auto child = modelIndexForPath(model, path, index); child.isValid()) return child;
+    }
+    return {};
+}
+
+QObject *controlWithText(QObject *root, const QString &text)
+{
+    for (auto *item : root->findChildren<QObject *>()) {
+        if (item->property("text").toString() == text && item->metaObject()->indexOfMethod("click()") >= 0)
+            return item;
+    }
+    return nullptr;
+}
+
+QQuickItem *quickItemForPath(QQuickItem *root, const QString &path)
+{
+    for (auto *item : root->childItems()) {
+        if (item->property("filePath").toString() == path && item->isVisible()) return item;
+        if (auto *nested = quickItemForPath(item, path); nested) return nested;
+    }
+    return nullptr;
+}
+
+void clickControl(QQuickWindow *window, QObject *control, const QString &what)
+{
+    require(control != nullptr, "find " + what);
+    auto *item = qobject_cast<QQuickItem *>(control);
+    require(item != nullptr && item->isVisible() && item->isEnabled(), "show enabled " + what);
+    QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                      item->mapToScene({item->width() / 2, item->height() / 2}).toPoint());
+}
+
+void invokeModernCommand(QObject *player, const QString &command, const QString &payload)
+{
+    require(QMetaObject::invokeMethod(player, "command", Q_ARG(QVariant, QVariant(command)),
+                                      Q_ARG(QVariant, QVariant(payload))),
+            "invoke ModernPlayer command " + command);
+}
+
+void checkClassicProBrowserScripts(QObject *player, QObject *web)
+{
+    runJavaScript(web, QStringLiteral(
+        "(() => { const failures = window.kogModern.scriptDiagnostics.filter(message => "
+        "message.toLowerCase().includes('browser.maki') || message.includes('ToggleButton.setactivated')); "
+        "window.kogModern.commands.send('error', 'modern browser scripts failures=' + JSON.stringify(failures)); })()"));
+    require(waitFor([player] {
+                return player->property("rendererStatus").toString().contains("modern browser scripts failures=");
+            }, 10'000, "ClassicPro browser script diagnostics"), "renderer reports browser script diagnostics");
+    require(player->property("rendererStatus").toString() == "Skin error: modern browser scripts failures=[]",
+            "ClassicPro browser initialization and callbacks complete: " + player->property("rendererStatus").toString());
+}
+
+void checkNativeLibraryPanel(QObject *player, QObject *web, KogFileTreeSearch &model,
+                             MockApp &app, const QString &libraryRoot, const QString &trackPath,
+                             const QString &archivePath, const QString &changedRoot,
+                             const QString &changedTrackPath)
+{
+    auto *window = qobject_cast<QQuickWindow *>(player);
+    require(window != nullptr, "ModernPlayer library test has a QQuickWindow");
+    auto *loader = player->findChild<QObject *>("modernLibraryLoader");
+    require(loader != nullptr, "ModernPlayer created native library loader");
+    const bool libraryVisible = waitFor([loader] { return loader->property("visible").toBool(); }, 15'000,
+                                        "native library viewport");
+    require(libraryVisible, "Cpro library slot displays the trusted native overlay");
+    auto *panel = player->findChild<QObject *>("modernLibraryPanel");
+    auto *tree = player->findChild<QObject *>("modernLibraryTree");
+    auto *search = player->findChild<QObject *>("modernLibrarySearch");
+    require(panel != nullptr && panel->property("visible").toBool(), "native library panel is visible");
+    require(tree != nullptr && tree->property("visible").toBool() && tree->property("enabled").toBool(),
+            "native library TreeView is visible and enabled");
+    require(search != nullptr, "native library search field exists");
+
+    const auto tracksPath = QDir(libraryRoot).filePath("tracks");
+    require(waitFor([&model, &tracksPath] {
+                return modelIndexForPath(&model, tracksPath).isValid();
+            }, 10'000, "native model folder scan"),
+            "real FileTreeModel lists the fixture tracks folder");
+
+    require(search->setProperty("text", "Inside Archive Track"), "type archive query into native search field");
+    const auto archiveEntry = kogArchiveUrl(archivePath, "Archive Disc/Inside Archive Track.mid", false);
+    require(waitFor([&model, &archiveEntry] {
+                return !model.searching() && modelIndexForPath(&model, archiveEntry).isValid();
+            }, 15'000, "native archive search"),
+            "native search finds an entry in the real archive fixture");
+
+    require(search->setProperty("text", "Native Library Track"), "type file query into native search field");
+    require(waitFor([&model, &trackPath] {
+                return !model.searching() && modelIndexForPath(&model, trackPath).isValid();
+            }, 15'000, "native file search"),
+            "native search finds the real local track");
+    require(waitFor([tree] { return tree->property("rows").toInt() >= 2; }, 10'000, "visible native search rows"),
+            "TreeView renders the matching folder and local result from the native model");
+    require(waitFor([tree] { return tree->property("enabled").toBool() && tree->property("opacity").toReal() > 0.99; },
+                    10'000, "settled native search layout"), "native search layout becomes interactive after expanding results");
+
+    // Drive the QML tree row and buttons with pointer clicks, not fixture backend calls.
+    require(waitFor([window, &trackPath] { return quickItemForPath(window->contentItem(), trackPath) != nullptr; },
+                    10'000, "visible native search result"), "TreeView materializes the local search result");
+    clickControl(window, quickItemForPath(window->contentItem(), trackPath), "native search result");
+    require(waitFor([panel, &trackPath] { return panel->property("selectedPath").toString() == trackPath; },
+                    5'000, "native result selection"), "clicking the native tree selects its path");
+    clickControl(window, controlWithText(panel, "Add to playlist"), "Add to playlist button");
+    clickControl(window, controlWithText(panel, "Play"), "Play button");
+    require(app.addedPaths().contains(trackPath), "native Add to playlist click reaches host add_local_path");
+    require(app.activatedPaths().contains(trackPath), "native Play click reaches host activate_local_path");
+
+    app.setDirectoryPath(changedRoot);
+    require(waitFor([&model, &changedRoot, &changedTrackPath] {
+                return model.filePath(model.viewRootIndex()) == changedRoot
+                    && modelIndexForPath(&model, changedTrackPath).isValid();
+            }, 10'000, "directory_path native model refresh"),
+            "directory_pathChanged refreshes the panel's real native model root");
+    require(panel->property("selectedPath").toString().isEmpty(), "directory change clears the native tree selection");
+
+    // The native library is a QML overlay rather than DOM/WebChannel content. Do not reconnect a
+    // second QWebChannel here: Qt's transport has one active response dispatcher.
+    runJavaScript(web, QStringLiteral(
+        "(() => { const forbidden = ['libraryModel', 'filePath', 'setRootPath', 'isDir', 'directory_path']; "
+        "const surface = [window.kogModern, window.kogModern.commands, window.kogModern.state]; "
+        "const isolated = forbidden.every(name => surface.every(value => !(name in value))) "
+        "&& !document.body.innerText.includes('Native Library Track'); "
+        "window.kogModern.commands.send('error', 'library renderer isolated=' + isolated); })()"));
+    require(waitFor([player] { return player->property("rendererStatus").toString().contains("library renderer isolated=true"); },
+                    10'000, "library renderer isolation"), "renderer cannot reach native model or filesystem APIs");
+
+    // Invalid geometry is rejected by the QML command boundary, then the real renderer republishes its slot.
+    invokeModernCommand(player, "libraryViewport", R"({"x":-1,"y":0,"width":50,"height":50})");
+    require(!loader->property("visible").toBool(), "out-of-bounds renderer geometry immediately hides the native overlay");
+    require(waitFor([loader] { return loader->property("visible").toBool(); }, 5'000, "republished library viewport"),
+            "renderer restores the native overlay from its real library slot");
+
+    // This is the exact geometry-only notification published when the skin leaves its library tab.
+    invokeModernCommand(player, "libraryViewport", "null");
+    require(!loader->property("visible").toBool(), "native overlay immediately hides when the renderer reports no library slot");
+}
 } // namespace
 
 int main(int argc, char **argv)
@@ -200,6 +414,7 @@ int main(int argc, char **argv)
     const QString skinArchive = QString::fromLocal8Bit(argv[2]);
     const QString screenshotPath = QString::fromLocal8Bit(argv[3]);
     require(QFile::exists(skinArchive), "real modern-skin archive exists");
+    const bool expectLibrary = qEnvironmentVariableIntValue("KOG_MODERN_EXPECT_LIBRARY") != 0;
 
     checkAllowlist();
     QCoreApplication::setAttribute(Qt::AA_ShareOpenGLContexts);
@@ -210,8 +425,31 @@ int main(int argc, char **argv)
     require(QFile::exists(":/kog/modern/index.html"), "compiled modern renderer index exists");
     require(QFile::exists(":/kog/modern/runtime.js"), "compiled modern renderer bundle exists");
 
+    QTemporaryDir libraryFixture;
+    require(libraryFixture.isValid(), "create temporary native library fixture");
+    QDir libraryRoot(libraryFixture.path());
+    require(libraryRoot.mkpath("tracks"), "create fixture tracks folder");
+    const QString trackPath = libraryRoot.filePath("tracks/Native Library Track.mid");
+    QFile track(trackPath);
+    require(track.open(QIODevice::WriteOnly), "create fixture local track");
+    require(track.write("test") == 4, "write fixture local track");
+    track.close();
+    const QString archivePath = libraryRoot.filePath("tracks/fixture.zip");
+    writeArchiveFixture(archivePath);
+    QTemporaryDir changedLibraryFixture;
+    require(changedLibraryFixture.isValid(), "create changed native library fixture");
+    QDir changedLibraryRoot(changedLibraryFixture.path());
+    require(changedLibraryRoot.mkpath("tracks"), "create changed fixture tracks folder");
+    const QString changedTrackPath = changedLibraryRoot.filePath("tracks/Native Library Track replacement.mid");
+    QFile changedTrack(changedTrackPath);
+    require(changedTrack.open(QIODevice::WriteOnly), "create changed fixture local track");
+    require(changedTrack.write("test") == 4, "write changed fixture local track");
+    changedTrack.close();
+
     MockApp app;
+    app.setDirectoryPath(libraryRoot.absolutePath());
     MockMainWindow mainWindow;
+    KogFileTreeSearch libraryModel;
     QQmlEngine engine;
     QQmlComponent component(&engine, QUrl::fromLocalFile(repository + "/qml/ModernPlayer.qml"));
     require(component.isReady(), "load ModernPlayer.qml: " + component.errorString());
@@ -219,6 +457,7 @@ int main(int argc, char **argv)
         {"app", QVariant::fromValue(&app)},
         {"mainWindow", QVariant::fromValue(&mainWindow)},
         {"skin", QVariantMap {{"title", "MMD3 native smoke"}, {"archivePath", skinArchive}}},
+        {"libraryModel", QVariant::fromValue(&libraryModel)},
         {"visible", true},
     };
     std::unique_ptr<QObject> player(component.createWithInitialProperties(properties));
@@ -234,6 +473,7 @@ int main(int argc, char **argv)
     require(profile->skinPath() == skinArchive, "ModernPlayer passed archive path to profile");
     auto *web = player->findChild<QObject *>("modernWebView");
     require(web != nullptr, "ModernPlayer created WebEngine view");
+    checkNativeWebChannelBoundary(player.get(), &libraryModel);
     auto *window = qobject_cast<QQuickWindow *>(player.get());
     require(window != nullptr, "ModernPlayer is a QQuickWindow");
 
@@ -317,11 +557,22 @@ int main(int argc, char **argv)
             "renderer applied revised playlist and metadata");
     checkRenderedTitle(web, player.get(), "Second fixture title");
 
+    if (expectLibrary) {
+        checkNativeLibraryPanel(player.get(), web, libraryModel, app, libraryRoot.absolutePath(), trackPath, archivePath,
+                                changedLibraryRoot.absolutePath(), changedTrackPath);
+        checkClassicProBrowserScripts(player.get(), web);
+    }
+
     const QString secondSkin = repository + "/native/webamp/packages/webamp-modern/assets/skins/WinampModern566.wal";
     require(QFile::exists(secondSkin), "second real modern-skin archive exists");
     require(player->setProperty("skin", QVariantMap {{"title", "Winamp modern reload smoke"},
                                                        {"archivePath", secondSkin}}),
             "replace ModernPlayer skin fixture");
+    if (expectLibrary) {
+        auto *loader = player->findChild<QObject *>("modernLibraryLoader");
+        require(loader != nullptr && !loader->property("visible").toBool(),
+                "skin reload immediately hides the stale native library viewport");
+    }
     require(waitFor([profile, &player, &secondSkin] {
                 return profile->skinPath() == secondSkin
                     && player->property("rendererStatus").toString().startsWith("Experimental modern skin");

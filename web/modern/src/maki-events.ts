@@ -100,7 +100,11 @@ export function installMakiActionEvents() {
     this.setactivated((Number.parseInt(value, 10) || 0) !== 0);
   };
   Group.prototype.getobject = function (id: string) {
-    return this._children.find(child => child.getId().toLowerCase() === String(id).toLowerCase()) ?? null;
+    const key = String(id).toLowerCase();
+    for (const child of this._children) {
+      if (child.getId().toLowerCase() === key) return child;
+    }
+    return null;
   };
   GuiObj.prototype.show = function () { setVisibility(this, true); };
   GuiObj.prototype.hide = function () { setVisibility(this, false); };

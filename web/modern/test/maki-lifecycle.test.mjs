@@ -229,6 +229,50 @@ test("MAKI config reload does not synthesize user toggles or repeated activation
   } finally { restoreBrowser(); }
 });
 
+test("initially visible GUI objects receive one post-init visibility event", async () => {
+  const restoreBrowser = installBrowserGlobals(new FakeDocument());
+  try {
+    const { beginMakiStartup, finishMakiStartup, GuiObj, Group, installMakiActionEvents,
+      installMakiStartup, resumeMakiTimers, Timer, Vm } = await loadFixture();
+    installMakiActionEvents();
+    installMakiStartup();
+    const root = makeRoot(Vm);
+    const layout = new Group(root);
+    const visible = new Group(root);
+    const hidden = new GuiObj(root);
+    const revealed = new GuiObj(root);
+    hidden._visible = false;
+    revealed._visible = false;
+    layout.addChild(visible);
+    layout.addChild(hidden);
+    visible.addChild(revealed);
+    const container = { getVisible: () => true, getcurlayout: () => layout };
+    root.getContainers = () => [container];
+    const timer = new Timer(root);
+    timer._delay = 60_000;
+    const events = [];
+    const revealedEvents = [];
+    listen(root.vm, visible, "onsetvisible", (_name, args) => {
+      events.push(args[0].value);
+      revealed.show();
+      timer.start();
+    });
+    listen(root.vm, revealed, "onsetvisible", (_name, args) => revealedEvents.push(args[0].value));
+    listen(root.vm, hidden, "onsetvisible", () => assert.fail("hidden windows must not get initial visibility"));
+    root.vm.interpret = async (script, _offset, event, args) => script.callback(event, args);
+    beginMakiStartup(root);
+    await finishMakiStartup(root);
+    await finishMakiStartup(root);
+    assert.deepEqual(events, [1]);
+    assert.deepEqual(revealedEvents, [1], "a nested show already supplies the child's initial visibility");
+    assert.equal(timer.isrunning(), true, "ClassicPro-style visibility callback starts its deferred timer");
+    assert.equal(timer._timeout, null);
+    await resumeMakiTimers(root);
+    assert.notEqual(timer._timeout, null);
+    timer.stop();
+  } finally { restoreBrowser(); }
+});
+
 test("MAKI lifecycle preserves effective visibility and defers startup events/timers", async () => {
   const restoreBrowser = installBrowserGlobals(new FakeDocument());
   try {

@@ -12,8 +12,17 @@ type ListItem = {
   labels: string[];
 };
 
+type ListColumn = {
+  dynamic: boolean;
+  label: string;
+  width: number;
+};
+
 type ListState = {
   autoDeselect: boolean;
+  columns: ListColumn[];
+  columnLabels: string | null;
+  columnWidths: string | null;
   fontSize: number;
   focus: number;
   iconHeight: number;
@@ -23,6 +32,7 @@ type ListState = {
   multiSelect: boolean;
   preventMultiple: boolean;
   selected: Set<number>;
+  showColumns: boolean;
   showIcons: boolean;
 };
 
@@ -85,6 +95,9 @@ function listState(list: object): ListState {
   if (prior) return prior;
   const state: ListState = {
     autoDeselect: false,
+    columns: [{ dynamic: true, label: "", width: -1 }],
+    columnLabels: null,
+    columnWidths: null,
     fontSize: 12,
     focus: -1,
     iconHeight: 16,
@@ -94,6 +107,7 @@ function listState(list: object): ListState {
     multiSelect: false,
     preventMultiple: false,
     selected: new Set(),
+    showColumns: true,
     showIcons: false,
   };
   listStates.set(list, state);
@@ -218,9 +232,47 @@ function dispatch(object: GuiObjectLike, event: string, ...values: number[]): vo
   }
 }
 
+function styleControlHost(host: HTMLElement): void {
+  // Wasabi controls are child windows. Their XML x/y/w/h are therefore a
+  // positioned border box. Absolute positioning blockifies custom elements;
+  // do not write display here because GuiObj owns display:none visibility.
+  host.style.position = "absolute";
+  host.style.boxSizing = "border-box";
+}
+
 function validItem(state: ListState, position: unknown): number {
   const index = integer(position, -1);
   return index >= 0 && index < state.items.length ? index : -1;
+}
+
+function setColumnCount(state: ListState, value: unknown): void {
+  const count = Math.max(1, Math.min(256, integer(value, 1)));
+  state.columns = Array.from({ length: count }, (_, index) =>
+    state.columns[index] ?? { dynamic: true, label: "", width: -1 });
+  if (state.columnWidths !== null) setColumnWidths(state, state.columnWidths);
+  if (state.columnLabels !== null) setColumnLabels(state, state.columnLabels);
+}
+
+function setColumnWidths(state: ListState, value: string): void {
+  state.columnWidths = String(value ?? "");
+  const widths = String(value ?? "").split(/[;,]/);
+  for (let index = 0; index < Math.min(widths.length, state.columns.length); index++) {
+    const width = integer(widths[index], -1);
+    state.columns[index].dynamic = width < 0;
+    state.columns[index].width = width;
+  }
+}
+
+function setColumnLabels(state: ListState, value: string): void {
+  state.columnLabels = String(value ?? "");
+  const labels = String(value ?? "").split(";");
+  for (let index = 0; index < Math.min(labels.length, state.columns.length); index++) {
+    state.columns[index].label = labels[index];
+  }
+}
+
+function columnTemplate(state: ListState): string {
+  return state.columns.map(column => column.dynamic ? "minmax(0, 1fr)" : `${Math.max(0, column.width)}px`).join(" ");
 }
 
 function renderList(list: GuiObjectLike): void {
@@ -228,10 +280,35 @@ function renderList(list: GuiObjectLike): void {
   const host = list._div;
   if (!host || !host.ownerDocument) return;
 
+  styleControlHost(host);
   host.style.overflow = "auto";
   host.style.fontSize = `${state.fontSize}px`;
   host.setAttribute("role", "listbox");
   host.setAttribute("aria-multiselectable", String(state.multiSelect && !state.preventMultiple));
+
+  const showHeader = state.showColumns && state.columns.some(column => column.label !== "");
+  const header = showHeader ? host.ownerDocument.createElement("div") : null;
+  if (header) {
+    header.setAttribute("data-classicpro-columns", "1");
+    header.setAttribute("role", "row");
+    header.style.display = "grid";
+    header.style.gridTemplateColumns = `${state.showIcons ? `${state.iconWidth}px ` : ""}${columnTemplate(state)}`;
+    header.style.position = "sticky";
+    header.style.top = "0";
+    header.style.zIndex = "1";
+    header.style.whiteSpace = "nowrap";
+    if (state.showIcons) {
+      const spacer = host.ownerDocument.createElement("span");
+      spacer.setAttribute("aria-hidden", "true");
+      header.append(spacer);
+    }
+    for (const column of state.columns) {
+      const cell = host.ownerDocument.createElement("span");
+      cell.setAttribute("role", "columnheader");
+      cell.textContent = column.label;
+      header.append(cell);
+    }
+  }
 
   const rows = state.items.map((item, index) => {
     const row = host.ownerDocument.createElement("div");
@@ -239,6 +316,8 @@ function renderList(list: GuiObjectLike): void {
     row.setAttribute("data-classicpro-row", String(index));
     row.setAttribute("aria-selected", String(state.selected.has(index)));
     row.style.minHeight = `${state.fontSize + 4}px`;
+    row.style.display = "grid";
+    row.style.gridTemplateColumns = `${state.showIcons ? `${state.iconWidth}px ` : ""}${columnTemplate(state)}`;
     row.style.whiteSpace = "pre";
     row.style.cursor = "default";
     if (state.selected.has(index)) row.setAttribute("data-selected", "1");
@@ -259,11 +338,13 @@ function renderList(list: GuiObjectLike): void {
       list._uiRoot?.getBitmap?.(item.icon)?.setAsBackground?.(icon);
       row.append(icon);
     }
-    const label = host.ownerDocument.createElement("span");
-    // Labels originate in skin scripts and playlist metadata. textContent keeps
-    // them data, rather than allowing markup from either source into the UI.
-    label.textContent = item.labels.join("\t");
-    row.append(label);
+    for (let column = 0; column < state.columns.length; column++) {
+      const label = host.ownerDocument.createElement("span");
+      // Labels originate in skin scripts and playlist metadata. textContent
+      // keeps them data, rather than allowing markup into the UI.
+      label.textContent = item.labels[column] ?? "";
+      row.append(label);
+    }
 
     row.addEventListener("click", event => {
       const mouse = event as MouseEvent;
@@ -279,7 +360,7 @@ function renderList(list: GuiObjectLike): void {
     });
     return row;
   });
-  host.replaceChildren(...rows);
+  host.replaceChildren(...(header ? [header, ...rows] : rows));
 }
 
 function selectItem(list: GuiObjectLike, position: number, selected: boolean, clearOther: boolean): void {
@@ -306,6 +387,8 @@ function syncEdit(edit: GuiObjectLike): HTMLInputElement | null {
   if (state.input) return state.input;
   const host = edit._div;
   if (!host || !host.ownerDocument) return null;
+  styleControlHost(host);
+  host.style.overflow = "hidden";
   const input = host.ownerDocument.createElement("input");
   input.type = "text";
   input.value = state.text;
@@ -313,6 +396,13 @@ function syncEdit(edit: GuiObjectLike): HTMLInputElement | null {
   input.style.boxSizing = "border-box";
   input.style.width = "100%";
   input.style.height = "100%";
+  input.style.minWidth = "0";
+  input.style.margin = "0";
+  input.style.padding = "0";
+  input.style.border = "0";
+  input.style.background = "transparent";
+  input.style.color = "inherit";
+  input.style.font = "inherit";
   input.addEventListener("input", () => {
     state.text = input.value;
     dispatch(edit, "oneditupdate");
@@ -366,6 +456,26 @@ function listSetXmlAttr(this: GuiObjectLike, original: (key: string, value: stri
       return true;
     case "fontsize":
       setFontSize.call(this, integer(value, state.fontSize));
+      return true;
+    case "numcolumns":
+      setColumnCount(state, value);
+      renderList(this);
+      return true;
+    case "columnwidths":
+      setColumnWidths(state, value);
+      renderList(this);
+      return true;
+    case "columnlabels":
+      setColumnLabels(state, value);
+      renderList(this);
+      return true;
+    case "nocolheader":
+      state.showColumns = !bool(value);
+      renderList(this);
+      return true;
+    case "showcolumns":
+      state.showColumns = bool(value);
+      renderList(this);
       return true;
     default:
       return false;
@@ -441,11 +551,20 @@ function setFontSize(this: GuiObjectLike, size: number): number {
   return normalized;
 }
 
+function setColumnLabel(this: GuiObjectLike, column: number, label: string): void {
+  const state = listState(this);
+  const index = integer(column, -1);
+  if (index < 0 || index >= state.columns.length) return;
+  state.columns[index].label = String(label ?? "");
+  renderList(this);
+}
+
 function scrollToItem(this: GuiObjectLike, position: number): void {
   const state = listState(this);
   const index = validItem(state, position);
   if (index < 0) return;
-  const row = this._div?.children[index] as HTMLElement | undefined;
+  const row = Array.from(this._div?.children ?? []).find(child =>
+    child.getAttribute("data-classicpro-row") === String(index)) as HTMLElement | undefined;
   if (row && typeof row.scrollIntoView === "function") row.scrollIntoView({ block: "nearest" });
   else if (this._div) this._div.scrollTop = index * (state.fontSize + 4);
 }
@@ -516,6 +635,7 @@ function groupListHeight(list: GuiObjectLike): number {
 function layoutGroups(list: GuiObjectLike): void {
   const state = groupListState(list);
   if (!state.redraw) return;
+  if (list._div) styleControlHost(list._div);
   let offset = -state.scrollY;
   let maxWidth = 0;
   const width = typeof (list as { getwidth?: () => unknown }).getwidth === "function"
@@ -658,6 +778,7 @@ export function installClassicProControls(): void {
   guiList.setitemlabel = setItemLabel;
   guiList.setsubitem = setSubItem;
   guiList.setfontsize = setFontSize;
+  guiList.setcolumnlabel = setColumnLabel;
   guiList.getfontsize = function (this: GuiObjectLike) { return listState(this).fontSize; };
   guiList.scrolltoitem = scrollToItem;
   guiList.setselected = setSelected;

@@ -5,6 +5,8 @@ import { UIRoot } from "../../../native/webamp/packages/webamp-modern/src/UIRoot
 import SkinEngineWAL from "../../../native/webamp/packages/webamp-modern/src/skin/SkinEngine_WAL";
 import { ZipFileExtractor } from "../../../native/webamp/packages/webamp-modern/src/skin/FileExtractor";
 import PlayListGui from "../../../native/webamp/packages/webamp-modern/src/skin/makiClasses/PlayListGui";
+import GuiObj from "../../../native/webamp/packages/webamp-modern/src/skin/makiClasses/GuiObj";
+import { XmlElement } from "@rgrove/parse-xml";
 import SystemObject from "../../../native/webamp/packages/webamp-modern/src/skin/makiClasses/SystemObject";
 import Timer from "../../../native/webamp/packages/webamp-modern/src/skin/makiClasses/Timer";
 import Text from "../../../native/webamp/packages/webamp-modern/src/skin/makiClasses/Text";
@@ -23,12 +25,14 @@ import { notifyClassicProBeforeLoadingElements, notifyClassicProGuiLoaded, notif
 import { installClassicProFileApi } from "./classicpro-files";
 import { installClassicProGraphics } from "./classicpro-graphics";
 import { installClassicProControls } from "./classicpro-controls";
+import { installClassicProBrowser } from "./classicpro-browser";
 import { installMakiActionEvents } from "./maki-events";
 import { installMakiDynamicContainers } from "./maki-containers";
 import { installMakiFrames } from "./maki-frames";
 import { installMakiGeometry } from "./maki-geometry";
 import { installMakiConfigBindings } from "./maki-config";
 import { installMakiDispatch } from "./maki-dispatch";
+import { isLibraryComponent, publishLibraryViewport } from "./host-library.js";
 import { beginMakiStartup, finishMakiStartup, resumeMakiTimers, installMakiStartup } from "./maki-startup";
 import {
   CommandGateway,
@@ -85,6 +89,7 @@ console.warn = (...args) => {
 installClassicProServices();
 installClassicProGraphics();
 installClassicProControls();
+installClassicProBrowser();
 installMakiActionEvents();
 installMakiDynamicContainers();
 installMakiFrames();
@@ -377,6 +382,13 @@ class SafePlayListGui extends PlayListGui {
   }
 }
 
+class HostLibrarySlot extends GuiObj {
+  init() {
+    super.init();
+    this.getDiv().dataset.kogLibrary = "true";
+  }
+}
+
 class KogSkinEngine extends SkinEngineWAL {
   private includeRequests = 0;
   private guiObjects = 0;
@@ -399,6 +411,22 @@ class KogSkinEngine extends SkinEngineWAL {
     if (++this.guiObjects > 50_000) throw new Error("Modern skin GUI object limit exceeded");
     const SafeType = Type === PlayListGui ? SafePlayListGui : Type;
     return super.newGui(SafeType, node, parent);
+  }
+
+  async component(node: any, parent: any) {
+    if (isLibraryComponent(node.attributes.param)) return this.newGui(HostLibrarySlot, node, parent);
+    return super.component(node, parent);
+  }
+
+  async windowholder(node: any, parent: any) {
+    const holder = await super.windowholder(node, parent);
+    if (isLibraryComponent(node.attributes.hold)) {
+      // A WindowHolder is a passthrough group; the hosted child, not the
+      // holder's background, owns the interactive content rectangle.
+      const content = new XmlElement("component", { fitparent: "1", name: "Kog Music Library" });
+      (holder as any)._heldObj = await this.newGui(HostLibrarySlot, content, holder);
+    }
+    return holder;
   }
 }
 
@@ -848,6 +876,7 @@ async function main() {
   hideLoading();
   window.kogModern = { root, state: store, commands: gateway, scriptDiagnostics };
   gateway.send("ready");
+  publishLibraryViewport((command: string, data: unknown) => gateway?.send(command, data));
 }
 
 window.addEventListener("error", (event) => reportError(event.error || event.message));

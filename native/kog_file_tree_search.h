@@ -19,9 +19,9 @@ class KogFileTreeSearch : public QSortFilterProxyModel {
 public:
     explicit KogFileTreeSearch(QObject *parent = nullptr);
     ~KogFileTreeSearch() override;
-    QModelIndex setRootPath(const QString &path);
+    Q_INVOKABLE QModelIndex setRootPath(const QString &path);
     Q_INVOKABLE QString filePath(const QModelIndex &index) const;
-    bool isDir(const QModelIndex &index) const;
+    Q_INVOKABLE bool isDir(const QModelIndex &index) const;
     QString searchText() const { return m_query; }
     void setSearchText(const QString &query);
     bool searching() const { return m_searching; }

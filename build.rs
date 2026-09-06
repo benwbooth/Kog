@@ -80,6 +80,7 @@ fn main() {
         "qml/ClassicPlayer.qml",
         "qml/ClassicPlaylist.qml",
         "qml/ModernPlayer.qml",
+        "qml/ModernLibraryPanel.qml",
         "qml/SkinBrowser.qml",
         "qml/SkinSprite.qml",
         "qml/Visualizer.qml",

@@ -236,7 +236,7 @@ ApplicationWindow {
     function showClassicPlayer() {
         const skin = JSON.parse(skinLibrary.active_json)
         if (skin.kind === "modern") {
-            modernLoader.setSource("ModernPlayer.qml", { app: appController, mainWindow: root, skin: skin })
+            modernLoader.setSource("ModernPlayer.qml", { app: appController, mainWindow: root, skin: skin, libraryModel: modernLibraryModel })
             if (!modernLoader.item) return
             modernLoader.item.skin = skin
             modernLoader.item.show()
@@ -446,6 +446,7 @@ ApplicationWindow {
 
     AppController { id: appController }
     FileTreeModel { id: fileTreeModel }
+    FileTreeModel { id: modernLibraryModel }
 
     Platform.SystemTrayIcon {
         id: trayIcon

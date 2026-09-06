@@ -10,6 +10,8 @@ ApplicationWindow {
     required property var app
     required property var mainWindow
     property var skin: ({})
+    property var libraryModel: null
+    property var libraryViewport: null
     property string rendererStatus: qsTr("Loading modern skin…")
     property int sentRevision: -1
     property int requestCount: 0
@@ -32,6 +34,7 @@ ApplicationWindow {
         }
     }
     onSkinChanged: {
+        libraryViewport = null
         sentRevision = -1
         rendererStatus = qsTr("Loading modern skin…")
         bridge.skinUrl = "kogskin://current/skin.wal?v=" + Date.now()
@@ -60,6 +63,15 @@ ApplicationWindow {
         let data
         try { data = JSON.parse(payload) } catch (_) { return }
         switch (name) {
+        case "libraryViewport":
+            // Geometry only: the renderer never receives a directory model or paths.
+            if (data === null) libraryViewport = null
+            else if (data && [data.x, data.y, data.width, data.height].every(number)
+                     && data.x >= 0 && data.y >= 0 && data.width > 0 && data.height > 0
+                     && data.x + data.width <= web.width + 1 && data.y + data.height <= web.height + 1)
+                libraryViewport = data
+            else libraryViewport = null
+            break
         case "ready": rendererStatus = qsTr("Experimental modern skin — some skin features may be unsupported"); updateState(true); break
         case "error": rendererStatus = qsTr("Skin error: %1").arg(String(data).slice(0, 300)); break
         case "play": if (app.playback_state !== "playing") app.play_pause(); break
@@ -120,29 +132,48 @@ ApplicationWindow {
     ColumnLayout {
         anchors.fill: parent
         spacing: 0
-        WebEngineView {
-            id: web
-            objectName: "modernWebView"
+        Item {
+            id: skinSurface
             Layout.fillWidth: true
             Layout.fillHeight: true
-            url: "qrc:/kog/modern/index.html"
-            webChannel: channel
-            profile: ModernSkinProfile { skinPath: root.skin.archivePath || "" }
-            settings.localContentCanAccessRemoteUrls: false
-            settings.localContentCanAccessFileUrls: false
-            settings.javascriptCanOpenWindows: false
-            settings.javascriptCanAccessClipboard: false
-            settings.pluginsEnabled: false
-            settings.fullScreenSupportEnabled: false
-            settings.screenCaptureEnabled: false
-            settings.webGLEnabled: false
-            onNavigationRequested: function(request) {
-                if (request.url.toString() !== "qrc:/kog/modern/index.html") request.action = WebEngineNavigationRequest.IgnoreRequest
+            clip: true
+            WebEngineView {
+                id: web
+                objectName: "modernWebView"
+                anchors.fill: parent
+                url: "qrc:/kog/modern/index.html"
+                webChannel: channel
+                profile: ModernSkinProfile { skinPath: root.skin.archivePath || "" }
+                settings.localContentCanAccessRemoteUrls: false
+                settings.localContentCanAccessFileUrls: false
+                settings.javascriptCanOpenWindows: false
+                settings.javascriptCanAccessClipboard: false
+                settings.pluginsEnabled: false
+                settings.fullScreenSupportEnabled: false
+                settings.screenCaptureEnabled: false
+                settings.webGLEnabled: false
+                onNavigationRequested: function(request) {
+                    if (request.url.toString() !== "qrc:/kog/modern/index.html") request.action = WebEngineNavigationRequest.IgnoreRequest
+                }
+                onLoadingChanged: function(info) {
+                    if (info.status === WebEngineView.LoadStartedStatus) root.libraryViewport = null
+                    if (info.status === WebEngineView.LoadFailedStatus) root.rendererStatus = qsTr("Renderer failed: %1").arg(info.errorString)
+                }
+                onRenderProcessTerminated: {
+                    root.libraryViewport = null
+                    root.rendererStatus = qsTr("The modern skin renderer stopped. Reopen the skin to retry.")
+                }
             }
-            onLoadingChanged: function(info) {
-                if (info.status === WebEngineView.LoadFailedStatus) root.rendererStatus = qsTr("Renderer failed: %1").arg(info.errorString)
+            Loader {
+                objectName: "modernLibraryLoader"
+                active: root.libraryModel !== null
+                visible: !!root.libraryViewport && status === Loader.Ready
+                x: root.libraryViewport ? root.libraryViewport.x : 0
+                y: root.libraryViewport ? root.libraryViewport.y : 0
+                width: root.libraryViewport ? root.libraryViewport.width : 0
+                height: root.libraryViewport ? root.libraryViewport.height : 0
+                sourceComponent: ModernLibraryPanel { app: root.app; libraryModel: root.libraryModel }
             }
-            onRenderProcessTerminated: root.rendererStatus = qsTr("The modern skin renderer stopped. Reopen the skin to retry.")
         }
         RowLayout {
             Layout.fillWidth: true

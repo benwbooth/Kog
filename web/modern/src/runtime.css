@@ -18,6 +18,14 @@ body {
   font-size: 10px;
 }
 
+/* HostLibrarySlot is a custom GUI tag, just like the upstream windowholder.
+   Inline display:none from the skin still takes precedence when a tab hides. */
+[data-kog-library] {
+  position: absolute;
+  display: block;
+  box-sizing: border-box;
+}
+
 #web-amp {
   position: relative;
   isolation: isolate;

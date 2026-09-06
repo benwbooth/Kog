@@ -31,6 +31,7 @@ class FakeElement {
   replaceChildren(...children) { this.children = children; }
   remove() { this.removed = true; }
   setAttribute(key, value) { this.attributes.set(key, String(value)); }
+  getAttribute(key) { return this.attributes.get(key) ?? null; }
   addEventListener(name, callback) { this.listeners.set(name, callback); }
   emit(name, event = {}) { this.listeners.get(name)?.({ preventDefault() {}, ...event }); }
   focus() { this.focused = true; this.emit("focus"); }
@@ -159,6 +160,49 @@ test("ClassicPro GuiList keeps safe row, selection, scroll, and VM event state",
   }
 });
 
+test("ClassicPro GuiList renders stateful column labels and honors header visibility XML", async () => {
+  const document = new FakeDocument();
+  const restoreBrowser = installBrowserGlobals(document);
+  try {
+    const { GuiList, installClassicProControls } = await loadFixture();
+    installClassicProControls();
+    const list = Object.create(GuiList.prototype);
+    list._div = document.createElement("guilist");
+    list._uiRoot = { vm: { dispatch() {} } };
+    list.setXmlAttr("columnwidths", "270;-1");
+    list.setXmlAttr("columnlabels", "Media From;");
+    list.setXmlAttr("numcolumns", "2");
+    list.additem("Fixture Artist - Fixture Title");
+    list.setsubitem(0, 1, "https://example.invalid/item");
+    list.setselected(0, 1);
+
+    list.setcolumnlabel(1, "Location");
+    const header = list._div.children[0];
+    const row = list._div.children[1];
+    assert.equal(header.attributes.get("data-classicpro-columns"), "1");
+    assert.equal(header.children[0].textContent, "Media From");
+    assert.equal(header.children[1].textContent, "Location");
+    assert.equal(header.style.gridTemplateColumns, "270px minmax(0, 1fr)");
+    assert.equal(row.attributes.get("data-classicpro-row"), "0");
+    assert.equal(row.children[0].textContent, "Fixture Artist - Fixture Title");
+    assert.equal(row.children[1].textContent, "https://example.invalid/item");
+    assert.equal(row.attributes.get("aria-selected"), "true");
+    assert.equal(list.getnumitems(), 1, "changing a column label preserves rows");
+    assert.equal(list.getitemlabel(0, 1), "https://example.invalid/item");
+
+    list.setXmlAttr("showcolumns", "0");
+    assert.equal(list._div.children.length, 1);
+    assert.equal(list._div.children[0].attributes.get("data-classicpro-row"), "0");
+    assert.equal(list.getitemselected(0), 1, "hiding headers preserves selection");
+    list.setXmlAttr("nocolheader", "0");
+    assert.equal(list._div.children[0].attributes.get("data-classicpro-columns"), "1");
+    list.setXmlAttr("nocolheader", "1");
+    assert.equal(list._div.children[0].attributes.get("data-classicpro-row"), "0");
+  } finally {
+    restoreBrowser();
+  }
+});
+
 test("ClassicPro Edit and GroupList turn script calls into DOM/controller state", async () => {
   const document = new FakeDocument();
   const restoreBrowser = installBrowserGlobals(document);
@@ -183,9 +227,16 @@ test("ClassicPro Edit and GroupList turn script calls into DOM/controller state"
     definitions.set("widget.replacement", replacementDefinition);
     const edit = Object.create(Edit.prototype);
     edit._div = document.createElement("edit");
+    edit._div.style.display = "none";
     edit._uiRoot = root;
     edit.settext("playlist search");
     assert.equal(edit.gettext(), "playlist search");
+    assert.equal(edit._div.style.position, "absolute");
+    assert.equal(edit._div.style.display, "none", "control rendering must preserve GuiObj visibility");
+    assert.equal(edit._div.style.overflow, "hidden");
+    assert.equal(edit._div.children[0].style.boxSizing, "border-box");
+    assert.equal(edit._div.children[0].style.border, "0");
+    assert.equal(edit._div.children[0].style.padding, "0");
     edit.setfocus();
     assert.equal(edit._div.children[0].focused, true);
     edit._div.children[0].value = "updated";

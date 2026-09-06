@@ -3,10 +3,17 @@ import Timer from "../../../native/webamp/packages/webamp-modern/src/skin/makiCl
 import Container from "../../../native/webamp/packages/webamp-modern/src/skin/makiClasses/Container";
 
 type Deferred = { vm: any; object: any; event: string; args: any[] };
-type Startup = { pending: Set<Promise<unknown>>; timers: Set<Timer>; deferred: Deferred[] };
+type Startup = {
+  pending: Set<Promise<unknown>>;
+  timers: Set<Timer>;
+  deferred: Deferred[];
+  initialVisibility: Set<object>;
+  notifyingVisibility: boolean;
+};
 const startups = new WeakMap<object, Startup>();
 const startTimer = Timer.prototype.start;
 let originalDispatch: typeof Vm.prototype.dispatch;
+let installed = false;
 const deferredEvents = new Set(["onresize", "onstartup"]);
 const eventBudgets = new WeakMap<object, { since: number; count: number; counts: Map<string, number>; blocked: string | null }>();
 
@@ -31,7 +38,33 @@ async function notifyLayout(root: any, container: any, event: string, layout: un
 }
 
 export function beginMakiStartup(root: object) {
-  startups.set(root, { pending: new Set(), timers: new Set(), deferred: [] });
+  startups.set(root, { pending: new Set(), timers: new Set(), deferred: [], initialVisibility: new Set(), notifyingVisibility: false });
+}
+
+async function notifyInitialVisibility(root: any, startup: Startup) {
+  // Wasabi BaseWnd::onPostOnInit notifies initially visible windows, even
+  // without a visibility transition. ClassicPro uses this to start its tab
+  // selection timer. Wait until onScriptLoaded bindings are initialized.
+  const visited = new Set<object>();
+  const visit = async (object: any) => {
+    if (!object || visited.has(object)) return;
+    if (visited.size >= 50000) throw new Error("MAKI initial visibility tree limit exceeded");
+    visited.add(object);
+    if (!object.isvisible()) return;
+    if (!startup.initialVisibility.has(object)) {
+      startup.initialVisibility.add(object);
+      await root.vm.dispatch(object, "onsetvisible", [{ type: "BOOLEAN", value: 1 }]);
+    }
+    for (const child of [...(object._children ?? [])]) await visit(child);
+  };
+  startup.notifyingVisibility = true;
+  try {
+    for (const container of [...root.getContainers()]) {
+      if (container.getVisible()) await visit(container.getcurlayout());
+    }
+  } finally {
+    startup.notifyingVisibility = false;
+  }
 }
 
 export async function finishMakiStartup(root: any) {
@@ -45,6 +78,7 @@ export async function finishMakiStartup(root: any) {
   for (const container of [...root.getContainers()]) {
     if (container.getVisible()) await notifyLayout(root, container, "onshowlayout", container.getcurlayout());
   }
+  await notifyInitialVisibility(root, startup);
 }
 
 export async function resumeMakiTimers(root: object) {
@@ -60,6 +94,8 @@ export async function resumeMakiTimers(root: object) {
 }
 
 export function installMakiStartup() {
+  if (installed) return;
+  installed = true;
   originalDispatch = Vm.prototype.dispatch;
   const switchLayout = Container.prototype.switchtolayout;
   Container.prototype.switchtolayout = async function (id: string) {
@@ -72,6 +108,11 @@ export function installMakiStartup() {
   };
   (Vm.prototype as any).dispatch = function (object: unknown, event: string, args: any[] = []) {
     const startup = startups.get(this._uiRoot);
+    // An ancestor's initialization handler can show a child. That transition
+    // already delivers its visibility; do not deliver it again while walking.
+    if (startup?.notifyingVisibility && event === "onsetvisible" && object && args[0]?.value) {
+      startup.initialVisibility.add(object as object);
+    }
     if (!startup) {
       let budget = eventBudgets.get(this);
       const now = performance.now();

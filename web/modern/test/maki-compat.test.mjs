@@ -129,6 +129,9 @@ async function loadRuntime() {
         export { interpret } from "../../native/webamp/packages/webamp-modern/src/maki/interpreter.ts";
         export { default as GuiObj } from "../../native/webamp/packages/webamp-modern/src/skin/makiClasses/GuiObj.ts";
         export { default as Group } from "../../native/webamp/packages/webamp-modern/src/skin/makiClasses/Group.ts";
+        export { default as ToggleButton } from "../../native/webamp/packages/webamp-modern/src/skin/makiClasses/ToggleButton.ts";
+        export { installClassicProBrowser } from "./src/classicpro-browser.ts";
+        export { makiInterface } from "./src/maki-members.js";
         export { installMakiActionEvents } from "./src/maki-events.ts";
         export { default as Vm } from "../../native/webamp/packages/webamp-modern/src/skin/VM.ts";
         export { installMakiDispatch } from "./src/maki-dispatch.ts";
@@ -361,6 +364,61 @@ test("native Promise-returning methods suspend and resume the real interpreter",
     assert.equal(typeof result.then, "function");
     release(null);
     assert.deepEqual(await result, { type: "OBJECT", value: null });
+  }
+});
+
+test("native calls resolve a group's declared embedded control interface", async () => {
+  runtime.installClassicProBrowser();
+  const root = { getImageManager() { return {}; }, vm: { dispatch() {} } };
+  const group = new runtime.Group(root);
+  const button = new runtime.ToggleButton(root);
+  button.setXmlAttr("id", "cpro.tab.button");
+  group.addChild(button);
+  group.setXmlAttr("embed_xui", "cpro.tab.button");
+  assert.equal(runtime.makiInterface(group, runtime.GuiObj), group, "preserve the wrapper's own GUI interface");
+  assert.equal(runtime.makiInterface(group, runtime.ToggleButton), button);
+  assert.equal(group.setactivated, undefined, "the wrapper does not acquire fabricated button methods");
+  const unrelated = new runtime.Group(root);
+  assert.equal(runtime.makiInterface(unrelated, runtime.ToggleButton), unrelated,
+    "a group without declared embedded content cannot masquerade as a button");
+  const bytes = makeMaki({
+    classes: [runtime.Group.GUID, runtime.ToggleButton.GUID],
+    methods: [{ classIndex: 1, name: "setActivated" }],
+    variables: [{ classIndex: 0 }, { type: 2, value: 1 }],
+    commands: [command(1, 0), command(1, 1), command(24, 0), command(33)],
+  });
+  const program = runtime.parse(asArrayBuffer(bytes), "embedded-toggle.maki");
+  program.variables[0].value = group;
+  await runtime.interpret(0, program, [], runtime.classResolver, "test", root);
+  assert.equal(button.getactivated(), true, "MAKI activates the actual embedded toggle button");
+  assert.equal(program.variables[0].value, group, "interface dispatch preserves the original group reference");
+});
+
+test("typed MAKI assignment selects the embedded control while Group assignment preserves its wrapper", async () => {
+  runtime.installClassicProBrowser();
+  const root = { getImageManager() { return {}; }, vm: { dispatch() {} } };
+  const group = new runtime.Group(root);
+  const button = new runtime.ToggleButton(root);
+  button.setXmlAttr("id", "button");
+  group.addChild(button);
+  group.setXmlAttr("embed_xui", "button");
+  for (const opcode of [3, 48]) {
+    const assignments = opcode === 3
+      ? [command(1, 0), command(3, 1), command(1, 0), command(3, 2)]
+      : [command(1, 1), command(1, 0), command(48), command(2), command(1, 2), command(1, 0), command(48), command(2)];
+    const bytes = makeMaki({
+      classes: [runtime.Group.GUID, runtime.ToggleButton.GUID],
+      methods: [{ classIndex: 1, name: "setActivated" }],
+      variables: [{ classIndex: 0 }, { classIndex: 1 }, { classIndex: 0 }, { type: 2, value: 1 }],
+      commands: [...assignments, command(1, 1), command(1, 3), command(24, 0), command(33)],
+    });
+    const program = runtime.parse(asArrayBuffer(bytes), `embedded-assignment-${opcode}.maki`);
+    program.variables[0].value = group;
+    await runtime.interpret(0, program, [], runtime.classResolver, "test", root);
+    assert.equal(program.variables[1].value, button, "typed variable binds events to the embedded control");
+    assert.equal(program.variables[2].value, group, "Group variable retains wrapper identity");
+    assert.equal(button.getactivated(), true);
+    button.setactivated(false);
   }
 });
 

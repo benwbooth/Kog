@@ -14,15 +14,17 @@ if [[ -n "${KOG_QTWEBENGINE_RPATH_LINK:-}" ]]; then
   webengine_rpath_link=("-Wl,-rpath-link,${KOG_QTWEBENGINE_RPATH_LINK}")
 fi
 "$qt_moc" "$repo_dir/native/kog_modern_skin.h" -o "$test_dir/moc_kog_modern_skin.cpp"
+"$qt_moc" "$repo_dir/native/kog_file_tree_search.h" -o "$test_dir/moc_kog_file_tree_search.cpp"
 "$qt_moc" "$repo_dir/tests/native/modern_skin_smoke.cpp" -o "$test_dir/modern_skin_smoke.moc"
 (cd "$repo_dir" && "$qt_rcc" --name modern_runtime web/modern/runtime.qrc -o "$test_dir/qrc_modern_runtime.cpp")
 # Qt's pkg-config flags intentionally expand into individual compiler arguments.
 # shellcheck disable=SC2046
 c++ -std=c++17 -fPIC -pthread -I"$repo_dir/native" -I"$test_dir" \
-  $(pkg-config --cflags Qt6Widgets Qt6Quick Qt6Qml Qt6WebChannel Qt6WebEngineQuick Qt6WebEngineCore) \
+  $(pkg-config --cflags Qt6Widgets Qt6Quick Qt6Qml Qt6Concurrent Qt6Test Qt6WebChannel Qt6WebChannelQuick Qt6WebEngineQuick Qt6WebEngineCore libarchive) \
   "$repo_dir/tests/native/modern_skin_smoke.cpp" "$repo_dir/native/kog_modern_skin.cpp" \
-  "$test_dir/moc_kog_modern_skin.cpp" "$test_dir/qrc_modern_runtime.cpp" \
-  $(pkg-config --libs Qt6Widgets Qt6Quick Qt6Qml Qt6WebChannel Qt6WebEngineQuick Qt6WebEngineCore) \
+  "$repo_dir/native/kog_file_tree_search.cpp" "$repo_dir/native/kog_tree_archive.cpp" \
+  "$test_dir/moc_kog_modern_skin.cpp" "$test_dir/moc_kog_file_tree_search.cpp" "$test_dir/qrc_modern_runtime.cpp" \
+  $(pkg-config --libs Qt6Widgets Qt6Quick Qt6Qml Qt6Concurrent Qt6Test Qt6WebChannel Qt6WebChannelQuick Qt6WebEngineQuick Qt6WebEngineCore libarchive) \
   "${webengine_rpath_link[@]}" \
   -o "$test_dir/modern-skin-smoke"
 mkdir -p "$test_dir/cache" "$test_dir/config" "$test_dir/data" "$test_dir/runtime"
