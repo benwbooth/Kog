@@ -7,8 +7,16 @@ import {
   moveTargetAfterRemoval,
   normalizeArchivePath,
   sanitizeState,
+  skinDependencyError,
   StateStore,
 } from "../src/state-adapter.js";
+
+test("external ClassicPro engines produce a clear dependency diagnostic", () => {
+  assert.match(skinDependencyError("@COLORTHEMESPATH@/../../Plugins/classicPro/engine/load.xml"), /ClassicPro/);
+  assert.match(skinDependencyError("@COLORTHEMESPATH@\\..\\..\\Plugins\\ClassicPro\\engine\\load.xml"), /standalone/);
+  assert.equal(skinDependencyError("xml/player.xml"), "");
+  assert.equal(skinDependencyError("@DEFAULTSKINPATH@/xml/xui/text/text.xml"), "");
+});
 
 test("state updates retain playlist rows when tracks are omitted", () => {
   const store = new StateStore();

@@ -55,6 +55,12 @@ are handed back to Kog.
 
 ## Security and limits
 
+ClassicPro/cPro skins are not standalone WAL skins: their layout comes from an
+external engine installed under Winamp's Plugins directory. Kog rejects those
+imports with a dependency message and shows the same explanation when opening an
+older installed copy. A skin that supplies no player containers is reported as a
+load failure rather than a ready, blank player.
+
 - CSP permits only bundled `qrc`, the fixed `kogskin://current/skin.wal` URL,
   and generated `data`/`blob` image and font content. Audio and frames are denied.
 - The native request interceptor is still authoritative; browser checks are a

@@ -14,6 +14,8 @@ pub mod qobject {
         fn skin_text_colors(path: &QString) -> QString;
         #[cxx_name = "kogValidateModernSkin"]
         fn validate_modern_skin(path: &QString) -> bool;
+        #[cxx_name = "kogModernSkinDependencyError"]
+        fn modern_skin_dependency_error(path: &QString) -> QString;
         #[cxx_name = "kogValidateModernImage"]
         fn validate_modern_image(path: &QString) -> bool;
     }
@@ -293,6 +295,15 @@ fn install_archive_in(
                 .unwrap_or_default()
                 .to_string_lossy()
                 .to_ascii_lowercase();
+            if ext == "xml" {
+                let dependency_error = qobject::modern_skin_dependency_error(&QString::from(
+                    entry.path.to_string_lossy().as_ref(),
+                ))
+                .to_string();
+                if !dependency_error.is_empty() {
+                    return Err(dependency_error);
+                }
+            }
             if ["bmp", "png", "jpg", "jpeg", "gif", "webp"].contains(&ext.as_str())
                 && !qobject::validate_modern_image(&QString::from(
                     entry.path.to_string_lossy().as_ref(),
@@ -653,6 +664,20 @@ mod tests {
                 .unwrap_or_else(|error| panic!("{name}: {error}"));
             assert_eq!(skin["kind"], "modern");
         }
+    }
+
+    #[test]
+    fn rejects_modern_skins_requiring_external_classicpro() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cpro.wal");
+        crate::archive::tests::write_stored_zip(&path, &[
+            ("skin.xml", br#"<WasabiXML><include file="@COLORTHEMESPATH@/../../Plugins/classicPro/engine/load.xml"/></WasabiXML>"#),
+        ]);
+        let installed = dir.path().join("installed");
+        let error = install_archive_in(&path, "cPro", "", &Value::Null, &installed).unwrap_err();
+        assert!(error.contains("ClassicPro"), "{error}");
+        assert!(error.contains("standalone"), "{error}");
+        assert!(!installed.exists());
     }
 
     #[test]

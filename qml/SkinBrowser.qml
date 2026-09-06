@@ -35,7 +35,7 @@ ApplicationWindow {
         }
         Label {
             Layout.fillWidth: true
-            text: qsTr("Classic skins include a skinned playlist. Modern .wal support is experimental; native plugins and some MAKI features are unsupported.")
+            text: qsTr("Classic skins include a skinned playlist. Standalone modern .wal skins are experimental. ClassicPro/cPro skins require an external engine and are not supported.")
             wrapMode: Text.WordWrap
             opacity: 0.75
         }

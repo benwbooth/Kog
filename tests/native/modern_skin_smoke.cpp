@@ -220,6 +220,24 @@ int main(int argc, char **argv)
     auto *window = qobject_cast<QQuickWindow *>(player.get());
     require(window != nullptr, "ModernPlayer is a QQuickWindow");
 
+    const QString expectedError = qEnvironmentVariable("KOG_MODERN_EXPECT_ERROR");
+    if (!expectedError.isEmpty()) {
+        require(waitFor([&player, &expectedError] {
+                    return player->property("rendererStatus").toString().contains(expectedError);
+                }, 60'000, "unsupported skin diagnostic"),
+                "unsupported skin reports its missing dependency");
+        runJavaScript(web, QStringLiteral(
+            "new QWebChannel(qt.webChannelTransport, channel => { const status = document.getElementById('runtime-status'); "
+            "channel.objects.kog.request('error', JSON.stringify('diagnostic visible=' + "
+            "!!(status && !status.hidden && status.classList.contains('fatal') && status.innerText.includes('ClassicPro')))); });"));
+        require(waitFor([&player] {
+                    return player->property("rendererStatus").toString().contains("diagnostic visible=true");
+                }, 10'000, "visible unsupported skin diagnostic"), "failure is visible in the renderer");
+        require(window->grabWindow().save(screenshotPath), "capture unsupported skin diagnostic");
+        std::printf("Unsupported modern skin diagnostic passed; screenshot: %s\n", qPrintable(screenshotPath));
+        return 0;
+    }
+
     require(waitFor([&player] {
                 return player->property("rendererStatus").toString().startsWith("Experimental modern skin");
             }, 60'000, "renderer ready command"),

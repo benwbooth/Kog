@@ -21,6 +21,7 @@ import {
   findSkinPrefix,
   moveTargetAfterRemoval,
   normalizeArchivePath,
+  skinDependencyError,
   StateStore,
 } from "./state-adapter.js";
 
@@ -161,6 +162,17 @@ class NormalizedZipFileExtractor extends ZipFileExtractor {
       .filter((entry) => !entry.dir)
       .map((entry) => normalizeArchivePath(entry.name));
     this.prefix = findSkinPrefix(paths);
+    // Also check previously installed skins, which predate importer validation.
+    // An external ClassicPro include cannot supply a UI from the archive alone.
+    for (const entry of Object.values(this._zip.files)) {
+      if (entry.dir || !entry.name.toLowerCase().endsWith(".xml")) continue;
+      const xml = new DOMParser().parseFromString(await entry.async("text"), "application/xml");
+      for (const element of Array.from(xml.getElementsByTagName("*"))) {
+        if (element.localName.toLowerCase() !== "include") continue;
+        const error = skinDependencyError(element.getAttribute("file"));
+        if (error) throw new Error(error);
+      }
+    }
   }
 
   resolve(filePath: string) {
@@ -696,6 +708,9 @@ async function loadSkin(root: UIRoot, skinUrl: string) {
 
   const engine = new KogSkinEngine(root);
   await engine.buildUI();
+  if (!root.getContainers().length) {
+    throw new Error("This skin did not provide a player layout. It may require an unsupported external skin engine.");
+  }
 }
 
 async function main() {

@@ -138,7 +138,7 @@ impl Track {
     }
 
     fn refresh_search_text(&mut self) {
-        let source_label = self.source.display_label();
+        let source_filename = search_source_filename(&self.source);
         self.search_text = [
             self.title.as_str(),
             self.artist.as_str(),
@@ -146,7 +146,7 @@ impl Track {
             self.album.as_str(),
             self.genre.as_str(),
             self.composer.as_str(),
-            source_label.as_str(),
+            source_filename.as_str(),
         ]
         .join("\n")
         .to_lowercase();
@@ -162,6 +162,17 @@ impl Track {
     pub fn duration_label(&self) -> String {
         duration_label(self.duration.unwrap_or_default())
     }
+}
+
+fn search_source_filename(source: &PlaybackSource) -> String {
+    let path = source
+        .archive_origin
+        .as_ref()
+        .map(|origin| Path::new(&origin.entry_name))
+        .unwrap_or(&source.path);
+    path.file_name()
+        .map(|filename| filename.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 fn lyrics_from_tag(tag: &Tag) -> String {
@@ -234,5 +245,30 @@ mod tests {
         assert!(track.matches("blue-green"));
         assert!(track.matches("final theme.flac"));
         assert!(!track.matches("missing"));
+    }
+
+    #[test]
+    fn playlist_search_filters_on_the_first_character_without_matching_parent_paths() {
+        let mut matching = Track {
+            title: "Aerial".to_owned(),
+            source: PlaybackSource::from_path(PathBuf::from("/var/media/first.ogg")),
+            ..Track::default()
+        };
+        let mut non_matching = Track {
+            title: "Bore".to_owned(),
+            source: PlaybackSource::from_path(PathBuf::from("/var/media/second.ogg")),
+            ..Track::default()
+        };
+        matching.refresh_search_text();
+        non_matching.refresh_search_text();
+
+        let visible_rows = [matching, non_matching]
+            .iter()
+            .enumerate()
+            .filter(|(_, track)| track.matches("a"))
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+
+        assert_eq!(visible_rows, [0]);
     }
 }

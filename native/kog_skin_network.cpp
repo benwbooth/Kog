@@ -45,6 +45,25 @@ bool kogValidateModernImage(const QString &path)
     return !reader.read().isNull();
 }
 
+QString kogModernSkinDependencyError(const QString &path)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly) || file.size() > 2 * 1024 * 1024)
+        return QStringLiteral("Cannot read modern skin XML within the 2 MiB limit");
+    QXmlStreamReader xml(&file);
+    while (!xml.atEnd()) {
+        if (xml.readNext() != QXmlStreamReader::StartElement
+            || xml.name().compare(QStringLiteral("include"), Qt::CaseInsensitive) != 0) continue;
+        const auto include = xml.attributes().value(QStringLiteral("file")).toString()
+            .replace(QLatin1Char('\\'), QLatin1Char('/')).toLower();
+        if (include.contains(QStringLiteral("/plugins/classicpro/")))
+            return QStringLiteral("This skin requires the external ClassicPro engine, which Kog does not support. Choose a standalone modern .wal skin.");
+        if (include.contains(QStringLiteral("/plugins/")) && include.contains(QStringLiteral("../")))
+            return QStringLiteral("This skin requires an external Winamp plugin engine. Choose a standalone modern .wal skin.");
+    }
+    return {};
+}
+
 // Runs on the import worker. Never nests an event loop on the GUI thread.
 QByteArray kogFetchSkinUrl(const QString &address, unsigned int maxBytes)
 {

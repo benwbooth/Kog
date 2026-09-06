@@ -6,6 +6,17 @@ const MAX_TRACKS = 100_000;
 const MAX_VIS_SAMPLES = 4_096;
 const MAX_STATE_JSON_BYTES = 16 * 1024 * 1024;
 
+export function skinDependencyError(reference) {
+  const path = String(reference || "").replaceAll("\\", "/").toLowerCase();
+  if (path.includes("/plugins/classicpro/")) {
+    return "This skin requires the external ClassicPro engine, which Kog does not support. Choose a standalone modern .wal skin.";
+  }
+  if (path.includes("/plugins/") && path.includes("../")) {
+    return "This skin requires an external Winamp plugin engine. Choose a standalone modern .wal skin.";
+  }
+  return "";
+}
+
 function finite(value, fallback = 0) {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
