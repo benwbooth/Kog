@@ -517,6 +517,11 @@ ApplicationWindow {
             }
             Platform.MenuSeparator {}
             Platform.MenuItem {
+                text: qsTr("About Kog…")
+                icon.name: "help-about"
+                onTriggered: aboutKog.open()
+            }
+            Platform.MenuItem {
                 text: qsTr("Quit Kog")
                 icon.name: "application-exit"
                 onTriggered: root.quitKog()
@@ -594,6 +599,12 @@ ApplicationWindow {
         mainWindow: root
     }
     Preferences { id: preferences; app: appController }
+    AboutKog { id: aboutKog }
+    Shortcut {
+        sequence: "F1"
+        context: Qt.ApplicationShortcut
+        onActivated: aboutKog.open()
+    }
     SkinLibrary { id: skinLibrary }
     Timer { interval: 100; running: skinLibrary.busy; repeat: true; onTriggered: skinLibrary.poll() }
     SkinBrowser { id: skinBrowser; library: skinLibrary; onOpenClassic: root.showClassicPlayer() }
@@ -982,6 +993,7 @@ ApplicationWindow {
 
         MenuSeparator {}
         Action { text: qsTr("Preferences…"); icon.name: "configure"; shortcut: "Ctrl+,"; onTriggered: preferences.show() }
+        Action { text: qsTr("About Kog…"); icon.name: "help-about"; onTriggered: aboutKog.open() }
         Action { text: qsTr("Quit Kog"); icon.name: "application-exit"; shortcut: StandardKey.Quit; onTriggered: root.quitKog() }
     }
 

@@ -43,6 +43,11 @@ std::unique_ptr<QApplication> kogApplicationNew()
     return application;
 }
 
+void kogApplicationSetVersion(QApplication &application, const QString &version)
+{
+    application.setApplicationVersion(version);
+}
+
 void kogApplicationSetName(QApplication &application, const QString &name)
 {
     application.setApplicationName(name);

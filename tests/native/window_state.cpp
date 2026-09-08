@@ -28,6 +28,9 @@ public:
 int main(int argc, char **argv)
 {
     QApplication application(argc, argv);
+    kogApplicationSetVersion(application, QStringLiteral("9.8.7-test"));
+    require(QCoreApplication::applicationVersion() == QStringLiteral("9.8.7-test"),
+            "About version reaches Qt application metadata");
     QTemporaryDir config;
     require(config.isValid(), "temporary settings directory");
     QSettings::setDefaultFormat(QSettings::IniFormat);

@@ -66,7 +66,11 @@ The tree also hides files without a supported media, playlist, or archive
 extension, using the current decoder catalog and case-insensitive matching.
 Folders remain visible; a supported extension does not guarantee a file is valid.
 
-Kog uses the desktop's Qt theme and native file dialogs. Closing the main window
+Kog uses the desktop's Qt theme and native file dialogs.
+The **About Kog…** entry in the main or tray menu (also **F1**) shows the running
+application version, which can be selected and copied.
+
+Closing the main window
 to the system tray is enabled by default where a tray is available. Tray,
 minimize, and close behavior can be changed under **Preferences → General**.
 The main window remembers its size and maximized state. Position is restored

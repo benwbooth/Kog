@@ -14,6 +14,9 @@ mod ffi {
         #[cxx_name = "kogApplicationSetName"]
         fn application_set_name(application: Pin<&mut QApplication>, name: &QString);
 
+        #[cxx_name = "kogApplicationSetVersion"]
+        fn application_set_version(application: Pin<&mut QApplication>, version: &QString);
+
         #[cxx_name = "kogApplicationExec"]
         fn application_exec(application: Pin<&mut QApplication>) -> i32;
 
@@ -39,6 +42,12 @@ impl DesktopApplication {
     pub fn set_application_name(&mut self, name: &cxx_qt_lib::QString) {
         if let Some(application) = self.0.as_mut() {
             ffi::application_set_name(application, name);
+        }
+        if let Some(application) = self.0.as_mut() {
+            ffi::application_set_version(
+                application,
+                &cxx_qt_lib::QString::from(env!("CARGO_PKG_VERSION")),
+            );
         }
     }
 
