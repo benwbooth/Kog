@@ -68,7 +68,7 @@ Folders remain visible; a supported extension does not guarantee a file is valid
 
 Kog uses the desktop's Qt theme and native file dialogs.
 The **About Kog…** entry in the main or tray menu (also **F1**) shows the running
-application version, which can be selected and copied.
+application version.
 
 Closing the main window
 to the system tray is enabled by default where a tray is available. Tray,

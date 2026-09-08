@@ -29,12 +29,10 @@ Window {
             font.bold: true
             Layout.alignment: Qt.AlignHCenter
         }
-        TextField {
+        Label {
             objectName: "aboutVersion"
             text: qsTr("Version %1").arg(root.version)
-            readOnly: true
-            selectByMouse: true
-            horizontalAlignment: TextInput.AlignHCenter
+            horizontalAlignment: Text.AlignHCenter
             Accessible.name: text
             Layout.fillWidth: true
         }

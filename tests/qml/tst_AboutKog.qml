@@ -10,7 +10,7 @@ TestCase {
         const field = findChild(about, "aboutVersion")
         verify(field !== null)
         compare(field.text, "Version " + Qt.application.version)
-        verify(field.readOnly)
+        verify(field.readOnly === undefined)
         about.open()
         tryCompare(about, "visible", true)
         about.hide()
