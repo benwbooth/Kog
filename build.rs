@@ -161,6 +161,7 @@ fn main() {
     .cpp_file("native/kog_modern_skin.h")
     .cpp_file("native/kog_modern_skin.cpp")
     .cpp_file("native/kog_file_tree_search.h")
+    .cpp_file("native/kog_media_path.h")
     .cpp_file("native/kog_file_tree_search.cpp")
     .cpp_file("native/kog_tree_archive.cpp")
     .cpp_file("native/kog_tree_archive_bridge.cpp")

@@ -1,4 +1,5 @@
 #include "kog_tree_archive.h"
+#include "kog_media_path.h"
 
 #include <archive.h>
 #include <archive_entry.h>
@@ -56,7 +57,7 @@ bool readIndex(const QString &fileName, const QString &key, KogArchiveListing &l
         if (pair.size() != 2 || !pair[0].isString() || !pair[1].isBool()) return false;
         const auto name = pair[0].toString();
         if (name.isEmpty() || name.size() > 4096 || safeName(name) != name) return false;
-        listing.entries.insert(name, pair[1].toBool());
+        if (!kogIsMetadataPath(name)) listing.entries.insert(name, pair[1].toBool());
     }
     listing.fromCache = true;
     return true;
@@ -196,6 +197,7 @@ KogArchiveListing kogListArchive(const QString &path,
         if (archive_format(reader.get()) == ARCHIVE_FORMAT_RAW && name == "data")
             name = info.completeBaseName();
         name = safeName(name);
+        if (kogIsMetadataPath(name)) continue;
         const auto type = archive_entry_filetype(entry);
         if (!name.isEmpty() && !archive_entry_hardlink(entry)
             && (type == AE_IFREG || type == AE_IFDIR || type == 0)) {

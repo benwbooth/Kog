@@ -160,6 +160,10 @@ impl ExtractedArchive {
                             continue;
                         }
                     };
+                    if crate::media_path::is_metadata(&relative) {
+                        current = CurrentEntry::Discard { written: 0 };
+                        continue;
+                    }
                     if !seen_paths.insert(relative.clone()) {
                         warnings.push(format!(
                             "Skipped duplicate archive entry {}",
@@ -625,6 +629,25 @@ pub(crate) mod tests {
         for unsafe_path in ["../song.vgm", "/tmp/song.vgm", "C:\\song.vgm", "."] {
             assert!(safe_relative_path(unsafe_path).is_err(), "{unsafe_path}");
         }
+    }
+
+    #[test]
+    fn metadata_archive_entries_are_not_extracted() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("metadata.zip");
+        write_stored_zip(
+            &path,
+            &[
+                ("._song.flac", b"junk"),
+                ("__MACOSX/Album/song.flac", b"junk"),
+                ("Album/desktop.ini", b"junk"),
+                ("Album/.real.flac", b"music"),
+            ],
+        );
+        let extracted = ExtractedArchive::open(&path).unwrap();
+        assert_eq!(extracted.entries.len(), 1);
+        assert_eq!(extracted.entries[0].name, "Album/.real.flac");
+        assert!(!extracted.root().join("__MACOSX").exists());
     }
 
     #[test]

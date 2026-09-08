@@ -423,6 +423,11 @@ impl DecoderRegistry {
         &self,
         location: crate::archive::TreeLocation,
     ) -> Result<ExpansionResult, String> {
+        if crate::media_path::is_metadata(&location.archive)
+            || crate::media_path::is_metadata(Path::new(&location.entry))
+        {
+            return Ok(ExpansionResult::default());
+        }
         let path = location.archive.canonicalize().map_err(|e| e.to_string())?;
         let metadata = path.metadata().map_err(|e| e.to_string())?;
         let key = (
@@ -514,6 +519,9 @@ impl DecoderRegistry {
     }
 
     pub fn accepts_path(&self, path: &Path) -> bool {
+        if crate::media_path::is_metadata(path) {
+            return false;
+        }
         crate::archive::is_tree_location(path)
             || crate::playlist::Playlist::is_path(path)
             || crate::archive::is_path(path)
@@ -575,6 +583,9 @@ impl DecoderRegistry {
         playlist_stack: &mut Vec<PathBuf>,
         depth: usize,
     ) -> Result<ExpansionResult, String> {
+        if crate::media_path::is_metadata(&path) {
+            return Ok(ExpansionResult::default());
+        }
         if depth > 32 {
             return Err("playlist nesting exceeds Kog's 32-level safety limit".to_owned());
         }
@@ -683,6 +694,9 @@ impl DecoderRegistry {
                     )),
                 },
                 crate::playlist::PlaylistLocation::Local(entry_path) => {
+                    if crate::media_path::is_metadata(entry_path) {
+                        continue;
+                    }
                     let resolved = match entry_path.canonicalize() {
                         Ok(path) => path,
                         Err(error) => {
@@ -734,6 +748,11 @@ impl DecoderRegistry {
         playlist_stack: &mut Vec<PathBuf>,
         depth: usize,
     ) -> Result<ExpansionResult, String> {
+        if crate::media_path::is_metadata(&path)
+            || crate::media_path::is_metadata(Path::new(entry_name))
+        {
+            return Ok(ExpansionResult::default());
+        }
         let path = path
             .canonicalize()
             .map_err(|error| format!("resolving archive {}: {error}", path.display()))?;
@@ -2048,6 +2067,31 @@ mod tests {
     use std::io::Write;
 
     use super::*;
+
+    #[test]
+    fn metadata_is_skipped_for_direct_files_and_playlist_entries() {
+        let registry = DecoderRegistry::default();
+        let root = tempfile::tempdir().unwrap();
+        let sidecar = root.path().join("._song.flac");
+        assert!(!registry.accepts_path(&sidecar));
+        assert!(
+            registry
+                .expand_detailed(sidecar)
+                .unwrap()
+                .sources
+                .is_empty()
+        );
+        let playlist = root.path().join("songs.m3u");
+        std::fs::write(
+            &playlist,
+            "._song.flac\n__MACOSX/song.flac\nhttps://example.com/song.mp3\n",
+        )
+        .unwrap();
+        let expanded = registry.expand_detailed(playlist).unwrap();
+        assert_eq!(expanded.sources.len(), 1);
+        assert!(expanded.sources[0].remote_url.is_some());
+        assert!(expanded.warnings.is_empty());
+    }
 
     #[test]
     fn supported_format_catalog_is_registry_driven_and_complete() {

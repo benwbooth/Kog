@@ -8,3 +8,20 @@
 *.user
 *.qmlc
 *.jsc
+
+# Operating-system metadata (at any depth)
+._*
+.DS_Store
+__MACOSX/
+.AppleDouble/
+.LSOverride
+.Spotlight-V100/
+.Trashes/
+.fseventsd/
+.TemporaryItems/
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+desktop.ini
+$RECYCLE.BIN/
+System Volume Information/

@@ -1,5 +1,6 @@
 #include "kog_file_tree_search.h"
 #include "kog_tree_archive.h"
+#include "kog_media_path.h"
 #include <archive.h>
 #include <archive_entry.h>
 #include <QtCore/QCoreApplication>
@@ -65,7 +66,8 @@ static void writeArchive(const QString &path, bool sevenZip = false)
           "Create real archive fixture with libarchive");
     const auto filename = QFile::encodeName(path);
     check(archive_write_open_filename(writer, filename.constData()) == ARCHIVE_OK, "Open archive fixture");
-    for (const auto &name : {"Disc/Hidden Tune.mid", "Disc/日本語 + #%.mid", "Other/song.flac", "../escape.mid"}) {
+    for (const auto &name : {"Disc/Hidden Tune.mid", "Disc/日本語 + #%.mid", "Other/song.flac", "../escape.mid",
+                           "Disc/._Hidden Tune.mid", "__MACOSX/Ghost Theme.flac", "Disc/desktop.ini"}) {
         auto *entry = archive_entry_new();
         archive_entry_set_pathname_utf8(entry, name);
         archive_entry_set_filetype(entry, AE_IFREG);
@@ -82,6 +84,10 @@ static void writeArchive(const QString &path, bool sevenZip = false)
 int main(int argc, char **argv)
 {
     QApplication app(argc, argv);
+    check(kogIsMetadataPath("Album/._song.flac"), "AppleDouble is metadata");
+    check(kogIsMetadataPath("__MACOSX/Album/song.flac"), "Metadata descendants are excluded");
+    check(kogIsMetadataPath("Album/DESKTOP.INI"), "Windows metadata is case insensitive");
+    check(!kogIsMetadataPath(".music/.song.flac"), "Ordinary hidden music is not metadata");
     if (argc == 4 && QString::fromUtf8(argv[1]) == "--benchmark") {
         KogFileTreeSearch benchmark;
         benchmark.setRootPath(QString::fromUtf8(argv[2]));
@@ -111,6 +117,11 @@ int main(int argc, char **argv)
     QDir base(fixture.path());
     check(base.mkpath("Album/Disc 1"), "Create nested unopened folders");
     check(base.mkpath("Other"), "Create other folder");
+    check(base.mkpath("__MACOSX"), "Create metadata folder");
+    for (const auto &name : {"._Root Theme.flac", "desktop.ini", "__MACOSX/Ghost Theme.flac"}) {
+        QFile file(base.filePath(name));
+        check(file.open(QIODevice::WriteOnly), "Create metadata fixture");
+    }
     check(base.mkpath("Album/Empty"), "Create empty folder");
     for (const auto &name : {"Album/Disc 1/日本語 Theme.mid", "Other/unrelated.mp3", "Root Theme.flac"}) {
         QFile file(base.filePath(QString::fromUtf8(name)));
@@ -148,6 +159,10 @@ int main(int argc, char **argv)
     highlightCheck("Duck Tales — Duck & Tales", "duck tales", "Duck Tales — Duck & Tales", {{0, 10}}, true);
     highlightCheck("Theme  Theme.mid", "theme", "Theme  Theme.mid", {{0, 5}, {7, 5}});
     model.setRootPath(base.absolutePath());
+    waitFor([&] { return childNamed(model, model.viewRootIndex(), "Other").isValid(); },
+            "Browse fixture loaded");
+    check(!childNamed(model, model.viewRootIndex(), "__MACOSX").isValid(), "Browse hides metadata folder");
+    check(!childNamed(model, model.viewRootIndex(), "desktop.ini").isValid(), "Browse hides Windows metadata");
     QQmlEngine engine;
     engine.rootContext()->setContextProperty("testModel", &model);
     if (argc == 3 && QString::fromUtf8(argv[1]) == "--highlight-preview") {

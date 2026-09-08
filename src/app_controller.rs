@@ -388,6 +388,9 @@ fn ordered_directory_files(directory: &Path) -> Result<Vec<PathBuf>, String> {
     let mut pending = vec![(directory.to_owned(), true)];
 
     while let Some((path, is_directory)) = pending.pop() {
+        if crate::media_path::is_metadata(&path) {
+            continue;
+        }
         if !is_directory {
             files.push(path);
             continue;
@@ -508,6 +511,9 @@ fn scan_directory_paths(
 ) {
     let mut files = Vec::new();
     'roots: for root in paths {
+        if crate::media_path::is_metadata(&root) {
+            continue;
+        }
         if cancel.load(AtomicOrdering::Relaxed) {
             break;
         }
@@ -544,6 +550,9 @@ fn scan_directory_paths(
 
         let mut pending = vec![(root, true)];
         while let Some((path, is_directory)) = pending.pop() {
+            if crate::media_path::is_metadata(&path) {
+                continue;
+            }
             if cancel.load(AtomicOrdering::Relaxed) {
                 break 'roots;
             }
@@ -4211,6 +4220,10 @@ mod tests {
     fn directory_scan_preserves_sorted_depth_first_file_order() {
         let temporary = tempdir().expect("create temporary music folder");
         let root = temporary.path();
+        fs::create_dir(root.join("__MACOSX")).unwrap();
+        fs::write(root.join("__MACOSX/ghost.flac"), []).unwrap();
+        fs::write(root.join("._ghost.flac"), []).unwrap();
+        fs::write(root.join("desktop.ini"), []).unwrap();
         fs::create_dir(root.join("02-disc")).expect("create nested album folder");
         fs::write(root.join("01-first.flac"), []).expect("create first track");
         fs::write(root.join("02-disc/01-middle.flac"), []).expect("create nested first track");
@@ -4238,6 +4251,9 @@ mod tests {
     fn background_directory_scan_preserves_visual_file_order() {
         let temporary = tempdir().expect("create temporary music folder");
         let root = temporary.path();
+        fs::create_dir(root.join("__MACOSX")).unwrap();
+        fs::write(root.join("__MACOSX/ghost.flac"), []).unwrap();
+        fs::write(root.join("._ghost.flac"), []).unwrap();
         fs::create_dir(root.join("02-disc")).expect("create nested album folder");
         fs::write(root.join("01-first.flac"), []).expect("create first track");
         fs::write(root.join("02-disc/01-middle.flac"), []).expect("create nested first track");

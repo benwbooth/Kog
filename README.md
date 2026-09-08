@@ -57,6 +57,12 @@ music, with companion files kept together. Archives inside other archives are
 not supported yet.
 Clear the search (or press Escape in the box) to return to normal browsing.
 
+Library scans, playlist imports, and tree browsing/search skip OS metadata:
+AppleDouble (`._*`), `.DS_Store`, `__MACOSX`, `.AppleDouble`, Spotlight/trash
+directories, `Thumbs.db`, and `desktop.ini`. This also applies inside archives.
+These files are not deleted, and the metadata filter does not exclude arbitrary
+dot-prefixed music files or folders.
+
 Kog uses the desktop's Qt theme and native file dialogs. Closing the main window
 to the system tray is enabled by default where a tray is available. Tray,
 minimize, and close behavior can be changed under **Preferences → General**.

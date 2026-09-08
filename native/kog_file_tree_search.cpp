@@ -1,5 +1,6 @@
 #include "kog_file_tree_search.h"
 #include "kog_tree_archive.h"
+#include "kog_media_path.h"
 
 #include <QtConcurrent/QtConcurrentRun>
 #include <QtCore/QDirIterator>
@@ -113,6 +114,7 @@ SearchResult scan(const QString &root, const QString &query,
         entries.next();
         const auto info = entries.fileInfo();
         const auto relative = base.relativeFilePath(info.absoluteFilePath());
+        if (kogIsMetadataPath(info.absoluteFilePath())) continue;
         const bool archive = info.isFile() && kogIsArchive(info.absoluteFilePath());
         if (matches(info.fileName()))
             match(relative, {info.absoluteFilePath(), info.isDir(), info.isDir() || archive});
@@ -132,6 +134,7 @@ SearchResult scan(const QString &root, const QString &query,
         const auto listing = kogListArchive(path, cancel);
         if (!listing.error.isEmpty()) ++result.unreadableArchives;
         for (auto it = listing.entries.cbegin(); it != listing.entries.cend() && !cancel->load(); ++it) {
+            if (kogIsMetadataPath(it.key())) continue;
             // Comparing names is cheap. Only construct encoded member URLs
             // and ancestor paths for actual matches, not every indexed entry.
             if (matches(QFileInfo(it.key()).fileName()))
@@ -248,6 +251,7 @@ private:
                 entries.error = listing.error;
                 const auto prefix = location.entry.isEmpty() ? QString() : location.entry + '/';
                 for (auto it = listing.entries.cbegin(); it != listing.entries.cend(); ++it) {
+                    if (kogIsMetadataPath(it.key())) continue;
                     if (!it.key().startsWith(prefix)) continue;
                     const auto name = it.key().mid(prefix.size());
                     if (name.isEmpty() || name.contains('/')) continue;
@@ -260,6 +264,7 @@ private:
             while (!cancel->load() && dir.hasNext()) {
                 dir.next();
                 const auto info = dir.fileInfo();
+                if (kogIsMetadataPath(info.absoluteFilePath())) continue;
                 entries.rows.insert(info.fileName(), {info.absoluteFilePath(), info.isDir(),
                     info.isDir() || kogIsArchive(info.absoluteFilePath())});
             }

@@ -22,6 +22,7 @@ mod hively;
 mod hively_decoder;
 mod libvgm;
 mod libvgm_decoder;
+mod media_path;
 mod mpris;
 mod mt32;
 mod ncsf;
@@ -47,6 +48,7 @@ mod sfm;
 mod sfm_decoder;
 mod sid;
 mod sid_decoder;
+mod skin_library;
 mod spessasynth_midi;
 mod syntrax;
 mod syntrax_decoder;
@@ -58,7 +60,6 @@ mod usf_decoder;
 mod vgmstream;
 mod vgmstream_decoder;
 mod visualizer;
-mod skin_library;
 
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QString, QUrl};
 
