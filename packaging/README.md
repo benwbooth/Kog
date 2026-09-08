@@ -6,7 +6,7 @@ The Linux flake exports `packages.default` and `apps.default`, including the
 desktop entry and decoder helpers. Fetch submodules when using the flake:
 
 ```nix
-inputs.kog.url = "git+https://github.com/benwbooth/Kog?ref=v0.2.1&submodules=1";
+inputs.kog.url = "git+https://github.com/benwbooth/Kog?ref=refs/tags/v0.2.1&submodules=1";
 # In the host module:
 environment.systemPackages = [ inputs.kog.packages.${pkgs.stdenv.hostPlatform.system}.default ];
 ```
