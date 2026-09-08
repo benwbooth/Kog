@@ -284,6 +284,17 @@ test("top-level MAKI return yields the actual INT variable", async () => {
   assert.deepEqual(program.variables[0], { global: 0, type: "INT", value: 73 });
 });
 
+test("MAKI logical operators normalize their complete numeric truth tables", async () => {
+  for (const lhs of [0, 1, 2]) for (const rhs of [0, 1, 2]) for (const opcode of [80, 81]) {
+    const bytes = makeMaki({ variables: [{ type: 2, value: lhs }, { type: 2, value: rhs }],
+      commands: [command(1, 0), command(1, 1), command(opcode), command(33)] });
+    const program = runtime.parse(asArrayBuffer(bytes), "logical-truth-table.maki");
+    const result = await runtime.interpret(0, program, [], () => null, "logic", {});
+    assert.deepEqual(result, { type: "BOOLEAN", value: Number(opcode === 80 ? !!lhs && !!rhs : !!lhs || !!rhs) },
+      `${lhs} ${opcode === 80 ? '&&' : '||'} ${rhs}`);
+  }
+});
+
 test("nested dispatch finishes every synchronous listener before a caller clears its guard", () => {
   runtime.installMakiDispatch();
   const vm = Object.create(runtime.Vm.prototype);

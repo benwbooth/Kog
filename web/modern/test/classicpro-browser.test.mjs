@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
+import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import esbuild from "esbuild";
+import { adaptMakiText, adaptMakiSkinEngine, adaptMakiLayer } from "../maki-compat.mjs";
 
 const directory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -35,7 +37,11 @@ class FakeDocument {
     this.body = new FakeElement(this, "body");
     this.documentElement = { clientWidth: 800, clientHeight: 600 };
   }
-  createElement(name) { return new FakeElement(this, name); }
+  createElement(name) {
+    const element = new FakeElement(this, name);
+    if (name === "canvas") element.getContext = () => ({ measureText: text => ({ width: text.length * 7 }) });
+    return element;
+  }
   addEventListener() {}
   removeEventListener() {}
 }
@@ -78,6 +84,17 @@ function installBrowserGlobals(document) {
 
 async function loadFixture() {
   const result = await esbuild.build({
+    plugins: [{ name: "maki-localized-text", setup(build) {
+      build.onLoad({ filter: /[/\\]makiClasses[/\\]Layer\.ts$/ }, async args => ({
+        contents: adaptMakiLayer(await readFile(args.path, "utf8")), loader: "ts",
+      }));
+      build.onLoad({ filter: /[/\\]skin[/\\]SkinEngine_WAL\.ts$/ }, async args => ({
+        contents: adaptMakiSkinEngine(await readFile(args.path, "utf8")), loader: "ts",
+      }));
+      build.onLoad({ filter: /[/\\]makiClasses[/\\]Text\.ts$/ }, async args => ({
+        contents: adaptMakiText(await readFile(args.path, "utf8"), path.join(directory, "src/maki-locales.js")), loader: "ts",
+      }));
+    } }],
     bundle: true,
     format: "esm",
     nodePaths: [path.join(directory, "node_modules")],
@@ -95,11 +112,13 @@ async function loadFixture() {
         import Browser from "../../native/webamp/packages/webamp-modern/src/skin/makiClasses/Browser.ts";
         import Button from "../../native/webamp/packages/webamp-modern/src/skin/makiClasses/Button.ts";
         import Edit from "../../native/webamp/packages/webamp-modern/src/skin/makiClasses/Edit.ts";
+        import Text from "../../native/webamp/packages/webamp-modern/src/skin/makiClasses/Text.ts";
+        import Layer from "../../native/webamp/packages/webamp-modern/src/skin/makiClasses/Layer.ts";
         import Group from "../../native/webamp/packages/webamp-modern/src/skin/makiClasses/Group.ts";
         import SkinEngineWAL from "../../native/webamp/packages/webamp-modern/src/skin/SkinEngine_WAL.ts";
         import SystemObject from "../../native/webamp/packages/webamp-modern/src/skin/makiClasses/SystemObject.ts";
         import { XmlElement } from "@rgrove/parse-xml";
-        export { makiInterface, installClassicProBrowser, installClassicProControls, installMakiActionEvents, preferredLanguageId, Browser, Button, Edit, Group, SkinEngineWAL, SystemObject, XmlElement };
+        export { makiInterface, installClassicProBrowser, installClassicProControls, installMakiActionEvents, preferredLanguageId, Browser, Button, Edit, Text, Layer, Group, SkinEngineWAL, SystemObject, XmlElement };
       `,
     },
   });
@@ -273,6 +292,63 @@ test("ClassicPro System strings come from loaded StringTable resources and URLs 
   } finally {
     restoreBrowser();
   }
+});
+
+test("modern text translates only presentation and measures the translated label", async () => {
+  const document = new FakeDocument();
+  const restoreBrowser = installBrowserGlobals(document);
+  try {
+    const { Text, Group, SkinEngineWAL, XmlElement, installMakiActionEvents, installClassicProBrowser } = await loadFixture();
+    installMakiActionEvents();
+    installClassicProBrowser();
+    const root = {
+      getImageManager() { return {}; }, vm: { dispatch() {} },
+      async getFileAsString() { return '<StringTable><StringEntry id="7" string="Library"/></StringTable>'; },
+    };
+    const engine = new SkinEngineWAL(root);
+    await engine.include(new XmlElement("include", { file: "strings.xml" }), null);
+    const text = new Text(root);
+    text.setXmlAttr("text", "@nullsoft.wasabi#7");
+    assert.equal(text._textWrapper.innerText, "@nullsoft.wasabi#7");
+    text.setXmlAttr("translate", "2");
+    assert.equal(text._textWrapper.innerText, "Library");
+    assert.equal(text.gettext(), "@nullsoft.wasabi#7", "MAKI still observes the source value");
+    assert.equal(text.getautowidth(), 7 * 7, "TrueType layout geometry measures the translated text");
+    assert.equal(text.gettextwidth(), "@nullsoft.wasabi#7".length * 7 + 4,
+      "native script getTextWidth measures unlocalized text with its four-pixel padding");
+    assert.equal(text._getBitmapFontTextWidth({ _charWidth: 6 }), 7 * 6);
+    text.setalternatetext("@nullsoft.wasabi#7");
+    assert.equal(text._textWrapper.innerText, "Library");
+    text.setXmlAttr("translate", "0");
+    assert.equal(text._textWrapper.innerText, "@nullsoft.wasabi#7");
+    const control = new Group(root);
+    control.setXmlAttr("translate", "2");
+    control.setXmlAttr("tooltip", "@nullsoft.wasabi#7");
+    assert.equal(control._div.attributes.get("title"), "Library");
+    assert.equal(control._tooltip, "@nullsoft.wasabi#7");
+    control.setXmlAttr("translate", "0");
+    assert.equal(control._div.attributes.get("title"), "@nullsoft.wasabi#7");
+    text.setalternatetext("");
+    text._display = "time";
+    text._displayValue = "  :  ";
+    text.settext("12:34");
+    assert.equal(text.gettext(), "12:34", "script clock text overrides the stopped display");
+    text.settext("");
+    assert.equal(text.gettext(), "  :  ", "clearing script text restores the dynamic display");
+  } finally { restoreBrowser(); }
+});
+
+test("native Layer is movable by default and explicit move=0 disables dragging", async () => {
+  const restoreBrowser = installBrowserGlobals(new FakeDocument());
+  try {
+    const { Layer } = await loadFixture();
+    const layer = new Layer({ getImageManager() { return {}; } });
+    assert.equal(layer._movable, true);
+    assert.equal(layer._movingEventsRegistered, true);
+    layer.setXmlAttr("move", "0");
+    assert.equal(layer._movable, false);
+    assert.equal(layer._movingEventsRegistered, false);
+  } finally { restoreBrowser(); }
 });
 
 test("ClassicPro Browser materializes typed embedded XUI and DownloadsList controls", async () => {

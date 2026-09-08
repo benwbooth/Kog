@@ -3,9 +3,10 @@ import Group from "../../../native/webamp/packages/webamp-modern/src/skin/makiCl
 import Button from "../../../native/webamp/packages/webamp-modern/src/skin/makiClasses/Button";
 import ToggleButton from "../../../native/webamp/packages/webamp-modern/src/skin/makiClasses/ToggleButton";
 import SystemObject from "../../../native/webamp/packages/webamp-modern/src/skin/makiClasses/SystemObject";
-import { isMakiPromise } from "./maki-execution.js";
+import { isMakiPromise, runMakiGenerator } from "./maki-execution.js";
 import { interpret } from "../../../native/webamp/packages/webamp-modern/src/maki/interpreter";
 import { classResolver } from "../../../native/webamp/packages/webamp-modern/src/skin/resolver";
+import { renderedMakiString } from "./maki-locales.js";
 
 const depths = new WeakMap<object, number>();
 
@@ -43,8 +44,10 @@ function setVisibility(object: any, visible: boolean) {
 
 // onAction is a callable script event with an integer result, not a count of
 // listeners. Each callback gets its own stack; nested events can await safely.
-async function onaction(this: any, action: string, param: string, x: number, y: number, p1: number, p2: number, source: unknown): Promise<number> {
+function onaction(this: any, action: string, param: string, x: number, y: number, p1: number, p2: number, source: unknown) {
+  const receiver = this;
   const root = this._uiRoot;
+  return runMakiGenerator((function* () {
   const depth = depths.get(root) ?? 0;
   if (depth >= 64) throw new Error("MAKI action nesting limit exceeded");
   depths.set(root, depth + 1);
@@ -55,17 +58,18 @@ async function onaction(this: any, action: string, param: string, x: number, y: 
         if (script.methods[binding.methodOffset].name.toLowerCase() !== "onaction") continue;
         const variable = script.variables[binding.variableOffset];
         const matches = variable.isClass
-          ? variable.members.some((index: number) => script.variables[index].value === this)
-          : variable.type === "OBJECT" && variable.value === this;
+          ? variable.members.some((index: number) => script.variables[index].value === receiver)
+          : variable.type === "OBJECT" && variable.value === receiver;
         if (!matches) continue;
-        if (variable.isClass) variable.value = this;
+        if (variable.isClass) variable.value = receiver;
         const args: any[] = [
           { type: "STRING", value: action }, { type: "STRING", value: param },
           { type: "INT", value: x }, { type: "INT", value: y },
           { type: "INT", value: p1 }, { type: "INT", value: p2 },
           { type: "OBJECT", value: source },
         ];
-        const returned = await interpret(binding.commandOffset, script, args.reverse(), classResolver, "onaction", root);
+        const execution = interpret(binding.commandOffset, script, args.reverse(), classResolver, "onaction", root);
+        const returned = isMakiPromise(execution) ? yield execution : execution;
         if (returned && Number.isFinite(Number(returned.value))) result = Number(returned.value) | 0;
       }
     }
@@ -73,6 +77,7 @@ async function onaction(this: any, action: string, param: string, x: number, y: 
   } finally {
     depths.set(root, depth);
   }
+  })());
 }
 
 export function installMakiActionEvents() {
@@ -99,6 +104,18 @@ export function installMakiActionEvents() {
     // back into mutually exclusive settings.
     this.setactivated((Number.parseInt(value, 10) || 0) !== 0);
   };
+  // Button's constructor installs its mousedown handler before GuiObj.init
+  // installs the MAKI callback. Do not change activation before scripts can
+  // inspect the pre-press state (ClassicPro uses that state to select tabs).
+  ToggleButton.prototype._handleMouseDown = function (event: MouseEvent) {
+    event.stopPropagation();
+  };
+  ToggleButton.prototype.onLeftButtonDown = function (x: number, y: number) {
+    GuiObj.prototype.onLeftButtonDown.call(this, x, y);
+    this.setactivated(!this._active);
+    this.updateCfgAttib(this._active ? "1" : "0");
+    this.ontoggle(this._active);
+  };
   Group.prototype.getobject = function (id: string) {
     const key = String(id).toLowerCase();
     for (const child of this._children) {
@@ -110,13 +127,27 @@ export function installMakiActionEvents() {
   GuiObj.prototype.hide = function () { setVisibility(this, false); };
   GuiObj.prototype.isvisible = function () { return effectiveVisibility(this); };
   const setAttribute = GuiObj.prototype.setXmlAttr;
+  const updateTooltip = (object: any) => {
+    object._div.setAttribute("title", renderedMakiString(object, object._tooltip ?? ""));
+  };
   GuiObj.prototype.setXmlAttr = function (key: string, value: string) {
     const lower = key.toLowerCase();
     if (lower === "userdata" || lower === "translate") {
       (this as any)[`_${lower}`] = value ?? "";
+      if (lower === "translate") {
+        updateTooltip(this);
+        (this as any)._renderText?.();
+      }
       return true;
     }
-    return setAttribute.call(this, key, value);
+    const handled = setAttribute.call(this, key, value);
+    if (lower === "tooltip") updateTooltip(this);
+    return handled;
+  };
+  const draw = GuiObj.prototype.draw;
+  GuiObj.prototype.draw = function () {
+    draw.call(this);
+    updateTooltip(this);
   };
   const getAttribute = GuiObj.prototype.getxmlparam;
   GuiObj.prototype.getxmlparam = function (key: string) { return getAttribute.call(this, key) ?? ""; };
@@ -127,7 +158,7 @@ export function installMakiActionEvents() {
     return found;
   };
   (GuiObj.prototype as any).onaction = onaction;
-  (GuiObj.prototype as any).sendaction = async function (action: string, param: string, x: number, y: number, p1: number, p2: number) {
+  (GuiObj.prototype as any).sendaction = function (action: string, param: string, x: number, y: number, p1: number, p2: number) {
     return onaction.call(this, action, param, x, y, p1, p2, this);
   };
 }

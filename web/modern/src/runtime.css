@@ -18,6 +18,45 @@ body {
   font-size: 10px;
 }
 
+/* Glyphs outside a short number-only atlas are blank, not tiled copies of
+   another cell (ClassicPro's unused first row contains a magenta warning).
+   background-repeat-x is not a supported CSS property in Chromium. */
+text span {
+  background-repeat: no-repeat;
+}
+
+.pl.list {
+  color: var(--color-wasabi-list-text, var(--color-studio-list-text, white));
+}
+.pl.list .current {
+  color: var(--color-wasabi-list-text-current, inherit);
+}
+
+/* Wasabi widths include their frame. HTML borders must not enlarge controls
+   or consume text space that the skin measured with Text.getAutoWidth(). */
+button.wasabi {
+  box-sizing: border-box;
+  border: 0;
+  isolation: isolate;
+  font: 11px "Liberation Sans", "DejaVu Sans", Arial, sans-serif;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  color: var(--color-wasabi-button-text, var(--color-wasabi-list-text, white));
+}
+button.wasabi::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border: 4px solid transparent;
+  border-image: var(--bitmap-studio-button) 4 fill;
+  pointer-events: none;
+  z-index: -1;
+}
+button.wasabi:active::after {
+  border-image-source: var(--bitmap-studio-button-pressed);
+}
+
 /* HostLibrarySlot is a custom GUI tag, just like the upstream windowholder.
    Inline display:none from the skin still takes precedence when a tab hides. */
 [data-kog-library] {

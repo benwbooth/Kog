@@ -1,5 +1,19 @@
 # Kog release packages
 
+## NixOS
+
+The Linux flake exports `packages.default` and `apps.default`, including the
+desktop entry and decoder helpers. Fetch submodules when using the flake:
+
+```nix
+inputs.kog.url = "git+https://github.com/benwbooth/Kog?ref=v0.2.1&submodules=1";
+# In the host module:
+environment.systemPackages = [ inputs.kog.packages.${pkgs.stdenv.hostPlatform.system}.default ];
+```
+
+Keep Kog's own pinned nixpkgs input for matching Qt libraries and QML plugins.
+For a local build, use `nix build 'git+file:///absolute/path/to/Kog?submodules=1'`.
+
 Kog's release workflow produces native packages from the same source revision:
 
 - Windows: a portable ZIP containing `Kog.exe`, its bundled helper programs,

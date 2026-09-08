@@ -39,7 +39,7 @@ function lifecycleState(uiRoot: UIRoot): LifecycleState {
   return state;
 }
 
-function resolveRgb(
+export function resolveRgb(
   uiRoot: UIRoot,
   color: SkinColor,
   seen = new Set<string>(),

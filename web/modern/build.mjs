@@ -12,7 +12,7 @@ import {
 import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
-import { adaptMakiResolver, adaptMakiSource } from "./maki-compat.mjs";
+import { adaptMakiResolver, adaptMakiSource, adaptMakiText, adaptMakiSkinEngine, adaptMakiColors, adaptMakiLayer } from "./maki-compat.mjs";
 
 const projectDir = path.dirname(fileURLToPath(import.meta.url));
 const repositoryDir = path.resolve(projectDir, "../..");
@@ -50,6 +50,18 @@ const classicProAssetsPlugin = {
 const makiInstructionBudgetPlugin = {
   name: "kog-maki-instruction-budget",
   setup(buildContext) {
+    buildContext.onLoad({ filter: /[/\\]makiClasses[/\\]Layer\.ts$/ }, async args => ({
+      contents: adaptMakiLayer(await readFile(args.path, "utf8")), loader: "ts",
+    }));
+    buildContext.onLoad({ filter: /[/\\]UIRoot\.ts$/ }, async args => ({
+      contents: adaptMakiColors(await readFile(args.path, "utf8"), path.join(projectDir, "src/classicpro-colors.ts")), loader: "ts",
+    }));
+    buildContext.onLoad({ filter: /[/\\]skin[/\\]SkinEngine_WAL\.ts$/ }, async args => ({
+      contents: adaptMakiSkinEngine(await readFile(args.path, "utf8")), loader: "ts",
+    }));
+    buildContext.onLoad({ filter: /[/\\]makiClasses[/\\]Text\.ts$/ }, async (args) => ({
+      contents: adaptMakiText(await readFile(args.path, "utf8"), path.join(projectDir, "src/maki-locales.js")), loader: "ts",
+    }));
     buildContext.onLoad({ filter: /[/\\]maki[/\\](constants|parser)\.ts$/ }, async (args) => ({
       contents: adaptMakiSource(path.basename(args.path, ".ts"), await readFile(args.path, "utf8")), loader: "ts",
     }));

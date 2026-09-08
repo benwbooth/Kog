@@ -6,6 +6,7 @@ import SystemObject from "../../../native/webamp/packages/webamp-modern/src/skin
 import XuiElement from "../../../native/webamp/packages/webamp-modern/src/skin/makiClasses/XuiElement";
 import { XmlElement } from "@rgrove/parse-xml";
 import { getMakiEmbeddedObject, setMakiEmbeddedObject } from "./maki-members.js";
+import { getMakiString, registerMakiStrings } from "./maki-locales.js";
 
 type MakiValue = { type: "INT" | "STRING"; value: number | string };
 
@@ -34,7 +35,6 @@ type BrowserState = {
 };
 
 const states = new WeakMap<object, BrowserState>();
-const stringTables = new WeakMap<object, Map<string, Map<number, string>>>();
 const POLICY_ERROR = -1;
 const MAX_HISTORY_ENTRIES = 128;
 const MAX_NAVIGATIONS_PER_WINDOW = 128;
@@ -42,16 +42,10 @@ const NAVIGATION_WINDOW_MS = 1000;
 let installed = false;
 
 function registerStringTable(uiRoot: object, node: XmlElement): void {
-  const tableId = String(node.attributes.id ?? "");
-  if (!tableId) return;
-  let tables = stringTables.get(uiRoot);
-  if (!tables) {
-    tables = new Map();
-    stringTables.set(uiRoot, tables);
-  }
+  const tableId = String(node.attributes.id ?? "nullsoft.wasabi");
   // LocalesManager::AddString merges entries into the exact named table;
   // later fragments replace only matching ids, not the complete table.
-  const entries = tables.get(tableId) ?? new Map<number, string>();
+  const entries = new Map<number, string>();
   for (const child of node.children) {
     if (!(child instanceof XmlElement) || child.name.toLowerCase() !== "stringentry") continue;
     const rawId = String(child.attributes.id ?? "").trim();
@@ -60,14 +54,14 @@ function registerStringTable(uiRoot: object, node: XmlElement): void {
     if (!Number.isSafeInteger(id) || id < 0) continue;
     entries.set(id, String(child.attributes.string ?? ""));
   }
-  tables.set(tableId, entries);
+  registerMakiStrings(uiRoot, tableId, entries);
 }
 
 function getString(uiRoot: object | undefined, table: unknown, id: unknown): string {
   if (!uiRoot) return "";
   const entryId = Number(id);
   if (!Number.isSafeInteger(entryId) || entryId < 0) return "";
-  return stringTables.get(uiRoot)?.get(String(table ?? ""))?.get(entryId) ?? "";
+  return getMakiString(uiRoot, table, entryId) ?? "";
 }
 
 function urlEncode(value: unknown): string {

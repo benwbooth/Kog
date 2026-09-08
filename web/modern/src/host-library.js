@@ -31,7 +31,7 @@ function visibleRect(element, document, viewport) {
   return rect;
 }
 
-// Only geometry leaves the renderer. The real file browser is a trusted QML
+// Only geometry and bounded palette colors leave the renderer. The file browser is a trusted QML
 // overlay; no filenames, model objects or filesystem commands enter this page.
 export function libraryViewport(document, viewport) {
   // Menus retain hidden popup DOM between uses. Only an open, visible popup
@@ -57,8 +57,12 @@ export function libraryViewport(document, viewport) {
 
 export function publishLibraryViewport(send, document = globalThis.document, window = globalThis.window) {
   let previous = "";
+  let previousStyle = "";
   let refreshTicks = 0;
   const update = () => {
+    const palette = libraryStyle(document);
+    const styleKey = JSON.stringify(palette);
+    if (styleKey !== previousStyle || refreshTicks <= 1) { send("libraryStyle", palette); previousStyle = styleKey; }
     const rect = libraryViewport(document, { x: 0, y: 0, width: window.innerWidth, height: window.innerHeight });
     const next = JSON.stringify(rect);
     // WebChannel requests can be rate-limited during script startup. Refresh
@@ -73,4 +77,26 @@ export function publishLibraryViewport(send, document = globalThis.document, win
   update();
   const timer = window.setInterval(update, 100);
   window.addEventListener("pagehide", () => window.clearInterval(timer), { once: true });
+}
+
+// Only bounded color values cross this bridge, never CSS, assets, or paths.
+export function libraryStyle(document) {
+  const root = document.getElementById?.("ui-root");
+  const style = root ? document.defaultView.getComputedStyle(root) : null;
+  const color = (name, fallback) => {
+    const value = style?.getPropertyValue(`--color-${name}`).trim() || "";
+    if (/^#[0-9a-f]{6}$/i.test(value)) return value;
+    const rgb = value.match(/^rgb\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)$/i);
+    return rgb && rgb.slice(1).every(n => Number(n) <= 255)
+      ? "#" + rgb.slice(1).map(n => Number(n).toString(16).padStart(2, "0")).join("") : fallback;
+  };
+  return {
+    background: color("wasabi-list-background", "#202020"),
+    text: color("wasabi-list-text", "#ffffff"),
+    selection: color("wasabi-list-text-selected-background", "#405880"),
+    selectionText: color("wasabi-list-text-selected", "#ffffff"),
+    frame: color("wasabi-window-background", "#808080"),
+    header: color("wasabi-list-column-background", "#808080"),
+    headerText: color("wasabi-list-column-text", "#000000"),
+  };
 }

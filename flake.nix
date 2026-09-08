@@ -49,6 +49,52 @@
         ];
       in
       {
+        packages = pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          default = pkgs.rustPlatform.buildRustPackage {
+            pname = "kog";
+            version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version;
+            src = pkgs.lib.cleanSource ./.;
+            cargoLock.lockFile = ./Cargo.lock;
+            nativeBuildInputs = [ pkgs.cmake pkgs.ninja pkgs.pkg-config pkgs.clang pkgs.qt6.wrapQtAppsHook ];
+            # Cargo invokes CMake/Ninja for decoder libraries; they must not
+            # replace Cargo's top-level configure/build/install phases.
+            dontUseCmakeConfigure = true;
+            dontUseNinjaBuild = true;
+            dontUseNinjaCheck = true;
+            dontUseNinjaInstall = true;
+            buildInputs = qtModules ++ [ kogFfmpeg pkgs.libarchive pkgs.alsa-lib pkgs.zlib pkgs.libxcb-cursor ];
+            QMAKE = "${qtEnv}/bin/qmake";
+            LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+            preBuild = ''
+              export PATH="${qtEnv}/bin:${qtEnv}/libexec:$PATH"
+              # Qt's setup hook can replace QMAKE with qtbase's split output.
+              # CXX-Qt needs the combined installation's QML .prl metadata.
+              export QMAKE="${qtEnv}/bin/qmake"
+              export QT_INCLUDE_PATH="${qtEnv}/include"
+              export QT_LIBEXEC_PATH="${qtEnv}/libexec"
+            '';
+            postInstall = ''
+              for helper in kog-sfm-helper kog-psf-helper kog-psf2-helper kog-2sf-helper kog-snsf-helper kog-syntrax-helper kog-sc55-helper; do
+                helperPath=$(find target -type f -path "*/bin/$helper" -print -quit)
+                test -n "$helperPath" || { echo "Missing decoder helper: $helper" >&2; exit 1; }
+                install -m755 "$helperPath" "$out/bin/$helper"
+              done
+              install -Dm644 packaging/linux/org.kog.player.desktop "$out/share/applications/org.kog.player.desktop"
+              install -Dm644 qml/icons/kog.svg "$out/share/icons/hicolor/scalable/apps/org.kog.player.svg"
+              install -Dm644 packaging/linux/org.kog.player.metainfo.xml "$out/share/metainfo/org.kog.player.metainfo.xml"
+            '';
+            meta = {
+              description = "Format-comprehensive local music player";
+              homepage = "https://github.com/benwbooth/Kog";
+              license = pkgs.lib.licenses.gpl3Plus;
+              platforms = pkgs.lib.platforms.linux;
+              mainProgram = "kog";
+            };
+          };
+        };
+        apps = pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          default = { type = "app"; program = "${inputs.self.packages.${system}.default}/bin/kog"; };
+        };
         devShells.default = pkgs.mkShell {
           packages =
             (with pkgs; [

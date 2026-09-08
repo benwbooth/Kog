@@ -151,6 +151,9 @@ export class StateStore {
 }
 
 const ACTIVATION_REQUIRED = new Set([
+  "windowMove",
+  "windowResize",
+  "windowMinimize",
   "clear",
   "remove",
   "move",

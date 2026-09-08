@@ -12,15 +12,24 @@ ApplicationWindow {
     property var skin: ({})
     property var libraryModel: null
     property var libraryViewport: null
+    property var libraryStyle: ({ background: "#202020", text: "#ffffff", selection: "#405880", selectionText: "#ffffff", frame: "#808080", header: "#808080", headerText: "#000000" })
     property string rendererStatus: qsTr("Loading modern skin…")
     property int sentRevision: -1
     property int requestCount: 0
     property double requestWindow: 0
     property bool pageStarted: false
+    property bool skinOwnsWindow: false
+    property bool showHostControls: false
+    // Set this before creating the Wayland surface; skin chrome must not depend
+    // on a later (potentially rate-limited) renderer geometry message.
+    flags: Qt.Window | Qt.FramelessWindowHint
+    color: "transparent"
     Component.onCompleted: pageStarted = true
     signal openGallery()
     signal openEqualizer()
     signal openVisualizer()
+    signal systemMoveRequested()
+    onSystemMoveRequested: startSystemMove()
     title: qsTr("Kog — %1 (modern skin)").arg(skin.title || "Modern")
     width: 1000
     height: 720
@@ -34,6 +43,9 @@ ApplicationWindow {
         }
     }
     onSkinChanged: {
+        skinOwnsWindow = false
+        maximumWidth = 16384
+        maximumHeight = 16384
         libraryViewport = null
         sentRevision = -1
         rendererStatus = qsTr("Loading modern skin…")
@@ -63,6 +75,38 @@ ApplicationWindow {
         let data
         try { data = JSON.parse(payload) } catch (_) { return }
         switch (name) {
+        case "libraryStyle":
+            if (data && ["background", "text", "selection", "selectionText", "frame", "header", "headerText"].every(
+                    key => typeof data[key] === "string" && /^#[0-9a-f]{6}$/i.test(data[key]))) {
+                libraryStyle = { background: data.background, text: data.text, selection: data.selection,
+                    selectionText: data.selectionText, frame: data.frame, header: data.header, headerText: data.headerText }
+            }
+            break
+        case "windowGeometry":
+            if (data && [data.width, data.height, data.minimumWidth, data.minimumHeight, data.maximumWidth, data.maximumHeight].every(number)
+                    && data.width >= data.minimumWidth && data.height >= data.minimumHeight
+                    && data.minimumWidth > 0 && data.minimumHeight > 0
+                    && data.maximumWidth >= data.width && data.maximumHeight >= data.height
+                    && data.maximumWidth <= 16384 && data.maximumHeight <= 16384) {
+                minimumWidth = data.minimumWidth
+                minimumHeight = data.minimumHeight
+                maximumWidth = data.maximumWidth
+                maximumHeight = data.maximumHeight
+                width = data.width
+                height = data.height
+                skinOwnsWindow = true
+            }
+            break
+        case "windowMove": systemMoveRequested(); break
+        case "windowResize":
+            if (skinOwnsWindow && data && [data.left, data.right, data.top, data.bottom].every(v => typeof v === "boolean")
+                    && !(data.left && data.right) && !(data.top && data.bottom)) {
+                const edges = (data.left ? Qt.LeftEdge : 0) | (data.right ? Qt.RightEdge : 0)
+                            | (data.top ? Qt.TopEdge : 0) | (data.bottom ? Qt.BottomEdge : 0)
+                if (edges) startSystemResize(edges)
+            }
+            break
+        case "windowMinimize": showMinimized(); break
         case "libraryViewport":
             // Geometry only: the renderer never receives a directory model or paths.
             if (data === null) libraryViewport = null
@@ -129,6 +173,9 @@ ApplicationWindow {
         function request(command, payloadJson) { root.command(command, payloadJson) }
     }
     Timer { interval: 100; running: root.visible; repeat: true; onTriggered: root.updateState(false) }
+    Shortcut { sequence: "F10"; onActivated: root.showHostControls = !root.showHostControls }
+    SkinResizeGrip { targetWindow: root }
+    Shortcut { sequence: "Ctrl+Shift+K"; onActivated: { root.hide(); root.mainWindow.showFromTray() } }
     ColumnLayout {
         anchors.fill: parent
         spacing: 0
@@ -141,6 +188,7 @@ ApplicationWindow {
                 id: web
                 objectName: "modernWebView"
                 anchors.fill: parent
+                backgroundColor: "transparent"
                 url: "qrc:/kog/modern/index.html"
                 webChannel: channel
                 profile: ModernSkinProfile { skinPath: root.skin.archivePath || "" }
@@ -172,12 +220,15 @@ ApplicationWindow {
                 y: root.libraryViewport ? root.libraryViewport.y : 0
                 width: root.libraryViewport ? root.libraryViewport.width : 0
                 height: root.libraryViewport ? root.libraryViewport.height : 0
-                sourceComponent: ModernLibraryPanel { app: root.app; libraryModel: root.libraryModel }
+                sourceComponent: ModernLibraryPanel { app: root.app; libraryModel: root.libraryModel; skinStyle: root.libraryStyle }
             }
         }
         RowLayout {
-            Layout.fillWidth: true
-            Layout.margins: 6
+            parent: root.contentItem
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            visible: root.showHostControls || !root.skinOwnsWindow
             Label { text: root.rendererStatus; textFormat: Text.PlainText; elide: Text.ElideRight; Layout.fillWidth: true }
             ToolButton { text: qsTr("Skins…"); onClicked: root.openGallery() }
             ToolButton { text: qsTr("Kog"); onClicked: { root.hide(); root.mainWindow.showFromTray() } }

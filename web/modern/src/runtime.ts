@@ -8,6 +8,7 @@ import PlayListGui from "../../../native/webamp/packages/webamp-modern/src/skin/
 import GuiObj from "../../../native/webamp/packages/webamp-modern/src/skin/makiClasses/GuiObj";
 import { XmlElement } from "@rgrove/parse-xml";
 import SystemObject from "../../../native/webamp/packages/webamp-modern/src/skin/makiClasses/SystemObject";
+import { integerToLongTime } from "./maki-time.js";
 import Timer from "../../../native/webamp/packages/webamp-modern/src/skin/makiClasses/Timer";
 import Text from "../../../native/webamp/packages/webamp-modern/src/skin/makiClasses/Text";
 import {
@@ -33,6 +34,7 @@ import { installMakiGeometry } from "./maki-geometry";
 import { installMakiConfigBindings } from "./maki-config";
 import { installMakiDispatch } from "./maki-dispatch";
 import { isLibraryComponent, publishLibraryViewport } from "./host-library.js";
+import { installHostWindow } from "./host-window";
 import { beginMakiStartup, finishMakiStartup, resumeMakiTimers, installMakiStartup } from "./maki-startup";
 import {
   CommandGateway,
@@ -574,7 +576,7 @@ function installAudioAdapter(root: UIRoot) {
   store.subscribe((next: any, previous: any) => {
     audio._isStop = next.playback === "stopped";
     audio._eqEnabled = next.eqEnabled;
-    if (next.position !== previous.position || next.duration !== previous.duration) {
+    if (next.position !== previous.position || next.duration !== previous.duration || next.playback !== previous.playback) {
       audio.trigger("timeupdate");
       if (pendingSeek) {
         pendingSeek = false;
@@ -723,6 +725,7 @@ function installUiActions(root: UIRoot) {
   }
 
   const systemPrototype = SystemObject.prototype as any;
+  systemPrototype.integertolongtime = integerToLongTime;
   const currentMetadata = (system: any) => {
     const track = system._uiRoot.playlist.currentTrack();
     return track?.metadata || {};
@@ -876,6 +879,7 @@ async function main() {
   hideLoading();
   window.kogModern = { root, state: store, commands: gateway, scriptDiagnostics };
   gateway.send("ready");
+  installHostWindow(root, (command, data) => gateway?.send(command, data));
   publishLibraryViewport((command: string, data: unknown) => gateway?.send(command, data));
 }
 

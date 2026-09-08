@@ -388,6 +388,11 @@ fn install_archive_in(
             width,
             height,
         ) {
+            // A missing/unusable optional font must not reject the whole skin.
+            // Older two-row TEXT.BMP sheets remain valid above.
+            if name == "text" {
+                continue;
+            }
             return Err(format!("Invalid or oversized {target_name} bitmap"));
         }
         let destination = staging.path().join(&target_name);
@@ -543,8 +548,7 @@ mod tests {
         }
     }
 
-    fn bitmap() -> Vec<u8> {
-        let (width, height) = (275_u32, 116_u32);
+    fn bitmap_with_size(width: u32, height: u32) -> Vec<u8> {
         let stride = (width * 3 + 3) & !3;
         let length = 54 + stride * height;
         let mut bytes = vec![0_u8; length as usize];
@@ -557,6 +561,10 @@ mod tests {
         bytes[26..28].copy_from_slice(&1_u16.to_le_bytes());
         bytes[28..30].copy_from_slice(&24_u16.to_le_bytes());
         bytes
+    }
+
+    fn bitmap() -> Vec<u8> {
+        bitmap_with_size(275, 116)
     }
 
     #[test]
@@ -592,6 +600,64 @@ mod tests {
         assert!(!folder.join("skin.maki").exists());
         assert!(!folder.join("vis.dll").exists());
         assert_eq!(fs::read_dir(folder).unwrap().count(), 3);
+    }
+
+    #[test]
+    fn legacy_two_row_text_bitmap_is_preserved() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("skin.wsz");
+        let bmp = bitmap();
+        let legacy_text = bitmap_with_size(150, 12);
+        crate::archive::tests::write_stored_zip(
+            &path,
+            &[
+                ("main.bmp", &bmp),
+                ("cbuttons.bmp", &bmp),
+                ("text.bmp", &legacy_text),
+            ],
+        );
+        let skin = install_archive_in(
+            &path,
+            "Test",
+            "",
+            &Value::Null,
+            &dir.path().join("installed"),
+        )
+        .unwrap();
+        assert!(skin["assets"]["text"].as_str().is_some());
+    }
+
+    #[test]
+    fn undersized_optional_text_bitmap_uses_the_ui_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("skin.wsz");
+        let bmp = bitmap();
+        let incomplete_text = bitmap_with_size(149, 12);
+        crate::archive::tests::write_stored_zip(
+            &path,
+            &[
+                ("main.bmp", &bmp),
+                ("cbuttons.bmp", &bmp),
+                ("text.bmp", &incomplete_text),
+            ],
+        );
+        let skin = install_archive_in(
+            &path,
+            "Test",
+            "",
+            &Value::Null,
+            &dir.path().join("installed"),
+        )
+        .unwrap();
+
+        assert!(skin["assets"]["main"].as_str().is_some());
+        assert!(skin["assets"]["cbuttons"].as_str().is_some());
+        assert!(skin["assets"]["text"].is_null());
+        let main = url::Url::parse(skin["assets"]["main"].as_str().unwrap())
+            .unwrap()
+            .to_file_path()
+            .unwrap();
+        assert!(!main.parent().unwrap().join("text.bmp").exists());
     }
 
     #[test]

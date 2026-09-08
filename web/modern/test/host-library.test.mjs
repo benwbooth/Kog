@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { isLibraryComponent, intersectRect, libraryViewport, publishLibraryViewport } from "../src/host-library.js";
+import { isLibraryComponent, intersectRect, libraryViewport, publishLibraryViewport, libraryStyle } from "../src/host-library.js";
 
 test("library slots match the media library GUID, not arbitrary components", () => {
   assert.equal(isLibraryComponent("guid:{6B0EDF80-C9A5-11D3-9F26-00C04F39FFC6}"), true);
@@ -26,7 +26,7 @@ test("library geometry refresh recovers a dropped host update and stops on page 
     addEventListener(event, callback) { assert.equal(event, "pagehide"); pagehide = callback; },
   };
   const calls = [];
-  publishLibraryViewport((...args) => calls.push(args), document, window);
+  publishLibraryViewport((...args) => { if (args[0] === "libraryViewport") calls.push(args); }, document, window);
   assert.deepEqual(calls, [["libraryViewport", null]]);
   for (let i = 0; i < 9; ++i) tick();
   assert.equal(calls.length, 1);
@@ -34,6 +34,19 @@ test("library geometry refresh recovers a dropped host update and stops on page 
   assert.deepEqual(calls, [["libraryViewport", null], ["libraryViewport", null]]);
   pagehide();
   assert.equal(cleared, 123);
+});
+
+test("native library palette accepts only normalized RGB colors, never raw CSS", () => {
+  const values = { '--color-wasabi-list-background': 'rgb(28, 61, 125)',
+    '--color-wasabi-list-text': 'rgb(255,255,255)', '--color-wasabi-list-column-text': 'url(file:///private)' };
+  const document = { getElementById: () => ({}), defaultView: {
+    getComputedStyle: () => ({ getPropertyValue: name => values[name] || '' }),
+  } };
+  const palette = libraryStyle(document);
+  assert.equal(palette.background, '#1c3d7d');
+  assert.equal(palette.text, '#ffffff');
+  assert.equal(palette.headerText, '#000000');
+  assert.ok(Object.values(palette).every(value => /^#[0-9a-f]{6}$/.test(value)));
 });
 
 test("library viewport hides inactive slots and popup menus, clips and rounds inward", () => {

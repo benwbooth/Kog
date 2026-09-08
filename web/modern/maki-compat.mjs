@@ -10,6 +10,54 @@ export function adaptMakiResolver(source, servicesModule) {
     + replace(source, "const klass = GUID_MAP[guid];", "const klass = GUID_MAP[guid] || classicProClasses[guid];");
 }
 
+export function adaptMakiSkinEngine(source) {
+  return replace(source, "const ResourcesTag = [", 'const ResourcesTag = ["stringtable",');
+}
+
+export function adaptMakiLayer(source) {
+  // Native Layer::Layer enables guiobject_setMover(1). XML move=0 can
+  // subsequently disable it; do not change defaults for buttons or sliders.
+  return replace(source, "export default class Layer extends Movable {", `export default class Layer extends Movable {
+  constructor(uiRoot) {
+    super(uiRoot);
+    this.setXmlAttr("move", "1");
+  }`);
+}
+
+export function adaptMakiColors(source, colorsModule) {
+  source = replace(source, "const groupId = color.getGammaGroup();\n      const gammaGroup = this._getGammaGroup(groupId);\n      const url = gammaGroup.transformColor(color.getValue());",
+    "const resolved = resolveRgb(this, color);\n      const gammaGroup = this._getGammaGroup(resolved.gammaGroup);\n      const url = gammaGroup.transformColor(resolved.rgb.join(','));");
+  return `import { resolveRgb } from ${JSON.stringify(colorsModule)};\n` + source;
+}
+
+export function adaptMakiText(source, localesModule) {
+  // Explicit text overrides a dynamic display until cleared, as in Text::getPrintedText.
+  source = replace(source, '    if (this._display) {\n      if (this._display == "songinfo")', '    if (this._text) return this._text;\n    if (this._display) {\n      if (this._display == "songinfo")');
+  source = replace(source, 'this.setDisplayValue("  : ");', 'this.setDisplayValue("  :  ");');
+  const marker = "  _renderText() {";
+  if (!source.includes(marker)) throw new Error("Pinned MAKI text renderer changed");
+  const start = source.indexOf(marker);
+  // Text.getText and onTextChanged expose the source text in Wasabi. Resolve
+  // string-table references only in rendering and geometry calculations.
+  const rendering = source.slice(start).replaceAll("this.gettext()", "renderedMakiString(this, this.gettext())");
+  source = source.slice(0, start) + rendering;
+  source = replace(source, "context.measureText(renderedMakiString(this, this.gettext()))", "context.measureText(txt)");
+  source = replace(source, "_getBitmapFontTextWidth(font: BitmapFont): number {", "_getBitmapFontTextWidth(font: BitmapFont, text = renderedMakiString(this, this.gettext())): number {");
+  source = replace(source, "return renderedMakiString(this, this.gettext()).length * charWidth;", "return text.length * charWidth;");
+  source = replace(source, "_getTrueTypeTextWidth(font: TrueTypeFont): number {", "_getTrueTypeTextWidth(font: TrueTypeFont, text = renderedMakiString(this, this.gettext()), transform = true): number {");
+  source = replace(source, "let txt = renderedMakiString(this, this.gettext());", "let txt = text;");
+  source = replace(source, "if (this._forceuppercase) {\n      txt", "if (transform && this._forceuppercase) {\n      txt");
+  source = replace(source, "} else if (this._forcelowercase) {\n      txt", "} else if (transform && this._forcelowercase) {\n      txt");
+  // Native Text::getTextWidth is deliberately distinct from getPreferences:
+  // the script API measures unlocalized text and includes four pixels padding.
+  source = replace(source, "return this.getautowidth();", `const font = this._font_obj;
+    const text = this.gettext();
+    return 4 + (font instanceof BitmapFont
+      ? this._getBitmapFontTextWidth(font, text)
+      : this._getTrueTypeTextWidth(font, text, false));`);
+  return `import { renderedMakiString } from ${JSON.stringify(localesModule)};\n` + source;
+}
+
 export function adaptMakiSource(kind, source, membersModule) {
   if (kind === "constants") {
     return replace(source, "export const COMMANDS = {", 'export const COMMANDS = {\n  104: { name: "userMember", arg: "type", in: "2", out: "1" },');
@@ -22,6 +70,16 @@ export function adaptMakiSource(kind, source, membersModule) {
     return source;
   }
   if (kind === "interpreter") {
+    source = replace(source, `if (b.value && a.value) {
+            this.push(a);
+          } else {
+            this.push(b);
+          }`, "this.push(V.newBool(Boolean(b.value) && Boolean(a.value)));");
+    source = replace(source, `if (b.value) {
+            this.push(b);
+          } else {
+            this.push(a);
+          }`, "this.push(V.newBool(Boolean(b.value) || Boolean(a.value)));");
     source = `import { makiMember, makiInterface } from ${JSON.stringify(membersModule)};\n` + source;
     source = `import { runMakiGenerator, isMakiPromise } from ${JSON.stringify(membersModule.replace(/maki-members\.js$/, "maki-execution.js"))};\n` + source;
     source = replace(source, 'export async function interpret(', 'export function interpret(');

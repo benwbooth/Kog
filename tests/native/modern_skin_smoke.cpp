@@ -23,6 +23,7 @@
 #include <QtQuick/QQuickWindow>
 #include <QtWebChannelQuick/QQmlWebChannel>
 #include <QtTest/QTest>
+#include <QtTest/QSignalSpy>
 #include <QtWidgets/QApplication>
 
 #include <cstdio>
@@ -160,7 +161,7 @@ signals:
     void stateChanged();
     void directory_pathChanged();
 private:
-    QString m_playback = "playing";
+    QString m_playback = qEnvironmentVariableIsSet("KOG_MODERN_INSPECT_STOPPED") ? "stopped" : "playing";
     int m_revision = 7;
     int m_stateRequests = 0;
     int m_fullStateRequests = 0;
@@ -320,6 +321,22 @@ void checkClassicProBrowserScripts(QObject *player, QObject *web)
             }, 10'000, "ClassicPro browser script diagnostics"), "renderer reports browser script diagnostics");
     require(player->property("rendererStatus").toString() == "Skin error: modern browser scripts failures=[]",
             "ClassicPro browser initialization and callbacks complete: " + player->property("rendererStatus").toString());
+    runJavaScript(web, QStringLiteral(
+        "(() => { const visited = new Set(); let translated = 0; const failures = []; const visit = object => { "
+        "if (!object || visited.has(object)) return; visited.add(object); "
+        "if (Number(object._translate) === 2 && object._tooltip?.startsWith('@nullsoft.browser#')) { "
+        "const title = object._div.getAttribute('title'); if (title && !title.startsWith('@')) translated++; "
+        "else failures.push(object.getId() + ':' + title); } (object._children || []).forEach(visit); }; "
+        "window.kogModern.root.getContainers().forEach(container => container._layouts.forEach(visit)); "
+        "const sample = window.kogModern.root.vm._scripts[0].variables[0].value.getstring('nullsoft.browser', 17); "
+        "window.kogModern.commands.send('error', 'modern translated tooltips=' + translated + '; sample=' + sample + '; failures=' + JSON.stringify(failures.slice(0, 5))); })()"));
+    require(waitFor([player] {
+                return player->property("rendererStatus").toString().contains("modern translated tooltips=");
+            }, 10'000, "translated modern-skin tooltip inspection"), "renderer reports translated tooltips");
+    const QString translationStatus = player->property("rendererStatus").toString();
+    require(!translationStatus.contains("tooltips=0;") && translationStatus.contains("; sample=Location;")
+                && translationStatus.endsWith("failures=[]"),
+            "real ClassicPro string-table tooltips render translated text: " + translationStatus);
 }
 
 void checkNativeLibraryPanel(QObject *player, QObject *web, KogFileTreeSearch &model,
@@ -511,6 +528,45 @@ int main(int argc, char **argv)
     }
     const QImage screenshot = window->grabWindow();
     require(!screenshot.isNull() && screenshot.save(screenshotPath), "capture modern-skin screenshot");
+    if (qEnvironmentVariableIsSet("KOG_MODERN_INSPECT_STOPPED")) {
+        app.stop();
+        QTest::qWait(1200);
+        const QImage stopped = window->grabWindow();
+        require(stopped.save(screenshotPath + ".stopped.png"), "capture stopped display");
+        int magenta = 0;
+        for (int y = 37; y < 68; ++y) for (int x = 16; x < 126; ++x) {
+            const QColor pixel = stopped.pixelColor(x, y);
+            if (pixel.red() > 220 && pixel.green() < 40 && pixel.blue() > 100) ++magenta;
+        }
+        require(magenta == 0, "stopped timer must not tile the number atlas warning into blank glyphs");
+        runJavaScript(web, QStringLiteral(
+            "window.kogModern.commands.send('error','clock healthy='+!window.kogModern.scriptDiagnostics.some(m=>m.includes('cProClock')));"));
+        require(waitFor([&player] { return player->property("rendererStatus").toString().contains("clock healthy=true"); },
+                        10'000, "stopped clock script"), "stopped clock script completes without missing methods");
+    }
+    if (expectLibrary) {
+    auto *resizeGrip = player->findChild<QObject *>("skinResizeGrip");
+    require(resizeGrip != nullptr, "modern native resize grip exists");
+    QSignalSpy resizeRequests(resizeGrip, SIGNAL(resizeRequested(int)));
+    require(resizeRequests.isValid(), "native resize signal exists");
+    QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, QPoint(window->width() - 7, window->height() - 7));
+    QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, QPoint(window->width() - 7, window->height() - 7));
+    require(resizeRequests.count() == 1 && resizeRequests.at(0).at(0).toInt() == (Qt::RightEdge | Qt::BottomEdge),
+            "real corner press synchronously reaches native bottom-right resize");
+    QSignalSpy moveRequests(player.get(), SIGNAL(systemMoveRequested()));
+    require(moveRequests.isValid(), "native title-bar move signal exists");
+    QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, QPoint(100, 10));
+    const bool moveReachedHost = waitFor([&moveRequests] { return !moveRequests.isEmpty(); }, 5'000, "real skin title-bar press");
+    QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, QPoint(100, 10));
+    require(moveReachedHost, "real title-bar press reaches native system move without dragging the DOM");
+    require(window->flags().testFlag(Qt::FramelessWindowHint), "single-window skin owns the native window chrome");
+    window->resize(840, 640);
+    QTest::qWait(500);
+    runJavaScript(web, QStringLiteral(
+        "{const l=window.kogModern.root.findContainer('main').getcurlayout(); window.kogModern.commands.send('error','host resize='+l.getwidth()+'x'+l.getheight());}"));
+    require(waitFor([&player] { return player->property("rendererStatus").toString().contains("host resize=840x640"); },
+                    10'000, "host resize reaches MAKI"), "main layout follows native window resize");
+    }
     if (qEnvironmentVariableIsSet("KOG_MODERN_DUMP_DIAGNOSTICS")) {
         runJavaScript(web, QStringLiteral("if (window.kogModern) window.kogModern.scriptDiagnostics.forEach((message, index) => window.kogModern.commands.send('error', 'MAKI ' + index + ': ' + message)); else new QWebChannel(qt.webChannelTransport, channel => channel.objects.kog.request('error', JSON.stringify('Runtime not ready: ' + document.getElementById('runtime-status')?.textContent)));"));
         QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
@@ -561,6 +617,27 @@ int main(int argc, char **argv)
         checkNativeLibraryPanel(player.get(), web, libraryModel, app, libraryRoot.absolutePath(), trackPath, archivePath,
                                 changedLibraryRoot.absolutePath(), changedTrackPath);
         checkClassicProBrowserScripts(player.get(), web);
+        // Exercise the real skin tab, not a synthetic libraryViewport hide.
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, QPoint(132, 116));
+        QTest::qWait(700);
+        require(window->grabWindow().save(screenshotPath + ".playlist.png"), "capture real Playlist tab");
+        runJavaScript(web, QStringLiteral(
+            "{ const lists=Array.from(document.querySelectorAll('.content-list')).filter(e=>e.getBoundingClientRect().width>500 && e.innerText.includes('fixture')); const f=window.kogModern.root.findContainer('main').getcurlayout().findobject('centro.mainframe'); window.kogModern.commands.send('error','main playlist visible='+lists.length+'; side='+f.getposition()); }"));
+        require(waitFor([&player] { return player->property("rendererStatus").toString().contains("main playlist visible=1"); },
+                        10'000, "ClassicPro Playlist tab"), "Playlist tab displays the host playlist in the main pane");
+        require(player->property("rendererStatus").toString().endsWith("side=0"), "Playlist tab collapses the duplicate side playlist");
+        for (const QSize size : {QSize(500, 500), QSize(840, 640)}) {
+            window->resize(size);
+            QTest::qWait(500);
+            runJavaScript(web, QStringLiteral(
+                "{const f=window.kogModern.root.findContainer('main').getcurlayout().findobject('centro.mainframe');"
+                "const buttons=Array.from(document.querySelectorAll('button.wasabi')).filter(e=>e.innerText==='Search' && e.getBoundingClientRect().width>0);"
+                "const fits=buttons.length>0 && buttons.every(e=>e.scrollWidth<=e.clientWidth && e.getBoundingClientRect().right<=innerWidth);"
+                "window.kogModern.commands.send('error','playlist resize healthy='+(f.getposition()===0 && fits));}"));
+            require(waitFor([&player] { return player->property("rendererStatus").toString().contains("playlist resize healthy=true"); },
+                            10'000, "playlist search geometry"), "playlist remains collapsed and Search fits after shrinking and growing");
+            player->setProperty("rendererStatus", QStringLiteral("checking next size"));
+        }
     }
 
     const QString secondSkin = repository + "/native/webamp/packages/webamp-modern/assets/skins/WinampModern566.wal";

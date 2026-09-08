@@ -9,7 +9,17 @@ Pane {
     required property var app
     required property var libraryModel
     property string selectedPath: ""
-    padding: 6
+    required property var skinStyle
+    padding: 2
+    font.pixelSize: 12
+    palette.text: skinStyle.text
+    palette.windowText: skinStyle.text
+    palette.buttonText: skinStyle.headerText
+    palette.base: skinStyle.background
+    palette.window: skinStyle.background
+    palette.highlight: skinStyle.selection
+    palette.highlightedText: skinStyle.selectionText
+    background: Rectangle { color: root.skinStyle.background; border.color: root.skinStyle.frame }
     objectName: "modernLibraryPanel"
     clip: true
 
@@ -26,26 +36,28 @@ Pane {
 
     ColumnLayout {
         anchors.fill: parent
-        spacing: 5
+        spacing: 2
         RowLayout {
             Layout.fillWidth: true
-            Label { text: qsTr("Music library"); font.bold: true; Layout.fillWidth: true }
-            ToolButton {
+            Label { text: qsTr("Media Library — Local Files"); color: root.skinStyle.text; font.bold: true; Layout.fillWidth: true }
+            LibraryButton {
                 text: qsTr("Folder…")
                 Accessible.name: qsTr("Choose music folder")
                 onClicked: { root.app.choose_music_folder(); root.refreshRoot() }
             }
         }
-        Label {
-            text: root.app ? root.app.directory_path : ""
-            textFormat: Text.PlainText
-            elide: Text.ElideMiddle
-            Layout.fillWidth: true
-        }
         TextField {
             id: search
             objectName: "modernLibrarySearch"
             Layout.fillWidth: true
+            Layout.preferredHeight: 22
+            color: root.skinStyle.text
+            placeholderTextColor: root.skinStyle.text
+            leftPadding: 4
+            rightPadding: 4
+            topPadding: 2
+            bottomPadding: 2
+            background: Rectangle { color: root.skinStyle.background; border.color: root.skinStyle.frame }
             placeholderText: qsTr("Search files, folders and archives…")
             maximumLength: 200
             selectByMouse: true
@@ -77,9 +89,11 @@ Pane {
                 required property string filePath
                 required property string fileIcon
                 implicitWidth: tree.width
-                implicitHeight: 28
+                implicitHeight: 20
                 text: fileName
                 icon.name: fileIcon
+                palette.text: root.selectedPath === filePath ? root.skinStyle.selectionText : root.skinStyle.text
+                background: Rectangle { color: root.selectedPath === filePath ? root.skinStyle.selection : root.skinStyle.background }
                 onClicked: root.selectedPath = filePath
                 onDoubleClicked: {
                     if (hasChildren) tree.toggleExpanded(row)
@@ -97,23 +111,45 @@ Pane {
         }
         RowLayout {
             Layout.fillWidth: true
-            Button {
+            LibraryButton {
                 text: qsTr("Add to playlist")
                 enabled: root.selectedPath.length > 0
                 onClicked: root.app.add_local_path(root.selectedPath)
             }
-            Button {
+            LibraryButton {
                 text: qsTr("Play")
                 enabled: root.selectedPath.length > 0
                 onClicked: root.app.activate_local_path(root.selectedPath)
             }
-            Item { Layout.fillWidth: true }
+            Label {
+                text: root.app ? root.app.directory_path : ""
+                color: root.skinStyle.text
+                textFormat: Text.PlainText
+                elide: Text.ElideMiddle
+                Layout.fillWidth: true
+            }
             BusyIndicator {
                 running: !!root.libraryModel && (root.libraryModel.searching || searchLayout.busy)
                 visible: running
                 Layout.preferredWidth: 24
                 Layout.preferredHeight: 24
             }
+        }
+    }
+    component LibraryButton: Button {
+        implicitHeight: 22
+        leftPadding: 6
+        rightPadding: 6
+        topPadding: 2
+        bottomPadding: 2
+        background: Rectangle { color: root.skinStyle.header; border.color: root.skinStyle.frame }
+        contentItem: Text {
+            text: parent.text
+            font: parent.font
+            color: root.skinStyle.headerText
+            opacity: parent.enabled ? 1 : 0.5
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
         }
     }
 }

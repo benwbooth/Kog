@@ -9,6 +9,9 @@ ApplicationWindow {
     required property var mainWindow
     property var skin: ({assets: {}})
     property int scaleFactor: 2
+    readonly property real displayScale: Math.max(1, width / 275)
+    property bool geometryReady: false
+    flags: Qt.Window | Qt.FramelessWindowHint
     property bool toolbarVisible: false
     property bool playlistVisible: true
     property string settingsFile: ""
@@ -23,10 +26,22 @@ ApplicationWindow {
     title: qsTr("Kog Classic — ") + (skin.title || "")
     width: 275 * scaleFactor
     height: (116 + (playlistVisible ? 232 : 0)) * scaleFactor + (toolbarVisible ? 44 : 0)
-    minimumWidth: 275 * scaleFactor
-    maximumWidth: 275 * scaleFactor
-    minimumHeight: (116 + (playlistVisible ? 232 : 0)) * scaleFactor + (toolbarVisible ? 44 : 0)
-    maximumHeight: minimumHeight
+    minimumWidth: 275
+    minimumHeight: Math.ceil((116 + (playlistVisible ? 116 : 0)) * displayScale) + (toolbarVisible ? 44 : 0)
+    maximumHeight: playlistVisible ? 16777215 : minimumHeight
+    onScaleFactorChanged: {
+        width = 275 * scaleFactor
+        height = (116 + (playlistVisible ? 232 : 0)) * scaleFactor + (toolbarVisible ? 44 : 0)
+    }
+    onPlaylistVisibleChanged: height = (116 + (playlistVisible ? 232 : 0)) * displayScale + (toolbarVisible ? 44 : 0)
+    onToolbarVisibleChanged: if (geometryReady) height += toolbarVisible ? 44 : -44
+    Component.onCompleted: {
+        // Presets initialize geometry; user resizing must not leave competing
+        // width/height bindings that later undo their drag.
+        width = 275 * scaleFactor
+        height = (116 + (playlistVisible ? 232 : 0)) * scaleFactor + (toolbarVisible ? 44 : 0)
+        geometryReady = true
+    }
     signal openGallery()
     signal openEqualizer()
     signal openVisualizer()
@@ -57,7 +72,7 @@ ApplicationWindow {
     }
     Item {
         width: 275; height: 116
-        scale: root.scaleFactor
+        scale: root.displayScale
         transformOrigin: Item.TopLeft
         SkinSprite { source: root.assets.main || ""; width: 275; height: 116 }
         SkinSprite { source: root.assets.titlebar || ""; width: 275; height: 14; sheetX: 27; sheetY: root.active ? 0 : 15; visible: source.toString().length > 0 }
@@ -75,13 +90,21 @@ ApplicationWindow {
             MouseArea { anchors.fill: parent; onClicked: skinMenu.popup() }
         }
         Rectangle { x: 111; y: 23; width: 153; height: 11; color: root.textColors[0] }
+        ClassicBitmapText {
+            id: bitmapTitle
+            objectName: "classicBitmapTitle"
+            x: 111; y: 27; width: 154
+            source: root.assets.text || ""
+            text: root.app.now_title
+        }
         Text {
             x: 112; y: 24; width: 151; height: 10
             text: root.app.now_title; textFormat: Text.PlainText
             color: root.textColors[1]; font.pixelSize: 8; font.family: "monospace"
             elide: Text.ElideRight
-            MouseArea { anchors.fill: parent; hoverEnabled: true; ToolTip.visible: containsMouse; ToolTip.text: root.app.now_title }
+            visible: !bitmapTitle.bitmapAvailable
         }
+        MouseArea { x: 111; y: 23; width: 153; height: 11; hoverEnabled: true; ToolTip.visible: containsMouse; ToolTip.text: root.app.now_title }
         Text {
             x: 38; y: 24; width: 62; height: 18
             text: Math.floor(root.app.position_seconds / 60) + ":" + String(Math.floor(root.app.position_seconds % 60)).padStart(2, "0")
@@ -169,9 +192,10 @@ ApplicationWindow {
         }
     }
     ClassicPlaylist {
-        x: 0; y: 116 * root.scaleFactor
-        width: 275; height: 232
-        scale: root.scaleFactor
+        objectName: "classicPlaylistPanel"
+        x: 0; y: 116 * root.displayScale
+        width: 275; height: Math.max(116, (root.contentItem.height - y) / root.displayScale)
+        scale: root.displayScale
         transformOrigin: Item.TopLeft
         visible: root.playlistVisible
         app: root.app
@@ -180,10 +204,11 @@ ApplicationWindow {
     }
     MouseArea {
         width: parent.width
-        height: 116 * root.scaleFactor
+        height: 116 * root.displayScale
         acceptedButtons: Qt.RightButton
         onClicked: skinMenu.popup()
     }
+    SkinResizeGrip { targetWindow: root }
     footer: ToolBar {
         objectName: "classicToolbar"
         visible: root.toolbarVisible

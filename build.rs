@@ -77,6 +77,8 @@ fn main() {
     let qt_builder = CxxQtBuilder::new_qml_module(QmlModule::new("org.kog.player").qml_files([
         "qml/CogButton.qml",
         "qml/AudioVisualization.qml",
+        "qml/ClassicBitmapText.qml",
+        "qml/SkinResizeGrip.qml",
         "qml/ClassicPlayer.qml",
         "qml/ClassicPlaylist.qml",
         "qml/ModernPlayer.qml",
