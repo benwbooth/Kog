@@ -62,6 +62,9 @@ AppleDouble (`._*`), `.DS_Store`, `__MACOSX`, `.AppleDouble`, Spotlight/trash
 directories, `Thumbs.db`, and `desktop.ini`. This also applies inside archives.
 These files are not deleted, and the metadata filter does not exclude arbitrary
 dot-prefixed music files or folders.
+The tree also hides files without a supported media, playlist, or archive
+extension, using the current decoder catalog and case-insensitive matching.
+Folders remain visible; a supported extension does not guarantee a file is valid.
 
 Kog uses the desktop's Qt theme and native file dialogs. Closing the main window
 to the system tray is enabled by default where a tray is available. Tray,

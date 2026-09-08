@@ -209,7 +209,7 @@ impl OpenMpt {
     }
 
     pub fn supports_extension(extension: &str) -> bool {
-        let Ok(extension) = CString::new(extension) else {
+        let Ok(extension) = CString::new(extension.to_ascii_lowercase()) else {
             return false;
         };
         unsafe { openmpt_is_extension_supported(extension.as_ptr()) != 0 }

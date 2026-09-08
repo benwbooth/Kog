@@ -66,7 +66,7 @@ static void writeArchive(const QString &path, bool sevenZip = false)
           "Create real archive fixture with libarchive");
     const auto filename = QFile::encodeName(path);
     check(archive_write_open_filename(writer, filename.constData()) == ARCHIVE_OK, "Open archive fixture");
-    for (const auto &name : {"Disc/Hidden Tune.mid", "Disc/日本語 + #%.mid", "Other/song.flac", "../escape.mid",
+    for (const auto &name : {"Disc/Hidden Tune.mid", "Disc/日本語 + #%.mid", "Other/song.FLAC", "../escape.mid", "Disc/Hidden Tune.TXT",
                            "Disc/._Hidden Tune.mid", "__MACOSX/Ghost Theme.flac", "Disc/desktop.ini"}) {
         auto *entry = archive_entry_new();
         archive_entry_set_pathname_utf8(entry, name);
@@ -84,12 +84,14 @@ static void writeArchive(const QString &path, bool sevenZip = false)
 int main(int argc, char **argv)
 {
     QApplication app(argc, argv);
+    const QString formats = R"({"groups":[{"extensions":["MID","FlAc","mp3","zip","7z","m3u","cue"]}]})";
     check(kogIsMetadataPath("Album/._song.flac"), "AppleDouble is metadata");
     check(kogIsMetadataPath("__MACOSX/Album/song.flac"), "Metadata descendants are excluded");
     check(kogIsMetadataPath("Album/DESKTOP.INI"), "Windows metadata is case insensitive");
     check(!kogIsMetadataPath(".music/.song.flac"), "Ordinary hidden music is not metadata");
     if (argc == 4 && QString::fromUtf8(argv[1]) == "--benchmark") {
         KogFileTreeSearch benchmark;
+        benchmark.setSupportedFormats(formats);
         benchmark.setRootPath(QString::fromUtf8(argv[2]));
         for (int pass = 0; pass < 3; ++pass) {
             if (pass == 1) kogClearArchiveMemoryCache(); // Measure persistent-cache reuse too.
@@ -128,6 +130,11 @@ int main(int argc, char **argv)
         check(file.open(QIODevice::WriteOnly), "Create fixture file");
     }
     KogFileTreeSearch model;
+    model.setSupportedFormats(formats);
+    for (const auto &name : {"extensioncase.Mp3", "extensioncase.TXT", "extensioncase"}) {
+        QFile file(base.filePath(name));
+        check(file.open(QIODevice::WriteOnly), "Create extension fixtures");
+    }
     auto highlightCheck = [&](const QString &name, const QString &query,
                               const QString &shown, const QList<QPair<int, int>> &ranges, bool wholeQuery = false) {
         QTextDocument document;
@@ -163,6 +170,14 @@ int main(int argc, char **argv)
             "Browse fixture loaded");
     check(!childNamed(model, model.viewRootIndex(), "__MACOSX").isValid(), "Browse hides metadata folder");
     check(!childNamed(model, model.viewRootIndex(), "desktop.ini").isValid(), "Browse hides Windows metadata");
+    check(childNamed(model, model.viewRootIndex(), "extensioncase.Mp3").isValid(), "Browse accepts mixed-case extensions");
+    check(!childNamed(model, model.viewRootIndex(), "extensioncase.TXT").isValid(), "Browse hides unsupported files");
+    check(!childNamed(model, model.viewRootIndex(), "extensioncase").isValid(), "Browse hides extensionless files");
+    model.setSearchText("extensioncase");
+    settle(model);
+    check(model.rowCount(model.viewRootIndex()) == 1, "Search only includes supported extensions");
+    check(childNamed(model, model.viewRootIndex(), "extensioncase.Mp3").isValid(), "Search accepts mixed-case extensions");
+    model.setSearchText("");
     QQmlEngine engine;
     engine.rootContext()->setContextProperty("testModel", &model);
     if (argc == 3 && QString::fromUtf8(argv[1]) == "--highlight-preview") {
@@ -450,6 +465,10 @@ int main(int argc, char **argv)
     QPersistentModelIndex zipDisc(childNamed(model, zipIndex, "Disc"));
     model.fetchMore(zipDisc);
     waitFor([&] { return model.rowCount(zipDisc) == 2; }, "Internal archive directories expand lazily");
+    check(!childNamed(model, zipDisc, "Hidden Tune.TXT").isValid(), "Archive browsing hides unsupported files");
+    QPersistentModelIndex zipOther(childNamed(model, zipIndex, "Other"));
+    model.fetchMore(zipOther);
+    waitFor([&] { return childNamed(model, zipOther, "song.FLAC").isValid(); }, "Archive browsing accepts uppercase media extensions");
     auto encoded = childNamed(model, zipDisc, QString::fromUtf8("日本語 + #%.mid"));
     auto location = kogArchiveLocation(model.filePath(encoded));
     check(location.archive == zip && location.entry == QString::fromUtf8("Disc/日本語 + #%.mid")

@@ -7,6 +7,9 @@
 #include <QtCore/QFutureWatcher>
 #include <QtCore/QRegularExpression>
 #include <QtCore/QSet>
+#include <QtCore/QJsonDocument>
+#include <QtCore/QJsonObject>
+#include <QtCore/QJsonArray>
 #include <QtCore/QTimer>
 #include <QtCore/QFileSystemWatcher>
 #include <QtCore/QElapsedTimer>
@@ -24,6 +27,10 @@ constexpr int containerRole = directoryRole + 3;
 constexpr int iconRole = directoryRole + 4;
 constexpr int matchLimit = 2000;
 constexpr int nodeLimit = 12000;
+bool supportedFile(const QString &path, const QSet<QString> &extensions)
+{
+    return extensions.contains(QFileInfo(path).suffix().toLower());
+}
 struct TreeEntry {
     QString path;
     bool directory = false;
@@ -70,7 +77,8 @@ struct SearchProgress {
 
 SearchResult scan(const QString &root, const QString &query,
                   const std::shared_ptr<std::atomic_bool> &cancel,
-                  const std::shared_ptr<SearchProgress> &progress)
+                  const std::shared_ptr<SearchProgress> &progress,
+                  const QSet<QString> &extensions)
 {
     SearchResult result;
     QElapsedTimer throttle;
@@ -115,6 +123,7 @@ SearchResult scan(const QString &root, const QString &query,
         const auto info = entries.fileInfo();
         const auto relative = base.relativeFilePath(info.absoluteFilePath());
         if (kogIsMetadataPath(info.absoluteFilePath())) continue;
+        if (!info.isDir() && !supportedFile(info.fileName(), extensions)) continue;
         const bool archive = info.isFile() && kogIsArchive(info.absoluteFilePath());
         if (matches(info.fileName()))
             match(relative, {info.absoluteFilePath(), info.isDir(), info.isDir() || archive});
@@ -135,6 +144,7 @@ SearchResult scan(const QString &root, const QString &query,
         if (!listing.error.isEmpty()) ++result.unreadableArchives;
         for (auto it = listing.entries.cbegin(); it != listing.entries.cend() && !cancel->load(); ++it) {
             if (kogIsMetadataPath(it.key())) continue;
+            if (!it.value() && !supportedFile(it.key(), extensions)) continue;
             // Comparing names is cheap. Only construct encoded member URLs
             // and ancestor paths for actual matches, not every indexed entry.
             if (matches(QFileInfo(it.key()).fileName()))
@@ -174,6 +184,7 @@ public:
     }
     ~KogSearchResults() override { m_cancel->store(true); }
     std::function<void(const QString &)> reportError;
+    QSet<QString> extensions;
 
     void resetResults(QStandardItem *root)
     {
@@ -242,7 +253,7 @@ private:
             }
             appendBatch(target, entries, cancel);
         });
-        job->setFuture(QtConcurrent::run([path, cancel] {
+        job->setFuture(QtConcurrent::run([path, cancel, extensions = extensions] {
             Entries entries;
             auto location = kogArchiveLocation(path);
             if (kogIsArchive(path)) location = {path, {}, true};
@@ -252,6 +263,7 @@ private:
                 const auto prefix = location.entry.isEmpty() ? QString() : location.entry + '/';
                 for (auto it = listing.entries.cbegin(); it != listing.entries.cend(); ++it) {
                     if (kogIsMetadataPath(it.key())) continue;
+                    if (!it.value() && !supportedFile(it.key(), extensions)) continue;
                     if (!it.key().startsWith(prefix)) continue;
                     const auto name = it.key().mid(prefix.size());
                     if (name.isEmpty() || name.contains('/')) continue;
@@ -265,6 +277,7 @@ private:
                 dir.next();
                 const auto info = dir.fileInfo();
                 if (kogIsMetadataPath(info.absoluteFilePath())) continue;
+                if (!info.isDir() && !supportedFile(info.fileName(), extensions)) continue;
                 entries.rows.insert(info.fileName(), {info.absoluteFilePath(), info.isDir(),
                     info.isDir() || kogIsArchive(info.absoluteFilePath())});
             }
@@ -321,6 +334,20 @@ KogFileTreeSearch::KogFileTreeSearch(QObject *parent)
 KogFileTreeSearch::~KogFileTreeSearch()
 {
     if (m_cancel) m_cancel->store(true, std::memory_order_relaxed);
+}
+
+void KogFileTreeSearch::setSupportedFormats(const QString &catalog)
+{
+    QSet<QString> extensions;
+    const auto groups = QJsonDocument::fromJson(catalog.toUtf8()).object().value("groups").toArray();
+    for (const auto &group : groups)
+        for (const auto &extension : group.toObject().value("extensions").toArray())
+            extensions.insert(extension.toString().toLower());
+    if (extensions == m_extensions) return;
+    m_extensions = extensions;
+    m_files->extensions = extensions;
+    m_results->extensions = extensions;
+    if (!m_root.isEmpty()) setRootPath(m_root);
 }
 
 QModelIndex KogFileTreeSearch::setRootPath(const QString &path)
@@ -575,6 +602,6 @@ void KogFileTreeSearch::startSearch()
         if (!batches->isActive()) batches->start();
     });
     // The worker owns only value data and a cancellation flag, never the model.
-    watcher->setFuture(QtConcurrent::run(scan, m_root, m_query, m_cancel, progress));
+    watcher->setFuture(QtConcurrent::run(scan, m_root, m_query, m_cancel, progress, m_extensions));
     updates->start();
 }

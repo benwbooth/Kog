@@ -2094,6 +2094,21 @@ mod tests {
     }
 
     #[test]
+    fn media_extension_matching_is_case_insensitive() {
+        let registry = DecoderRegistry::default();
+        for extension in [
+            "MP3", "fLaC", "MoD", "VaG", "CmF", "M3U", "PlS", "ZIP", "CuE",
+        ] {
+            assert!(
+                registry.accepts_path(Path::new(&format!("song.{extension}"))),
+                "{extension}"
+            );
+        }
+        assert!(!registry.accepts_path(Path::new("notes.TXT")));
+        assert!(!registry.accepts_path(Path::new("README")));
+    }
+
+    #[test]
     fn supported_format_catalog_is_registry_driven_and_complete() {
         let registry = DecoderRegistry::default();
         let catalog: serde_json::Value = serde_json::from_str(&registry.supported_formats_json())

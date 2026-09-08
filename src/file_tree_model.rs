@@ -34,6 +34,10 @@ pub mod qobject {
         fn set_root_path_super(self: Pin<&mut FileTreeModel>, path: &QString) -> QModelIndex;
 
         #[inherit]
+        #[cxx_name = "setSupportedFormats"]
+        fn set_supported_formats(self: Pin<&mut FileTreeModel>, catalog: &QString);
+
+        #[inherit]
         #[cxx_name = "filePath"]
         fn file_path_super(self: &FileTreeModel, index: &QModelIndex) -> QString;
 
@@ -131,6 +135,8 @@ impl qobject::FileTreeModel {
     }
 
     fn set_tree_root(mut self: Pin<&mut Self>, path: PathBuf) {
+        let catalog = crate::decoder::DecoderRegistry::default().supported_formats_json();
+        self.as_mut().set_supported_formats(&QString::from(catalog));
         let path = std::fs::canonicalize(&path).unwrap_or(path);
         if !Path::new(&path).is_dir() {
             return;

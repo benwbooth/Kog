@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QtCore/QSortFilterProxyModel>
+#include <QtCore/QSet>
 #include <QtGui/QFileSystemModel>
 #include <QtGui/QStandardItemModel>
 #include <atomic>
@@ -20,6 +21,7 @@ public:
     explicit KogFileTreeSearch(QObject *parent = nullptr);
     ~KogFileTreeSearch() override;
     Q_INVOKABLE QModelIndex setRootPath(const QString &path);
+    Q_INVOKABLE void setSupportedFormats(const QString &catalog);
     Q_INVOKABLE QString filePath(const QModelIndex &index) const;
     Q_INVOKABLE bool isDir(const QModelIndex &index) const;
     QString searchText() const { return m_query; }
@@ -42,6 +44,7 @@ private:
     std::unique_ptr<KogSearchResults> m_files;
     std::unique_ptr<KogSearchResults> m_results;
     QString m_root;
+    QSet<QString> m_extensions;
     QString m_query;
     QString m_status;
     bool m_searching = false;
