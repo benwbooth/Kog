@@ -351,38 +351,6 @@ Rectangle {
                 }
             }
         }
-
-        MouseArea {
-            id: separatorDrag
-
-            property real previousX: 0
-
-            z: 2
-            width: 9
-            anchors.top: parent.top
-            anchors.bottom: parent.bottom
-            anchors.horizontalCenter: parent.right
-            acceptedButtons: Qt.LeftButton
-            cursorShape: Qt.SplitHCursor
-            preventStealing: true
-            onPressed: mouse => {
-                previousX = mapToItem(root, mouse.x, mouse.y).x
-                mouse.accepted = true
-            }
-            onPositionChanged: mouse => {
-                if (!pressed)
-                    return
-                const currentX = mapToItem(root, mouse.x, mouse.y).x
-                root.setColumnWidth(cell.column.id,
-                    cell.column.width + currentX - previousX)
-                previousX = currentX
-            }
-            onReleased: root.persistLayout()
-            onDoubleClicked: mouse => {
-                root.autoFitColumn(cell.column.id)
-                mouse.accepted = true
-            }
-        }
     }
 
     Row {
@@ -395,6 +363,66 @@ Rectangle {
                 required property var modelData
                 column: modelData
             }
+        }
+    }
+
+    // Resizing reassigns the columns model, which destroys and recreates every
+    // HeaderCell delegate; a separator MouseArea living in a delegate would
+    // lose the mouse grab mid-drag after a single width update. This overlay
+    // is a direct child of the header, so it keeps the grab for the whole drag.
+    MouseArea {
+        id: separatorDrag
+
+        property string dragColumn: ""
+        property real previousX: 0
+
+        function boundaryIndexAt(x) {
+            let edge = 0
+            for (let index = 0; index < root.visibleColumns.length; ++index) {
+                edge += root.visibleColumns[index].width
+                if (x <= edge + 5)
+                    return x >= edge - 5 ? index : -1
+            }
+            return -1
+        }
+
+        anchors.fill: parent
+        z: 2
+        acceptedButtons: Qt.LeftButton
+        hoverEnabled: true
+        cursorShape: mouseX > root.totalWidth ? Qt.ArrowCursor
+            : boundaryIndexAt(mouseX) >= 0
+            ? Qt.SplitHCursor : Qt.PointingHandCursor
+        onPressed: mouse => {
+            const index = boundaryIndexAt(mouse.x)
+            if (index < 0) {
+                mouse.accepted = false
+                return
+            }
+            dragColumn = root.visibleColumns[index].id
+            previousX = mouse.x
+            mouse.accepted = true
+        }
+        onPositionChanged: mouse => {
+            if (dragColumn.length === 0)
+                return
+            const index = root.columnIndex(dragColumn)
+            if (index >= 0)
+                root.setColumnWidth(dragColumn,
+                    root.columns[index].width + mouse.x - previousX)
+            previousX = mouse.x
+        }
+        onReleased: {
+            if (dragColumn.length > 0)
+                root.persistLayout()
+            dragColumn = ""
+        }
+        onCanceled: dragColumn = ""
+        onDoubleClicked: mouse => {
+            const index = boundaryIndexAt(mouse.x)
+            if (index >= 0)
+                root.autoFitColumn(root.visibleColumns[index].id)
+            mouse.accepted = true
         }
     }
 
