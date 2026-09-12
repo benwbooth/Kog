@@ -1412,7 +1412,7 @@ ApplicationWindow {
         }
     }
 
-    SplitView {
+    PaneSplitView {
         anchors.fill: parent
         orientation: Qt.Horizontal
 

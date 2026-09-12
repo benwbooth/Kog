@@ -89,6 +89,7 @@ fn main() {
         "qml/Equalizer.qml",
         "qml/InfoInspector.qml",
         "qml/AboutKog.qml",
+        "qml/PaneSplitView.qml",
         "qml/KineticWheelHandler.qml",
         "qml/Lyrics.qml",
         "qml/Main.qml",
