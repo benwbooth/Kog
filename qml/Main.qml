@@ -1495,45 +1495,69 @@ ApplicationWindow {
                     }
                 }
 
-                RowLayout {
+                Rectangle {
                     Layout.fillWidth: true
-                    Layout.margins: 6
-                    spacing: 4
-                    TextField {
-                        id: treeSearchField
-                        objectName: "treeSearchField"
-                        Layout.fillWidth: true
-                        placeholderText: qsTr("Search files and folders…")
-                        Accessible.name: qsTr("Search music folder, subfolders, and archive contents")
-                        selectByMouse: true
-                        maximumLength: 200
-                        onTextChanged: {
-                            root.clearTreeSelection()
-                            if (text.trim().length === 0) {
-                                treeSearchDebounce.stop()
-                                fileTreeModel.searchText = ""
-                            } else {
-                                treeSearchDebounce.restart()
-                            }
+                    Layout.leftMargin: 6
+                    Layout.rightMargin: 6
+                    Layout.topMargin: 6
+                    Layout.bottomMargin: 6
+                    Layout.preferredHeight: 34
+                    radius: 17
+                    color: root.palette.base
+                    border.width: 1
+                    border.color: treeSearchField.activeFocus ? root.palette.highlight : root.palette.mid
+
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: 10
+                        anchors.rightMargin: 5
+                        spacing: 6
+
+                        Label {
+                            text: "⌕"
+                            color: root.palette.placeholderText
+                            font.pixelSize: 15
                         }
-                        Keys.onEscapePressed: clear()
-                    }
-                    CogButton {
-                        Layout.preferredWidth: 28
-                        Layout.preferredHeight: 28
-                        iconName: "edit-clear"
-                        glyph: "×"
-                        enabled: treeSearchField.text.length > 0
-                        toolTip: qsTr("Clear folder search")
-                        onClicked: treeSearchField.clear()
-                    }
-                    BusyIndicator {
-                        objectName: "treeSearchSpinner"
-                        Layout.preferredWidth: 22
-                        Layout.preferredHeight: 22
-                        visible: fileTreeModel.searching || treeSearchLayout.busy
-                        running: visible
-                        Accessible.name: qsTr("Searching files and archives")
+                        TextField {
+                            id: treeSearchField
+                            objectName: "treeSearchField"
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            verticalAlignment: TextInput.AlignVCenter
+                            placeholderText: qsTr("Search files and folders…")
+                            Accessible.name: qsTr("Search music folder, subfolders, and archive contents")
+                            selectByMouse: true
+                            maximumLength: 200
+                            background: Item {}
+                            onTextChanged: {
+                                root.clearTreeSelection()
+                                if (text.trim().length === 0) {
+                                    treeSearchDebounce.stop()
+                                    fileTreeModel.searchText = ""
+                                } else {
+                                    treeSearchDebounce.restart()
+                                }
+                            }
+                            Keys.onEscapePressed: clear()
+                        }
+                        ToolbarButton {
+                            Layout.preferredWidth: 26
+                            Layout.preferredHeight: 26
+                            visible: treeSearchField.text.length > 0
+                                && !treeSearchSpinner.visible
+                            glyph: "×"
+                            toolTip: qsTr("Clear folder search")
+                            onClicked: treeSearchField.clear()
+                        }
+                        BusyIndicator {
+                            id: treeSearchSpinner
+                            objectName: "treeSearchSpinner"
+                            Layout.preferredWidth: 18
+                            Layout.preferredHeight: 18
+                            visible: fileTreeModel.searching || treeSearchLayout.busy
+                            running: visible
+                            Accessible.name: qsTr("Searching files and archives")
+                        }
                     }
                 }
                 Timer {
