@@ -31,7 +31,6 @@ ApplicationWindow {
 
     property alias sidebarVisible: mainWindowSettings.sidebarVisible
     MainWindowSettings { id: mainWindowSettings }
-    property bool searchVisible: false
     property string playlistHighlightQuery: ""
     property int selectedRow: -1
     property int selectionAnchor: -1
@@ -1109,40 +1108,54 @@ ApplicationWindow {
                 Layout.fillHeight: true
             }
 
-            TextField {
-                id: searchField
-                Layout.preferredWidth: root.compactToolbar ? 122 : 165
-                visible: root.searchVisible
-                placeholderText: qsTr("Search playlist")
-                selectByMouse: true
-                onTextChanged: {
-                    if (text.length === 0) {
-                        playlistSearchTimer.stop()
-                        appController.filter_playlist("")
-                        root.playlistHighlightQuery = ""
-                        root.clearPlaylistSelection()
-                    } else {
-                        playlistSearchTimer.restart()
-                    }
-                }
-                onVisibleChanged: if (visible) forceActiveFocus()
-                Keys.onEscapePressed: {
-                    text = ""
-                    root.searchVisible = false
-                }
-            }
-            ToolbarButton {
-                Layout.preferredWidth: 34
+            Rectangle {
+                Layout.preferredWidth: root.compactToolbar ? 170 : 230
                 Layout.preferredHeight: 34
-                glyph: "⌕"
-                iconName: "edit-find"
-                checkable: true
-                checked: root.searchVisible
-                toolTip: root.searchVisible ? qsTr("Close Search") : qsTr("Search")
-                onToggled: {
-                    root.searchVisible = checked
-                    if (!checked)
-                        searchField.text = ""
+                Layout.alignment: Qt.AlignVCenter
+                radius: 17
+                color: root.palette.base
+                border.width: 1
+                border.color: searchField.activeFocus ? root.palette.highlight : root.palette.mid
+
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: 10
+                    anchors.rightMargin: 5
+                    spacing: 6
+
+                    Label {
+                        text: "⌕"
+                        color: root.palette.placeholderText
+                        font.pixelSize: 15
+                    }
+                    TextField {
+                        id: searchField
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        verticalAlignment: TextInput.AlignVCenter
+                        placeholderText: qsTr("Search playlist")
+                        selectByMouse: true
+                        background: Item {}
+                        onTextChanged: {
+                            if (text.length === 0) {
+                                playlistSearchTimer.stop()
+                                appController.filter_playlist("")
+                                root.playlistHighlightQuery = ""
+                                root.clearPlaylistSelection()
+                            } else {
+                                playlistSearchTimer.restart()
+                            }
+                        }
+                        Keys.onEscapePressed: text = ""
+                    }
+                    ToolbarButton {
+                        Layout.preferredWidth: 26
+                        Layout.preferredHeight: 26
+                        visible: searchField.text.length > 0
+                        glyph: "×"
+                        toolTip: qsTr("Clear playlist search")
+                        onClicked: searchField.clear()
+                    }
                 }
             }
 
@@ -1214,8 +1227,8 @@ ApplicationWindow {
             spacing: 12
 
             RowLayout {
-                Layout.preferredWidth: root.compactToolbar ? 180 : 280
-                Layout.maximumWidth: 320
+                Layout.preferredWidth: root.compactToolbar ? 160 : 240
+                Layout.maximumWidth: 260
                 Layout.fillHeight: true
                 spacing: 10
 
@@ -1383,7 +1396,7 @@ ApplicationWindow {
             }
 
             ColumnLayout {
-                Layout.preferredWidth: root.compactToolbar ? 180 : 250
+                Layout.preferredWidth: root.compactToolbar ? 150 : 200
                 Layout.fillHeight: true
                 Layout.alignment: Qt.AlignVCenter
                 spacing: 4
@@ -1419,7 +1432,7 @@ ApplicationWindow {
                         }
                     }
                     Slider {
-                        Layout.preferredWidth: root.compactToolbar ? 80 : 110
+                        Layout.preferredWidth: root.compactToolbar ? 70 : 100
                         Layout.alignment: Qt.AlignVCenter
                         from: 0
                         to: 1
