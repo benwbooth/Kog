@@ -14,6 +14,25 @@
 
 namespace {
 
+QScreen *geometryScreen(const QWindow *window)
+{
+    if (QScreen *screen = window->screen())
+        return screen;
+    return QGuiApplication::primaryScreen();
+}
+
+// A normal-state geometry that fills the screen is indistinguishable from
+// maximized, so restoring to it looks like a no-op (seen live: a persisted
+// fullscreen normalGeometry after tiling or edge-filling the window).
+// Never persist such a geometry, and fall back to the declared window size
+// when loading one.
+bool fillsAvailableScreen(const QWindow *window, const QRect &geometry)
+{
+    QScreen *screen = geometryScreen(window);
+    return screen && !geometry.isEmpty()
+        && geometry.size() == screen->availableGeometry().size();
+}
+
 class MainWindowState final : public QObject {
 public:
     explicit MainWindowState(QWindow *window)
@@ -43,6 +62,17 @@ public:
             std::clamp(m_normal.height(), std::min(window->minimumHeight(), available.height()), available.height())));
         m_normal.moveLeft(std::clamp(m_normal.x(), available.left(), available.right() - m_normal.width() + 1));
         m_normal.moveTop(std::clamp(m_normal.y(), available.top(), available.bottom() - m_normal.height() + 1));
+        if (fillsAvailableScreen(window, m_normal)) {
+            QSize fallback = window->geometry().size();
+            if (fallback.isEmpty())
+                fallback = window->minimumSize();
+            if (!fallback.isEmpty()) {
+                m_normal.setSize(QSize(
+                    std::clamp(fallback.width(), std::min(window->minimumWidth(), available.width()), available.width()),
+                    std::clamp(fallback.height(), std::min(window->minimumHeight(), available.height()), available.height())));
+                m_normal.moveCenter(available.center());
+            }
+        }
         m_maximized = m_settings.value("maximized", false).toBool();
         window->resize(m_normal.size());
         // Wayland positions come from the compositor's persistent session.
@@ -101,7 +131,8 @@ private:
     void save()
     {
         m_timer.stop();
-        if (m_window->windowState() == Qt::WindowNoState && !m_maximized)
+        if (m_window->windowState() == Qt::WindowNoState && !m_maximized
+            && !fillsAvailableScreen(m_window, m_window->geometry()))
             m_normal = m_window->geometry();
         m_settings.setValue("normalGeometry", m_normal);
         m_settings.setValue("maximized", m_maximized);

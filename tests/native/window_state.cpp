@@ -89,10 +89,47 @@ int main(int argc, char **argv)
         window.close();
     }
     {
+        // A fullscreen-sized normal geometry restores invisibly, so it must
+        // be neither saved nor loaded (live report: a persisted fullscreen
+        // normalGeometry after the window filled the screen untiled).
+        settings.setValue("MainWindow/maximized", false);
+        settings.setValue("MainWindow/normalGeometry", moved);
+        settings.sync();
+        MainWindow window;
+        window.resize(500, 320);
+        kogRestoreMainWindow();
+        QTest::qWait(250);
+        QScreen *screen = window.screen();
+        if (!screen)
+            screen = QGuiApplication::primaryScreen();
+        require(screen, "test screen exists");
+        const QRect fullscreen = screen->availableGeometry();
+        window.setGeometry(fullscreen);
+        window.close();
+        require(settings.value("MainWindow/normalGeometry").toRect() != fullscreen,
+            "fullscreen-sized normal geometry is not saved");
+        require(settings.value("MainWindow/normalGeometry").toRect() == moved,
+            "sane normal geometry survives a fullscreen stint");
+    }
+    {
+        QScreen *screen = QGuiApplication::primaryScreen();
+        require(screen, "test screen exists");
+        settings.setValue("MainWindow/maximized", false);
+        settings.setValue("MainWindow/normalGeometry", screen->availableGeometry());
+        settings.sync();
+        MainWindow window;
+        window.resize(500, 320);
+        kogRestoreMainWindow();
+        QTest::qWait(250);
+        require(window.geometry().size() == QSize(500, 320),
+            "poisoned fullscreen geometry falls back to declared size");
+        window.close();
+    }
+    {
         QWindow popup;
         popup.setObjectName("kogNowPlayingNotification");
         kogRestoreMainWindow();
         require(!popup.isVisible(), "did not show or manage the notification window");
     }
-    std::puts("Window geometry, maximize, tray, and disconnected-screen tests passed");
+    std::puts("Window geometry, maximize, tray, disconnected-screen, and fullscreen-normal tests passed");
 }
