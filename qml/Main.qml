@@ -125,7 +125,16 @@ ApplicationWindow {
         DragHandler {
             target: null
             acceptedButtons: Qt.LeftButton
-            onActiveChanged: if (active) root.startSystemMove()
+            onActiveChanged: {
+                if (!active)
+                    return
+                // Active requires a real drag: presses and double-clicks
+                // never activate the handler, so restoring here cannot race
+                // the double-tap toggle below.
+                if (root.visibility === Window.Maximized)
+                    root.showNormal()
+                root.startSystemMove()
+            }
         }
         TapHandler {
             acceptedButtons: Qt.LeftButton
