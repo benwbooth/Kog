@@ -21,16 +21,22 @@ QScreen *geometryScreen(const QWindow *window)
     return QGuiApplication::primaryScreen();
 }
 
-// A normal-state geometry that fills the screen is indistinguishable from
-// maximized, so restoring to it looks like a no-op (seen live: a persisted
-// fullscreen normalGeometry after tiling or edge-filling the window).
-// Never persist such a geometry, and fall back to the declared window size
-// when loading one.
-bool fillsAvailableScreen(const QWindow *window, const QRect &geometry)
+// A normal-state geometry that covers (almost) the whole screen is
+// indistinguishable from maximized, so restoring to it looks like a no-op
+// (seen live: a persisted 3938x1618 normalGeometry on a 3938x1662 work
+// area). Never persist such a geometry, and fall back to the declared
+// window size when loading one. The margin catches tiled and edge-filled
+// windows whose frames sit a panel-height shy of the work area.
+bool coversAvailableScreen(const QWindow *window, const QRect &geometry)
 {
     QScreen *screen = geometryScreen(window);
-    return screen && !geometry.isEmpty()
-        && geometry.size() == screen->availableGeometry().size();
+    if (!screen || geometry.isEmpty())
+        return false;
+    const QSize available = screen->availableGeometry().size();
+    if (available.isEmpty())
+        return false;
+    return geometry.width() >= available.width() * 0.9
+        && geometry.height() >= available.height() * 0.9;
 }
 
 class MainWindowState final : public QObject {
@@ -62,7 +68,7 @@ public:
             std::clamp(m_normal.height(), std::min(window->minimumHeight(), available.height()), available.height())));
         m_normal.moveLeft(std::clamp(m_normal.x(), available.left(), available.right() - m_normal.width() + 1));
         m_normal.moveTop(std::clamp(m_normal.y(), available.top(), available.bottom() - m_normal.height() + 1));
-        if (fillsAvailableScreen(window, m_normal)) {
+        if (coversAvailableScreen(window, m_normal)) {
             QSize fallback = window->geometry().size();
             if (fallback.isEmpty())
                 fallback = window->minimumSize();
@@ -132,7 +138,7 @@ private:
     {
         m_timer.stop();
         if (m_window->windowState() == Qt::WindowNoState && !m_maximized
-            && !fillsAvailableScreen(m_window, m_window->geometry()))
+            && !coversAvailableScreen(m_window, m_window->geometry()))
             m_normal = m_window->geometry();
         m_settings.setValue("normalGeometry", m_normal);
         m_settings.setValue("maximized", m_maximized);

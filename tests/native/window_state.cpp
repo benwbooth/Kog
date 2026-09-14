@@ -89,9 +89,9 @@ int main(int argc, char **argv)
         window.close();
     }
     {
-        // A fullscreen-sized normal geometry restores invisibly, so it must
-        // be neither saved nor loaded (live report: a persisted fullscreen
-        // normalGeometry after the window filled the screen untiled).
+        // A normal geometry covering almost the whole screen restores
+        // invisibly, so it must be neither saved nor loaded (live report: a
+        // persisted 3938x1618 normalGeometry on a 3938x1662 work area).
         settings.setValue("MainWindow/maximized", false);
         settings.setValue("MainWindow/normalGeometry", moved);
         settings.sync();
@@ -103,26 +103,27 @@ int main(int argc, char **argv)
         if (!screen)
             screen = QGuiApplication::primaryScreen();
         require(screen, "test screen exists");
-        const QRect fullscreen = screen->availableGeometry();
-        window.setGeometry(fullscreen);
+        const QRect nearlyFullscreen = screen->availableGeometry().adjusted(0, 0, 0, -44);
+        window.setGeometry(nearlyFullscreen);
         window.close();
-        require(settings.value("MainWindow/normalGeometry").toRect() != fullscreen,
-            "fullscreen-sized normal geometry is not saved");
+        require(settings.value("MainWindow/normalGeometry").toRect() != nearlyFullscreen,
+            "near-fullscreen normal geometry is not saved");
         require(settings.value("MainWindow/normalGeometry").toRect() == moved,
-            "sane normal geometry survives a fullscreen stint");
+            "sane normal geometry survives a near-fullscreen stint");
     }
     {
         QScreen *screen = QGuiApplication::primaryScreen();
         require(screen, "test screen exists");
         settings.setValue("MainWindow/maximized", false);
-        settings.setValue("MainWindow/normalGeometry", screen->availableGeometry());
+        settings.setValue("MainWindow/normalGeometry",
+            screen->availableGeometry().adjusted(0, 0, 0, -44));
         settings.sync();
         MainWindow window;
         window.resize(500, 320);
         kogRestoreMainWindow();
         QTest::qWait(250);
         require(window.geometry().size() == QSize(500, 320),
-            "poisoned fullscreen geometry falls back to declared size");
+            "poisoned near-fullscreen geometry falls back to declared size");
         window.close();
     }
     {
@@ -131,5 +132,5 @@ int main(int argc, char **argv)
         kogRestoreMainWindow();
         require(!popup.isVisible(), "did not show or manage the notification window");
     }
-    std::puts("Window geometry, maximize, tray, disconnected-screen, and fullscreen-normal tests passed");
+    std::puts("Window geometry, maximize, tray, disconnected-screen, and near-fullscreen-normal tests passed");
 }
