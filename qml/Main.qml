@@ -1318,6 +1318,14 @@ ApplicationWindow {
                 Layout.fillHeight: true
             }
 
+            // Absorbs leftover width so Clear/Search and the window controls
+            // pin to the right edge on Windows/Linux. Hidden on macOS, where
+            // the traffic lights already sit at the left edge.
+            Item {
+                visible: !root.useMacWindowControls
+                Layout.fillWidth: true
+            }
+
             ToolbarButton {
                 Layout.preferredWidth: 34
                 Layout.preferredHeight: 34
