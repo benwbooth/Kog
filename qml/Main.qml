@@ -1104,236 +1104,9 @@ ApplicationWindow {
 
                 TitleDragArea { anchors.fill: parent }
             }
-            Item {
-                id: nowPlayingTitle
-
-                readonly property string displayTitle:
-                    playbackTitle.text
-                readonly property bool overflowing:
-                    nowPlayingLabel.implicitWidth > width
-
-                Layout.preferredWidth: root.compactToolbar ? 82 : 156
-                Layout.minimumWidth: root.compactToolbar ? 58 : 92
-                Layout.maximumWidth: root.compactToolbar ? 112 : 210
-                Layout.fillHeight: true
-                clip: true
-
-                Label {
-                    id: nowPlayingLabel
-
-                    anchors.verticalCenter: parent.verticalCenter
-                    x: 0
-                    text: nowPlayingTitle.displayTitle
-                    font.pixelSize: 12
-                    font.weight: Font.DemiBold
-                    color: root.palette.text
-                    wrapMode: Text.NoWrap
-                }
-
-                SequentialAnimation {
-                    id: nowPlayingMarquee
-
-                    running: nowPlayingTitle.overflowing
-                        && !nowPlayingHover.containsMouse
-                    loops: Animation.Infinite
-
-                    PauseAnimation { duration: 1200 }
-                    NumberAnimation {
-                        target: nowPlayingLabel
-                        property: "x"
-                        from: 0
-                        to: Math.min(0, nowPlayingTitle.width
-                            - nowPlayingLabel.implicitWidth)
-                        duration: Math.max(2600,
-                            Math.abs(to) * 28)
-                        easing.type: Easing.Linear
-                    }
-                    PauseAnimation { duration: 900 }
-                    NumberAnimation {
-                        target: nowPlayingLabel
-                        property: "x"
-                        to: 0
-                        duration: 320
-                        easing.type: Easing.OutCubic
-                    }
-
-                    onStopped: nowPlayingLabel.x = 0
-                }
-
-                MouseArea {
-                    id: nowPlayingHover
-
-                    anchors.fill: parent
-                    acceptedButtons: Qt.NoButton
-                    hoverEnabled: true
-                }
-                ToolTip.visible: nowPlayingHover.containsMouse
-                    && playbackTitle.active
-                ToolTip.delay: 500
-                ToolTip.text: playbackTitle.text
-
-                TitleDragArea { anchors.fill: parent }
-            }
-
             TitleDragArea {
-                Layout.preferredWidth: root.compactToolbar ? 0 : 6
-                Layout.fillHeight: true
-            }
-
-            ToolbarButton {
-                Layout.preferredWidth: 34
-                Layout.preferredHeight: 34
-                glyph: "◀"
-                iconName: "media-skip-backward"
-                toolTip: qsTr("Previous")
-                enabled: appController.playlist_count > 0
-                onClicked: appController.previous()
-            }
-            ToolbarButton {
-                Layout.preferredWidth: 34
-                Layout.preferredHeight: 34
-                glyph: appController.playback_state === "playing" ? "Ⅱ" : "▶"
-                iconName: appController.playback_state === "playing"
-                    ? "media-playback-pause"
-                    : "media-playback-start"
-                toolTip: qsTr("Play/Pause")
-                enabled: appController.playlist_count > 0
-                onClicked: appController.play_pause()
-            }
-            ToolbarButton {
-                Layout.preferredWidth: 34
-                Layout.preferredHeight: 34
-                glyph: "■"
-                iconName: "media-playback-stop"
-                toolTip: qsTr("Stop")
-                enabled: appController.current_index >= 0
-                    && appController.playback_state !== "stopped"
-                onClicked: appController.stop()
-            }
-            ToolbarButton {
-                Layout.preferredWidth: 34
-                Layout.preferredHeight: 34
-                glyph: "▶"
-                iconName: "media-skip-forward"
-                toolTip: qsTr("Next")
-                enabled: appController.playlist_count > 0
-                onClicked: appController.next()
-            }
-            ToolbarButton {
-                id: volumeButton
-                Layout.preferredWidth: 34
-                Layout.preferredHeight: 34
-                glyph: "♪"
-                iconName: "audio-volume-high"
-                toolTip: qsTr("Volume")
-                onClicked: volumePopup.open()
-
-                Popup {
-                    id: volumePopup
-                    x: (parent.width - width) / 2
-                    y: parent.height + 4
-                    width: 190
-                    height: 54
-                    padding: 10
-                    closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
-
-                    RowLayout {
-                        anchors.fill: parent
-                        Label { text: qsTr("Volume") }
-                        Slider {
-                            Layout.fillWidth: true
-                            from: 0
-                            to: 1
-                            value: appController.volume
-                            onMoved: appController.set_volume_level(value)
-                        }
-                    }
-                }
-            }
-
-            Frame {
-                Layout.preferredWidth: 62
-                Layout.preferredHeight: 30
-                padding: 4
-                Label {
-                    anchors.centerIn: parent
-                    text: root.timeLabel(appController.position_seconds)
-                    color: root.palette.text
-                    font.pixelSize: 12
-                }
-            }
-            Slider {
                 Layout.fillWidth: true
-                Layout.minimumWidth: root.compactToolbar ? 72 : 140
-                Layout.preferredWidth: root.compactToolbar ? 110 : 260
-                Layout.maximumWidth: 460
-                visible: !root.searchVisible || root.width >= 1080
-                from: 0
-                to: Math.max(1, appController.duration_seconds)
-                value: appController.position_seconds
-                enabled: appController.current_index >= 0
-                Accessible.name: qsTr("Playback position")
-                onMoved: appController.seek(value)
-            }
-            ToolbarButton {
-                Layout.preferredWidth: 34
-                Layout.preferredHeight: 34
-                glyph: "⇄"
-                iconName: "media-playlist-shuffle"
-                modeActive: appController.shuffle_mode !== "off"
-                badgeText: appController.shuffle_mode === "albums" ? "A"
-                    : (appController.shuffle_mode === "all" ? "•" : "")
-                toolTip: appController.shuffle_mode === "off"
-                    ? qsTr("Shuffle Off — click for Albums")
-                    : (appController.shuffle_mode === "albums"
-                        ? qsTr("Shuffle Albums — click for All Tracks")
-                        : qsTr("Shuffle All Tracks — click to turn off"))
-                enabled: appController.playlist_count > 1
-                opacity: enabled ? (modeActive ? 1 : 0.62) : 0.38
-                onClicked: appController.cycle_shuffle_mode()
-            }
-            ToolbarButton {
-                Layout.preferredWidth: 34
-                Layout.preferredHeight: 34
-                glyph: "↻"
-                iconName: "media-playlist-repeat"
-                modeActive: appController.repeat_mode !== "off"
-                badgeText: appController.repeat_mode === "one" ? "1"
-                    : (appController.repeat_mode === "album" ? "A"
-                        : (appController.repeat_mode === "all" ? "∞" : ""))
-                toolTip: appController.repeat_mode === "off"
-                    ? qsTr("Repeat Off — click for One Track")
-                    : (appController.repeat_mode === "one"
-                        ? qsTr("Repeat One Track — click for Album")
-                        : (appController.repeat_mode === "album"
-                            ? qsTr("Repeat Album — click for All Tracks")
-                            : qsTr("Repeat All Tracks — click to turn off")))
-                enabled: appController.playlist_count > 0
-                opacity: enabled ? (modeActive ? 1 : 0.62) : 0.38
-                onClicked: appController.cycle_repeat_mode()
-            }
-
-            TitleDragArea {
-                Layout.preferredWidth: root.compactToolbar ? 0 : 6
                 Layout.fillHeight: true
-            }
-
-            // Absorbs leftover width so Clear/Search and the window controls
-            // pin to the right edge on Windows/Linux. Hidden on macOS, where
-            // the traffic lights already sit at the left edge.
-            Item {
-                visible: !root.useMacWindowControls
-                Layout.fillWidth: true
-            }
-
-            ToolbarButton {
-                Layout.preferredWidth: 34
-                Layout.preferredHeight: 34
-                glyph: "×"
-                iconName: "edit-clear-list"
-                toolTip: qsTr("Clear Playlist")
-                enabled: clearPlaylistAction.enabled
-                onClicked: clearPlaylistAction.trigger()
             }
 
             TextField {
@@ -1405,27 +1178,267 @@ ApplicationWindow {
     }
 
     footer: Rectangle {
-        implicitHeight: 22
-        color: root.palette.button
-        border.color: root.palette.mid
+        implicitHeight: 92
+        color: root.toolbarSurface
+        border.width: 0
 
-        Label {
-            anchors.centerIn: parent
-            text: appController.total_duration
-            font.pixelSize: 11
+        Rectangle {
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            height: 1
+            color: root.palette.mid
         }
 
-        Label {
-            anchors.right: parent.right
-            anchors.rightMargin: 9
-            anchors.verticalCenter: parent.verticalCenter
-            visible: appController.status.length > 0
-                && appController.status !== "Drop audio files here or use the Kog menu to add files"
-            text: appController.status
-            color: root.palette.placeholderText
-            font.pixelSize: 10
-            elide: Text.ElideLeft
-            width: Math.min(320, implicitWidth)
+        readonly property string trackSubtitle: {
+            const artist = appController.now_artist
+            const album = appController.current_album
+            if (artist.length > 0 && album.length > 0)
+                return artist + "  •  " + album
+            if (artist.length > 0)
+                return artist
+            if (album.length > 0)
+                return album
+            return qsTr("Ready to play")
+        }
+        readonly property bool transientStatus:
+            appController.status.length > 0
+            && appController.status !== "Drop audio files here or use the Kog menu to add files"
+
+        RowLayout {
+            anchors.fill: parent
+            anchors.leftMargin: 12
+            anchors.rightMargin: 12
+            anchors.topMargin: 8
+            anchors.bottomMargin: 8
+            spacing: 12
+
+            RowLayout {
+                Layout.preferredWidth: root.compactToolbar ? 180 : 280
+                Layout.maximumWidth: 320
+                Layout.fillHeight: true
+                spacing: 10
+
+                Rectangle {
+                    Layout.preferredWidth: 52
+                    Layout.preferredHeight: 52
+                    Layout.alignment: Qt.AlignVCenter
+                    radius: 8
+                    color: root.palette.alternateBase
+                    border.width: 1
+                    border.color: root.palette.mid
+
+                    Image {
+                        anchors.centerIn: parent
+                        width: 36
+                        height: 36
+                        source: Qt.resolvedUrl("icons/kog.svg")
+                        sourceSize.width: 72
+                        sourceSize.height: 72
+                        fillMode: Image.PreserveAspectFit
+                        mipmap: true
+                        Accessible.name: qsTr("Kog")
+                    }
+                }
+
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    Layout.alignment: Qt.AlignVCenter
+                    spacing: 2
+
+                    Label {
+                        Layout.fillWidth: true
+                        text: playbackTitle.text
+                        font.pixelSize: 13
+                        font.weight: Font.DemiBold
+                        color: root.palette.text
+                        elide: Text.ElideRight
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        visible: !root.compactToolbar
+                        text: root.footer.trackSubtitle
+                        font.pixelSize: 11
+                        color: root.palette.placeholderText
+                        elide: Text.ElideRight
+                    }
+                }
+            }
+
+            ColumnLayout {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.minimumWidth: 220
+                spacing: 4
+
+                RowLayout {
+                    Layout.alignment: Qt.AlignHCenter
+                    spacing: 2
+
+                    ToolbarButton {
+                        Layout.preferredWidth: 34
+                        Layout.preferredHeight: 34
+                        glyph: "⇄"
+                        iconName: "media-playlist-shuffle"
+                        modeActive: appController.shuffle_mode !== "off"
+                        badgeText: appController.shuffle_mode === "albums" ? "A"
+                            : (appController.shuffle_mode === "all" ? "•" : "")
+                        toolTip: appController.shuffle_mode === "off"
+                            ? qsTr("Shuffle Off — click for Albums")
+                            : (appController.shuffle_mode === "albums"
+                                ? qsTr("Shuffle Albums — click for All Tracks")
+                                : qsTr("Shuffle All Tracks — click to turn off"))
+                        enabled: appController.playlist_count > 1
+                        opacity: enabled ? (modeActive ? 1 : 0.62) : 0.38
+                        onClicked: appController.cycle_shuffle_mode()
+                    }
+                    ToolbarButton {
+                        Layout.preferredWidth: 34
+                        Layout.preferredHeight: 34
+                        glyph: "◀"
+                        iconName: "media-skip-backward"
+                        toolTip: qsTr("Previous")
+                        enabled: appController.playlist_count > 0
+                        onClicked: appController.previous()
+                    }
+                    ToolbarButton {
+                        Layout.preferredWidth: 40
+                        Layout.preferredHeight: 40
+                        glyph: appController.playback_state === "playing" ? "Ⅱ" : "▶"
+                        iconName: appController.playback_state === "playing"
+                            ? "media-playback-pause"
+                            : "media-playback-start"
+                        toolTip: qsTr("Play/Pause")
+                        enabled: appController.playlist_count > 0
+                        onClicked: appController.play_pause()
+                    }
+                    ToolbarButton {
+                        Layout.preferredWidth: 34
+                        Layout.preferredHeight: 34
+                        glyph: "■"
+                        iconName: "media-playback-stop"
+                        toolTip: qsTr("Stop")
+                        enabled: appController.current_index >= 0
+                            && appController.playback_state !== "stopped"
+                        onClicked: appController.stop()
+                    }
+                    ToolbarButton {
+                        Layout.preferredWidth: 34
+                        Layout.preferredHeight: 34
+                        glyph: "▶"
+                        iconName: "media-skip-forward"
+                        toolTip: qsTr("Next")
+                        enabled: appController.playlist_count > 0
+                        onClicked: appController.next()
+                    }
+                    ToolbarButton {
+                        Layout.preferredWidth: 34
+                        Layout.preferredHeight: 34
+                        glyph: "↻"
+                        iconName: "media-playlist-repeat"
+                        modeActive: appController.repeat_mode !== "off"
+                        badgeText: appController.repeat_mode === "one" ? "1"
+                            : (appController.repeat_mode === "album" ? "A"
+                                : (appController.repeat_mode === "all" ? "∞" : ""))
+                        toolTip: appController.repeat_mode === "off"
+                            ? qsTr("Repeat Off — click for One Track")
+                            : (appController.repeat_mode === "one"
+                                ? qsTr("Repeat One Track — click for Album")
+                                : (appController.repeat_mode === "album"
+                                    ? qsTr("Repeat Album — click for All Tracks")
+                                    : qsTr("Repeat All Tracks — click to turn off")))
+                        enabled: appController.playlist_count > 0
+                        opacity: enabled ? (modeActive ? 1 : 0.62) : 0.38
+                        onClicked: appController.cycle_repeat_mode()
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+
+                    Label {
+                        Layout.preferredWidth: 48
+                        horizontalAlignment: Text.AlignRight
+                        text: root.timeLabel(appController.position_seconds)
+                        color: root.palette.text
+                        font.pixelSize: 11
+                    }
+                    Slider {
+                        Layout.fillWidth: true
+                        from: 0
+                        to: Math.max(1, appController.duration_seconds)
+                        value: appController.position_seconds
+                        enabled: appController.current_index >= 0
+                        Accessible.name: qsTr("Playback position")
+                        onMoved: appController.seek(value)
+                    }
+                    Label {
+                        Layout.preferredWidth: 48
+                        text: root.timeLabel(appController.duration_seconds)
+                        color: root.palette.placeholderText
+                        font.pixelSize: 11
+                    }
+                }
+            }
+
+            ColumnLayout {
+                Layout.preferredWidth: root.compactToolbar ? 180 : 250
+                Layout.fillHeight: true
+                Layout.alignment: Qt.AlignVCenter
+                spacing: 4
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 2
+
+                    Item { Layout.fillWidth: true }
+                    ToolbarButton {
+                        Layout.preferredWidth: 34
+                        Layout.preferredHeight: 34
+                        glyph: "×"
+                        iconName: "edit-clear-list"
+                        toolTip: qsTr("Clear Playlist")
+                        enabled: clearPlaylistAction.enabled
+                        onClicked: clearPlaylistAction.trigger()
+                    }
+                    ToolbarButton {
+                        Layout.preferredWidth: 34
+                        Layout.preferredHeight: 34
+                        glyph: "♪"
+                        iconName: "audio-volume-high"
+                        toolTip: appController.volume <= 0 ? qsTr("Unmute") : qsTr("Mute")
+                        onClicked: {
+                            if (appController.volume <= 0)
+                                appController.set_volume_level(
+                                    root.volumeBeforeMute > 0 ? root.volumeBeforeMute : 0.75)
+                            else {
+                                root.volumeBeforeMute = appController.volume
+                                appController.set_volume_level(0)
+                            }
+                        }
+                    }
+                    Slider {
+                        Layout.preferredWidth: root.compactToolbar ? 80 : 110
+                        Layout.alignment: Qt.AlignVCenter
+                        from: 0
+                        to: 1
+                        value: appController.volume
+                        Accessible.name: qsTr("Volume")
+                        onMoved: appController.set_volume_level(value)
+                    }
+                }
+
+                Label {
+                    Layout.fillWidth: true
+                    horizontalAlignment: Text.AlignRight
+                    text: root.footer.transientStatus
+                        ? appController.status : appController.total_duration
+                    font.pixelSize: 10
+                    color: root.palette.placeholderText
+                    elide: Text.ElideRight
+                }
+            }
         }
     }
 
