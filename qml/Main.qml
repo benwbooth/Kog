@@ -1123,10 +1123,15 @@ ApplicationWindow {
                     anchors.rightMargin: 5
                     spacing: 6
 
-                    Label {
-                        text: "⌕"
-                        color: root.palette.placeholderText
-                        font.pixelSize: 15
+                    Image {
+                        Layout.preferredWidth: 16
+                        Layout.preferredHeight: 16
+                        Layout.alignment: Qt.AlignVCenter
+                        source: Qt.resolvedUrl("icons/edit-find" + (root.baseLuminance < 0.5 ? "-light" : "") + ".svg")
+                        sourceSize.width: 32
+                        sourceSize.height: 32
+                        fillMode: Image.PreserveAspectFit
+                        mipmap: true
                     }
                     TextField {
                         id: searchField
@@ -1513,10 +1518,15 @@ ApplicationWindow {
                         anchors.rightMargin: 5
                         spacing: 6
 
-                        Label {
-                            text: "⌕"
-                            color: root.palette.placeholderText
-                            font.pixelSize: 15
+                        Image {
+                            Layout.preferredWidth: 16
+                            Layout.preferredHeight: 16
+                            Layout.alignment: Qt.AlignVCenter
+                            source: Qt.resolvedUrl("icons/edit-find" + (root.baseLuminance < 0.5 ? "-light" : "") + ".svg")
+                            sourceSize.width: 32
+                            sourceSize.height: 32
+                            fillMode: Image.PreserveAspectFit
+                            mipmap: true
                         }
                         TextField {
                             id: treeSearchField
