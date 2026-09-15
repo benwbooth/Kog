@@ -1591,7 +1591,8 @@ ApplicationWindow {
             }
 
             ColumnLayout {
-                Layout.preferredWidth: root.compactToolbar ? 150 : 200
+                Layout.preferredWidth: root.compactToolbar ? 160 : 240
+                Layout.maximumWidth: 260
                 Layout.fillHeight: true
                 Layout.alignment: Qt.AlignVCenter
                 spacing: 4
@@ -1627,7 +1628,7 @@ ApplicationWindow {
                         }
                     }
                     Slider {
-                        Layout.preferredWidth: root.compactToolbar ? 70 : 100
+                        Layout.preferredWidth: root.compactToolbar ? 80 : 140
                         Layout.alignment: Qt.AlignVCenter
                         from: 0
                         to: 1

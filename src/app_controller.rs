@@ -387,6 +387,7 @@ struct TreeDeleteState {
 }
 
 enum RadioEvent {
+    QuickPool(Vec<PathBuf>),
     CatalogReady(Vec<PathBuf>),
     TracksReady {
         tracks: Vec<Track>,
@@ -401,7 +402,11 @@ struct RadioJob {
 
 struct RadioState {
     job: Option<RadioJob>,
+    expand_job: Option<RadioJob>,
+    root: PathBuf,
     bag: VecDeque<PathBuf>,
+    quick: VecDeque<PathBuf>,
+    ready: VecDeque<Track>,
     appends_this_round: u32,
     idle_exhausted: bool,
     kickstart_armed: bool,
@@ -1160,6 +1165,108 @@ fn random_seed() -> u64 {
         .unwrap_or(0x9E37_79B9_7F4A_7C15)
 }
 
+fn hash_with_seed(seed: u64, bytes: &[u8]) -> u64 {
+    let mut salted = seed.to_le_bytes().to_vec();
+    salted.extend_from_slice(bytes);
+    crate::cover_art::fnv1a64(&salted)
+}
+
+/// Top-level folder of a locator relative to the music root ("" for files
+/// sitting directly in the root). Archive members group with the folder
+/// holding their archive, so one huge folder cannot drown out the rest.
+fn radio_group_key(locator: &Path, root: &Path) -> String {
+    let base = if let Ok(Some(location)) = crate::archive::tree_location(locator) {
+        location.archive.display().to_string()
+    } else {
+        locator.display().to_string()
+    };
+    radio_group_key_from_base(&base, root)
+}
+
+fn radio_group_key_from_base(base: &str, root: &Path) -> String {
+    let relative = Path::new(base)
+        .strip_prefix(root)
+        .map(|path| path.to_path_buf())
+        .unwrap_or_else(|_| PathBuf::from(base));
+    let parent = relative.parent().unwrap_or_else(|| Path::new(""));
+    parent
+        .components()
+        .next()
+        .map(|top| top.as_os_str().to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// Shuffled bag with folder spread: groups shuffle, songs shuffle within
+/// each group, then picks round-robin across groups. The first N picks cover
+/// N distinct folders instead of clustering in the biggest one.
+fn build_radio_bag(locators: Vec<PathBuf>, root: &Path, seed: u64) -> VecDeque<PathBuf> {
+    use std::collections::HashMap;
+    let mut groups: HashMap<String, Vec<PathBuf>> = HashMap::new();
+    for locator in locators {
+        groups
+            .entry(radio_group_key(&locator, root))
+            .or_default()
+            .push(locator);
+    }
+    let mut groups: Vec<(String, Vec<PathBuf>)> = groups.into_iter().collect();
+    groups.sort_by(|left, right| {
+        hash_with_seed(seed, left.0.as_bytes())
+            .cmp(&hash_with_seed(seed, right.0.as_bytes()))
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    for (_, members) in groups.iter_mut() {
+        members.sort_by(|left, right| {
+            let left_hash = hash_with_seed(
+                seed ^ 0x9E37_79B9_7F4A_7C15,
+                left.as_os_str().as_encoded_bytes(),
+            );
+            let right_hash = hash_with_seed(
+                seed ^ 0x9E37_79B9_7F4A_7C15,
+                right.as_os_str().as_encoded_bytes(),
+            );
+            left_hash.cmp(&right_hash).then_with(|| left.cmp(right))
+        });
+    }
+    let mut bag = VecDeque::new();
+    loop {
+        let mut progressed = false;
+        for (_, members) in groups.iter_mut() {
+            if let Some(pick) = members.pop() {
+                bag.push_back(pick);
+                progressed = true;
+            }
+        }
+        if !progressed {
+            break;
+        }
+    }
+    bag
+}
+
+/// Next pick, quick pool first, skipping anything already queued or staged.
+/// Returns None when both pools are exhausted.
+fn pop_next_pick(
+    quick: &mut VecDeque<PathBuf>,
+    bag: &mut VecDeque<PathBuf>,
+    staged: &HashSet<String>,
+) -> Option<PathBuf> {
+    for _ in 0..quick.len() + 1 {
+        match quick.pop_front() {
+            Some(candidate) if !staged.contains(&radio_locator_key(&candidate)) => {
+                return Some(candidate);
+            }
+            Some(_) => continue,
+            None => break,
+        }
+    }
+    while let Some(candidate) = bag.pop_front() {
+        if !staged.contains(&radio_locator_key(&candidate)) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 /// Stable identity for playlist deduplication: plain paths as-is, archive
 /// tracks as `outer :: member`. Mirrors radio_locator_key so both sides of
 /// the comparison speak the same language (lexically, like playlist purge).
@@ -1185,12 +1292,25 @@ fn radio_locator_key(path: &Path) -> String {
 /// Walk the music folder for the radio catalog: plain files as paths,
 /// archive members as tree URLs. Index-only for archives; skips metadata,
 /// symlinks, playlists, and unreadable directories; bounded like scans.
-fn collect_radio_catalog(root: &Path, read_cue: bool, cancel: &AtomicBool) -> Vec<PathBuf> {
+/// Quick mode collects plain files only and stops early: it feeds instant
+/// kickstarts without waiting on archive indexing.
+fn collect_radio_catalog(
+    root: &Path,
+    read_cue: bool,
+    cancel: &AtomicBool,
+    quick_only: bool,
+) -> Vec<PathBuf> {
     const COLLECT_LIMIT: usize = 200_000;
+    const QUICK_LIMIT: usize = 25;
+    let limit = if quick_only {
+        QUICK_LIMIT
+    } else {
+        COLLECT_LIMIT
+    };
     let mut out = Vec::new();
     let mut pending = vec![root.to_path_buf()];
     while let Some(directory) = pending.pop() {
-        if cancel.load(AtomicOrdering::Relaxed) || out.len() >= COLLECT_LIMIT {
+        if cancel.load(AtomicOrdering::Relaxed) || out.len() >= limit {
             break;
         }
         let Ok(entries) = std::fs::read_dir(&directory) else {
@@ -1214,6 +1334,9 @@ fn collect_radio_catalog(root: &Path, read_cue: bool, cancel: &AtomicBool) -> Ve
                 continue;
             }
             if crate::archive::is_path(&path) {
+                if quick_only {
+                    continue;
+                }
                 match crate::archive::list_archive_names(&path) {
                     Ok(members) => {
                         for member in members {
@@ -1226,7 +1349,7 @@ fn collect_radio_catalog(root: &Path, read_cue: bool, cancel: &AtomicBool) -> Ve
                                 member.trim_end_matches('/'),
                                 directory,
                             ));
-                            if out.len() >= COLLECT_LIMIT {
+                            if out.len() >= limit {
                                 break;
                             }
                         }
@@ -1236,7 +1359,7 @@ fn collect_radio_catalog(root: &Path, read_cue: bool, cancel: &AtomicBool) -> Ve
             } else {
                 out.push(path);
             }
-            if out.len() >= COLLECT_LIMIT {
+            if out.len() >= limit {
                 break;
             }
         }
@@ -1498,18 +1621,22 @@ fn natural_compare(left: &str, right: &str) -> Ordering {
     (left.len() - left_index).cmp(&(right.len() - right_index))
 }
 
+/// Full path of a track for the path column: the file itself, or the outer
+/// archive with nested members appended as folders. The outer join uses the
+/// OS separator; member separators inside archives are always `/`.
 fn track_path(track: &Track) -> String {
     if let Some(url) = &track.source.remote_url {
         return url.clone();
     }
-    let path = track
-        .source
-        .archive_origin
-        .as_ref()
-        .map_or(&track.source.path, |origin| &origin.archive_path);
-    path.parent()
-        .map(|parent| parent.to_string_lossy().into_owned())
-        .unwrap_or_default()
+    if let Some(origin) = &track.source.archive_origin {
+        return format!(
+            "{}{}{}",
+            origin.archive_path.display(),
+            std::path::MAIN_SEPARATOR,
+            origin.entry_name
+        );
+    }
+    track.source.path.display().to_string()
 }
 
 fn track_filename(track: &Track) -> String {
@@ -2507,9 +2634,14 @@ impl qobject::AppController {
         self.as_mut().apply_repeat_mode(RepeatMode::Off);
         let kickstart = self.as_ref().rust().tracks.is_empty();
         let last_playlist_len = self.as_ref().rust().tracks.len();
+        let root = self.as_ref().rust().directory.clone();
         self.as_mut().rust_mut().radio = Some(RadioState {
             job: None,
+            expand_job: None,
+            root,
             bag: VecDeque::new(),
+            quick: VecDeque::new(),
+            ready: VecDeque::new(),
             appends_this_round: 0,
             idle_exhausted: false,
             kickstart_armed: kickstart,
@@ -2528,7 +2660,7 @@ impl qobject::AppController {
         }
         let mut events = Vec::new();
         if let Some(radio) = self.as_ref().rust().radio.as_ref() {
-            if let Some(job) = radio.job.as_ref() {
+            for job in [&radio.job, &radio.expand_job].into_iter().flatten() {
                 while let Ok(event) = job.receiver.try_recv() {
                     events.push(event);
                     if events.len() >= 16 {
@@ -2543,12 +2675,36 @@ impl qobject::AppController {
         for event in events {
             self.as_mut().handle_radio_event(event);
         }
+        let kickstart = self
+            .as_ref()
+            .rust()
+            .radio
+            .as_ref()
+            .is_some_and(|radio| radio.kickstart_armed)
+            && self.as_ref().rust().tracks.is_empty()
+            && self
+                .as_ref()
+                .rust()
+                .radio
+                .as_ref()
+                .is_some_and(|radio| !radio.ready.is_empty());
+        if kickstart {
+            if let Some(index) = self.as_mut().shift_radio_track() {
+                self.as_mut().play_source_index(index);
+            }
+            if let Some(radio) = self.as_mut().rust_mut().radio.as_mut() {
+                radio.kickstart_armed = false;
+            }
+        }
         self.as_mut().top_up_radio();
     }
 
     fn teardown_radio(mut self: Pin<&mut Self>) {
         if let Some(round) = self.as_mut().rust_mut().radio.take() {
             if let Some(job) = round.job {
+                job.cancel.store(true, AtomicOrdering::Relaxed);
+            }
+            if let Some(job) = round.expand_job {
                 job.cancel.store(true, AtomicOrdering::Relaxed);
             }
         }
@@ -2578,7 +2734,12 @@ impl qobject::AppController {
         if std::thread::Builder::new()
             .name("kog-radio-catalog".to_owned())
             .spawn(move || {
-                let locators = collect_radio_catalog(&root, read_cue, &cancel);
+                let quick = collect_radio_catalog(&root, read_cue, &cancel, true);
+                let _ = sender.send(RadioEvent::QuickPool(quick));
+                if cancel.load(AtomicOrdering::Relaxed) {
+                    return;
+                }
+                let locators = collect_radio_catalog(&root, read_cue, &cancel, false);
                 let _ = sender.send(RadioEvent::CatalogReady(locators));
             })
             .is_err()
@@ -2605,7 +2766,7 @@ impl qobject::AppController {
         let (sender, receiver) = std::sync::mpsc::sync_channel(4);
         let cancel = Arc::new(AtomicBool::new(false));
         if let Some(radio) = self.as_mut().rust_mut().radio.as_mut() {
-            radio.job = Some(RadioJob {
+            radio.expand_job = Some(RadioJob {
                 receiver,
                 cancel: Arc::clone(&cancel),
             });
@@ -2628,18 +2789,35 @@ impl qobject::AppController {
             .is_err()
         {
             if let Some(radio) = self.as_mut().rust_mut().radio.as_mut() {
-                radio.job = None;
+                radio.expand_job = None;
             }
         }
     }
 
     fn handle_radio_event(mut self: Pin<&mut Self>, event: RadioEvent) {
         match event {
+            RadioEvent::QuickPool(locators) => {
+                if locators.is_empty() {
+                    return;
+                }
+                // Catalog worker keeps running phase two on this slot.
+                let shuffled = pick_random_files(locators, usize::MAX, random_seed());
+                if let Some(radio) = self.as_mut().rust_mut().radio.as_mut() {
+                    radio.quick = VecDeque::from(shuffled);
+                }
+            }
             RadioEvent::CatalogReady(locators) => {
                 let count = locators.len();
-                let shuffled = pick_random_files(locators, count, random_seed());
+                let root = self
+                    .as_ref()
+                    .rust()
+                    .radio
+                    .as_ref()
+                    .map(|radio| radio.root.clone())
+                    .unwrap_or_default();
+                let bag = build_radio_bag(locators, &root, random_seed());
                 if let Some(radio) = self.as_mut().rust_mut().radio.as_mut() {
-                    radio.bag = VecDeque::from(shuffled);
+                    radio.bag = bag;
                     radio.job = None;
                     if !radio.announced {
                         radio.announced = true;
@@ -2652,38 +2830,40 @@ impl qobject::AppController {
                 }
             }
             RadioEvent::TracksReady { tracks, warnings } => {
-                let fresh = self.as_ref().rust().tracks.len();
-                let kickstart = fresh == 0
-                    && self.as_ref().rust().current_index < 0
-                    && self
-                        .as_ref()
-                        .rust()
-                        .radio
-                        .as_ref()
-                        .is_some_and(|radio| radio.kickstart_armed);
-                let appended = tracks.len();
-                if appended > 0 {
-                    self.as_mut().rust_mut().tracks.extend(tracks);
-                    self.as_mut().refresh_playback_order();
-                    self.as_mut().rebuild_playlist();
+                let live = !tracks.is_empty();
+                if let Some(radio) = self.as_mut().rust_mut().radio.as_mut() {
+                    radio.expand_job = None;
+                    radio.ready.extend(tracks);
                 }
-                if appended == 0 {
+                if !live {
                     if let Some(warning) = warnings.into_iter().next() {
                         self.as_mut().set_status(qstring(warning));
                     }
-                } else if kickstart {
-                    self.as_mut().play_source_index(fresh);
-                }
-                let len = self.as_ref().rust().tracks.len();
-                if let Some(radio) = self.as_mut().rust_mut().radio.as_mut() {
-                    radio.job = None;
-                    radio.appends_this_round =
-                        radio.appends_this_round.saturating_add(appended as u32);
-                    radio.last_playlist_len = len;
-                    radio.kickstart_armed = false;
                 }
             }
         }
+    }
+
+    /// Move one staged radio track into the playlist. Returns its new index.
+    /// Callers play it immediately (kickstart, end-of-playlist advance).
+    fn shift_radio_track(mut self: Pin<&mut Self>) -> Option<usize> {
+        let track = self
+            .as_mut()
+            .rust_mut()
+            .radio
+            .as_mut()?
+            .ready
+            .pop_front()?;
+        let index = self.as_ref().rust().tracks.len();
+        self.as_mut().rust_mut().tracks.push(track);
+        self.as_mut().refresh_playback_order();
+        self.as_mut().rebuild_playlist();
+        let len = self.as_ref().rust().tracks.len();
+        if let Some(radio) = self.as_mut().rust_mut().radio.as_mut() {
+            radio.appends_this_round = radio.appends_this_round.saturating_add(1);
+            radio.last_playlist_len = len;
+        }
+        Some(index)
     }
 
     fn top_up_radio(mut self: Pin<&mut Self>) {
@@ -2692,14 +2872,17 @@ impl qobject::AppController {
             Rebuild,
             IdleNote,
         }
-        const RADIO_LOOKAHEAD: usize = 10;
-        match self.as_ref().rust().radio.as_ref() {
-            None => return,
-            Some(radio) if radio.job.is_some() => return,
-            _ => {}
+        const RADIO_READY_TARGET: usize = 10;
+        let busy = self.as_ref().rust().radio.as_ref().is_some_and(|radio| {
+            radio.job.is_some() || radio.expand_job.is_some()
+        });
+        if busy {
+            return;
         }
+        let Some(_) = self.as_ref().rust().radio.as_ref() else {
+            return;
+        };
         let len = self.as_ref().rust().tracks.len();
-        let current = self.as_ref().rust().current_index;
         {
             let mut rust = self.as_mut().rust_mut();
             if let Some(radio) = rust.radio.as_mut() {
@@ -2709,40 +2892,54 @@ impl qobject::AppController {
                 }
             }
         }
-        let played_through = if current < 0 {
-            0
-        } else {
-            (current as usize + 1).min(len)
-        };
-        let mut action = None;
-        let bag_nonempty = self
+        let ready_len = self
             .as_ref()
             .rust()
             .radio
             .as_ref()
-            .is_some_and(|radio| !radio.bag.is_empty());
-        if (len == 0 || len - played_through < RADIO_LOOKAHEAD) && bag_nonempty {
-            let playlist_keys: HashSet<String> = self
+            .map(|radio| radio.ready.len())
+            .unwrap_or(0);
+        let mut action = None;
+        if ready_len < RADIO_READY_TARGET {
+            let staged: HashSet<String> = self
                 .as_ref()
                 .rust()
                 .tracks
                 .iter()
                 .map(radio_track_key)
+                .chain(
+                    self.as_ref()
+                        .rust()
+                        .radio
+                        .as_ref()
+                        .map(|radio| radio.ready.iter().map(radio_track_key))
+                        .into_iter()
+                        .flatten(),
+                )
                 .collect();
             let mut rust = self.as_mut().rust_mut();
             if let Some(radio) = rust.radio.as_mut() {
-                while let Some(candidate) = radio.bag.pop_front() {
-                    if !playlist_keys.contains(&radio_locator_key(&candidate)) {
-                        action = Some(Action::Expand(candidate));
-                        break;
-                    }
+                let quick = std::mem::take(&mut radio.quick);
+                let mut bag = std::mem::take(&mut radio.bag);
+                let mut quick = quick;
+                drop(rust);
+                let picked = pop_next_pick(&mut quick, &mut bag, &staged);
+                let mut rust = self.as_mut().rust_mut();
+                if let Some(radio) = rust.radio.as_mut() {
+                    radio.quick = quick;
+                    radio.bag = bag;
+                }
+                if let Some(path) = picked {
+                    action = Some(Action::Expand(path));
                 }
             }
         }
         if action.is_none() {
             let mut rust = self.as_mut().rust_mut();
             if let Some(radio) = rust.radio.as_mut() {
-                if radio.bag.is_empty() && radio.announced {
+                let ready_empty =
+                    radio.ready.len() < RADIO_READY_TARGET && radio.bag.is_empty() && radio.quick.is_empty();
+                if ready_empty && radio.announced {
                     if radio.appends_this_round > 0 {
                         radio.appends_this_round = 0;
                         action = Some(Action::Rebuild);
@@ -5083,6 +5280,25 @@ impl qobject::AppController {
         self.as_mut().set_queue_count(saturating_i32(queue_count));
         if let Some(target) = target {
             self.as_mut().play_source_index(target);
+        } else if self.as_ref().rust().radio_active {
+            // End of the playlist with radio on: pull one staged track into
+            // the playlist instead of stopping. Stop-after never reaches here;
+            // it stops explicitly before advancing.
+            let pulled = self
+                .as_ref()
+                .rust()
+                .radio
+                .as_ref()
+                .is_some_and(|radio| !radio.ready.is_empty());
+            if pulled {
+                if let Some(index) = self.as_mut().shift_radio_track() {
+                    self.as_mut().play_source_index(index);
+                } else {
+                    self.as_mut().stop();
+                }
+            } else {
+                self.as_mut().stop();
+            }
         } else {
             self.as_mut().stop();
         }
@@ -5331,13 +5547,14 @@ impl qobject::AppController {
 #[cfg(test)]
 mod tests {
     use super::{
-        AddPathResult, DirectoryScanEvent, PlaylistSortColumn, add_path_status, collect_radio_catalog,
-        compare_tracks, count_delete_entries, dropped_urls_from_json, is_random_candidate,
-        local_paths_from_json, move_selected_items, natural_compare, normalize_playlist_save_path,
-        ordered_directory_files, output_devices_json, parse_delete_paths_json, parse_row_indices,
-        pick_random_files, playlist_entry_for_track, purged_track_indices, radio_locator_key,
-        radio_track_key, remove_path_permanent, resolve_output_device, sample_rate_label,
-        sanitize_delete_paths, scan_directory_paths, sort_visible_indices, valid_equalizer_gain,
+        AddPathResult, DirectoryScanEvent, PlaylistSortColumn, add_path_status, build_radio_bag,
+        collect_radio_catalog, compare_tracks, count_delete_entries, dropped_urls_from_json,
+        is_random_candidate, local_paths_from_json, move_selected_items, natural_compare,
+        normalize_playlist_save_path, ordered_directory_files, output_devices_json,
+        parse_delete_paths_json, parse_row_indices, pick_random_files, playlist_entry_for_track,
+        pop_next_pick, purged_track_indices, radio_group_key, radio_locator_key, radio_track_key,
+        remove_path_permanent, resolve_output_device, sample_rate_label, sanitize_delete_paths,
+        scan_directory_paths, sort_visible_indices, track_filename, track_path, valid_equalizer_gain,
     };
     use crate::decoder::{ArchiveOrigin, DecoderRegistry, DecoderSettings, PlaybackSource};
     use crate::playback::OutputDevice;
@@ -5345,6 +5562,7 @@ mod tests {
     use crate::settings::OutputDevicePreference;
     use crate::track::Track;
     use std::cmp::Ordering;
+    use std::collections::HashSet;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
@@ -5622,7 +5840,7 @@ mod tests {
         std::fs::write(root.join("notes.cue"), []).unwrap();
         crate::archive::tests::write_stored_zip(&root.join("pack.zip"), &[("inner.wav", b"data")]);
         let cancel = AtomicBool::new(false);
-        let found = collect_radio_catalog(root, true, &cancel);
+        let found = collect_radio_catalog(root, true, &cancel, false);
         assert!(found.contains(&root.join("song.flac")));
         assert!(found.contains(&root.join("sub/song.mp3")));
         assert!(found.contains(&root.join("notes.cue")));
@@ -5644,9 +5862,126 @@ mod tests {
             .expect("location");
         assert_eq!(location.archive, root.join("pack.zip"));
 
-        let without_cue = collect_radio_catalog(root, false, &cancel);
+        let without_cue = collect_radio_catalog(root, false, &cancel, false);
         assert!(!without_cue.contains(&root.join("notes.cue")));
         assert!(without_cue.contains(&root.join("song.flac")));
+
+        let quick = collect_radio_catalog(root, true, &cancel, true);
+        assert!(quick.contains(&root.join("song.flac")));
+        assert!(
+            !quick.iter().any(|path| {
+                crate::archive::tree_location(path)
+                    .ok()
+                    .flatten()
+                    .is_some()
+            }),
+            "quick mode skips archive contents"
+        );
+    }
+
+    #[test]
+    fn track_path_shows_full_song_path() {
+        let local = Track {
+            source: PlaybackSource::from_path(PathBuf::from("/music/song.flac")),
+            ..Track::default()
+        };
+        assert_eq!(track_path(&local), "/music/song.flac");
+        let mut archived = Track {
+            source: PlaybackSource::from_path(PathBuf::from("inner.zip/track.flac")),
+            ..Track::default()
+        };
+        archived.source.set_archive_origin(
+            PathBuf::from("/music/pack.zip"),
+            "inner.zip/track.flac".to_owned(),
+        );
+        assert_eq!(
+            track_path(&archived),
+            format!(
+                "/music/pack.zip{}inner.zip/track.flac",
+                std::path::MAIN_SEPARATOR
+            )
+        );
+        assert_eq!(
+            track_filename(&archived),
+            "track.flac",
+            "filename column keeps showing just the file"
+        );
+    }
+
+    #[test]
+    fn radio_group_key_groups_by_top_folder() {
+        let root = Path::new("/music");
+        assert_eq!(
+            radio_group_key(Path::new("/music/rock/song.flac"), root),
+            "rock"
+        );
+        assert_eq!(radio_group_key(Path::new("/music/song.flac"), root), "");
+        let member = crate::archive::member_url(Path::new("/music/pop/pack.zip"), "a.wav", false);
+        assert_eq!(radio_group_key(&member, root), "pop");
+    }
+
+    #[test]
+    fn build_radio_bag_spreads_folders() {
+        let root = Path::new("/music");
+        let mut locators = Vec::new();
+        for name in ["a1", "a2", "a3", "a4", "a5"] {
+            locators.push(PathBuf::from(format!("/music/big/{name}.flac")));
+        }
+        for name in ["b1", "b2"] {
+            locators.push(PathBuf::from(format!("/music/small/{name}.flac")));
+        }
+        locators.push(PathBuf::from("/music/lone.flac"));
+        let first = build_radio_bag(locators.clone(), root, 99);
+        assert_eq!(first.len(), 8);
+        let groups: Vec<String> = first
+            .iter()
+            .take(3)
+            .map(|path| radio_group_key(path, root))
+            .collect();
+        let mut unique = groups.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            3,
+            "first three picks cover three folders: {groups:?}"
+        );
+        assert_eq!(first, build_radio_bag(locators, root, 99));
+        let mut sorted = first.into_iter().collect::<Vec<_>>();
+        sorted.sort();
+        let mut expected = vec![
+            PathBuf::from("/music/lone.flac"),
+            PathBuf::from("/music/big/a1.flac"),
+            PathBuf::from("/music/big/a2.flac"),
+            PathBuf::from("/music/big/a3.flac"),
+            PathBuf::from("/music/big/a4.flac"),
+            PathBuf::from("/music/big/a5.flac"),
+            PathBuf::from("/music/small/b1.flac"),
+            PathBuf::from("/music/small/b2.flac"),
+        ];
+        expected.sort();
+        assert_eq!(sorted, expected, "no loss, no duplicates");
+    }
+
+    #[test]
+    fn pop_next_pick_prefers_quick_and_skips_staged() {
+        use std::collections::VecDeque;
+        let mut quick = VecDeque::from([
+            PathBuf::from("/music/staged.flac"),
+            PathBuf::from("/music/fresh.flac"),
+        ]);
+        let mut bag = VecDeque::from([PathBuf::from("/music/deep.flac")]);
+        let staged: HashSet<String> =
+            ["/music/staged.flac".to_owned()].into_iter().collect();
+        assert_eq!(
+            pop_next_pick(&mut quick, &mut bag, &staged),
+            Some(PathBuf::from("/music/fresh.flac"))
+        );
+        assert_eq!(
+            pop_next_pick(&mut quick, &mut bag, &staged),
+            Some(PathBuf::from("/music/deep.flac"))
+        );
+        assert_eq!(pop_next_pick(&mut quick, &mut bag, &staged), None);
     }
 
     #[test]
