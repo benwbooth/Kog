@@ -21,6 +21,7 @@ public:
     explicit KogFileTreeSearch(QObject *parent = nullptr);
     ~KogFileTreeSearch() override;
     Q_INVOKABLE QModelIndex setRootPath(const QString &path);
+    Q_INVOKABLE void refreshTree();
     Q_INVOKABLE void setSupportedFormats(const QString &catalog);
     Q_INVOKABLE QString filePath(const QModelIndex &index) const;
     Q_INVOKABLE bool isDir(const QModelIndex &index) const;

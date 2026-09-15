@@ -34,6 +34,10 @@ pub mod qobject {
         fn set_root_path_super(self: Pin<&mut FileTreeModel>, path: &QString) -> QModelIndex;
 
         #[inherit]
+        #[cxx_name = "refreshTree"]
+        fn refresh_tree_super(self: Pin<&mut FileTreeModel>);
+
+        #[inherit]
         #[cxx_name = "setSupportedFormats"]
         fn set_supported_formats(self: Pin<&mut FileTreeModel>, catalog: &QString);
 
@@ -54,6 +58,9 @@ pub mod qobject {
 
         #[qinvokable]
         fn set_root_path_text(self: Pin<&mut FileTreeModel>, path: QString);
+
+        #[qinvokable]
+        fn refresh_tree(self: Pin<&mut FileTreeModel>);
 
         #[qinvokable]
         fn file_url(self: &FileTreeModel, index: &QModelIndex) -> QUrl;
@@ -102,6 +109,10 @@ impl qobject::FileTreeModel {
 
     pub fn set_root_path_text(mut self: Pin<&mut Self>, path: QString) {
         self.as_mut().set_tree_root(PathBuf::from(path.to_string()));
+    }
+
+    pub fn refresh_tree(mut self: Pin<&mut Self>) {
+        self.as_mut().refresh_tree_super();
     }
 
     pub fn file_url(&self, index: &QModelIndex) -> QUrl {

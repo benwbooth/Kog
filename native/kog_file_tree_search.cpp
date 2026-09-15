@@ -27,6 +27,18 @@ constexpr int containerRole = directoryRole + 3;
 constexpr int iconRole = directoryRole + 4;
 constexpr int matchLimit = 2000;
 constexpr int nodeLimit = 12000;
+
+// Tree rows sort alphabetically ignoring case, so names starting with
+// digits or symbols (like "_tapes") stay at the top instead of landing
+// between upper- and lowercase names under the default codepoint order.
+class KogTreeItem : public QStandardItem {
+public:
+    using QStandardItem::QStandardItem;
+    bool operator<(const QStandardItem &other) const override
+    {
+        return text().compare(other.text(), Qt::CaseInsensitive) < 0;
+    }
+};
 bool supportedFile(const QString &path, const QSet<QString> &extensions)
 {
     return extensions.contains(QFileInfo(path).suffix().toLower());
@@ -197,6 +209,18 @@ public:
         if (root) appendRow(root);
     }
 
+    void refreshAll()
+    {
+        // Re-run the background load for every watched directory, keeping
+        // expansion state. Filesystem notifications already do this per
+        // directory, but they can be missed (network mounts, watcher
+        // limits), and archive listings are never watched.
+        const auto targets = watched.values();
+        for (const auto &target : targets) {
+            if (target.isValid()) load(target, true);
+        }
+    }
+
     bool hasChildren(const QModelIndex &parent = {}) const override
     {
         return QStandardItemModel::hasChildren(parent) || canFetchMore(parent)
@@ -297,7 +321,7 @@ private:
             const auto name = first.key();
             const auto entry = first.value();
             entries->rows.erase(first);
-            auto *item = new QStandardItem(name);
+            auto *item = new KogTreeItem(name);
             item->setData(name, QFileSystemModel::FileNameRole);
             item->setData(entry.path, QFileSystemModel::FilePathRole);
             item->setData(entry.icon, iconRole);
@@ -353,7 +377,7 @@ void KogFileTreeSearch::setSupportedFormats(const QString &catalog)
 QModelIndex KogFileTreeSearch::setRootPath(const QString &path)
 {
     m_root = QDir::cleanPath(path);
-    auto *root = new QStandardItem(QFileInfo(m_root).fileName());
+    auto *root = new KogTreeItem(QFileInfo(m_root).fileName());
     root->setData(m_root, QFileSystemModel::FilePathRole);
     root->setData(QFileInfo(m_root).fileName(), QFileSystemModel::FileNameRole);
     root->setData(QStringLiteral("folder"), iconRole);
@@ -364,6 +388,11 @@ QModelIndex KogFileTreeSearch::setRootPath(const QString &path)
     m_files->fetchMore(m_files->index(0, 0));
     startSearch();
     return viewRootIndex();
+}
+
+void KogFileTreeSearch::refreshTree()
+{
+    m_files->refreshAll();
 }
 
 QModelIndex KogFileTreeSearch::viewRootIndex() const
@@ -470,7 +499,7 @@ void KogFileTreeSearch::startSearch()
         return;
     }
     // Do not leave old-query paths selectable while the next scan is running.
-    auto *root = new QStandardItem(QFileInfo(m_root).fileName());
+    auto *root = new KogTreeItem(QFileInfo(m_root).fileName());
     root->setData(m_root, QFileSystemModel::FilePathRole);
     root->setData(QFileInfo(m_root).fileName(), QFileSystemModel::FileNameRole);
     root->setData(QStringLiteral("folder"), iconRole);
@@ -537,7 +566,7 @@ void KogFileTreeSearch::startSearch()
                 }
             }
             if (!item) {
-                item = new QStandardItem(relative.fileName());
+                item = new KogTreeItem(relative.fileName());
                 item->setData(relative.fileName(), QFileSystemModel::FileNameRole);
                 item->setData(it->path, QFileSystemModel::FilePathRole);
                 item->setData(it->icon, iconRole);

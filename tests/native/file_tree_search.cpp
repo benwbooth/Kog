@@ -454,6 +454,38 @@ int main(int argc, char **argv)
     QCoreApplication::processEvents();
     check(model.filePath(model.viewRootIndex()) == base.absolutePath(), "Clearing search restores the actual browse root");
 
+    QFile refreshProbe(base.filePath("Manual refresh.flac"));
+    check(refreshProbe.open(QIODevice::WriteOnly), "Create refresh fixture");
+    model.refreshTree();
+    model.refreshTree();
+    waitFor([&] { return childNamed(model, model.viewRootIndex(), "Manual refresh.flac").isValid(); },
+            "Manual refresh discovers an externally added file");
+    const int refreshedRows = model.rowCount(model.viewRootIndex());
+    model.refreshTree();
+    QCoreApplication::processEvents();
+    check(model.rowCount(model.viewRootIndex()) == refreshedRows,
+          "Repeated manual refresh does not duplicate rows");
+    check(QFile::remove(base.filePath("Manual refresh.flac")), "Delete refresh fixture");
+    model.refreshTree();
+    waitFor([&] { return !childNamed(model, model.viewRootIndex(), "Manual refresh.flac").isValid(); },
+            "Manual refresh drops an externally deleted file");
+
+    check(base.mkpath("Sort"), "Create sort fixture");
+    for (const auto &name : {"apple.flac", "Zebra.flac", "_top.flac", "10-first.flac", "banana.flac"}) {
+        QFile sorted(base.filePath(QString("Sort/") + name));
+        check(sorted.open(QIODevice::WriteOnly), "Create sort fixture file");
+    }
+    waitFor([&] { return childNamed(model, model.viewRootIndex(), "Sort").isValid(); },
+            "Sort fixture discovered");
+    QPersistentModelIndex sortDir(childNamed(model, model.viewRootIndex(), "Sort"));
+    model.fetchMore(sortDir);
+    waitFor([&] { return model.rowCount(sortDir) == 5; }, "Sort fixture loads");
+    QStringList sortedNames;
+    for (int row = 0; row < model.rowCount(sortDir); ++row)
+        sortedNames << model.index(row, 0, sortDir).data(QFileSystemModel::FileNameRole).toString();
+    check(sortedNames == QStringList({"10-first.flac", "_top.flac", "apple.flac", "banana.flac", "Zebra.flac"}),
+          "Tree sorts alphabetically ignoring case with symbols first");
+
     const auto zip = base.filePath(QString::fromUtf8("Pack + 日本語.zip"));
     writeArchive(zip);
     waitFor([&] { return childNamed(model, model.viewRootIndex(), QFileInfo(zip).fileName()).isValid(); },
