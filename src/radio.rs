@@ -41,11 +41,14 @@ pub(crate) fn random_seed() -> u64 {
 /// Salt distinguishing file order from turn order inside one folder.
 const FILE_ORDER_SALT: u64 = 0x9E37_79B9_7F4A_7C15;
 
-/// Picks produced by the staging thread: locators in round order, or Empty
-/// when the library yielded nothing across two consecutive rounds.
+/// Picks produced by the staging thread: locators in round order, Empty
+/// when the library yielded nothing across two consecutive rounds, Barren
+/// when everything reachable already failed this session.
+#[derive(Debug)]
 pub(crate) enum StagingResponse {
     Pick(PathBuf),
     Empty,
+    Barren,
 }
 
 /// Staging thread body: own the round, its decoder set, and its cursors;
@@ -53,15 +56,20 @@ pub(crate) enum StagingResponse {
 /// bounded channel paces production: a full channel blocks the thread, so
 /// nothing is ever staged faster than the UI consumes. Round exhaustion
 /// rotates to a fresh seed silently; a second consecutive exhaustion ends
-/// the thread with Empty.
+/// the thread with Empty. Locators the UI already proved dead are skipped
+/// without expansion (their turns stay consumed, so orders never shift).
 pub(crate) fn run_staging(
     root: PathBuf,
     settings: DecoderSettings,
     read_cue: bool,
     nested_cache: PathBuf,
+    dead: std::sync::Arc<std::sync::Mutex<HashSet<String>>>,
     picks: std::sync::mpsc::SyncSender<StagingResponse>,
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) {
+    // A library of pure junk would spin rounds of skips forever: cap
+    // consecutive skips, then report Barren and park.
+    const MAX_SKIPS: usize = 16384;
     let decoders = DecoderRegistry::new(settings);
     let exts = decoders.audio_extensions();
     let ctx = RadioCtx {
@@ -71,24 +79,47 @@ pub(crate) fn run_staging(
         nested_cache: &nested_cache,
     };
     let mut round = RadioRound::new(random_seed());
-    let mut rotations = 0_usize;
+    // Consecutive rounds with zero yields of any kind end the thread; a
+    // round that yields (live or skipped) proves content and resets both.
+    let mut empty_rounds = 0_usize;
+    let mut round_yielded = false;
+    let mut skips = 0_usize;
     loop {
         if cancel.load(std::sync::atomic::Ordering::Relaxed) {
             return;
         }
         match round.next_pick(&root, &ctx) {
             Some(locator) => {
+                round_yielded = true;
+                let known_dead = dead
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .contains(&radio_locator_key(&locator));
+                if known_dead {
+                    skips += 1;
+                    if skips >= MAX_SKIPS {
+                        let _ = picks.send(StagingResponse::Barren);
+                        return;
+                    }
+                    continue;
+                }
+                skips = 0;
                 if picks.send(StagingResponse::Pick(locator)).is_err() {
                     return;
                 }
             }
             None => {
-                rotations += 1;
-                if rotations > 1 {
+                if round_yielded {
+                    empty_rounds = 0;
+                } else {
+                    empty_rounds += 1;
+                }
+                if empty_rounds > 1 {
                     let _ = picks.send(StagingResponse::Empty);
                     return;
                 }
                 round = RadioRound::new(random_seed());
+                round_yielded = false;
             }
         }
     }
@@ -257,6 +288,30 @@ fn is_radio_member(name: &str, read_cue: bool, audio_exts: &HashSet<String>) -> 
             audio_exts.contains(&extension.to_ascii_lowercase())
                 || crate::archive::is_path(Path::new(name))
         })
+}
+
+/// Stable identity for playlist deduplication: plain paths as-is, archive
+/// tracks as `outer :: member`. Mirrors radio_locator_key so both sides of
+/// the comparison speak the same language (lexically, like playlist purge).
+/// Lives here (not the controller) so the staging thread and the UI share
+/// one scheme for the dead set.
+pub(crate) fn radio_track_key(track: &crate::track::Track) -> String {
+    if let Some(origin) = &track.source.archive_origin {
+        return format!("{}::{}", origin.archive_path.display(), origin.entry_name);
+    }
+    if let Some(url) = &track.source.remote_url {
+        return url.clone();
+    }
+    track.source.path.display().to_string()
+}
+
+/// Stable identity for a catalog locator: plain paths as-is, archive member
+/// URLs parsed back to `outer :: member`.
+pub(crate) fn radio_locator_key(path: &Path) -> String {
+    if let Ok(Some(location)) = crate::archive::tree_location(path) {
+        return format!("{}::{}", location.archive.display(), location.entry);
+    }
+    path.display().to_string()
 }
 
 /// Whether a playlist/archive path is eligible for random queueing: regular
@@ -468,6 +523,39 @@ mod tests {
         picks
     }
     #[test]
+    fn radio_keys_agree_between_tracks_and_locators() {
+        use crate::decoder::PlaybackSource;
+        use crate::track::Track;
+        let file = PathBuf::from("/music/song.flac");
+        let file_track = Track {
+            source: PlaybackSource::from_path(file.clone()),
+            ..Track::default()
+        };
+        assert_eq!(radio_track_key(&file_track), radio_locator_key(&file));
+        let mut archived = Track {
+            source: PlaybackSource::from_path(PathBuf::from("/music/pack.zip/Disc/a.wav")),
+            ..Track::default()
+        };
+        archived
+            .source
+            .set_archive_origin(PathBuf::from("/music/pack.zip"), "Disc/a.wav".to_owned());
+        let locator = crate::archive::member_url(Path::new("/music/pack.zip"), "Disc/a.wav", false);
+        assert_eq!(radio_track_key(&archived), radio_locator_key(&locator));
+        let remote = Track {
+            source: PlaybackSource {
+                remote_url: Some("https://example.com/stream".to_owned()),
+                path: PathBuf::from("/stream"),
+                ..PlaybackSource::default()
+            },
+            ..Track::default()
+        };
+        assert_eq!(
+            radio_track_key(&remote),
+            "https://example.com/stream".to_owned()
+        );
+    }
+
+    #[test]
     fn is_random_candidate_filters_playlists_and_optional_cue() {
         assert!(!is_random_candidate(Path::new("/music/list.m3u"), true));
         assert!(!is_random_candidate(Path::new("/music/list.m3u8"), true));
@@ -476,6 +564,84 @@ mod tests {
         assert!(!is_random_candidate(Path::new("/music/album.cue"), false));
         assert!(is_random_candidate(Path::new("/music/song.flac"), true));
         assert!(is_random_candidate(Path::new("/music/pack.zip"), false));
+    }
+
+    #[test]
+    fn staging_skips_known_dead_and_reports_barren() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::mpsc::sync_channel;
+        use std::sync::{Arc, Mutex};
+        use std::time::Duration;
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        std::fs::write(root.join("live.flac"), []).unwrap();
+        std::fs::write(root.join("dead.flac"), []).unwrap();
+        let decoders = DecoderRegistry::default();
+        let dead = Arc::new(Mutex::new(HashSet::new()));
+        dead.lock()
+            .unwrap()
+            .insert(radio_locator_key(&root.join("dead.flac")));
+        let (sender, receiver) = sync_channel(4);
+        let settings = crate::decoder::DecoderSettings::default();
+        let cache = root.join("cache");
+        let worker_dead = Arc::clone(&dead);
+        let worker_cancel = Arc::new(AtomicBool::new(false));
+        let root_owned = root.to_path_buf();
+        std::thread::spawn(move || {
+            run_staging(
+                root_owned,
+                settings,
+                false,
+                cache,
+                worker_dead,
+                sender,
+                worker_cancel,
+            );
+        });
+        // The dead file never arrives; live rounds keep cycling instead.
+        for _ in 0..4 {
+            match receiver.recv_timeout(Duration::from_secs(30)) {
+                Ok(StagingResponse::Pick(pick)) => assert_eq!(pick, root.join("live.flac")),
+                other => panic!("expected the live pick, got {other:?}"),
+            }
+        }
+        drop(receiver);
+    }
+
+    #[test]
+    fn staging_reports_barren_when_everything_is_dead() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::mpsc::sync_channel;
+        use std::sync::{Arc, Mutex};
+        use std::time::Duration;
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        std::fs::write(root.join("dead.flac"), []).unwrap();
+        let dead = Arc::new(Mutex::new(HashSet::new()));
+        dead.lock()
+            .unwrap()
+            .insert(radio_locator_key(&root.join("dead.flac")));
+        let (sender, receiver) = sync_channel(4);
+        let settings = crate::decoder::DecoderSettings::default();
+        let cache = root.join("cache");
+        let worker_dead = Arc::clone(&dead);
+        let worker_cancel = Arc::new(AtomicBool::new(false));
+        let root_owned = root.to_path_buf();
+        std::thread::spawn(move || {
+            run_staging(
+                root_owned,
+                settings,
+                false,
+                cache,
+                worker_dead,
+                sender,
+                worker_cancel,
+            );
+        });
+        match receiver.recv_timeout(Duration::from_secs(60)) {
+            Ok(StagingResponse::Barren) => {}
+            other => panic!("expected Barren, got {other:?}"),
+        }
     }
 
     #[test]
