@@ -1559,13 +1559,18 @@ pub(crate) mod tests {
         std::fs::read(&path).unwrap()
     }
 
-    struct TestCacheDir;
+    struct TestCacheDir {
+        _guard: std::sync::MutexGuard<'static, ()>,
+    }
     impl TestCacheDir {
         fn set(path: &Path) -> Self {
+            // Serialized: parallel tests share one process-wide variable.
             // SAFETY: only nested tests touch KOG_NESTED_CACHE_DIR, and
             // every other nested test passes its cache explicitly.
+            static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+            let guard = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             unsafe { std::env::set_var("KOG_NESTED_CACHE_DIR", path); }
-            Self
+            Self { _guard: guard }
         }
     }
     impl Drop for TestCacheDir {
