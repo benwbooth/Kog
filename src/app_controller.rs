@@ -67,6 +67,11 @@ pub mod qobject {
         #[qproperty(i32, directory_scan_files_scanned)]
         #[qproperty(i32, directory_scan_tracks_added)]
         #[qproperty(QString, directory_scan_current_path)]
+        #[qproperty(bool, tree_delete_active)]
+        #[qproperty(i32, tree_delete_done)]
+        #[qproperty(i32, tree_delete_total)]
+        #[qproperty(QString, tree_delete_current_path)]
+        #[qproperty(QString, tree_delete_error)]
         #[qproperty(bool, equalizer_enabled)]
         #[qproperty(bool, equalizer_track_genre)]
         #[qproperty(f64, equalizer_preamp_db)]
@@ -91,6 +96,16 @@ pub mod qobject {
         fn poll_directory_scan(self: Pin<&mut AppController>);
         #[qinvokable]
         fn cancel_directory_scan(self: Pin<&mut AppController>);
+        #[qinvokable]
+        fn start_tree_delete(
+            self: Pin<&mut AppController>,
+            paths: QString,
+            permanent: bool,
+        ) -> bool;
+        #[qinvokable]
+        fn poll_tree_delete(self: Pin<&mut AppController>);
+        #[qinvokable]
+        fn cancel_tree_delete(self: Pin<&mut AppController>);
         #[qinvokable]
         fn add_url(self: Pin<&mut AppController>, url: QString);
         #[qinvokable]
@@ -338,6 +353,23 @@ struct DirectoryScanState {
     last_playlist_refresh: Instant,
 }
 
+enum TreeDeleteEvent {
+    Total { items: usize },
+    Progress { path: PathBuf, done: usize },
+    Deleted { path: PathBuf },
+    Failed { path: PathBuf, error: String },
+    Complete { cancelled: bool, files: usize },
+}
+
+struct TreeDeleteState {
+    receiver: Receiver<TreeDeleteEvent>,
+    cancel: Arc<AtomicBool>,
+    cancel_requested: bool,
+    permanent: bool,
+    deleted: Vec<PathBuf>,
+    failures: Vec<String>,
+}
+
 impl AddPathResult {
     fn push_warning(&mut self, warning: impl AsRef<str>) {
         let warning = warning.as_ref();
@@ -440,6 +472,166 @@ fn send_directory_scan_event(
             }
         }
     }
+}
+
+/// Parse the JSON path list handed over from the file-tree context menu.
+fn parse_delete_paths_json(value: &str) -> Vec<PathBuf> {
+    serde_json::from_str::<Vec<String>>(value)
+        .unwrap_or_default()
+        .into_iter()
+        .map(PathBuf::from)
+        .collect()
+}
+
+/// Drop empty selections, relative paths, filesystem roots, duplicates, and
+/// paths already covered by another selected ancestor so each on-disk entry
+/// is deleted exactly once. Symlinks are kept as-is: trashing a link removes
+/// the link, never its target.
+fn sanitize_delete_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut kept: Vec<PathBuf> = Vec::new();
+    let mut sorted = paths;
+    sorted.sort();
+    sorted.dedup();
+    for path in sorted {
+        if path.as_os_str().is_empty() || !path.is_absolute() || path.parent().is_none() {
+            continue;
+        }
+        if kept
+            .iter()
+            .any(|kept| path == *kept || path.starts_with(kept))
+        {
+            continue;
+        }
+        kept.push(path);
+    }
+    kept
+}
+
+/// Count the entries under `path` for the delete summary without following
+/// symlinked directories. The path itself counts as one entry; missing paths
+/// count as zero so a concurrent external change cannot fail the job.
+fn count_delete_entries(path: &Path, cancel: &AtomicBool) -> (usize, usize) {
+    let mut files = 0_usize;
+    let mut directories = 0_usize;
+    let mut pending = vec![path.to_owned()];
+    while let Some(current) = pending.pop() {
+        if cancel.load(AtomicOrdering::Relaxed) {
+            break;
+        }
+        let Ok(metadata) = std::fs::symlink_metadata(&current) else {
+            continue;
+        };
+        if metadata.file_type().is_dir() {
+            directories = directories.saturating_add(1);
+            let Ok(entries) = std::fs::read_dir(&current) else {
+                continue;
+            };
+            for entry in entries.filter_map(Result::ok) {
+                pending.push(entry.path());
+            }
+        } else {
+            files = files.saturating_add(1);
+        }
+    }
+    (files, directories)
+}
+
+/// Permanently remove a file, link, or directory tree without following the
+/// final link itself.
+fn remove_path_permanent(path: &Path) -> Result<(), String> {
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|error| format!("reading {}: {error}", path.display()))?;
+    if metadata.file_type().is_dir() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    }
+    .map_err(|error| format!("deleting {}: {error}", path.display()))
+}
+
+/// Local filesystem paths a playlist track depends on: its own file plus the
+/// archive it was expanded from, if any. Remote tracks depend on nothing
+/// the file tree can delete.
+fn track_local_paths(track: &Track) -> Vec<PathBuf> {
+    if track.source.is_remote() {
+        return Vec::new();
+    }
+    let mut paths = vec![track.source.path.clone()];
+    if let Some(origin) = &track.source.archive_origin {
+        paths.push(origin.archive_path.clone());
+    }
+    paths
+}
+
+/// Source indices of tracks with a local path at or under any deleted path.
+/// `Path::starts_with` compares whole components, so `/music/rock` never
+/// matches `/music/rock2`.
+fn purged_track_indices(tracks: &[Track], deleted: &[PathBuf]) -> Vec<usize> {
+    tracks
+        .iter()
+        .enumerate()
+        .filter(|(_, track)| {
+            track_local_paths(track).iter().any(|path| {
+                deleted
+                    .iter()
+                    .any(|root| path == root || path.starts_with(root))
+            })
+        })
+        .map(|(index, _)| index)
+        .collect()
+}
+
+fn run_tree_delete_job(
+    paths: Vec<PathBuf>,
+    permanent: bool,
+    sender: SyncSender<TreeDeleteEvent>,
+    cancel: Arc<AtomicBool>,
+) {
+    // Deleted/Failed/Complete use blocking sends: the summary must not lose
+    // them if the worker outruns the 100 ms UI poll. Progress and Total may
+    // drop under pressure; the next poll catches up. Blocking is
+    // deadlock-free because the UI keeps draining until Complete arrives.
+    let mut files = 0_usize;
+    for path in &paths {
+        if cancel.load(AtomicOrdering::Relaxed) {
+            break;
+        }
+        let (path_files, _) = count_delete_entries(path, &cancel);
+        files = files.saturating_add(path_files);
+    }
+    let mut completed = 0_usize;
+    let total = paths.len();
+    let _ = sender.try_send(TreeDeleteEvent::Total { items: total });
+    for path in &paths {
+        if cancel.load(AtomicOrdering::Relaxed) {
+            break;
+        }
+        let outcome = if permanent {
+            remove_path_permanent(path)
+        } else {
+            trash::delete(path).map_err(|error| error.to_string())
+        };
+        match outcome {
+            Ok(()) => {
+                let _ = sender.send(TreeDeleteEvent::Deleted { path: path.clone() });
+            }
+            Err(error) => {
+                let _ = sender.send(TreeDeleteEvent::Failed {
+                    path: path.clone(),
+                    error,
+                });
+            }
+        }
+        completed += 1;
+        let _ = sender.try_send(TreeDeleteEvent::Progress {
+            path: path.clone(),
+            done: completed,
+        });
+    }
+    let _ = sender.send(TreeDeleteEvent::Complete {
+        cancelled: cancel.load(AtomicOrdering::Relaxed),
+        files,
+    });
 }
 
 fn prepare_scan_file(
@@ -1157,6 +1349,11 @@ pub struct AppControllerRust {
     directory_scan_files_scanned: i32,
     directory_scan_tracks_added: i32,
     directory_scan_current_path: QString,
+    tree_delete_active: bool,
+    tree_delete_done: i32,
+    tree_delete_total: i32,
+    tree_delete_current_path: QString,
+    tree_delete_error: QString,
     equalizer_enabled: bool,
     equalizer_track_genre: bool,
     equalizer_preamp_db: f64,
@@ -1174,6 +1371,7 @@ pub struct AppControllerRust {
     playback: PlaybackEngine,
     equalizer_settings: EqualizerSettings,
     directory_scan: Option<DirectoryScanState>,
+    tree_delete: Option<TreeDeleteState>,
     mpris: MprisService,
 }
 
@@ -1336,6 +1534,11 @@ impl Default for AppControllerRust {
             directory_scan_files_scanned: 0,
             directory_scan_tracks_added: 0,
             directory_scan_current_path: QString::default(),
+            tree_delete_active: false,
+            tree_delete_done: 0,
+            tree_delete_total: 0,
+            tree_delete_current_path: QString::default(),
+            tree_delete_error: QString::default(),
             equalizer_enabled: equalizer_settings.enabled,
             equalizer_track_genre: equalizer_settings.track_genre,
             equalizer_preamp_db: f64::from(equalizer_settings.preamp_db),
@@ -1357,6 +1560,7 @@ impl Default for AppControllerRust {
             playback,
             equalizer_settings,
             directory_scan: None,
+            tree_delete: None,
             mpris: MprisService::default(),
         };
 
@@ -2106,6 +2310,216 @@ impl qobject::AppController {
         self.as_mut()
             .set_directory_scan_current_path(qstring("Cancelling…"));
         self.as_mut().set_status(qstring("Cancelling music load…"));
+    }
+
+    pub fn start_tree_delete(mut self: Pin<&mut Self>, paths: QString, permanent: bool) -> bool {
+        if self.as_ref().rust().tree_delete_active {
+            self.as_mut()
+                .set_status(qstring("A file delete is already running"));
+            return false;
+        }
+        let paths = sanitize_delete_paths(parse_delete_paths_json(&paths.to_string()));
+        if paths.is_empty() {
+            self.as_mut().set_status(qstring("Nothing to delete"));
+            return false;
+        }
+        let (sender, receiver) = std::sync::mpsc::sync_channel(64);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let first = paths[0].to_string_lossy().into_owned();
+        self.as_mut().rust_mut().tree_delete = Some(TreeDeleteState {
+            receiver,
+            cancel: Arc::clone(&cancel),
+            cancel_requested: false,
+            permanent,
+            deleted: Vec::new(),
+            failures: Vec::new(),
+        });
+        self.as_mut().set_tree_delete_done(0);
+        self.as_mut()
+            .set_tree_delete_total(saturating_i32(paths.len()));
+        self.as_mut().set_tree_delete_current_path(qstring(&first));
+        self.as_mut().set_tree_delete_error(QString::default());
+        self.as_mut().set_tree_delete_active(true);
+        self.as_mut().set_status(qstring(if permanent {
+            "Deleting files permanently…"
+        } else {
+            "Moving files to trash…"
+        }));
+        if let Err(error) = std::thread::Builder::new()
+            .name("kog-tree-delete".to_owned())
+            .spawn(move || run_tree_delete_job(paths, permanent, sender, cancel))
+        {
+            self.as_mut().rust_mut().tree_delete = None;
+            self.as_mut().set_tree_delete_active(false);
+            self.as_mut()
+                .set_status(qstring(format!("Starting file delete: {error}")));
+            return false;
+        }
+        true
+    }
+
+    pub fn poll_tree_delete(mut self: Pin<&mut Self>) {
+        if !self.as_ref().rust().tree_delete_active {
+            return;
+        }
+        let mut events = Vec::new();
+        let mut disconnected = false;
+        if self.as_ref().rust().tree_delete.as_ref().is_some() {
+            for _ in 0..64 {
+                let event = match self.as_ref().rust().tree_delete.as_ref() {
+                    Some(job) => match job.receiver.try_recv() {
+                        Ok(event) => event,
+                        Err(TryRecvError::Empty) => break,
+                        Err(TryRecvError::Disconnected) => {
+                            disconnected = true;
+                            break;
+                        }
+                    },
+                    None => break,
+                };
+                let complete = matches!(event, TreeDeleteEvent::Complete { .. });
+                events.push(event);
+                if complete {
+                    break;
+                }
+            }
+        }
+        let mut completion = None;
+        for event in events {
+            match event {
+                TreeDeleteEvent::Total { items } => {
+                    self.as_mut().set_tree_delete_total(saturating_i32(items));
+                }
+                TreeDeleteEvent::Progress { path, done } => {
+                    self.as_mut()
+                        .set_tree_delete_current_path(qstring(path.to_string_lossy()));
+                    self.as_mut().set_tree_delete_done(saturating_i32(done));
+                }
+                TreeDeleteEvent::Deleted { path } => {
+                    if let Some(job) = self.as_mut().rust_mut().tree_delete.as_mut() {
+                        job.deleted.push(path);
+                    }
+                }
+                TreeDeleteEvent::Failed { path, error } => {
+                    if let Some(job) = self.as_mut().rust_mut().tree_delete.as_mut() {
+                        job.failures.push(format!("{}: {error}", path.display()));
+                    }
+                }
+                TreeDeleteEvent::Complete { cancelled, files } => {
+                    completion = Some((cancelled, files));
+                }
+            }
+        }
+        if disconnected && completion.is_none() {
+            if !self
+                .as_ref()
+                .rust()
+                .tree_delete
+                .as_ref()
+                .is_some_and(|job| job.cancel_requested)
+                && let Some(job) = self.as_mut().rust_mut().tree_delete.as_mut()
+            {
+                job.failures
+                    .push("The file delete stopped unexpectedly".to_owned());
+            }
+            completion = Some((true, 0));
+        }
+        if let Some((cancelled, files)) = completion {
+            self.as_mut().finish_tree_delete(cancelled, files);
+        }
+    }
+
+    pub fn cancel_tree_delete(mut self: Pin<&mut Self>) {
+        {
+            let mut rust = self.as_mut().rust_mut();
+            let Some(job) = rust.tree_delete.as_mut() else {
+                return;
+            };
+            job.cancel_requested = true;
+            job.cancel.store(true, AtomicOrdering::Relaxed);
+        }
+        self.as_mut()
+            .set_tree_delete_current_path(qstring("Cancelling…"));
+        self.as_mut().set_status(qstring("Cancelling file delete…"));
+    }
+
+    fn finish_tree_delete(mut self: Pin<&mut Self>, worker_cancelled: bool, files: usize) {
+        let Some(job) = self.as_mut().rust_mut().tree_delete.take() else {
+            return;
+        };
+        let cancelled = worker_cancelled || job.cancel_requested;
+        let permanent = job.permanent;
+        let moved = job.deleted.len();
+        let failed = job.failures.len();
+        let contents = if files == 1 {
+            " (1 file)".to_owned()
+        } else if files > 1 {
+            format!(" ({files} files)")
+        } else {
+            String::new()
+        };
+
+        // Drop playlist entries that pointed into the trashed paths so the
+        // playlist never keeps dead files behind. Only currently visible
+        // rows are mapped; rows hidden by an active search filter keep
+        // today's external-deletion behavior.
+        let doomed = purged_track_indices(&self.as_ref().rust().tracks, &job.deleted);
+        let mut purged_tracks = 0_usize;
+        if !doomed.is_empty() {
+            let visible = self
+                .as_ref()
+                .rust()
+                .visible_indices
+                .iter()
+                .enumerate()
+                .filter(|(_, source)| doomed.binary_search(source).is_ok())
+                .map(|(position, _)| position)
+                .collect::<Vec<_>>();
+            if !visible.is_empty() {
+                purged_tracks = visible.len();
+                let csv = visible
+                    .iter()
+                    .map(usize::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",");
+                self.as_mut().remove_tracks(qstring(csv));
+            }
+        }
+
+        let items = if moved == 1 { "item" } else { "items" };
+        let mut status = if cancelled {
+            if permanent {
+                format!("Delete cancelled after permanently deleting {moved} {items}{contents}")
+            } else {
+                format!("Delete cancelled after moving {moved} {items} to trash{contents}")
+            }
+        } else if permanent {
+            format!("Permanently deleted {moved} {items}{contents}")
+        } else {
+            format!("Moved {moved} {items} to trash{contents}")
+        };
+        if failed > 0 {
+            status.push_str(&format!(" — {failed} failed"));
+            let shown = job
+                .failures
+                .iter()
+                .take(3)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n");
+            self.as_mut().set_tree_delete_error(qstring(shown));
+        }
+        if purged_tracks > 0 {
+            status.push_str(&format!(
+                " — removed {purged_tracks} playlist track{}",
+                if purged_tracks == 1 { "" } else { "s" }
+            ));
+        }
+        self.as_mut().set_tree_delete_done(saturating_i32(moved));
+        self.as_mut()
+            .set_tree_delete_current_path(QString::default());
+        self.as_mut().set_tree_delete_active(false);
+        self.as_mut().set_status(qstring(status));
     }
 
     pub fn add_url(mut self: Pin<&mut Self>, url: QString) {
@@ -4184,10 +4598,11 @@ impl qobject::AppController {
 mod tests {
     use super::{
         AddPathResult, DirectoryScanEvent, PlaylistSortColumn, add_path_status, compare_tracks,
-        dropped_urls_from_json, local_paths_from_json, move_selected_items, natural_compare,
-        normalize_playlist_save_path, ordered_directory_files, output_devices_json,
-        parse_row_indices, playlist_entry_for_track, resolve_output_device, sample_rate_label,
-        scan_directory_paths, sort_visible_indices, valid_equalizer_gain,
+        count_delete_entries, dropped_urls_from_json, local_paths_from_json, move_selected_items,
+        natural_compare, normalize_playlist_save_path, ordered_directory_files,
+        output_devices_json, parse_delete_paths_json, parse_row_indices, playlist_entry_for_track,
+        purged_track_indices, remove_path_permanent, resolve_output_device, sample_rate_label,
+        sanitize_delete_paths, scan_directory_paths, sort_visible_indices, valid_equalizer_gain,
     };
     use crate::decoder::{ArchiveOrigin, DecoderRegistry, DecoderSettings, PlaybackSource};
     use crate::playback::OutputDevice;
@@ -4305,6 +4720,121 @@ mod tests {
             ]
         );
         assert!(local_paths_from_json(r#"{"path":"/music/01.flac"}"#).is_err());
+    }
+
+    #[test]
+    fn sanitize_delete_paths_drops_roots_empties_duplicates_and_nested() {
+        assert_eq!(
+            sanitize_delete_paths(vec![
+                PathBuf::from(""),
+                PathBuf::from("/"),
+                PathBuf::from("relative/song.flac"),
+                PathBuf::from("/other"),
+                PathBuf::from("/music/pop"),
+                PathBuf::from("/music/pop"),
+                PathBuf::from("/music/rock/song.flac"),
+                PathBuf::from("/music/rock"),
+            ]),
+            [
+                PathBuf::from("/music/pop"),
+                PathBuf::from("/music/rock"),
+                PathBuf::from("/other"),
+            ]
+        );
+        assert!(sanitize_delete_paths(vec![PathBuf::from("")]).is_empty());
+    }
+
+    #[test]
+    fn count_delete_entries_counts_files_without_following_links() {
+        let temporary = tempdir().expect("create temporary music folder");
+        let root = temporary.path();
+        fs::create_dir(root.join("sub")).unwrap();
+        fs::write(root.join("a.flac"), []).unwrap();
+        fs::write(root.join("sub/b.flac"), []).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(root.join("sub"), root.join("link")).unwrap();
+
+        let cancel = AtomicBool::new(false);
+        let (files, directories) = count_delete_entries(root, &cancel);
+        #[cfg(unix)]
+        assert_eq!((files, directories), (3, 2));
+        #[cfg(not(unix))]
+        assert_eq!((files, directories), (2, 2));
+        assert_eq!(
+            count_delete_entries(&root.join("missing.flac"), &cancel),
+            (0, 0)
+        );
+        assert_eq!(count_delete_entries(&root.join("a.flac"), &cancel), (1, 0));
+    }
+
+    #[test]
+    fn remove_path_permanent_removes_files_and_trees() {
+        let temporary = tempdir().expect("create temporary music folder");
+        let root = temporary.path();
+        let file = root.join("gone.flac");
+        fs::write(&file, []).unwrap();
+        remove_path_permanent(&file).expect("remove file");
+        assert!(!file.exists());
+
+        let tree = root.join("tree");
+        fs::create_dir(&tree).unwrap();
+        fs::write(tree.join("nested.flac"), []).unwrap();
+        remove_path_permanent(&tree).expect("remove directory tree");
+        assert!(!tree.exists());
+
+        assert!(remove_path_permanent(&root.join("missing.flac")).is_err());
+    }
+
+    #[test]
+    fn purged_track_indices_match_files_dirs_and_archives() {
+        fn local(path: &str) -> Track {
+            Track {
+                source: PlaybackSource::from_path(PathBuf::from(path)),
+                ..Track::default()
+            }
+        }
+        let mut archived = local("/music/pack.zip/Disc/a.wav");
+        archived
+            .source
+            .set_archive_origin(PathBuf::from("/music/pack.zip"), "Disc/a.wav".to_owned());
+        let remote = Track {
+            source: PlaybackSource {
+                remote_url: Some("https://example.com/stream".to_owned()),
+                path: PathBuf::from("/stream"),
+                ..PlaybackSource::default()
+            },
+            ..Track::default()
+        };
+        let tracks = vec![
+            local("/music/rock/song.flac"),
+            local("/music/pop/song.flac"),
+            archived,
+            remote,
+            local("/music/rock2/song.flac"),
+        ];
+        assert_eq!(
+            purged_track_indices(&tracks, &[PathBuf::from("/music/rock")]),
+            [0]
+        );
+        assert_eq!(
+            purged_track_indices(&tracks, &[PathBuf::from("/music/pack.zip")]),
+            [2]
+        );
+        assert_eq!(
+            purged_track_indices(&tracks, &[PathBuf::from("/music")]),
+            [0, 1, 2, 4]
+        );
+        assert!(purged_track_indices(&tracks, &[PathBuf::from("/videos")]).is_empty());
+    }
+
+    #[test]
+    fn parse_delete_paths_json_handles_arrays() {
+        assert_eq!(
+            parse_delete_paths_json(r#"["/music/a.flac", "/music/b"]"#),
+            [PathBuf::from("/music/a.flac"), PathBuf::from("/music/b")]
+        );
+        assert!(parse_delete_paths_json("not json").is_empty());
+        assert!(parse_delete_paths_json(r#"{"path": 1}"#).is_empty());
     }
 
     #[test]

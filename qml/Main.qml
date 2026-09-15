@@ -576,6 +576,22 @@ ApplicationWindow {
     }
 
     Timer {
+        id: treeDeleteTimer
+
+        interval: 100
+        running: appController.tree_delete_active
+        repeat: true
+        onTriggered: {
+            appController.poll_tree_delete()
+            if (!appController.tree_delete_active && treeDeleteDialog.opened) {
+                treeDeleteDialog.close()
+                root.clearTreeSelection()
+                root.clearPlaylistSelection()
+            }
+        }
+    }
+
+    Timer {
         id: directoryScanTimer
 
         interval: 35
@@ -612,6 +628,11 @@ ApplicationWindow {
         sequence: "F1"
         context: Qt.ApplicationShortcut
         onActivated: aboutKog.open()
+    }
+    Shortcut {
+        sequence: "F5"
+        enabled: root.sidebarVisible
+        onActivated: fileTreeModel.refresh_tree()
     }
     SkinLibrary { id: skinLibrary }
     Timer { interval: 100; running: skinLibrary.busy; repeat: true; onTriggered: skinLibrary.poll() }
@@ -694,6 +715,147 @@ ApplicationWindow {
                 icon.name: "dialog-cancel"
                 enabled: appController.directory_scan_active
                 onClicked: appController.cancel_directory_scan()
+            }
+        }
+    }
+
+    Dialog {
+        id: treeDeleteConfirmDialog
+
+        property var deletePaths: []
+
+        function openFor(paths) {
+            deletePaths = paths
+            permanentCheckbox.checked = false
+            open()
+        }
+
+        anchors.centerIn: parent
+        width: Math.min(520, root.width - 48)
+        modal: true
+        title: qsTr("Delete Files")
+        closePolicy: Popup.CloseOnEscape
+
+        contentItem: ColumnLayout {
+            spacing: 10
+
+            Label {
+                Layout.fillWidth: true
+                text: permanentCheckbox.checked
+                    ? qsTr("Permanently delete %n item(s)? This cannot be undone.", "", treeDeleteConfirmDialog.deletePaths.length)
+                    : qsTr("Move %n item(s) to the system trash?", "", treeDeleteConfirmDialog.deletePaths.length)
+                font.bold: true
+                wrapMode: Text.WordWrap
+            }
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 2
+
+                Repeater {
+                    model: Math.min(6, treeDeleteConfirmDialog.deletePaths.length)
+
+                    Label {
+                        required property int index
+
+                        Layout.fillWidth: true
+                        text: treeDeleteConfirmDialog.deletePaths[index]
+                        color: root.palette.placeholderText
+                        font.pixelSize: 11
+                        elide: Text.ElideMiddle
+                    }
+                }
+                Label {
+                    Layout.fillWidth: true
+                    visible: treeDeleteConfirmDialog.deletePaths.length > 6
+                    text: qsTr("…and %1 more").arg(treeDeleteConfirmDialog.deletePaths.length - 6)
+                    color: root.palette.placeholderText
+                    font.pixelSize: 11
+                }
+            }
+            CheckBox {
+                id: permanentCheckbox
+
+                text: qsTr("Delete permanently (cannot be undone)")
+            }
+            Label {
+                Layout.fillWidth: true
+                visible: !permanentCheckbox.checked
+                text: qsTr("Trashed items can be restored from your file manager. Playlist entries for deleted files are removed as well.")
+                color: root.palette.placeholderText
+                font.pixelSize: 11
+                wrapMode: Text.WordWrap
+            }
+        }
+
+        footer: RowLayout {
+            spacing: 8
+
+            Item { Layout.fillWidth: true }
+            Button {
+                text: qsTr("Cancel")
+                icon.name: "dialog-cancel"
+                onClicked: treeDeleteConfirmDialog.reject()
+            }
+            Button {
+                text: permanentCheckbox.checked ? qsTr("Delete Permanently") : qsTr("Move to Trash")
+                icon.name: "edit-delete"
+                onClicked: treeDeleteConfirmDialog.accept()
+            }
+        }
+
+        onAccepted: {
+            if (appController.start_tree_delete(
+                    JSON.stringify(treeDeleteConfirmDialog.deletePaths),
+                    permanentCheckbox.checked))
+                treeDeleteDialog.open()
+        }
+    }
+
+    Dialog {
+        id: treeDeleteDialog
+
+        anchors.centerIn: parent
+        width: Math.min(520, root.width - 48)
+        modal: true
+        title: qsTr("Deleting Files")
+        closePolicy: Popup.NoAutoClose
+
+        contentItem: ColumnLayout {
+            spacing: 10
+
+            ProgressBar {
+                Layout.fillWidth: true
+                from: 0
+                to: Math.max(1, appController.tree_delete_total)
+                value: appController.tree_delete_done
+                Accessible.name: qsTr("Delete progress")
+            }
+            Label {
+                Layout.fillWidth: true
+                horizontalAlignment: Text.AlignHCenter
+                text: qsTr("%1 of %2").arg(appController.tree_delete_done).arg(appController.tree_delete_total)
+                color: root.palette.placeholderText
+            }
+            Label {
+                Layout.fillWidth: true
+                text: appController.tree_delete_current_path
+                color: root.palette.placeholderText
+                elide: Text.ElideMiddle
+                font.pixelSize: 11
+            }
+            Label {
+                Layout.fillWidth: true
+                visible: appController.tree_delete_error.length > 0
+                text: appController.tree_delete_error
+                wrapMode: Text.WordWrap
+                font.pixelSize: 11
+            }
+            Button {
+                Layout.alignment: Qt.AlignRight
+                text: qsTr("Cancel")
+                icon.name: "dialog-cancel"
+                enabled: appController.tree_delete_active
+                onClicked: appController.cancel_tree_delete()
             }
         }
     }
@@ -868,7 +1030,8 @@ ApplicationWindow {
         MenuItem {
             text: qsTr("Use as Tree Root")
             icon.name: "folder-open"
-            enabled: fileTreeModel.is_path_directory(root.treeContextPath)
+            enabled: root.treeSelectedPaths.length <= 1
+                && fileTreeModel.is_path_directory(root.treeContextPath)
             onTriggered: root.useTreeRoot(root.treeContextPath)
         }
         MenuSeparator {}
@@ -876,6 +1039,17 @@ ApplicationWindow {
             text: qsTr("Add to Playlist")
             icon.name: "list-add"
             onTriggered: root.addTreeSelection(root.treeContextPath, false)
+        }
+        MenuItem {
+            text: qsTr("Delete…")
+            icon.name: "edit-delete"
+            enabled: root.treeSelectedPaths.length > 0
+            onTriggered: {
+                const paths = root.selectedTreePathsFor(root.treeContextPath)
+                    .filter(path => path.length > 0)
+                if (paths.length > 0)
+                    treeDeleteConfirmDialog.openFor(paths)
+            }
         }
     }
 
@@ -1495,6 +1669,13 @@ ApplicationWindow {
                             iconName: "folder-open"
                             toolTip: qsTr("Choose music folder")
                             onClicked: root.chooseMusicFolder()
+                        }
+                        CogButton {
+                            Layout.preferredWidth: 30
+                            Layout.preferredHeight: 30
+                            glyph: "↻"
+                            toolTip: qsTr("Refresh file tree")
+                            onClicked: fileTreeModel.refresh_tree()
                         }
                         Label { Layout.fillWidth: true; text: appController.directory_path; font.bold: true; elide: Text.ElideMiddle }
                     }
