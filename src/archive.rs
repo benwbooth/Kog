@@ -477,31 +477,60 @@ pub fn materialize_archive_member(
     Ok(path)
 }
 
-/// Resolve (outer archive, full member path) to (deepest container file,
-/// leaf remainder), materializing nested archives to the stable cache.
-/// Depth-capped so hostile self-nesting terminates with a clear error.
+/// Resolved nested location: the deepest container file holding the leaf,
+/// plus the stable outer identity for playlist origins. `prefix` is the
+/// outer-relative path of `container` ("" when it is the outer archive
+/// itself); `links` counts consumed archive links for depth accounting.
+#[derive(Clone, Debug)]
+pub struct ResolvedArchive {
+    pub outer: PathBuf,
+    pub container: PathBuf,
+    pub leaf: String,
+    pub prefix: String,
+    pub links: u32,
+}
+
+/// Resolve (outer archive, full member path) to the deepest container file
+/// and leaf remainder, materializing nested archives to the stable cache.
+/// Refuses to pass MAX_NESTED_DEPTH archive links so hostile self-nesting
+/// terminates loudly.
 pub fn resolve_archive_chain(
     outer: &Path,
     entry: &str,
     cache_dir: &Path,
-) -> Result<(PathBuf, String), String> {
-    let mut current = outer
+) -> Result<ResolvedArchive, String> {
+    let canonical = outer
         .canonicalize()
         .map_err(|error| format!("resolving archive {}: {error}", outer.display()))?;
+    let mut current = canonical.clone();
     let mut rest = entry.replace('\\', "/");
+    let mut consumed: Vec<String> = Vec::new();
     for _ in 0..MAX_NESTED_DEPTH {
         let members = list_archive_names(&current)?;
         let Some((link, remainder)) = longest_archive_prefix(&members, &rest) else {
-            return Ok((current, rest));
+            return Ok(ResolvedArchive {
+                outer: canonical,
+                container: current,
+                leaf: rest,
+                prefix: consumed.join("/"),
+                links: consumed.len() as u32,
+            });
         };
         current = materialize_archive_member(&current, &link, cache_dir)?;
+        consumed.push(link);
         rest = remainder;
     }
     let members = list_archive_names(&current)?;
     if longest_archive_prefix(&members, &rest).is_some() {
         return Err("archive nesting exceeds Kog's 4-level safety limit".to_owned());
     }
-    Ok((current, rest))
+    Ok(ResolvedArchive {
+        outer: canonical,
+        container: current,
+        leaf: rest,
+        prefix: consumed.join("/"),
+        links: consumed.len() as u32,
+    })
 }
 
 fn extension(path: &Path) -> Option<&str> {
@@ -1539,39 +1568,47 @@ pub(crate) mod tests {
         write_stored_zip(&outer, &[("inner.zip", &inner), ("plain.txt", b"")]);
         let cache = root.join("nested-cache");
 
-        let (first, leaf) =
+        let resolved =
             resolve_archive_chain(&outer, "inner.zip/song.wav", &cache).expect("resolve nested");
-        assert_eq!(leaf, "song.wav");
-        assert_eq!(first.extension().and_then(|ext| ext.to_str()), Some("zip"));
-        assert!(first.starts_with(&cache));
-        assert_eq!(std::fs::read(&first).unwrap(), inner);
-
-        let (second, _) =
-            resolve_archive_chain(&outer, "inner.zip/song.wav", &cache).expect("reuse cache");
-        assert_eq!(first, second);
-
-        let (flat_container, flat_leaf) =
-            resolve_archive_chain(&outer, "plain.txt", &cache).expect("plain member");
-        assert_eq!(flat_leaf, "plain.txt");
+        assert_eq!(resolved.leaf, "song.wav");
+        assert_eq!(resolved.prefix, "inner.zip");
+        assert_eq!(resolved.links, 1);
         assert_eq!(
-            flat_container,
+            resolved.container.extension().and_then(|ext| ext.to_str()),
+            Some("zip")
+        );
+        assert!(resolved.container.starts_with(&cache));
+        assert_eq!(std::fs::read(&resolved.container).unwrap(), inner);
+
+        let reused =
+            resolve_archive_chain(&outer, "inner.zip/song.wav", &cache).expect("reuse cache");
+        assert_eq!(resolved.container, reused.container);
+
+        let flat =
+            resolve_archive_chain(&outer, "plain.txt", &cache).expect("plain member");
+        assert_eq!(flat.leaf, "plain.txt");
+        assert_eq!(flat.links, 0);
+        assert_eq!(
+            flat.container,
             outer.canonicalize().unwrap(),
             "non-nested entries resolve unchanged"
         );
 
-        let (missing_container, missing_leaf) =
-            resolve_archive_chain(&outer, "missing/track.wav", &cache)
-                .expect("missing entries resolve unchanged");
-        assert_eq!(missing_leaf, "missing/track.wav");
-        assert_eq!(missing_container, outer.canonicalize().unwrap());
+        let missing = resolve_archive_chain(&outer, "missing/track.wav", &cache)
+            .expect("missing entries resolve unchanged");
+        assert_eq!(missing.leaf, "missing/track.wav");
+        assert_eq!(missing.container, outer.canonicalize().unwrap());
 
         write_stored_zip(
             &outer,
             &[("inner.zip", &inner), ("plain.txt", b""), ("extra.txt", b"x")],
         );
-        let (third, _) =
+        let renewed =
             resolve_archive_chain(&outer, "inner.zip/song.wav", &cache).expect("re-resolve");
-        assert_ne!(first, third, "changed outer archives invalidate the cache");
+        assert_ne!(
+            resolved.container, renewed.container,
+            "changed outer archives invalidate the cache"
+        );
     }
 
     #[test]
@@ -1583,10 +1620,11 @@ pub(crate) mod tests {
         let outer = root.join("outer.zip");
         write_stored_zip(&outer, &[("pack.zip/x.flac", &wav_bytes(100))]);
         let cache = root.join("nested-cache");
-        let (container, leaf) = resolve_archive_chain(&outer, "pack.zip/x.flac", &cache)
+        let resolved = resolve_archive_chain(&outer, "pack.zip/x.flac", &cache)
             .expect("implied directories never descend");
-        assert_eq!(leaf, "pack.zip/x.flac");
-        assert_eq!(container, outer.canonicalize().unwrap());
+        assert_eq!(resolved.leaf, "pack.zip/x.flac");
+        assert_eq!(resolved.links, 0);
+        assert_eq!(resolved.container, outer.canonicalize().unwrap());
     }
 
     #[test]
@@ -1613,7 +1651,39 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn nested_archive_expands_to_flat_cache_origin() {
+    fn whole_archive_expansion_includes_nested_tracks() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        let inner = stored_zip_bytes(&[("deep.wav", &wav_bytes(100))]);
+        let outer = root.join("outer.zip");
+        write_stored_zip(
+            &outer,
+            &[("inner.zip", &inner), ("top.wav", &wav_bytes(100))],
+        );
+        let registry = DecoderRegistry::new(DecoderSettings::default());
+        let expansion = registry
+            .expand_detailed(outer.clone())
+            .expect("expand outer archive with a nested member");
+        assert_eq!(expansion.sources.len(), 2);
+        assert!(
+            expansion.warnings.iter().all(|warning| !warning.contains("Nested archive")),
+            "no nested warnings: {:?}",
+            expansion.warnings
+        );
+        let deep = expansion
+            .sources
+            .iter()
+            .find(|source| {
+                source.path.file_name().and_then(|name| name.to_str()) == Some("deep.wav")
+            })
+            .expect("nested track expanded");
+        let origin = deep.archive_origin.as_ref().expect("nested chain origin");
+        assert_eq!(origin.entry_name, "inner.zip/deep.wav");
+        assert_eq!(origin.archive_path, outer.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn nested_archive_expands_to_outer_chain_origin() {
         struct TestCacheDir;
         impl TestCacheDir {
             fn set(path: &Path) -> Self {
@@ -1646,10 +1716,11 @@ pub(crate) mod tests {
             .archive_origin
             .as_ref()
             .expect("nested track keeps a stable origin");
-        assert_eq!(origin.entry_name, "song.wav");
-        assert!(
-            origin.archive_path.starts_with(&cache),
-            "nested origin points at the stable cache, not a temp dir"
+        assert_eq!(origin.entry_name, "inner.zip/song.wav");
+        assert_eq!(
+            origin.archive_path,
+            outer.canonicalize().unwrap(),
+            "nested origin names the real outer archive, not a cache copy"
         );
         assert!(std::fs::read(&expansion.sources[0].path).is_ok());
     }

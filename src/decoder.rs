@@ -360,6 +360,28 @@ pub struct ExpansionResult {
     pub warnings: Vec<String>,
 }
 
+/// Outer identity for playlist origins inside (possibly nested) archives:
+/// the on-disk outer archive plus the outer-relative path of the current
+/// container ("" at the outer root). Origins stay human-readable and stable
+/// across cache sweeps; deleting the outer archive purges its nested tracks.
+#[derive(Clone, Debug)]
+struct NestedScope {
+    outer: PathBuf,
+    prefix: String,
+}
+
+impl NestedScope {
+    fn full_entry(&self, member: &str) -> String {
+        if self.prefix.is_empty() {
+            member.to_owned()
+        } else if member.is_empty() {
+            self.prefix.clone()
+        } else {
+            format!("{}/{}", self.prefix, member)
+        }
+    }
+}
+
 impl Default for DecoderRegistry {
     fn default() -> Self {
         Self::new(DecoderSettings::default())
@@ -429,9 +451,19 @@ impl DecoderRegistry {
             return Ok(ExpansionResult::default());
         }
         let cache = crate::archive::nested_cache_dir();
-        let (container, leaf) =
+        let resolved =
             crate::archive::resolve_archive_chain(&location.archive, &location.entry, &cache)?;
-        self.expand_archive_container(&container, &leaf, location.directory, 0)
+        let scope = NestedScope {
+            outer: resolved.outer,
+            prefix: resolved.prefix,
+        };
+        self.expand_archive_container(
+            &resolved.container,
+            &resolved.leaf,
+            location.directory,
+            resolved.links,
+            &scope,
+        )
     }
 
     fn expand_archive_container(
@@ -440,6 +472,7 @@ impl DecoderRegistry {
         entry: &str,
         directory: bool,
         nesting: u32,
+        scope: &NestedScope,
     ) -> Result<ExpansionResult, String> {
         let path = container.canonicalize().map_err(|e| e.to_string())?;
         let metadata = path.metadata().map_err(|e| e.to_string())?;
@@ -467,7 +500,7 @@ impl DecoderRegistry {
             .iter()
             .filter(|candidate| {
                 if directory {
-                    candidate.name.starts_with(&prefix)
+                    entry.is_empty() || candidate.name.starts_with(&prefix)
                 } else {
                     candidate.name == entry
                 }
@@ -487,15 +520,22 @@ impl DecoderRegistry {
                     ));
                     continue;
                 }
+                let full = scope.full_entry(&candidate.name);
                 let cache = crate::archive::nested_cache_dir();
-                match crate::archive::resolve_archive_chain(&path, &candidate.name, &cache) {
-                    Ok((nested_container, leaf)) => {
-                        let directory = leaf.is_empty();
+                match crate::archive::resolve_archive_chain(&scope.outer, &full, &cache)
+                {
+                    Ok(resolved) => {
+                        let next = NestedScope {
+                            outer: resolved.outer,
+                            prefix: resolved.prefix,
+                        };
+                        let directory = resolved.leaf.is_empty();
                         match self.expand_archive_container(
-                            &nested_container,
-                            &leaf,
+                            &resolved.container,
+                            &resolved.leaf,
                             directory,
-                            nesting + 1,
+                            nesting + resolved.links,
+                            &next,
                         ) {
                             Ok(expansion) => {
                                 result.sources.extend(expansion.sources);
@@ -525,7 +565,10 @@ impl DecoderRegistry {
                             .strip_prefix(extracted.root())
                             .map(crate::archive::portable_name)
                             .unwrap_or_else(|_| candidate.name.clone());
-                        source.set_archive_origin(path.clone(), logical);
+                        source.set_archive_origin(
+                            scope.outer.clone(),
+                            scope.full_entry(&logical),
+                        );
                     }
                     result.sources.extend(expansion.sources);
                     result.warnings.extend(expansion.warnings);
@@ -796,30 +839,40 @@ impl DecoderRegistry {
             return Ok(ExpansionResult::default());
         }
         let cache = crate::archive::nested_cache_dir();
-        let (container, leaf) = crate::archive::resolve_archive_chain(&path, entry_name, &cache)?;
-        self.expand_archive_member(&container, &leaf, fragment, playlist_stack, depth)
+        let resolved = crate::archive::resolve_archive_chain(&path, entry_name, &cache)?;
+        self.expand_archive_member(&resolved, fragment, playlist_stack, depth)
     }
 
     fn expand_archive_member(
         &self,
-        container: &Path,
-        entry_name: &str,
+        resolved: &crate::archive::ResolvedArchive,
         fragment: Option<&str>,
         playlist_stack: &mut Vec<PathBuf>,
         depth: usize,
     ) -> Result<ExpansionResult, String> {
-        if entry_name.is_empty() {
-            return self.expand_archive(container.to_path_buf(), playlist_stack, depth);
+        if resolved.leaf.is_empty() {
+            let scope = NestedScope {
+                outer: resolved.outer.clone(),
+                prefix: resolved.prefix.clone(),
+            };
+            return self.expand_archive_container(
+                &resolved.container,
+                "",
+                true,
+                resolved.links,
+                &scope,
+            );
         }
+        let entry_name = &resolved.leaf;
+        let container = &resolved.container;
         let path = container
             .canonicalize()
             .map_err(|error| format!("resolving archive {}: {error}", container.display()))?;
         let extracted = crate::archive::ExtractedArchive::open(&path)?;
         let (workspace, entries, warnings) = extracted.into_parts();
-        let workspace_path = workspace.path().to_path_buf();
         let entry = entries
             .into_iter()
-            .find(|entry| entry.name == entry_name)
+            .find(|entry| entry.name == *entry_name)
             .ok_or_else(|| {
                 format!(
                     "{} has no archive entry named {entry_name:?}",
@@ -836,14 +889,13 @@ impl DecoderRegistry {
         }
 
         let mut result = self.expand_local(entry.path, fragment, playlist_stack, depth + 1)?;
+        let scope = NestedScope {
+            outer: resolved.outer.clone(),
+            prefix: resolved.prefix.clone(),
+        };
+        let full_entry = scope.full_entry(&resolved.leaf);
         for source in &mut result.sources {
-            let logical_entry = source
-                .path
-                .strip_prefix(&workspace_path)
-                .ok()
-                .map(crate::archive::portable_name)
-                .unwrap_or_else(|| entry_name.to_owned());
-            source.set_archive_origin(path.clone(), logical_entry);
+            source.set_archive_origin(scope.outer.clone(), full_entry.clone());
         }
         result.warnings.splice(0..0, warnings);
         self.archive_workspaces
@@ -874,8 +926,19 @@ impl DecoderRegistry {
             if crate::archive::is_path(&entry.path) {
                 let cache = crate::archive::nested_cache_dir();
                 match crate::archive::resolve_archive_chain(&path, &entry.name, &cache) {
-                    Ok((nested_container, _)) => {
-                        match self.expand_archive(nested_container, playlist_stack, depth + 1) {
+                    Ok(resolved) => {
+                        let scope = NestedScope {
+                            outer: resolved.outer,
+                            prefix: resolved.prefix,
+                        };
+                        let directory = resolved.leaf.is_empty();
+                        match self.expand_archive_container(
+                            &resolved.container,
+                            &resolved.leaf,
+                            directory,
+                            resolved.links,
+                            &scope,
+                        ) {
                             Ok(expansion) => {
                                 result.sources.extend(expansion.sources);
                                 result.warnings.extend(expansion.warnings);
