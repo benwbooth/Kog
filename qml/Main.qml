@@ -1641,7 +1641,6 @@ ApplicationWindow {
         Rectangle {
             SplitView.preferredWidth: root.sidebarVisible ? 285 : 0
             SplitView.minimumWidth: root.sidebarVisible ? 170 : 0
-            SplitView.maximumWidth: root.sidebarVisible ? 420 : 0
             visible: root.sidebarVisible
             color: root.palette.window
             border.color: root.palette.mid
@@ -1993,7 +1992,7 @@ ApplicationWindow {
 
         Rectangle {
             SplitView.fillWidth: true
-            SplitView.minimumWidth: 560
+            SplitView.minimumWidth: 320
             color: root.palette.base
 
             ColumnLayout {
