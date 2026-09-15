@@ -546,6 +546,7 @@ ApplicationWindow {
         onTriggered: {
             appController.poll_playback()
             appController.poll_cover_art()
+            appController.poll_radio()
             if (root.notificationSerialSeen !== appController.notification_serial) {
                 root.notificationSerialSeen = appController.notification_serial
                 nowPlayingPopup.present()
@@ -859,60 +860,6 @@ ApplicationWindow {
                 onClicked: appController.cancel_tree_delete()
             }
         }
-    }
-
-    Dialog {
-        id: randomQueueDialog
-
-        anchors.centerIn: parent
-        width: Math.min(360, root.width - 48)
-        modal: true
-        title: qsTr("Queue Random Tracks")
-        closePolicy: Popup.CloseOnEscape
-
-        contentItem: ColumnLayout {
-            spacing: 10
-
-            Label {
-                Layout.fillWidth: true
-                text: qsTr("How many random files should Kog queue from the music folder?")
-                wrapMode: Text.WordWrap
-            }
-            SpinBox {
-                id: randomCountSpin
-
-                from: 1
-                to: 100
-                value: 10
-                editable: true
-                Accessible.name: qsTr("Number of random tracks")
-            }
-            Label {
-                Layout.fillWidth: true
-                text: qsTr("Picks span every subfolder. Archives count as one pick and expand to their tracks.")
-                color: root.palette.placeholderText
-                font.pixelSize: 11
-                wrapMode: Text.WordWrap
-            }
-        }
-
-        footer: RowLayout {
-            spacing: 8
-
-            Item { Layout.fillWidth: true }
-            Button {
-                text: qsTr("Cancel")
-                icon.name: "dialog-cancel"
-                onClicked: randomQueueDialog.reject()
-            }
-            Button {
-                text: qsTr("Queue")
-                icon.name: "list-add"
-                onClicked: randomQueueDialog.accept()
-            }
-        }
-
-        onAccepted: appController.enqueue_random_tracks(randomCountSpin.value)
     }
 
     Dialog {
@@ -1605,8 +1552,12 @@ ApplicationWindow {
                         Layout.preferredWidth: 34
                         Layout.preferredHeight: 34
                         glyph: "⚄"
-                        toolTip: qsTr("Queue random tracks")
-                        onClicked: randomQueueDialog.open()
+                        toolTip: qsTr("Random Radio")
+                        checkable: true
+                        checked: appController.radio_active
+                        modeActive: appController.radio_active
+                        opacity: appController.radio_active ? 1 : 0.62
+                        onToggled: appController.set_radio_enabled(checked)
                     }
                 }
 

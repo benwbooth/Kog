@@ -322,6 +322,16 @@ pub fn nested_cache_dir() -> PathBuf {
         .unwrap_or_else(|| std::env::temp_dir().join("kog-nested-archives"))
 }
 
+/// Tree URL addressing one archive member for browsing and expansion.
+pub fn member_url(archive: &Path, entry: &str, directory: bool) -> PathBuf {
+    let mut url = url::Url::parse("kog-archive:").expect("kog-archive scheme");
+    url.query_pairs_mut()
+        .append_pair("archive", &archive.to_string_lossy())
+        .append_pair("entry", entry)
+        .append_pair("directory", if directory { "1" } else { "0" });
+    PathBuf::from(url.as_str())
+}
+
 /// Index-only member names of an archive file, without extracting anything.
 /// Uses the same name decoder as extraction so listings match extracted
 /// entry names byte-for-byte.
@@ -1557,6 +1567,22 @@ pub(crate) mod tests {
         let path = dir.path().join("pack.zip");
         write_stored_zip(&path, entries);
         std::fs::read(&path).unwrap()
+    }
+
+    #[test]
+    fn member_url_round_trips_through_tree_location() {
+        let url = member_url(Path::new("/music/pack.zip"), "Disc/a.wav", false);
+        let location = tree_location(&url)
+            .expect("parse member url")
+            .expect("location");
+        assert_eq!(location.archive, PathBuf::from("/music/pack.zip"));
+        assert_eq!(location.entry, "Disc/a.wav");
+        assert!(!location.directory);
+        let dir_url = member_url(Path::new("/music/pack.zip"), "Disc", true);
+        let dir_location = tree_location(&dir_url)
+            .expect("parse dir url")
+            .expect("location");
+        assert!(dir_location.directory);
     }
 
     struct TestCacheDir {
