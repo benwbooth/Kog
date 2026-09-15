@@ -428,7 +428,20 @@ impl DecoderRegistry {
         {
             return Ok(ExpansionResult::default());
         }
-        let path = location.archive.canonicalize().map_err(|e| e.to_string())?;
+        let cache = crate::archive::nested_cache_dir();
+        let (container, leaf) =
+            crate::archive::resolve_archive_chain(&location.archive, &location.entry, &cache)?;
+        self.expand_archive_container(&container, &leaf, location.directory, 0)
+    }
+
+    fn expand_archive_container(
+        &self,
+        container: &Path,
+        entry: &str,
+        directory: bool,
+        nesting: u32,
+    ) -> Result<ExpansionResult, String> {
+        let path = container.canonicalize().map_err(|e| e.to_string())?;
         let metadata = path.metadata().map_err(|e| e.to_string())?;
         let key = (
             path.clone(),
@@ -448,15 +461,15 @@ impl DecoderRegistry {
             .get_or_init(|| crate::archive::ExtractedArchive::open(&path).map(Arc::new))
             .as_ref()
             .map_err(Clone::clone)?;
-        let prefix = format!("{}/", location.entry);
+        let prefix = format!("{entry}/");
         let mut entries = extracted
             .entries
             .iter()
-            .filter(|entry| {
-                if location.directory {
-                    entry.name.starts_with(&prefix)
+            .filter(|candidate| {
+                if directory {
+                    candidate.name.starts_with(&prefix)
                 } else {
-                    entry.name == location.entry
+                    candidate.name == entry
                 }
             })
             .collect::<Vec<_>>();
@@ -465,24 +478,53 @@ impl DecoderRegistry {
             sources: Vec::new(),
             warnings: extracted.warnings.clone(),
         };
-        for entry in entries {
-            if crate::archive::is_path(&entry.path) {
-                result
-                    .warnings
-                    .push(format!("Nested archive {} is not supported", entry.name));
+        for candidate in entries {
+            if crate::archive::is_path(&candidate.path) {
+                if nesting >= crate::archive::MAX_NESTED_DEPTH as u32 {
+                    result.warnings.push(format!(
+                        "Nested archive {} exceeds Kog's 4-level safety limit",
+                        candidate.name
+                    ));
+                    continue;
+                }
+                let cache = crate::archive::nested_cache_dir();
+                match crate::archive::resolve_archive_chain(&path, &candidate.name, &cache) {
+                    Ok((nested_container, leaf)) => {
+                        let directory = leaf.is_empty();
+                        match self.expand_archive_container(
+                            &nested_container,
+                            &leaf,
+                            directory,
+                            nesting + 1,
+                        ) {
+                            Ok(expansion) => {
+                                result.sources.extend(expansion.sources);
+                                result.warnings.extend(expansion.warnings);
+                            }
+                            Err(error) => result.warnings.push(format!(
+                                "Nested archive {} was not added: {error}",
+                                candidate.name
+                            )),
+                        }
+                    }
+                    Err(error) => result.warnings.push(format!(
+                        "Nested archive {} was not added: {error}",
+                        candidate.name
+                    )),
+                }
                 continue;
             }
-            if !self.accepts_path(&entry.path) {
+            if !self.accepts_path(&candidate.path) {
                 continue;
             }
-            match self.expand_local(entry.path.clone(), None, &mut Vec::new(), 0) {
+            match self.expand_local(candidate.path.clone(), None, &mut Vec::new(), 0) {
                 Ok(mut expansion) => {
                     for source in &mut expansion.sources {
                         let logical = source
                             .path
                             .strip_prefix(extracted.root())
                             .map(crate::archive::portable_name)
-                            .unwrap_or_else(|_| entry.name.clone());
+                            .unwrap_or_else(|_| candidate.name.clone());
                         source.set_archive_origin(path.clone(), logical);
                     }
                     result.sources.extend(expansion.sources);
@@ -495,7 +537,7 @@ impl DecoderRegistry {
             return Err(format!(
                 "No playable entries in {} :: {}",
                 path.display(),
-                location.entry
+                entry
             ));
         }
         Ok(result)
@@ -753,9 +795,25 @@ impl DecoderRegistry {
         {
             return Ok(ExpansionResult::default());
         }
-        let path = path
+        let cache = crate::archive::nested_cache_dir();
+        let (container, leaf) = crate::archive::resolve_archive_chain(&path, entry_name, &cache)?;
+        self.expand_archive_member(&container, &leaf, fragment, playlist_stack, depth)
+    }
+
+    fn expand_archive_member(
+        &self,
+        container: &Path,
+        entry_name: &str,
+        fragment: Option<&str>,
+        playlist_stack: &mut Vec<PathBuf>,
+        depth: usize,
+    ) -> Result<ExpansionResult, String> {
+        if entry_name.is_empty() {
+            return self.expand_archive(container.to_path_buf(), playlist_stack, depth);
+        }
+        let path = container
             .canonicalize()
-            .map_err(|error| format!("resolving archive {}: {error}", path.display()))?;
+            .map_err(|error| format!("resolving archive {}: {error}", container.display()))?;
         let extracted = crate::archive::ExtractedArchive::open(&path)?;
         let (workspace, entries, warnings) = extracted.into_parts();
         let workspace_path = workspace.path().to_path_buf();
@@ -813,7 +871,29 @@ impl DecoderRegistry {
         };
 
         for entry in entries {
-            if crate::archive::is_path(&entry.path) || self.select(&entry.path).is_none() {
+            if crate::archive::is_path(&entry.path) {
+                let cache = crate::archive::nested_cache_dir();
+                match crate::archive::resolve_archive_chain(&path, &entry.name, &cache) {
+                    Ok((nested_container, _)) => {
+                        match self.expand_archive(nested_container, playlist_stack, depth + 1) {
+                            Ok(expansion) => {
+                                result.sources.extend(expansion.sources);
+                                result.warnings.extend(expansion.warnings);
+                            }
+                            Err(error) => result.warnings.push(format!(
+                                "Nested archive {} was not added: {error}",
+                                entry.name
+                            )),
+                        }
+                    }
+                    Err(error) => result.warnings.push(format!(
+                        "Nested archive {} was not added: {error}",
+                        entry.name
+                    )),
+                }
+                continue;
+            }
+            if self.select(&entry.path).is_none() {
                 continue;
             }
             match self.expand_local(entry.path, None, playlist_stack, depth + 1) {

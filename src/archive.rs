@@ -308,6 +308,202 @@ pub fn supported_extensions() -> Vec<String> {
         .collect()
 }
 
+pub const MAX_NESTED_DEPTH: usize = 4;
+pub const MAX_NESTED_MEMBER_BYTES: u64 = 512 * 1024 * 1024;
+pub const MAX_NESTED_CACHE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const NESTED_CACHE_SUBDIRECTORY: &str = "nested-archives";
+
+pub fn nested_cache_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("KOG_NESTED_CACHE_DIR") {
+        return PathBuf::from(dir);
+    }
+    directories::ProjectDirs::from("org", "Kog", "Kog")
+        .map(|directories| directories.cache_dir().join(NESTED_CACHE_SUBDIRECTORY))
+        .unwrap_or_else(|| std::env::temp_dir().join("kog-nested-archives"))
+}
+
+/// Index-only member names of an archive file, without extracting anything.
+/// Uses the same name decoder as extraction so listings match extracted
+/// entry names byte-for-byte.
+pub fn list_archive_names(path: &Path) -> Result<Vec<String>, String> {
+    let file =
+        File::open(path).map_err(|error| format!("opening archive {}: {error}", path.display()))?;
+    compress_tools::list_archive_files_with_encoding(file, decode_archive_name)
+        .map_err(|error| format!("listing archive {}: {error}", path.display()))
+}
+
+/// Longest leading run of `entry` components naming an archive file member
+/// of the listed container. Returns (archive link, remainder), with the link
+/// in its original stored spelling for extraction. An explicit
+/// trailing-slash directory entry always wins ties: real folders are never
+/// descended into.
+fn longest_archive_prefix(members: &[String], entry: &str) -> Option<(String, String)> {
+    let normalized = entry.replace('\\', "/");
+    let parts: Vec<&str> = normalized.split('/').collect();
+    for length in (1..=parts.len()).rev() {
+        let candidate = parts[..length].join("/");
+        if candidate.is_empty() {
+            continue;
+        }
+        if members
+            .iter()
+            .any(|member| member == &format!("{candidate}/"))
+        {
+            continue;
+        }
+        if !is_path(Path::new(&candidate)) {
+            continue;
+        }
+        if let Some(original) = members.iter().find(|member| {
+            member.trim_end_matches('/') == candidate
+                || member.replace('\\', "/").trim_end_matches('/') == candidate
+        }) {
+            let remainder = parts[length..].join("/");
+            // Extract with the stored spelling; match with the normalized one.
+            let link = original.trim_end_matches('/').to_owned();
+            return Some((link, remainder));
+        }
+    }
+    None
+}
+
+struct CappedWriter<W: Write> {
+    inner: W,
+    remaining: u64,
+}
+
+impl<W: Write> Write for CappedWriter<W> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if self.remaining == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::QuotaExceeded,
+                "archive member exceeds the nested-archive size limit",
+            ));
+        }
+        let allowed = usize::try_from(self.remaining.min(bytes.len() as u64)).unwrap_or(usize::MAX);
+        let written = self.inner.write(&bytes[..allowed])?;
+        self.remaining = self.remaining.saturating_sub(written as u64);
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+fn container_fingerprint(container: &Path) -> Result<(u64, i128), String> {
+    let metadata = container.metadata().map_err(|error| {
+        format!("reading archive {}: {error}", container.display())
+    })?;
+    let modified = metadata
+        .modified()
+        .map_err(|error| format!("reading archive {}: {error}", container.display()))?
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|age| age.as_millis() as i128)
+        .unwrap_or_default();
+    Ok((metadata.len(), modified))
+}
+
+fn nested_cache_name(container: &Path, link: &str, length: u64, modified: i128) -> String {
+    let extension = Path::new(link)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("bin");
+    let stem: String = Path::new(link)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("archive")
+        .chars()
+        .map(|character| {
+            if character.is_alphanumeric() || matches!(character, '-' | '_' | '.') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .take(40)
+        .collect();
+    let fingerprint = format!("{}|{length}|{modified}|{link}", container.display());
+    let hash = crate::cover_art::fnv1a64(fingerprint.as_bytes());
+    format!("{stem}-{length}-{modified}-{hash:016x}.{extension}")
+}
+
+/// Extract one archive member to a stable cache file keyed by the outer
+/// container's identity, so playlists and the tree keep working across
+/// sessions. Reuses the cached copy while the outer file is unchanged.
+/// Partial downloads are written aside and renamed only on success.
+pub fn materialize_archive_member(
+    container: &Path,
+    link: &str,
+    cache_dir: &Path,
+) -> Result<PathBuf, String> {
+    let (length, modified) = container_fingerprint(container)?;
+    let path = cache_dir.join(nested_cache_name(container, link, length, modified));
+    if path.is_file() {
+        return Ok(path);
+    }
+    std::fs::create_dir_all(cache_dir).map_err(|error| {
+        format!(
+            "creating archive cache {}: {error}",
+            cache_dir.display()
+        )
+    })?;
+    let source = File::open(container).map_err(|error| {
+        format!("opening archive {}: {error}", container.display())
+    })?;
+    let partial = path.with_extension("part");
+    let target = File::create(&partial).map_err(|error| {
+        format!("writing archive cache {}: {error}", partial.display())
+    })?;
+    let capped = CappedWriter {
+        inner: target,
+        remaining: MAX_NESTED_MEMBER_BYTES,
+    };
+    if let Err(error) = compress_tools::uncompress_archive_file_with_encoding(
+        source,
+        capped,
+        link,
+        decode_archive_name,
+    ) {
+        let _ = std::fs::remove_file(&partial);
+        return Err(format!(
+            "reading {link} from {}: {error}",
+            container.display()
+        ));
+    }
+    std::fs::rename(&partial, &path)
+        .map_err(|error| format!("writing archive cache {}: {error}", path.display()))?;
+    crate::cover_art::evict_cache(cache_dir, MAX_NESTED_CACHE_BYTES);
+    Ok(path)
+}
+
+/// Resolve (outer archive, full member path) to (deepest container file,
+/// leaf remainder), materializing nested archives to the stable cache.
+/// Depth-capped so hostile self-nesting terminates with a clear error.
+pub fn resolve_archive_chain(
+    outer: &Path,
+    entry: &str,
+    cache_dir: &Path,
+) -> Result<(PathBuf, String), String> {
+    let mut current = outer
+        .canonicalize()
+        .map_err(|error| format!("resolving archive {}: {error}", outer.display()))?;
+    let mut rest = entry.replace('\\', "/");
+    for _ in 0..MAX_NESTED_DEPTH {
+        let members = list_archive_names(&current)?;
+        let Some((link, remainder)) = longest_archive_prefix(&members, &rest) else {
+            return Ok((current, rest));
+        };
+        current = materialize_archive_member(&current, &link, cache_dir)?;
+        rest = remainder;
+    }
+    let members = list_archive_names(&current)?;
+    if longest_archive_prefix(&members, &rest).is_some() {
+        return Err("archive nesting exceeds Kog's 4-level safety limit".to_owned());
+    }
+    Ok((current, rest))
+}
+
 fn extension(path: &Path) -> Option<&str> {
     path.extension().and_then(|value| value.to_str())
 }
@@ -1325,5 +1521,136 @@ pub(crate) mod tests {
                 b"hello libarchive test suite!\n"
             );
         }
+    }
+
+    fn stored_zip_bytes(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pack.zip");
+        write_stored_zip(&path, entries);
+        std::fs::read(&path).unwrap()
+    }
+
+    #[test]
+    fn nested_chain_materializes_reuses_and_detects_staleness() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        let inner = stored_zip_bytes(&[("song.wav", &wav_bytes(100))]);
+        let outer = root.join("outer.zip");
+        write_stored_zip(&outer, &[("inner.zip", &inner), ("plain.txt", b"")]);
+        let cache = root.join("nested-cache");
+
+        let (first, leaf) =
+            resolve_archive_chain(&outer, "inner.zip/song.wav", &cache).expect("resolve nested");
+        assert_eq!(leaf, "song.wav");
+        assert_eq!(first.extension().and_then(|ext| ext.to_str()), Some("zip"));
+        assert!(first.starts_with(&cache));
+        assert_eq!(std::fs::read(&first).unwrap(), inner);
+
+        let (second, _) =
+            resolve_archive_chain(&outer, "inner.zip/song.wav", &cache).expect("reuse cache");
+        assert_eq!(first, second);
+
+        let (flat_container, flat_leaf) =
+            resolve_archive_chain(&outer, "plain.txt", &cache).expect("plain member");
+        assert_eq!(flat_leaf, "plain.txt");
+        assert_eq!(
+            flat_container,
+            outer.canonicalize().unwrap(),
+            "non-nested entries resolve unchanged"
+        );
+
+        let (missing_container, missing_leaf) =
+            resolve_archive_chain(&outer, "missing/track.wav", &cache)
+                .expect("missing entries resolve unchanged");
+        assert_eq!(missing_leaf, "missing/track.wav");
+        assert_eq!(missing_container, outer.canonicalize().unwrap());
+
+        write_stored_zip(
+            &outer,
+            &[("inner.zip", &inner), ("plain.txt", b""), ("extra.txt", b"x")],
+        );
+        let (third, _) =
+            resolve_archive_chain(&outer, "inner.zip/song.wav", &cache).expect("re-resolve");
+        assert_ne!(first, third, "changed outer archives invalidate the cache");
+    }
+
+    #[test]
+    fn nested_chain_prefers_explicit_directories() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        // "pack.zip/" only exists as an implied directory here, so the plain
+        // file "pack.zip/x.flac" must resolve without descending.
+        let outer = root.join("outer.zip");
+        write_stored_zip(&outer, &[("pack.zip/x.flac", &wav_bytes(100))]);
+        let cache = root.join("nested-cache");
+        let (container, leaf) = resolve_archive_chain(&outer, "pack.zip/x.flac", &cache)
+            .expect("implied directories never descend");
+        assert_eq!(leaf, "pack.zip/x.flac");
+        assert_eq!(container, outer.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn nested_chain_depth_cap_rejects_runaway_nesting() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        let mut payload = stored_zip_bytes(&[("deep.wav", &wav_bytes(100))]);
+        for level in ["l5.zip", "l4.zip", "l3.zip", "l2.zip", "l1.zip"] {
+            payload = stored_zip_bytes(&[(level, &payload)]);
+        }
+        let outer = root.join("outer.zip");
+        write_stored_zip(&outer, &[("l0.zip", &payload)]);
+        let cache = root.join("nested-cache");
+        let error = resolve_archive_chain(
+            &outer,
+            "l0.zip/l1.zip/l2.zip/l3.zip/l4.zip/l5.zip/deep.wav",
+            &cache,
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("4-level"),
+            "runaway nesting fails loudly: {error}"
+        );
+    }
+
+    #[test]
+    fn nested_archive_expands_to_flat_cache_origin() {
+        struct TestCacheDir;
+        impl TestCacheDir {
+            fn set(path: &Path) -> Self {
+                // SAFETY: only this test touches KOG_NESTED_CACHE_DIR, and
+                // every other nested test passes its cache explicitly.
+                unsafe { std::env::set_var("KOG_NESTED_CACHE_DIR", path); }
+                Self
+            }
+        }
+        impl Drop for TestCacheDir {
+            fn drop(&mut self) {
+                // SAFETY: paired with the scoped set above.
+                unsafe { std::env::remove_var("KOG_NESTED_CACHE_DIR"); }
+            }
+        }
+
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        let cache = root.join("nested-cache");
+        let _cache_guard = TestCacheDir::set(&cache);
+        let inner = stored_zip_bytes(&[("song.wav", &wav_bytes(100))]);
+        let outer = root.join("outer.zip");
+        write_stored_zip(&outer, &[("inner.zip", &inner)]);
+        let registry = DecoderRegistry::new(DecoderSettings::default());
+        let expansion = registry
+            .expand_detailed(tree_url(&outer, "inner.zip/song.wav", false))
+            .expect("expand nested archive member");
+        assert_eq!(expansion.sources.len(), 1);
+        let origin = expansion.sources[0]
+            .archive_origin
+            .as_ref()
+            .expect("nested track keeps a stable origin");
+        assert_eq!(origin.entry_name, "song.wav");
+        assert!(
+            origin.archive_path.starts_with(&cache),
+            "nested origin points at the stable cache, not a temp dir"
+        );
+        assert!(std::fs::read(&expansion.sources[0].path).is_ok());
     }
 }

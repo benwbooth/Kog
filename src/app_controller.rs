@@ -594,7 +594,9 @@ fn track_local_paths(track: &Track) -> Vec<PathBuf> {
 
 /// Source indices of tracks with a local path at or under any deleted path.
 /// `Path::starts_with` compares whole components, so `/music/rock` never
-/// matches `/music/rock2`.
+/// matches `/music/rock2`. Tracks from nested archives point at stable cache
+/// copies, so deleting the outer archive leaves them playable from cache
+/// rather than purging them.
 fn purged_track_indices(tracks: &[Track], deleted: &[PathBuf]) -> Vec<usize> {
     tracks
         .iter()

@@ -38,7 +38,7 @@ pub fn sniff_image_kind(bytes: &[u8]) -> Option<ImageKind> {
     }
 }
 
-fn fnv1a64(bytes: &[u8]) -> u64 {
+pub(crate) fn fnv1a64(bytes: &[u8]) -> u64 {
     let mut hash = 0xcbf29ce484222325_u64;
     for byte in bytes {
         hash ^= u64::from(*byte);

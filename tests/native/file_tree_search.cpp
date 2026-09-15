@@ -21,6 +21,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
+#include <utility>
+#include <vector>
 
 static void check(bool value, const char *message)
 {
@@ -78,6 +80,29 @@ static void writeArchive(const QString &path, bool sevenZip = false)
         archive_entry_free(entry);
     }
     check(archive_write_close(writer) == ARCHIVE_OK, "Close archive fixture");
+    archive_write_free(writer);
+}
+
+static void writeZipEntries(const QString &path,
+    const std::vector<std::pair<QString, QByteArray>> &entries)
+{
+    auto *writer = archive_write_new();
+    check(archive_write_set_format_zip(writer) == ARCHIVE_OK, "Create nested zip fixture");
+    const auto filename = QFile::encodeName(path);
+    check(archive_write_open_filename(writer, filename.constData()) == ARCHIVE_OK,
+          "Open nested zip fixture");
+    for (const auto &[name, data] : entries) {
+        auto *entry = archive_entry_new();
+        archive_entry_set_pathname_utf8(entry, name.toUtf8().constData());
+        archive_entry_set_filetype(entry, AE_IFREG);
+        archive_entry_set_perm(entry, 0644);
+        archive_entry_set_size(entry, data.size());
+        check(archive_write_header(writer, entry) >= ARCHIVE_WARN, "Write nested header");
+        check(archive_write_data(writer, data.constData(), data.size()) == (la_ssize_t)data.size(),
+              "Write nested data");
+        archive_entry_free(entry);
+    }
+    check(archive_write_close(writer) == ARCHIVE_OK, "Close nested zip fixture");
     archive_write_free(writer);
 }
 
@@ -454,6 +479,9 @@ int main(int argc, char **argv)
     QCoreApplication::processEvents();
     check(model.filePath(model.viewRootIndex()) == base.absolutePath(), "Clearing search restores the actual browse root");
 
+    settle(model);
+    waitFor([&] { return childNamed(model, model.viewRootIndex(), "Album").isValid(); },
+            "Browse tree settled before refresh fixtures");
     QFile refreshProbe(base.filePath("Manual refresh.flac"));
     check(refreshProbe.open(QIODevice::WriteOnly), "Create refresh fixture");
     model.refreshTree();
@@ -523,6 +551,45 @@ int main(int argc, char **argv)
     check(model.canFetchMore(pack), "An archive-name match remains expandable");
     model.fetchMore(pack);
     waitFor([&] { return model.rowCount(pack) == 2; }, "Browse all contents of an archive-name match");
+    model.setSearchText("");
+    settle(model);
+    waitFor([&] { return childNamed(model, model.viewRootIndex(), "Album").isValid(); },
+            "Browsing restored before nested fixtures");
+
+    QTemporaryDir nestedStaging;
+    check(nestedStaging.isValid(), "Stage nested archives");
+    writeZipEntries(nestedStaging.filePath("inner.zip"),
+        {{"inner-song.flac", "x"}, {"Disc/deep.flac", "x"}});
+    QFile stagedInner(nestedStaging.filePath("inner.zip"));
+    check(stagedInner.open(QIODevice::ReadOnly), "Read staged inner archive");
+    const QByteArray innerBytes = stagedInner.readAll();
+    writeZipEntries(base.filePath("Nested.zip"),
+        {{"inner.zip", innerBytes}, {"top.flac", "x"}});
+    waitFor([&] { return childNamed(model, model.viewRootIndex(), "Nested.zip").isValid(); },
+            "Nested outer archive appears in browsing");
+    QPersistentModelIndex nestedOuter(childNamed(model, model.viewRootIndex(), "Nested.zip"));
+    model.fetchMore(nestedOuter);
+    waitFor([&] { return childNamed(model, nestedOuter, "inner.zip").isValid(); },
+            "Nested archive member is listed");
+    QPersistentModelIndex nestedInner(childNamed(model, nestedOuter, "inner.zip"));
+    check(model.canFetchMore(nestedInner), "Nested archives expand");
+    model.fetchMore(nestedInner);
+    waitFor([&] { return model.rowCount(nestedInner) == 2; }, "Nested archive contents listed");
+    QStringList nestedNames;
+    for (int row = 0; row < model.rowCount(nestedInner); ++row)
+        nestedNames << model.index(row, 0, nestedInner).data(QFileSystemModel::FileNameRole).toString();
+    check(nestedNames == QStringList({"Disc", "inner-song.flac"}),
+          "Nested levels sort like the rest of the tree");
+    auto nestedSong = childNamed(model, nestedInner, "inner-song.flac");
+    auto nestedLocation = kogArchiveLocation(model.filePath(nestedSong));
+    check(nestedLocation.archive == base.filePath("Nested.zip")
+              && nestedLocation.entry == "inner.zip/inner-song.flac" && !nestedLocation.directory,
+          "Nested identities keep the full chain");
+    auto nestedListing = kogListArchiveLocation(base.filePath("Nested.zip"), "inner.zip",
+        std::make_shared<std::atomic_bool>(false));
+    check(nestedListing.error.isEmpty()
+              && nestedListing.entries.contains("inner.zip/inner-song.flac"),
+          "Nested listings use full-chain keys");
     const auto sevenZip = base.filePath("compressed.7z");
     writeArchive(sevenZip, true);
     check(kogListArchive(sevenZip, std::make_shared<std::atomic_bool>(false)).entries.contains("Disc/Hidden Tune.mid"),

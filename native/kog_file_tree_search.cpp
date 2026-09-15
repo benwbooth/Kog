@@ -156,12 +156,15 @@ SearchResult scan(const QString &root, const QString &query,
         if (!listing.error.isEmpty()) ++result.unreadableArchives;
         for (auto it = listing.entries.cbegin(); it != listing.entries.cend() && !cancel->load(); ++it) {
             if (kogIsMetadataPath(it.key())) continue;
-            if (!it.value() && !supportedFile(it.key(), extensions)) continue;
+            // Archive members stay discoverable so nested packs expand in the
+            // tree; their contents surface when browsed, not here.
+            const bool expandable = it.value() || kogIsArchiveName(it.key());
+            if (!expandable && !supportedFile(it.key(), extensions)) continue;
             // Comparing names is cheap. Only construct encoded member URLs
             // and ancestor paths for actual matches, not every indexed entry.
             if (matches(QFileInfo(it.key()).fileName()))
                 match(relative + '/' + it.key(),
-                    {kogArchiveUrl(path, it.key(), it.value()), it.value(), it.value()}, relative);
+                    {kogArchiveUrl(path, it.key(), it.value()), it.value(), expandable}, relative);
             if (result.limited) break;
             publish();
         }
@@ -280,19 +283,20 @@ private:
         job->setFuture(QtConcurrent::run([path, cancel, extensions = extensions] {
             Entries entries;
             auto location = kogArchiveLocation(path);
-            if (kogIsArchive(path)) location = {path, {}, true};
+            if (!path.startsWith("kog-archive:") && kogIsArchive(path)) location = {path, {}, true};
             if (!location.archive.isEmpty()) {
-                const auto listing = kogListArchive(location.archive, cancel);
+                const auto listing = kogListArchiveLocation(location.archive, location.entry, cancel);
                 entries.error = listing.error;
                 const auto prefix = location.entry.isEmpty() ? QString() : location.entry + '/';
                 for (auto it = listing.entries.cbegin(); it != listing.entries.cend(); ++it) {
                     if (kogIsMetadataPath(it.key())) continue;
-                    if (!it.value() && !supportedFile(it.key(), extensions)) continue;
+                    const bool expandable = it.value() || kogIsArchiveName(it.key());
+                    if (!expandable && !supportedFile(it.key(), extensions)) continue;
                     if (!it.key().startsWith(prefix)) continue;
                     const auto name = it.key().mid(prefix.size());
                     if (name.isEmpty() || name.contains('/')) continue;
                     entries.rows.insert(name, {kogArchiveUrl(location.archive, it.key(), it.value()),
-                                               it.value(), it.value()});
+                                               it.value(), expandable});
                 }
                 return entries;
             }
