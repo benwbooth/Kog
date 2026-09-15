@@ -1559,6 +1559,22 @@ pub(crate) mod tests {
         std::fs::read(&path).unwrap()
     }
 
+    struct TestCacheDir;
+    impl TestCacheDir {
+        fn set(path: &Path) -> Self {
+            // SAFETY: only nested tests touch KOG_NESTED_CACHE_DIR, and
+            // every other nested test passes its cache explicitly.
+            unsafe { std::env::set_var("KOG_NESTED_CACHE_DIR", path); }
+            Self
+        }
+    }
+    impl Drop for TestCacheDir {
+        fn drop(&mut self) {
+            // SAFETY: paired with the scoped set above.
+            unsafe { std::env::remove_var("KOG_NESTED_CACHE_DIR"); }
+        }
+    }
+
     #[test]
     fn nested_chain_materializes_reuses_and_detects_staleness() {
         let fixture = tempfile::tempdir().unwrap();
@@ -1654,6 +1670,7 @@ pub(crate) mod tests {
     fn whole_archive_expansion_includes_nested_tracks() {
         let fixture = tempfile::tempdir().unwrap();
         let root = fixture.path();
+        let _cache_guard = TestCacheDir::set(&root.join("nested-cache"));
         let inner = stored_zip_bytes(&[("deep.wav", &wav_bytes(100))]);
         let outer = root.join("outer.zip");
         write_stored_zip(
@@ -1684,22 +1701,6 @@ pub(crate) mod tests {
 
     #[test]
     fn nested_archive_expands_to_outer_chain_origin() {
-        struct TestCacheDir;
-        impl TestCacheDir {
-            fn set(path: &Path) -> Self {
-                // SAFETY: only this test touches KOG_NESTED_CACHE_DIR, and
-                // every other nested test passes its cache explicitly.
-                unsafe { std::env::set_var("KOG_NESTED_CACHE_DIR", path); }
-                Self
-            }
-        }
-        impl Drop for TestCacheDir {
-            fn drop(&mut self) {
-                // SAFETY: paired with the scoped set above.
-                unsafe { std::env::remove_var("KOG_NESTED_CACHE_DIR"); }
-            }
-        }
-
         let fixture = tempfile::tempdir().unwrap();
         let root = fixture.path();
         let cache = root.join("nested-cache");
