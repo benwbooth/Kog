@@ -23,7 +23,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use crate::decoder::DecoderRegistry;
+use crate::decoder::{DecoderRegistry, DecoderSettings};
 
 fn hash_with_seed(seed: u64, bytes: &[u8]) -> u64 {
     let mut salted = seed.to_le_bytes().to_vec();
@@ -31,9 +31,68 @@ fn hash_with_seed(seed: u64, bytes: &[u8]) -> u64 {
     crate::cover_art::fnv1a64(&salted)
 }
 
+pub(crate) fn random_seed() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|age| age.as_secs() ^ u64::from(age.subsec_nanos()))
+        .unwrap_or(0x9E37_79B9_7F4A_7C15)
+}
+
 /// Salt distinguishing file order from turn order inside one folder.
 const FILE_ORDER_SALT: u64 = 0x9E37_79B9_7F4A_7C15;
 
+/// Picks produced by the staging thread: locators in round order, or Empty
+/// when the library yielded nothing across two consecutive rounds.
+pub(crate) enum StagingResponse {
+    Pick(PathBuf),
+    Empty,
+}
+
+/// Staging thread body: own the round, its decoder set, and its cursors;
+/// descend picks and post them until cancelled or the receiver is gone. The
+/// bounded channel paces production: a full channel blocks the thread, so
+/// nothing is ever staged faster than the UI consumes. Round exhaustion
+/// rotates to a fresh seed silently; a second consecutive exhaustion ends
+/// the thread with Empty.
+pub(crate) fn run_staging(
+    root: PathBuf,
+    settings: DecoderSettings,
+    read_cue: bool,
+    nested_cache: PathBuf,
+    picks: std::sync::mpsc::SyncSender<StagingResponse>,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
+    let decoders = DecoderRegistry::new(settings);
+    let exts = decoders.audio_extensions();
+    let ctx = RadioCtx {
+        decoders: &decoders,
+        audio_exts: &exts,
+        read_cue,
+        nested_cache: &nested_cache,
+    };
+    let mut round = RadioRound::new(random_seed());
+    let mut rotations = 0_usize;
+    loop {
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
+        match round.next_pick(&root, &ctx) {
+            Some(locator) => {
+                if picks.send(StagingResponse::Pick(locator)).is_err() {
+                    return;
+                }
+            }
+            None => {
+                rotations += 1;
+                if rotations > 1 {
+                    let _ = picks.send(StagingResponse::Empty);
+                    return;
+                }
+                round = RadioRound::new(random_seed());
+            }
+        }
+    }
+}
 /// Per-folder radio state: positions in the functionally-shuffled orders.
 /// That is the only thing a round remembers; orders are recomputed.
 #[derive(Default)]
@@ -408,7 +467,6 @@ mod tests {
         }
         picks
     }
-
     #[test]
     fn is_random_candidate_filters_playlists_and_optional_cue() {
         assert!(!is_random_candidate(Path::new("/music/list.m3u"), true));

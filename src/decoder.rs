@@ -1020,7 +1020,9 @@ impl DecoderRegistry {
         Ok(result)
     }
 
-    #[cfg(test)]
+    /// Open a source and read its stream properties without playing it.
+    /// Radio staging uses this to drop unopenable picks before they ever
+    /// reach the playlist; failures name the backend-independent reason.
     pub fn probe(&self, source: &PlaybackSource) -> Result<StreamProperties, String> {
         self.probe_with_backend(source)
             .map(|(_, properties)| properties)
