@@ -160,6 +160,7 @@ fn main() {
     .cpp_file("native/kog_desktop_integration.cpp")
     .cpp_file("native/kog_window_state.cpp")
     .cpp_file("native/kog_skin_network.cpp")
+    .cpp_file("native/kog_cover_art_network.cpp")
     .cpp_file("native/kog_modern_skin.h")
     .cpp_file("native/kog_modern_skin.cpp")
     .cpp_file("native/kog_file_tree_search.h")

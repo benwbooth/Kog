@@ -545,6 +545,7 @@ ApplicationWindow {
         repeat: true
         onTriggered: {
             appController.poll_playback()
+            appController.poll_cover_art()
             if (root.notificationSerialSeen !== appController.notification_serial) {
                 root.notificationSerialSeen = appController.notification_serial
                 nowPlayingPopup.present()
@@ -1424,12 +1425,15 @@ ApplicationWindow {
                         anchors.centerIn: parent
                         width: 36
                         height: 36
-                        source: Qt.resolvedUrl("icons/kog.svg")
+                        source: appController.current_artwork_path.length > 0
+                            ? "file://" + appController.current_artwork_path
+                            : Qt.resolvedUrl("icons/kog.svg")
                         sourceSize.width: 72
                         sourceSize.height: 72
                         fillMode: Image.PreserveAspectFit
                         mipmap: true
-                        Accessible.name: qsTr("Kog")
+                        asynchronous: true
+                        Accessible.name: qsTr("Album cover")
                     }
                 }
 

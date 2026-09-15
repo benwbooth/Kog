@@ -394,6 +394,17 @@ Window {
                                 checked: root.app.track_notifications
                                 onToggled: root.app.update_track_notifications(checked)
                             }
+                            PreferenceCheckBox {
+                                text: qsTr("Automatically download missing album covers")
+                                checked: root.app.download_cover_art
+                                onToggled: root.app.update_download_cover_art(checked)
+                            }
+                            PreferenceLabel {
+                                Layout.fillWidth: true
+                                text: qsTr("Covers come from embedded tags first, then Deezer, iTunes, MusicBrainz, and DuckDuckGo, and are cached on disk.")
+                                wrapMode: Text.Wrap
+                                color: root.palette.placeholderText
+                            }
                             PreferenceLabel {
                                 Layout.fillWidth: true
                             text: qsTr("A compact now-playing popup includes Previous, Play/Pause, Stop, and Next controls. Hover to keep it open; it otherwise dismisses after eight seconds. Drag its header to move it; your position is remembered. Right-click the header to reset it above the tray.")

@@ -17,6 +17,7 @@ const SHOW_TRAY_ICON_SETTING_FILE: &str = "show-tray-icon";
 const CLOSE_TO_TRAY_SETTING_FILE: &str = "close-to-tray";
 const MINIMIZE_TO_TRAY_SETTING_FILE: &str = "minimize-to-tray";
 const TRACK_NOTIFICATIONS_SETTING_FILE: &str = "track-notifications";
+const DOWNLOAD_COVER_ART_SETTING_FILE: &str = "download-cover-art";
 const OUTPUT_VOLUME_SETTING_FILE: &str = "output-volume";
 const OUTPUT_DEVICE_SETTING_FILE: &str = "output-device";
 const PLAYLIST_COLUMN_LAYOUT_SETTING_FILE: &str = "playlist-column-layout";
@@ -202,6 +203,7 @@ pub struct AppSettings {
     pub close_to_tray: bool,
     pub minimize_to_tray: bool,
     pub track_notifications: bool,
+    pub download_cover_art: bool,
     pub output_volume: f64,
     pub output_device: Option<OutputDevicePreference>,
     pub playlist_column_layout: Option<String>,
@@ -242,6 +244,7 @@ impl AppSettings {
         let close_to_tray = load_bool(CLOSE_TO_TRAY_SETTING_FILE).unwrap_or(true);
         let minimize_to_tray = load_bool(MINIMIZE_TO_TRAY_SETTING_FILE).unwrap_or(false);
         let track_notifications = load_bool(TRACK_NOTIFICATIONS_SETTING_FILE).unwrap_or(false);
+        let download_cover_art = load_bool(DOWNLOAD_COVER_ART_SETTING_FILE).unwrap_or(true);
         let output_volume = load_text(OUTPUT_VOLUME_SETTING_FILE)
             .and_then(|value| value.parse::<f64>().ok())
             .filter(|value| value.is_finite())
@@ -278,6 +281,7 @@ impl AppSettings {
             close_to_tray,
             minimize_to_tray,
             track_notifications,
+            download_cover_art,
             output_volume,
             output_device,
             playlist_column_layout,
@@ -378,6 +382,10 @@ impl AppSettings {
 
     pub fn save_track_notifications(enabled: bool) -> Result<(), String> {
         save_bool(TRACK_NOTIFICATIONS_SETTING_FILE, enabled)
+    }
+
+    pub fn save_download_cover_art(enabled: bool) -> Result<(), String> {
+        save_bool(DOWNLOAD_COVER_ART_SETTING_FILE, enabled)
     }
 
     pub fn save_output_volume(volume: f64) -> Result<(), String> {

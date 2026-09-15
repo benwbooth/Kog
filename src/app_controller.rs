@@ -5,6 +5,11 @@ pub mod qobject {
         type QString = cxx_qt_lib::QString;
         include!("cxx-qt-lib/qurl.h");
         type QUrl = cxx_qt_lib::QUrl;
+        include!("cxx-qt-lib/qbytearray.h");
+        type QByteArray = cxx_qt_lib::QByteArray;
+        include!("kog/kog_cover_art_network.h");
+        #[cxx_name = "kogFetchCoverArtUrl"]
+        fn fetch_cover_art_url(url: &QString, max_bytes: u32) -> Result<QByteArray>;
     }
 
     unsafe extern "RustQt" {
@@ -28,6 +33,8 @@ pub mod qobject {
         #[qproperty(QString, now_title)]
         #[qproperty(QString, now_artist)]
         #[qproperty(QString, current_album)]
+        #[qproperty(QString, current_artwork_path)]
+        #[qproperty(bool, download_cover_art)]
         #[qproperty(QString, current_genre)]
         #[qproperty(QString, current_lyrics)]
         #[qproperty(QString, current_file)]
@@ -289,6 +296,10 @@ pub mod qobject {
         fn update_minimize_to_tray(self: Pin<&mut AppController>, enabled: bool);
         #[qinvokable]
         fn update_track_notifications(self: Pin<&mut AppController>, enabled: bool);
+        #[qinvokable]
+        fn update_download_cover_art(self: Pin<&mut AppController>, enabled: bool);
+        #[qinvokable]
+        fn poll_cover_art(self: Pin<&mut AppController>);
     }
 }
 
@@ -368,6 +379,24 @@ struct TreeDeleteState {
     permanent: bool,
     deleted: Vec<PathBuf>,
     failures: Vec<String>,
+}
+
+struct CoverArtRequest {
+    generation: u64,
+    artist: String,
+    album: String,
+    cache_dir: PathBuf,
+}
+
+struct CoverArtResult {
+    generation: u64,
+    path: Option<PathBuf>,
+}
+
+struct CoverArtState {
+    receiver: Receiver<CoverArtResult>,
+    cancel: Arc<AtomicBool>,
+    generation: u64,
 }
 
 impl AddPathResult {
@@ -631,6 +660,134 @@ fn run_tree_delete_job(
     let _ = sender.send(TreeDeleteEvent::Complete {
         cancelled: cancel.load(AtomicOrdering::Relaxed),
         files,
+    });
+}
+
+fn cover_art_cache_dir() -> PathBuf {
+    directories::ProjectDirs::from("org", "Kog", "Kog")
+        .map(|directories| crate::cover_art::cache_directory(directories.cache_dir()))
+        .unwrap_or_else(|| std::env::temp_dir().join("kog-covers"))
+}
+
+fn fetch_cover(url: &str, max_bytes: u32) -> Result<Vec<u8>, String> {
+    qobject::fetch_cover_art_url(&QString::from(url), max_bytes)
+        .map(|bytes| bytes.as_slice().to_vec())
+        .map_err(|error| error.to_string())
+}
+
+fn fetch_validated_cover(url: &str) -> Option<Vec<u8>> {
+    let bytes = fetch_cover(url, crate::cover_art::MAX_COVER_BYTES).ok()?;
+    if crate::cover_art::sniff_image_kind(&bytes).is_some() {
+        Some(bytes)
+    } else {
+        None
+    }
+}
+
+fn musicbrainz_rate_limit() {
+    use std::sync::OnceLock;
+    static LAST_REQUEST: OnceLock<std::sync::Mutex<std::time::Instant>> = OnceLock::new();
+    let guard = LAST_REQUEST.get_or_init(|| {
+        std::sync::Mutex::new(std::time::Instant::now() - Duration::from_secs(2))
+    });
+    if let Ok(mut last) = guard.lock() {
+        let elapsed = last.elapsed();
+        if elapsed < Duration::from_millis(1100) {
+            std::thread::sleep(Duration::from_millis(1100) - elapsed);
+        }
+        *last = std::time::Instant::now();
+    }
+}
+
+fn resolve_cover_art(request: &CoverArtRequest, cancel: &AtomicBool) -> Option<PathBuf> {
+    let cancelled = || cancel.load(AtomicOrdering::Relaxed);
+    let key = crate::cover_art::cache_key(&request.artist, &request.album);
+    let store = |bytes: Vec<u8>| crate::cover_art::store_cache(&request.cache_dir, &key, &bytes);
+
+    if !cancelled() {
+        let url = crate::cover_art::deezer_search_url(&request.artist, &request.album);
+        if let Ok(json) = fetch_cover(&url, crate::cover_art::MAX_SEARCH_BYTES)
+            && let Ok(text) = String::from_utf8(json)
+            && let Some((title, artist, cover)) = crate::cover_art::parse_deezer_cover(&text)
+            && !cover.is_empty()
+            && crate::cover_art::titles_match(&request.artist, &request.album, &title, &artist)
+            && let Some(bytes) = fetch_validated_cover(&cover)
+            && let Some(path) = store(bytes)
+        {
+            return Some(path);
+        }
+    }
+    if !cancelled() {
+        let url = crate::cover_art::itunes_search_url(&request.artist, &request.album);
+        if let Ok(json) = fetch_cover(&url, crate::cover_art::MAX_SEARCH_BYTES)
+            && let Ok(text) = String::from_utf8(json)
+            && let Some((title, artist, artwork)) = crate::cover_art::parse_itunes_cover(&text)
+            && !artwork.is_empty()
+            && crate::cover_art::titles_match(&request.artist, &request.album, &title, &artist)
+            && let Some(bytes) = fetch_validated_cover(&artwork)
+            && let Some(path) = store(bytes)
+        {
+            return Some(path);
+        }
+    }
+    if !cancelled() {
+        musicbrainz_rate_limit();
+        if !cancelled() {
+            let url = crate::cover_art::mb_release_group_url(&request.artist, &request.album);
+            if let Ok(json) = fetch_cover(&url, crate::cover_art::MAX_SEARCH_BYTES)
+                && let Ok(text) = String::from_utf8(json)
+                && let Some((title, artist, mbid)) =
+                    crate::cover_art::parse_mb_release_group(&text)
+                && !mbid.is_empty()
+                && crate::cover_art::titles_match(&request.artist, &request.album, &title, &artist)
+                && let Some(bytes) =
+                    fetch_validated_cover(&crate::cover_art::caa_front_url(&mbid))
+                && let Some(path) = store(bytes)
+            {
+                return Some(path);
+            }
+        }
+    }
+    if !cancelled() {
+        let query = format!("{} {} cover art", request.artist, request.album)
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        if let Ok(page) = fetch_cover(
+            &crate::cover_art::ddg_page_url(&query),
+            crate::cover_art::MAX_SEARCH_BYTES,
+        )
+        && let Ok(html) = String::from_utf8(page)
+        && let Some(token) = crate::cover_art::ddg_token(&html)
+        && let Ok(results) = fetch_cover(
+            &crate::cover_art::ddg_image_url(&query, &token),
+            crate::cover_art::MAX_SEARCH_BYTES,
+        )
+        && let Ok(text) = String::from_utf8(results)
+        && let Some((title, thumbnail)) = crate::cover_art::parse_ddg_thumbnail(&text)
+        && crate::cover_art::titles_match(&request.artist, &request.album, &title, "")
+        && let Some(bytes) = fetch_validated_cover(&thumbnail)
+        && let Some(path) = store(bytes)
+        {
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn run_cover_art_job(
+    request: CoverArtRequest,
+    sender: SyncSender<CoverArtResult>,
+    cancel: Arc<AtomicBool>,
+) {
+    let path = if cancel.load(AtomicOrdering::Relaxed) {
+        None
+    } else {
+        resolve_cover_art(&request, &cancel)
+    };
+    let _ = sender.send(CoverArtResult {
+        generation: request.generation,
+        path,
     });
 }
 
@@ -1345,6 +1502,10 @@ pub struct AppControllerRust {
     close_to_tray: bool,
     minimize_to_tray: bool,
     track_notifications: bool,
+    download_cover_art: bool,
+    current_artwork_path: QString,
+    cover_art: Option<CoverArtState>,
+    cover_art_generation: u64,
     directory_scan_active: bool,
     directory_scan_files_scanned: i32,
     directory_scan_tracks_added: i32,
@@ -1530,6 +1691,10 @@ impl Default for AppControllerRust {
             close_to_tray: app_settings.close_to_tray,
             minimize_to_tray: app_settings.minimize_to_tray,
             track_notifications: app_settings.track_notifications,
+            download_cover_art: app_settings.download_cover_art,
+            current_artwork_path: QString::default(),
+            cover_art: None,
+            cover_art_generation: 0,
             directory_scan_active: false,
             directory_scan_files_scanned: 0,
             directory_scan_tracks_added: 0,
@@ -4135,6 +4300,121 @@ impl qobject::AppController {
         }));
     }
 
+    pub fn update_download_cover_art(mut self: Pin<&mut Self>, enabled: bool) {
+        if let Err(error) = AppSettings::save_download_cover_art(enabled) {
+            self.as_mut().set_status(qstring(error));
+            return;
+        }
+        self.as_mut().set_download_cover_art(enabled);
+        if !enabled {
+            if let Some(job) = self.as_mut().rust_mut().cover_art.take() {
+                job.cancel.store(true, AtomicOrdering::Relaxed);
+            }
+            self.as_mut().set_status(qstring("Cover art downloads disabled"));
+            return;
+        }
+        self.as_mut()
+            .set_status(qstring("Cover art downloads enabled"));
+        let current = usize::try_from(self.as_ref().rust().current_index)
+            .ok()
+            .and_then(|index| self.as_ref().rust().tracks.get(index).cloned());
+        if let Some(track) = current {
+            self.as_mut().refresh_cover_art(
+                track.artist.clone(),
+                track.album.clone(),
+                track.source.path.clone(),
+            );
+        }
+    }
+
+    pub fn poll_cover_art(mut self: Pin<&mut Self>) {
+        let generation = match self.as_ref().rust().cover_art.as_ref() {
+            Some(job) => job.generation,
+            None => return,
+        };
+        let mut resolved = None;
+        let mut received = false;
+        if let Some(job) = self.as_ref().rust().cover_art.as_ref() {
+            while let Ok(event) = job.receiver.try_recv() {
+                if event.generation == generation {
+                    resolved = event.path;
+                    received = true;
+                }
+            }
+        }
+        if !received {
+            return;
+        }
+        if self
+            .as_ref()
+            .rust()
+            .cover_art
+            .as_ref()
+            .is_some_and(|job| job.generation == generation)
+        {
+            self.as_mut().rust_mut().cover_art = None;
+        }
+        if let Some(path) = resolved {
+            self.as_mut()
+                .set_current_artwork_path(qstring(path.to_string_lossy()));
+        }
+    }
+
+    fn refresh_cover_art(mut self: Pin<&mut Self>, artist: String, album: String, file: PathBuf) {
+        let generation = self
+            .as_ref()
+            .rust()
+            .cover_art_generation
+            .wrapping_add(1);
+        self.as_mut().rust_mut().cover_art_generation = generation;
+        if let Some(job) = self.as_mut().rust_mut().cover_art.take() {
+            job.cancel.store(true, AtomicOrdering::Relaxed);
+        }
+        self.as_mut()
+            .set_current_artwork_path(QString::default());
+        let album = crate::cover_art::fallback_album(&file, &album);
+        if album.is_empty() {
+            return;
+        }
+        let cache_dir = cover_art_cache_dir();
+        let key = crate::cover_art::cache_key(&artist, &album);
+        if let Some(cached) = crate::cover_art::cache_lookup(&cache_dir, &key) {
+            self.as_mut()
+                .set_current_artwork_path(qstring(cached.to_string_lossy()));
+            return;
+        }
+        if let Some(bytes) = crate::cover_art::embedded_cover_bytes(&file) {
+            if let Some(stored) = crate::cover_art::store_cache(&cache_dir, &key, &bytes) {
+                self.as_mut()
+                    .set_current_artwork_path(qstring(stored.to_string_lossy()));
+                return;
+            }
+        }
+        if !self.as_ref().rust().download_cover_art {
+            return;
+        }
+        let (sender, receiver) = std::sync::mpsc::sync_channel(2);
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.as_mut().rust_mut().cover_art = Some(CoverArtState {
+            receiver,
+            cancel: Arc::clone(&cancel),
+            generation,
+        });
+        let request = CoverArtRequest {
+            generation,
+            artist,
+            album,
+            cache_dir,
+        };
+        if std::thread::Builder::new()
+            .name("kog-cover-art".to_owned())
+            .spawn(move || run_cover_art_job(request, sender, cancel))
+            .is_err()
+        {
+            self.as_mut().rust_mut().cover_art = None;
+        }
+    }
+
     fn commit_equalizer_settings(
         mut self: Pin<&mut Self>,
         settings: EqualizerSettings,
@@ -4543,6 +4823,11 @@ impl qobject::AppController {
             .set_current_bits_per_sample(qstring(bits_per_sample));
         self.as_mut().set_duration_seconds(duration);
         self.as_mut().set_position_seconds(0.0);
+        self.as_mut().refresh_cover_art(
+            track.artist.clone(),
+            track.album.clone(),
+            track.source.path.clone(),
+        );
     }
 
     fn reset_now_playing(mut self: Pin<&mut Self>) {
@@ -4562,6 +4847,17 @@ impl qobject::AppController {
             .set_current_bits_per_sample(QString::default());
         self.as_mut().set_duration_seconds(0.0);
         self.as_mut().set_position_seconds(0.0);
+        let generation = self
+            .as_ref()
+            .rust()
+            .cover_art_generation
+            .wrapping_add(1);
+        self.as_mut().rust_mut().cover_art_generation = generation;
+        if let Some(job) = self.as_mut().rust_mut().cover_art.take() {
+            job.cancel.store(true, AtomicOrdering::Relaxed);
+        }
+        self.as_mut()
+            .set_current_artwork_path(QString::default());
     }
 
     fn sync_playback_state(mut self: Pin<&mut Self>) {

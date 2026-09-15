@@ -8,6 +8,7 @@ mod app_controller;
 mod archive;
 mod cuesheet;
 mod cuesheet_decoder;
+mod cover_art;
 mod decoder;
 mod desktop_integration;
 mod equalizer;
