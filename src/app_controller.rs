@@ -393,19 +393,26 @@ enum RadioEvent {
     },
 }
 
+/// One in-flight radio expansion: up to MAX_EXPANDERS run at once so a
+/// single slow archive cannot wedge staging. The locator identifies timed
+/// out picks for the session skip-list.
 struct RadioJob {
     receiver: Receiver<RadioEvent>,
     cancel: Arc<AtomicBool>,
+    locator: PathBuf,
+    started: Instant,
 }
 
 /// Live radio state: staged tracks waiting for their playlist turn, the
-/// in-flight expansion, the background staging thread's pick channel, and
-/// whether an explicit play press is owed an instant start. Picking never
-/// touches the UI thread: the staging thread owns the round, its decoders,
-/// and its cursors, paced by the bounded channel.
+/// in-flight expansions, the background staging thread's pick channel,
+/// locators that timed out this session, and whether an explicit play press
+/// is owed an instant start. Picking never touches the UI thread: the
+/// staging thread owns the round, its decoders, and its cursors, paced by
+/// the bounded channel.
 struct RadioState {
     ready: VecDeque<Track>,
-    expand_job: Option<RadioJob>,
+    expand_jobs: Vec<RadioJob>,
+    skipped: HashSet<String>,
     staging: Option<StagingWorker>,
     kickstart_armed: bool,
 }
@@ -1853,7 +1860,8 @@ impl Default for AppControllerRust {
                 } else {
                     controller.radio = Some(RadioState {
                         ready: VecDeque::new(),
-                        expand_job: None,
+                        expand_jobs: Vec::new(),
+                        skipped: HashSet::new(),
                         staging,
                         kickstart_armed: false,
                     });
@@ -2508,7 +2516,8 @@ impl qobject::AppController {
         };
         self.as_mut().rust_mut().radio = Some(RadioState {
             ready: VecDeque::new(),
-            expand_job: None,
+            expand_jobs: Vec::new(),
+            skipped: HashSet::new(),
             staging: Some(staging),
             // Never autoplay on toggle: staging fills the hidden buffer,
             // and the first track moves (and plays) only after an explicit
@@ -2524,13 +2533,28 @@ impl qobject::AppController {
             return;
         }
         let mut events = Vec::new();
+        let mut finished = Vec::new();
         if let Some(radio) = self.as_ref().rust().radio.as_ref() {
-            if let Some(job) = radio.expand_job.as_ref() {
-                while let Ok(event) = job.receiver.try_recv() {
-                    events.push(event);
-                    if events.len() >= 16 {
-                        break;
+            for (index, job) in radio.expand_jobs.iter().enumerate() {
+                // Expand workers send exactly once, so a first event and a
+                // disconnect both mean that lane is done.
+                let mut done = false;
+                while events.len() < 16 {
+                    match job.receiver.try_recv() {
+                        Ok(event) => {
+                            events.push(event);
+                            done = true;
+                            break;
+                        }
+                        Err(TryRecvError::Empty) => break,
+                        Err(TryRecvError::Disconnected) => {
+                            done = true;
+                            break;
+                        }
                     }
+                }
+                if done {
+                    finished.push(index);
                 }
             }
         } else {
@@ -2539,6 +2563,13 @@ impl qobject::AppController {
         }
         for event in events {
             self.as_mut().handle_radio_event(event);
+        }
+        if let Some(radio) = self.as_mut().rust_mut().radio.as_mut() {
+            for index in finished.into_iter().rev() {
+                if index < radio.expand_jobs.len() {
+                    radio.expand_jobs.remove(index);
+                }
+            }
         }
         let kickstart = self
             .as_ref()
@@ -2566,7 +2597,7 @@ impl qobject::AppController {
 
     fn teardown_radio(mut self: Pin<&mut Self>) {
         if let Some(state) = self.as_mut().rust_mut().radio.take() {
-            if let Some(job) = state.expand_job {
+            for job in state.expand_jobs {
                 job.cancel.store(true, AtomicOrdering::Relaxed);
             }
             if let Some(staging) = state.staging {
@@ -2589,45 +2620,60 @@ impl qobject::AppController {
         };
         let (sender, receiver) = std::sync::mpsc::sync_channel(4);
         let cancel = Arc::new(AtomicBool::new(false));
-        if let Some(radio) = self.as_mut().rust_mut().radio.as_mut() {
-            radio.expand_job = Some(RadioJob {
-                receiver,
-                cancel: Arc::clone(&cancel),
-            });
-        } else {
-            return;
-        }
-        if std::thread::Builder::new()
+        let job = RadioJob {
+            receiver,
+            cancel: Arc::clone(&cancel),
+            locator: locator.clone(),
+            started: Instant::now(),
+        };
+        let spawned = std::thread::Builder::new()
             .name("kog-radio-expand".to_owned())
             .spawn(move || {
                 if cancel.load(AtomicOrdering::Relaxed) {
                     return;
                 }
-                let prepared =
-                    prepare_scan_file(locator, &worker_decoders, read_cue, read_playlists);
-                // Probe-open every candidate: only tracks that actually open
-                // reach the staging buffer, so an unplayable file can never
-                // surface as a playback error later.
-                let mut tracks = prepared.tracks;
-                let mut warnings = prepared.warnings;
-                if !cancel.load(AtomicOrdering::Relaxed) && !tracks.is_empty() {
-                    tracks.retain(|track| match worker_decoders.probe(&track.source) {
-                        Ok(_) => true,
-                        Err(error) => {
-                            warnings.push(format!(
-                                "{} cannot be played and was skipped: {error}",
-                                track.source.display_label()
-                            ));
-                            false
-                        }
-                    });
+                // A panicking pick must free its lane instead of wedging
+                // staging forever: catch it and report a skipped pick.
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let prepared =
+                        prepare_scan_file(locator, &worker_decoders, read_cue, read_playlists);
+                    // Probe-open every candidate: only tracks that actually
+                    // open reach the staging buffer, so an unplayable file can
+                    // never surface as a playback error later.
+                    let mut tracks = prepared.tracks;
+                    let mut warnings = prepared.warnings;
+                    if !cancel.load(AtomicOrdering::Relaxed) && !tracks.is_empty() {
+                        tracks.retain(|track| match worker_decoders.probe(&track.source) {
+                            Ok(_) => true,
+                            Err(error) => {
+                                warnings.push(format!(
+                                    "{} cannot be played and was skipped: {error}",
+                                    track.source.display_label()
+                                ));
+                                false
+                            }
+                        });
+                    }
+                    (tracks, warnings)
+                }));
+                match outcome {
+                    Ok((tracks, warnings)) => {
+                        let _ = sender.send(RadioEvent::TracksReady { tracks, warnings });
+                    }
+                    Err(_) => {
+                        let _ = sender.send(RadioEvent::TracksReady {
+                            tracks: Vec::new(),
+                            warnings: vec![
+                                "A radio pick failed unexpectedly and was skipped".to_owned(),
+                            ],
+                        });
+                    }
                 }
-                let _ = sender.send(RadioEvent::TracksReady { tracks, warnings });
             })
-            .is_err()
-        {
+            .is_ok();
+        if spawned {
             if let Some(radio) = self.as_mut().rust_mut().radio.as_mut() {
-                radio.expand_job = None;
+                radio.expand_jobs.push(job);
             }
         }
     }
@@ -2636,7 +2682,6 @@ impl qobject::AppController {
         let RadioEvent::TracksReady { tracks, warnings } = event;
         let live = !tracks.is_empty();
         if let Some(radio) = self.as_mut().rust_mut().radio.as_mut() {
-            radio.expand_job = None;
             radio.ready.extend(tracks);
         }
         if !live {
@@ -2674,30 +2719,43 @@ impl qobject::AppController {
     /// poll stages at most one more track, so the playlist still grows one
     /// song at a time. Everything here is channel drains and key lookups;
     /// picking itself never runs on the UI thread.
+    /// Keep the hidden staging buffer filled from the background staging
+    /// thread: take staged locators off the channel and expand the first
+    /// ones that are not already queued. Up to three expansions fly at once
+    /// so one slow archive cannot wedge staging; lanes that overrun their
+    /// timeout join the session skip-list instead of blocking forever.
+    /// Everything here is channel drains and key lookups; picking itself
+    /// never runs on the UI thread.
     fn top_up_radio(mut self: Pin<&mut Self>) {
         const RADIO_READY_TARGET: usize = 10;
-        const MAX_DRAIN: usize = 32;
-        if self
-            .as_ref()
-            .rust()
-            .radio
-            .as_ref()
-            .is_some_and(|radio| radio.expand_job.is_some())
-        {
-            return;
-        }
+        const MAX_EXPANDERS: usize = 3;
+        const MAX_DRAIN: usize = 128;
+        const EXPAND_TIMEOUT: Duration = Duration::from_secs(300);
         let Some(_) = self.as_ref().rust().radio.as_ref() else {
             return;
         };
-        let ready_len = self
-            .as_ref()
-            .rust()
-            .radio
-            .as_ref()
-            .map(|radio| radio.ready.len())
-            .unwrap_or(0);
-        if ready_len >= RADIO_READY_TARGET {
-            return;
+        // Retire lanes that overran: best-effort cancel, skip-list their
+        // locator so the turn is never spent on them again this session.
+        let now = Instant::now();
+        let mut timed_out = Vec::new();
+        if let Some(radio) = self.as_mut().rust_mut().radio.as_mut() {
+            let mut kept = Vec::new();
+            for job in radio.expand_jobs.drain(..) {
+                if now.duration_since(job.started) > EXPAND_TIMEOUT {
+                    job.cancel.store(true, AtomicOrdering::Relaxed);
+                    timed_out.push(radio_locator_key(&job.locator));
+                } else {
+                    kept.push(job);
+                }
+            }
+            radio.expand_jobs = kept;
+            for key in &timed_out {
+                radio.skipped.insert(key.clone());
+            }
+        }
+        if !timed_out.is_empty() {
+            self.as_mut()
+                .set_status(qstring("Random Radio — skipping an unresponsive file"));
         }
         let staged: HashSet<String> = self
             .as_ref()
@@ -2710,38 +2768,79 @@ impl qobject::AppController {
                     .rust()
                     .radio
                     .as_ref()
-                    .map(|radio| radio.ready.iter().map(radio_track_key))
+                    .map(|radio| {
+                        radio
+                            .ready
+                            .iter()
+                            .map(radio_track_key)
+                            .chain(radio.skipped.iter().cloned())
+                    })
                     .into_iter()
                     .flatten(),
             )
             .collect();
-        for _ in 0..MAX_DRAIN {
-            let response = {
-                let mut this = self.as_mut();
-                let mut rust = this.as_mut().rust_mut();
-                let Some(radio) = rust.radio.as_mut() else {
-                    return;
+        let mut budget = MAX_DRAIN;
+        loop {
+            let (ready_len, active) = self
+                .as_ref()
+                .rust()
+                .radio
+                .as_ref()
+                .map(|radio| (radio.ready.len(), radio.expand_jobs.len()))
+                .unwrap_or((RADIO_READY_TARGET, MAX_EXPANDERS));
+            if ready_len + active >= RADIO_READY_TARGET || active >= MAX_EXPANDERS {
+                return;
+            }
+            enum Drain {
+                Pick(PathBuf),
+                Empty,
+                Dry,
+                Gone,
+            }
+            let mut outcome = Drain::Dry;
+            while budget > 0 {
+                budget -= 1;
+                let response = {
+                    let mut this = self.as_mut();
+                    let mut rust = this.as_mut().rust_mut();
+                    let Some(radio) = rust.radio.as_mut() else {
+                        return;
+                    };
+                    let Some(staging) = radio.staging.as_ref() else {
+                        return;
+                    };
+                    staging.picks.try_recv()
                 };
-                let Some(staging) = radio.staging.as_ref() else {
-                    return;
-                };
-                staging.picks.try_recv()
-            };
-            match response {
-                Ok(crate::radio::StagingResponse::Pick(locator)) => {
-                    if staged.contains(&radio_locator_key(&locator)) {
-                        continue;
+                match response {
+                    Ok(crate::radio::StagingResponse::Pick(locator)) => {
+                        if staged.contains(&radio_locator_key(&locator)) {
+                            continue;
+                        }
+                        outcome = Drain::Pick(locator);
+                        break;
                     }
-                    self.as_mut().request_radio_expand(locator);
-                    return;
+                    Ok(crate::radio::StagingResponse::Empty) => {
+                        outcome = Drain::Empty;
+                        break;
+                    }
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        outcome = Drain::Gone;
+                        break;
+                    }
                 }
-                Ok(crate::radio::StagingResponse::Empty) => {
+            }
+            match outcome {
+                Drain::Pick(locator) => {
+                    self.as_mut().request_radio_expand(locator);
+                }
+                Drain::Empty => {
                     self.as_mut()
                         .set_status(qstring("Random Radio — music folder is empty"));
                     return;
                 }
-                Err(TryRecvError::Empty) => return,
-                Err(TryRecvError::Disconnected) => {
+                Drain::Dry => return,
+                Drain::Gone => {
                     // The staging thread is gone: park radio visibly instead
                     // of stalling silently. Toggling restarts it.
                     if let Some(radio) = self.as_mut().rust_mut().radio.as_mut() {
