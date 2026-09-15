@@ -269,18 +269,27 @@ Rectangle {
         persistLayout()
     }
 
-    function autoFitColumn(identifier) {
-        const index = columnIndex(identifier)
-        if (index < 0)
-            return
-        const column = columns[index]
+    function fittedColumnWidth(column) {
         let contentWidth = columnFontMetrics.advanceWidth(
             column.label.length > 0 ? column.label + "  ▼" : "▶")
         for (let row = 0; row < root.app.playlist_count; ++row) {
             contentWidth = Math.max(contentWidth, columnFontMetrics.advanceWidth(
-                root.app.track_value_at(row, identifier)))
+                root.app.track_value_at(row, column.id)))
         }
-        setColumnWidth(identifier, contentWidth + 18)
+        return contentWidth + 18
+    }
+
+    function autoFitColumn(identifier) {
+        const index = columnIndex(identifier)
+        if (index < 0)
+            return
+        setColumnWidth(identifier, fittedColumnWidth(columns[index]))
+        persistLayout()
+    }
+
+    function autoFitAllColumns() {
+        for (const column of root.visibleColumns)
+            setColumnWidth(column.id, fittedColumnWidth(column))
         persistLayout()
     }
 
@@ -419,9 +428,8 @@ Rectangle {
         }
         onCanceled: dragColumn = ""
         onDoubleClicked: mouse => {
-            const index = boundaryIndexAt(mouse.x)
-            if (index >= 0)
-                root.autoFitColumn(root.visibleColumns[index].id)
+            if (boundaryIndexAt(mouse.x) >= 0)
+                root.autoFitAllColumns()
             mouse.accepted = true
         }
     }
@@ -440,6 +448,14 @@ Rectangle {
             icon.name: "go-next"
             enabled: root.canMoveColumn(root.menuColumn, 1)
             onTriggered: root.moveColumn(root.menuColumn, 1)
+        }
+        MenuItem {
+            text: qsTr("Auto-Fit Column")
+            onTriggered: root.autoFitColumn(root.menuColumn)
+        }
+        MenuItem {
+            text: qsTr("Auto-Fit All Columns")
+            onTriggered: root.autoFitAllColumns()
         }
         MenuSeparator {}
         MenuItem {
