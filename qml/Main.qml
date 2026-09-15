@@ -863,6 +863,48 @@ ApplicationWindow {
     }
 
     Dialog {
+        id: coverArtDialog
+
+        anchors.centerIn: parent
+        width: Math.min(480, root.width - 48)
+        height: Math.min(560, root.height - 48)
+        modal: true
+        title: playbackTitle.text.length > 0 ? playbackTitle.text : qsTr("Album cover")
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+
+        contentItem: ColumnLayout {
+            spacing: 10
+
+            Image {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                source: appController.current_artwork_path.length > 0
+                    ? "file://" + appController.current_artwork_path
+                    : Qt.resolvedUrl("icons/kog.svg")
+                fillMode: Image.PreserveAspectFit
+                mipmap: true
+                asynchronous: true
+                cache: false
+                Accessible.name: qsTr("Album cover enlarged")
+
+                MouseArea {
+                    anchors.fill: parent
+                    onClicked: coverArtDialog.close()
+                }
+            }
+            Label {
+                Layout.fillWidth: true
+                horizontalAlignment: Text.AlignHCenter
+                visible: root.footer.trackSubtitle.length > 0
+                text: root.footer.trackSubtitle
+                color: root.palette.placeholderText
+                font.pixelSize: 11
+                elide: Text.ElideRight
+            }
+        }
+    }
+
+    Dialog {
         id: openUrlDialog
 
         anchors.centerIn: parent
@@ -1436,6 +1478,22 @@ ApplicationWindow {
                         asynchronous: true
                         Accessible.name: qsTr("Album cover")
                     }
+
+                    MouseArea {
+                        anchors.fill: parent
+                        enabled: appController.current_artwork_path.length > 0
+                        cursorShape: Qt.PointingHandCursor
+                        Accessible.name: qsTr("Show album cover enlarged")
+                        Accessible.role: Accessible.Button
+                        onClicked: coverArtDialog.open()
+                    }
+
+                    ToolTip.visible: coverArtHover.containsMouse
+                        && appController.current_artwork_path.length > 0
+                    ToolTip.delay: 500
+                    ToolTip.text: qsTr("Show enlarged")
+
+                    HoverHandler { id: coverArtHover }
                 }
 
                 ColumnLayout {

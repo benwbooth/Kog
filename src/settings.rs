@@ -25,6 +25,7 @@ const PLAYLIST_COLUMN_WIDTHS_SETTING_FILE: &str = "playlist-column-widths";
 const EQUALIZER_SETTING_FILE: &str = "equalizer-settings";
 const SHUFFLE_MODE_SETTING_FILE: &str = "shuffle-mode";
 const REPEAT_MODE_SETTING_FILE: &str = "repeat-mode";
+const RADIO_ENABLED_SETTING_FILE: &str = "radio-enabled";
 const PLAYLIST_COLUMN_IDS: [&str; 19] = [
     "index",
     "status",
@@ -210,6 +211,7 @@ pub struct AppSettings {
     pub equalizer: EqualizerSettings,
     pub shuffle_mode: ShuffleMode,
     pub repeat_mode: RepeatMode,
+    pub radio_enabled: bool,
 }
 
 impl AppSettings {
@@ -267,6 +269,7 @@ impl AppSettings {
         let repeat_mode = load_text(REPEAT_MODE_SETTING_FILE)
             .and_then(|value| RepeatMode::from_setting(&value))
             .unwrap_or_default();
+        let radio_enabled = load_bool(RADIO_ENABLED_SETTING_FILE).unwrap_or(false);
         Self {
             soundfont_path,
             sc55_rom_path,
@@ -288,6 +291,7 @@ impl AppSettings {
             equalizer,
             shuffle_mode,
             repeat_mode,
+            radio_enabled,
         }
     }
 
@@ -422,6 +426,10 @@ impl AppSettings {
 
     pub fn save_repeat_mode(mode: RepeatMode) -> Result<(), String> {
         save_text(REPEAT_MODE_SETTING_FILE, mode.setting_value())
+    }
+
+    pub fn save_radio_enabled(enabled: bool) -> Result<(), String> {
+        save_bool(RADIO_ENABLED_SETTING_FILE, enabled)
     }
 }
 
