@@ -613,6 +613,28 @@ impl DecoderRegistry {
             || self.select(path).is_some()
     }
 
+    /// Lowercased playable extensions behind every backend plus archives:
+    /// the name-level filter radio listings use for archive members, where
+    /// only the name (not extracted bytes) is available. Playlists are
+    /// included here and excluded by radio policy instead.
+    pub fn audio_extensions(&self) -> std::collections::HashSet<String> {
+        let mut extensions = std::collections::HashSet::new();
+        for extension in crate::archive::supported_extensions() {
+            extensions.insert(extension.to_ascii_lowercase());
+        }
+        for backend in &self.backends {
+            for extension in backend.advertised_extensions() {
+                let extension = extension
+                    .trim_start_matches('.')
+                    .to_ascii_lowercase();
+                if !extension.is_empty() {
+                    extensions.insert(extension);
+                }
+            }
+        }
+        extensions
+    }
+
     pub fn supported_formats_json(&self) -> String {
         let mut groups = Vec::new();
         let mut unique_extensions = std::collections::BTreeSet::new();

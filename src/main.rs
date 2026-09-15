@@ -40,6 +40,7 @@ mod psf;
 mod psf_decoder;
 mod qsf;
 mod qsf_decoder;
+mod radio;
 mod rom_import;
 mod sc55;
 mod sdsf;
