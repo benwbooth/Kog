@@ -114,6 +114,8 @@ pub mod qobject {
         #[qinvokable]
         fn cancel_tree_delete(self: Pin<&mut AppController>);
         #[qinvokable]
+        fn enqueue_random_tracks(self: Pin<&mut AppController>, count: i32) -> i32;
+        #[qinvokable]
         fn add_url(self: Pin<&mut AppController>, url: QString);
         #[qinvokable]
         fn enqueue_url(self: Pin<&mut AppController>, url: QString);
@@ -1084,6 +1086,52 @@ fn parse_row_indices(value: &str, row_count: usize) -> Vec<usize> {
     indices.sort_unstable();
     indices.dedup();
     indices
+}
+
+/// Whether a discovered file is eligible for random queueing: regular
+/// audio, cue sheets (when enabled), and archives, which expand through the
+/// normal add path. Playlists are excluded because one pick could enqueue
+/// hundreds of tracks.
+fn is_random_candidate(path: &Path, read_cue_sheets: bool) -> bool {
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if matches!(extension.as_str(), "m3u" | "m3u8" | "pls") {
+        return false;
+    }
+    if extension == "cue" {
+        return read_cue_sheets;
+    }
+    true
+}
+
+/// Deterministic salted-hash sampling: sorts candidates by hash, then takes
+/// the first `count`, so tests can pin exact picks while production seeds
+/// from the clock.
+fn pick_random_files(files: Vec<PathBuf>, count: usize, seed: u64) -> Vec<PathBuf> {
+    let mut keyed = files
+        .into_iter()
+        .map(|path| {
+            let mut salted = seed.to_le_bytes().to_vec();
+            salted.extend_from_slice(path.as_os_str().as_encoded_bytes());
+            (crate::cover_art::fnv1a64(&salted), path)
+        })
+        .collect::<Vec<_>>();
+    keyed.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+    keyed
+        .into_iter()
+        .take(count)
+        .map(|(_, path)| path)
+        .collect()
+}
+
+fn random_seed() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|age| age.as_secs() ^ u64::from(age.subsec_nanos()))
+        .unwrap_or(0x9E37_79B9_7F4A_7C15)
 }
 
 fn playlist_entry_for_track(track: &Track) -> Result<PlaylistEntry, String> {
@@ -2330,6 +2378,73 @@ impl qobject::AppController {
         )
         .unwrap_or_default();
         self.as_mut().add_local_paths(paths, behavior);
+    }
+
+    pub fn enqueue_random_tracks(mut self: Pin<&mut Self>, count: i32) -> i32 {
+        if self.as_ref().rust().tree_delete_active {
+            self.as_mut()
+                .set_status(qstring("Finish the running file delete first"));
+            return 0;
+        }
+        if self.as_ref().rust().directory_scan_active {
+            self.as_mut().set_status(qstring(
+                "A folder scan is already running; cancel it before adding more files",
+            ));
+            return 0;
+        }
+        let root = self.as_ref().rust().directory.clone();
+        if !root.is_dir() {
+            self.as_mut().set_status(qstring(format!(
+                "Music folder {} is unavailable",
+                root.display()
+            )));
+            return 0;
+        }
+        let read_cue_sheets = self.as_ref().rust().read_cue_sheets_in_folders;
+        const COLLECT_LIMIT: usize = 200_000;
+        let mut files = Vec::new();
+        let mut pending = vec![root];
+        'walk: while let Some(directory) = pending.pop() {
+            let Ok(entries) = std::fs::read_dir(&directory) else {
+                continue;
+            };
+            let mut subdirectories = Vec::new();
+            for entry in entries.filter_map(Result::ok) {
+                let path = entry.path();
+                let Ok(kind) =
+                    std::fs::symlink_metadata(&path).map(|metadata| metadata.file_type())
+                else {
+                    continue;
+                };
+                if kind.is_symlink() || (!kind.is_file() && !kind.is_dir()) {
+                    continue;
+                }
+                if kind.is_dir() {
+                    subdirectories.push(path);
+                    continue;
+                }
+                if crate::media_path::is_metadata(&path)
+                    || !is_random_candidate(&path, read_cue_sheets)
+                {
+                    continue;
+                }
+                files.push(path);
+                if files.len() >= COLLECT_LIMIT {
+                    break 'walk;
+                }
+            }
+            pending.extend(subdirectories);
+        }
+        if files.is_empty() {
+            self.as_mut()
+                .set_status(qstring("No playable files found in the music folder"));
+            return 0;
+        }
+        let picked = pick_random_files(files, count.clamp(1, 1000) as usize, random_seed());
+        let queued = saturating_i32(picked.len());
+        self.as_mut()
+            .add_local_paths(picked, OpeningFilesBehavior::Enqueue);
+        queued
     }
 
     pub fn poll_directory_scan(mut self: Pin<&mut Self>) {
@@ -4895,11 +5010,12 @@ impl qobject::AppController {
 mod tests {
     use super::{
         AddPathResult, DirectoryScanEvent, PlaylistSortColumn, add_path_status, compare_tracks,
-        count_delete_entries, dropped_urls_from_json, local_paths_from_json, move_selected_items,
-        natural_compare, normalize_playlist_save_path, ordered_directory_files,
-        output_devices_json, parse_delete_paths_json, parse_row_indices, playlist_entry_for_track,
-        purged_track_indices, remove_path_permanent, resolve_output_device, sample_rate_label,
-        sanitize_delete_paths, scan_directory_paths, sort_visible_indices, valid_equalizer_gain,
+        count_delete_entries, dropped_urls_from_json, is_random_candidate, local_paths_from_json,
+        move_selected_items, natural_compare, normalize_playlist_save_path,
+        ordered_directory_files, output_devices_json, parse_delete_paths_json, parse_row_indices,
+        pick_random_files, playlist_entry_for_track, purged_track_indices, remove_path_permanent,
+        resolve_output_device, sample_rate_label, sanitize_delete_paths, scan_directory_paths,
+        sort_visible_indices, valid_equalizer_gain,
     };
     use crate::decoder::{ArchiveOrigin, DecoderRegistry, DecoderSettings, PlaybackSource};
     use crate::playback::OutputDevice;
@@ -4908,7 +5024,7 @@ mod tests {
     use crate::track::Track;
     use std::cmp::Ordering;
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
     use tempfile::tempdir;
@@ -5132,6 +5248,45 @@ mod tests {
         );
         assert!(parse_delete_paths_json("not json").is_empty());
         assert!(parse_delete_paths_json(r#"{"path": 1}"#).is_empty());
+    }
+
+    #[test]
+    fn pick_random_files_is_deterministic_and_bounded() {
+        let files = (0..20)
+            .map(|index| PathBuf::from(format!("/music/track-{index:02}.flac")))
+            .collect::<Vec<_>>();
+        let first = pick_random_files(files.clone(), 5, 12345);
+        assert_eq!(first, pick_random_files(files.clone(), 5, 12345));
+        assert_eq!(first.len(), 5);
+        let mut unique = first.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), 5, "no duplicate picks");
+        assert!(first.iter().all(|path| files.contains(path)));
+        assert_eq!(pick_random_files(files.clone(), 50, 7).len(), 20);
+        assert!(pick_random_files(files, 0, 7).is_empty());
+    }
+
+    #[test]
+    fn pick_random_files_varies_with_seed() {
+        let files = (0..20)
+            .map(|index| PathBuf::from(format!("/music/track-{index:02}.flac")))
+            .collect::<Vec<_>>();
+        assert_ne!(
+            pick_random_files(files.clone(), 20, 1),
+            pick_random_files(files, 20, 2)
+        );
+    }
+
+    #[test]
+    fn is_random_candidate_filters_playlists_and_optional_cue() {
+        assert!(!is_random_candidate(Path::new("/music/list.m3u"), true));
+        assert!(!is_random_candidate(Path::new("/music/list.m3u8"), true));
+        assert!(!is_random_candidate(Path::new("/music/list.pls"), false));
+        assert!(is_random_candidate(Path::new("/music/album.cue"), true));
+        assert!(!is_random_candidate(Path::new("/music/album.cue"), false));
+        assert!(is_random_candidate(Path::new("/music/song.flac"), true));
+        assert!(is_random_candidate(Path::new("/music/pack.zip"), false));
     }
 
     #[test]

@@ -862,6 +862,60 @@ ApplicationWindow {
     }
 
     Dialog {
+        id: randomQueueDialog
+
+        anchors.centerIn: parent
+        width: Math.min(360, root.width - 48)
+        modal: true
+        title: qsTr("Queue Random Tracks")
+        closePolicy: Popup.CloseOnEscape
+
+        contentItem: ColumnLayout {
+            spacing: 10
+
+            Label {
+                Layout.fillWidth: true
+                text: qsTr("How many random files should Kog queue from the music folder?")
+                wrapMode: Text.WordWrap
+            }
+            SpinBox {
+                id: randomCountSpin
+
+                from: 1
+                to: 100
+                value: 10
+                editable: true
+                Accessible.name: qsTr("Number of random tracks")
+            }
+            Label {
+                Layout.fillWidth: true
+                text: qsTr("Picks span every subfolder. Archives count as one pick and expand to their tracks.")
+                color: root.palette.placeholderText
+                font.pixelSize: 11
+                wrapMode: Text.WordWrap
+            }
+        }
+
+        footer: RowLayout {
+            spacing: 8
+
+            Item { Layout.fillWidth: true }
+            Button {
+                text: qsTr("Cancel")
+                icon.name: "dialog-cancel"
+                onClicked: randomQueueDialog.reject()
+            }
+            Button {
+                text: qsTr("Queue")
+                icon.name: "list-add"
+                onClicked: randomQueueDialog.accept()
+            }
+        }
+
+        onAccepted: appController.enqueue_random_tracks(randomCountSpin.value)
+    }
+
+    Dialog {
         id: openUrlDialog
 
         anchors.centerIn: parent
@@ -1546,6 +1600,13 @@ ApplicationWindow {
                         enabled: appController.playlist_count > 0
                         opacity: enabled ? (modeActive ? 1 : 0.62) : 0.38
                         onClicked: appController.cycle_repeat_mode()
+                    }
+                    ToolbarButton {
+                        Layout.preferredWidth: 34
+                        Layout.preferredHeight: 34
+                        glyph: "⚄"
+                        toolTip: qsTr("Queue random tracks")
+                        onClicked: randomQueueDialog.open()
                     }
                 }
 
