@@ -1493,6 +1493,11 @@ ApplicationWindow {
                     row ? row.name + qsTr(" copy") : "")
             }
         }
+        MenuItem {
+            text: qsTr("Export as m3u…")
+            icon.name: "document-save-as"
+            onTriggered: appController.export_playlist(root.playlistMenuPid)
+        }
         MenuSeparator {}
         MenuItem {
             text: qsTr("Delete…")

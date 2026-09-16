@@ -87,6 +87,20 @@ impl Playlist {
         Ok(contains_hls_tag(&decode_text(&bytes).replace('\r', "\n")))
     }
 
+    /// Portable export: archives read as directories
+    /// (`outer.zip/inner/song`), subsongs as `#N` fragments. Kog
+    /// re-resolves both on import (see the archive fallback in
+    /// [`resolve_entry`]); other players get plain files plus whatever
+    /// lines they understand. Not fully interchangeable by design.
+    pub fn save_portable(path: &Path, entries: &[PlaylistEntry]) -> Result<(), String> {
+        let mut body = String::from("#\n");
+        for entry in entries {
+            body.push_str(&export_line(path, entry)?);
+            body.push('\n');
+        }
+        Self::write_atomic(path, &body)
+    }
+
     pub fn save(path: &Path, entries: &[PlaylistEntry]) -> Result<(), String> {
         let format = PlaylistFormat::for_path(path)?;
         let mut body = String::new();
@@ -120,6 +134,18 @@ impl Playlist {
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
+        Self::write_atomic_in(parent, path, &body)
+    }
+
+    fn write_atomic(path: &Path, body: &str) -> Result<(), String> {
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        Self::write_atomic_in(parent, path, body)
+    }
+
+    fn write_atomic_in(parent: &Path, path: &Path, body: &str) -> Result<(), String> {
         let mut temporary = tempfile::Builder::new()
             .prefix(".kog-playlist-")
             .tempfile_in(parent)
@@ -242,10 +268,52 @@ fn resolve_entry(playlist_path: &Path, entry: &str) -> Result<PlaylistEntry, Str
             .unwrap_or_else(|| Path::new("."))
             .join(path)
     };
+    if !path.exists() {
+        // Portable-export fallback: treat archives as directories. Walk
+        // ancestors from the longest down; the first existing archive file
+        // wins when the remainder names one of its members.
+        if let Some(archive_entry) = resolve_archive_prefix(&path, fragment.clone()) {
+            return Ok(archive_entry);
+        }
+    }
     Ok(PlaylistEntry {
         location: PlaylistLocation::Local(path),
         fragment,
     })
+}
+
+/// Split a missing plain path into an existing archive plus a member name,
+/// mirroring the portable exporter. Returns None when no ancestor is a
+/// listable archive containing the remainder.
+fn resolve_archive_prefix(path: &Path, fragment: Option<String>) -> Option<PlaylistEntry> {
+    for ancestor in path.ancestors().skip(1) {
+        if !ancestor.is_file() || !crate::archive::is_path(ancestor) {
+            continue;
+        }
+        let Ok(relative) = path.strip_prefix(ancestor) else {
+            continue;
+        };
+        let member = relative.to_string_lossy().replace('\\', "/");
+        if member.is_empty() {
+            continue;
+        }
+        let listed = crate::archive::list_archive_names(ancestor).unwrap_or_default();
+        let present = listed.iter().any(|listed_member| {
+            listed_member.trim_end_matches('/') == member
+                || listed_member.replace('\\', "/").trim_end_matches('/') == member
+        });
+        if !present {
+            continue;
+        }
+        return Some(PlaylistEntry {
+            location: PlaylistLocation::Archive {
+                archive_path: ancestor.to_path_buf(),
+                entry_name: member,
+            },
+            fragment,
+        });
+    }
+    None
 }
 
 fn resolve_unpack_entry(
@@ -358,6 +426,69 @@ fn split_utf16_prefix(value: &str, units: usize) -> Option<(&str, &str)> {
         }
     }
     None
+}
+
+/// One portable export line: plain files (and remote URLs) exactly like
+/// the Cog serializer writes them, archive members as `outer/member`
+/// directory-style paths, subsongs as `#N` fragments in both cases.
+fn export_line(playlist_path: &Path, entry: &PlaylistEntry) -> Result<String, String> {
+    let fragment = entry
+        .fragment
+        .as_deref()
+        .map(validate_fragment)
+        .transpose()?;
+    let mut value = match &entry.location {
+        PlaylistLocation::Local(path) => serialize_local_path(playlist_path, path, None)?,
+        PlaylistLocation::Remote(url) => {
+            validate_line_value(url, "remote playlist URL")?;
+            url.clone()
+        }
+        PlaylistLocation::Archive {
+            archive_path,
+            entry_name,
+        } => {
+            let archive = archive_path.to_str().ok_or_else(|| {
+                format!(
+                    "Archive path is not valid UTF-8 and cannot be exported: {}",
+                    archive_path.display()
+                )
+            })?;
+            validate_line_value(archive, "archive path")?;
+            validate_line_value(entry_name, "archive entry name")?;
+            if entry_name.is_empty() {
+                return Err("Archive entry name cannot be empty".to_owned());
+            }
+            let base = playlist_path
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."));
+            let relative = Path::new(archive)
+                .strip_prefix(base)
+                .ok()
+                .filter(|path| !path.as_os_str().is_empty());
+            let candidate = relative
+                .map(|path| path.to_path_buf())
+                .unwrap_or_else(|| archive_path.clone());
+            let raw = candidate.to_str().ok_or_else(|| {
+                format!(
+                    "Archive path is not valid UTF-8 and cannot be exported: {}",
+                    archive_path.display()
+                )
+            })?;
+            let mut joined = raw.replace('\\', "/");
+            if !joined.is_empty() && !joined.ends_with('/') {
+                joined.push('/');
+            }
+            joined.push_str(&entry_name.replace('\\', "/"));
+            validate_line_value(&joined, "archive entry path")?;
+            joined
+        }
+    };
+    if let Some(fragment) = fragment {
+        value.push('#');
+        value.push_str(fragment);
+    }
+    Ok(value)
 }
 
 fn serialize_entry(playlist_path: &Path, entry: &PlaylistEntry) -> Result<String, String> {
@@ -521,6 +652,66 @@ mod tests {
         fn drop(&mut self) {
             std::fs::remove_dir_all(&self.0).ok();
         }
+    }
+
+    #[test]
+    fn portable_export_addresses_archives_as_directories() {
+        let fixture = Fixture::new();
+        crate::archive::tests::write_stored_zip(
+            &fixture.path("pack.zip"),
+            &[("inner.wav", b"data"), ("deep/song.nsf", b"data")],
+        );
+        let entries = vec![
+            PlaylistEntry {
+                location: PlaylistLocation::Local(fixture.path("audio/plain.flac")),
+                fragment: None,
+            },
+            PlaylistEntry {
+                location: PlaylistLocation::Archive {
+                    archive_path: fixture.path("pack.zip"),
+                    entry_name: "inner.wav".to_owned(),
+                },
+                fragment: None,
+            },
+            PlaylistEntry {
+                location: PlaylistLocation::Archive {
+                    archive_path: fixture.path("pack.zip"),
+                    entry_name: "deep/song.nsf".to_owned(),
+                },
+                fragment: Some("2".to_owned()),
+            },
+            PlaylistEntry {
+                location: PlaylistLocation::Remote("https://example.invalid/live.mp3".to_owned()),
+                fragment: None,
+            },
+        ];
+        let playlist_path = fixture.path("export.m3u");
+        Playlist::save_portable(&playlist_path, &entries).expect("portable export");
+        let body = std::fs::read_to_string(&playlist_path).expect("read export");
+        assert!(
+            body.lines().any(|line| line == "pack.zip/inner.wav"),
+            "archive member as directory path:\n{body}"
+        );
+        assert!(
+            body.lines().any(|line| line == "pack.zip/deep/song.nsf#2"),
+            "archive subsong keeps its fragment:\n{body}"
+        );
+        let reopened = Playlist::open(&playlist_path).expect("reopen export");
+        assert_eq!(reopened.entries, entries, "portable round-trip is exact");
+    }
+
+    #[test]
+    fn archive_prefix_fallback_ignores_non_members() {
+        let fixture = Fixture::new();
+        crate::archive::tests::write_stored_zip(&fixture.path("pack.zip"), &[("inner.wav", b"data")]);
+        let playlist_path = fixture.path("list.m3u");
+        std::fs::write(&playlist_path, "pack.zip/missing.wav\nplain.flac\n").unwrap();
+        let playlist = Playlist::open(&playlist_path).expect("parse");
+        assert_eq!(playlist.entries.len(), 2);
+        assert!(matches!(
+            playlist.entries[0].location,
+            PlaylistLocation::Local(_)
+        ));
     }
 
     #[test]

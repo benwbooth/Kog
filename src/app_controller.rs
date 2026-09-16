@@ -162,17 +162,9 @@ pub mod qobject {
         #[qinvokable]
         fn create_playlist(self: Pin<&mut AppController>, name: QString) -> QString;
         #[qinvokable]
-        fn rename_playlist(
-            self: Pin<&mut AppController>,
-            id: i32,
-            name: QString,
-        ) -> QString;
+        fn rename_playlist(self: Pin<&mut AppController>, id: i32, name: QString) -> QString;
         #[qinvokable]
-        fn duplicate_playlist(
-            self: Pin<&mut AppController>,
-            id: i32,
-            name: QString,
-        ) -> QString;
+        fn duplicate_playlist(self: Pin<&mut AppController>, id: i32, name: QString) -> QString;
         #[qinvokable]
         fn delete_playlist(self: Pin<&mut AppController>, id: i32);
         #[qinvokable]
@@ -181,6 +173,8 @@ pub mod qobject {
         fn enqueue_playlist(self: Pin<&mut AppController>, id: i32, start_playback: bool);
         #[qinvokable]
         fn save_pane_as_playlist(self: Pin<&mut AppController>, name: QString) -> QString;
+        #[qinvokable]
+        fn export_playlist(self: Pin<&mut AppController>, id: i32);
         #[qinvokable]
         fn save_playlist_column_layout(self: Pin<&mut AppController>, layout: QString);
         #[qinvokable]
@@ -3877,7 +3871,10 @@ impl qobject::AppController {
                 return json_result(Err(error));
             }
         }
-        json_result(Ok(serde_json::Value::Array(items)))
+        json_result(Ok(serde_json::json!({
+            "ok": true,
+            "playlists": items,
+        })))
     }
 
     fn playlist_result(
@@ -3913,9 +3910,10 @@ impl qobject::AppController {
                     "name": name.trim(),
                 })
             });
-        let status = outcome.as_ref().ok().map(| _| {
-            format!("Created playlist {name:?}", name = name.trim())
-        });
+        let status = outcome
+            .as_ref()
+            .ok()
+            .map(|_| format!("Created playlist {name:?}", name = name.trim()));
         self.playlist_result(outcome, status)
     }
 
@@ -3939,11 +3937,7 @@ impl qobject::AppController {
         self.playlist_result(outcome, None)
     }
 
-    pub fn duplicate_playlist(
-        mut self: Pin<&mut Self>,
-        id: i32,
-        name: QString,
-    ) -> QString {
+    pub fn duplicate_playlist(mut self: Pin<&mut Self>, id: i32, name: QString) -> QString {
         let outcome = if id == 0 {
             Err("Favorites cannot be duplicated".to_owned())
         } else {
@@ -3969,12 +3963,7 @@ impl qobject::AppController {
                 .set_status(qstring("Favorites cannot be deleted"));
             return;
         }
-        match self
-            .as_ref()
-            .rust()
-            .library_db
-            .delete_playlist(id as i64)
-        {
+        match self.as_ref().rust().library_db.delete_playlist(id as i64) {
             Ok(()) => {
                 self.as_mut().bump_playlists_revision();
                 self.as_mut().set_status(qstring("Deleted playlist"));
@@ -3991,10 +3980,12 @@ impl qobject::AppController {
                 .set_status(qstring("Favorites always stays first"));
             return;
         }
-        match self.as_ref().rust().library_db.move_playlist(
-            id as i64,
-            to_position.max(0) as usize,
-        ) {
+        match self
+            .as_ref()
+            .rust()
+            .library_db
+            .move_playlist(id as i64, to_position.max(0) as usize)
+        {
             Ok(()) => {
                 self.as_mut().bump_playlists_revision();
             }
@@ -4012,6 +4003,92 @@ impl qobject::AppController {
         self.rust().library_db.playlist_entries(id)
     }
 
+    /// Export a stored playlist (or Favorites) as a portable `.m3u` file:
+    /// archives read as directories, subsongs as `#N` fragments. Kog
+    /// re-resolves both on import; anything else sees plain paths.
+    pub fn export_playlist(mut self: Pin<&mut Self>, id: i32) {
+        let stored = match self.playlist_stored_entries(id as i64) {
+            Ok(stored) => stored,
+            Err(error) => {
+                self.as_mut().set_status(qstring(error));
+                return;
+            }
+        };
+        if stored.is_empty() {
+            self.as_mut().set_status(qstring("Playlist is empty"));
+            return;
+        }
+        let mut entries = Vec::with_capacity(stored.len());
+        let mut skipped = 0_usize;
+        for stored_entry in &stored {
+            match playlist_entry_from_stored(stored_entry) {
+                Some(entry) => entries.push(entry),
+                None => skipped += 1,
+            }
+        }
+        if entries.is_empty() {
+            self.as_mut()
+                .set_status(qstring("Playlist has no exportable entries left"));
+            return;
+        }
+        let default_name = if id == 0 {
+            "favorites.m3u".to_owned()
+        } else {
+            let name = self
+                .as_ref()
+                .rust()
+                .library_db
+                .list_playlists()
+                .ok()
+                .and_then(|playlists| {
+                    playlists
+                        .into_iter()
+                        .find(|playlist| playlist.id == id as i64)
+                        .map(|playlist| playlist.name)
+                })
+                .unwrap_or_else(|| format!("playlist-{id}"));
+            format!("{name}.m3u")
+        };
+        let directory = self.as_ref().rust().directory.clone();
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Export Playlist")
+            .set_directory(directory)
+            .set_file_name(default_name)
+            .add_filter("M3U Playlist", &["m3u", "m3u8"])
+            .save_file()
+        else {
+            return;
+        };
+        let mut path = path;
+        if path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_none_or(|extension| {
+                !(extension.eq_ignore_ascii_case("m3u") || extension.eq_ignore_ascii_case("m3u8"))
+            })
+        {
+            path.set_extension("m3u");
+        }
+        match crate::playlist::Playlist::save_portable(&path, &entries) {
+            Ok(()) => self.as_mut().set_status(qstring(format!(
+                "Exported {} {} to {}{}",
+                entries.len(),
+                if entries.len() == 1 {
+                    "track"
+                } else {
+                    "tracks"
+                },
+                path.display(),
+                if skipped > 0 {
+                    format!(" ({skipped} skipped)")
+                } else {
+                    String::new()
+                },
+            ))),
+            Err(error) => self.as_mut().set_status(qstring(error)),
+        }
+    }
+
     /// Enqueue a stored playlist (or Favorites) through the normal
     /// background folder scanner via a cache `.m3u`, so progress, cancel,
     /// dedup, archive members, and play behavior all match adding files.
@@ -4024,8 +4101,7 @@ impl qobject::AppController {
             }
         };
         if stored.is_empty() {
-            self.as_mut()
-                .set_status(qstring("Playlist is empty"));
+            self.as_mut().set_status(qstring("Playlist is empty"));
             return;
         }
         let mut entries = Vec::with_capacity(stored.len());
@@ -4037,9 +4113,8 @@ impl qobject::AppController {
             }
         }
         if entries.is_empty() {
-            self.as_mut().set_status(qstring(
-                "Playlist has no playable entries left",
-            ));
+            self.as_mut()
+                .set_status(qstring("Playlist has no playable entries left"));
             return;
         }
         let cache_file = playlist_cache_dir().join(if id == 0 {
@@ -4049,9 +4124,8 @@ impl qobject::AppController {
         });
         if let Some(parent) = cache_file.parent() {
             if std::fs::create_dir_all(parent).is_err() {
-                self.as_mut().set_status(qstring(
-                    "Could not stage the playlist for import",
-                ));
+                self.as_mut()
+                    .set_status(qstring("Could not stage the playlist for import"));
                 return;
             }
         }
@@ -4060,9 +4134,8 @@ impl qobject::AppController {
             return;
         }
         if skipped > 0 {
-            self.as_mut().set_status(qstring(format!(
-                "Skipped {skipped} unresolvable entries"
-            )));
+            self.as_mut()
+                .set_status(qstring(format!("Skipped {skipped} unresolvable entries")));
         }
         self.as_mut().add_local_paths(
             vec![cache_file],
@@ -4078,11 +4151,7 @@ impl qobject::AppController {
     pub fn save_pane_as_playlist(mut self: Pin<&mut Self>, name: QString) -> QString {
         let name = name.to_string();
         let outcome: Result<serde_json::Value, String> = (|| {
-            let id = self
-                .as_ref()
-                .rust()
-                .library_db
-                .create_playlist(&name)?;
+            let id = self.as_ref().rust().library_db.create_playlist(&name)?;
             let mut entries = Vec::new();
             let mut skipped = 0_usize;
             for track in &self.as_ref().rust().tracks {
@@ -4122,7 +4191,8 @@ impl qobject::AppController {
         self.playlist_result(outcome, status)
     }
 
-    pub fn save_playlist_column_layout(mut self: Pin<&mut Self>, layout: QString) {        if let Err(error) = AppSettings::save_playlist_column_layout(&layout.to_string()) {
+    pub fn save_playlist_column_layout(mut self: Pin<&mut Self>, layout: QString) {
+        if let Err(error) = AppSettings::save_playlist_column_layout(&layout.to_string()) {
             self.as_mut().set_status(qstring(error));
             return;
         }
@@ -4187,22 +4257,23 @@ impl qobject::AppController {
             }
         }
         self.as_mut().bump_playlist_revision();
+        self.as_mut().bump_playlists_revision();
         if skipped == 0 {
-            self.as_mut().set_status(qstring(match (
-                starred_count,
-                unstarred_count,
-            ) {
-                (0, 0) => "Nothing to star".to_owned(),
-                (starred, 0) => format!(
-                    "Starred {starred} track{}",
-                    if starred == 1 { "" } else { "s" }
-                ),
-                (0, unstarred) => format!(
-                    "Unstarred {unstarred} track{}",
-                    if unstarred == 1 { "" } else { "s" }
-                ),
-                (starred, unstarred) => format!("Starred {starred}, unstarred {unstarred}"),
-            }));
+            self.as_mut()
+                .set_status(qstring(match (starred_count, unstarred_count) {
+                    (0, 0) => "Nothing to star".to_owned(),
+                    (starred, 0) => format!(
+                        "Starred {starred} track{}",
+                        if starred == 1 { "" } else { "s" }
+                    ),
+                    (0, unstarred) => format!(
+                        "Unstarred {unstarred} track{}",
+                        if unstarred == 1 { "" } else { "s" }
+                    ),
+                    (starred, unstarred) => {
+                        format!("Starred {starred}, unstarred {unstarred}")
+                    }
+                }));
         } else {
             self.as_mut().set_status(qstring(format!(
                 "Starred {starred_count}, unstarred {unstarred_count}, skipped {skipped}"
