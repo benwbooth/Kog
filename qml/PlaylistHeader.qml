@@ -58,6 +58,8 @@ Rectangle {
         return [
             makeColumn("index", "#", qsTr("Index"), 54, 28, 64, true,
                 Text.AlignRight, false),
+            makeColumn("star", "★", qsTr("Star"), 40, 28, 64, true,
+                Text.AlignHCenter, false),
             makeColumn("status", "", qsTr("Status"), 38, 38, 38, true,
                 Text.AlignHCenter, false),
             makeColumn("rating", qsTr("Rating"), qsTr("Rating"), 78, 48, 128, true,
@@ -173,6 +175,7 @@ Rectangle {
             const restored = []
             const seen = []
             let valid = entries.length === defaults.length
+                || entries.length === defaults.length - 1
             let visibleCount = 0
             for (let entryIndex = 0; valid && entryIndex < entries.length; ++entryIndex) {
                 const fields = entries[entryIndex].split(",")
@@ -194,6 +197,15 @@ Rectangle {
                 restored.push(column)
             }
             if (valid && visibleCount > 0) {
+                // Layouts saved before the star column carry one fewer
+                // entry: splice any missing column back in at its default
+                // position instead of discarding the saved widths.
+                for (let defaultIndex = 0; defaultIndex < defaults.length; ++defaultIndex) {
+                    if (seen.indexOf(defaultIndex) < 0) {
+                        restored.splice(defaultIndex, 0, copyColumn(defaults[defaultIndex]));
+                        seen.push(defaultIndex);
+                    }
+                }
                 columns = restored
                 return
             }

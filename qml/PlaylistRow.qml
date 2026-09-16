@@ -75,11 +75,32 @@ Item {
             query: root.searchQuery
             searchModel: root.searchModel
             wholeQuery: true
-            visible: cell.column.id !== "status" || !root.isActiveTrack
+            visible: (cell.column.id !== "status" || !root.isActiveTrack)
+                && cell.column.id !== "star"
             color: root.selected ? root.theme.highlightedText : root.theme.text
             font.pixelSize: 11
             horizontalAlignment: cell.column.alignment
             verticalAlignment: Text.AlignVCenter
+        }
+
+        Label {
+            anchors.fill: parent
+            visible: cell.column.id === "star"
+            text: cell.text
+            color: root.selected ? root.theme.highlightedText : root.theme.text
+            font.pixelSize: 13
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+        }
+
+        MouseArea {
+            anchors.fill: parent
+            visible: cell.column.id === "star"
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            Accessible.name: qsTr("Toggle star")
+            Accessible.role: Accessible.Button
+            onClicked: root.app.toggle_stars(String(root.rowIndex))
         }
 
         HoverHandler {

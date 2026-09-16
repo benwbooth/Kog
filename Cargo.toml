@@ -30,6 +30,7 @@ self_cell = "1.2.1"
 tempfile = "3.27.0"
 url = "2.5.8"
 trash = "5.2.9"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 async-channel = "2.5.0"

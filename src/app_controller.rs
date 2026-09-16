@@ -155,6 +155,8 @@ pub mod qobject {
             selected_indices: QString,
         ) -> QString;
         #[qinvokable]
+        fn toggle_stars(self: Pin<&mut AppController>, indices: QString);
+        #[qinvokable]
         fn save_playlist_column_layout(self: Pin<&mut AppController>, layout: QString);
         #[qinvokable]
         fn play_index(self: Pin<&mut AppController>, index: i32);
@@ -1309,6 +1311,7 @@ fn encode_row_indices(indices: &[usize]) -> QString {
 enum PlaylistSortColumn {
     #[default]
     Index,
+    Star,
     Rating,
     Title,
     AlbumArtist,
@@ -1333,6 +1336,7 @@ impl PlaylistSortColumn {
     fn from_identifier(identifier: &str) -> Option<Self> {
         match identifier {
             "index" => Some(Self::Index),
+            "star" => Some(Self::Star),
             "rating" => Some(Self::Rating),
             "title" => Some(Self::Title),
             "albumartist" => Some(Self::AlbumArtist),
@@ -1358,6 +1362,7 @@ impl PlaylistSortColumn {
     const fn identifier(self) -> &'static str {
         match self {
             Self::Index => "index",
+            Self::Star => "star",
             Self::Rating => "rating",
             Self::Title => "title",
             Self::AlbumArtist => "albumartist",
@@ -1382,6 +1387,7 @@ impl PlaylistSortColumn {
     const fn display_name(self) -> &'static str {
         match self {
             Self::Index => "playlist order",
+            Self::Star => "Star",
             Self::Rating => "Rating",
             Self::Title => "Title",
             Self::AlbumArtist => "Album Artist",
@@ -1503,12 +1509,22 @@ fn sample_rate_label(sample_rate: Option<u32>) -> String {
     }
 }
 
-fn compare_tracks(left: &Track, right: &Track, column: PlaylistSortColumn) -> Ordering {
+fn compare_tracks(
+    left: &Track,
+    right: &Track,
+    column: PlaylistSortColumn,
+    starred: &HashSet<String>,
+) -> Ordering {
     match column {
         PlaylistSortColumn::Index
         | PlaylistSortColumn::Rating
         | PlaylistSortColumn::PlayCount
         | PlaylistSortColumn::Status => Ordering::Equal,
+        // Starred first when ascending: reversed boolean order so a click
+        // on the star header groups favorites on top.
+        PlaylistSortColumn::Star => starred
+            .contains(&star_key_for_track(right))
+            .cmp(&starred.contains(&star_key_for_track(left))),
         PlaylistSortColumn::Title => natural_compare(&left.title, &right.title),
         PlaylistSortColumn::AlbumArtist => natural_compare(&left.album_artist, &right.album_artist),
         PlaylistSortColumn::Artist => natural_compare(&left.artist, &right.artist),
@@ -1552,17 +1568,32 @@ fn compare_tracks(left: &Track, right: &Track, column: PlaylistSortColumn) -> Or
     }
 }
 
+/// Song-level identity for stars: the radio locator plus the subsong
+/// fragment when one exists, so two cue tracks from one file star
+/// independently. Mirrors `playlist_entry_for_track` addressing.
+fn star_key_for_track(track: &Track) -> String {
+    let base = crate::radio::radio_track_key(track);
+    match playlist_entry_for_track(track) {
+        Ok(entry) => match entry.fragment {
+            Some(fragment) => format!("{base}#{fragment}"),
+            None => base,
+        },
+        Err(_) => base,
+    }
+}
+
 fn sort_visible_indices(
     tracks: &[Track],
     visible_indices: &mut [usize],
     column: PlaylistSortColumn,
     ascending: bool,
+    starred: &HashSet<String>,
 ) {
     if column == PlaylistSortColumn::Index {
         return;
     }
     visible_indices.sort_by(|left, right| {
-        let ordering = compare_tracks(&tracks[*left], &tracks[*right], column);
+        let ordering = compare_tracks(&tracks[*left], &tracks[*right], column, starred);
         if ascending {
             ordering
         } else {
@@ -1651,6 +1682,8 @@ pub struct AppControllerRust {
     sort_column: PlaylistSortColumn,
     playback_order: PlaybackOrder,
     filter: String,
+    library_db: crate::db::LibraryDb,
+    starred: HashSet<String>,
     directory: PathBuf,
     decoder_settings: DecoderSettings,
     decoders: DecoderRegistry,
@@ -1846,6 +1879,11 @@ impl Default for AppControllerRust {
                 0x4b6f_672d_7368_7566 ^ u64::from(std::process::id()),
             ),
             filter: String::new(),
+            library_db: crate::db::LibraryDb::open().unwrap_or_else(|_| {
+                crate::db::LibraryDb::open_in_memory()
+                    .expect("in-memory library database always opens")
+            }),
+            starred: HashSet::new(),
             directory,
             decoder_settings,
             decoders,
@@ -1926,6 +1964,11 @@ impl Default for AppControllerRust {
         {
             let (playback_order, tracks) = (&mut controller.playback_order, &controller.tracks);
             playback_order.tracks_changed(tracks, None);
+        }
+        // In-memory star cache for column display and star sorting; the
+        // database stays the source of truth on every toggle.
+        if let Ok(locators) = controller.library_db.starred_locators() {
+            controller.starred.extend(locators);
         }
         controller.mpris.publish(mpris_snapshot(&controller));
         controller
@@ -2247,6 +2290,7 @@ impl AppControllerRust {
                 &mut self.visible_indices,
                 self.sort_column,
                 self.playlist_sort_ascending,
+                &self.starred,
             );
         }
     }
@@ -3715,6 +3759,109 @@ impl qobject::AppController {
         self.as_mut().set_playlist_column_layout(layout);
     }
 
+    /// Flip the star on each selected playlist row, persisting to the
+    /// library database and refreshing the star column. Rows without a
+    /// resolvable identity are skipped and reported.
+    pub fn toggle_stars(mut self: Pin<&mut Self>, indices: QString) {
+        let rows = parse_row_indices(
+            &indices.to_string(),
+            self.as_ref().rust().visible_indices.len(),
+        );
+        if rows.is_empty() {
+            return;
+        }
+        let mut starred_count = 0_usize;
+        let mut unstarred_count = 0_usize;
+        let mut skipped = 0_usize;
+        for row in rows {
+            let track = {
+                let this = self.as_ref();
+                let rust = this.rust();
+                rust.visible_indices
+                    .get(row)
+                    .copied()
+                    .and_then(|source_index| rust.tracks.get(source_index))
+                    .cloned()
+            };
+            let Some(track) = track else {
+                skipped += 1;
+                continue;
+            };
+            let key = star_key_for_track(&track);
+            let (kind, path, entry, fragment) = match playlist_entry_for_track(&track) {
+                Ok(entry) => match entry.location {
+                    crate::playlist::PlaylistLocation::Local(path) => (
+                        crate::db::KIND_LOCAL.to_owned(),
+                        path.to_string_lossy().into_owned(),
+                        String::new(),
+                        entry.fragment,
+                    ),
+                    crate::playlist::PlaylistLocation::Archive {
+                        archive_path,
+                        entry_name,
+                    } => (
+                        crate::db::KIND_ARCHIVE.to_owned(),
+                        archive_path.to_string_lossy().into_owned(),
+                        entry_name,
+                        entry.fragment,
+                    ),
+                    crate::playlist::PlaylistLocation::Remote(url) => {
+                        (crate::db::KIND_REMOTE.to_owned(), url, String::new(), None)
+                    }
+                },
+                Err(_) => {
+                    skipped += 1;
+                    continue;
+                }
+            };
+            let starring = !self.as_ref().rust().starred.contains(&key);
+            match self.as_ref().rust().library_db.set_star(
+                &key,
+                &kind,
+                &path,
+                &entry,
+                fragment.as_deref(),
+                starring,
+            ) {
+                Ok(()) => {
+                    if starring {
+                        self.as_mut().rust_mut().starred.insert(key);
+                        starred_count += 1;
+                    } else {
+                        self.as_mut().rust_mut().starred.remove(&key);
+                        unstarred_count += 1;
+                    }
+                }
+                Err(error) => {
+                    self.as_mut().set_status(qstring(error));
+                    return;
+                }
+            }
+        }
+        self.as_mut().bump_playlist_revision();
+        if skipped == 0 {
+            self.as_mut().set_status(qstring(match (
+                starred_count,
+                unstarred_count,
+            ) {
+                (0, 0) => "Nothing to star".to_owned(),
+                (starred, 0) => format!(
+                    "Starred {starred} track{}",
+                    if starred == 1 { "" } else { "s" }
+                ),
+                (0, unstarred) => format!(
+                    "Unstarred {unstarred} track{}",
+                    if unstarred == 1 { "" } else { "s" }
+                ),
+                (starred, unstarred) => format!("Starred {starred}, unstarred {unstarred}"),
+            }));
+        } else {
+            self.as_mut().set_status(qstring(format!(
+                "Starred {starred_count}, unstarred {unstarred_count}, skipped {skipped}"
+            )));
+        }
+    }
+
     pub fn tag_editor_data(&self, indices: QString) -> QString {
         let sources = selected_sources(self, &indices.to_string());
         json_result(snapshot_json(&sources))
@@ -4526,6 +4673,13 @@ impl qobject::AppController {
         };
         match column.to_string().as_str() {
             "index" => qstring((source_index + 1).to_string()),
+            "star" => {
+                if self.rust().starred.contains(&star_key_for_track(track)) {
+                    qstring("★")
+                } else {
+                    QString::default()
+                }
+            }
             "status" => self.track_status_at(index),
             "rating" | "playcount" => QString::default(),
             "title" => qstring(&track.title),
@@ -5743,7 +5897,7 @@ mod tests {
         output_devices_json, parse_delete_paths_json, parse_row_indices, playlist_entry_for_track,
         purged_track_indices, remove_path_permanent,
         resolve_output_device, sample_rate_label, sanitize_delete_paths, scan_directory_paths,
-        sort_visible_indices, track_filename, track_path, valid_equalizer_gain,
+        sort_visible_indices, star_key_for_track, track_filename, track_path, valid_equalizer_gain,
     };
     use crate::decoder::{ArchiveOrigin, DecoderRegistry, DecoderSettings, PlaybackSource};
     use crate::playback::OutputDevice;
@@ -6247,6 +6401,7 @@ mod tests {
     fn cogs_complete_playlist_column_schema_is_sortable() {
         let identifiers = [
             "index",
+            "star",
             "status",
             "rating",
             "title",
@@ -6307,8 +6462,38 @@ mod tests {
         };
 
         assert_eq!(
-            compare_tracks(&track_ten, &disc_two, PlaylistSortColumn::Track),
+            compare_tracks(
+                &track_ten,
+                &disc_two,
+                PlaylistSortColumn::Track,
+                &HashSet::new()
+            ),
             Ordering::Less
+        );
+    }
+
+    #[test]
+    fn star_sort_groups_starred_first_when_ascending() {
+        let plain = Track {
+            source: crate::decoder::PlaybackSource::from_path(PathBuf::from("/music/a.flac")),
+            ..Track::default()
+        };
+        let favorite = Track {
+            source: crate::decoder::PlaybackSource::from_path(PathBuf::from("/music/b.flac")),
+            ..Track::default()
+        };
+        let starred: HashSet<String> = [star_key_for_track(&favorite)].into_iter().collect();
+        assert_eq!(
+            compare_tracks(&plain, &favorite, PlaylistSortColumn::Star, &starred),
+            Ordering::Greater
+        );
+        assert_eq!(
+            compare_tracks(&favorite, &plain, PlaylistSortColumn::Star, &starred),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_tracks(&plain, &plain, PlaylistSortColumn::Star, &starred),
+            Ordering::Equal
         );
     }
 
@@ -6330,11 +6515,23 @@ mod tests {
         ];
         let mut visible = vec![0, 1, 2];
 
-        sort_visible_indices(&tracks, &mut visible, PlaylistSortColumn::Title, true);
+        sort_visible_indices(
+            &tracks,
+            &mut visible,
+            PlaylistSortColumn::Title,
+            true,
+            &HashSet::new(),
+        );
         assert_eq!(visible, [1, 2, 0]);
 
         let mut original = vec![0, 1, 2];
-        sort_visible_indices(&tracks, &mut original, PlaylistSortColumn::Index, false);
+        sort_visible_indices(
+            &tracks,
+            &mut original,
+            PlaylistSortColumn::Index,
+            false,
+            &HashSet::new(),
+        );
         assert_eq!(original, [0, 1, 2]);
     }
 }

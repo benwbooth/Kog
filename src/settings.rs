@@ -26,8 +26,9 @@ const EQUALIZER_SETTING_FILE: &str = "equalizer-settings";
 const SHUFFLE_MODE_SETTING_FILE: &str = "shuffle-mode";
 const REPEAT_MODE_SETTING_FILE: &str = "repeat-mode";
 const RADIO_ENABLED_SETTING_FILE: &str = "radio-enabled";
-const PLAYLIST_COLUMN_IDS: [&str; 19] = [
+const PLAYLIST_COLUMN_IDS: [&str; 20] = [
     "index",
+    "star",
     "status",
     "rating",
     "title",
@@ -495,7 +496,11 @@ fn validate_playlist_column_layout(value: &str) -> bool {
         return false;
     }
     let entries = value.split(';').collect::<Vec<_>>();
-    if entries.len() != PLAYLIST_COLUMN_IDS.len() {
+    // Nineteen-entry layouts predate the star column; they stay valid and
+    // the header fills in the missing column with its default.
+    if entries.len() != PLAYLIST_COLUMN_IDS.len()
+        && entries.len() + 1 != PLAYLIST_COLUMN_IDS.len()
+    {
         return false;
     }
 
@@ -698,6 +703,13 @@ mod tests {
     fn playlist_column_layout_requires_every_unique_column_and_one_visible_column() {
         let valid = "index,54,1;status,20,1;rating,78,1;title,220,1;albumartist,150,0;artist,190,1;composer,151,0;album,220,1;length,70,1;date,58,1;genre,120,1;track,54,1;playcount,71,0;path,64,0;filename,64,0;codec,64,0;samplerate,64,0;bitspersample,64,0;bitrate,64,0";
         assert!(validate_playlist_column_layout(valid));
+        // Twenty-entry layouts add the star column after the index.
+        let with_star = valid.replacen("index,54,1;", "index,54,1;star,40,1;", 1);
+        assert!(validate_playlist_column_layout(&with_star));
+        // Anything else than nineteen or twenty entries stays invalid.
+        assert!(!validate_playlist_column_layout(
+            &valid.replace(";bitrate,64,0", "")
+        ));
         assert!(!validate_playlist_column_layout(
             &valid.replace("bitrate,64,0", "title,64,0")
         ));
