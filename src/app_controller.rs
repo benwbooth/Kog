@@ -5309,6 +5309,16 @@ impl qobject::AppController {
                 } else {
                     self.as_mut().stop();
                 }
+            } else if self.as_ref().rust().tracks.is_empty() {
+                // Explicit next on an empty radio playlist with nothing
+                // staged yet: arm kickstart so the next staged track
+                // autoplays instead of sitting stopped.
+                self.as_mut().stop();
+                if let Some(radio) = self.as_mut().rust_mut().radio.as_mut() {
+                    radio.kickstart_armed = true;
+                }
+                self.as_mut()
+                    .set_status(qstring("Random Radio — finding a track…"));
             } else {
                 self.as_mut().stop();
             }

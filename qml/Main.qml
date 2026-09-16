@@ -501,7 +501,7 @@ ApplicationWindow {
                     ? qsTr("Pause") : qsTr("Play")
                 icon.name: appController.playback_state === "playing"
                     ? "media-playback-pause" : "media-playback-start"
-                enabled: appController.playlist_count > 0
+                enabled: appController.playlist_count > 0 || appController.radio_active
                 onTriggered: appController.play_pause()
             }
             Platform.MenuItem {
@@ -520,7 +520,7 @@ ApplicationWindow {
             Platform.MenuItem {
                 text: qsTr("Next")
                 icon.name: "media-skip-forward"
-                enabled: appController.playlist_count > 0
+                enabled: appController.playlist_count > 0 || appController.radio_active
                 onTriggered: appController.next()
             }
             Platform.MenuSeparator {}
@@ -1564,7 +1564,7 @@ ApplicationWindow {
                             ? "media-playback-pause"
                             : "media-playback-start"
                         toolTip: qsTr("Play/Pause")
-                        enabled: appController.playlist_count > 0
+                        enabled: appController.playlist_count > 0 || appController.radio_active
                         onClicked: appController.play_pause()
                     }
                     ToolbarButton {
@@ -1583,7 +1583,7 @@ ApplicationWindow {
                         glyph: "▶"
                         iconName: "media-skip-forward"
                         toolTip: qsTr("Next")
-                        enabled: appController.playlist_count > 0
+                        enabled: appController.playlist_count > 0 || appController.radio_active
                         onClicked: appController.next()
                     }
                     ToolbarButton {
