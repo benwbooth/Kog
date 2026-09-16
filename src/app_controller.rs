@@ -17,6 +17,7 @@ pub mod qobject {
         #[qml_element]
         #[qproperty(i32, playlist_count)]
         #[qproperty(i32, playlist_revision)]
+        #[qproperty(i32, playlists_revision)]
         #[qproperty(QString, playlist_sort_column)]
         #[qproperty(bool, playlist_sort_ascending)]
         #[qproperty(QString, playlist_column_layout)]
@@ -156,6 +157,30 @@ pub mod qobject {
         ) -> QString;
         #[qinvokable]
         fn toggle_stars(self: Pin<&mut AppController>, indices: QString);
+        #[qinvokable]
+        fn playlists_json(self: &AppController) -> QString;
+        #[qinvokable]
+        fn create_playlist(self: Pin<&mut AppController>, name: QString) -> QString;
+        #[qinvokable]
+        fn rename_playlist(
+            self: Pin<&mut AppController>,
+            id: i32,
+            name: QString,
+        ) -> QString;
+        #[qinvokable]
+        fn duplicate_playlist(
+            self: Pin<&mut AppController>,
+            id: i32,
+            name: QString,
+        ) -> QString;
+        #[qinvokable]
+        fn delete_playlist(self: Pin<&mut AppController>, id: i32);
+        #[qinvokable]
+        fn move_playlist(self: Pin<&mut AppController>, id: i32, to_position: i32);
+        #[qinvokable]
+        fn enqueue_playlist(self: Pin<&mut AppController>, id: i32, start_playback: bool);
+        #[qinvokable]
+        fn save_pane_as_playlist(self: Pin<&mut AppController>, name: QString) -> QString;
         #[qinvokable]
         fn save_playlist_column_layout(self: Pin<&mut AppController>, layout: QString);
         #[qinvokable]
@@ -773,6 +798,17 @@ fn cover_art_cache_dir() -> PathBuf {
     directories::ProjectDirs::from("org", "Kog", "Kog")
         .map(|directories| crate::cover_art::cache_directory(directories.cache_dir()))
         .unwrap_or_else(|| std::env::temp_dir().join("kog-covers"))
+}
+
+/// Stable cache directory for materialized playlist files (one `.m3u` per
+/// custom playlist id, `favorites.m3u` for stars). Enqueueing a playlist
+/// rewrites its file and feeds it through the normal background folder
+/// scanner, so progress, cancel, dedup, and play behavior all match
+/// adding files from the tree.
+fn playlist_cache_dir() -> PathBuf {
+    directories::ProjectDirs::from("org", "Kog", "Kog")
+        .map(|directories| directories.cache_dir().join("kog-playlists"))
+        .unwrap_or_else(|| std::env::temp_dir().join("kog-playlists"))
 }
 
 fn fetch_cover(url: &str, max_bytes: u32) -> Result<Vec<u8>, String> {
@@ -1582,6 +1618,72 @@ fn star_key_for_track(track: &Track) -> String {
     }
 }
 
+/// Full-fidelity database row for a track, or None when the track cannot
+/// be addressed on its own (e.g. a cue sheet entry without a track number).
+/// Shared by starring and by saving the pane as a playlist.
+fn stored_entry_for_track(track: &Track) -> Option<crate::db::StoredEntry> {
+    let entry = playlist_entry_for_track(track).ok()?;
+    let (kind, path, name) = match entry.location {
+        crate::playlist::PlaylistLocation::Local(path) => (
+            crate::db::KIND_LOCAL.to_owned(),
+            path.to_string_lossy().into_owned(),
+            String::new(),
+        ),
+        crate::playlist::PlaylistLocation::Archive {
+            archive_path,
+            entry_name,
+        } => (
+            crate::db::KIND_ARCHIVE.to_owned(),
+            archive_path.to_string_lossy().into_owned(),
+            entry_name,
+        ),
+        crate::playlist::PlaylistLocation::Remote(url) => {
+            (crate::db::KIND_REMOTE.to_owned(), url, String::new())
+        }
+    };
+    Some(crate::db::StoredEntry {
+        kind,
+        path,
+        entry: name,
+        fragment: entry.fragment,
+    })
+}
+
+/// Playlist entries back out of database rows. Remote entries keep their
+/// URL; anything malformed is left for the caller to skip and count.
+fn playlist_entry_from_stored(entry: &crate::db::StoredEntry) -> Option<crate::playlist::PlaylistEntry> {
+    use crate::db::{KIND_ARCHIVE, KIND_LOCAL, KIND_REMOTE};
+    use crate::playlist::{PlaylistEntry, PlaylistLocation};
+    let location = match entry.kind.as_str() {
+        KIND_LOCAL => {
+            if entry.path.is_empty() {
+                return None;
+            }
+            PlaylistLocation::Local(PathBuf::from(&entry.path))
+        }
+        KIND_ARCHIVE => {
+            if entry.path.is_empty() || entry.entry.is_empty() {
+                return None;
+            }
+            PlaylistLocation::Archive {
+                archive_path: PathBuf::from(&entry.path),
+                entry_name: entry.entry.clone(),
+            }
+        }
+        KIND_REMOTE => {
+            if entry.path.is_empty() {
+                return None;
+            }
+            PlaylistLocation::Remote(entry.path.clone())
+        }
+        _ => return None,
+    };
+    Some(PlaylistEntry {
+        location,
+        fragment: entry.fragment.clone(),
+    })
+}
+
 fn sort_visible_indices(
     tracks: &[Track],
     visible_indices: &mut [usize],
@@ -1605,6 +1707,7 @@ fn sort_visible_indices(
 pub struct AppControllerRust {
     playlist_count: i32,
     playlist_revision: i32,
+    playlists_revision: i32,
     playlist_sort_column: QString,
     playlist_sort_ascending: bool,
     playlist_column_layout: QString,
@@ -1795,6 +1898,7 @@ impl Default for AppControllerRust {
         let mut controller = Self {
             playlist_count: 0,
             playlist_revision: 0,
+            playlists_revision: 0,
             playlist_sort_column: qstring(PlaylistSortColumn::Index.identifier()),
             playlist_sort_ascending: true,
             playlist_column_layout,
@@ -3751,8 +3855,274 @@ impl qobject::AppController {
         encode_row_indices(&selected_rows)
     }
 
-    pub fn save_playlist_column_layout(mut self: Pin<&mut Self>, layout: QString) {
-        if let Err(error) = AppSettings::save_playlist_column_layout(&layout.to_string()) {
+    /// Custom playlists (plus the virtual Favorites at id 0) for the
+    /// sidebar, as JSON for QML. Favorites reports the live star count.
+    pub fn playlists_json(&self) -> QString {
+        let mut items = vec![serde_json::json!({
+            "id": 0,
+            "name": "Favorites",
+            "entryCount": self.rust().starred.len(),
+        })];
+        match self.rust().library_db.list_playlists() {
+            Ok(playlists) => {
+                for playlist in playlists {
+                    items.push(serde_json::json!({
+                        "id": playlist.id,
+                        "name": playlist.name,
+                        "entryCount": playlist.entry_count,
+                    }));
+                }
+            }
+            Err(error) => {
+                return json_result(Err(error));
+            }
+        }
+        json_result(Ok(serde_json::Value::Array(items)))
+    }
+
+    fn playlist_result(
+        mut self: Pin<&mut Self>,
+        outcome: Result<serde_json::Value, String>,
+        ok_status: Option<String>,
+    ) -> QString {
+        match &outcome {
+            Ok(_) => {
+                self.as_mut().bump_playlists_revision();
+                if let Some(status) = ok_status {
+                    self.as_mut().set_status(qstring(status));
+                }
+            }
+            Err(error) => {
+                self.as_mut().set_status(qstring(error));
+            }
+        }
+        json_result(outcome)
+    }
+
+    pub fn create_playlist(mut self: Pin<&mut Self>, name: QString) -> QString {
+        let name = name.to_string();
+        let outcome = self
+            .as_ref()
+            .rust()
+            .library_db
+            .create_playlist(&name)
+            .map(|id| {
+                serde_json::json!({
+                    "ok": true,
+                    "id": id,
+                    "name": name.trim(),
+                })
+            });
+        let status = outcome.as_ref().ok().map(| _| {
+            format!("Created playlist {name:?}", name = name.trim())
+        });
+        self.playlist_result(outcome, status)
+    }
+
+    pub fn rename_playlist(mut self: Pin<&mut Self>, id: i32, name: QString) -> QString {
+        if id == 0 {
+            return json_result(Err("Favorites cannot be renamed".to_owned()));
+        }
+        let name = name.to_string();
+        let outcome = self
+            .as_ref()
+            .rust()
+            .library_db
+            .rename_playlist(id as i64, &name)
+            .map(|()| {
+                serde_json::json!({
+                    "ok": true,
+                    "id": id,
+                    "name": name.trim(),
+                })
+            });
+        self.playlist_result(outcome, None)
+    }
+
+    pub fn duplicate_playlist(
+        mut self: Pin<&mut Self>,
+        id: i32,
+        name: QString,
+    ) -> QString {
+        let outcome = if id == 0 {
+            Err("Favorites cannot be duplicated".to_owned())
+        } else {
+            let name = name.to_string();
+            self.as_ref()
+                .rust()
+                .library_db
+                .duplicate_playlist(id as i64, &name)
+                .map(|new_id| {
+                    serde_json::json!({
+                        "ok": true,
+                        "id": new_id,
+                        "name": name.trim(),
+                    })
+                })
+        };
+        self.playlist_result(outcome, None)
+    }
+
+    pub fn delete_playlist(mut self: Pin<&mut Self>, id: i32) {
+        if id == 0 {
+            self.as_mut()
+                .set_status(qstring("Favorites cannot be deleted"));
+            return;
+        }
+        match self
+            .as_ref()
+            .rust()
+            .library_db
+            .delete_playlist(id as i64)
+        {
+            Ok(()) => {
+                self.as_mut().bump_playlists_revision();
+                self.as_mut().set_status(qstring("Deleted playlist"));
+            }
+            Err(error) => {
+                self.as_mut().set_status(qstring(error));
+            }
+        }
+    }
+
+    pub fn move_playlist(mut self: Pin<&mut Self>, id: i32, to_position: i32) {
+        if id == 0 {
+            self.as_mut()
+                .set_status(qstring("Favorites always stays first"));
+            return;
+        }
+        match self.as_ref().rust().library_db.move_playlist(
+            id as i64,
+            to_position.max(0) as usize,
+        ) {
+            Ok(()) => {
+                self.as_mut().bump_playlists_revision();
+            }
+            Err(error) => {
+                self.as_mut().set_status(qstring(error));
+            }
+        }
+    }
+
+    /// Resolve a stored playlist (or Favorites at id 0) to entries.
+    fn playlist_stored_entries(&self, id: i64) -> Result<Vec<crate::db::StoredEntry>, String> {
+        if id == 0 {
+            return self.rust().library_db.starred_entries();
+        }
+        self.rust().library_db.playlist_entries(id)
+    }
+
+    /// Enqueue a stored playlist (or Favorites) through the normal
+    /// background folder scanner via a cache `.m3u`, so progress, cancel,
+    /// dedup, archive members, and play behavior all match adding files.
+    pub fn enqueue_playlist(mut self: Pin<&mut Self>, id: i32, start_playback: bool) {
+        let stored = match self.playlist_stored_entries(id as i64) {
+            Ok(stored) => stored,
+            Err(error) => {
+                self.as_mut().set_status(qstring(error));
+                return;
+            }
+        };
+        if stored.is_empty() {
+            self.as_mut()
+                .set_status(qstring("Playlist is empty"));
+            return;
+        }
+        let mut entries = Vec::with_capacity(stored.len());
+        let mut skipped = 0_usize;
+        for stored_entry in &stored {
+            match playlist_entry_from_stored(stored_entry) {
+                Some(entry) => entries.push(entry),
+                None => skipped += 1,
+            }
+        }
+        if entries.is_empty() {
+            self.as_mut().set_status(qstring(
+                "Playlist has no playable entries left",
+            ));
+            return;
+        }
+        let cache_file = playlist_cache_dir().join(if id == 0 {
+            "favorites.m3u".to_owned()
+        } else {
+            format!("playlist-{id}.m3u")
+        });
+        if let Some(parent) = cache_file.parent() {
+            if std::fs::create_dir_all(parent).is_err() {
+                self.as_mut().set_status(qstring(
+                    "Could not stage the playlist for import",
+                ));
+                return;
+            }
+        }
+        if let Err(error) = crate::playlist::Playlist::save(&cache_file, &entries) {
+            self.as_mut().set_status(qstring(error));
+            return;
+        }
+        if skipped > 0 {
+            self.as_mut().set_status(qstring(format!(
+                "Skipped {skipped} unresolvable entries"
+            ));
+        }
+        self.as_mut().add_local_paths(
+            vec![cache_file],
+            if start_playback {
+                OpeningFilesBehavior::EnqueueAndPlay
+            } else {
+                OpeningFilesBehavior::Enqueue
+            },
+        );
+    }
+
+    /// Save the current pane as a new playlist at the bottom of the list.
+    pub fn save_pane_as_playlist(mut self: Pin<&mut Self>, name: QString) -> QString {
+        let name = name.to_string();
+        let outcome: Result<serde_json::Value, String> = (|| {
+            let id = self
+                .as_ref()
+                .rust()
+                .library_db
+                .create_playlist(&name)?;
+            let mut entries = Vec::new();
+            let mut skipped = 0_usize;
+            for track in &self.as_ref().rust().tracks {
+                match stored_entry_for_track(track) {
+                    Some(entry) => entries.push(entry),
+                    None => skipped += 1,
+                }
+            }
+            if entries.is_empty() {
+                let _ = self.as_ref().rust().library_db.delete_playlist(id);
+                return Err("The current pane has no savable tracks".to_owned());
+            }
+            self.as_ref()
+                .rust()
+                .library_db
+                .append_entries(id, &entries)?;
+            let mut value = serde_json::json!({
+                "ok": true,
+                "id": id,
+                "name": name.trim(),
+            });
+            if skipped > 0 {
+                value["skipped"] = serde_json::json!(skipped);
+            }
+            Ok(value)
+        })();
+        let status = match &outcome {
+            Ok(value) => Some(format!(
+                "Saved {} as a new playlist",
+                value
+                    .get("name")
+                    .and_then(|name| name.as_str())
+                    .unwrap_or("playlist")
+            )),
+            Err(_) => None,
+        };
+        self.playlist_result(outcome, status)
+    }
+
+    pub fn save_playlist_column_layout(mut self: Pin<&mut Self>, layout: QString) {        if let Err(error) = AppSettings::save_playlist_column_layout(&layout.to_string()) {
             self.as_mut().set_status(qstring(error));
             return;
         }
@@ -3788,39 +4158,17 @@ impl qobject::AppController {
                 continue;
             };
             let key = star_key_for_track(&track);
-            let (kind, path, entry, fragment) = match playlist_entry_for_track(&track) {
-                Ok(entry) => match entry.location {
-                    crate::playlist::PlaylistLocation::Local(path) => (
-                        crate::db::KIND_LOCAL.to_owned(),
-                        path.to_string_lossy().into_owned(),
-                        String::new(),
-                        entry.fragment,
-                    ),
-                    crate::playlist::PlaylistLocation::Archive {
-                        archive_path,
-                        entry_name,
-                    } => (
-                        crate::db::KIND_ARCHIVE.to_owned(),
-                        archive_path.to_string_lossy().into_owned(),
-                        entry_name,
-                        entry.fragment,
-                    ),
-                    crate::playlist::PlaylistLocation::Remote(url) => {
-                        (crate::db::KIND_REMOTE.to_owned(), url, String::new(), None)
-                    }
-                },
-                Err(_) => {
-                    skipped += 1;
-                    continue;
-                }
+            let Some(stored) = stored_entry_for_track(&track) else {
+                skipped += 1;
+                continue;
             };
             let starring = !self.as_ref().rust().starred.contains(&key);
             match self.as_ref().rust().library_db.set_star(
                 &key,
-                &kind,
-                &path,
-                &entry,
-                fragment.as_deref(),
+                &stored.kind,
+                &stored.path,
+                &stored.entry,
+                stored.fragment.as_deref(),
                 starring,
             ) {
                 Ok(()) => {
@@ -5867,6 +6215,11 @@ impl qobject::AppController {
     fn bump_playlist_revision(mut self: Pin<&mut Self>) {
         let revision = self.as_ref().rust().playlist_revision.wrapping_add(1);
         self.as_mut().set_playlist_revision(revision);
+    }
+
+    fn bump_playlists_revision(mut self: Pin<&mut Self>) {
+        let revision = self.as_ref().rust().playlists_revision.wrapping_add(1);
+        self.as_mut().set_playlists_revision(revision);
     }
 
     fn set_directory(mut self: Pin<&mut Self>, path: PathBuf) {
