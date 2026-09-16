@@ -578,22 +578,10 @@ ApplicationWindow {
         }
     }
 
-    // Instant playlist creation from the header + button: the selection
-    // when rows are selected, otherwise the whole pane. Drops straight
-    // into inline rename so naming never needs a dialog.
+    // Header + button: prompt for a name, then save the selection when
+    // rows are selected, otherwise the whole pane.
     function quickCreatePlaylist() {
-        let result = null
-        try {
-            result = JSON.parse(appController.quick_create_playlist(
-                root.selectedRows.join(",")))
-        } catch (e) {
-            result = null
-        }
-        if (result && result.ok) {
-            root.setPlaylistSelectionById([result.id])
-            root.playlistSelectionAnchor = result.id
-            root.renamingPlaylistId = result.id
-        }
+        savePlaylistDialog.openFor(root.selectedRows.length > 0)
     }
 
     function enqueueSelectedPlaylists(startPlayback) {
@@ -1186,6 +1174,68 @@ ApplicationWindow {
         }
 
     Dialog {
+        id: savePlaylistDialog
+
+        // False saves the whole pane, true saves the current selection.
+        property bool forSelection: false
+        property string pendingText: ""
+
+        function openFor(useSelection) {
+            forSelection = useSelection
+            pendingText = ""
+            open()
+        }
+        function updateAcceptButton() {
+            const button = standardButton(Dialog.Ok)
+            if (button)
+                button.enabled = nameField.text.trim().length > 0
+        }
+
+        anchors.centerIn: parent
+        width: Math.min(480, root.width - 48)
+        modal: true
+        title: forSelection ? qsTr("Save Selection as Playlist") : qsTr("Save Playlist")
+        standardButtons: Dialog.Ok | Dialog.Cancel
+        closePolicy: Popup.CloseOnEscape
+        onOpened: {
+            nameField.text = pendingText
+            nameField.forceActiveFocus()
+            nameField.selectAll()
+            updateAcceptButton()
+        }
+        onAccepted: {
+            if (savePlaylistDialog.forSelection)
+                appController.save_selection_as_playlist(
+                    root.selectedRows.join(","), nameField.text.trim())
+            else
+                appController.save_pane_as_playlist(nameField.text.trim())
+            nameField.text = ""
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 10
+
+            Label {
+                Layout.fillWidth: true
+                text: savePlaylistDialog.forSelection
+                    ? qsTr("Name the new playlist. The selected rows are saved into it.")
+                    : qsTr("Name the new playlist. It appears at the bottom of the playlists list.")
+                wrapMode: Text.WordWrap
+            }
+            TextField {
+                id: nameField
+
+                Layout.fillWidth: true
+                placeholderText: qsTr("Playlist name")
+                maximumLength: 120
+                selectByMouse: true
+                onTextChanged: savePlaylistDialog.updateAcceptButton()
+                onAccepted: if (text.trim().length > 0) savePlaylistDialog.accept()
+            }
+        }
+    }
+
+    Dialog {
         id: duplicatePlaylistDialog
         property int sourcePid: -1
         property string pendingText: ""
@@ -1463,7 +1513,7 @@ ApplicationWindow {
         id: playlistMenu
 
         MenuItem {
-            text: qsTr("Add to Playlist")
+            text: qsTr("Add to Pane")
             icon.name: "list-add"
             onTriggered: {
                 const ids = root.orderedSelectedPlaylistIds()
@@ -1479,6 +1529,11 @@ ApplicationWindow {
                 for (let index = 0; index < ids.length; ++index)
                     appController.enqueue_playlist(ids[index], index === ids.length - 1)
             }
+        }
+        MenuItem {
+            text: qsTr("Replace Pane")
+            icon.name: "document-open"
+            onTriggered: appController.load_playlist_into_pane(root.playlistMenuPid)
         }
         MenuSeparator {}
         MenuItem {

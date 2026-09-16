@@ -172,6 +172,8 @@ pub mod qobject {
         #[qinvokable]
         fn enqueue_playlist(self: Pin<&mut AppController>, id: i32, start_playback: bool);
         #[qinvokable]
+        fn load_playlist_into_pane(self: Pin<&mut AppController>, id: i32);
+        #[qinvokable]
         fn save_pane_as_playlist(self: Pin<&mut AppController>, name: QString) -> QString;
         #[qinvokable]
         fn save_selection_as_playlist(
@@ -179,8 +181,6 @@ pub mod qobject {
             indices: QString,
             name: QString,
         ) -> QString;
-        #[qinvokable]
-        fn quick_create_playlist(self: Pin<&mut AppController>, indices: QString) -> QString;
         #[qinvokable]
         fn export_playlist(self: Pin<&mut AppController>, id: i32);
         #[qinvokable]
@@ -940,6 +940,7 @@ fn prepare_scan_file(
     decoders: &DecoderRegistry,
     read_cue_sheets: bool,
     read_playlists: bool,
+    explicit_root: bool,
 ) -> PreparedScanFile {
     let mut prepared = PreparedScanFile {
         path: path.clone(),
@@ -953,13 +954,14 @@ fn prepare_scan_file(
         .extension()
         .and_then(|value| value.to_str())
         .unwrap_or_default();
-    if extension.eq_ignore_ascii_case("cue") && !read_cue_sheets {
+    if extension.eq_ignore_ascii_case("cue") && !read_cue_sheets && !explicit_root {
         return prepared;
     }
     if matches!(
         extension.to_ascii_lowercase().as_str(),
         "m3u" | "m3u8" | "pls"
     ) && !read_playlists
+        && !explicit_root
     {
         return prepared;
     }
@@ -1003,6 +1005,11 @@ fn scan_directory_paths(
     read_playlists: bool,
 ) {
     let mut files = Vec::new();
+    // Explicitly passed playlist/cue files are always parsed: the folder
+    // preference only governs playlists discovered during folder walks.
+    // Without this, staging a playlist for import (e.g. loading a stored
+    // playlist into the pane) silently yields zero tracks.
+    let mut explicit_roots = HashSet::new();
     'roots: for root in paths {
         if crate::media_path::is_metadata(&root) {
             continue;
@@ -1029,6 +1036,7 @@ fn scan_directory_paths(
         };
 
         if root.is_file() {
+            explicit_roots.insert(root.clone());
             files.push(root);
             continue;
         }
@@ -1087,6 +1095,7 @@ fn scan_directory_paths(
 
     if !files.is_empty() && !cancel.load(AtomicOrdering::Relaxed) {
         let files = Arc::new(files);
+        let explicit_roots = Arc::new(explicit_roots);
         let next_index = Arc::new(AtomicUsize::new(0));
         let worker_count = std::thread::available_parallelism()
             .map_or(2, usize::from)
@@ -1098,6 +1107,7 @@ fn scan_directory_paths(
         std::thread::scope(|scope| {
             for _ in 0..worker_count {
                 let files = Arc::clone(&files);
+                let explicit_roots = Arc::clone(&explicit_roots);
                 let next_index = Arc::clone(&next_index);
                 let prepared_sender = prepared_sender.clone();
                 let cancel = Arc::clone(&cancel);
@@ -1112,10 +1122,11 @@ fn scan_directory_paths(
                             break;
                         };
                         let prepared = prepare_scan_file(
-                            path,
+                            path.clone(),
                             &worker_decoders,
                             read_cue_sheets,
                             read_playlists,
+                            explicit_roots.contains(&path),
                         );
                         if prepared_sender.send((index, prepared)).is_err() {
                             break;
@@ -2923,6 +2934,7 @@ impl qobject::AppController {
                         &worker_decoders,
                         read_cue,
                         read_playlists,
+                        false,
                     );
                     // Probe-open every candidate: only tracks that actually
                     // open reach the staging buffer, so an unplayable file can
@@ -4114,17 +4126,13 @@ impl qobject::AppController {
     /// Enqueue a stored playlist (or Favorites) through the normal
     /// background folder scanner via a cache `.m3u`, so progress, cancel,
     /// dedup, archive members, and play behavior all match adding files.
-    pub fn enqueue_playlist(mut self: Pin<&mut Self>, id: i32, start_playback: bool) {
-        let stored = match self.playlist_stored_entries(id as i64) {
-            Ok(stored) => stored,
-            Err(error) => {
-                self.as_mut().set_status(qstring(error));
-                return;
-            }
-        };
+    /// Stage a stored playlist (or Favorites) as an importable `.m3u`
+    /// cache file. Returns the cache path plus the count of entries that
+    /// could not be addressed and were skipped.
+    fn stage_playlist_cache_file(&self, id: i64) -> Result<(PathBuf, usize), String> {
+        let stored = self.playlist_stored_entries(id)?;
         if stored.is_empty() {
-            self.as_mut().set_status(qstring("Playlist is empty"));
-            return;
+            return Err("Playlist is empty".to_owned());
         }
         let mut entries = Vec::with_capacity(stored.len());
         let mut skipped = 0_usize;
@@ -4135,9 +4143,7 @@ impl qobject::AppController {
             }
         }
         if entries.is_empty() {
-            self.as_mut()
-                .set_status(qstring("Playlist has no playable entries left"));
-            return;
+            return Err("Playlist has no playable entries left".to_owned());
         }
         let cache_file = playlist_cache_dir().join(if id == 0 {
             "favorites.m3u".to_owned()
@@ -4145,16 +4151,22 @@ impl qobject::AppController {
             format!("playlist-{id}.m3u")
         });
         if let Some(parent) = cache_file.parent() {
-            if std::fs::create_dir_all(parent).is_err() {
-                self.as_mut()
-                    .set_status(qstring("Could not stage the playlist for import"));
-                return;
-            }
+            std::fs::create_dir_all(parent)
+                .map_err(|_| "Could not stage the playlist for import".to_owned())?;
         }
-        if let Err(error) = crate::playlist::Playlist::save(&cache_file, &entries) {
-            self.as_mut().set_status(qstring(error));
-            return;
-        }
+        crate::playlist::Playlist::save(&cache_file, &entries)?;
+        Ok((cache_file, skipped))
+    }
+
+    pub fn enqueue_playlist(mut self: Pin<&mut Self>, id: i32, start_playback: bool) {
+        let (cache_file, skipped) =
+            match self.as_ref().stage_playlist_cache_file(id as i64) {
+                Ok(staged) => staged,
+                Err(error) => {
+                    self.as_mut().set_status(qstring(error));
+                    return;
+                }
+            };
         if skipped > 0 {
             self.as_mut()
                 .set_status(qstring(format!("Skipped {skipped} unresolvable entries")));
@@ -4166,6 +4178,27 @@ impl qobject::AppController {
             } else {
                 OpeningFilesBehavior::Enqueue
             },
+        );
+    }
+
+    /// Replace the pane with a stored playlist (or Favorites) and start
+    /// playing it from the top.
+    pub fn load_playlist_into_pane(mut self: Pin<&mut Self>, id: i32) {
+        let (cache_file, skipped) =
+            match self.as_ref().stage_playlist_cache_file(id as i64) {
+                Ok(staged) => staged,
+                Err(error) => {
+                    self.as_mut().set_status(qstring(error));
+                    return;
+                }
+            };
+        if skipped > 0 {
+            self.as_mut()
+                .set_status(qstring(format!("Skipped {skipped} unresolvable entries")));
+        }
+        self.as_mut().add_local_paths(
+            vec![cache_file],
+            OpeningFilesBehavior::ClearAndPlay,
         );
     }
 
@@ -4265,103 +4298,6 @@ impl qobject::AppController {
         self.playlist_result(outcome, status)
     }
 
-    /// Create a new playlist at the bottom of the list without a naming
-    /// dialog: from the given pane rows (comma-separated visible indices),
-    /// or from the whole pane when no rows are selected. The name is
-    /// auto-assigned ("New Playlist", "New Playlist 2", ...) so the UI can
-    /// drop straight into inline rename.
-    pub fn quick_create_playlist(mut self: Pin<&mut Self>, indices: QString) -> QString {
-        let raw = indices.to_string();
-        let outcome: Result<serde_json::Value, String> = (|| {
-            let rows = parse_row_indices(
-                &raw,
-                self.as_ref().rust().visible_indices.len(),
-            );
-            let from_pane = raw.trim().is_empty();
-            if !from_pane && rows.is_empty() {
-                return Err("No rows are selected".to_owned());
-            }
-            let tracks: Vec<Track> = if from_pane {
-                self.as_ref().rust().tracks.clone()
-            } else {
-                let this = self.as_ref();
-                let rust = this.rust();
-                rows.iter()
-                    .filter_map(|row| {
-                        rust.visible_indices
-                            .get(*row)
-                            .and_then(|source_index| rust.tracks.get(*source_index))
-                            .cloned()
-                    })
-                    .collect()
-            };
-            let (entries, skipped) = collect_stored_entries(&tracks);
-            if entries.is_empty() {
-                return Err(if from_pane {
-                    "The current pane has no savable tracks".to_owned()
-                } else {
-                    "The selection has no savable tracks".to_owned()
-                });
-            }
-            let existing: Vec<String> = self
-                .as_ref()
-                .rust()
-                .library_db
-                .list_playlists()
-                .map(|lists| lists.into_iter().map(|list| list.name).collect())
-                .unwrap_or_default();
-            let mut name = "New Playlist".to_owned();
-            let mut counter = 2;
-            while existing.iter().any(|other| other == &name) {
-                name = format!("New Playlist {counter}");
-                counter += 1;
-            }
-            let id = self.as_ref().rust().library_db.create_playlist(&name)?;
-            if let Err(error) = self
-                .as_ref()
-                .rust()
-                .library_db
-                .append_entries(id, &entries)
-            {
-                let _ = self.as_ref().rust().library_db.delete_playlist(id);
-                return Err(error);
-            }
-            let mut value = serde_json::json!({
-                "ok": true,
-                "id": id,
-                "name": name,
-                "tracks": entries.len(),
-            });
-            if skipped > 0 {
-                value["skipped"] = serde_json::json!(skipped);
-            }
-            Ok(value)
-        })();
-        let status = match &outcome {
-            Ok(value) => {
-                let count = value.get("tracks").and_then(|count| count.as_u64());
-                Some(match count {
-                    Some(count) => format!(
-                        "Created {} with {count} track{}",
-                        value
-                            .get("name")
-                            .and_then(|name| name.as_str())
-                            .unwrap_or("playlist"),
-                        if count == 1 { "" } else { "s" }
-                    ),
-                    None => format!(
-                        "Created {}",
-                        value
-                            .get("name")
-                            .and_then(|name| name.as_str())
-                            .unwrap_or("playlist")
-                    ),
-                })
-            }
-            Err(_) => None,
-        };
-        self.playlist_result(outcome, status)
-    }
 
     pub fn save_playlist_column_layout(mut self: Pin<&mut Self>, layout: QString) {
         if let Err(error) = AppSettings::save_playlist_column_layout(&layout.to_string()) {
@@ -6491,7 +6427,7 @@ mod tests {
         count_delete_entries, cover_art_key, dropped_urls_from_json, local_paths_from_json,
         move_selected_items, natural_compare, normalize_playlist_save_path, ordered_directory_files,
         output_devices_json, parse_delete_paths_json, parse_row_indices, playlist_entry_for_track,
-        purged_track_indices, remove_path_permanent,
+        purged_track_indices, remove_path_permanent, prepare_scan_file,
         resolve_output_device, sample_rate_label, sanitize_delete_paths, scan_directory_paths,
         sort_visible_indices, star_key_for_track, track_filename, track_path, valid_equalizer_gain,
     };
@@ -6675,6 +6611,41 @@ mod tests {
         assert!(!tree.exists());
 
         assert!(remove_path_permanent(&root.join("missing.flac")).is_err());
+    }
+
+    #[test]
+    fn explicit_playlist_files_bypass_the_folder_playlist_filter() {
+        // Staged playlists (e.g. loading a stored playlist into the pane)
+        // are explicit scan roots: they must parse even when the folder
+        // preference disables playlist discovery.
+        let temporary = tempdir().expect("create temporary music folder");
+        let playlist = temporary.path().join("staged.m3u");
+        fs::write(&playlist, "missing.flac\n").expect("write staged playlist");
+        let skipped = prepare_scan_file(
+            playlist.clone(),
+            &DecoderRegistry::default(),
+            true,
+            false,
+            false,
+        );
+        assert!(skipped.tracks.is_empty());
+        assert!(skipped.warnings.is_empty());
+        let forced = prepare_scan_file(
+            playlist,
+            &DecoderRegistry::default(),
+            true,
+            false,
+            true,
+        );
+        assert!(forced.tracks.is_empty());
+        assert!(
+            forced
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("missing.flac")),
+            "unexpected warnings: {:?}",
+            forced.warnings
+        );
     }
 
     #[test]
