@@ -213,7 +213,7 @@ Window {
                 // the surface itself, so a raw delta mixes pointer
                 // motion with the surface motion our last margins
                 // caused. Subtract the applied shift to recover the
-                // true pointer delta, then follow with damping.
+                // true pointer delta, then follow it exactly.
                 const next = centroid.scenePosition
                 const dx = (next.x - lastPoint.x)
                     - (appliedRight - prevAppliedRight)
@@ -232,8 +232,6 @@ Window {
                 appliedBottom = root.bottomMargin
             }
         }
-        TapHandler {
-
 
         ColumnLayout {
             anchors.fill: parent
@@ -245,6 +243,7 @@ Window {
                 objectName: "notificationHeader"
                 Layout.fillWidth: true
                 spacing: 7
+                TapHandler {
                     acceptedButtons: Qt.RightButton
                     onTapped: positionMenu.popup()
                 }
