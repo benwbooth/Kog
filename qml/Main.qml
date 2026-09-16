@@ -1280,6 +1280,35 @@ ApplicationWindow {
                 }
             }
 
+            Item {
+                Layout.preferredWidth: 34
+                Layout.preferredHeight: 34
+                Layout.alignment: Qt.AlignVCenter
+                Accessible.name: qsTr("Kog")
+                Accessible.role: Accessible.Button
+
+                Image {
+                    anchors.centerIn: parent
+                    width: 28
+                    height: 28
+                    source: Qt.resolvedUrl("icons/kog.svg")
+                    sourceSize.width: 56
+                    sourceSize.height: 56
+                    fillMode: Image.PreserveAspectFit
+                    mipmap: true
+                }
+
+                MouseArea {
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    Accessible.name: qsTr("About Kog")
+                    Accessible.role: Accessible.Button
+                    ToolTip.visible: containsMouse
+                    ToolTip.text: qsTr("About Kog")
+                    onClicked: aboutKog.open()
+                }
+            }
             ToolbarButton {
                 id: hamburgerButton
                 Layout.preferredWidth: 34
@@ -1299,88 +1328,67 @@ ApplicationWindow {
                 toolTip: root.sidebarVisible ? qsTr("Hide File Tree") : qsTr("Show File Tree")
                 onToggled: root.sidebarVisible = checked
             }
-            ToolbarButton {
-                Layout.preferredWidth: 34
-                Layout.preferredHeight: 34
-                glyph: "i"
-                iconName: "dialog-information"
-                toolTip: qsTr("Info Inspector")
-                onClicked: infoInspector.show()
-            }
-            Image {
-                Layout.preferredWidth: 28
-                Layout.preferredHeight: 28
-                Layout.leftMargin: 4
-                Layout.rightMargin: 3
-                source: Qt.resolvedUrl("icons/kog.svg")
-                sourceSize.width: 56
-                sourceSize.height: 56
-                fillMode: Image.PreserveAspectFit
-                mipmap: true
-                Accessible.name: qsTr("Kog")
-
-                TitleDragArea { anchors.fill: parent }
-            }
-            TitleDragArea {
+            Item {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-            }
 
-            Rectangle {
-                Layout.preferredWidth: root.compactToolbar ? 170 : 230
-                Layout.preferredHeight: 34
-                Layout.alignment: Qt.AlignVCenter
-                radius: 17
-                color: root.palette.base
-                border.width: 1
-                border.color: searchField.activeFocus ? root.palette.highlight : root.palette.mid
+                TitleDragArea { anchors.fill: parent }
 
-                RowLayout {
-                    anchors.fill: parent
-                    anchors.leftMargin: 10
-                    anchors.rightMargin: 5
-                    spacing: 6
+                Rectangle {
+                    anchors.centerIn: parent
+                    width: Math.max(140, Math.min(parent.width - 24, root.compactToolbar ? 340 : 460))
+                    height: 34
+                    radius: 17
+                    color: root.palette.base
+                    border.width: 1
+                    border.color: searchField.activeFocus ? root.palette.highlight : root.palette.mid
 
-                    Image {
-                        Layout.preferredWidth: 16
-                        Layout.preferredHeight: 16
-                        Layout.alignment: Qt.AlignVCenter
-                        source: Qt.resolvedUrl("icons/edit-find" + (root.baseLuminance < 0.5 ? "-light" : "") + ".svg")
-                        sourceSize.width: 32
-                        sourceSize.height: 32
-                        fillMode: Image.PreserveAspectFit
-                        mipmap: true
-                    }
-                    TextField {
-                        id: searchField
-                        Layout.fillWidth: true
-                        Layout.fillHeight: true
-                        verticalAlignment: TextInput.AlignVCenter
-                        placeholderText: qsTr("Search playlist")
-                        selectByMouse: true
-                        background: Item {}
-                        onTextChanged: {
-                            if (text.length === 0) {
-                                playlistSearchTimer.stop()
-                                appController.filter_playlist("")
-                                root.playlistHighlightQuery = ""
-                                root.clearPlaylistSelection()
-                            } else {
-                                playlistSearchTimer.restart()
-                            }
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: 10
+                        anchors.rightMargin: 5
+                        spacing: 6
+
+                        Image {
+                            Layout.preferredWidth: 16
+                            Layout.preferredHeight: 16
+                            Layout.alignment: Qt.AlignVCenter
+                            source: Qt.resolvedUrl("icons/edit-find" + (root.baseLuminance < 0.5 ? "-light" : "") + ".svg")
+                            sourceSize.width: 32
+                            sourceSize.height: 32
+                            fillMode: Image.PreserveAspectFit
+                            mipmap: true
                         }
-                        Keys.onEscapePressed: text = ""
-                    }
-                    ToolbarButton {
-                        Layout.preferredWidth: 26
-                        Layout.preferredHeight: 26
-                        visible: searchField.text.length > 0
-                        glyph: "×"
-                        toolTip: qsTr("Clear playlist search")
-                        onClicked: searchField.clear()
+                        TextField {
+                            id: searchField
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            verticalAlignment: TextInput.AlignVCenter
+                            placeholderText: qsTr("Search playlist")
+                            selectByMouse: true
+                            background: Item {}
+                            onTextChanged: {
+                                if (text.length === 0) {
+                                    playlistSearchTimer.stop()
+                                    appController.filter_playlist("")
+                                    root.playlistHighlightQuery = ""
+                                    root.clearPlaylistSelection()
+                                } else {
+                                    playlistSearchTimer.restart()
+                                }
+                            }
+                            Keys.onEscapePressed: text = ""
+                        }
+                        ToolbarButton {
+                            Layout.preferredWidth: 26
+                            Layout.preferredHeight: 26
+                            visible: searchField.text.length > 0
+                            glyph: "×"
+                            toolTip: qsTr("Clear playlist search")
+                            onClicked: searchField.clear()
+                        }
                     }
                 }
-            }
 
             RowLayout {
                 visible: !root.useMacWindowControls
