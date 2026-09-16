@@ -184,11 +184,23 @@ Window {
                     property real startRight: 0
                     property real startBottom: 0
                     property point lastPoint
+                    property real appliedRight: 0
+                    property real prevAppliedRight: 0
+                    property real appliedBottom: 0
+                    property real prevAppliedBottom: 0
+                    // Follow gain below 1: the compositor applies margins a
+                    // frame late, so chasing the pointer exactly would
+                    // oscillate. Halfway converges smoothly within frames.
+                    readonly property real followGain: 0.5
                     onActiveChanged: {
                         if (active) {
                             startRight = root.rightMargin
                             startBottom = root.bottomMargin
                             lastPoint = centroid.scenePosition
+                            appliedRight = root.rightMargin
+                            prevAppliedRight = root.rightMargin
+                            appliedBottom = root.bottomMargin
+                            prevAppliedBottom = root.bottomMargin
                             dismissTimer.stop()
                         } else {
                             root.savePosition()
@@ -208,19 +220,27 @@ Window {
                     onCentroidChanged: {
                         if (!active || !root.layerPlacement)
                             return
-                        // Layer-shell has no global pointer coordinates, so
-                        // apply only the incremental movement since the last
-                        // update: re-applying the total press-to-now delta to
-                        // the already-moved margins compounds every event and
-                        // flings the window away from the pointer.
+                        // Layer-shell gives pointer coordinates relative to
+                        // the surface itself, so a raw delta mixes pointer
+                        // motion with the surface motion our last margins
+                        // caused. Subtract the applied shift to recover the
+                        // true pointer delta, then follow with damping.
                         const next = centroid.scenePosition
-                        const dx = next.x - lastPoint.x
-                        const dy = next.y - lastPoint.y
+                        const dx = (next.x - lastPoint.x)
+                            - (appliedRight - prevAppliedRight)
+                        const dy = (next.y - lastPoint.y)
+                            - (appliedBottom - prevAppliedBottom)
                         lastPoint = next
-                        root.rightMargin = Math.max(0, Math.min(root.rightMargin - dx,
+                        prevAppliedRight = appliedRight
+                        prevAppliedBottom = appliedBottom
+                        root.rightMargin = Math.max(0, Math.min(
+                            appliedRight - followGain * dx,
                             root.screen.width - root.width))
-                        root.bottomMargin = Math.max(0, Math.min(root.bottomMargin - dy,
+                        root.bottomMargin = Math.max(0, Math.min(
+                            appliedBottom - followGain * dy,
                             root.screen.height - root.height))
+                        appliedRight = root.rightMargin
+                        appliedBottom = root.bottomMargin
                     }
                 }
                 TapHandler {
