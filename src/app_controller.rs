@@ -174,6 +174,12 @@ pub mod qobject {
         #[qinvokable]
         fn save_pane_as_playlist(self: Pin<&mut AppController>, name: QString) -> QString;
         #[qinvokable]
+        fn save_selection_as_playlist(
+            self: Pin<&mut AppController>,
+            indices: QString,
+            name: QString,
+        ) -> QString;
+        #[qinvokable]
         fn export_playlist(self: Pin<&mut AppController>, id: i32);
         #[qinvokable]
         fn save_playlist_column_layout(self: Pin<&mut AppController>, layout: QString);
@@ -1612,9 +1618,23 @@ fn star_key_for_track(track: &Track) -> String {
     }
 }
 
+/// Full-fidelity database rows for tracks, skipping the unaddressable
+/// ones and counting them for status lines.
+fn collect_stored_entries(tracks: &[Track]) -> (Vec<crate::db::StoredEntry>, usize) {
+    let mut entries = Vec::new();
+    let mut skipped = 0_usize;
+    for track in tracks {
+        match stored_entry_for_track(track) {
+            Some(entry) => entries.push(entry),
+            None => skipped += 1,
+        }
+    }
+    (entries, skipped)
+}
+
 /// Full-fidelity database row for a track, or None when the track cannot
 /// be addressed on its own (e.g. a cue sheet entry without a track number).
-/// Shared by starring and by saving the pane as a playlist.
+/// Shared by starring and by saving panes and selections as playlists.
 fn stored_entry_for_track(track: &Track) -> Option<crate::db::StoredEntry> {
     let entry = playlist_entry_for_track(track).ok()?;
     let (kind, path, name) = match entry.location {
@@ -4152,14 +4172,8 @@ impl qobject::AppController {
         let name = name.to_string();
         let outcome: Result<serde_json::Value, String> = (|| {
             let id = self.as_ref().rust().library_db.create_playlist(&name)?;
-            let mut entries = Vec::new();
-            let mut skipped = 0_usize;
-            for track in &self.as_ref().rust().tracks {
-                match stored_entry_for_track(track) {
-                    Some(entry) => entries.push(entry),
-                    None => skipped += 1,
-                }
-            }
+            let (entries, skipped) =
+                collect_stored_entries(&self.as_ref().rust().tracks);
             if entries.is_empty() {
                 let _ = self.as_ref().rust().library_db.delete_playlist(id);
                 return Err("The current pane has no savable tracks".to_owned());
@@ -4168,6 +4182,64 @@ impl qobject::AppController {
                 .rust()
                 .library_db
                 .append_entries(id, &entries)?;
+            let mut value = serde_json::json!({
+                "ok": true,
+                "id": id,
+                "name": name.trim(),
+            });
+            if skipped > 0 {
+                value["skipped"] = serde_json::json!(skipped);
+            }
+            Ok(value)
+        })();
+        let status = match &outcome {
+            Ok(value) => Some(format!(
+                "Saved {} as a new playlist",
+                value
+                    .get("name")
+                    .and_then(|name| name.as_str())
+                    .unwrap_or("playlist")
+            )),
+            Err(_) => None,
+        };
+        self.playlist_result(outcome, status)
+    }
+
+    /// Save the selected pane rows as a new playlist at the bottom of the
+    /// list. Mirrors save_pane_as_playlist over the selection instead.
+    pub fn save_selection_as_playlist(
+        mut self: Pin<&mut Self>,
+        indices: QString,
+        name: QString,
+    ) -> QString {
+        let name = name.to_string();
+        let outcome: Result<serde_json::Value, String> = (|| {
+            let rows = parse_row_indices(
+                &indices.to_string(),
+                self.as_ref().rust().visible_indices.len(),
+            );
+            if rows.is_empty() {
+                return Err("No rows are selected".to_owned());
+            }
+            let id = self.as_ref().rust().library_db.create_playlist(&name)?;
+            let tracks: Vec<Track> = {
+                let this = self.as_ref();
+                let rust = this.rust();
+                rows.iter()
+                    .filter_map(|row| {
+                        rust.visible_indices
+                            .get(*row)
+                            .and_then(|source_index| rust.tracks.get(*source_index))
+                            .cloned()
+                    })
+                    .collect()
+            };
+            let (entries, skipped) = collect_stored_entries(&tracks);
+            if entries.is_empty() {
+                let _ = self.as_ref().rust().library_db.delete_playlist(id);
+                return Err("The selection has no savable tracks".to_owned());
+            }
+            self.as_ref().rust().library_db.append_entries(id, &entries)?;
             let mut value = serde_json::json!({
                 "ok": true,
                 "id": id,

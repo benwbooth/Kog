@@ -58,7 +58,7 @@ Rectangle {
         return [
             makeColumn("index", "#", qsTr("Index"), 54, 28, 64, true,
                 Text.AlignRight, false),
-            makeColumn("star", "★", qsTr("Star"), 40, 28, 64, true,
+            makeColumn("star", "", qsTr("Star"), 40, 28, 64, true,
                 Text.AlignHCenter, false),
             makeColumn("status", "", qsTr("Status"), 38, 38, 38, true,
                 Text.AlignHCenter, false),

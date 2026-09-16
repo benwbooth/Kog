@@ -144,6 +144,8 @@ fn main() {
         "qml/icons/media-skip-backward-light.svg",
         "qml/icons/media-skip-forward.svg",
         "qml/icons/media-skip-forward-light.svg",
+        "qml/icons/star-filled.svg",
+        "qml/icons/star-outline.svg",
         "qml/icons/view-list-tree.svg",
         "qml/icons/view-list-tree-light.svg",
         "qml/icons/view-restore.svg",

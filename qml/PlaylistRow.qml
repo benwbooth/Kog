@@ -15,6 +15,7 @@ Item {
     property string searchQuery: ""
     property bool selected: false
     property bool hovered: false
+    property bool playlistCellTipActive: false
     property int revision: app.playlist_revision
     readonly property string statusMessage: {
         revision
@@ -83,34 +84,47 @@ Item {
             verticalAlignment: Text.AlignVCenter
         }
 
-        Label {
-            anchors.fill: parent
+        readonly property bool starred: cell.text.length > 0
+
+        Image {
+            anchors.centerIn: parent
+            width: 16
+            height: 16
             visible: cell.column.id === "star"
-            text: cell.text
-            color: root.selected ? root.theme.highlightedText : root.theme.text
-            font.pixelSize: 13
-            horizontalAlignment: Text.AlignHCenter
-            verticalAlignment: Text.AlignVCenter
+            source: Qt.resolvedUrl(cell.starred
+                ? "icons/star-filled.svg"
+                : "icons/star-outline.svg")
+            opacity: cell.starred ? 1 : (starMouse.containsMouse ? 0.9 : 0.45)
+            fillMode: Image.PreserveAspectFit
+            mipmap: true
+            Accessible.name: qsTr("Star")
         }
 
         MouseArea {
+            id: starMouse
             anchors.fill: parent
             visible: cell.column.id === "star"
             hoverEnabled: true
             cursorShape: Qt.PointingHandCursor
-            Accessible.name: qsTr("Toggle star")
+            Accessible.name: cell.starred ? qsTr("Unstar") : qsTr("Star")
             Accessible.role: Accessible.Button
+            ToolTip.visible: containsMouse
+            ToolTip.delay: 650
+            ToolTip.text: cell.starred ? qsTr("Unstar") : qsTr("Star")
             onClicked: root.app.toggle_stars(String(root.rowIndex))
         }
 
         HoverHandler {
             id: cellHover
+            onHoveredChanged: root.playlistCellTipActive = hovered
+                && (cell.column.id === "star"
+                    || (cell.text.length > 0 && cellLabel.elided))
         }
 
         ToolTip.visible: cellHover.hovered
             && cell.text.length > 0
             && cellLabel.elided
-            && root.statusMessage.length === 0
+            && cell.column.id !== "star"
         ToolTip.delay: 650
         ToolTip.text: cell.text
 
@@ -270,6 +284,7 @@ Item {
             root.dragCanceled()
         }
         ToolTip.visible: containsMouse && root.statusMessage.length > 0
+            && !root.playlistCellTipActive
         ToolTip.delay: 650
         ToolTip.text: root.statusMessage
     }
