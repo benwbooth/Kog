@@ -117,6 +117,8 @@ pub mod qobject {
         #[qinvokable]
         fn set_radio_enabled(self: Pin<&mut AppController>, enabled: bool);
         #[qinvokable]
+        fn reshuffle_radio(self: Pin<&mut AppController>);
+        #[qinvokable]
         fn poll_radio(self: Pin<&mut AppController>);
         #[qinvokable]
         fn add_url(self: Pin<&mut AppController>, url: QString);
@@ -389,6 +391,7 @@ struct TreeDeleteState {
 
 enum RadioEvent {
     TracksReady {
+        locator: PathBuf,
         tracks: Vec<Track>,
         warnings: Vec<String>,
     },
@@ -412,6 +415,12 @@ struct RadioJob {
 /// the bounded channel.
 struct RadioState {
     ready: VecDeque<Track>,
+    /// Surplus subsongs from multi-song single files (NSF and friends),
+    /// already shuffled, served spaced out instead of back-to-back.
+    deferred: VecDeque<Track>,
+    /// Stagings committed (fresh expansions plus deferred servings): drives
+    /// the interleave below.
+    staged_count: u64,
     expand_jobs: Vec<RadioJob>,
     dead: Arc<Mutex<HashSet<String>>>,
     staging: Option<StagingWorker>,
@@ -468,25 +477,11 @@ fn spawn_staging_worker(
     ))
 }
 
-/// Persisted round for `root`, or a fresh round when nothing valid waits.
-/// A wrong music folder never resumes another folder's positions.
-fn load_radio_round(root: &Path) -> crate::radio::RoundInitial {
-    match crate::settings::setting_path("radio-round.json").as_deref() {
-        Some(path) => crate::radio::RadioRound::load(path, root)
-            .unwrap_or_else(|| crate::radio::RoundInitial::fresh(crate::radio::random_seed())),
-        None => crate::radio::RoundInitial::fresh(crate::radio::random_seed()),
-    }
-}
-
-/// Just the dead keys for `root`: manual reshuffles keep unplayability
-/// knowledge while resetting every position.
-fn load_radio_dead(root: &Path) -> Vec<String> {
-    match crate::settings::setting_path("radio-round.json").as_deref() {
-        Some(path) => crate::radio::RadioRound::load(path, root)
-            .map(|loaded| loaded.dead)
-            .unwrap_or_default(),
-        None => Vec::new(),
-    }
+/// Persisted round for `root`, or None when nothing valid waits. A wrong
+/// music folder never resumes another folder's positions.
+fn load_radio_round(root: &Path) -> Option<crate::radio::RoundInitial> {
+    let path = crate::settings::setting_path("radio-round.json")?;
+    crate::radio::RadioRound::load(&path, root)
 }
 
 struct CoverArtRequest {
@@ -1861,15 +1856,19 @@ impl Default for AppControllerRust {
             mpris: MprisService::default(),
         };
 
-        // Startup restore for radio users: the persisted toggle opens a
-        // fresh round immediately, so the first pick only needs a short
-        // descent instead of a cold scan. Skipped when repeat is on (radio
-        // and repeat are mutually exclusive) or the folder is unavailable.
+        // Startup restore for radio users: resume the persisted round so
+        // picks continue instead of replaying openers, and the first pick
+        // only needs a short descent. Skipped when repeat is on (radio and
+        // repeat are mutually exclusive) or the folder is unavailable.
         if app_settings.radio_enabled {
             if app_settings.repeat_mode != RepeatMode::Off {
                 let _ = AppSettings::save_radio_enabled(false);
             } else if controller.directory.is_dir() {
-                let initial = load_radio_round(&controller.directory);
+                let restored = load_radio_round(&controller.directory);
+                let resumed = restored.is_some();
+                let initial = restored.unwrap_or_else(|| {
+                    crate::radio::RoundInitial::fresh(crate::radio::random_seed())
+                });
                 let staged = spawn_staging_worker(
                     controller.directory.clone(),
                     controller.decoder_settings.clone(),
@@ -1884,6 +1883,8 @@ impl Default for AppControllerRust {
                     Some((staging, dead)) => {
                         controller.radio = Some(RadioState {
                             ready: VecDeque::new(),
+                            deferred: VecDeque::new(),
+                            staged_count: 0,
                             expand_jobs: Vec::new(),
                             dead,
                             staging: Some(staging),
@@ -1891,7 +1892,11 @@ impl Default for AppControllerRust {
                             consecutive_dead: 0,
                         });
                         controller.radio_active = true;
-                        controller.status = qstring("Random Radio on");
+                        controller.status = qstring(if resumed {
+                            "Random Radio on — resumed"
+                        } else {
+                            "Random Radio on"
+                        });
                     }
                 }
             }
@@ -2525,11 +2530,74 @@ impl qobject::AppController {
             )));
             return;
         }
-        // Manual toggle-on always starts a FRESH shuffle: same songs, new
-        // positions. Unplayable-file knowledge carries over (a dead file is
-        // dead regardless of shuffle). Contrast prewarm/restore, which
-        // resumes positions. Either way nothing autoplays before play.
-        let dead = load_radio_dead(&root);
+        // Manual toggle-on resumes the persisted round when one waits, so
+        // positions (and the no-repeat promise) survive toggling. The Reset
+        // control is the explicit reshuffle action, not this toggle.
+        // Either way nothing autoplays before play.
+        let (initial, resumed) = match load_radio_round(&root) {
+            Some(initial) => (initial, true),
+            None => (
+                crate::radio::RoundInitial::fresh(crate::radio::random_seed()),
+                false,
+            ),
+        };
+        let staging = {
+            let rust = self.as_ref();
+            spawn_staging_worker(
+                root,
+                rust.rust().decoder_settings.clone(),
+                rust.rust().read_cue_sheets_in_folders,
+                initial,
+            )
+        };
+        let (staging, dead) = match staging {
+            Ok(staging) => staging,
+            Err(error) => {
+                self.as_mut().set_status(qstring(error));
+                return;
+            }
+        };
+        self.as_mut().rust_mut().radio = Some(RadioState {
+            ready: VecDeque::new(),
+            deferred: VecDeque::new(),
+            staged_count: 0,
+            expand_jobs: Vec::new(),
+            dead,
+            staging: Some(staging),
+            // Never autoplay on toggle: staging fills the hidden buffer,
+            // and the first track moves (and plays) only after an explicit
+            // play/next press or a natural track end.
+            kickstart_armed: false,
+            consecutive_dead: 0,
+        });
+        self.as_mut().set_radio_active(true);
+        self.as_mut().set_status(qstring(if resumed {
+            "Random Radio on — resumed"
+        } else {
+            "Random Radio on"
+        }));
+    }
+
+    /// Fresh shuffle for the running radio session: new seed and cleared
+    /// positions, keeping unplayability knowledge. Radio turns on if off.
+    pub fn reshuffle_radio(mut self: Pin<&mut Self>) {
+        let root = self.as_ref().rust().directory.clone();
+        if !root.is_dir() {
+            self.as_mut().set_status(qstring(format!(
+                "Music folder {} is unavailable",
+                root.display()
+            )));
+            return;
+        }
+        if let Err(error) = AppSettings::save_radio_enabled(true) {
+            self.as_mut().set_status(qstring(error));
+            return;
+        }
+        self.as_mut().apply_repeat_mode(RepeatMode::Off);
+        self.as_mut().teardown_radio();
+        let dead: Vec<String> = load_radio_round(&root)
+            .map(|loaded| loaded.dead)
+            .unwrap_or_default();
         let initial = crate::radio::RoundInitial {
             seed: crate::radio::random_seed(),
             counter: 0,
@@ -2554,17 +2622,17 @@ impl qobject::AppController {
         };
         self.as_mut().rust_mut().radio = Some(RadioState {
             ready: VecDeque::new(),
+            deferred: VecDeque::new(),
+            staged_count: 0,
             expand_jobs: Vec::new(),
             dead,
             staging: Some(staging),
-            // Never autoplay on toggle: staging fills the hidden buffer,
-            // and the first track moves (and plays) only after an explicit
-            // play/next press or a natural track end.
             kickstart_armed: false,
             consecutive_dead: 0,
         });
         self.as_mut().set_radio_active(true);
-        self.as_mut().set_status(qstring("Random Radio on"));
+        self.as_mut()
+            .set_status(qstring("Random Radio — fresh shuffle"));
     }
 
     pub fn poll_radio(mut self: Pin<&mut Self>) {
@@ -2686,8 +2754,12 @@ impl qobject::AppController {
                 // A panicking pick must free its lane instead of wedging
                 // staging forever: catch it and report a skipped pick.
                 let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let prepared =
-                        prepare_scan_file(locator, &worker_decoders, read_cue, read_playlists);
+                    let prepared = prepare_scan_file(
+                        locator.clone(),
+                        &worker_decoders,
+                        read_cue,
+                        read_playlists,
+                    );
                     // Probe-open every candidate: only tracks that actually
                     // open reach the staging buffer, so an unplayable file can
                     // never surface as a playback error later.
@@ -2709,10 +2781,15 @@ impl qobject::AppController {
                 }));
                 match outcome {
                     Ok((tracks, warnings)) => {
-                        let _ = sender.send(RadioEvent::TracksReady { tracks, warnings });
+                        let _ = sender.send(RadioEvent::TracksReady {
+                            locator,
+                            tracks,
+                            warnings,
+                        });
                     }
                     Err(_) => {
                         let _ = sender.send(RadioEvent::TracksReady {
+                            locator,
                             tracks: Vec::new(),
                             warnings: vec![
                                 "A radio pick failed unexpectedly and was skipped".to_owned(),
@@ -2730,10 +2807,44 @@ impl qobject::AppController {
     }
 
     fn handle_radio_event(mut self: Pin<&mut Self>, event: RadioEvent) {
-        let RadioEvent::TracksReady { tracks, .. } = event;
-        let live = !tracks.is_empty();
+        let RadioEvent::TracksReady {
+            locator, tracks, ..
+        } = event;
+        // Multi-song single files (NSF and friends) expand to one track per
+        // subsong. Stage a single shuffled pick now and defer the rest for
+        // spaced staging, instead of queueing the whole file back-to-back.
+        // Anything without uniform subsong indices stages whole, as before.
+        let mut staged = tracks;
+        let mut deferred = Vec::new();
+        if staged.len() > 1 {
+            let indices: Vec<u32> = staged
+                .iter()
+                .filter_map(|track| track.source.subsong)
+                .collect();
+            // Every track indexed, or nobody is: a partial set would orphan
+            // the unindexed tracks, so those stage whole as before.
+            if indices.len() == staged.len() {
+                if let Some(order) = crate::radio::shuffle_subsong_order(
+                    &crate::radio::radio_locator_key(&locator),
+                    &indices,
+                ) {
+                    let mut ordered = Vec::with_capacity(staged.len());
+                    for index in order {
+                        let position = staged
+                            .iter()
+                            .position(|track| track.source.subsong == Some(index))
+                            .expect("shuffled index comes from these tracks");
+                        ordered.push(staged.remove(position));
+                    }
+                    deferred = ordered.split_off(1);
+                    staged = ordered;
+                }
+            }
+        }
+        let live = !staged.is_empty();
         if let Some(radio) = self.as_mut().rust_mut().radio.as_mut() {
-            radio.ready.extend(tracks);
+            radio.ready.extend(staged);
+            radio.deferred.extend(deferred);
             if live {
                 radio.consecutive_dead = 0;
             } else {
@@ -2856,6 +2967,28 @@ impl qobject::AppController {
             if ready_len + active >= RADIO_READY_TARGET || active >= MAX_EXPANDERS {
                 return;
             }
+            // Spaced subsong staging: every SUBSONG_EVERY-th staging serves
+            // the deferred queue instead of fresh picks, so one multi-song
+            // file spreads across the session rather than playing back to
+            // back. Deferred servings count like fresh ones below.
+            const SUBSONG_EVERY: u64 = 4;
+            let serve_deferred = self.as_ref().rust().radio.as_ref().is_some_and(|radio| {
+                !radio.deferred.is_empty()
+                    && radio.staged_count % SUBSONG_EVERY == SUBSONG_EVERY - 1
+            });
+            if serve_deferred {
+                let mut this = self.as_mut();
+                let mut rust = this.as_mut().rust_mut();
+                if let Some(radio) = rust.radio.as_mut() {
+                    if radio.ready.len() < RADIO_READY_TARGET {
+                        if let Some(track) = radio.deferred.pop_front() {
+                            radio.ready.push_back(track);
+                            radio.staged_count += 1;
+                        }
+                    }
+                }
+                continue;
+            }
             enum Drain {
                 Pick(PathBuf),
                 Empty,
@@ -2903,6 +3036,9 @@ impl qobject::AppController {
             match outcome {
                 Drain::Pick(locator) => {
                     self.as_mut().request_radio_expand(locator);
+                    if let Some(radio) = self.as_mut().rust_mut().radio.as_mut() {
+                        radio.staged_count += 1;
+                    }
                 }
                 Drain::Empty => {
                     // The worker exited after reporting: drop the handle so

@@ -1211,6 +1211,7 @@ ApplicationWindow {
                     onTriggered: appController.select_repeat_mode("all")
                 }
             }
+            Action { text: qsTr("Reshuffle Radio"); icon.name: "view-refresh"; enabled: appController.radio_active; onTriggered: appController.reshuffle_radio() }
             MenuSeparator {}
             MenuItem { action: toggleQueueAction }
             MenuItem { action: stopAfterSelectionAction }
@@ -1389,6 +1390,7 @@ ApplicationWindow {
                         }
                     }
                 }
+            }
 
             RowLayout {
                 visible: !root.useMacWindowControls

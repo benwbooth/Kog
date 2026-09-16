@@ -19,9 +19,10 @@
 //! so small libraries behave as pure exhaustive rounds.
 //!
 //! Rounds persist across sessions (seed, cursors, replay ages, dead keys),
-//! so restarts continue the descent instead of replaying openers. A manual
-//! toggle-on always starts a fresh shuffle but keeps unplayability
-//! knowledge; rotation clears it so fixed files re-prove themselves.
+//! so restarts and re-toggles continue the descent instead of replaying
+//! openers. The explicit reshuffle action starts a fresh shuffle but keeps
+//! unplayability knowledge; rotation clears it so fixed files re-prove
+//! themselves.
 //!
 //! Archives descend exactly like folders, nested archives included (up to the
 //! shared 4-level safety cap). Unlistable archives contribute nothing rather
@@ -581,7 +582,35 @@ pub(crate) fn radio_locator_key(path: &Path) -> String {
     path.display().to_string()
 }
 
-/// Whether a playlist/archive path is eligible for random queueing: regular
+/// Shuffled play order for one multi-song file: uniform multi-song
+/// expansions (every track carries a distinct subsong index, as NSF and
+/// friends produce) come back in hash order, so radio stages a single
+/// shuffled pick now and defers the rest for spaced staging. Anything else
+/// (single tracks, missing or duplicated indices) returns None and stages
+/// whole, exactly as before.
+pub(crate) fn shuffle_subsong_order(file_key: &str, subsongs: &[u32]) -> Option<Vec<u32>> {
+    if subsongs.len() < 2 {
+        return None;
+    }
+    let mut unique = subsongs.to_vec();
+    unique.sort_unstable();
+    unique.dedup();
+    if unique.len() != subsongs.len() {
+        return None;
+    }
+    unique.sort_by(|left, right| {
+        let mut left_key = file_key.as_bytes().to_vec();
+        left_key.extend_from_slice(&left.to_le_bytes());
+        let mut right_key = file_key.as_bytes().to_vec();
+        right_key.extend_from_slice(&right.to_le_bytes());
+        hash_with_seed(FILE_ORDER_SALT, &left_key)
+            .cmp(&hash_with_seed(FILE_ORDER_SALT, &right_key))
+            .then_with(|| left.cmp(right))
+    });
+    Some(unique)
+}
+
+/// Whether a discovered file is eligible for random queueing: regular
 /// audio, cue sheets (when enabled), and archives, which expand through the
 /// normal add path. Playlists are excluded because one pick could enqueue
 /// hundreds of tracks.
@@ -900,6 +929,97 @@ mod tests {
             radio_track_key(&remote),
             "https://example.com/stream".to_owned()
         );
+    }
+
+    #[test]
+    fn probe_staging_throughput() {
+        use std::time::Duration;
+        let root = PathBuf::from("/mnt/stuff/Music");
+        if !root.is_dir() {
+            return;
+        }
+        let decoders = DecoderRegistry::default();
+        let exts = decoders.audio_extensions();
+        let cache = std::env::temp_dir().join("kog-probe-nested");
+        let context = RadioCtx {
+            decoders: &decoders,
+            audio_exts: &exts,
+            read_cue: true,
+            nested_cache: &cache,
+        };
+        let worker = decoders.background_worker(crate::decoder::DecoderSettings::default());
+        let mut round = RadioRound::new(777);
+        let mut total_expand = Duration::ZERO;
+        let mut total_probe = Duration::ZERO;
+        let mut tracks = 0_usize;
+        let mut slow = Vec::new();
+        for index in 0..60 {
+            let started = std::time::Instant::now();
+            let Some(locator) = round.next_pick(&root, &context) else {
+                break;
+            };
+            let descended = started.elapsed();
+            let prepared = match worker.expand_detailed(locator.clone()) {
+                Ok(expansion) => expansion,
+                Err(error) => {
+                    eprintln!("PROBE pick {index} expand ERR {error}");
+                    continue;
+                }
+            };
+            let expanded = started.elapsed();
+            let mut pick_tracks = 0;
+            for source in &prepared.sources {
+                let probe_started = std::time::Instant::now();
+                let ok = worker.probe(source).is_ok();
+                let took = probe_started.elapsed();
+                total_probe += took;
+                if ok {
+                    pick_tracks += 1;
+                }
+                if took > Duration::from_secs(1) {
+                    slow.push((source.path.display().to_string(), took));
+                }
+            }
+            tracks += pick_tracks;
+            total_expand += expanded - descended;
+            eprintln!(
+                "PROBE pick {index}: descend {descended:?}, expand {:?} ({} tracks)",
+                expanded - descended,
+                prepared.sources.len(),
+            );
+        }
+        eprintln!(
+            "PROBE staged {tracks} tracks; expand total {total_expand:?}, probe total {total_probe:?}"
+        );
+        for (path, took) in &slow {
+            eprintln!("PROBE SLOW {took:?} {path}");
+        }
+    }
+
+    #[test]
+    fn subsong_order_shuffles_uniform_sets_only() {
+        let order = shuffle_subsong_order("pack.zip::a", &[0, 1, 2, 3, 4]).expect("order");
+        assert_eq!(order.len(), 5);
+        let mut sorted = order.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, vec![0, 1, 2, 3, 4], "a permutation, no loss");
+        assert_eq!(
+            order,
+            shuffle_subsong_order("pack.zip::a", &[0, 1, 2, 3, 4]).expect("order"),
+            "deterministic per file"
+        );
+        // Key sensitivity: across several files the orders must vary (a
+        // single fixed order per key set would still pass determinism).
+        // Deterministic inputs, so green stays green.
+        let orders: HashSet<Vec<u32>> = ["a", "b", "c", "d", "e", "f"]
+            .iter()
+            .map(|key| shuffle_subsong_order(key, &[0, 1, 2, 3, 4]).expect("order"))
+            .collect();
+        assert!(orders.len() >= 2, "shuffles vary by file");
+        assert!(shuffle_subsong_order("x", &[]).is_none());
+        assert!(shuffle_subsong_order("x", &[7]).is_none());
+        assert!(shuffle_subsong_order("x", &[1, 1, 2]).is_none());
+        assert!(shuffle_subsong_order("x", &[0, 2]).is_some());
     }
 
     #[test]
