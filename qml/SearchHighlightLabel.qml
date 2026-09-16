@@ -8,6 +8,9 @@ Label {
     required property var searchModel
     property bool wholeQuery: false
     readonly property bool highlighting: query.trim().length > 0
+    // True elision state: the label shows pre-elided text, so its own
+    // truncated flag never fires. Compare the metrics output instead.
+    readonly property bool elided: metrics.elidedText !== sourceText
 
     // Normal browsing keeps the lightweight plain-text rendering path.
     text: highlighting ? searchModel.highlightedName(sourceText, query, metrics.elidedText, wholeQuery)

@@ -67,6 +67,7 @@ Item {
         height: root.height
 
         SearchHighlightLabel {
+            id: cellLabel
             anchors.fill: parent
             leftPadding: 6
             rightPadding: 6
@@ -80,6 +81,17 @@ Item {
             horizontalAlignment: cell.column.alignment
             verticalAlignment: Text.AlignVCenter
         }
+
+        HoverHandler {
+            id: cellHover
+        }
+
+        ToolTip.visible: cellHover.hovered
+            && cell.text.length > 0
+            && cellLabel.elided
+            && root.statusMessage.length === 0
+        ToolTip.delay: 650
+        ToolTip.text: cell.text
 
         Loader {
             anchors.centerIn: parent
