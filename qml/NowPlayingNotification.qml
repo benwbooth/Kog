@@ -183,12 +183,12 @@ Window {
                     acceptedButtons: Qt.LeftButton
                     property real startRight: 0
                     property real startBottom: 0
-                    property point grabPoint
+                    property point lastPoint
                     onActiveChanged: {
                         if (active) {
                             startRight = root.rightMargin
                             startBottom = root.bottomMargin
-                            grabPoint = centroid.scenePressPosition
+                            lastPoint = centroid.scenePosition
                             dismissTimer.stop()
                         } else {
                             root.savePosition()
@@ -208,13 +208,19 @@ Window {
                     onCentroidChanged: {
                         if (!active || !root.layerPlacement)
                             return
-                        // Layer-shell has no global pointer coordinates. Keep
-                        // the grabbed header point under the pointer, using
-                        // the current margins as the moving window's origin.
-                        root.rightMargin = Math.max(0, Math.min(root.rightMargin
-                            - (centroid.scenePosition.x - grabPoint.x), root.screen.width - root.width))
-                        root.bottomMargin = Math.max(0, Math.min(root.bottomMargin
-                            - (centroid.scenePosition.y - grabPoint.y), root.screen.height - root.height))
+                        // Layer-shell has no global pointer coordinates, so
+                        // apply only the incremental movement since the last
+                        // update: re-applying the total press-to-now delta to
+                        // the already-moved margins compounds every event and
+                        // flings the window away from the pointer.
+                        const next = centroid.scenePosition
+                        const dx = next.x - lastPoint.x
+                        const dy = next.y - lastPoint.y
+                        lastPoint = next
+                        root.rightMargin = Math.max(0, Math.min(root.rightMargin - dx,
+                            root.screen.width - root.width))
+                        root.bottomMargin = Math.max(0, Math.min(root.bottomMargin - dy,
+                            root.screen.height - root.height))
                     }
                 }
                 TapHandler {
