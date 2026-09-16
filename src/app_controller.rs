@@ -4062,7 +4062,7 @@ impl qobject::AppController {
         if skipped > 0 {
             self.as_mut().set_status(qstring(format!(
                 "Skipped {skipped} unresolvable entries"
-            ));
+            )));
         }
         self.as_mut().add_local_paths(
             vec![cache_file],
