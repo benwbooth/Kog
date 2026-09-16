@@ -434,11 +434,13 @@ fn spawn_staging_worker(
     root: PathBuf,
     settings: DecoderSettings,
     read_cue: bool,
+    initial: crate::radio::RoundInitial,
 ) -> Result<(StagingWorker, Arc<Mutex<HashSet<String>>>), String> {
     let (sender, receiver) = std::sync::mpsc::sync_channel(4);
     let cancel = Arc::new(AtomicBool::new(false));
     let worker_cancel = Arc::clone(&cancel);
     let nested_cache = crate::archive::nested_cache_dir();
+    let save_path = crate::settings::setting_path("radio-round.json");
     let dead = Arc::new(Mutex::new(HashSet::new()));
     let worker_dead = Arc::clone(&dead);
     std::thread::Builder::new()
@@ -449,6 +451,8 @@ fn spawn_staging_worker(
                 settings,
                 read_cue,
                 nested_cache,
+                initial,
+                save_path,
                 worker_dead,
                 sender,
                 worker_cancel,
@@ -462,6 +466,27 @@ fn spawn_staging_worker(
         },
         dead,
     ))
+}
+
+/// Persisted round for `root`, or a fresh round when nothing valid waits.
+/// A wrong music folder never resumes another folder's positions.
+fn load_radio_round(root: &Path) -> crate::radio::RoundInitial {
+    match crate::settings::setting_path("radio-round.json").as_deref() {
+        Some(path) => crate::radio::RadioRound::load(path, root)
+            .unwrap_or_else(|| crate::radio::RoundInitial::fresh(crate::radio::random_seed())),
+        None => crate::radio::RoundInitial::fresh(crate::radio::random_seed()),
+    }
+}
+
+/// Just the dead keys for `root`: manual reshuffles keep unplayability
+/// knowledge while resetting every position.
+fn load_radio_dead(root: &Path) -> Vec<String> {
+    match crate::settings::setting_path("radio-round.json").as_deref() {
+        Some(path) => crate::radio::RadioRound::load(path, root)
+            .map(|loaded| loaded.dead)
+            .unwrap_or_default(),
+        None => Vec::new(),
+    }
 }
 
 struct CoverArtRequest {
@@ -1844,10 +1869,12 @@ impl Default for AppControllerRust {
             if app_settings.repeat_mode != RepeatMode::Off {
                 let _ = AppSettings::save_radio_enabled(false);
             } else if controller.directory.is_dir() {
+                let initial = load_radio_round(&controller.directory);
                 let staged = spawn_staging_worker(
                     controller.directory.clone(),
                     controller.decoder_settings.clone(),
                     controller.read_cue_sheets_in_folders,
+                    initial,
                 )
                 .ok();
                 match staged {
@@ -2498,12 +2525,24 @@ impl qobject::AppController {
             )));
             return;
         }
+        // Manual toggle-on always starts a FRESH shuffle: same songs, new
+        // positions. Unplayable-file knowledge carries over (a dead file is
+        // dead regardless of shuffle). Contrast prewarm/restore, which
+        // resumes positions. Either way nothing autoplays before play.
+        let dead = load_radio_dead(&root);
+        let initial = crate::radio::RoundInitial {
+            seed: crate::radio::random_seed(),
+            counter: 0,
+            cursors: HashMap::new(),
+            dead,
+        };
         let staging = {
             let rust = self.as_ref();
             spawn_staging_worker(
                 root,
                 rust.rust().decoder_settings.clone(),
                 rust.rust().read_cue_sheets_in_folders,
+                initial,
             )
         };
         let (staging, dead) = match staging {

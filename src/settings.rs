@@ -580,7 +580,7 @@ fn load_persisted_sc55_rom_path() -> Option<PathBuf> {
     (!value.is_empty()).then(|| PathBuf::from(value))
 }
 
-fn setting_path(file_name: &str) -> Option<PathBuf> {
+pub(crate) fn setting_path(file_name: &str) -> Option<PathBuf> {
     ProjectDirs::from("org", "Kog", "Kog")
         .map(|directories| directories.config_dir().join(file_name))
 }
