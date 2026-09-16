@@ -3290,6 +3290,11 @@ impl qobject::AppController {
         let mut scanned_increment = 0_i32;
         let mut last_scanned_path = None;
         let mut last_added_count = None;
+        // Staged playlist imports live here: duplicates are legitimate
+        // playlist content, so they bypass the known-source filter below.
+        // Compare canonical paths since prepared paths are canonicalized.
+        let staged_dir = crate::track::canonical_path(&playlist_cache_dir())
+            .unwrap_or_else(|_| playlist_cache_dir());
         for event in events {
             match event {
                 DirectoryScanEvent::Prepared(prepared) => {
@@ -3303,6 +3308,7 @@ impl qobject::AppController {
                         continue;
                     }
                     scanned_increment = scanned_increment.saturating_add(1);
+                    let staged_import = prepared.path.starts_with(&staged_dir);
                     last_scanned_path = Some(prepared.path);
                     let (new_tracks, added_count) = {
                         let mut rust = self.as_mut().rust_mut();
@@ -3312,7 +3318,9 @@ impl qobject::AppController {
                         let new_tracks = prepared
                             .tracks
                             .into_iter()
-                            .filter(|track| scan.known_sources.insert(track.source.clone()))
+                            .filter(|track| {
+                                staged_import || scan.known_sources.insert(track.source.clone())
+                            })
                             .collect::<Vec<_>>();
                         let newly_added = new_tracks.len();
                         scan.combined.added += newly_added;
@@ -4159,14 +4167,13 @@ impl qobject::AppController {
     }
 
     pub fn enqueue_playlist(mut self: Pin<&mut Self>, id: i32, start_playback: bool) {
-        let (cache_file, skipped) =
-            match self.as_ref().stage_playlist_cache_file(id as i64) {
-                Ok(staged) => staged,
-                Err(error) => {
-                    self.as_mut().set_status(qstring(error));
-                    return;
-                }
-            };
+        let (cache_file, skipped) = match self.as_ref().stage_playlist_cache_file(id as i64) {
+            Ok(staged) => staged,
+            Err(error) => {
+                self.as_mut().set_status(qstring(error));
+                return;
+            }
+        };
         if skipped > 0 {
             self.as_mut()
                 .set_status(qstring(format!("Skipped {skipped} unresolvable entries")));
@@ -4184,22 +4191,19 @@ impl qobject::AppController {
     /// Replace the pane with a stored playlist (or Favorites) and start
     /// playing it from the top.
     pub fn load_playlist_into_pane(mut self: Pin<&mut Self>, id: i32) {
-        let (cache_file, skipped) =
-            match self.as_ref().stage_playlist_cache_file(id as i64) {
-                Ok(staged) => staged,
-                Err(error) => {
-                    self.as_mut().set_status(qstring(error));
-                    return;
-                }
-            };
+        let (cache_file, skipped) = match self.as_ref().stage_playlist_cache_file(id as i64) {
+            Ok(staged) => staged,
+            Err(error) => {
+                self.as_mut().set_status(qstring(error));
+                return;
+            }
+        };
         if skipped > 0 {
             self.as_mut()
                 .set_status(qstring(format!("Skipped {skipped} unresolvable entries")));
         }
-        self.as_mut().add_local_paths(
-            vec![cache_file],
-            OpeningFilesBehavior::ClearAndPlay,
-        );
+        self.as_mut()
+            .add_local_paths(vec![cache_file], OpeningFilesBehavior::ClearAndPlay);
     }
 
     /// Save the current pane as a new playlist at the bottom of the list.
@@ -4297,7 +4301,6 @@ impl qobject::AppController {
         };
         self.playlist_result(outcome, status)
     }
-
 
     pub fn save_playlist_column_layout(mut self: Pin<&mut Self>, layout: QString) {
         if let Err(error) = AppSettings::save_playlist_column_layout(&layout.to_string()) {
