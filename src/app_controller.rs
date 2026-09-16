@@ -180,6 +180,8 @@ pub mod qobject {
             name: QString,
         ) -> QString;
         #[qinvokable]
+        fn quick_create_playlist(self: Pin<&mut AppController>, indices: QString) -> QString;
+        #[qinvokable]
         fn export_playlist(self: Pin<&mut AppController>, id: i32);
         #[qinvokable]
         fn save_playlist_column_layout(self: Pin<&mut AppController>, layout: QString);
@@ -4258,6 +4260,104 @@ impl qobject::AppController {
                     .and_then(|name| name.as_str())
                     .unwrap_or("playlist")
             )),
+            Err(_) => None,
+        };
+        self.playlist_result(outcome, status)
+    }
+
+    /// Create a new playlist at the bottom of the list without a naming
+    /// dialog: from the given pane rows (comma-separated visible indices),
+    /// or from the whole pane when no rows are selected. The name is
+    /// auto-assigned ("New Playlist", "New Playlist 2", ...) so the UI can
+    /// drop straight into inline rename.
+    pub fn quick_create_playlist(mut self: Pin<&mut Self>, indices: QString) -> QString {
+        let raw = indices.to_string();
+        let outcome: Result<serde_json::Value, String> = (|| {
+            let rows = parse_row_indices(
+                &raw,
+                self.as_ref().rust().visible_indices.len(),
+            );
+            let from_pane = raw.trim().is_empty();
+            if !from_pane && rows.is_empty() {
+                return Err("No rows are selected".to_owned());
+            }
+            let tracks: Vec<Track> = if from_pane {
+                self.as_ref().rust().tracks.clone()
+            } else {
+                let this = self.as_ref();
+                let rust = this.rust();
+                rows.iter()
+                    .filter_map(|row| {
+                        rust.visible_indices
+                            .get(*row)
+                            .and_then(|source_index| rust.tracks.get(*source_index))
+                            .cloned()
+                    })
+                    .collect()
+            };
+            let (entries, skipped) = collect_stored_entries(&tracks);
+            if entries.is_empty() {
+                return Err(if from_pane {
+                    "The current pane has no savable tracks".to_owned()
+                } else {
+                    "The selection has no savable tracks".to_owned()
+                });
+            }
+            let existing: Vec<String> = self
+                .as_ref()
+                .rust()
+                .library_db
+                .list_playlists()
+                .map(|lists| lists.into_iter().map(|list| list.name).collect())
+                .unwrap_or_default();
+            let mut name = "New Playlist".to_owned();
+            let mut counter = 2;
+            while existing.iter().any(|other| other == &name) {
+                name = format!("New Playlist {counter}");
+                counter += 1;
+            }
+            let id = self.as_ref().rust().library_db.create_playlist(&name)?;
+            if let Err(error) = self
+                .as_ref()
+                .rust()
+                .library_db
+                .append_entries(id, &entries)
+            {
+                let _ = self.as_ref().rust().library_db.delete_playlist(id);
+                return Err(error);
+            }
+            let mut value = serde_json::json!({
+                "ok": true,
+                "id": id,
+                "name": name,
+                "tracks": entries.len(),
+            });
+            if skipped > 0 {
+                value["skipped"] = serde_json::json!(skipped);
+            }
+            Ok(value)
+        })();
+        let status = match &outcome {
+            Ok(value) => {
+                let count = value.get("tracks").and_then(|count| count.as_u64());
+                Some(match count {
+                    Some(count) => format!(
+                        "Created {} with {count} track{}",
+                        value
+                            .get("name")
+                            .and_then(|name| name.as_str())
+                            .unwrap_or("playlist"),
+                        if count == 1 { "" } else { "s" }
+                    ),
+                    None => format!(
+                        "Created {}",
+                        value
+                            .get("name")
+                            .and_then(|name| name.as_str())
+                            .unwrap_or("playlist")
+                    ),
+                })
+            }
             Err(_) => None,
         };
         self.playlist_result(outcome, status)

@@ -35,11 +35,27 @@ Item {
     signal dragFinished(real viewX, real viewY)
     signal dragCanceled()
 
+    // True when the x position (in row coordinates) lands inside the
+    // star column. Cells start at x=0 with no row-level margins, so the
+    // hit test just walks the visible column widths.
+    function starColumnHit(x) {
+        let offset = 0
+        const cols = columns.visibleColumns
+        for (let i = 0; i < cols.length; i++) {
+            const col = cols[i]
+            if (col.id === "star")
+                return x >= offset && x < offset + col.width
+            offset += col.width
+        }
+        return false
+    }
+
     implicitHeight: 24
     height: implicitHeight
 
     ListView.onPooled: {
         root.hovered = false
+        root.playlistCellTipActive = false
         rowPointer.manualDragging = false
         rowPointer.suppressNextClick = false
     }
@@ -104,6 +120,10 @@ Item {
             id: starMouse
             anchors.fill: parent
             visible: cell.column.id === "star"
+            // Hover and cursor only: clicks are handled by rowPointer's
+            // star hit test, which sits above this area and would
+            // otherwise swallow them (and double-toggle if both fired).
+            acceptedButtons: Qt.NoButton
             hoverEnabled: true
             cursorShape: Qt.PointingHandCursor
             Accessible.name: cell.starred ? qsTr("Unstar") : qsTr("Star")
@@ -111,19 +131,16 @@ Item {
             ToolTip.visible: containsMouse
             ToolTip.delay: 650
             ToolTip.text: cell.starred ? qsTr("Unstar") : qsTr("Star")
-            onClicked: root.app.toggle_stars(String(root.rowIndex))
         }
 
         HoverHandler {
             id: cellHover
             onHoveredChanged: root.playlistCellTipActive = hovered
-                && (cell.column.id === "star"
-                    || (cell.text.length > 0 && cellLabel.elided))
+                && (cell.column.id === "star" || cell.text.length > 0)
         }
 
         ToolTip.visible: cellHover.hovered
             && cell.text.length > 0
-            && cellLabel.elided
             && cell.column.id !== "star"
         ToolTip.delay: 650
         ToolTip.text: cell.text
@@ -265,9 +282,20 @@ Item {
                 suppressNextClick = false
                 return
             }
+            // Star column toggles the star without touching selection:
+            // rowPointer sits above the star cell, so this is the only
+            // click path that reliably reaches it.
+            if (root.starColumnHit(mouse.x)) {
+                root.app.toggle_stars(String(root.rowIndex))
+                return
+            }
             root.pressed(root.rowIndex, mouse.modifiers, mouse.button)
         }
-        onDoubleClicked: root.activated(root.rowIndex)
+        onDoubleClicked: mouse => {
+            if (root.starColumnHit(mouse.x))
+                return
+            root.activated(root.rowIndex)
+        }
         onReleased: mouse => {
             if (manualDragging) {
                 const point = root.mapToItem(root.ListView.view,

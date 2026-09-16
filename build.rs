@@ -130,6 +130,8 @@ fn main() {
         "qml/icons/go-up-light.svg",
         "qml/icons/kog.svg",
         "qml/icons/kog-symbolic.svg",
+        "qml/icons/kog-symbolic-play.svg",
+        "qml/icons/kog-symbolic-pause.svg",
         "qml/icons/media-playback-pause.svg",
         "qml/icons/media-playback-pause-light.svg",
         "qml/icons/media-playback-start.svg",

@@ -191,20 +191,18 @@ ApplicationWindow {
     }
 
     // VSCode-style sidebar accordion header: expander glyph plus title,
-    // with optional trailing actions (the playlists header uses both: a
-    // create-empty button and a save button whose tooltip and target switch
-    // between the whole pane and the current selection).
+    // with an optional trailing action for the playlists header (instant
+    // playlist creation). The action uses a plain MouseArea like the
+    // toggle itself, so it cannot depend on button styling to receive
+    // clicks.
     component SidebarSectionHeader: Rectangle {
         id: sectionHeader
         required property string sectionTitle
         required property bool sectionExpanded
         property bool showAddButton: false
         property string addToolTip: ""
-        property bool showSaveButton: false
-        property string saveToolTip: ""
         signal toggled()
         signal addClicked()
-        signal saveClicked()
 
         Layout.fillWidth: true
         Layout.preferredHeight: 30
@@ -236,21 +234,39 @@ ApplicationWindow {
                 color: root.palette.text
                 elide: Text.ElideRight
             }
-            ToolbarButton {
+            Rectangle {
                 Layout.preferredWidth: 24
                 Layout.preferredHeight: 24
                 visible: sectionHeader.showAddButton
-                glyph: "+"
-                toolTip: sectionHeader.addToolTip
-                onClicked: sectionHeader.addClicked()
-            }
-            ToolbarButton {
-                Layout.preferredWidth: 24
-                Layout.preferredHeight: 24
-                visible: sectionHeader.showSaveButton
-                glyph: "↓"
-                toolTip: sectionHeader.saveToolTip
-                onClicked: sectionHeader.saveClicked()
+                radius: 5
+                color: addMouse.containsMouse
+                    ? root.palette.button : "transparent"
+                border.color: addMouse.containsMouse
+                    ? root.palette.mid : "transparent"
+
+                Label {
+                    anchors.centerIn: parent
+                    text: "+"
+                    font.pixelSize: 16
+                    font.bold: true
+                    color: root.palette.text
+                }
+                ToolTip.visible: addMouse.containsMouse
+                    && sectionHeader.addToolTip.length > 0
+                ToolTip.delay: 450
+                ToolTip.text: sectionHeader.addToolTip
+
+                MouseArea {
+                    id: addMouse
+                    anchors.fill: parent
+                    acceptedButtons: Qt.LeftButton
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: mouse => {
+                        mouse.accepted = true
+                        sectionHeader.addClicked()
+                    }
+                }
             }
         }
     }
@@ -562,6 +578,24 @@ ApplicationWindow {
         }
     }
 
+    // Instant playlist creation from the header + button: the selection
+    // when rows are selected, otherwise the whole pane. Drops straight
+    // into inline rename so naming never needs a dialog.
+    function quickCreatePlaylist() {
+        let result = null
+        try {
+            result = JSON.parse(appController.quick_create_playlist(
+                root.selectedRows.join(",")))
+        } catch (e) {
+            result = null
+        }
+        if (result && result.ok) {
+            root.setPlaylistSelectionById([result.id])
+            root.playlistSelectionAnchor = result.id
+            root.renamingPlaylistId = result.id
+        }
+    }
+
     function enqueueSelectedPlaylists(startPlayback) {
         const ids = orderedSelectedPlaylistIds()
         if (ids.length === 0)
@@ -676,7 +710,13 @@ ApplicationWindow {
                     : (appController.playback_state === "paused"
                         ? qsTr("Paused") : qsTr("Stopped")))
                 + qsTr(" — right-click for playback controls")
-        icon.source: Qt.resolvedUrl("icons/kog-symbolic.svg")
+        icon.source: {
+            if (appController.playback_state === "playing")
+                return Qt.resolvedUrl("icons/kog-symbolic-play.svg")
+            if (appController.playback_state === "paused")
+                return Qt.resolvedUrl("icons/kog-symbolic-pause.svg")
+            return Qt.resolvedUrl("icons/kog-symbolic.svg")
+        }
         icon.mask: false
         onActivated: function(reason) {
             if (reason === Platform.SystemTrayIcon.Trigger
@@ -1144,117 +1184,6 @@ ApplicationWindow {
             appController.add_url(urlField.text.trim())
             urlField.text = ""
         }
-
-    Dialog {
-        id: savePlaylistDialog
-
-        // False saves the whole pane, true saves the current selection.
-        property bool forSelection: false
-        property string pendingText: ""
-
-        function openFor(useSelection) {
-            forSelection = useSelection
-            pendingText = ""
-            open()
-        }
-        function updateAcceptButton() {
-            const button = standardButton(Dialog.Ok)
-            if (button)
-                button.enabled = nameField.text.trim().length > 0
-        }
-
-        anchors.centerIn: parent
-        width: Math.min(480, root.width - 48)
-        modal: true
-        title: forSelection ? qsTr("Save Selection as Playlist") : qsTr("Save Playlist")
-        standardButtons: Dialog.Ok | Dialog.Cancel
-        closePolicy: Popup.CloseOnEscape
-        onOpened: {
-            nameField.text = pendingText
-            nameField.forceActiveFocus()
-            nameField.selectAll()
-            updateAcceptButton()
-        }
-        onAccepted: {
-            if (savePlaylistDialog.forSelection)
-                appController.save_selection_as_playlist(
-                    root.selectedRows.join(","), nameField.text.trim())
-            else
-                appController.save_pane_as_playlist(nameField.text.trim())
-            nameField.text = ""
-        }
-
-        contentItem: ColumnLayout {
-            spacing: 10
-
-            Label {
-                Layout.fillWidth: true
-                text: savePlaylistDialog.forSelection
-                    ? qsTr("Name the new playlist. The selected rows are saved into it.")
-                    : qsTr("Name the new playlist. It appears at the bottom of the playlists list.")
-                wrapMode: Text.WordWrap
-            }
-            TextField {
-                id: nameField
-
-                Layout.fillWidth: true
-                placeholderText: qsTr("Playlist name")
-                maximumLength: 120
-                selectByMouse: true
-                onTextChanged: savePlaylistDialog.updateAcceptButton()
-                onAccepted: if (text.trim().length > 0) savePlaylistDialog.accept()
-            }
-        }
-    }
-
-    Dialog {
-        id: createPlaylistDialog
-
-        function openFor() {
-            open()
-        }
-        function updateAcceptButton() {
-            const button = standardButton(Dialog.Ok)
-            if (button)
-                button.enabled = createNameField.text.trim().length > 0
-        }
-
-        anchors.centerIn: parent
-        width: Math.min(480, root.width - 48)
-        modal: true
-        title: qsTr("Create Playlist")
-        standardButtons: Dialog.Ok | Dialog.Cancel
-        closePolicy: Popup.CloseOnEscape
-        onOpened: {
-            createNameField.text = ""
-            createNameField.forceActiveFocus()
-            updateAcceptButton()
-        }
-        onAccepted: {
-            appController.create_playlist(createNameField.text.trim())
-            createNameField.text = ""
-        }
-
-        contentItem: ColumnLayout {
-            spacing: 10
-
-            Label {
-                Layout.fillWidth: true
-                text: qsTr("Name the new empty playlist. Add songs later from the file tree or the playlist pane.")
-                wrapMode: Text.WordWrap
-            }
-            TextField {
-                id: createNameField
-
-                Layout.fillWidth: true
-                placeholderText: qsTr("Playlist name")
-                maximumLength: 120
-                selectByMouse: true
-                onTextChanged: createPlaylistDialog.updateAcceptButton()
-                onAccepted: if (text.trim().length > 0) createPlaylistDialog.accept()
-            }
-        }
-    }
 
     Dialog {
         id: duplicatePlaylistDialog
@@ -2585,14 +2514,11 @@ ApplicationWindow {
                     sectionTitle: qsTr("Playlists")
                     sectionExpanded: root.playlistsSectionExpanded
                     showAddButton: true
-                    addToolTip: qsTr("Create empty playlist")
-                    showSaveButton: true
-                    saveToolTip: root.selectedRows.length > 0
-                        ? qsTr("Save current selection as a new playlist")
-                        : qsTr("Save current playlist as a new playlist")
+                    addToolTip: root.selectedRows.length > 0
+                        ? qsTr("Create playlist from selection")
+                        : qsTr("Create playlist from this pane")
                     onToggled: root.playlistsSectionExpanded = !root.playlistsSectionExpanded
-                    onAddClicked: createPlaylistDialog.openFor()
-                    onSaveClicked: savePlaylistDialog.openFor(root.selectedRows.length > 0)
+                    onAddClicked: root.quickCreatePlaylist()
                 }
 
                 Item {

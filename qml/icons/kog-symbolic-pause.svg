@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <circle cx="32" cy="32" r="32" fill="#000"/>
+  <g transform="translate(2 2) scale(.9375)">
+    <g fill="#fff">
+      <rect x="27" y="1" width="10" height="15" rx="3"/>
+      <rect x="27" y="48" width="10" height="15" rx="3"/>
+      <rect x="48" y="27" width="15" height="10" rx="3"/>
+      <rect x="1" y="27" width="15" height="10" rx="3"/>
+      <rect x="44.5" y="5.8" width="10" height="15" rx="3" transform="rotate(45 49.5 13.3)"/>
+      <rect x="9.5" y="40.8" width="10" height="15" rx="3" transform="rotate(45 14.5 48.3)"/>
+      <rect x="43.8" y="41.5" width="15" height="10" rx="3" transform="rotate(45 51.3 46.5)"/>
+      <rect x="5.2" y="12.5" width="15" height="10" rx="3" transform="rotate(45 12.7 17.5)"/>
+      <circle cx="32" cy="32" r="23"/>
+    </g>
+    <circle cx="32" cy="32" r="14.5" fill="#000"/>
+    <path fill="#fff" transform="translate(14.6 15.65) scale(1.45)"
+          d="M12 3v10.55A4 4 0 0 0 10 13c-2.21 0-4 1.34-4 3s1.79 3 4 3 4-1.34 4-3V7h4V3z"/>
+  </g>
+  <circle cx="47" cy="16" r="14" fill="#fff"/>
+  <rect x="42" y="9" width="4" height="14" rx="1.5" fill="#000"/>
+  <rect x="49" y="9" width="4" height="14" rx="1.5" fill="#000"/>
+</svg>

@@ -165,6 +165,75 @@ Window {
             duration: 140
             easing.type: Easing.OutCubic
         }
+        DragHandler {
+            id: moveHandler
+            objectName: "notificationDragHandler"
+            target: null
+            acceptedButtons: Qt.LeftButton
+            property real startRight: 0
+            property real startBottom: 0
+            property point lastPoint
+            property real appliedRight: 0
+            property real prevAppliedRight: 0
+            property real appliedBottom: 0
+            property real prevAppliedBottom: 0
+            // Plain 1:1 drag: the surface follows the pointer exactly.
+            // The delta recovery below already subtracts our own applied
+            // shift, so unity gain tracks without runaway.
+            readonly property real followGain: 1.0
+            onActiveChanged: {
+                if (active) {
+                    startRight = root.rightMargin
+                    startBottom = root.bottomMargin
+                    lastPoint = centroid.scenePosition
+                    appliedRight = root.rightMargin
+                    prevAppliedRight = root.rightMargin
+                    appliedBottom = root.bottomMargin
+                    prevAppliedBottom = root.bottomMargin
+                    dismissTimer.stop()
+                } else {
+                    root.savePosition()
+                    if (!root.pointerInside && root.visible)
+                        dismissTimer.restart()
+                }
+            }
+            onActiveTranslationChanged: {
+                if (!active || root.layerPlacement)
+                    return
+                root.rightMargin = Math.max(0, Math.min(startRight - activeTranslation.x,
+                    root.screen.width - root.width))
+                root.bottomMargin = Math.max(0, Math.min(startBottom - activeTranslation.y,
+                    root.screen.height - root.height))
+                root.applyPosition()
+            }
+            onCentroidChanged: {
+                if (!active || !root.layerPlacement)
+                    return
+                // Layer-shell gives pointer coordinates relative to
+                // the surface itself, so a raw delta mixes pointer
+                // motion with the surface motion our last margins
+                // caused. Subtract the applied shift to recover the
+                // true pointer delta, then follow with damping.
+                const next = centroid.scenePosition
+                const dx = (next.x - lastPoint.x)
+                    - (appliedRight - prevAppliedRight)
+                const dy = (next.y - lastPoint.y)
+                    - (appliedBottom - prevAppliedBottom)
+                lastPoint = next
+                prevAppliedRight = appliedRight
+                prevAppliedBottom = appliedBottom
+                root.rightMargin = Math.max(0, Math.min(
+                    appliedRight - followGain * dx,
+                    root.screen.width - root.width))
+                root.bottomMargin = Math.max(0, Math.min(
+                    appliedBottom - followGain * dy,
+                    root.screen.height - root.height))
+                appliedRight = root.rightMargin
+                appliedBottom = root.bottomMargin
+            }
+        }
+        TapHandler {
+
 
         ColumnLayout {
             anchors.fill: parent
@@ -176,74 +245,6 @@ Window {
                 objectName: "notificationHeader"
                 Layout.fillWidth: true
                 spacing: 7
-                DragHandler {
-                    id: moveHandler
-                    objectName: "notificationDragHandler"
-                    target: null
-                    acceptedButtons: Qt.LeftButton
-                    property real startRight: 0
-                    property real startBottom: 0
-                    property point lastPoint
-                    property real appliedRight: 0
-                    property real prevAppliedRight: 0
-                    property real appliedBottom: 0
-                    property real prevAppliedBottom: 0
-                    // Follow gain below 1: the compositor applies margins a
-                    // frame late, so chasing the pointer exactly would
-                    // oscillate. Halfway converges smoothly within frames.
-                    readonly property real followGain: 0.5
-                    onActiveChanged: {
-                        if (active) {
-                            startRight = root.rightMargin
-                            startBottom = root.bottomMargin
-                            lastPoint = centroid.scenePosition
-                            appliedRight = root.rightMargin
-                            prevAppliedRight = root.rightMargin
-                            appliedBottom = root.bottomMargin
-                            prevAppliedBottom = root.bottomMargin
-                            dismissTimer.stop()
-                        } else {
-                            root.savePosition()
-                            if (!root.pointerInside && root.visible)
-                                dismissTimer.restart()
-                        }
-                    }
-                    onActiveTranslationChanged: {
-                        if (!active || root.layerPlacement)
-                            return
-                        root.rightMargin = Math.max(0, Math.min(startRight - activeTranslation.x,
-                            root.screen.width - root.width))
-                        root.bottomMargin = Math.max(0, Math.min(startBottom - activeTranslation.y,
-                            root.screen.height - root.height))
-                        root.applyPosition()
-                    }
-                    onCentroidChanged: {
-                        if (!active || !root.layerPlacement)
-                            return
-                        // Layer-shell gives pointer coordinates relative to
-                        // the surface itself, so a raw delta mixes pointer
-                        // motion with the surface motion our last margins
-                        // caused. Subtract the applied shift to recover the
-                        // true pointer delta, then follow with damping.
-                        const next = centroid.scenePosition
-                        const dx = (next.x - lastPoint.x)
-                            - (appliedRight - prevAppliedRight)
-                        const dy = (next.y - lastPoint.y)
-                            - (appliedBottom - prevAppliedBottom)
-                        lastPoint = next
-                        prevAppliedRight = appliedRight
-                        prevAppliedBottom = appliedBottom
-                        root.rightMargin = Math.max(0, Math.min(
-                            appliedRight - followGain * dx,
-                            root.screen.width - root.width))
-                        root.bottomMargin = Math.max(0, Math.min(
-                            appliedBottom - followGain * dy,
-                            root.screen.height - root.height))
-                        appliedRight = root.rightMargin
-                        appliedBottom = root.bottomMargin
-                    }
-                }
-                TapHandler {
                     acceptedButtons: Qt.RightButton
                     onTapped: positionMenu.popup()
                 }
