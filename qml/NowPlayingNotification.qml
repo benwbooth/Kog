@@ -197,6 +197,9 @@ Window {
                 id: header
                 objectName: "notificationHeader"
                 Layout.fillWidth: true
+                // Side insets clear the corner move buttons.
+                Layout.leftMargin: 22
+                Layout.rightMargin: 22
                 spacing: 7
                 TapHandler {
                     acceptedButtons: Qt.RightButton
@@ -285,6 +288,8 @@ Window {
 
             RowLayout {
                 Layout.fillWidth: true
+                Layout.leftMargin: 22
+                Layout.rightMargin: 22
                 spacing: 4
                 Label {
                     text: root.timeLabel(root.app.position_seconds)
@@ -326,6 +331,8 @@ Window {
 
             Rectangle {
                 Layout.fillWidth: true
+                Layout.leftMargin: 22
+                Layout.rightMargin: 22
                 Layout.preferredHeight: 3
                 radius: 1.5
                 color: root.palette.alternateBase
@@ -339,9 +346,9 @@ Window {
         }
 
         component CornerMoveButton: CogButton {
-            implicitWidth: 22
-            implicitHeight: 22
-            font.pixelSize: 12
+            implicitWidth: 18
+            implicitHeight: 18
+            font.pixelSize: 10
             opacity: hovered ? 1 : 0.55
         }
 
