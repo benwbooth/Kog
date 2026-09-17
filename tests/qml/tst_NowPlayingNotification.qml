@@ -136,6 +136,19 @@ TestCase {
         compare(notification.bottomMargin, 16)
     }
 
+    function test_corner_buttons_move_to_corners() {
+        notification.present()
+        const topLeft = findChild(notification, "cornerTopLeft")
+        const bottomRight = findChild(notification, "cornerBottomRight")
+        verify(topLeft !== null && bottomRight !== null)
+        topLeft.clicked()
+        verify(notification.rightMargin > 16)
+        verify(notification.bottomMargin > 16)
+        bottomRight.clicked()
+        compare(notification.rightMargin, 16)
+        compare(notification.bottomMargin, 16)
+    }
+
     function test_drag_remembers_position_and_reset() {
         notification.resetPosition()
         compare(notification.rightMargin, 16)

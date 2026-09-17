@@ -337,5 +337,53 @@ Window {
                 }
             }
         }
+
+        component CornerMoveButton: CogButton {
+            implicitWidth: 22
+            implicitHeight: 22
+            font.pixelSize: 12
+            opacity: hovered ? 1 : 0.55
+        }
+
+        CornerMoveButton {
+            objectName: "cornerTopLeft"
+            anchors.top: card.top
+            anchors.left: card.left
+            anchors.margins: 3
+            glyph: "↖"
+            toolTip: qsTr("Move to top left")
+            Accessible.name: toolTip
+            onClicked: root.moveToCorner("topLeft")
+        }
+        CornerMoveButton {
+            objectName: "cornerTopRight"
+            anchors.top: card.top
+            anchors.right: card.right
+            anchors.margins: 3
+            glyph: "↗"
+            toolTip: qsTr("Move to top right")
+            Accessible.name: toolTip
+            onClicked: root.moveToCorner("topRight")
+        }
+        CornerMoveButton {
+            objectName: "cornerBottomLeft"
+            anchors.bottom: card.bottom
+            anchors.left: card.left
+            anchors.margins: 3
+            glyph: "↙"
+            toolTip: qsTr("Move to bottom left")
+            Accessible.name: toolTip
+            onClicked: root.moveToCorner("bottomLeft")
+        }
+        CornerMoveButton {
+            objectName: "cornerBottomRight"
+            anchors.bottom: card.bottom
+            anchors.right: card.right
+            anchors.margins: 3
+            glyph: "↘"
+            toolTip: qsTr("Move to bottom right")
+            Accessible.name: toolTip
+            onClicked: root.moveToCorner("bottomRight")
+        }
     }
 }
