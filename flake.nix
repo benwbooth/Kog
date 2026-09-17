@@ -55,8 +55,43 @@
           let
             craneLib = crane.mkLib pkgs;
             # Shared build environment for the dependency closure and the
-            # final crate: third-party dependencies compile once per Cargo.lock
-            # and stay cached while only Kog itself rebuilds per tag.
+            # final crate: third-party dependencies compile once and stay
+            # cached while only Kog itself rebuilds per tag.
+            #
+            # Version bumps must NOT invalidate that cache: the dependency
+            # graph never depends on our own version string, so the deps
+            # build sees manifests with the version pinned to a constant
+            # while the final package builds the real tree (and reports
+            # the real version).
+            normalizedSrc = pkgs.runCommand "kog-deps-src"
+              {
+                nativeBuildInputs = [ pkgs.python3 ];
+              }
+              ''
+                cp -r ${pkgs.lib.cleanSource ./.} $out
+                chmod -R u+w $out
+                ${pkgs.python3}/bin/python3 - <<'PYEOF'
+                import os
+                import re
+                root = os.environ["out"]
+                toml = os.path.join(root, "Cargo.toml")
+                text = open(toml).read()
+                head, sep, tail = text.partition("[dependencies]")
+                assert sep, "Cargo.toml has no [dependencies] section"
+                head = re.sub(r'(?m)^version = "[^"]*"$', 'version = "0.0.0"', head, count=1)
+                open(toml, "w").write(head + sep + tail)
+                lock = os.path.join(root, "Cargo.lock")
+                text = open(lock).read()
+                fixed, count = re.subn(
+                    r'(\[\[package\]\]\nname = "kog"\nversion = ")[^"]*(")',
+                    r"\g<1>0.0.0\g<2>",
+                    text,
+                    count=1,
+                )
+                assert count == 1, "kog stanza not found in Cargo.lock"
+                open(lock, "w").write(fixed)
+                PYEOF
+              '';
             commonArgs = {
               src = pkgs.lib.cleanSource ./.;
               nativeBuildInputs = [ pkgs.cmake pkgs.ninja pkgs.pkg-config pkgs.clang pkgs.mold pkgs.qt6.wrapQtAppsHook ];
@@ -80,7 +115,9 @@
                 export QT_LIBEXEC_PATH="${qtEnv}/libexec"
               '';
             };
-            cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+            cargoArtifacts = craneLib.buildDepsOnly (commonArgs // {
+              src = normalizedSrc;
+            });
           in
           {
             default = craneLib.buildPackage (
