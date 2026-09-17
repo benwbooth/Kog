@@ -2753,6 +2753,27 @@ impl qobject::AppController {
                 false,
             ),
         };
+        self.as_mut().begin_radio_session(
+            root,
+            initial,
+            if resumed {
+                "Random Radio on — resumed".to_owned()
+            } else {
+                "Random Radio on".to_owned()
+            },
+        );
+    }
+
+    /// Spawn the staging worker and install fresh radio state for `root`,
+    /// clearing any ready buffer, deferred tracks, and in-flight jobs from
+    /// the previous folder. Callers choose the round (resumed or fresh)
+    /// and the status line.
+    fn begin_radio_session(
+        mut self: Pin<&mut Self>,
+        root: PathBuf,
+        initial: crate::radio::RoundInitial,
+        status: String,
+    ) {
         let staging = {
             let rust = self.as_ref();
             spawn_staging_worker(
@@ -2783,11 +2804,7 @@ impl qobject::AppController {
             consecutive_dead: 0,
         });
         self.as_mut().set_radio_active(true);
-        self.as_mut().set_status(qstring(if resumed {
-            "Random Radio on — resumed"
-        } else {
-            "Random Radio on"
-        }));
+        self.as_mut().set_status(qstring(status));
     }
 
     /// Fresh shuffle for the running radio session: new seed and cleared
@@ -2816,35 +2833,11 @@ impl qobject::AppController {
             cursors: HashMap::new(),
             dead,
         };
-        let staging = {
-            let rust = self.as_ref();
-            spawn_staging_worker(
-                root,
-                rust.rust().decoder_settings.clone(),
-                rust.rust().read_cue_sheets_in_folders,
-                initial,
-            )
-        };
-        let (staging, dead) = match staging {
-            Ok(staging) => staging,
-            Err(error) => {
-                self.as_mut().set_status(qstring(error));
-                return;
-            }
-        };
-        self.as_mut().rust_mut().radio = Some(RadioState {
-            ready: VecDeque::new(),
-            deferred: VecDeque::new(),
-            staged_count: 0,
-            expand_jobs: Vec::new(),
-            dead,
-            staging: Some(staging),
-            kickstart_armed: false,
-            consecutive_dead: 0,
-        });
-        self.as_mut().set_radio_active(true);
-        self.as_mut()
-            .set_status(qstring("Random Radio — fresh shuffle"));
+        self.as_mut().begin_radio_session(
+            root,
+            initial,
+            "Random Radio — fresh shuffle".to_owned(),
+        );
     }
 
     pub fn poll_radio(mut self: Pin<&mut Self>) {
@@ -6634,6 +6627,28 @@ impl qobject::AppController {
         self.as_mut().rust_mut().directory = path.clone();
         self.as_mut()
             .set_directory_path(qstring(path.to_string_lossy()));
+        // A new tree root invalidates everything radio staged from the old
+        // one: drop the ready buffer and in-flight jobs, then stage from
+        // the new folder (resuming its saved round when one waits).
+        if self.as_ref().rust().radio_active {
+            self.as_mut().teardown_radio();
+            let (initial, resumed) = match load_radio_round(&path) {
+                Some(initial) => (initial, true),
+                None => (
+                    crate::radio::RoundInitial::fresh(crate::radio::random_seed()),
+                    false,
+                ),
+            };
+            self.as_mut().begin_radio_session(
+                path,
+                initial,
+                if resumed {
+                    "Random Radio — new folder, resumed".to_owned()
+                } else {
+                    "Random Radio — new folder, staging fresh".to_owned()
+                },
+            );
+        }
     }
 }
 
