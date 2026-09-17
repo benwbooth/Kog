@@ -9,12 +9,10 @@ Window {
     required property var app
     signal openPlayer()
     property int displayDuration: 8000
+    property var layerPlacement: null
     property alias settingsFile: placement.fileName
-    // Saved top-left position; -1 means auto-place bottom-right. Only
-    // meaningful where the platform lets clients position windows (X11
-    // and offscreen); Wayland compositors place new windows themselves.
-    property real posX: placement.posX
-    property real posY: placement.posY
+    property real rightMargin: placement.rightMargin
+    property real bottomMargin: placement.bottomMargin
     readonly property bool dragging: moveHandler.active
     readonly property bool pointerInside: hover.hovered
     readonly property bool playing: app.playback_state === "playing"
@@ -36,40 +34,39 @@ Window {
     Settings {
         id: placement
         category: "NowPlayingNotification"
-        property real posX: -1
-        property real posY: -1
+        property real rightMargin: 16
+        property real bottomMargin: 16
     }
 
-    function applyPosition() {
-        const availX = screen.virtualX
-        const availY = screen.virtualY
-        const availW = screen.desktopAvailableWidth
-        const availH = screen.desktopAvailableHeight
-        if (posX >= 0 && posY >= 0) {
-            x = Math.max(availX, Math.min(posX, availX + availW - width))
-            y = Math.max(availY, Math.min(posY, availY + availH - height))
-        } else {
-            x = availX + availW - width - 16
-            y = availY + availH - height - 16
+    Component.onCompleted: {
+        if (Qt.platform.pluginName === "wayland" || Qt.platform.pluginName === "wayland-egl") {
+            const component = Qt.createComponent(Qt.resolvedUrl("NotificationLayerShell.qml"))
+            if (component.status === Component.Ready)
+                layerPlacement = component.createObject(root, { target: root })
         }
     }
 
+    function applyPosition() {
+        if (layerPlacement)
+            return // Layer-shell anchors and margins place the surface on Wayland.
+        x = screen.virtualX + screen.desktopAvailableWidth - width - rightMargin
+        y = screen.virtualY + screen.desktopAvailableHeight - height - bottomMargin
+    }
+
     function resetPosition() {
-        posX = -1
-        posY = -1
-        placement.setValue("posX", -1)
-        placement.setValue("posY", -1)
-        placement.sync()
+        rightMargin = 16
+        bottomMargin = 16
+        savePosition()
         applyPosition()
     }
 
     function savePosition() {
-        posX = x
-        posY = y
+        placement.rightMargin = rightMargin
+        placement.bottomMargin = bottomMargin
         // Settings batches property writes; persist immediately so quitting
         // straight after a drag does not lose the new position.
-        placement.setValue("posX", posX)
-        placement.setValue("posY", posY)
+        placement.setValue("rightMargin", rightMargin)
+        placement.setValue("bottomMargin", bottomMargin)
         placement.sync()
     }
 
@@ -82,6 +79,8 @@ Window {
     function present() {
         if (app.current_index < 0)
             return
+        rightMargin = Math.max(0, Math.min(rightMargin, screen.width - width))
+        bottomMargin = Math.max(0, Math.min(bottomMargin, screen.height - height))
         applyPosition()
         show()
         if (!pointerInside && !dragging)
@@ -171,20 +170,60 @@ Window {
             objectName: "notificationDragHandler"
             target: null
             acceptedButtons: Qt.LeftButton
+            // Latest pointer position; only the frame ticker below
+            // turns it into margins, at most once per frame with
+            // damping, so multi-frame compositor latency stays stable
+            // instead of oscillating into runaway.
+            property point pendingPoint
+            property bool hasPending: false
+            property real lastX: 0
+            property real lastY: 0
+            readonly property real followGain: 0.85
             onActiveChanged: {
-                // Active requires a real drag: presses and clicks never
-                // activate the handler. The compositor moves the window
-                // itself, so there is no follow math to fight over: this
-                // is the same mechanism as the main window's title bar.
                 if (active) {
+                    const at = centroid.scenePosition
+                    lastX = at.x
+                    lastY = at.y
+                    hasPending = false
+                    dragFrameTimer.restart()
                     dismissTimer.stop()
-                    root.startSystemMove()
                 } else {
+                    dragFrameTimer.stop()
+                    flushDrag()
                     root.savePosition()
                     if (!root.pointerInside && root.visible)
                         dismissTimer.restart()
                 }
             }
+            onCentroidChanged: {
+                if (!active)
+                    return
+                pendingPoint = centroid.scenePosition
+                hasPending = true
+            }
+            function flushDrag() {
+                if (!hasPending)
+                    return
+                hasPending = false
+                const dx = followGain * (pendingPoint.x - lastX)
+                const dy = followGain * (pendingPoint.y - lastY)
+                lastX = pendingPoint.x
+                lastY = pendingPoint.y
+                root.rightMargin = Math.max(0, Math.min(
+                    root.rightMargin - dx,
+                    root.screen.width - root.width))
+                root.bottomMargin = Math.max(0, Math.min(
+                    root.bottomMargin - dy,
+                    root.screen.height - root.height))
+                if (!root.layerPlacement)
+                    root.applyPosition()
+            }
+        }
+        Timer {
+            id: dragFrameTimer
+            interval: 16
+            repeat: true
+            onTriggered: moveHandler.flushDrag()
         }
 
         ColumnLayout {

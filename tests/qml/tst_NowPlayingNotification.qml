@@ -123,36 +123,30 @@ TestCase {
 
     function test_drag_remembers_position_and_reset() {
         notification.resetPosition()
-        compare(notification.posX, -1)
-        compare(notification.posY, -1)
         notification.present()
         const header = findChild(notification, "notificationHeader")
         waitForRendering(header)
         wait(50)
-        // A press-drag-release cycle must complete cleanly; the
-        // compositor owns the actual movement (a no-op offscreen).
-        const startX = notification.x
-        const startY = notification.y
         mousePress(header, 170, 12)
+        mouseMove(header, 140, 12, 30)
         mouseMove(header, 100, 12, 30)
-        mouseRelease(header, 100, 12)
-        verify(Math.abs(notification.x - startX) < 1)
-        verify(Math.abs(notification.y - startY) < 1)
-        // Saved positions round-trip across instances.
-        notification.x = startX + 40
-        notification.y = startY + 30
-        notification.savePosition()
+        mouseRelease(header, notification.layerPlacement ? 170 : 100, 12)
+        // Release flushes any pending frame update, so the final
+        // margins are deterministic here regardless of tick timing.
+        verify(notification.rightMargin > 16)
+        const movedRight = notification.rightMargin
+        if (notification.layerPlacement)
+            compare(notification.layerPlacement.surface.margins.right, Math.round(movedRight))
         const component = Qt.createComponent("../../qml/NowPlayingNotification.qml")
         compare(component.status, Component.Ready)
         const restored = component.createObject(null, {
             app: playback, settingsFile: notification.settingsFile
         })
         verify(restored !== null)
-        tryCompare(restored, "posX", notification.x)
-        tryCompare(restored, "posY", notification.y)
+        tryCompare(restored, "rightMargin", movedRight)
         restored.destroy()
         notification.resetPosition()
-        compare(notification.posX, -1)
-        compare(notification.posY, -1)
+        compare(notification.rightMargin, 16)
+        compare(notification.bottomMargin, 16)
     }
 }

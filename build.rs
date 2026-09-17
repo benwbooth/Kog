@@ -115,6 +115,7 @@ fn main() {
     .crate_include_root(Some("native".to_owned()))
     .qrc("web/modern/runtime.qrc")
     .qrc_resources([
+        "qml/NotificationLayerShell.qml",
         "qml/icons/application-menu.svg",
         "qml/icons/application-menu-light.svg",
         "qml/icons/audio-volume-high.svg",
