@@ -1535,6 +1535,12 @@ ApplicationWindow {
             icon.name: "document-open"
             onTriggered: appController.load_playlist_into_pane(root.playlistMenuPid)
         }
+        MenuItem {
+            text: qsTr("Remove Missing Files")
+            icon.name: "edit-clear"
+            enabled: root.playlistMenuPid > 0
+            onTriggered: appController.prune_missing_playlist_entries(root.playlistMenuPid)
+        }
         MenuSeparator {}
         MenuItem {
             text: qsTr("Rename")

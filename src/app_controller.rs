@@ -174,6 +174,8 @@ pub mod qobject {
         #[qinvokable]
         fn load_playlist_into_pane(self: Pin<&mut AppController>, id: i32);
         #[qinvokable]
+        fn prune_missing_playlist_entries(self: Pin<&mut AppController>, id: i32) -> QString;
+        #[qinvokable]
         fn save_pane_as_playlist(self: Pin<&mut AppController>, name: QString) -> QString;
         #[qinvokable]
         fn save_selection_as_playlist(
@@ -1643,6 +1645,17 @@ fn collect_stored_entries(tracks: &[Track]) -> (Vec<crate::db::StoredEntry>, usi
         }
     }
     (entries, skipped)
+}
+
+/// True when a stored entry points at a file that is gone. Archives
+/// only need their outer file, and remotes are never checked: an
+/// unmounted drive must not read as missing files.
+fn stored_entry_is_missing(entry: &crate::db::StoredEntry) -> bool {
+    use crate::db::{KIND_ARCHIVE, KIND_LOCAL};
+    match entry.kind.as_str() {
+        KIND_LOCAL | KIND_ARCHIVE => !std::path::Path::new(&entry.path).exists(),
+        _ => false,
+    }
 }
 
 /// Full-fidelity database row for a track, or None when the track cannot
@@ -4188,6 +4201,56 @@ impl qobject::AppController {
         );
     }
 
+    /// Drop the entries of a stored playlist whose files are gone and
+    /// report how many went. Never touches Favorites (id 0 lives in the
+    /// stars table, not playlist rows).
+    pub fn prune_missing_playlist_entries(mut self: Pin<&mut Self>, id: i32) -> QString {
+        let outcome: Result<serde_json::Value, String> = (|| {
+            if id == 0 {
+                return Err("Favorites are cleaned from their starred files instead".to_owned());
+            }
+            let rows = self
+                .as_ref()
+                .rust()
+                .library_db
+                .playlist_entry_rows(id as i64)?;
+            let doomed: Vec<i64> = rows
+                .iter()
+                .filter(|(_, entry)| stored_entry_is_missing(entry))
+                .map(|(row_id, _)| *row_id)
+                .collect();
+            let removed = self
+                .as_ref()
+                .rust()
+                .library_db
+                .delete_entry_rows(id as i64, &doomed)?;
+            Ok(serde_json::json!({
+                "ok": true,
+                "id": id,
+                "removed": removed,
+                "checked": rows.len(),
+            }))
+        })();
+        let status = match &outcome {
+            Ok(value) => {
+                let removed = value
+                    .get("removed")
+                    .and_then(|removed| removed.as_u64())
+                    .unwrap_or(0);
+                Some(if removed == 0 {
+                    "No missing files in the playlist".to_owned()
+                } else {
+                    format!(
+                        "Removed {removed} missing file{} from the playlist",
+                        if removed == 1 { "" } else { "s" }
+                    )
+                })
+            }
+            Err(_) => None,
+        };
+        self.playlist_result(outcome, status)
+    }
+
     /// Replace the pane with a stored playlist (or Favorites) and start
     /// playing it from the top.
     pub fn load_playlist_into_pane(mut self: Pin<&mut Self>, id: i32) {
@@ -6430,9 +6493,10 @@ mod tests {
         count_delete_entries, cover_art_key, dropped_urls_from_json, local_paths_from_json,
         move_selected_items, natural_compare, normalize_playlist_save_path, ordered_directory_files,
         output_devices_json, parse_delete_paths_json, parse_row_indices, playlist_entry_for_track,
-        purged_track_indices, remove_path_permanent, prepare_scan_file,
-        resolve_output_device, sample_rate_label, sanitize_delete_paths, scan_directory_paths,
-        sort_visible_indices, star_key_for_track, track_filename, track_path, valid_equalizer_gain,
+        purged_track_indices, remove_path_permanent, prepare_scan_file, resolve_output_device,
+        sample_rate_label, sanitize_delete_paths, scan_directory_paths, sort_visible_indices,
+        star_key_for_track, stored_entry_is_missing, track_filename, track_path,
+        valid_equalizer_gain,
     };
     use crate::decoder::{ArchiveOrigin, DecoderRegistry, DecoderSettings, PlaybackSource};
     use crate::playback::OutputDevice;
@@ -6873,6 +6937,41 @@ mod tests {
     fn row_index_parser_sorts_deduplicates_and_bounds_input() {
         assert_eq!(parse_row_indices("3, 1,3,garbage,8,0", 5), [0, 1, 3]);
         assert!(parse_row_indices("-1,wrong", 5).is_empty());
+    }
+
+    #[test]
+    fn missing_entry_check_ignores_remotes_and_checks_archive_outers() {
+        let temporary = tempdir().expect("create temporary music folder");
+        let present = temporary.path().join("song.flac");
+        fs::write(&present, []).expect("write present file");
+        let stored = |kind: &str, path: &str| crate::db::StoredEntry {
+            kind: kind.to_owned(),
+            path: path.to_owned(),
+            entry: String::new(),
+            fragment: None,
+        };
+        assert!(!stored_entry_is_missing(&stored(
+            crate::db::KIND_LOCAL,
+            present.to_str().unwrap()
+        )));
+        assert!(stored_entry_is_missing(&stored(
+            crate::db::KIND_LOCAL,
+            temporary.path().join("gone.flac").to_str().unwrap()
+        )));
+        assert!(stored_entry_is_missing(&stored(crate::db::KIND_LOCAL, "")));
+        assert!(!stored_entry_is_missing(&stored(
+            crate::db::KIND_ARCHIVE,
+            present.to_str().unwrap()
+        )));
+        assert!(stored_entry_is_missing(&stored(
+            crate::db::KIND_ARCHIVE,
+            temporary.path().join("gone.zip").to_str().unwrap()
+        )));
+        assert!(!stored_entry_is_missing(&stored(
+            crate::db::KIND_REMOTE,
+            "https://example.invalid/stream"
+        )));
+        assert!(!stored_entry_is_missing(&stored("bogus-kind", "/music/x.flac")));
     }
 
     #[test]

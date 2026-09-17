@@ -377,6 +377,50 @@ impl LibraryDb {
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| format!("reading playlist: {error}"))
     }
+
+    /// Entry rows with their row ids, for surgical deletes.
+    pub fn playlist_entry_rows(
+        &self,
+        playlist_id: i64,
+    ) -> Result<Vec<(i64, StoredEntry)>, String> {
+        let mut statement = self
+            .conn
+            .prepare(
+                "SELECT id, kind, path, entry, fragment FROM playlist_entries
+                 WHERE playlist_id = ?1 ORDER BY position, id",
+            )
+            .map_err(|error| format!("reading playlist: {error}"))?;
+        statement
+            .query_map([playlist_id], |row| {
+                Ok((
+                    row.get(0)?,
+                    StoredEntry {
+                        kind: row.get(1)?,
+                        path: row.get(2)?,
+                        entry: row.get(3)?,
+                        fragment: row.get(4)?,
+                    },
+                ))
+            })
+            .map_err(|error| format!("reading playlist: {error}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("reading playlist: {error}"))
+    }
+
+    /// Delete specific entry rows. Returns the number removed.
+    pub fn delete_entry_rows(&self, playlist_id: i64, ids: &[i64]) -> Result<usize, String> {
+        let mut removed = 0_usize;
+        for id in ids {
+            removed += self
+                .conn
+                .execute(
+                    "DELETE FROM playlist_entries WHERE playlist_id = ?1 AND id = ?2",
+                    rusqlite::params![playlist_id, id],
+                )
+                .map_err(|error| format!("cleaning playlist: {error}"))?;
+        }
+        Ok(removed)
+    }
 }
 
 #[cfg(test)]
@@ -400,6 +444,35 @@ mod tests {
         db.set_star("a", KIND_LOCAL, "/music/a.flac", "", None, false)
             .unwrap();
         assert!(!db.is_starred("a"));
+    }
+
+    #[test]
+    fn playlist_entry_rows_delete_by_id() {
+        let db = memory_db();
+        let list = db.create_playlist("Cleanup").unwrap();
+        let entry = |path: &str| StoredEntry {
+            kind: KIND_LOCAL.to_owned(),
+            path: path.to_owned(),
+            entry: String::new(),
+            fragment: None,
+        };
+        db.append_entries(
+            list,
+            &[entry("/music/gone.flac"), entry("/music/kept.flac")],
+        )
+        .unwrap();
+        let rows = db.playlist_entry_rows(list).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(db.delete_entry_rows(list, &[]).unwrap(), 0);
+        let gone = rows
+            .iter()
+            .find(|(_, stored)| stored.path == "/music/gone.flac")
+            .map(|(row_id, _)| *row_id)
+            .expect("missing row id");
+        assert_eq!(db.delete_entry_rows(list, &[gone, 999_999]).unwrap(), 1);
+        let remaining = db.playlist_entry_rows(list).unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].1.path, "/music/kept.flac");
     }
 
     #[test]
