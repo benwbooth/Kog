@@ -41,23 +41,24 @@ jobs:
             qml6-module-qtwebchannel qml6-module-qtwebengine \
             qml6-module-qtquick qml6-module-qtquick-controls \
             qml6-module-qtquick-layouts qml6-module-qtquick-templates \
-            qml6-module-qtquick-window zlib1g-dev
+            qml6-module-qtquick-window zlib1g-dev mold
 
       - name: Install Rust
         run: |
           rustup toolchain install stable --profile minimal
           rustup default stable
 
-      - uses: actions/cache@v5
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-linux-${{ hashFiles('Cargo.lock') }}
+          shared-key: kog-linux
+          # Release builds run on tags via workflow_dispatch, where the
+          # default save-if is false: always refresh the cache instead.
+          save-if: ${{ true }}
 
       - name: Build release binary
         env:
           QMAKE: /usr/bin/qmake6
+          RUSTFLAGS: -C link-arg=-fuse-ld=mold
         run: cargo build --release --locked
 
       - name: Build AppImage and portable AppDir

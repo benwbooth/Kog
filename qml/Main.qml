@@ -2893,8 +2893,10 @@ ApplicationWindow {
                     highlightMoveDuration: 0
                     maximumFlickVelocity: 12000
                     flickDeceleration: 2200
-                    onDraggingChanged: if (dragging)
+                    onDraggingChanged: if (dragging) {
                         playlistKineticWheel.stop()
+                        playlistHorizontalWheel.stop()
+                    }
 
                     Keys.onReturnPressed: if (root.selectedRow >= 0)
                         appController.play_index(root.selectedRow)
@@ -2965,12 +2967,16 @@ ApplicationWindow {
                     ScrollBar.vertical: ScrollBar {
                         id: playlistVerticalScrollBar
                         policy: ScrollBar.AsNeeded
-                        onPressedChanged: if (pressed)
+                        onPressedChanged: if (pressed) {
                             playlistKineticWheel.stop()
+                            playlistHorizontalWheel.stop()
+                        }
                     }
                     ScrollBar.horizontal: ScrollBar {
                         id: playlistHorizontalScrollBar
                         policy: ScrollBar.AsNeeded
+                        onPressedChanged: if (pressed)
+                            playlistHorizontalWheel.stop()
                     }
 
                     footer: Item {
@@ -2979,11 +2985,16 @@ ApplicationWindow {
                     }
 
                     // Physical mouse wheels use Kog's per-frame kinetic
-                    // motion. Touchpad gestures still pass through to Qt so
-                    // the platform can preserve their native pixel precision.
+                    // motion on both axes. Touchpad gestures keep their
+                    // native pixel precision per axis the same way.
                     KineticWheelHandler {
                         id: playlistKineticWheel
                         view: playlistView
+                    }
+                    KineticWheelHandler {
+                        id: playlistHorizontalWheel
+                        view: playlistView
+                        orientation: Qt.Horizontal
                     }
 
                     Item {

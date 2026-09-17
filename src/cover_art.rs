@@ -86,6 +86,122 @@ pub fn cache_directory(base: &Path) -> PathBuf {
     base.join(CACHE_SUBDIRECTORY)
 }
 
+/// Directory names that commonly hold scanned artwork next to music.
+const ART_SUBDIRECTORIES: [&str; 5] = ["covers", "cover", "artwork", "scans", "scan"];
+/// File stems preferred as the primary artwork, most specific first.
+const PREFERRED_ART_STEMS: [&str; 6] =
+    ["front", "frontcover", "cover", "folder", "album", "coverart"];
+/// Substrings marking booklet/back/disc scans: never promoted when any
+/// other image exists, so a back cover never becomes the artwork.
+const REJECTED_ART_SUBSTRINGS: [&str; 10] = [
+    "back", "rear", "disc", "tray", "inside", "inlay", "spine", "label", "cd", "dvd",
+];
+
+/// Best sibling artwork for a music file: exact front/cover/folder-style
+/// names beside the file, then in well-known art subdirectories, then any
+/// other image there that is not obviously a back/disc scan. Rips that
+/// keep scans in a `covers/` folder (with untagged `01.flac`-style files
+/// and no embeddable art) resolve through the last two tiers.
+pub fn sibling_cover_bytes(file_path: &Path) -> Option<Vec<u8>> {
+    if !file_path.is_file() {
+        return None;
+    }
+    let dir = file_path.parent()?;
+    let mut subdirs = vec![dir.to_path_buf()];
+    for name in ART_SUBDIRECTORIES {
+        let sub = dir.join(name);
+        if sub.is_dir() {
+            subdirs.push(sub);
+        }
+    }
+    // Tiers 1+2: exact preferred stems, track directory first.
+    for sub in &subdirs {
+        let mut ranked: Vec<(usize, PathBuf)> = art_file_candidates(sub)
+            .into_iter()
+            .filter_map(|candidate| {
+                PREFERRED_ART_STEMS
+                    .iter()
+                    .position(|keep| *keep == stem_lowercase(&candidate))
+                    .map(|rank| (rank, candidate))
+            })
+            .collect();
+        ranked.sort();
+        for (_, path) in ranked {
+            if let Some(bytes) = read_valid_art(&path) {
+                return Some(bytes);
+            }
+        }
+    }
+    // Tier 3: anything else in the art subdirectories except
+    // back/disc-style scans.
+    for sub in subdirs.iter().skip(1) {
+        for candidate in art_file_candidates(sub) {
+            let stem = stem_lowercase(&candidate);
+            if REJECTED_ART_SUBSTRINGS
+                .iter()
+                .any(|reject| stem.contains(reject))
+            {
+                continue;
+            }
+            if let Some(bytes) = read_valid_art(&candidate) {
+                return Some(bytes);
+            }
+        }
+    }
+    None
+}
+
+/// Folder-scoped cache key so sibling art is shared across the folder
+/// without leaking into other folders' files.
+pub fn folder_cover_key(folder: &Path) -> String {
+    cache_key("folder", &folder.to_string_lossy())
+}
+
+fn art_file_candidates(dir: &Path) -> Vec<PathBuf> {
+    let mut entries = Vec::new();
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return entries;
+    };
+    for entry in read.filter_map(Result::ok) {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let image = path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| {
+                let extension = extension.to_ascii_lowercase();
+                extension == "jpg" || extension == "jpeg" || extension == "png"
+            });
+        if image {
+            entries.push(path);
+        }
+    }
+    entries.sort();
+    entries
+}
+
+fn stem_lowercase(path: &Path) -> String {
+    path.file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+}
+
+fn read_valid_art(path: &Path) -> Option<Vec<u8>> {
+    let metadata = std::fs::metadata(path).ok()?;
+    if metadata.len() == 0 || metadata.len() > u64::from(MAX_COVER_BYTES) {
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    if sniff_image_kind(&bytes).is_some() {
+        Some(bytes)
+    } else {
+        None
+    }
+}
+
 /// A previously cached cover for this key, if any.
 pub fn cache_lookup(cache_dir: &Path, key: &str) -> Option<PathBuf> {
     for extension in ["jpg", "png"] {
@@ -482,5 +598,92 @@ mod tests {
             "Alisia Dragoon"
         );
         assert_eq!(fallback_album(Path::new("/song.flac"), ""), "");
+    }
+
+    fn write_jpeg(path: &Path) {
+        std::fs::write(path, [0xFF, 0xD8, 0xFF, 0xE0, 0x01, 0x02]).expect("write jpeg");
+    }
+
+    fn write_png(path: &Path) {
+        std::fs::write(
+            path,
+            [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A],
+        )
+        .expect("write png");
+    }
+
+    #[test]
+    fn sibling_art_prefers_named_files_beside_the_track() {
+        let temporary = tempfile::tempdir().expect("temporary music");
+        let track = temporary.path().join("01.flac");
+        std::fs::write(&track, []).expect("write track");
+        // Case-insensitive exact stems win over loose images.
+        write_jpeg(&temporary.path().join("Folder.JPG"));
+        write_png(&temporary.path().join("random.png"));
+        let found = sibling_cover_bytes(&track).expect("sibling art");
+        assert_eq!(sniff_image_kind(&found), Some(ImageKind::Jpeg));
+    }
+
+    #[test]
+    fn sibling_art_skips_junk_names_and_back_scans() {
+        let temporary = tempfile::tempdir().expect("temporary music");
+        let track = temporary.path().join("01.flac");
+        std::fs::write(&track, []).expect("write track");
+        // Junk front art falls through to the valid cover.
+        std::fs::write(temporary.path().join("front.jpg"), b"not an image")
+            .expect("write junk");
+        write_png(&temporary.path().join("cover.png"));
+        let found = sibling_cover_bytes(&track).expect("sibling art");
+        assert_eq!(sniff_image_kind(&found), Some(ImageKind::Png));
+        // A covers/ folder with only booklet/back/disc scans resolves to
+        // the first non-rejected image, never the back cover.
+        std::fs::remove_file(temporary.path().join("front.jpg")).unwrap();
+        std::fs::remove_file(temporary.path().join("cover.png")).unwrap();
+        let scans = temporary.path().join("covers");
+        std::fs::create_dir(&scans).expect("covers dir");
+        for name in ["b1.png", "b2.png", "back.png", "c1.png", "c2.png", "cdscan.png"] {
+            write_png(&scans.join(name));
+        }
+        std::fs::remove_file(scans.join("b1.png")).unwrap();
+        std::fs::remove_file(scans.join("b2.png")).unwrap();
+        std::fs::remove_file(scans.join("c1.png")).unwrap();
+        std::fs::remove_file(scans.join("c2.png")).unwrap();
+        // Only back/disc scans left: nothing promotable.
+        assert_eq!(sibling_cover_bytes(&track), None);
+    }
+
+    #[test]
+    fn sibling_art_falls_back_to_first_loose_scan() {
+        let temporary = tempfile::tempdir().expect("temporary music");
+        let track = temporary.path().join("01.flac");
+        std::fs::write(&track, []).expect("write track");
+        let scans = temporary.path().join("covers");
+        std::fs::create_dir(&scans).expect("covers dir");
+        for name in ["b1.png", "b2.png", "back.png", "c1.png", "c2.png", "cdscan.png"] {
+            write_png(&scans.join(name));
+        }
+        assert!(sibling_cover_bytes(&track).is_some());
+    }
+
+    #[test]
+    fn sibling_art_ignores_missing_files_and_oversized_images() {
+        assert_eq!(
+            sibling_cover_bytes(Path::new("/music/nowhere/song.flac")),
+            None
+        );
+        let temporary = tempfile::tempdir().expect("temporary music");
+        let track = temporary.path().join("01.flac");
+        std::fs::write(&track, []).expect("write track");
+        let big = vec![0xFF_u8; MAX_COVER_BYTES as usize + 1];
+        std::fs::write(temporary.path().join("folder.jpg"), &big).expect("write big");
+        assert_eq!(sibling_cover_bytes(&track), None);
+    }
+
+    #[test]
+    fn folder_cover_key_scopes_to_folders() {
+        let left = folder_cover_key(Path::new("/music/rip"));
+        assert_eq!(left, folder_cover_key(Path::new("/music/rip")));
+        assert_ne!(left, folder_cover_key(Path::new("/music/other")));
+        assert_ne!(left, cache_key("Artist", "Album"));
     }
 }

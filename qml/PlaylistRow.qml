@@ -15,7 +15,6 @@ Item {
     property string searchQuery: ""
     property bool selected: false
     property bool hovered: false
-    property bool playlistCellTipActive: false
     property int revision: app.playlist_revision
     readonly property string statusMessage: {
         revision
@@ -39,15 +38,50 @@ Item {
     // star column. Cells start at x=0 with no row-level margins, so the
     // hit test just walks the visible column widths.
     function starColumnHit(x) {
+        const column = columnAt(x)
+        return column !== null && column.id === "star"
+    }
+
+    function columnAt(x) {
         let offset = 0
         const cols = columns.visibleColumns
         for (let i = 0; i < cols.length; i++) {
-            const col = cols[i]
-            if (col.id === "star")
-                return x >= offset && x < offset + col.width
-            offset += col.width
+            const column = cols[i]
+            if (x >= offset && x < offset + column.width)
+                return column
+            offset += column.width
         }
-        return false
+        return null
+    }
+
+    // Grayed out once playback proves the file is gone; skipped over
+    // by next/previous/auto-advance from then on.
+    readonly property bool isMissing: {
+        root.revision
+        return root.app.track_missing_at(root.rowIndex)
+    }
+
+    // Per-row star state for the unified tooltip below.
+    readonly property bool rowStarred: {
+        root.revision
+        return String(root.app.track_value_at(root.rowIndex, "star")).length > 0
+    }
+
+    // Single tooltip for the whole row, driven by the proven rowPointer
+    // hover path: field contents under the cursor, Star/Unstar over the
+    // star column, and the playback status only over empty cells. One
+    // tooltip means no competing popups and no hover-event races.
+    readonly property string hoverTip: {
+        root.revision
+        if (rowPointer.hoverX < 0)
+            return ""
+        const column = root.columnAt(rowPointer.hoverX)
+        if (column === null)
+            return root.statusMessage
+        if (column.id === "star")
+            return root.rowStarred ? qsTr("Unstar") : qsTr("Star")
+        const value = String(root.app.track_value_at(root.rowIndex, column.id))
+        return value.length > 0 ? value : root.statusMessage
     }
 
     implicitHeight: 24
@@ -55,9 +89,9 @@ Item {
 
     ListView.onPooled: {
         root.hovered = false
-        root.playlistCellTipActive = false
         rowPointer.manualDragging = false
         rowPointer.suppressNextClick = false
+        rowPointer.hoverX = -1
     }
 
     Rectangle {
@@ -94,7 +128,9 @@ Item {
             wholeQuery: true
             visible: (cell.column.id !== "status" || !root.isActiveTrack)
                 && cell.column.id !== "star"
-            color: root.selected ? root.theme.highlightedText : root.theme.text
+            color: root.selected
+                ? root.theme.highlightedText
+                : (root.isMissing ? root.theme.placeholderText : root.theme.text)
             font.pixelSize: 11
             horizontalAlignment: cell.column.alignment
             verticalAlignment: Text.AlignVCenter
@@ -128,22 +164,7 @@ Item {
             cursorShape: Qt.PointingHandCursor
             Accessible.name: cell.starred ? qsTr("Unstar") : qsTr("Star")
             Accessible.role: Accessible.Button
-            ToolTip.visible: containsMouse
-            ToolTip.delay: 650
-            ToolTip.text: cell.starred ? qsTr("Unstar") : qsTr("Star")
         }
-
-        HoverHandler {
-            id: cellHover
-            onHoveredChanged: root.playlistCellTipActive = hovered
-                && (cell.column.id === "star" || cell.text.length > 0)
-        }
-
-        ToolTip.visible: cellHover.hovered
-            && cell.text.length > 0
-            && cell.column.id !== "star"
-        ToolTip.delay: 650
-        ToolTip.text: cell.text
 
         Loader {
             anchors.centerIn: parent
@@ -253,14 +274,22 @@ Item {
         hoverEnabled: true
         preventStealing: true
         scrollGestureEnabled: false
-        onEntered: root.hovered = true
-        onExited: root.hovered = false
+        property real hoverX: -1
+        onEntered: {
+            root.hovered = true
+            hoverX = -1
+        }
+        onExited: {
+            root.hovered = false
+            hoverX = -1
+        }
         onPressed: mouse => {
             pressX = mouse.x
             pressY = mouse.y
             manualDragging = false
         }
         onPositionChanged: mouse => {
+            hoverX = mouse.x
             if ((mouse.buttons & Qt.LeftButton) === 0)
                 return
             if (!manualDragging
@@ -311,10 +340,10 @@ Item {
             suppressNextClick = false
             root.dragCanceled()
         }
-        ToolTip.visible: containsMouse && root.statusMessage.length > 0
-            && !root.playlistCellTipActive
+        ToolTip.visible: containsMouse && !manualDragging
+            && root.hoverTip.length > 0
         ToolTip.delay: 650
-        ToolTip.text: root.statusMessage
+        ToolTip.text: root.hoverTip
     }
 
 }

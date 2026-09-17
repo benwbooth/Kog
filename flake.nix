@@ -59,7 +59,9 @@
             # and stay cached while only Kog itself rebuilds per tag.
             commonArgs = {
               src = pkgs.lib.cleanSource ./.;
-              nativeBuildInputs = [ pkgs.cmake pkgs.ninja pkgs.pkg-config pkgs.clang pkgs.qt6.wrapQtAppsHook ];
+              nativeBuildInputs = [ pkgs.cmake pkgs.ninja pkgs.pkg-config pkgs.clang pkgs.mold pkgs.qt6.wrapQtAppsHook ];
+              # Fast links: the final binary is huge (Qt/C++ in release).
+              RUSTFLAGS = "-C link-arg=-fuse-ld=mold";
               # Cargo invokes CMake/Ninja for decoder libraries; they must not
               # replace Cargo's top-level configure/build/install phases.
               dontUseCmakeConfigure = true;

@@ -1165,15 +1165,20 @@ struct SoundFontCache {
 
 struct MidiBackend {
     settings: DecoderSettings,
-    cache: Mutex<SoundFontCache>,
+}
+
+/// Process-wide SoundFont cache: every registry, scanner thread, and the
+/// playback engine share one parsed font per path+mtime instead of each
+/// reloading multi-hundred-megabyte SoundFonts on first use.
+fn global_soundfont_cache() -> &'static Mutex<SoundFontCache> {
+    use std::sync::OnceLock;
+    static CACHE: OnceLock<Mutex<SoundFontCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(SoundFontCache::default()))
 }
 
 impl MidiBackend {
     fn new(settings: DecoderSettings) -> Self {
-        Self {
-            settings,
-            cache: Mutex::new(SoundFontCache::default()),
-        }
+        Self { settings }
     }
 
     fn load_soundfont(&self) -> Result<Arc<SoundFont>, String> {
@@ -1185,8 +1190,7 @@ impl MidiBackend {
             format!("reading SoundFont metadata for {}: {error}", path.display())
         })?;
         let modified = metadata.modified().ok();
-        let mut cache = self
-            .cache
+        let mut cache = global_soundfont_cache()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if cache.path.as_ref() == Some(&path)

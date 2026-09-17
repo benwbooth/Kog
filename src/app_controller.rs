@@ -280,6 +280,8 @@ pub mod qobject {
         #[qinvokable]
         fn track_value_at(self: &AppController, index: i32, column: QString) -> QString;
         #[qinvokable]
+        fn track_missing_at(self: &AppController, index: i32) -> bool;
+        #[qinvokable]
         fn tag_editor_data(self: &AppController, indices: QString) -> QString;
         #[qinvokable]
         fn choose_tag_artwork(self: &AppController) -> QString;
@@ -1645,6 +1647,28 @@ fn collect_stored_entries(tracks: &[Track]) -> (Vec<crate::db::StoredEntry>, usi
         }
     }
     (entries, skipped)
+}
+
+/// Outcome of attempting playback at one pane index: Started plays or
+/// keeps the existing stop-with-error behavior, while Skipped means the
+/// file was verifiably gone and the caller should move on.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PlayOutcome {
+    Started,
+    Skipped,
+}
+
+/// True when a playback source points at a file that is gone. Archives
+/// only need their outer file, and remotes are never checked: transient
+/// network failures must not read as missing files.
+fn playback_source_is_missing(source: &PlaybackSource) -> bool {
+    if source.remote_url.is_some() {
+        return false;
+    }
+    if let Some(origin) = &source.archive_origin {
+        return !origin.archive_path.exists();
+    }
+    !source.path.exists()
 }
 
 /// True when a stored entry points at a file that is gone. Archives
@@ -4644,16 +4668,44 @@ impl qobject::AppController {
     }
 
     pub fn previous(mut self: Pin<&mut Self>) {
-        let tracks = self.as_ref().rust().tracks.clone();
-        let current = usize::try_from(self.as_ref().rust().current_index).ok();
-        let target = {
-            self.as_mut()
-                .rust_mut()
-                .playback_order
-                .previous(&tracks, current)
-        };
-        if let Some(target) = target {
-            self.as_mut().play_source_index(target);
+        // Like advancement, walk past verifiably-gone tracks instead of
+        // stopping on them.
+        let budget = self.as_ref().rust().tracks.len().saturating_add(1).max(1);
+        let mut skips = 0_usize;
+        loop {
+            let tracks = self.as_ref().rust().tracks.clone();
+            let current = usize::try_from(self.as_ref().rust().current_index).ok();
+            let target = {
+                self.as_mut()
+                    .rust_mut()
+                    .playback_order
+                    .previous(&tracks, current)
+            };
+            let Some(target) = target else {
+                return;
+            };
+            if self
+                .as_ref()
+                .rust()
+                .tracks
+                .get(target)
+                .is_some_and(|track| track.missing)
+            {
+                skips += 1;
+                if skips >= budget {
+                    return;
+                }
+                continue;
+            }
+            match self.as_mut().play_source_index(target) {
+                PlayOutcome::Started => return,
+                PlayOutcome::Skipped => {
+                    skips += 1;
+                    if skips >= budget {
+                        return;
+                    }
+                }
+            }
         }
     }
 
@@ -5255,6 +5307,12 @@ impl qobject::AppController {
         visible_track(self, index)
             .map(|track| qstring(&track.genre))
             .unwrap_or_default()
+    }
+
+    pub fn track_missing_at(&self, index: i32) -> bool {
+        visible_source_index(self, index)
+            .and_then(|source_index| self.rust().tracks.get(source_index))
+            .is_some_and(|track| track.missing)
     }
 
     pub fn track_value_at(&self, index: i32, column: QString) -> QString {
@@ -5915,6 +5973,29 @@ impl qobject::AppController {
                 return;
             }
         }
+        // Sibling scans beside the file (folder.jpg, a covers/ folder):
+        // folder-scoped so one album shares one cached copy without
+        // leaking across folders. Untitled rips with art in a covers/
+        // subdirectory resolve here instead of downloading blind.
+        if file.is_file() {
+            if let Some(folder) = file.parent() {
+                let folder_key = crate::cover_art::folder_cover_key(folder);
+                if let Some(cached) = crate::cover_art::cache_lookup(&cache_dir, &folder_key) {
+                    self.as_mut()
+                        .set_current_artwork_path(qstring(cached.to_string_lossy()));
+                    return;
+                }
+                if let Some(bytes) = crate::cover_art::sibling_cover_bytes(&file) {
+                    if let Some(stored) =
+                        crate::cover_art::store_cache(&cache_dir, &folder_key, &bytes)
+                    {
+                        self.as_mut()
+                            .set_current_artwork_path(qstring(stored.to_string_lossy()));
+                        return;
+                    }
+                }
+            }
+        }
         if !may_download || !self.as_ref().rust().download_cover_art {
             return;
         }
@@ -6166,17 +6247,56 @@ impl qobject::AppController {
     }
 
     fn advance_playback(mut self: Pin<&mut Self>, honor_repeat_one: bool) {
-        let tracks = self.as_ref().rust().tracks.clone();
-        let current = usize::try_from(self.as_ref().rust().current_index).ok();
-        let (target, queue_count) = {
-            let mut rust = self.as_mut().rust_mut();
-            let target = rust.playback_order.next(&tracks, current, honor_repeat_one);
-            (target, rust.playback_order.queue_count())
-        };
-        self.as_mut().set_queue_count(saturating_i32(queue_count));
-        if let Some(target) = target {
-            self.as_mut().play_source_index(target);
-        } else if self.as_ref().rust().radio_active {
+        // Walk past verifiably-gone tracks instead of stopping on them.
+        // The budget caps the walk below two full passes so repeat-all
+        // over an all-missing pane still reaches the end handling.
+        let budget = self.as_ref().rust().tracks.len().saturating_add(1).max(1);
+        let mut skips = 0_usize;
+        loop {
+            let tracks = self.as_ref().rust().tracks.clone();
+            let current = usize::try_from(self.as_ref().rust().current_index).ok();
+            let (target, queue_count) = {
+                let mut rust = self.as_mut().rust_mut();
+                let target = rust.playback_order.next(&tracks, current, honor_repeat_one);
+                (target, rust.playback_order.queue_count())
+            };
+            self.as_mut().set_queue_count(saturating_i32(queue_count));
+            let Some(target) = target else {
+                self.as_mut().advance_past_end();
+                return;
+            };
+            if self
+                .as_ref()
+                .rust()
+                .tracks
+                .get(target)
+                .is_some_and(|track| track.missing)
+            {
+                skips += 1;
+                if skips >= budget {
+                    self.as_mut().advance_past_end();
+                    return;
+                }
+                continue;
+            }
+            match self.as_mut().play_source_index(target) {
+                PlayOutcome::Started => return,
+                PlayOutcome::Skipped => {
+                    skips += 1;
+                    if skips >= budget {
+                        self.as_mut().advance_past_end();
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    /// End-of-playlist handling for advance: radio pulls a staged track,
+    /// otherwise playback stops. Shared by advancement and by skip
+    /// exhaustion over an all-missing pane.
+    fn advance_past_end(mut self: Pin<&mut Self>) {
+        if self.as_ref().rust().radio_active {
             // End of the playlist with radio on: pull one staged track into
             // the playlist instead of stopping. Stop-after never reaches here;
             // it stops explicitly before advancing.
@@ -6293,7 +6413,7 @@ impl qobject::AppController {
         }
     }
 
-    fn play_source_index(mut self: Pin<&mut Self>, source_index: usize) {
+    fn play_source_index(mut self: Pin<&mut Self>, source_index: usize) -> PlayOutcome {
         let Some((source, genre, notification)) = self
             .as_ref()
             .get_ref()
@@ -6308,7 +6428,7 @@ impl qobject::AppController {
                 (track.source.clone(), track.genre.clone(), notification)
             })
         else {
-            return;
+            return PlayOutcome::Started;
         };
         if self.as_ref().rust().equalizer_settings.track_genre {
             let mut settings = self.as_ref().rust().equalizer_settings.clone();
@@ -6344,11 +6464,42 @@ impl qobject::AppController {
                 if notification {
                     self.as_mut().show_now_playing_notification();
                 }
+                PlayOutcome::Started
             }
             Err(error) => {
+                // A verifiably-gone file grays out for skipping instead of
+                // stopping the whole playlist on it; anything else keeps
+                // the existing stop-with-error behavior.
+                let title = self
+                    .as_ref()
+                    .rust()
+                    .tracks
+                    .get(source_index)
+                    .map(|track| track.title.clone())
+                    .unwrap_or_default();
+                let gone = self
+                    .as_ref()
+                    .rust()
+                    .tracks
+                    .get(source_index)
+                    .is_some_and(|track| playback_source_is_missing(&track.source));
+                if gone {
+                    if let Some(track) = self.as_mut().rust_mut().tracks.get_mut(source_index) {
+                        track.missing = true;
+                    }
+                    self.as_mut().bump_playlist_revision();
+                    let trimmed = title.trim();
+                    self.as_mut().set_status(qstring(if trimmed.is_empty() {
+                        "Skipping missing file".to_owned()
+                    } else {
+                        format!("Skipping missing file: {trimmed}")
+                    }));
+                    return PlayOutcome::Skipped;
+                }
                 self.as_mut().set_status(qstring(error));
                 self.as_mut().rust_mut().playback.stop();
                 self.as_mut().sync_playback_state();
+                PlayOutcome::Started
             }
         }
     }
@@ -6492,7 +6643,8 @@ mod tests {
         AddPathResult, DirectoryScanEvent, PlaylistSortColumn, add_path_status, compare_tracks,
         count_delete_entries, cover_art_key, dropped_urls_from_json, local_paths_from_json,
         move_selected_items, natural_compare, normalize_playlist_save_path, ordered_directory_files,
-        output_devices_json, parse_delete_paths_json, parse_row_indices, playlist_entry_for_track,
+        output_devices_json, parse_delete_paths_json, parse_row_indices, playback_source_is_missing,
+        playlist_entry_for_track,
         purged_track_indices, remove_path_permanent, prepare_scan_file, resolve_output_device,
         sample_rate_label, sanitize_delete_paths, scan_directory_paths, sort_visible_indices,
         star_key_for_track, stored_entry_is_missing, track_filename, track_path,
@@ -6972,6 +7124,40 @@ mod tests {
             "https://example.invalid/stream"
         )));
         assert!(!stored_entry_is_missing(&stored("bogus-kind", "/music/x.flac")));
+    }
+
+    #[test]
+    fn missing_source_check_never_flags_remotes() {
+        let temporary = tempdir().expect("create temporary music folder");
+        let present = temporary.path().join("song.flac");
+        std::fs::write(&present, []).expect("write present file");
+        let local = |path: PathBuf| PlaybackSource {
+            path,
+            remote_url: None,
+            subsong: None,
+            archive_origin: None,
+        };
+        assert!(!playback_source_is_missing(&local(present)));
+        assert!(playback_source_is_missing(&local(
+            temporary.path().join("gone.flac")
+        )));
+        let mut archived = local(temporary.path().join("member.wav"));
+        archived.set_archive_origin(
+            temporary.path().join("gone.zip"),
+            "member.wav".to_owned(),
+        );
+        assert!(playback_source_is_missing(&archived));
+        let outer = temporary.path().join("pack.zip");
+        std::fs::write(&outer, []).expect("write present outer");
+        archived.set_archive_origin(outer, "member.wav".to_owned());
+        assert!(!playback_source_is_missing(&archived));
+        let remote = PlaybackSource {
+            path: PathBuf::from("/stream"),
+            remote_url: Some("https://example.invalid/stream".to_owned()),
+            subsong: None,
+            archive_origin: None,
+        };
+        assert!(!playback_source_is_missing(&remote));
     }
 
     #[test]

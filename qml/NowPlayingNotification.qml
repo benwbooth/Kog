@@ -170,13 +170,9 @@ Window {
             objectName: "notificationDragHandler"
             target: null
             acceptedButtons: Qt.LeftButton
-            property real startRight: 0
-            property real startBottom: 0
             property point pressPoint
             onActiveChanged: {
                 if (active) {
-                    startRight = root.rightMargin
-                    startBottom = root.bottomMargin
                     pressPoint = centroid.scenePosition
                     dismissTimer.stop()
                 } else {
@@ -188,26 +184,30 @@ Window {
             onActiveTranslationChanged: {
                 if (!active || root.layerPlacement)
                     return
-                root.rightMargin = Math.max(0, Math.min(startRight - activeTranslation.x,
+                // Deltas arrive in the surface frame, which moves with the
+                // surface itself: apply them relative to the currently
+                // applied margins, never the press-time ones, or the
+                // surface's own motion feeds back into the next delta.
+                root.rightMargin = Math.max(0, Math.min(
+                    root.rightMargin - activeTranslation.x,
                     root.screen.width - root.width))
-                root.bottomMargin = Math.max(0, Math.min(startBottom - activeTranslation.y,
+                root.bottomMargin = Math.max(0, Math.min(
+                    root.bottomMargin - activeTranslation.y,
                     root.screen.height - root.height))
                 root.applyPosition()
             }
             onCentroidChanged: {
                 if (!active || !root.layerPlacement)
                     return
-                // Absolute from the press point: every event recomputes
-                // the target from scratch, so compositor latency can only
-                // cause a bounded lag, never accumulated runaway. This
-                // holds whether the scene position is screen- or
-                // surface-relative.
+                // Same surface-frame rule as above, recomputed from the
+                // press point each event: bounded lag under compositor
+                // latency, never accumulated runaway.
                 const moved = centroid.scenePosition
                 root.rightMargin = Math.max(0, Math.min(
-                    startRight - (moved.x - pressPoint.x),
+                    root.rightMargin - (moved.x - pressPoint.x),
                     root.screen.width - root.width))
                 root.bottomMargin = Math.max(0, Math.min(
-                    startBottom - (moved.y - pressPoint.y),
+                    root.bottomMargin - (moved.y - pressPoint.y),
                     root.screen.height - root.height))
             }
         }

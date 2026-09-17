@@ -6,6 +6,10 @@ WheelHandler {
     id: kineticWheel
 
     required property Flickable view
+    // Qt.Vertical drives contentY (the default); Qt.Horizontal drives
+    // contentX for panes wider than their viewport.
+    property int orientation: Qt.Vertical
+    readonly property bool horizontal: orientation === Qt.Horizontal
     property real velocity: 0
     property real maximumVelocity: 9000
     property real impulsePerStep: 1250
@@ -17,12 +21,20 @@ WheelHandler {
     target: null
     acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
 
-    function minimumContentY() {
-        return view.originY - view.topMargin;
+    function minimumContent() {
+        return horizontal
+            ? view.originX - view.leftMargin
+            : view.originY - view.topMargin;
     }
 
-    function maximumContentY() {
-        return Math.max(minimumContentY(), view.originY + view.contentHeight - view.height + view.bottomMargin);
+    function maximumContent() {
+        return horizontal
+            ? Math.max(minimumContent(), view.originX + view.contentWidth - view.width + view.rightMargin)
+            : Math.max(minimumContent(), view.originY + view.contentHeight - view.height + view.bottomMargin);
+    }
+
+    function currentContent() {
+        return horizontal ? view.contentX : view.contentY;
     }
 
     function stop() {
@@ -35,7 +47,7 @@ WheelHandler {
     }
 
     function start(steps) {
-        if (steps === 0 || maximumContentY() <= minimumContentY())
+        if (steps === 0 || maximumContent() <= minimumContent())
             return;
         const impulse = -steps * impulsePerStep;
         if (velocity * impulse < 0)
@@ -46,13 +58,17 @@ WheelHandler {
     }
 
     function moveTo(position) {
-        const minimum = minimumContentY();
-        const maximum = maximumContentY();
-        view.contentY = Math.max(minimum, Math.min(maximum, position));
+        const minimum = minimumContent();
+        const maximum = maximumContent();
+        const clamped = Math.max(minimum, Math.min(maximum, position));
+        if (horizontal)
+            view.contentX = clamped;
+        else
+            view.contentY = clamped;
     }
 
     function applyPixelDelta(pixelDelta) {
-        if (pixelDelta === 0 || maximumContentY() <= minimumContentY())
+        if (pixelDelta === 0 || maximumContent() <= minimumContent())
             return;
 
         const now = Date.now();
@@ -60,7 +76,7 @@ WheelHandler {
         const elapsed = lastPixelEventTime > 0 ? (now - lastPixelEventTime) / 1000 : 0;
         momentumTimer.stop();
         velocity = 0;
-        moveTo(view.contentY + contentDelta);
+        moveTo(currentContent() + contentDelta);
 
         if (elapsed >= 0.004 && elapsed <= 0.08) {
             const instantaneousVelocity = contentDelta / elapsed;
@@ -91,10 +107,10 @@ WheelHandler {
         lastFrameTime = now;
         if (elapsed <= 0)
             return;
-        const minimum = minimumContentY();
-        const maximum = maximumContentY();
-        const next = Math.max(minimum, Math.min(maximum, view.contentY + velocity * elapsed));
-        const hitBoundary = next === view.contentY && ((velocity < 0 && next <= minimum) || (velocity > 0 && next >= maximum));
+        const minimum = minimumContent();
+        const maximum = maximumContent();
+        const next = Math.max(minimum, Math.min(maximum, currentContent() + velocity * elapsed));
+        const hitBoundary = next === currentContent() && ((velocity < 0 && next <= minimum) || (velocity > 0 && next >= maximum));
         moveTo(next);
 
         const nextSpeed = Math.max(0, Math.abs(velocity) - deceleration * elapsed);
@@ -104,6 +120,13 @@ WheelHandler {
     }
 
     onWheel: event => {
+        if (horizontal)
+            handleHorizontalWheel(event);
+        else
+            handleVerticalWheel(event);
+    }
+
+    function handleVerticalWheel(event) {
         if (event.modifiers & Qt.ShiftModifier) {
             event.accepted = false;
             return;
@@ -118,6 +141,29 @@ WheelHandler {
         let steps = event.angleDelta.y / 120;
         if (steps === 0)
             steps = event.pixelDelta.y / 40;
+        if (steps === 0) {
+            event.accepted = false;
+            return;
+        }
+
+        start(steps);
+        event.accepted = true;
+    }
+
+    function handleHorizontalWheel(event) {
+        // Native horizontal wheels report angleDelta.x; Shift+wheel
+        // redirects the usual vertical detents sideways.
+        if (event.device.type === PointerDevice.TouchPad && event.pixelDelta.x !== 0) {
+            applyPixelDelta(event.pixelDelta.x);
+            event.accepted = true;
+            return;
+        }
+
+        let steps = event.angleDelta.x / 120;
+        if (steps === 0 && (event.modifiers & Qt.ShiftModifier))
+            steps = event.angleDelta.y / 120;
+        if (steps === 0)
+            steps = event.pixelDelta.x / 40;
         if (steps === 0) {
             event.accepted = false;
             return;

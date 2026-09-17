@@ -28,6 +28,9 @@ pub struct Track {
     pub codec: String,
     pub backend_id: String,
     pub search_text: String,
+    /// Set once playback (or an explicit check) proves the file is gone.
+    /// Grayed out in the pane and skipped by next/previous/auto-advance.
+    pub missing: bool,
 }
 
 impl Track {
