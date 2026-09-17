@@ -344,11 +344,6 @@ Item {
             && root.hoverTip.length > 0
         ToolTip.delay: 650
         ToolTip.text: root.hoverTip
-        // Anchor near the hovered column, not the row center: the tip
-        // parent is this full-row area, so the tracked cursor x lands
-        // it over the field it describes. Qt keeps it on-screen.
-        ToolTip.x: Math.round(hoverX)
-        ToolTip.y: root.height
     }
 
 }
