@@ -138,20 +138,20 @@ TestCase {
 
     function test_drag_remembers_position_and_reset() {
         notification.resetPosition()
+        compare(notification.rightMargin, 16)
+        compare(notification.bottomMargin, 16)
         notification.present()
-        const header = findChild(notification, "notificationHeader")
-        waitForRendering(header)
-        wait(50)
-        mousePress(header, 170, 12)
-        mouseMove(header, 140, 12, 30)
-        mouseMove(header, 100, 12, 30)
-        mouseRelease(header, notification.layerPlacement ? 170 : 100, 12)
-        // Release flushes any pending frame update, so the final
-        // margins are deterministic here regardless of tick timing.
+        // Moves are exact corner presets, not drags: they land
+        // deterministically and persist across instances.
+        notification.moveToCorner("topLeft")
         verify(notification.rightMargin > 16)
+        verify(notification.bottomMargin > 16)
         const movedRight = notification.rightMargin
-        if (notification.layerPlacement)
+        const movedBottom = notification.bottomMargin
+        if (notification.layerPlacement) {
             compare(notification.layerPlacement.surface.margins.right, Math.round(movedRight))
+            compare(notification.layerPlacement.surface.margins.bottom, Math.round(movedBottom))
+        }
         const component = Qt.createComponent("../../qml/NowPlayingNotification.qml")
         compare(component.status, Component.Ready)
         const restored = component.createObject(null, {
@@ -159,6 +159,7 @@ TestCase {
         })
         verify(restored !== null)
         tryCompare(restored, "rightMargin", movedRight)
+        tryCompare(restored, "bottomMargin", movedBottom)
         restored.destroy()
         notification.resetPosition()
         compare(notification.rightMargin, 16)

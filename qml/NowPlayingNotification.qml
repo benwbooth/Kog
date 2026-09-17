@@ -13,7 +13,7 @@ Window {
     property alias settingsFile: placement.fileName
     property real rightMargin: placement.rightMargin
     property real bottomMargin: placement.bottomMargin
-    readonly property bool dragging: moveHandler.active
+    readonly property bool dragging: false
     readonly property bool pointerInside: hover.hovered
     readonly property bool playing: app.playback_state === "playing"
     readonly property string detail: [app.now_artist, app.current_album]
@@ -118,10 +118,6 @@ Window {
         event.accepted = false
         dismiss()
     }
-    // Frame-synced drag updates phase-lock margin writes to the
-    // compositor; the 16ms timer covers static windows that produce
-    // no frames. Both funnel into the idempotent flush below.
-    onFrameSwapped: moveHandler.flushDrag()
     onVisibleChanged: {
         if (visible)
             entrance.restart()
@@ -190,82 +186,6 @@ Window {
             to: 1
             duration: 140
             easing.type: Easing.OutCubic
-        }
-        DragHandler {
-            id: moveHandler
-            objectName: "notificationDragHandler"
-            target: null
-            acceptedButtons: Qt.LeftButton
-            // Latest pointer position; the flush below turns it into
-            // margins with our own commanded motion subtracted out, so
-            // the surface's own travel never feeds back in. Updates run
-            // at most once per frame and are clamped per tick: exact
-            // when the compositor is current, capped-rate otherwise.
-            property point pendingPoint
-            property bool hasPending: false
-            property real lastX: 0
-            property real lastY: 0
-            property real lastCmdR: 0
-            property real lastCmdB: 0
-            readonly property real maxStep: 128
-            property int traceTick: 0
-            onActiveChanged: {
-                if (active) {
-                    const at = centroid.scenePosition
-                    lastX = at.x
-                    lastY = at.y
-                    lastCmdR = root.rightMargin
-                    lastCmdB = root.bottomMargin
-                    hasPending = false
-                    dragFrameTimer.restart()
-                    dismissTimer.stop()
-                } else {
-                    dragFrameTimer.stop()
-                    flushDrag()
-                    root.savePosition()
-                    if (!root.pointerInside && root.visible)
-                        dismissTimer.restart()
-                }
-            }
-            onCentroidChanged: {
-                if (!active)
-                    return
-                pendingPoint = centroid.scenePosition
-                hasPending = true
-            }
-            function flushDrag() {
-                if (!hasPending)
-                    return
-                hasPending = false
-                const travelX = (pendingPoint.x - lastX) - (root.rightMargin - lastCmdR)
-                const travelY = (pendingPoint.y - lastY) - (root.bottomMargin - lastCmdB)
-                if (traceTick++ % 10 === 0) {
-                    console.log("KOGDRAG t=" + Date.now()
-                        + " m=" + pendingPoint.x.toFixed(1) + "," + pendingPoint.y.toFixed(1)
-                        + " R=" + root.rightMargin.toFixed(1) + "," + root.bottomMargin.toFixed(1)
-                        + " d=" + travelX.toFixed(1) + "," + travelY.toFixed(1))
-                }
-                lastX = pendingPoint.x
-                lastY = pendingPoint.y
-                lastCmdR = root.rightMargin
-                lastCmdB = root.bottomMargin
-                const dx = Math.max(-maxStep, Math.min(maxStep, travelX))
-                const dy = Math.max(-maxStep, Math.min(maxStep, travelY))
-                root.rightMargin = Math.max(0, Math.min(
-                    root.rightMargin - dx,
-                    root.screen.width - root.width))
-                root.bottomMargin = Math.max(0, Math.min(
-                    root.bottomMargin - dy,
-                    root.screen.height - root.height))
-                if (!root.layerPlacement)
-                    root.applyPosition()
-            }
-        }
-        Timer {
-            id: dragFrameTimer
-            interval: 16
-            repeat: true
-            onTriggered: moveHandler.flushDrag()
         }
 
         ColumnLayout {
