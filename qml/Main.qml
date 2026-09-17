@@ -1173,6 +1173,29 @@ ApplicationWindow {
             urlField.text = ""
         }
 
+        contentItem: ColumnLayout {
+            spacing: 10
+
+            Label {
+                Layout.fillWidth: true
+                text: qsTr("Enter an HTTP or HTTPS audio stream or HLS playlist URL.")
+                wrapMode: Text.WordWrap
+            }
+            TextField {
+                id: urlField
+
+                Layout.fillWidth: true
+                placeholderText: qsTr("https://example.com/music.m3u8")
+                inputMethodHints: Qt.ImhUrlCharactersOnly | Qt.ImhNoPredictiveText
+                validator: RegularExpressionValidator {
+                    regularExpression: /^https?:\/\/\S+$/i
+                }
+                onTextChanged: openUrlDialog.updateAcceptButton()
+                onAccepted: if (acceptableInput) openUrlDialog.accept()
+            }
+        }
+    }
+
     Dialog {
         id: savePlaylistDialog
 
@@ -1340,28 +1363,6 @@ ApplicationWindow {
         }
     }
 
-        contentItem: ColumnLayout {
-            spacing: 10
-
-            Label {
-                Layout.fillWidth: true
-                text: qsTr("Enter an HTTP or HTTPS audio stream or HLS playlist URL.")
-                wrapMode: Text.WordWrap
-            }
-            TextField {
-                id: urlField
-
-                Layout.fillWidth: true
-                placeholderText: qsTr("https://example.com/music.m3u8")
-                inputMethodHints: Qt.ImhUrlCharactersOnly | Qt.ImhNoPredictiveText
-                validator: RegularExpressionValidator {
-                    regularExpression: /^https?:\/\/\S+$/i
-                }
-                onTextChanged: openUrlDialog.updateAcceptButton()
-                onAccepted: if (acceptableInput) openUrlDialog.accept()
-            }
-        }
-    }
 
     Action {
         id: removeSelectedAction

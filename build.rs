@@ -20,6 +20,12 @@ fn plain_absolute(path: PathBuf) -> PathBuf {
 }
 
 fn main() {
+    // QML, icons, and web runtime files are embedded into the binary:
+    // without these, local builds silently keep shipping stale UI after
+    // QML-only edits (releases were saved by version bumps rerunning us).
+    println!("cargo:rerun-if-changed=qml");
+    println!("cargo:rerun-if-changed=web");
+    println!("cargo:rerun-if-changed=build.rs");
     build_spessasynth_midi();
     build_mt32emu();
     build_game_music_emu();
