@@ -1,6 +1,6 @@
 [package]
 name = "kog"
-version = "0.9.23"
+version = "0.9.24"
 edition = "2024"
 license = "GPL-3.0-or-later"
 description = "A cross-platform, format-comprehensive local music player"
