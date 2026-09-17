@@ -9,10 +9,12 @@ Window {
     required property var app
     signal openPlayer()
     property int displayDuration: 8000
-    property var layerPlacement: null
     property alias settingsFile: placement.fileName
-    property real rightMargin: placement.rightMargin
-    property real bottomMargin: placement.bottomMargin
+    // Saved top-left position; -1 means auto-place bottom-right. Only
+    // meaningful where the platform lets clients position windows (X11
+    // and offscreen); Wayland compositors place new windows themselves.
+    property real posX: placement.posX
+    property real posY: placement.posY
     readonly property bool dragging: moveHandler.active
     readonly property bool pointerInside: hover.hovered
     readonly property bool playing: app.playback_state === "playing"
@@ -34,39 +36,40 @@ Window {
     Settings {
         id: placement
         category: "NowPlayingNotification"
-        property real rightMargin: 16
-        property real bottomMargin: 16
-    }
-
-    Component.onCompleted: {
-        if (Qt.platform.pluginName === "wayland" || Qt.platform.pluginName === "wayland-egl") {
-            const component = Qt.createComponent(Qt.resolvedUrl("NotificationLayerShell.qml"))
-            if (component.status === Component.Ready)
-                layerPlacement = component.createObject(root, { target: root })
-        }
+        property real posX: -1
+        property real posY: -1
     }
 
     function applyPosition() {
-        if (layerPlacement)
-            return // Layer-shell anchors and margins place the surface on Wayland.
-        x = screen.virtualX + screen.desktopAvailableWidth - width - rightMargin
-        y = screen.virtualY + screen.desktopAvailableHeight - height - bottomMargin
+        const availX = screen.virtualX
+        const availY = screen.virtualY
+        const availW = screen.desktopAvailableWidth
+        const availH = screen.desktopAvailableHeight
+        if (posX >= 0 && posY >= 0) {
+            x = Math.max(availX, Math.min(posX, availX + availW - width))
+            y = Math.max(availY, Math.min(posY, availY + availH - height))
+        } else {
+            x = availX + availW - width - 16
+            y = availY + availH - height - 16
+        }
     }
 
     function resetPosition() {
-        rightMargin = 16
-        bottomMargin = 16
-        savePosition()
+        posX = -1
+        posY = -1
+        placement.setValue("posX", -1)
+        placement.setValue("posY", -1)
+        placement.sync()
         applyPosition()
     }
 
     function savePosition() {
-        placement.rightMargin = rightMargin
-        placement.bottomMargin = bottomMargin
+        posX = x
+        posY = y
         // Settings batches property writes; persist immediately so quitting
         // straight after a drag does not lose the new position.
-        placement.setValue("rightMargin", rightMargin)
-        placement.setValue("bottomMargin", bottomMargin)
+        placement.setValue("posX", posX)
+        placement.setValue("posY", posY)
         placement.sync()
     }
 
@@ -79,8 +82,6 @@ Window {
     function present() {
         if (app.current_index < 0)
             return
-        rightMargin = Math.max(0, Math.min(rightMargin, screen.width - width))
-        bottomMargin = Math.max(0, Math.min(bottomMargin, screen.height - height))
         applyPosition()
         show()
         if (!pointerInside && !dragging)
@@ -170,45 +171,19 @@ Window {
             objectName: "notificationDragHandler"
             target: null
             acceptedButtons: Qt.LeftButton
-            property point pressPoint
             onActiveChanged: {
+                // Active requires a real drag: presses and clicks never
+                // activate the handler. The compositor moves the window
+                // itself, so there is no follow math to fight over: this
+                // is the same mechanism as the main window's title bar.
                 if (active) {
-                    pressPoint = centroid.scenePosition
                     dismissTimer.stop()
+                    root.startSystemMove()
                 } else {
                     root.savePosition()
                     if (!root.pointerInside && root.visible)
                         dismissTimer.restart()
                 }
-            }
-            onActiveTranslationChanged: {
-                if (!active || root.layerPlacement)
-                    return
-                // Deltas arrive in the surface frame, which moves with the
-                // surface itself: apply them relative to the currently
-                // applied margins, never the press-time ones, or the
-                // surface's own motion feeds back into the next delta.
-                root.rightMargin = Math.max(0, Math.min(
-                    root.rightMargin - activeTranslation.x,
-                    root.screen.width - root.width))
-                root.bottomMargin = Math.max(0, Math.min(
-                    root.bottomMargin - activeTranslation.y,
-                    root.screen.height - root.height))
-                root.applyPosition()
-            }
-            onCentroidChanged: {
-                if (!active || !root.layerPlacement)
-                    return
-                // Same surface-frame rule as above, recomputed from the
-                // press point each event: bounded lag under compositor
-                // latency, never accumulated runaway.
-                const moved = centroid.scenePosition
-                root.rightMargin = Math.max(0, Math.min(
-                    root.rightMargin - (moved.x - pressPoint.x),
-                    root.screen.width - root.width))
-                root.bottomMargin = Math.max(0, Math.min(
-                    root.bottomMargin - (moved.y - pressPoint.y),
-                    root.screen.height - root.height))
             }
         }
 

@@ -123,35 +123,36 @@ TestCase {
 
     function test_drag_remembers_position_and_reset() {
         notification.resetPosition()
+        compare(notification.posX, -1)
+        compare(notification.posY, -1)
         notification.present()
         const header = findChild(notification, "notificationHeader")
         waitForRendering(header)
         wait(50)
+        // A press-drag-release cycle must complete cleanly; the
+        // compositor owns the actual movement (a no-op offscreen).
+        const startX = notification.x
+        const startY = notification.y
         mousePress(header, 170, 12)
-        mouseMove(header, 140, 12, 30)
         mouseMove(header, 100, 12, 30)
-        if (notification.layerPlacement) {
-            const before = notification.rightMargin
-            // Once the surface follows the pointer, it is over the original
-            // grabbed point again. This must not snap the surface back.
-            mouseMove(header, 170, 12, 30)
-            compare(notification.rightMargin, before)
-        }
-        mouseRelease(header, notification.layerPlacement ? 170 : 100, 12)
-        verify(notification.rightMargin > 16)
-        const movedRight = notification.rightMargin
-        if (notification.layerPlacement)
-            compare(notification.layerPlacement.surface.margins.right, Math.round(movedRight))
+        mouseRelease(header, 100, 12)
+        verify(Math.abs(notification.x - startX) < 1)
+        verify(Math.abs(notification.y - startY) < 1)
+        // Saved positions round-trip across instances.
+        notification.x = startX + 40
+        notification.y = startY + 30
+        notification.savePosition()
         const component = Qt.createComponent("../../qml/NowPlayingNotification.qml")
         compare(component.status, Component.Ready)
         const restored = component.createObject(null, {
             app: playback, settingsFile: notification.settingsFile
         })
         verify(restored !== null)
-        tryCompare(restored, "rightMargin", movedRight)
+        tryCompare(restored, "posX", notification.x)
+        tryCompare(restored, "posY", notification.y)
         restored.destroy()
         notification.resetPosition()
-        compare(notification.rightMargin, 16)
-        compare(notification.bottomMargin, 16)
+        compare(notification.posX, -1)
+        compare(notification.posY, -1)
     }
 }

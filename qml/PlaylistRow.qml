@@ -92,6 +92,8 @@ Item {
         rowPointer.manualDragging = false
         rowPointer.suppressNextClick = false
         rowPointer.hoverX = -1
+        tipTimer.stop()
+        fieldTip.visible = false
     }
 
     Rectangle {
@@ -340,10 +342,63 @@ Item {
             suppressNextClick = false
             root.dragCanceled()
         }
-        ToolTip.visible: containsMouse && !manualDragging
-            && root.hoverTip.length > 0
-        ToolTip.delay: 650
-        ToolTip.text: root.hoverTip
+        onHoverXChanged: {
+            if (hoverX < 0 || manualDragging || root.hoverTip.length === 0) {
+                tipTimer.stop()
+                fieldTip.visible = false
+            } else {
+                tipTimer.restart()
+            }
+        }
+    }
+
+    Timer {
+        id: tipTimer
+        interval: 650
+        repeat: false
+        onTriggered: {
+            if (rowPointer.hoverX >= 0 && !rowPointer.manualDragging
+                    && root.hoverTip.length > 0)
+                fieldTip.visible = true
+        }
+    }
+
+    // Field tooltip as an explicitly positioned popup: the attached
+    // ToolTip cannot take coordinates, and its default placement lands
+    // mid-row. This one centers over the hovered column just above it.
+    Popup {
+        id: fieldTip
+        width: Math.min(tipLabel.implicitWidth + 18,
+            (root.ListView.view ? root.ListView.view.width : 400) - 16)
+        height: tipLabel.implicitHeight + 12
+        x: Math.round(Math.max(0, Math.min(
+            rowPointer.hoverX - width / 2,
+            (root.ListView.view ? root.ListView.view.width : 400) - width)))
+        y: -height - 4
+        modal: false
+        focus: false
+        closePolicy: Popup.NoAutoClose
+        padding: 0
+        opacity: 0.96
+
+        background: Rectangle {
+            radius: 5
+            color: root.theme.window
+            border.width: 1
+            border.color: root.theme.mid
+        }
+        contentItem: Label {
+            id: tipLabel
+            leftPadding: 9
+            rightPadding: 9
+            topPadding: 6
+            bottomPadding: 6
+            text: root.hoverTip
+            color: root.theme.text
+            font.pixelSize: 12
+            elide: Text.ElideRight
+            verticalAlignment: Text.AlignVCenter
+        }
     }
 
 }

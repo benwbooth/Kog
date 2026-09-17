@@ -33,17 +33,39 @@ Item {
         }
     }
 
+    Flickable {
+        id: horizontalView
+
+        width: 320
+        height: 200
+        visible: false
+        contentWidth: 1200
+        contentHeight: 200
+        boundsBehavior: Flickable.StopAtBounds
+
+        KineticWheelHandler {
+            id: horizontalWheel
+            view: horizontalView
+            orientation: Qt.Horizontal
+        }
+    }
+
     TestCase {
         name: "KineticWheel"
         when: windowShown
 
         function init() {
             kineticWheel.stop();
+            horizontalWheel.stop();
             view.contentY = 0;
+            horizontalView.contentX = 0;
+            horizontalView.visible = false;
         }
 
         function cleanup() {
             kineticWheel.stop();
+            horizontalWheel.stop();
+            horizontalView.visible = false;
         }
 
         function test_mouseWheelMomentumContinuesAfterNotch() {
@@ -82,11 +104,36 @@ Item {
         }
 
         function test_stopsAtBoundary() {
-            view.contentY = kineticWheel.maximumContentY();
+            view.contentY = kineticWheel.maximumContent();
             kineticWheel.start(-1);
             wait(32);
-            compare(view.contentY, kineticWheel.maximumContentY());
+            compare(view.contentY, kineticWheel.maximumContent());
             compare(kineticWheel.velocity, 0);
+        }
+
+        function test_horizontalWheelMomentumAndBoundary() {
+            horizontalView.visible = true;
+            waitForRendering(horizontalView);
+            horizontalWheel.start(-2);
+            wait(80);
+            verify(horizontalView.contentX > 0,
+                "contentX should keep moving after the initial wheel impulse");
+            horizontalWheel.stop();
+            horizontalView.contentX = horizontalWheel.maximumContent();
+            horizontalWheel.start(-1);
+            wait(32);
+            compare(horizontalView.contentX, horizontalWheel.maximumContent());
+            compare(horizontalWheel.velocity, 0);
+        }
+
+        function test_shiftWheelDrivesHorizontalAxis() {
+            horizontalView.visible = true;
+            mouseWheel(horizontalView, 160, 100, 0, -240, Qt.NoButton, Qt.ShiftModifier);
+            wait(80);
+            verify(horizontalView.contentX > 0,
+                "Shift+wheel should scroll horizontally with momentum");
+            verify(view.contentY === 0,
+                "Shift+wheel must not scroll the vertical axis");
         }
     }
 }
