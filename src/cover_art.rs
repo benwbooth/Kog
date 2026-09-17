@@ -605,11 +605,7 @@ mod tests {
     }
 
     fn write_png(path: &Path) {
-        std::fs::write(
-            path,
-            [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A],
-        )
-        .expect("write png");
+        std::fs::write(path, [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]).expect("write png");
     }
 
     #[test]
@@ -630,8 +626,7 @@ mod tests {
         let track = temporary.path().join("01.flac");
         std::fs::write(&track, []).expect("write track");
         // Junk front art falls through to the valid cover.
-        std::fs::write(temporary.path().join("front.jpg"), b"not an image")
-            .expect("write junk");
+        std::fs::write(temporary.path().join("front.jpg"), b"not an image").expect("write junk");
         write_png(&temporary.path().join("cover.png"));
         let found = sibling_cover_bytes(&track).expect("sibling art");
         assert_eq!(sniff_image_kind(&found), Some(ImageKind::Png));
@@ -641,7 +636,14 @@ mod tests {
         std::fs::remove_file(temporary.path().join("cover.png")).unwrap();
         let scans = temporary.path().join("covers");
         std::fs::create_dir(&scans).expect("covers dir");
-        for name in ["b1.png", "b2.png", "back.png", "c1.png", "c2.png", "cdscan.png"] {
+        for name in [
+            "b1.png",
+            "b2.png",
+            "back.png",
+            "c1.png",
+            "c2.png",
+            "cdscan.png",
+        ] {
             write_png(&scans.join(name));
         }
         std::fs::remove_file(scans.join("b1.png")).unwrap();
@@ -659,7 +661,14 @@ mod tests {
         std::fs::write(&track, []).expect("write track");
         let scans = temporary.path().join("covers");
         std::fs::create_dir(&scans).expect("covers dir");
-        for name in ["b1.png", "b2.png", "back.png", "c1.png", "c2.png", "cdscan.png"] {
+        for name in [
+            "b1.png",
+            "b2.png",
+            "back.png",
+            "c1.png",
+            "c2.png",
+            "cdscan.png",
+        ] {
             write_png(&scans.join(name));
         }
         assert!(sibling_cover_bytes(&track).is_some());

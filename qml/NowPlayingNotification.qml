@@ -54,10 +54,32 @@ Window {
     }
 
     function resetPosition() {
-        rightMargin = 16
-        bottomMargin = 16
+        moveToCorner("bottomRight")
+    }
+
+    // Corner presets expressed in the same bottom-right margins the
+    // drag uses, so every placement shares one code path: a top-left
+    // corner is just large right/bottom margins. Exact, no tracking.
+    function moveToCorner(corner) {
+        const maxRight = Math.max(0, root.screen.width - root.width)
+        const maxBottom = Math.max(0, root.screen.height - root.height)
+        const edge = 16
+        if (corner === "topLeft") {
+            rightMargin = Math.max(0, maxRight - edge)
+            bottomMargin = Math.max(0, maxBottom - edge)
+        } else if (corner === "topRight") {
+            rightMargin = edge
+            bottomMargin = Math.max(0, maxBottom - edge)
+        } else if (corner === "bottomLeft") {
+            rightMargin = Math.max(0, maxRight - edge)
+            bottomMargin = edge
+        } else {
+            rightMargin = edge
+            bottomMargin = edge
+        }
         savePosition()
-        applyPosition()
+        if (!root.layerPlacement)
+            root.applyPosition()
     }
 
     function savePosition() {
@@ -96,6 +118,10 @@ Window {
         event.accepted = false
         dismiss()
     }
+    // Frame-synced drag updates phase-lock margin writes to the
+    // compositor; the 16ms timer covers static windows that produce
+    // no frames. Both funnel into the idempotent flush below.
+    onFrameSwapped: moveHandler.flushDrag()
     onVisibleChanged: {
         if (visible)
             entrance.restart()
@@ -170,20 +196,26 @@ Window {
             objectName: "notificationDragHandler"
             target: null
             acceptedButtons: Qt.LeftButton
-            // Latest pointer position; only the frame ticker below
-            // turns it into margins, at most once per frame with
-            // damping, so multi-frame compositor latency stays stable
-            // instead of oscillating into runaway.
+            // Latest pointer position; the flush below turns it into
+            // margins with our own commanded motion subtracted out, so
+            // the surface's own travel never feeds back in. Updates run
+            // at most once per frame and are clamped per tick: exact
+            // when the compositor is current, capped-rate otherwise.
             property point pendingPoint
             property bool hasPending: false
             property real lastX: 0
             property real lastY: 0
-            readonly property real followGain: 0.85
+            property real lastCmdR: 0
+            property real lastCmdB: 0
+            readonly property real maxStep: 128
+            property int traceTick: 0
             onActiveChanged: {
                 if (active) {
                     const at = centroid.scenePosition
                     lastX = at.x
                     lastY = at.y
+                    lastCmdR = root.rightMargin
+                    lastCmdB = root.bottomMargin
                     hasPending = false
                     dragFrameTimer.restart()
                     dismissTimer.stop()
@@ -205,10 +237,20 @@ Window {
                 if (!hasPending)
                     return
                 hasPending = false
-                const dx = followGain * (pendingPoint.x - lastX)
-                const dy = followGain * (pendingPoint.y - lastY)
+                const travelX = (pendingPoint.x - lastX) - (root.rightMargin - lastCmdR)
+                const travelY = (pendingPoint.y - lastY) - (root.bottomMargin - lastCmdB)
+                if (traceTick++ % 10 === 0) {
+                    console.log("KOGDRAG t=" + Date.now()
+                        + " m=" + pendingPoint.x.toFixed(1) + "," + pendingPoint.y.toFixed(1)
+                        + " R=" + root.rightMargin.toFixed(1) + "," + root.bottomMargin.toFixed(1)
+                        + " d=" + travelX.toFixed(1) + "," + travelY.toFixed(1))
+                }
                 lastX = pendingPoint.x
                 lastY = pendingPoint.y
+                lastCmdR = root.rightMargin
+                lastCmdB = root.bottomMargin
+                const dx = Math.max(-maxStep, Math.min(maxStep, travelX))
+                const dy = Math.max(-maxStep, Math.min(maxStep, travelY))
                 root.rightMargin = Math.max(0, Math.min(
                     root.rightMargin - dx,
                     root.screen.width - root.width))
@@ -245,6 +287,23 @@ Window {
                     MenuItem {
                         text: qsTr("Reset position above tray")
                         onTriggered: root.resetPosition()
+                    }
+                    MenuSeparator {}
+                    MenuItem {
+                        text: qsTr("Move to top left")
+                        onTriggered: root.moveToCorner("topLeft")
+                    }
+                    MenuItem {
+                        text: qsTr("Move to top right")
+                        onTriggered: root.moveToCorner("topRight")
+                    }
+                    MenuItem {
+                        text: qsTr("Move to bottom left")
+                        onTriggered: root.moveToCorner("bottomLeft")
+                    }
+                    MenuItem {
+                        text: qsTr("Move to bottom right")
+                        onTriggered: root.moveToCorner("bottomRight")
                     }
                 }
                 Image {

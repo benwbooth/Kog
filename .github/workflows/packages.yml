@@ -353,5 +353,20 @@ jobs:
           gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || \
             gh release create "$GITHUB_REF_NAME" --verify-tag \
               --title "Kog ${GITHUB_REF_NAME#v}" --generate-notes
-          find dist/release -maxdepth 1 -type f -print0 | \
-            xargs -0 gh release upload "$GITHUB_REF_NAME" --clobber
+          # Large-asset uploads flake (HTTP 4xx/5xx from the uploads API):
+          # retry each file so one failure neither aborts the rest nor
+          # fails the release.
+          find dist/release -maxdepth 1 -type f -print0 | sort -z | \
+          while IFS= read -r -d '' asset; do
+            for attempt in 1 2 3 4 5; do
+              if gh release upload "$GITHUB_REF_NAME" --clobber "$asset"; then
+                break
+              fi
+              echo "Upload of $asset failed (attempt $attempt), retrying..."
+              sleep 60
+              if [ "$attempt" = 5 ]; then
+                echo "Upload of $asset failed permanently" >&2
+                exit 1
+              fi
+            done
+          done

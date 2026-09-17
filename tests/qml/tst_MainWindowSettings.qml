@@ -32,6 +32,13 @@ TestCase {
         wait(0)
         settings = settingsFactory.createObject(null, { location: location })
         compare(settings.sidebarVisible, true, "Shown state survives a new settings instance")
+
+        compare(settings.sidebarWidth, 285, "Fresh installations use the default tree width")
+        settings.sidebarWidth = 340
+        settings.destroy()
+        wait(0)
+        settings = settingsFactory.createObject(null, { location: location })
+        compare(settings.sidebarWidth, 340, "Resized tree width survives a new settings instance")
         settings.destroy()
     }
 }

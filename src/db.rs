@@ -43,6 +43,13 @@ CREATE TABLE IF NOT EXISTS playlist_entries (
 );
 CREATE INDEX IF NOT EXISTS playlist_entries_by_playlist
     ON playlist_entries(playlist_id, position);
+CREATE TABLE IF NOT EXISTS blacklist (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    path TEXT NOT NULL DEFAULT '',
+    entry TEXT NOT NULL DEFAULT '',
+    UNIQUE(kind, path, entry)
+);
 ";
 
 const SCHEMA_VERSION: &str = "1";
@@ -52,6 +59,19 @@ const SCHEMA_VERSION: &str = "1";
 pub const KIND_LOCAL: &str = "local";
 pub const KIND_ARCHIVE: &str = "archive";
 pub const KIND_REMOTE: &str = "remote";
+
+/// Blacklist entry kinds: whole songs or whole folders.
+pub const BLACKLIST_SONG: &str = "song";
+pub const BLACKLIST_FOLDER: &str = "folder";
+
+/// One blacklist row: songs match radio picks exactly (archive members
+/// keep outer path + member name), folders match by path prefix.
+pub struct BlacklistEntry {
+    pub id: i64,
+    pub kind: String,
+    pub path: String,
+    pub entry: String,
+}
 
 pub struct StoredPlaylist {
     pub id: i64,
@@ -379,10 +399,7 @@ impl LibraryDb {
     }
 
     /// Entry rows with their row ids, for surgical deletes.
-    pub fn playlist_entry_rows(
-        &self,
-        playlist_id: i64,
-    ) -> Result<Vec<(i64, StoredEntry)>, String> {
+    pub fn playlist_entry_rows(&self, playlist_id: i64) -> Result<Vec<(i64, StoredEntry)>, String> {
         let mut statement = self
             .conn
             .prepare(
@@ -420,6 +437,59 @@ impl LibraryDb {
                 .map_err(|error| format!("cleaning playlist: {error}"))?;
         }
         Ok(removed)
+    }
+
+    /// Add blacklist rows, skipping kinds/paths already listed. Returns
+    /// the number actually added.
+    pub fn add_blacklist_entries(&self, entries: &[BlacklistEntry]) -> Result<usize, String> {
+        let mut added = 0_usize;
+        for entry in entries {
+            if entry.kind != BLACKLIST_SONG && entry.kind != BLACKLIST_FOLDER {
+                return Err(format!("unknown blacklist kind: {}", entry.kind));
+            }
+            if entry.path.trim().is_empty() {
+                return Err("Blacklist entries need a path".to_owned());
+            }
+            added += self
+                .conn
+                .execute(
+                    "INSERT INTO blacklist (kind, path, entry) VALUES (?1, ?2, ?3)
+                     ON CONFLICT(kind, path, entry) DO NOTHING",
+                    rusqlite::params![entry.kind, entry.path, entry.entry],
+                )
+                .map_err(|error| format!("updating the blacklist: {error}"))?;
+        }
+        Ok(added)
+    }
+
+    pub fn remove_blacklist_entry(&self, id: i64) -> Result<(), String> {
+        let changed = self
+            .conn
+            .execute("DELETE FROM blacklist WHERE id = ?1", [id])
+            .map_err(|error| format!("updating the blacklist: {error}"))?;
+        if changed == 0 {
+            return Err("Blacklist entry no longer exists".to_owned());
+        }
+        Ok(())
+    }
+
+    pub fn list_blacklist(&self) -> Result<Vec<BlacklistEntry>, String> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT id, kind, path, entry FROM blacklist ORDER BY id")
+            .map_err(|error| format!("reading the blacklist: {error}"))?;
+        statement
+            .query_map([], |row| {
+                Ok(BlacklistEntry {
+                    id: row.get(0)?,
+                    kind: row.get(1)?,
+                    path: row.get(2)?,
+                    entry: row.get(3)?,
+                })
+            })
+            .map_err(|error| format!("reading the blacklist: {error}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("reading the blacklist: {error}"))
     }
 }
 
@@ -473,6 +543,49 @@ mod tests {
         let remaining = db.playlist_entry_rows(list).unwrap();
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].1.path, "/music/kept.flac");
+    }
+
+    #[test]
+    fn blacklist_add_list_and_remove() {
+        let db = memory_db();
+        assert!(db.list_blacklist().unwrap().is_empty());
+        let song = |path: &str| BlacklistEntry {
+            id: 0,
+            kind: BLACKLIST_SONG.to_owned(),
+            path: path.to_owned(),
+            entry: String::new(),
+        };
+        let folder = |path: &str| BlacklistEntry {
+            id: 0,
+            kind: BLACKLIST_FOLDER.to_owned(),
+            path: path.to_owned(),
+            entry: String::new(),
+        };
+        assert_eq!(
+            db.add_blacklist_entries(&[song("/music/a.flac"), folder("/music/nope")])
+                .unwrap(),
+            2
+        );
+        // Duplicates are ignored, bad kinds and empty paths rejected.
+        assert_eq!(
+            db.add_blacklist_entries(&[song("/music/a.flac")]).unwrap(),
+            0
+        );
+        assert!(
+            db.add_blacklist_entries(&[BlacklistEntry {
+                id: 0,
+                kind: "bogus".to_owned(),
+                path: "/music/a.flac".to_owned(),
+                entry: String::new(),
+            }])
+            .is_err()
+        );
+        assert!(db.add_blacklist_entries(&[song("   ")]).is_err());
+        let rows = db.list_blacklist().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(db.remove_blacklist_entry(999_999).is_err());
+        db.remove_blacklist_entry(rows[0].id).unwrap();
+        assert_eq!(db.list_blacklist().unwrap().len(), 1);
     }
 
     #[test]

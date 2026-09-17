@@ -30,6 +30,7 @@ ApplicationWindow {
     color: palette.window
 
     property alias sidebarVisible: mainWindowSettings.sidebarVisible
+    property alias sidebarWidth: mainWindowSettings.sidebarWidth
     property alias treeSectionExpanded: mainWindowSettings.treeSectionExpanded
     property alias playlistsSectionExpanded: mainWindowSettings.playlistsSectionExpanded
     MainWindowSettings { id: mainWindowSettings }
@@ -1471,6 +1472,20 @@ ApplicationWindow {
         MenuSeparator {}
         MenuItem { action: saveSelectionAction }
         MenuItem { action: editTagsAction }
+        MenuItem {
+            text: qsTr("Blacklist Song")
+            icon.name: "list-remove"
+            enabled: root.selectedRows.length > 0
+            onTriggered: appController.blacklist_pane_selection(
+                root.selectedRows.join(","), false)
+        }
+        MenuItem {
+            text: qsTr("Blacklist Folder")
+            icon.name: "edit-delete"
+            enabled: root.selectedRows.length > 0
+            onTriggered: appController.blacklist_pane_selection(
+                root.selectedRows.join(","), true)
+        }
         MenuSeparator {}
         MenuItem {
             text: qsTr("Select All")
@@ -1496,6 +1511,20 @@ ApplicationWindow {
             text: qsTr("Add to Playlist")
             icon.name: "list-add"
             onTriggered: root.addTreeSelection(root.treeContextPath, false)
+        }
+        MenuItem {
+            text: qsTr("Blacklist Song")
+            icon.name: "list-remove"
+            enabled: !fileTreeModel.is_path_directory(root.treeContextPath)
+            onTriggered: appController.blacklist_tree_paths(
+                JSON.stringify(root.selectedTreePathsFor(root.treeContextPath)), false)
+        }
+        MenuItem {
+            text: qsTr("Blacklist Folder")
+            icon.name: "edit-delete"
+            enabled: fileTreeModel.is_path_directory(root.treeContextPath)
+            onTriggered: appController.blacklist_tree_paths(
+                JSON.stringify(root.selectedTreePathsFor(root.treeContextPath)), true)
         }
         MenuItem {
             text: qsTr("Delete…")
@@ -2208,11 +2237,28 @@ ApplicationWindow {
         orientation: Qt.Horizontal
 
         Rectangle {
-            SplitView.preferredWidth: root.sidebarVisible ? 285 : 0
+            id: sidebarPane
+            SplitView.preferredWidth: root.sidebarVisible ? root.sidebarWidth : 0
             SplitView.minimumWidth: root.sidebarVisible ? 170 : 0
             visible: root.sidebarVisible
             color: root.palette.window
             border.color: root.palette.mid
+            onWidthChanged: {
+                // Debounced: SplitView drags fire per pixel, but only
+                // the settled width is worth persisting.
+                if (root.sidebarVisible && width >= 170)
+                    sidebarWidthSaver.restart()
+            }
+
+            Timer {
+                id: sidebarWidthSaver
+                interval: 800
+                repeat: false
+                onTriggered: {
+                    if (root.sidebarVisible && sidebarPane.width >= 170)
+                        root.sidebarWidth = sidebarPane.width
+                }
+            }
 
             ColumnLayout {
                 anchors.fill: parent

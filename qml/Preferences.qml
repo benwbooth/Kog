@@ -82,6 +82,23 @@ Window {
             extension.toLowerCase().includes(query))
     }
 
+    function reloadBlacklist() {
+        blacklistModel.clear()
+        try {
+            const parsed = JSON.parse(app.blacklist_json())
+            if (parsed && parsed.ok && Array.isArray(parsed.entries)) {
+                for (const entry of parsed.entries) {
+                    blacklistModel.append({
+                        entryId: entry.id,
+                        entryKind: entry.kind,
+                        entryPath: entry.path,
+                        entryMember: entry.entry || ""
+                    })
+                }
+            }
+        } catch (e) {}
+    }
+
     function outputDeviceIndex(id) {
         if (id.length === 0)
             return 0
@@ -93,8 +110,15 @@ Window {
     }
 
     onVisibleChanged: {
-        if (visible)
+        if (visible) {
             app.refresh_output_devices()
+            reloadBlacklist()
+        }
+    }
+
+    onCurrentPageChanged: {
+        if (visible && currentPage === 0)
+            reloadBlacklist()
     }
 
     RowLayout {
@@ -229,6 +253,62 @@ Window {
                                 text: qsTr("Folders dropped onto the playlist are scanned recursively. Unsupported files are ignored.")
                                 wrapMode: Text.Wrap
                                 color: root.palette.placeholderText
+                            }
+                        }
+                    }
+
+                    PreferenceGroup {
+                        title: qsTr("Blacklisted from Random Radio")
+                        Layout.fillWidth: true
+
+                        ColumnLayout {
+                            anchors.fill: parent
+                            spacing: 6
+
+                            PreferenceLabel {
+                                Layout.fillWidth: true
+                                text: qsTr("Blacklisted songs and folders never come up in Random Radio. Right-click songs or folders to blacklist them.")
+                                wrapMode: Text.Wrap
+                                color: root.palette.placeholderText
+                            }
+                            Label {
+                                Layout.fillWidth: true
+                                visible: blacklistModel.count === 0
+                                text: qsTr("Nothing blacklisted.")
+                                color: root.palette.placeholderText
+                            }
+                            ListView {
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: Math.min(contentHeight, 220)
+                                visible: blacklistModel.count > 0
+                                clip: true
+                                model: ListModel { id: blacklistModel }
+                                delegate: RowLayout {
+                                    required property int entryId
+                                    required property string entryKind
+                                    required property string entryPath
+                                    required property string entryMember
+                                    width: ListView.view.width
+                                    spacing: 8
+
+                                    Label {
+                                        Layout.fillWidth: true
+                                        text: entryKind === "folder"
+                                            ? qsTr("Folder: %1").arg(entryPath)
+                                            : (entryMember.length > 0
+                                                ? qsTr("Song: %1 :: %2").arg(entryPath).arg(entryMember)
+                                                : qsTr("Song: %1").arg(entryPath))
+                                        color: root.foregroundColor
+                                        elide: Text.ElideMiddle
+                                    }
+                                    Button {
+                                        text: qsTr("Remove")
+                                        onClicked: {
+                                            root.app.remove_blacklist_entry(entryId)
+                                            root.reloadBlacklist()
+                                        }
+                                    }
+                                }
                             }
                         }
                     }

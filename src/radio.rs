@@ -61,6 +61,77 @@ const FILE_ORDER_SALT: u64 = 0x9E37_79B9_7F4A_7C15;
 /// small libraries are unaffected. Tune here.
 const FOLDER_REPLAY_SPACING: u64 = 500;
 
+/// User-blacklisted songs and folders, shared live with the UI so menu
+/// changes apply without restarting staging. Songs match pick locator
+/// keys exactly; folders match by path prefix (archive members also
+/// match on their outer file's folders).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Blacklist {
+    pub songs: HashSet<String>,
+    pub folders: Vec<PathBuf>,
+}
+
+impl Blacklist {
+    /// Build from `(kind, path, entry)` rows. Paths resolve best-effort
+    /// so tree, pane, and descent forms agree even across symlinks;
+    /// missing files keep their raw strings.
+    pub(crate) fn from_rows(rows: &[(String, String, String)]) -> Self {
+        let mut songs = HashSet::new();
+        let mut folders = Vec::new();
+        for (kind, path, entry) in rows {
+            if kind == "folder" {
+                folders.push(resolve_path(path));
+            } else if entry.is_empty() {
+                songs.insert(resolve_path(path).display().to_string());
+            } else {
+                // No spaces: mirrors radio_locator_key exactly.
+                songs.insert(format!("{}::{}", resolve_path(path).display(), entry));
+            }
+        }
+        Self { songs, folders }
+    }
+}
+
+fn resolve_path(path: &str) -> PathBuf {
+    let candidate = PathBuf::from(path);
+    crate::track::canonical_path(&candidate).unwrap_or(candidate)
+}
+
+pub(crate) fn locator_is_blacklisted(locator: &Path, blacklist: &Blacklist) -> bool {
+    if blacklist.songs.is_empty() && blacklist.folders.is_empty() {
+        return false;
+    }
+    // Resolve the same way as insertion so symlinked trees match either
+    // form; archive members match on their canonical outer + member key
+    // as well as on outer-folder prefixes.
+    let resolved = resolve_path(&locator.to_string_lossy());
+    if let Ok(Some(location)) = crate::archive::tree_location(&resolved) {
+        let outer = resolve_path(&location.archive.to_string_lossy());
+        if blacklist
+            .songs
+            .contains(&format!("{}::{}", outer.display(), location.entry))
+        {
+            return true;
+        }
+        if blacklist
+            .folders
+            .iter()
+            .any(|folder| outer.starts_with(folder))
+        {
+            return true;
+        }
+    } else if blacklist
+        .songs
+        .contains(&resolved.display().to_string())
+    {
+        return true;
+    }
+    blacklist
+        .folders
+        .iter()
+        .any(|folder| resolved.starts_with(folder))
+}
+
 /// Picks produced by the staging thread: locators in round order, Empty
 /// when the library yielded nothing across two consecutive rounds, Barren
 /// when everything reachable already failed this session.
@@ -86,6 +157,7 @@ pub(crate) fn run_staging(
     initial: RoundInitial,
     save_path: Option<PathBuf>,
     dead: std::sync::Arc<std::sync::Mutex<HashSet<String>>>,
+    blacklist: std::sync::Arc<std::sync::Mutex<Blacklist>>,
     picks: std::sync::mpsc::SyncSender<StagingResponse>,
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) {
@@ -143,7 +215,13 @@ pub(crate) fn run_staging(
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .contains(&radio_locator_key(&locator));
-                if known_dead {
+                let blacklisted = locator_is_blacklisted(
+                    &locator,
+                    &blacklist
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()),
+                );
+                if known_dead || blacklisted {
                     skips += 1;
                     if skips >= MAX_SKIPS {
                         let _ = picks.send(StagingResponse::Barren);
@@ -932,6 +1010,43 @@ mod tests {
     }
 
     #[test]
+    fn blacklist_matches_songs_folders_and_archive_members() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+        std::fs::create_dir(root.join("keep")).unwrap();
+        std::fs::create_dir(root.join("drop")).unwrap();
+        let song = root.join("keep/song.flac");
+        let banned = root.join("drop/banned.flac");
+        std::fs::write(&song, []).unwrap();
+        std::fs::write(&banned, []).unwrap();
+        let pack = root.join("pack.zip");
+        std::fs::write(&pack, []).unwrap();
+        let member = |entry: &str| {
+            crate::archive::member_url(&pack, entry, false)
+        };
+        let rows = vec![
+            ("song".to_owned(), banned.to_string_lossy().into_owned(), String::new()),
+            (
+                "song".to_owned(),
+                pack.to_string_lossy().into_owned(),
+                "inner/banned.wav".to_owned(),
+            ),
+            (
+                "folder".to_owned(),
+                root.join("drop").to_string_lossy().into_owned(),
+                String::new(),
+            ),
+        ];
+        let blacklist = Blacklist::from_rows(&rows);
+        assert!(locator_is_blacklisted(&banned, &blacklist));
+        assert!(!locator_is_blacklisted(&song, &blacklist));
+        assert!(locator_is_blacklisted(&member("inner/banned.wav"), &blacklist));
+        assert!(!locator_is_blacklisted(&member("inner/kept.wav"), &blacklist));
+        assert!(Blacklist::default().songs.is_empty());
+        assert!(!locator_is_blacklisted(&song, &Blacklist::default()));
+    }
+
+    #[test]
     fn probe_staging_throughput() {
         use std::time::Duration;
         let root = PathBuf::from("/mnt/stuff/Music");
@@ -1063,6 +1178,7 @@ mod tests {
                 RoundInitial::fresh(1),
                 None,
                 worker_dead,
+                Arc::new(Mutex::new(Blacklist::default())),
                 sender,
                 worker_cancel,
             );
@@ -1120,6 +1236,7 @@ mod tests {
                 RoundInitial::fresh(1),
                 None,
                 worker_dead,
+                Arc::new(Mutex::new(Blacklist::default())),
                 sender,
                 worker_cancel,
             );
@@ -1365,6 +1482,7 @@ mod tests {
                 RoundInitial::fresh(77),
                 None,
                 worker_dead,
+                Arc::new(Mutex::new(Blacklist::default())),
                 sender,
                 worker_cancel,
             );

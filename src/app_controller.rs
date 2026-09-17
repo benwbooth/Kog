@@ -176,6 +176,19 @@ pub mod qobject {
         #[qinvokable]
         fn prune_missing_playlist_entries(self: Pin<&mut AppController>, id: i32) -> QString;
         #[qinvokable]
+        fn blacklist_tree_paths(self: Pin<&mut AppController>, paths: QString, folders: bool)
+        -> QString;
+        #[qinvokable]
+        fn blacklist_pane_selection(
+            self: Pin<&mut AppController>,
+            indices: QString,
+            folders: bool,
+        ) -> QString;
+        #[qinvokable]
+        fn blacklist_json(self: &AppController) -> QString;
+        #[qinvokable]
+        fn remove_blacklist_entry(self: Pin<&mut AppController>, id: i32) -> QString;
+        #[qinvokable]
         fn save_pane_as_playlist(self: Pin<&mut AppController>, name: QString) -> QString;
         #[qinvokable]
         fn save_selection_as_playlist(
@@ -456,6 +469,7 @@ struct RadioState {
     staged_count: u64,
     expand_jobs: Vec<RadioJob>,
     dead: Arc<Mutex<HashSet<String>>>,
+    blacklist: Arc<Mutex<crate::radio::Blacklist>>,
     staging: Option<StagingWorker>,
     kickstart_armed: bool,
     consecutive_dead: u32,
@@ -477,7 +491,15 @@ fn spawn_staging_worker(
     settings: DecoderSettings,
     read_cue: bool,
     initial: crate::radio::RoundInitial,
-) -> Result<(StagingWorker, Arc<Mutex<HashSet<String>>>), String> {
+    blacklist: crate::radio::Blacklist,
+) -> Result<
+    (
+        StagingWorker,
+        Arc<Mutex<HashSet<String>>>,
+        Arc<Mutex<crate::radio::Blacklist>>,
+    ),
+    String,
+> {
     let (sender, receiver) = std::sync::mpsc::sync_channel(4);
     let cancel = Arc::new(AtomicBool::new(false));
     let worker_cancel = Arc::clone(&cancel);
@@ -485,6 +507,8 @@ fn spawn_staging_worker(
     let save_path = crate::settings::setting_path("radio-round.json");
     let dead = Arc::new(Mutex::new(HashSet::new()));
     let worker_dead = Arc::clone(&dead);
+    let blacklist = Arc::new(Mutex::new(blacklist));
+    let worker_blacklist = Arc::clone(&blacklist);
     std::thread::Builder::new()
         .name("kog-radio-stage".to_owned())
         .spawn(move || {
@@ -496,6 +520,7 @@ fn spawn_staging_worker(
                 initial,
                 save_path,
                 worker_dead,
+                worker_blacklist,
                 sender,
                 worker_cancel,
             );
@@ -507,7 +532,39 @@ fn spawn_staging_worker(
             cancel,
         },
         dead,
+        blacklist,
     ))
+}
+
+/// Blacklist snapshot from the library store for radio staging.
+fn blacklist_snapshot(db: &crate::db::LibraryDb) -> crate::radio::Blacklist {
+    let rows: Vec<(String, String, String)> = db
+        .list_blacklist()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|entry| (entry.kind, entry.path, entry.entry))
+        .collect();
+    crate::radio::Blacklist::from_rows(&rows)
+}
+
+/// One blacklist row, with the path resolved best-effort so keys match
+/// radio locators derived from the same tree.
+fn blacklist_row(kind: &str, path: &str, entry: &str) -> crate::db::BlacklistEntry {
+    crate::db::BlacklistEntry {
+        id: 0,
+        kind: kind.to_owned(),
+        path: path.to_owned(),
+        entry: entry.to_owned(),
+    }
+}
+
+/// Best-effort canonical path for blacklist keys; falls back to the raw
+/// string for missing files so the row still records intent.
+fn blacklist_path(path: &str) -> String {
+    let candidate = PathBuf::from(path);
+    crate::track::canonical_path(&candidate)
+        .map(|canonical| canonical.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| path.to_owned())
 }
 
 /// Persisted round for `root`, or None when nothing valid waits. A wrong
@@ -2080,19 +2137,21 @@ impl Default for AppControllerRust {
                     controller.decoder_settings.clone(),
                     controller.read_cue_sheets_in_folders,
                     initial,
+                    blacklist_snapshot(&controller.library_db),
                 )
                 .ok();
                 match staged {
                     None => {
                         let _ = AppSettings::save_radio_enabled(false);
                     }
-                    Some((staging, dead)) => {
+                    Some((staging, dead, blacklist)) => {
                         controller.radio = Some(RadioState {
                             ready: VecDeque::new(),
                             deferred: VecDeque::new(),
                             staged_count: 0,
                             expand_jobs: Vec::new(),
                             dead,
+                            blacklist,
                             staging: Some(staging),
                             kickstart_armed: false,
                             consecutive_dead: 0,
@@ -2764,6 +2823,23 @@ impl qobject::AppController {
         );
     }
 
+    /// Blacklist snapshot from the library store for radio staging:
+    /// songs as locator keys, folders as paths.
+    fn load_blacklist_snapshot(&self) -> crate::radio::Blacklist {
+        blacklist_snapshot(&self.rust().library_db)
+    }
+
+    /// Refresh the running staging thread's blacklist after menu edits.
+    fn refresh_radio_blacklist(mut self: Pin<&mut Self>) {
+        let snapshot = self.as_ref().load_blacklist_snapshot();
+        if let Some(radio) = self.as_mut().rust_mut().radio.as_mut() {
+            *radio
+                .blacklist
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = snapshot;
+        }
+    }
+
     /// Spawn the staging worker and install fresh radio state for `root`,
     /// clearing any ready buffer, deferred tracks, and in-flight jobs from
     /// the previous folder. Callers choose the round (resumed or fresh)
@@ -2774,6 +2850,7 @@ impl qobject::AppController {
         initial: crate::radio::RoundInitial,
         status: String,
     ) {
+        let blacklist = self.as_ref().load_blacklist_snapshot();
         let staging = {
             let rust = self.as_ref();
             spawn_staging_worker(
@@ -2781,9 +2858,10 @@ impl qobject::AppController {
                 rust.rust().decoder_settings.clone(),
                 rust.rust().read_cue_sheets_in_folders,
                 initial,
+                blacklist,
             )
         };
-        let (staging, dead) = match staging {
+        let (staging, dead, blacklist) = match staging {
             Ok(staging) => staging,
             Err(error) => {
                 self.as_mut().set_status(qstring(error));
@@ -2796,6 +2874,7 @@ impl qobject::AppController {
             staged_count: 0,
             expand_jobs: Vec::new(),
             dead,
+            blacklist,
             staging: Some(staging),
             // Never autoplay on toggle: staging fills the hidden buffer,
             // and the first track moves (and plays) only after an explicit
@@ -4218,6 +4297,233 @@ impl qobject::AppController {
         );
     }
 
+    /// Blacklist file/folder paths from the tree so radio never picks
+    /// them. Songs match radio picks exactly (archive members resolve to
+    /// outer + member); folders match everything beneath, including
+    /// archive contents addressed as `outer :: member`.
+    pub fn blacklist_tree_paths(mut self: Pin<&mut Self>, paths: QString, folders: bool) -> QString {
+        let outcome: Result<serde_json::Value, String> = (|| {
+            let paths = local_paths_from_json(&paths.to_string())?;
+            if paths.is_empty() {
+                return Err("Nothing selected to blacklist".to_owned());
+            }
+            let mut entries = Vec::new();
+            let mut skipped = 0_usize;
+            for path in &paths {
+                if folders {
+                    if let Ok(Some(location)) = crate::archive::tree_location(path) {
+                        // Archive containers blacklist as folders: an empty
+                        // member means the whole archive, otherwise the
+                        // member subdirectory in key form.
+                        if location.entry.is_empty() {
+                            entries.push(blacklist_row(
+                                crate::db::BLACKLIST_FOLDER,
+                                &blacklist_path(&location.archive.to_string_lossy()),
+                                "",
+                            ));
+                        } else {
+                            entries.push(blacklist_row(
+                                crate::db::BLACKLIST_FOLDER,
+                                &format!(
+                                    "{} :: {}",
+                                    blacklist_path(&location.archive.to_string_lossy()),
+                                    location.entry
+                                ),
+                                "",
+                            ));
+                        }
+                        continue;
+                    }
+                    if !path.is_dir() {
+                        skipped += 1;
+                        continue;
+                    }
+                    entries.push(blacklist_row(
+                        crate::db::BLACKLIST_FOLDER,
+                        &blacklist_path(&path.to_string_lossy()),
+                        "",
+                    ));
+                    continue;
+                }
+                if let Ok(Some(location)) = crate::archive::tree_location(path) {
+                    if location.entry.is_empty() {
+                        skipped += 1;
+                        continue;
+                    }
+                    entries.push(blacklist_row(
+                        crate::db::BLACKLIST_SONG,
+                        &blacklist_path(&location.archive.to_string_lossy()),
+                        &location.entry,
+                    ));
+                    continue;
+                }
+                if path.is_dir() {
+                    skipped += 1;
+                    continue;
+                }
+                entries.push(blacklist_row(
+                    crate::db::BLACKLIST_SONG,
+                    &blacklist_path(&path.to_string_lossy()),
+                    "",
+                ));
+            }
+            self.as_mut().blacklist_commit(entries, skipped, folders)
+        })();
+        if let Err(error) = outcome.as_ref() {
+            self.as_mut().set_status(qstring(error));
+        }
+        json_result(outcome)
+    }
+
+    /// Blacklist pane rows so radio never picks them (or, with folders,
+    /// their parent folders for local files).
+    pub fn blacklist_pane_selection(
+        mut self: Pin<&mut Self>,
+        indices: QString,
+        folders: bool,
+    ) -> QString {
+        let outcome: Result<serde_json::Value, String> = (|| {
+            let rows = parse_row_indices(
+                &indices.to_string(),
+                self.as_ref().rust().visible_indices.len(),
+            );
+            if rows.is_empty() {
+                return Err("No rows are selected".to_owned());
+            }
+            let tracks: Vec<Track> = {
+                let this = self.as_ref();
+                let rust = this.rust();
+                rows.iter()
+                    .filter_map(|row| {
+                        rust.visible_indices
+                            .get(*row)
+                            .and_then(|source_index| rust.tracks.get(*source_index))
+                            .cloned()
+                    })
+                    .collect()
+            };
+            let mut entries = Vec::new();
+            let mut skipped = 0_usize;
+            let mut folders_seen = std::collections::HashSet::new();
+            for track in &tracks {
+                if folders {
+                    let Some(parent) = track.source.path.parent().map(PathBuf::from) else {
+                        skipped += 1;
+                        continue;
+                    };
+                    if track.source.remote_url.is_some() || track.source.archive_origin.is_some() {
+                        skipped += 1;
+                        continue;
+                    }
+                    let folder = blacklist_path(&parent.to_string_lossy());
+                    if folders_seen.insert(folder.clone()) {
+                        entries.push(blacklist_row(crate::db::BLACKLIST_FOLDER, &folder, ""));
+                    }
+                    continue;
+                }
+                if let Some(url) = track.source.remote_url.as_deref() {
+                    entries.push(blacklist_row(crate::db::BLACKLIST_SONG, url, ""));
+                    continue;
+                }
+                if let Some(origin) = track.source.archive_origin.as_ref() {
+                    if origin.entry_name.is_empty() {
+                        skipped += 1;
+                        continue;
+                    }
+                    entries.push(blacklist_row(
+                        crate::db::BLACKLIST_SONG,
+                        &blacklist_path(&origin.archive_path.to_string_lossy()),
+                        &origin.entry_name,
+                    ));
+                    continue;
+                }
+                entries.push(blacklist_row(
+                    crate::db::BLACKLIST_SONG,
+                    &blacklist_path(&track.source.path.to_string_lossy()),
+                    "",
+                ));
+            }
+            self.as_mut().blacklist_commit(entries, skipped, folders)
+        })();
+        if let Err(error) = outcome.as_ref() {
+            self.as_mut().set_status(qstring(error));
+        }
+        json_result(outcome)
+    }
+
+    /// Write blacklist rows, refresh live radio staging, and summarize.
+    fn blacklist_commit(
+        mut self: Pin<&mut Self>,
+        entries: Vec<crate::db::BlacklistEntry>,
+        skipped: usize,
+        folders: bool,
+    ) -> Result<serde_json::Value, String> {
+        if entries.is_empty() {
+            return Err(if skipped > 0 {
+                "Nothing selected can be blacklisted".to_owned()
+            } else {
+                "Nothing selected to blacklist".to_owned()
+            });
+        }
+        let added = self
+            .as_ref()
+            .rust()
+            .library_db
+            .add_blacklist_entries(&entries)?;
+        self.as_mut().refresh_radio_blacklist();
+        let noun = if folders { "folder" } else { "song" };
+        let mut status = if added == 0 {
+            format!("Already blacklisted")
+        } else {
+            format!(
+                "Blacklisted {added} {noun}{}",
+                if added == 1 { "" } else { "s" }
+            )
+        };
+        if skipped > 0 {
+            status.push_str(&format!(" ({skipped} skipped)"));
+        }
+        self.as_mut().set_status(qstring(status));
+        Ok(serde_json::json!({
+            "ok": true,
+            "added": added,
+            "skipped": skipped,
+        }))
+    }
+
+    pub fn blacklist_json(&self) -> QString {
+        let outcome = self.rust().library_db.list_blacklist().map(|entries| {
+            serde_json::json!({
+                "ok": true,
+                "entries": entries
+                    .iter()
+                    .map(|entry| serde_json::json!({
+                        "id": entry.id,
+                        "kind": entry.kind,
+                        "path": entry.path,
+                        "entry": entry.entry,
+                    }))
+                    .collect::<Vec<_>>(),
+            })
+        });
+        json_result(outcome)
+    }
+
+    pub fn remove_blacklist_entry(mut self: Pin<&mut Self>, id: i32) -> QString {
+        let outcome = self
+            .as_ref()
+            .rust()
+            .library_db
+            .remove_blacklist_entry(id as i64)
+            .map(|()| serde_json::json!({ "ok": true, "id": id }));
+        if outcome.is_ok() {
+            self.as_mut().refresh_radio_blacklist();
+            self.as_mut().set_status(qstring("Removed from blacklist"));
+        } else if let Err(error) = outcome.as_ref() {
+            self.as_mut().set_status(qstring(error));
+        }
+        json_result(outcome)
+    }
     /// Drop the entries of a stored playlist whose files are gone and
     /// report how many went. Never touches Favorites (id 0 lives in the
     /// stars table, not playlist rows).

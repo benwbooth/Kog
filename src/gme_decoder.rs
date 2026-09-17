@@ -19,6 +19,26 @@ const GME_DEFAULT_LENGTH: Duration = Duration::from_secs(150);
 const GME_DEFAULT_FADE: Duration = Duration::from_secs(8);
 const GME_DEFAULT_LOOP_COUNT: u32 = 2;
 
+/// GME reports the format maximum (256) for KSS because the format has
+/// no song count; real rips hold a handful of songs at most. Clamp so one
+/// file cannot flood the pane and radio with phantom noise subsongs.
+const KSS_SUBSONG_CAP: u32 = 16;
+
+fn is_kss(path: &Path) -> bool {
+    path.extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("kss"))
+}
+
+fn capped_subsong_count(emu: &GameMusicEmu, path: &Path) -> Result<u32, String> {
+    let count = emu.track_count()?;
+    Ok(if is_kss(path) {
+        count.min(KSS_SUBSONG_CAP)
+    } else {
+        count
+    })
+}
+
 pub struct GmeBackend;
 
 impl GmeBackend {
@@ -39,7 +59,7 @@ impl GmeBackend {
         source: &PlaybackSource,
     ) -> Result<(u32, GmeTrackInfo, GmePlaybackPlan), String> {
         let track = source.subsong.unwrap_or(0);
-        let count = emu.track_count()?;
+        let count = capped_subsong_count(emu, &source.path)?;
         if track >= count {
             return Err(format!(
                 "{} requests GME subsong {}, but the file contains {count}",
@@ -88,7 +108,7 @@ impl DecoderBackend for GmeBackend {
             return Ok(None);
         }
         let emu = GameMusicEmu::open(path, -1)?;
-        Ok(Some(emu.track_count()?))
+        Ok(Some(capped_subsong_count(&emu, path)?))
     }
 
     fn probe(&self, source: &PlaybackSource) -> Result<StreamProperties, String> {
@@ -261,6 +281,34 @@ mod tests {
 
     fn test_nsf_path() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("native/game-music-emu/test.nsf")
+    }
+
+    /// Minimal synthetic KSS: GME reports the format maximum (256)
+    /// regardless of content, which is exactly the phantom flood.
+    fn write_test_kss(dir: &std::path::Path) -> PathBuf {
+        let mut bytes = vec![0_u8; 16];
+        bytes[0..4].copy_from_slice(b"KSCC");
+        bytes[4..6].copy_from_slice(&0x4000_u16.to_le_bytes());
+        bytes[6..8].copy_from_slice(&0x0008_u16.to_le_bytes());
+        bytes[8..10].copy_from_slice(&0x4000_u16.to_le_bytes());
+        bytes[10..12].copy_from_slice(&0x4003_u16.to_le_bytes());
+        bytes.extend_from_slice(&[0xC9, 0xC9, 0xC9, 0xC9, 0xC9, 0xC9, 0xC9, 0xC9]);
+        let path = dir.join("synthetic.kss");
+        std::fs::write(&path, &bytes).expect("write synthetic KSS");
+        path
+    }
+
+    #[test]
+    fn kss_subsong_count_clamps_the_format_maximum() {
+        use crate::decoder::DecoderBackend;
+        let temporary = tempfile::tempdir().expect("temporary music");
+        let path = write_test_kss(temporary.path());
+        let emu = GameMusicEmu::open(&path, -1).expect("open synthetic KSS");
+        assert_eq!(emu.track_count().expect("raw KSS count"), 256);
+        assert_eq!(
+            GmeBackend.subsong_count(&path).expect("capped KSS count"),
+            Some(KSS_SUBSONG_CAP)
+        );
     }
 
     #[test]

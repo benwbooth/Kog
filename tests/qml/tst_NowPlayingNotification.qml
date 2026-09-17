@@ -121,6 +121,21 @@ TestCase {
         }
     }
 
+    function test_corners_land_on_their_sides() {
+        notification.moveToCorner("topLeft")
+        verify(notification.rightMargin > 16, "top left sits far from the right edge")
+        verify(notification.bottomMargin > 16, "top left sits far from the bottom edge")
+        notification.moveToCorner("topRight")
+        compare(notification.rightMargin, 16)
+        verify(notification.bottomMargin > 16)
+        notification.moveToCorner("bottomLeft")
+        verify(notification.rightMargin > 16)
+        compare(notification.bottomMargin, 16)
+        notification.moveToCorner("bottomRight")
+        compare(notification.rightMargin, 16)
+        compare(notification.bottomMargin, 16)
+    }
+
     function test_drag_remembers_position_and_reset() {
         notification.resetPosition()
         notification.present()
