@@ -1857,23 +1857,6 @@ ApplicationWindow {
                     onClicked: aboutKog.open()
                 }
             }
-            Label {
-                id: buildStampLabel
-                objectName: "buildStampLabel"
-                Layout.alignment: Qt.AlignVCenter
-                Layout.leftMargin: 2
-                visible: root.buildStamp.length > 0
-                text: root.buildStamp
-                font.pixelSize: 10
-                color: root.palette.placeholderText
-                elide: Text.ElideRight
-                Layout.maximumWidth: 220
-                Accessible.name: qsTr("Build %1").arg(root.buildStamp)
-                ToolTip.visible: buildStampHover.hovered
-                ToolTip.text: qsTr("Build %1").arg(root.buildStamp)
-
-                HoverHandler { id: buildStampHover }
-            }
             ToolbarButton {
                 id: hamburgerButton
                 Layout.preferredWidth: 34
@@ -2090,6 +2073,21 @@ ApplicationWindow {
                         font.pixelSize: 11
                         color: root.palette.placeholderText
                         elide: Text.ElideRight
+                    }
+                    Label {
+                        objectName: "buildStampFooter"
+                        Layout.fillWidth: true
+                        visible: !root.compactToolbar && root.buildStamp.length > 0
+                        text: qsTr("v%1 · %2").arg(Qt.application.version).arg(root.buildStamp)
+                        font.pixelSize: 10
+                        color: root.palette.placeholderText
+                        elide: Text.ElideRight
+                        Accessible.name: text
+                        ToolTip.visible: buildStampFooterHover.hovered
+                        ToolTip.text: qsTr("Version %1, build %2")
+                            .arg(Qt.application.version).arg(root.buildStamp)
+
+                        HoverHandler { id: buildStampFooterHover }
                     }
                 }
             }
