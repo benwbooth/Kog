@@ -143,12 +143,6 @@
               QMAKE = "${qtEnv}/bin/qmake";
               LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
               preBuild = ''
-                # Embed the real frontend: the crate falls back to a
-                # placeholder page when these assets are absent.
-                chmod -R u+w crates/kog-server/web
-                rm -rf crates/kog-server/web
-                mkdir -p crates/kog-server/web
-                cp -r ${kogWeb}/. crates/kog-server/web/
                 export PATH="${qtEnv}/bin:${qtEnv}/libexec:$PATH"
                 # Qt's setup hook can replace QMAKE with qtbase's split output.
                 # CXX-Qt needs the combined installation's QML .prl metadata.
@@ -171,6 +165,14 @@
             default = craneLib.buildPackage (
               commonArgs
               // {
+                # Embed the built frontend here, not in the shared args: the
+                # deps derivation uses a synthetic tree with no web directory.
+                # The crate falls back to a committed placeholder page.
+                preBuild = commonArgs.preBuild + ''
+                  rm -rf crates/kog-server/web
+                  mkdir -p crates/kog-server/web
+                  cp -r ${kogWeb}/. crates/kog-server/web/
+                '';
                 postInstall = ''
                   for helper in kog-sfm-helper kog-psf-helper kog-psf2-helper kog-2sf-helper kog-snsf-helper kog-syntrax-helper kog-sc55-helper; do
                     helperPath=$(find target -type f -path "*/bin/$helper" -print -quit)
