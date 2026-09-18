@@ -60,12 +60,17 @@ watch_args=(
   --watch Cargo.toml
   --exts rs,qml,toml,json,svg,css,html
   --debounce 300ms
+  # Ask the app to quit, but do not let a wedged one hold up the restart.
+  --stop-signal SIGTERM
+  --stop-timeout 3s
   --restart
 )
 
 case "$mode" in
   check)
-    command=(cargo check "${profile_args[@]}" --workspace --all-targets)
+    # Plain --workspace: test and bench targets are compile-checked by --test,
+    # and including them here would only slow the fastest feedback path down.
+    command=(cargo check "${profile_args[@]}" --workspace)
     ;;
   test)
     command=(cargo test "${profile_args[@]}" --workspace)
