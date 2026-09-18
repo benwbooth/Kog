@@ -2077,10 +2077,13 @@ ApplicationWindow {
                     Label {
                         objectName: "buildStampFooter"
                         Layout.fillWidth: true
+                        // Sit clear of the title/subtitle above rather than
+                        // crowding them.
+                        Layout.topMargin: 8
                         visible: !root.compactToolbar && root.buildStamp.length > 0
                         text: qsTr("v%1 · %2").arg(Qt.application.version).arg(root.buildStamp)
                         font.pixelSize: 10
-                        color: root.palette.placeholderText
+                        color: Qt.darker(root.palette.placeholderText, 1.2)
                         elide: Text.ElideRight
                         Accessible.name: text
                         ToolTip.visible: buildStampFooterHover.hovered
