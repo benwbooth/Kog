@@ -165,6 +165,9 @@
             });
           in
           {
+            # Exposed so the frontend can be built (and inspected) on its own:
+            # release jobs build it, then the package build embeds it.
+            kog-web = kogWeb;
             default = craneLib.buildPackage (
               commonArgs
               // {
