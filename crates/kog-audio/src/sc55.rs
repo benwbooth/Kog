@@ -111,9 +111,15 @@ impl Sc55 {
         match acquire_sc55_server(rom_directory) {
             Ok(server) => match Self::open_via_server(&server, schedule_file, path) {
                 Ok(source) => Ok(source),
-                Err(_) => Self::open_oneshot(midi, rom_directory, path),
+                Err(error) => {
+                    eprintln!("kog: SC-55 server job failed ({error}); using one-shot helper");
+                    Self::open_oneshot(midi, rom_directory, path)
+                }
             },
-            Err(_) => Self::open_oneshot(midi, rom_directory, path),
+            Err(error) => {
+                eprintln!("kog: SC-55 server unavailable ({error}); using one-shot helper");
+                Self::open_oneshot(midi, rom_directory, path)
+            }
         }
     }
 
@@ -878,18 +884,36 @@ fn acquire_sc55_server(rom_dir: &Path) -> Result<Arc<Sc55Server>, String> {
     if !slot.booting.swap(true, Ordering::SeqCst) {
         let slot = Arc::clone(&slot);
         let rom_dir = rom_dir.to_path_buf();
-        std::thread::Builder::new()
+        let spawned = std::thread::Builder::new()
             .name("kog-sc55-boot".to_owned())
             .spawn(move || {
-                let booted = server_supports_protocol_two(&helper)
-                    .then(|| Sc55Server::boot(&helper, &rom_dir))
-                    .and_then(Result::ok);
-                if let Some(server) = booted {
-                    *lock_unpoisoned(&slot.server) = Some(Arc::new(server));
+                let started = std::time::Instant::now();
+                let booted = if server_supports_protocol_two(&helper) {
+                    Sc55Server::boot(&helper, &rom_dir).map_err(|error| error)
+                } else {
+                    Err(format!(
+                        "{} predates protocol 2; rebuild the helper",
+                        helper.display()
+                    ))
+                };
+                match booted {
+                    Ok(server) => {
+                        eprintln!(
+                            "kog: SC-55 server ready in {:.1}s",
+                            started.elapsed().as_secs_f32()
+                        );
+                        *lock_unpoisoned(&slot.server) = Some(Arc::new(server));
+                    }
+                    Err(error) => {
+                        eprintln!("kog: SC-55 server failed to boot: {error}");
+                    }
                 }
                 slot.booting.store(false, Ordering::SeqCst);
             })
             .ok();
+        if spawned.is_none() {
+            eprintln!("kog: could not start the SC-55 boot thread");
+        }
     }
     Err("Nuked SC-55 server is warming up".to_owned())
 }
@@ -1181,6 +1205,49 @@ mod tests {
     // is deferred: it needs a test-only helper injection hook, because the
     // KOG_SC55_HELPER environment override is process-global and races
     // with the other sc55 tests under the harness's parallel runner.
+
+    /// Real-helper timing probe: needs user ROMs and a real MIDI file.
+    ///   KOG_SC55_ROMS=<rom dir> KOG_SC55_PROBE_MIDI=<file.mid>
+    ///   cargo test -p kog-audio -- --ignored sc55_server_startup_probe --nocapture
+    /// Proves the booted server serves later tracks without re-booting.
+    #[test]
+    #[ignore = "needs KOG_SC55_ROMS and KOG_SC55_PROBE_MIDI on a machine with the built helper"]
+    fn sc55_server_startup_probe() {
+        use std::time::Instant;
+        let (Ok(roms), Ok(midi_path)) = (
+            std::env::var("KOG_SC55_ROMS"),
+            std::env::var("KOG_SC55_PROBE_MIDI"),
+        ) else {
+            panic!("set KOG_SC55_ROMS and KOG_SC55_PROBE_MIDI");
+        };
+        let roms = PathBuf::from(roms);
+        let bytes = std::fs::read(&midi_path).expect("read probe MIDI");
+        let cold = Instant::now();
+        warm_sc55_server(&roms);
+        let deadline = Instant::now() + Duration::from_secs(120);
+        loop {
+            if acquire_sc55_server(&roms).is_ok() {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "SC-55 server never became ready"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        println!("server ready after {:?}", cold.elapsed());
+
+        let first = Instant::now();
+        let source = Sc55::open(&bytes, Path::new("probe-one.mid"), &roms).expect("server job 1");
+        println!("first server job open: {:?}", first.elapsed());
+        drop(source);
+
+        let second = Instant::now();
+        let source = Sc55::open(&bytes, Path::new("probe-two.mid"), &roms).expect("server job 2");
+        println!("second server job open: {:?}", second.elapsed());
+        drop(source);
+        shutdown_sc55_servers();
+    }
 
     #[test]
     fn built_helper_reports_its_pinned_protocol_version() {

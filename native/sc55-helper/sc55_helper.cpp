@@ -16,8 +16,13 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <atomic>
+#include <condition_variable>
+#include <deque>
 #include <iostream>
 #include <limits>
+#include <mutex>
+#include <thread>
 #include <memory>
 #include <span>
 #include <stdexcept>
@@ -195,12 +200,21 @@ struct OutputState
     uint64_t totalFrames = 0;
     bool writeFailed = false;
     FILE* out = stdout;
+    // Superseded when the requested epoch advances: a queued newer job
+    // must not wait for this render to finish.
+    const std::atomic<uint64_t>* epoch = nullptr;
+    uint64_t expectedEpoch = 0;
+
+    bool cancelled() const
+    {
+        return writeFailed || (epoch != nullptr && epoch->load() != expectedEpoch);
+    }
 };
 
 void receiveSample(void* context, const AudioFrame<int32_t>& input)
 {
     auto& state = *static_cast<OutputState*>(context);
-    if(state.frame >= state.totalFrames || state.writeFailed) return;
+    if(state.frame >= state.totalFrames || state.cancelled()) return;
     if(state.frame >= state.startFrame)
     {
         AudioFrame<int16_t> output;
@@ -288,7 +302,9 @@ BootedEmulator bootEmulator(const fs::path& romDirectory,
 void renderJob(BootedEmulator& booted,
                const Schedule& schedule,
                uint64_t startFrame,
-               FILE* out)
+               FILE* out,
+               const std::atomic<uint64_t>* epoch,
+               uint64_t expectedEpoch)
 {
     Emulator& emulator = *booted.emulator;
     const uint64_t totalFrames = framesForDuration(schedule.totalNs, booted.sampleRate);
@@ -303,24 +319,28 @@ void renderJob(BootedEmulator& booted,
     OutputState output {.frame = 0,
                         .startFrame = startFrame,
                         .totalFrames = totalFrames,
-                        .writeFailed = false};
+                        .writeFailed = false,
+                        .epoch = epoch,
+                        .expectedEpoch = expectedEpoch};
     emulator.SetSampleCallback(receiveSample, &output);
     const uint64_t nanosecondsPerStep = emulator.GetMCU().is_mk1 ? 600U : 500U;
     uint64_t simulatedNs = 0;
     for(const Event& event : schedule.events)
     {
         while(simulatedNs < event.timestampNs && output.frame < totalFrames &&
-              !output.writeFailed)
+              !output.cancelled())
         {
             emulator.Step();
             simulatedNs += nanosecondsPerStep;
         }
-        if(output.frame >= totalFrames || output.writeFailed) break;
+        if(output.frame >= totalFrames || output.cancelled()) break;
         emulator.PostMIDI(std::span<const uint8_t>(event.bytes));
     }
-    while(output.frame < totalFrames && !output.writeFailed) emulator.Step();
+    while(output.frame < totalFrames && !output.cancelled()) emulator.Step();
     if(output.writeFailed)
         throw std::runtime_error("writing SC-55 PCM failed");
+    if(epoch != nullptr && epoch->load() != expectedEpoch)
+        throw std::runtime_error("SC-55 render superseded by a newer job");
 }
 
 void run(const fs::path& schedulePath,
@@ -332,7 +352,7 @@ void run(const fs::path& schedulePath,
         throw std::runtime_error("SC-55 ROM path is not a directory");
     const Schedule schedule = readSchedule(schedulePath);
     BootedEmulator booted = bootEmulator(romDirectory, requestedRomset);
-    renderJob(booted, schedule, startFrame, stdout);
+    renderJob(booted, schedule, startFrame, stdout, nullptr, 0);
     if(std::fflush(stdout) != 0)
         throw std::runtime_error("flushing SC-55 PCM failed");
 }
@@ -468,13 +488,49 @@ void runServer(const fs::path& romDirectory, std::string_view requestedRomset)
     BootedEmulator booted = bootEmulator(romDirectory, requestedRomset);
     std::fprintf(stderr, "READY\n");
     std::fflush(stderr);
-    std::string line;
-    while(std::getline(std::cin, line))
+
+    // A dedicate reader keeps consuming job lines while a render runs, so a
+    // newer request supersedes the current one instead of queueing behind a
+    // full track. The render loop watches `epoch` and abandons immediately.
+    std::mutex queueMutex;
+    std::condition_variable queueCv;
+    std::deque<std::string> pendingLines;
+    std::atomic<uint64_t> epoch {0};
+    std::atomic<bool> stdinClosed {false};
+    std::thread reader([&] {
+        std::string line;
+        while(std::getline(std::cin, line))
+        {
+            {
+                std::lock_guard<std::mutex> lock(queueMutex);
+                pendingLines.push_back(std::move(line));
+            }
+            epoch.fetch_add(1, std::memory_order_relaxed);
+            queueCv.notify_one();
+        }
+        stdinClosed.store(true, std::memory_order_release);
+        queueCv.notify_one();
+    });
+
+    while(true)
     {
+        std::string line;
+        {
+            std::unique_lock<std::mutex> lock(queueMutex);
+            queueCv.wait(lock, [&] {
+                return !pendingLines.empty() || stdinClosed.load(std::memory_order_acquire);
+            });
+            if(pendingLines.empty())
+                break; // stdin closed and nothing left to render
+            // Only the newest request matters: older ones were superseded.
+            line = std::move(pendingLines.back());
+            pendingLines.clear();
+        }
         try
         {
             const ServerJob job = parseJobLine(line);
             const Schedule schedule = readSchedule(job.schedulePath);
+            const uint64_t expectedEpoch = epoch.load(std::memory_order_relaxed);
             booted.emulator->PostSystemReset(EMU_SystemReset::GS_RESET);
             for(uint32_t step = 0; step < POST_RESET_SETTLE_STEPS; ++step)
                 booted.emulator->Step();
@@ -482,16 +538,30 @@ void runServer(const fs::path& romDirectory, std::string_view requestedRomset)
             FILE* out = fdopenSocket(sock.sock);
             // The guard must not close the socket out from under stdio.
             sock.sock = INVALID_SOCK;
-            renderJob(booted, schedule, job.startFrame, out);
+            try
+            {
+                renderJob(booted, schedule, job.startFrame, out, &epoch, expectedEpoch);
+            }
+            catch(...)
+            {
+                std::fclose(out);
+                throw;
+            }
             if(std::fclose(out) != 0)
                 throw std::runtime_error("closing SC-55 render target failed");
         }
         catch(const std::exception& error)
         {
-            std::fprintf(stderr, "JOB ERROR %s\n", error.what());
-            std::fflush(stderr);
+            const std::string message = error.what();
+            // Superseding a render is normal operation, not a failure.
+            if(message.find("superseded") == std::string::npos)
+            {
+                std::fprintf(stderr, "JOB ERROR %s\n", message.c_str());
+                std::fflush(stderr);
+            }
         }
     }
+    reader.join();
 #ifdef _WIN32
     ::WSACleanup();
 #endif
