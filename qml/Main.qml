@@ -71,6 +71,16 @@ ApplicationWindow {
             : "none"
     }
     readonly property bool compactToolbar: width < 980
+    // Which build is running: the stamped revision plus, when it is known,
+    // when the binary was linked. Shown small in the toolbar and in About.
+    readonly property string buildRevision: appController.build_revision()
+    readonly property string buildStamp: {
+        const when = appController.build_timestamp()
+        const time = when > 0
+            ? Qt.formatDateTime(new Date(when), "yyyy-MM-dd HH:mm")
+            : ""
+        return [buildRevision, time].filter(part => part.length > 0).join(" · ")
+    }
     readonly property bool useMacWindowControls: Qt.platform.os === "osx"
     readonly property bool playerShowing: (root.visible
         && root.visibility !== Window.Hidden
@@ -881,7 +891,7 @@ ApplicationWindow {
         mainWindow: root
     }
     Preferences { id: preferences; app: appController }
-    AboutKog { id: aboutKog }
+    AboutKog { id: aboutKog; buildStamp: root.buildStamp }
     RemoteBrowser {
         id: remoteBrowser
         app: appController
@@ -1846,6 +1856,23 @@ ApplicationWindow {
                     ToolTip.text: qsTr("About Kog")
                     onClicked: aboutKog.open()
                 }
+            }
+            Label {
+                id: buildStampLabel
+                objectName: "buildStampLabel"
+                Layout.alignment: Qt.AlignVCenter
+                Layout.leftMargin: 2
+                visible: root.buildStamp.length > 0
+                text: root.buildStamp
+                font.pixelSize: 10
+                color: root.palette.placeholderText
+                elide: Text.ElideRight
+                Layout.maximumWidth: 220
+                Accessible.name: qsTr("Build %1").arg(root.buildStamp)
+                ToolTip.visible: buildStampHover.hovered
+                ToolTip.text: qsTr("Build %1").arg(root.buildStamp)
+
+                HoverHandler { id: buildStampHover }
             }
             ToolbarButton {
                 id: hamburgerButton

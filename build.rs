@@ -8,6 +8,12 @@ fn main() {
     println!("cargo:rerun-if-changed=qml");
     println!("cargo:rerun-if-changed=web");
     println!("cargo:rerun-if-changed=build.rs");
+    // Switching branch or commit rewrites .git/HEAD, which is when the stamped
+    // revision below can change. Absent when building from a source package.
+    if std::path::Path::new(".git/HEAD").exists() {
+        println!("cargo:rerun-if-changed=.git/HEAD");
+    }
+    emit_build_revision();
     let qt_builder = CxxQtBuilder::new_qml_module(QmlModule::new("org.kog.player").qml_files([
         "qml/CogButton.qml",
         "qml/AudioVisualization.qml",
@@ -164,4 +170,33 @@ fn wayland_session_headers() -> Vec<PathBuf> {
         return Vec::new();
     }
     vec![gui.join("QtGui"), gui, core.join("QtCore"), core]
+}
+
+/// Stamp the revision this build came from, so the About window and the title
+/// bar can show which build is running. Packaged builds have no `.git`, so
+/// `KOG_BUILD_REV` (set by a release job) wins when it is present.
+fn emit_build_revision() {
+    let revision = std::env::var("KOG_BUILD_REV")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            let head = git(&["rev-parse", "--short", "HEAD"])?;
+            let dirty = git(&["status", "--porcelain"])
+                .is_some_and(|status| !status.trim().is_empty());
+            Some(if dirty { format!("{head}-dirty") } else { head })
+        })
+        .unwrap_or_else(|| "unknown".to_owned());
+    println!("cargo:rustc-env=KOG_BUILD_REV={revision}");
+}
+
+/// Run a git command, returning its trimmed stdout when it succeeds.
+fn git(args: &[&str]) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }

@@ -19,4 +19,14 @@ TestCase {
         tryCompare(about, "visible", true)
         about.hide()
     }
+    function test_build_stamp_shows_only_when_known() {
+        const field = findChild(about, "aboutBuild")
+        verify(field !== null)
+        compare(field.visible, false, "hidden without a stamp")
+        about.buildStamp = "abc1234 · 2026-01-01 09:00"
+        compare(field.visible, true)
+        verify(field.text.indexOf("abc1234") >= 0)
+        about.buildStamp = ""
+        compare(field.visible, false)
+    }
 }

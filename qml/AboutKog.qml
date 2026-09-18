@@ -12,6 +12,8 @@ Window {
     minimumHeight: 260
     color: palette.window
     readonly property string version: Qt.application.version
+    /// Stamped by the build; empty in a source tree without git.
+    property string buildStamp: ""
 
     function open() {
         show()
@@ -32,6 +34,16 @@ Window {
         Label {
             objectName: "aboutVersion"
             text: qsTr("Version %1").arg(root.version)
+            horizontalAlignment: Text.AlignHCenter
+            Accessible.name: text
+            Layout.fillWidth: true
+        }
+        Label {
+            objectName: "aboutBuild"
+            visible: root.buildStamp.length > 0
+            text: qsTr("Build %1").arg(root.buildStamp)
+            font.pixelSize: 11
+            color: palette.placeholderText
             horizontalAlignment: Text.AlignHCenter
             Accessible.name: text
             Layout.fillWidth: true

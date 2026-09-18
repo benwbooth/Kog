@@ -229,6 +229,10 @@ pub mod qobject {
         #[qinvokable]
         fn server_addresses_json(self: &AppController) -> QString;
         #[qinvokable]
+        fn build_revision(self: &AppController) -> QString;
+        #[qinvokable]
+        fn build_timestamp(self: &AppController) -> f64;
+        #[qinvokable]
         fn previous(self: Pin<&mut AppController>);
         #[qinvokable]
         fn next(self: Pin<&mut AppController>);
@@ -5262,6 +5266,30 @@ impl qobject::AppController {
             "addresses": addresses,
             "port": config.port,
         })))
+    }
+
+    /// The revision stamped into this build, for the title bar and About box.
+    pub fn build_revision(&self) -> QString {
+        qstring(env!("KOG_BUILD_REV"))
+    }
+
+    /// When this binary was linked, in milliseconds since the epoch, so QML can
+    /// format it for the user's locale. Zero means "not known": a nix store
+    /// path carries a 1970 mtime, and showing that would be worse than a blank.
+    pub fn build_timestamp(&self) -> f64 {
+        const EARLIEST_PLAUSIBLE_MS: f64 = 946_684_800_000.0; // 2000-01-01
+        let millis = std::env::current_exe()
+            .ok()
+            .and_then(|path| std::fs::metadata(path).ok())
+            .and_then(|metadata| metadata.modified().ok())
+            .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|since| since.as_millis() as f64)
+            .unwrap_or(0.0);
+        if millis < EARLIEST_PLAUSIBLE_MS {
+            0.0
+        } else {
+            millis
+        }
     }
 
     fn server_result(
