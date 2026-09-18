@@ -4,7 +4,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Controls.impl as ControlsImpl
 import QtQuick.Layouts
-import Qt.labs.platform
+import Qt.labs.platform as Platform
 
 Window {
     id: root
