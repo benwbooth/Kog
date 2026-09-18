@@ -129,6 +129,12 @@
             };
             cargoArtifacts = craneLib.buildDepsOnly (commonArgs // {
               src = normalizedSrc;
+              # The dummy workspace crane synthesizes for the deps pass does
+              # not round-trip every member manifest, so `--locked` would
+              # reject its own synthetic lock. Resolution is still pinned by
+              # the vendored crate set, so dropping the flag is safe here;
+              # the real package build below keeps `--locked`.
+              cargoExtraArgs = "";
             });
           in
           {
