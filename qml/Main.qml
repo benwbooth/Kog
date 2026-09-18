@@ -2045,7 +2045,7 @@ ApplicationWindow {
                         onClicked: coverArtDialog.open()
                     }
 
-                    ToolTip.visible: coverArtHover.containsMouse
+                    ToolTip.visible: coverArtHover.hovered
                         && appController.current_artwork_path.length > 0
                     ToolTip.delay: 500
                     ToolTip.text: qsTr("Show enlarged")

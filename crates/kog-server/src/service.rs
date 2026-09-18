@@ -14,7 +14,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use axum::body::Bytes;
-use kog_audio::decoder::DecoderSettings;
+use kog_audio::decoder::{DecoderSettings, PlaybackSource};
 use kog_audio::playlist::PlaylistEntry;
 use kog_audio::streaming::{PcmReader, resolve_entry};
 
@@ -53,6 +53,10 @@ impl StreamService {
         encoder: PathBuf,
         scratch: PathBuf,
     ) -> Self {
+        // The scratch playlist the decoder expansion needs lives here; create
+        // it up front, or the very first stream fails on a missing directory
+        // and the client sees an empty 200 instead of audio.
+        let _ = std::fs::create_dir_all(&scratch);
         Self {
             cache,
             decoder_settings,
@@ -73,6 +77,11 @@ impl StreamService {
     }
 
     /// Open a stream for one entry, encoding on a miss.
+    ///
+    /// Everything that can fail is done here, before any bytes are promised to
+    /// the client: a cache hit, a missing encoder, or an entry that will not
+    /// resolve all have to become an HTTP error rather than a silent empty
+    /// body.
     pub fn open(
         &self,
         entry: PlaylistEntry,
@@ -81,12 +90,35 @@ impl StreamService {
         if let Some(path) = self.cache.lookup(&key) {
             return Ok(StreamSource::Cached(path));
         }
-        self.start_encode(entry, key)
+        self.check_encoder()?;
+        let decoders = kog_audio::decoder::DecoderRegistry::new(self.decoder_settings.clone());
+        let source = resolve_entry(&entry, &decoders, &self.scratch)?;
+        self.start_encode(source, key)
+    }
+
+    /// The encoder runs as a subprocess; a missing one is a configuration
+    /// problem the listener should hear about immediately.
+    fn check_encoder(&self) -> Result<(), String> {
+        let found = if self.encoder.is_absolute() {
+            self.encoder.is_file()
+        } else {
+            std::env::var_os("PATH").is_some_and(|path| {
+                std::env::split_paths(&path).any(|dir| dir.join(&self.encoder).is_file())
+            })
+        };
+        if found {
+            Ok(())
+        } else {
+            Err(format!(
+                "the encoder {} was not found; install ffmpeg or point KOG_FFMPEG at it",
+                self.encoder.display()
+            ))
+        }
     }
 
     fn start_encode(
         &self,
-        entry: PlaylistEntry,
+        source: PlaybackSource,
         key: StreamKey,
     ) -> Result<StreamSource, String> {
         let (sender, receiver) = tokio::sync::mpsc::channel(CHANNEL_DEPTH);
@@ -97,7 +129,7 @@ impl StreamService {
         std::thread::Builder::new()
             .name("kog-stream-encode".to_owned())
             .spawn(move || {
-                let result = service.encode_into(entry, &key, partial, sender.clone());
+                let result = service.encode_into(source, &key, partial, sender.clone());
                 if let Err(error) = &result {
                     eprintln!("kog-server: streaming {}: {error}", key.locator);
                     let _ = sender.blocking_send(Err(std::io::Error::other(error.clone())));
@@ -109,13 +141,11 @@ impl StreamService {
 
     fn encode_into(
         &self,
-        entry: PlaylistEntry,
+        source: PlaybackSource,
         key: &StreamKey,
         partial: std::fs::File,
         sender: tokio::sync::mpsc::Sender<Result<Bytes, std::io::Error>>,
     ) -> Result<(), String> {
-        let decoders = kog_audio::decoder::DecoderRegistry::new(self.decoder_settings.clone());
-        let source = resolve_entry(&entry, &decoders, &self.scratch)?;
         let pcm = PcmReader::open(source, self.decoder_settings.clone())?;
         let args = encoder_args(
             key.codec,

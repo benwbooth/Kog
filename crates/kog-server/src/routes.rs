@@ -203,7 +203,15 @@ async fn stream_audio(
     let bitrate = query.bitrate.unwrap_or(crate::stream::DEFAULT_BITRATE_KBPS);
     let key = StreamKey::new(query.locator(), codec, bitrate);
 
-    match state.streams.open(entry, key) {
+    // Cache lookup, decoder resolution and the encoder check all touch the
+    // filesystem, so they run on a blocking thread; failures come back as a
+    // real HTTP error instead of a 200 with an empty body.
+    let streams = state.streams.clone();
+    let opened = tokio::task::spawn_blocking(move || streams.open(entry, key))
+        .await
+        .unwrap_or_else(|error| Err(format!("stream setup failed: {error}")));
+
+    match opened {
         Ok(crate::service::StreamSource::Cached(path)) => {
             serve_cached(&path, codec, &headers).await
         }

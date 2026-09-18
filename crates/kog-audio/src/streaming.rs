@@ -170,6 +170,11 @@ pub fn resolve_entry(
     decoders: &DecoderRegistry,
     scratch: &Path,
 ) -> Result<PlaybackSource, String> {
+    // The expansion writes a one-line playlist here, and the playlist writer
+    // creates its temporary file beside it. Make sure the directory exists:
+    // the caller may be a fresh server whose scratch dir is still missing.
+    std::fs::create_dir_all(scratch)
+        .map_err(|error| format!("preparing {}: {error}", scratch.display()))?;
     let scratch_path = scratch.join("stream-entry.m3u");
     crate::playlist::Playlist::save(&scratch_path, std::slice::from_ref(entry))?;
     let expansion = decoders.expand_detailed(scratch_path)?;
