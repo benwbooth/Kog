@@ -209,6 +209,8 @@ pub mod qobject {
         #[qinvokable]
         fn stop(self: Pin<&mut AppController>);
         #[qinvokable]
+        fn shutdown_synth_helpers(self: &AppController);
+        #[qinvokable]
         fn previous(self: Pin<&mut AppController>);
         #[qinvokable]
         fn next(self: Pin<&mut AppController>);
@@ -372,10 +374,10 @@ use cxx_qt_lib::{QString, QUrl};
 use crate::decoder::{
     DecoderRegistry, DecoderSettings, ExpansionResult, PlaybackSource, validate_soundfont,
 };
-use crate::equalizer::{
+use kog_core::equalizer::{
     EqualizerSettings, apply_preset, preset_for_genre, preset_named, preset_names,
 };
-use crate::mpris::{
+use kog_core::mpris::{
     MprisCommand, MprisLoopStatus, MprisPlaybackStatus, MprisService, MprisSnapshot,
 };
 use crate::playback::{OutputDevice, PlaybackEngine, PlaybackState, available_output_devices};
@@ -537,7 +539,7 @@ fn spawn_staging_worker(
 }
 
 /// Blacklist snapshot from the library store for radio staging.
-fn blacklist_snapshot(db: &crate::db::LibraryDb) -> crate::radio::Blacklist {
+fn blacklist_snapshot(db: &kog_core::db::LibraryDb) -> crate::radio::Blacklist {
     let rows: Vec<(String, String, String)> = db
         .list_blacklist()
         .unwrap_or_default()
@@ -549,8 +551,8 @@ fn blacklist_snapshot(db: &crate::db::LibraryDb) -> crate::radio::Blacklist {
 
 /// One blacklist row, with the path resolved best-effort so keys match
 /// radio locators derived from the same tree.
-fn blacklist_row(kind: &str, path: &str, entry: &str) -> crate::db::BlacklistEntry {
-    crate::db::BlacklistEntry {
+fn blacklist_row(kind: &str, path: &str, entry: &str) -> kog_core::db::BlacklistEntry {
+    kog_core::db::BlacklistEntry {
         id: 0,
         kind: kind.to_owned(),
         path: path.to_owned(),
@@ -642,7 +644,7 @@ fn ordered_directory_files(directory: &Path) -> Result<Vec<PathBuf>, String> {
     let mut pending = vec![(directory.to_owned(), true)];
 
     while let Some((path, is_directory)) = pending.pop() {
-        if crate::media_path::is_metadata(&path) {
+        if kog_core::media_path::is_metadata(&path) {
             continue;
         }
         if !is_directory {
@@ -1072,7 +1074,7 @@ fn scan_directory_paths(
     // playlist into the pane) silently yields zero tracks.
     let mut explicit_roots = HashSet::new();
     'roots: for root in paths {
-        if crate::media_path::is_metadata(&root) {
+        if kog_core::media_path::is_metadata(&root) {
             continue;
         }
         if cancel.load(AtomicOrdering::Relaxed) {
@@ -1112,7 +1114,7 @@ fn scan_directory_paths(
 
         let mut pending = vec![(root, true)];
         while let Some((path, is_directory)) = pending.pop() {
-            if crate::media_path::is_metadata(&path) {
+            if kog_core::media_path::is_metadata(&path) {
                 continue;
             }
             if cancel.load(AtomicOrdering::Relaxed) {
@@ -1694,7 +1696,7 @@ fn star_key_for_track(track: &Track) -> String {
 
 /// Full-fidelity database rows for tracks, skipping the unaddressable
 /// ones and counting them for status lines.
-fn collect_stored_entries(tracks: &[Track]) -> (Vec<crate::db::StoredEntry>, usize) {
+fn collect_stored_entries(tracks: &[Track]) -> (Vec<kog_core::db::StoredEntry>, usize) {
     let mut entries = Vec::new();
     let mut skipped = 0_usize;
     for track in tracks {
@@ -1731,8 +1733,8 @@ fn playback_source_is_missing(source: &PlaybackSource) -> bool {
 /// True when a stored entry points at a file that is gone. Archives
 /// only need their outer file, and remotes are never checked: an
 /// unmounted drive must not read as missing files.
-fn stored_entry_is_missing(entry: &crate::db::StoredEntry) -> bool {
-    use crate::db::{KIND_ARCHIVE, KIND_LOCAL};
+fn stored_entry_is_missing(entry: &kog_core::db::StoredEntry) -> bool {
+    use kog_core::db::{KIND_ARCHIVE, KIND_LOCAL};
     match entry.kind.as_str() {
         KIND_LOCAL | KIND_ARCHIVE => !std::path::Path::new(&entry.path).exists(),
         _ => false,
@@ -1742,11 +1744,11 @@ fn stored_entry_is_missing(entry: &crate::db::StoredEntry) -> bool {
 /// Full-fidelity database row for a track, or None when the track cannot
 /// be addressed on its own (e.g. a cue sheet entry without a track number).
 /// Shared by starring and by saving panes and selections as playlists.
-fn stored_entry_for_track(track: &Track) -> Option<crate::db::StoredEntry> {
+fn stored_entry_for_track(track: &Track) -> Option<kog_core::db::StoredEntry> {
     let entry = playlist_entry_for_track(track).ok()?;
     let (kind, path, name) = match entry.location {
         crate::playlist::PlaylistLocation::Local(path) => (
-            crate::db::KIND_LOCAL.to_owned(),
+            kog_core::db::KIND_LOCAL.to_owned(),
             path.to_string_lossy().into_owned(),
             String::new(),
         ),
@@ -1754,15 +1756,15 @@ fn stored_entry_for_track(track: &Track) -> Option<crate::db::StoredEntry> {
             archive_path,
             entry_name,
         } => (
-            crate::db::KIND_ARCHIVE.to_owned(),
+            kog_core::db::KIND_ARCHIVE.to_owned(),
             archive_path.to_string_lossy().into_owned(),
             entry_name,
         ),
         crate::playlist::PlaylistLocation::Remote(url) => {
-            (crate::db::KIND_REMOTE.to_owned(), url, String::new())
+            (kog_core::db::KIND_REMOTE.to_owned(), url, String::new())
         }
     };
-    Some(crate::db::StoredEntry {
+    Some(kog_core::db::StoredEntry {
         kind,
         path,
         entry: name,
@@ -1772,8 +1774,8 @@ fn stored_entry_for_track(track: &Track) -> Option<crate::db::StoredEntry> {
 
 /// Playlist entries back out of database rows. Remote entries keep their
 /// URL; anything malformed is left for the caller to skip and count.
-fn playlist_entry_from_stored(entry: &crate::db::StoredEntry) -> Option<crate::playlist::PlaylistEntry> {
-    use crate::db::{KIND_ARCHIVE, KIND_LOCAL, KIND_REMOTE};
+fn playlist_entry_from_stored(entry: &kog_core::db::StoredEntry) -> Option<crate::playlist::PlaylistEntry> {
+    use kog_core::db::{KIND_ARCHIVE, KIND_LOCAL, KIND_REMOTE};
     use crate::playlist::{PlaylistEntry, PlaylistLocation};
     let location = match entry.kind.as_str() {
         KIND_LOCAL => {
@@ -1906,7 +1908,7 @@ pub struct AppControllerRust {
     sort_column: PlaylistSortColumn,
     playback_order: PlaybackOrder,
     filter: String,
-    library_db: crate::db::LibraryDb,
+    library_db: kog_core::db::LibraryDb,
     starred: HashSet<String>,
     directory: PathBuf,
     decoder_settings: DecoderSettings,
@@ -2104,8 +2106,8 @@ impl Default for AppControllerRust {
                 0x4b6f_672d_7368_7566 ^ u64::from(std::process::id()),
             ),
             filter: String::new(),
-            library_db: crate::db::LibraryDb::open().unwrap_or_else(|_| {
-                crate::db::LibraryDb::open_in_memory()
+            library_db: kog_core::db::LibraryDb::open().unwrap_or_else(|_| {
+                kog_core::db::LibraryDb::open_in_memory()
                     .expect("in-memory library database always opens")
             }),
             starred: HashSet::new(),
@@ -2325,13 +2327,13 @@ fn skin_equalizer_interpolates_in_log_frequency() {
     );
     let mut gains = [0.0; 31];
     set_interpolated_eq_gain(
-        &crate::equalizer::EQUALIZER_FREQUENCIES,
+        &kog_core::equalizer::EQUALIZER_FREQUENCIES,
         &mut gains,
         14000.0,
         6.0,
     );
     assert!(
-        (interpolate_eq(&crate::equalizer::EQUALIZER_FREQUENCIES, &gains, 14000.0) - 6.0).abs()
+        (interpolate_eq(&kog_core::equalizer::EQUALIZER_FREQUENCIES, &gains, 14000.0) - 6.0).abs()
             < 0.0001
     );
     assert!(gains[28] > 0.0 && gains[29] > 0.0);
@@ -4147,7 +4149,7 @@ impl qobject::AppController {
     }
 
     /// Resolve a stored playlist (or Favorites at id 0) to entries.
-    fn playlist_stored_entries(&self, id: i64) -> Result<Vec<crate::db::StoredEntry>, String> {
+    fn playlist_stored_entries(&self, id: i64) -> Result<Vec<kog_core::db::StoredEntry>, String> {
         if id == 0 {
             return self.rust().library_db.starred_entries();
         }
@@ -4317,13 +4319,13 @@ impl qobject::AppController {
                         // member subdirectory in key form.
                         if location.entry.is_empty() {
                             entries.push(blacklist_row(
-                                crate::db::BLACKLIST_FOLDER,
+                                kog_core::db::BLACKLIST_FOLDER,
                                 &blacklist_path(&location.archive.to_string_lossy()),
                                 "",
                             ));
                         } else {
                             entries.push(blacklist_row(
-                                crate::db::BLACKLIST_FOLDER,
+                                kog_core::db::BLACKLIST_FOLDER,
                                 &format!(
                                     "{} :: {}",
                                     blacklist_path(&location.archive.to_string_lossy()),
@@ -4339,7 +4341,7 @@ impl qobject::AppController {
                         continue;
                     }
                     entries.push(blacklist_row(
-                        crate::db::BLACKLIST_FOLDER,
+                        kog_core::db::BLACKLIST_FOLDER,
                         &blacklist_path(&path.to_string_lossy()),
                         "",
                     ));
@@ -4351,7 +4353,7 @@ impl qobject::AppController {
                         continue;
                     }
                     entries.push(blacklist_row(
-                        crate::db::BLACKLIST_SONG,
+                        kog_core::db::BLACKLIST_SONG,
                         &blacklist_path(&location.archive.to_string_lossy()),
                         &location.entry,
                     ));
@@ -4362,7 +4364,7 @@ impl qobject::AppController {
                     continue;
                 }
                 entries.push(blacklist_row(
-                    crate::db::BLACKLIST_SONG,
+                    kog_core::db::BLACKLIST_SONG,
                     &blacklist_path(&path.to_string_lossy()),
                     "",
                 ));
@@ -4417,12 +4419,12 @@ impl qobject::AppController {
                     }
                     let folder = blacklist_path(&parent.to_string_lossy());
                     if folders_seen.insert(folder.clone()) {
-                        entries.push(blacklist_row(crate::db::BLACKLIST_FOLDER, &folder, ""));
+                        entries.push(blacklist_row(kog_core::db::BLACKLIST_FOLDER, &folder, ""));
                     }
                     continue;
                 }
                 if let Some(url) = track.source.remote_url.as_deref() {
-                    entries.push(blacklist_row(crate::db::BLACKLIST_SONG, url, ""));
+                    entries.push(blacklist_row(kog_core::db::BLACKLIST_SONG, url, ""));
                     continue;
                 }
                 if let Some(origin) = track.source.archive_origin.as_ref() {
@@ -4431,14 +4433,14 @@ impl qobject::AppController {
                         continue;
                     }
                     entries.push(blacklist_row(
-                        crate::db::BLACKLIST_SONG,
+                        kog_core::db::BLACKLIST_SONG,
                         &blacklist_path(&origin.archive_path.to_string_lossy()),
                         &origin.entry_name,
                     ));
                     continue;
                 }
                 entries.push(blacklist_row(
-                    crate::db::BLACKLIST_SONG,
+                    kog_core::db::BLACKLIST_SONG,
                     &blacklist_path(&track.source.path.to_string_lossy()),
                     "",
                 ));
@@ -4454,7 +4456,7 @@ impl qobject::AppController {
     /// Write blacklist rows, refresh live radio staging, and summarize.
     fn blacklist_commit(
         mut self: Pin<&mut Self>,
-        entries: Vec<crate::db::BlacklistEntry>,
+        entries: Vec<kog_core::db::BlacklistEntry>,
         skipped: usize,
         folders: bool,
     ) -> Result<serde_json::Value, String> {
@@ -4953,6 +4955,14 @@ impl qobject::AppController {
         self.as_mut().sync_playback_state();
     }
 
+    /// Best-effort shutdown for background synth helpers (currently the
+    /// persistent SC-55 server): called on real application quit so no
+    /// booted emulator outlives the player. An idle server only blocks on
+    /// stdin, so a missed shutdown is harmless.
+    pub fn shutdown_synth_helpers(&self) {
+        crate::sc55::shutdown_sc55_servers();
+    }
+
     pub fn stop(mut self: Pin<&mut Self>) {
         self.as_mut().rust_mut().playback.stop();
         self.as_mut().set_position_seconds(0.0);
@@ -5346,7 +5356,7 @@ impl qobject::AppController {
             "currentIndex": current, "revision": state.playlist_revision,
             "shuffle": state.shuffle_mode.to_string(), "repeat": state.repeat_mode.to_string(),
             "eqEnabled": state.equalizer_enabled, "eqPreamp": state.equalizer_preamp_db,
-            "eq": SKIN_EQ_FREQUENCIES.map(|hz| interpolate_eq(&crate::equalizer::EQUALIZER_FREQUENCIES, &state.equalizer_settings.gains_db, hz)),
+            "eq": SKIN_EQ_FREQUENCIES.map(|hz| interpolate_eq(&kog_core::equalizer::EQUALIZER_FREQUENCIES, &state.equalizer_settings.gains_db, hz)),
             "visualization": serde_json::from_str::<serde_json::Value>(&state.playback.visualizer_frame()).unwrap_or_default()
         });
         if include_tracks {
@@ -5367,7 +5377,7 @@ impl qobject::AppController {
         };
         let mut settings = self.rust().equalizer_settings.clone();
         set_interpolated_eq_gain(
-            &crate::equalizer::EQUALIZER_FREQUENCIES,
+            &kog_core::equalizer::EQUALIZER_FREQUENCIES,
             &mut settings.gains_db,
             SKIN_EQ_FREQUENCIES[index],
             gain,
@@ -5450,7 +5460,7 @@ impl qobject::AppController {
     pub fn update_equalizer_band(mut self: Pin<&mut Self>, index: i32, gain_db: f64) {
         let Some(index) = usize::try_from(index)
             .ok()
-            .filter(|index| *index < crate::equalizer::EQUALIZER_FREQUENCIES.len())
+            .filter(|index| *index < kog_core::equalizer::EQUALIZER_FREQUENCIES.len())
         else {
             self.as_mut()
                 .set_status(qstring("That equalizer band does not exist"));
@@ -7417,31 +7427,31 @@ mod tests {
         let temporary = tempdir().expect("create temporary music folder");
         let present = temporary.path().join("song.flac");
         fs::write(&present, []).expect("write present file");
-        let stored = |kind: &str, path: &str| crate::db::StoredEntry {
+        let stored = |kind: &str, path: &str| kog_core::db::StoredEntry {
             kind: kind.to_owned(),
             path: path.to_owned(),
             entry: String::new(),
             fragment: None,
         };
         assert!(!stored_entry_is_missing(&stored(
-            crate::db::KIND_LOCAL,
+            kog_core::db::KIND_LOCAL,
             present.to_str().unwrap()
         )));
         assert!(stored_entry_is_missing(&stored(
-            crate::db::KIND_LOCAL,
+            kog_core::db::KIND_LOCAL,
             temporary.path().join("gone.flac").to_str().unwrap()
         )));
-        assert!(stored_entry_is_missing(&stored(crate::db::KIND_LOCAL, "")));
+        assert!(stored_entry_is_missing(&stored(kog_core::db::KIND_LOCAL, "")));
         assert!(!stored_entry_is_missing(&stored(
-            crate::db::KIND_ARCHIVE,
+            kog_core::db::KIND_ARCHIVE,
             present.to_str().unwrap()
         )));
         assert!(stored_entry_is_missing(&stored(
-            crate::db::KIND_ARCHIVE,
+            kog_core::db::KIND_ARCHIVE,
             temporary.path().join("gone.zip").to_str().unwrap()
         )));
         assert!(!stored_entry_is_missing(&stored(
-            crate::db::KIND_REMOTE,
+            kog_core::db::KIND_REMOTE,
             "https://example.invalid/stream"
         )));
         assert!(!stored_entry_is_missing(&stored("bogus-kind", "/music/x.flac")));

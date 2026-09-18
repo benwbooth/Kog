@@ -445,8 +445,8 @@ impl DecoderRegistry {
         &self,
         location: crate::archive::TreeLocation,
     ) -> Result<ExpansionResult, String> {
-        if crate::media_path::is_metadata(&location.archive)
-            || crate::media_path::is_metadata(Path::new(&location.entry))
+        if kog_core::media_path::is_metadata(&location.archive)
+            || kog_core::media_path::is_metadata(Path::new(&location.entry))
         {
             return Ok(ExpansionResult::default());
         }
@@ -604,7 +604,7 @@ impl DecoderRegistry {
     }
 
     pub fn accepts_path(&self, path: &Path) -> bool {
-        if crate::media_path::is_metadata(path) {
+        if kog_core::media_path::is_metadata(path) {
             return false;
         }
         crate::archive::is_tree_location(path)
@@ -690,7 +690,7 @@ impl DecoderRegistry {
         playlist_stack: &mut Vec<PathBuf>,
         depth: usize,
     ) -> Result<ExpansionResult, String> {
-        if crate::media_path::is_metadata(&path) {
+        if kog_core::media_path::is_metadata(&path) {
             return Ok(ExpansionResult::default());
         }
         if depth > 32 {
@@ -801,7 +801,7 @@ impl DecoderRegistry {
                     )),
                 },
                 crate::playlist::PlaylistLocation::Local(entry_path) => {
-                    if crate::media_path::is_metadata(entry_path) {
+                    if kog_core::media_path::is_metadata(entry_path) {
                         continue;
                     }
                     let resolved = match entry_path.canonicalize() {
@@ -855,8 +855,8 @@ impl DecoderRegistry {
         playlist_stack: &mut Vec<PathBuf>,
         depth: usize,
     ) -> Result<ExpansionResult, String> {
-        if crate::media_path::is_metadata(&path)
-            || crate::media_path::is_metadata(Path::new(entry_name))
+        if kog_core::media_path::is_metadata(&path)
+            || kog_core::media_path::is_metadata(Path::new(entry_name))
         {
             return Ok(ExpansionResult::default());
         }
@@ -1595,7 +1595,7 @@ fn midi_track_title(track: &[midly::TrackEvent<'_>]) -> Option<String> {
 }
 
 fn decode_midi_text(bytes: &[u8]) -> Option<String> {
-    let decoded = crate::text_encoding::decode(bytes);
+    let decoded = kog_core::text_encoding::decode(bytes);
     let mut text = String::with_capacity(decoded.len().min(512));
     for character in decoded
         .trim_matches(['\0', ' ', '\t', '\r', '\n'])

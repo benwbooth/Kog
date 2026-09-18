@@ -1,0 +1,26 @@
+[package]
+name = "kog-core"
+version = "0.9.32"
+edition = "2024"
+license = "GPL-3.0-or-later"
+description = "Shared foundations for Kog: settings, library store, encodings, paths, EQ, MPRIS"
+repository = "https://github.com/benwbooth/Kog"
+
+[dependencies]
+chardetng = "1.0.0"
+directories = "6.0.0"
+encoding_rs = "0.8.35"
+serde_json = "1.0.149"
+rodio = { version = "0.22.2", default-features = false, features = [
+  "playback",
+  "symphonia-all",
+] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+async-channel = "2.5.0"
+futures-lite = "2.6.1"
+mpris-server = "0.10.0"
+
+[dev-dependencies]
+tempfile = "3.27.0"

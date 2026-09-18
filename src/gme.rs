@@ -259,7 +259,7 @@ fn copy_gme_string(value: *const c_char) -> String {
     if value.is_null() {
         return String::new();
     }
-    crate::text_encoding::decode(unsafe { CStr::from_ptr(value) }.to_bytes())
+    kog_core::text_encoding::decode(unsafe { CStr::from_ptr(value) }.to_bytes())
 }
 
 fn check_gme_error(error: *const c_char, context: String) -> Result<(), String> {
@@ -286,7 +286,7 @@ fn append_warning(slot: &mut Option<String>, warning: String) {
 }
 
 fn gme_error_message(error: *const c_char, context: String) -> String {
-    let message = crate::text_encoding::decode(unsafe { CStr::from_ptr(error) }.to_bytes());
+    let message = kog_core::text_encoding::decode(unsafe { CStr::from_ptr(error) }.to_bytes());
     format!("{context}: {message}")
 }
 

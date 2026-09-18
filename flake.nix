@@ -74,22 +74,34 @@
                 import os
                 import re
                 root = os.environ["out"]
-                toml = os.path.join(root, "Cargo.toml")
-                text = open(toml).read()
-                head, sep, tail = text.partition("[dependencies]")
-                assert sep, "Cargo.toml has no [dependencies] section"
-                head = re.sub(r'(?m)^version = "[^"]*"$', 'version = "0.0.0"', head, count=1)
-                open(toml, "w").write(head + sep + tail)
+                # Every workspace member manifest: pin the version constant so
+                # release bumps cannot invalidate the cached dependency build.
+                manifests = [os.path.join(root, "Cargo.toml")]
+                crates = os.path.join(root, "crates")
+                if os.path.isdir(crates):
+                    for member in sorted(os.listdir(crates)):
+                        candidate = os.path.join(crates, member, "Cargo.toml")
+                        if os.path.isfile(candidate):
+                            manifests.append(candidate)
+                for manifest in manifests:
+                    text = open(manifest).read()
+                    head, sep, tail = text.partition("[dependencies]")
+                    assert sep, manifest + " has no [dependencies] section"
+                    head = re.sub(
+                        r'(?m)^version = "[^"]*"$', 'version = "0.0.0"', head, count=1
+                    )
+                    open(manifest, "w").write(head + sep + tail)
                 lock = os.path.join(root, "Cargo.lock")
                 text = open(lock).read()
-                fixed, count = re.subn(
-                    r'(\[\[package\]\]\nname = "kog"\nversion = ")[^"]*(")',
-                    r"\g<1>0.0.0\g<2>",
-                    text,
-                    count=1,
-                )
-                assert count == 1, "kog stanza not found in Cargo.lock"
-                open(lock, "w").write(fixed)
+                for name in ("kog", "kog-core"):
+                    text, count = re.subn(
+                        r'(\[\[package\]\]\nname = "' + name + r'"\nversion = ")[^"]*(")',
+                        r"\g<1>0.0.0\g<2>",
+                        text,
+                        count=1,
+                    )
+                    assert count == 1, name + " stanza not found in Cargo.lock"
+                open(lock, "w").write(text)
                 PYEOF
               '';
             commonArgs = {

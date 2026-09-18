@@ -87,7 +87,7 @@ impl Hively {
         let title = if title.is_null() {
             String::new()
         } else {
-            crate::text_encoding::decode(unsafe { CStr::from_ptr(title) }.to_bytes())
+            kog_core::text_encoding::decode(unsafe { CStr::from_ptr(title) }.to_bytes())
                 .trim()
                 .to_owned()
         };

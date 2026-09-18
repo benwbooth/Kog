@@ -1268,6 +1268,7 @@ dependencies = [
  "directories",
  "encoding_rs",
  "futures-lite",
+ "kog-core",
  "lofty",
  "midly",
  "mpris-server",
@@ -1283,6 +1284,22 @@ dependencies = [
  "tempfile",
  "trash",
  "url",
+]
+
+[[package]]
+name = "kog-core"
+version = "0.9.32"
+dependencies = [
+ "async-channel",
+ "chardetng",
+ "directories",
+ "encoding_rs",
+ "futures-lite",
+ "mpris-server",
+ "rodio",
+ "rusqlite",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

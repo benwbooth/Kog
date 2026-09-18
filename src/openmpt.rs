@@ -331,7 +331,7 @@ fn error_text(error: c_int) -> String {
 
 fn take_native_string(value: *const c_char) -> Option<String> {
     let value = NonNull::new(value.cast_mut())?;
-    let result = crate::text_encoding::decode(unsafe { CStr::from_ptr(value.as_ptr()) }.to_bytes());
+    let result = kog_core::text_encoding::decode(unsafe { CStr::from_ptr(value.as_ptr()) }.to_bytes());
     unsafe { openmpt_free_string(value.as_ptr()) };
     Some(result)
 }

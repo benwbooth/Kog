@@ -169,7 +169,7 @@ fn native_text(value: *const c_char) -> Option<String> {
     if value.is_null() {
         return None;
     }
-    let value = crate::text_encoding::decode(unsafe { CStr::from_ptr(value) }.to_bytes())
+    let value = kog_core::text_encoding::decode(unsafe { CStr::from_ptr(value) }.to_bytes())
         .trim_matches(|character: char| character.is_whitespace() || character == '\0')
         .to_owned();
     (!value.is_empty()).then_some(value)

@@ -748,7 +748,7 @@ fn list_fs_dir(dir: &Path, ctx: &RadioCtx, listing: &mut RadioListing) {
             listing.dirs.push((name, fs_node(&path)));
             continue;
         }
-        if crate::media_path::is_metadata(&path) {
+        if kog_core::media_path::is_metadata(&path) {
             continue;
         }
         if crate::archive::is_path(&path) {
@@ -831,7 +831,7 @@ fn list_archive_interior(
         } else {
             format!("{prefix}/{child}")
         };
-        if child.starts_with('.') || crate::media_path::is_metadata(Path::new(&full)) {
+        if child.starts_with('.') || kog_core::media_path::is_metadata(Path::new(&full)) {
             continue;
         }
         if info.explicit_dir {

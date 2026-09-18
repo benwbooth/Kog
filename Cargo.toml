@@ -6,7 +6,11 @@ license = "GPL-3.0-or-later"
 description = "A cross-platform, format-comprehensive local music player"
 repository = "https://github.com/benwbooth/Kog"
 
+[workspace]
+members = ["crates/kog-core"]
+
 [dependencies]
+kog-core = { path = "crates/kog-core" }
 base64 = "0.22.1"
 chardetng = "1.0.0"
 cxx = "1.0.176"

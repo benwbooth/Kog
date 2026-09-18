@@ -61,8 +61,12 @@ Window {
     // drag uses, so every placement shares one code path: a top-left
     // corner is just large right/bottom margins. Exact, no tracking.
     function moveToCorner(corner) {
-        const maxRight = Math.max(0, root.screen.width - root.width)
-        const maxBottom = Math.max(0, root.screen.height - root.height)
+        // Available geometry, not full output: a top panel would
+        // otherwise cover the window's own top buttons.
+        const availW = root.screen.desktopAvailableWidth
+        const availH = root.screen.desktopAvailableHeight
+        const maxRight = Math.max(0, availW - root.width)
+        const maxBottom = Math.max(0, availH - root.height)
         const edge = 16
         if (corner === "topLeft") {
             rightMargin = Math.max(0, maxRight - edge)
@@ -101,8 +105,10 @@ Window {
     function present() {
         if (app.current_index < 0)
             return
-        rightMargin = Math.max(0, Math.min(rightMargin, screen.width - width))
-        bottomMargin = Math.max(0, Math.min(bottomMargin, screen.height - height))
+        rightMargin = Math.max(0, Math.min(rightMargin,
+            root.screen.desktopAvailableWidth - width))
+        bottomMargin = Math.max(0, Math.min(bottomMargin,
+            root.screen.desktopAvailableHeight - height))
         applyPosition()
         show()
         if (!pointerInside && !dragging)

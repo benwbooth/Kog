@@ -615,7 +615,7 @@ fn split_numeric_fragment(value: &str) -> (&str, Option<String>) {
 }
 
 fn decode_text(bytes: &[u8]) -> String {
-    crate::text_encoding::decode(bytes)
+    kog_core::text_encoding::decode(bytes)
         .trim_end_matches('\0')
         .to_owned()
 }

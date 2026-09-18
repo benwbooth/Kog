@@ -41,3 +41,24 @@ starts a fresh helper and suppresses frames before the requested position.
 The helper is a separate optional program because Nuked SC-55's original MAME
 license includes non-commercial restrictions incompatible with Kog's GPL main
 executable. Roland firmware and waveform ROMs are never bundled.
+
+## Persistent server mode (protocol 2)
+
+`kog-sc55-helper --server <ROM-directory> [ROM-set]` boots the emulator once
+(the same 24-million-step startup) and then renders one job per stdin line,
+so switching songs costs a fast GS reset instead of another full boot:
+
+```
+JOB<TAB><id><TAB><start-frame><TAB><tcp-port><TAB><schedule-path>\n
+```
+
+Each job GS-resets the live emulator, settles briefly, connects back to
+`127.0.0.1:<tcp-port>`, and streams the usual header followed by PCM before
+closing the connection. A new `JOB` line supersedes the in-flight render:
+writes to the abandoned socket fail fast and the loop picks the new job up.
+End of stdin exits cleanly. The server prints `READY` on stderr once booted
+and `JOB ERROR <message>` per failed job; anything else on stderr is
+diagnostic noise. Schedule paths must not contain tabs or newlines.
+
+One-shot mode (`<schedule> <ROM-directory> <start-frame>`) is unchanged
+and remains the fallback whenever the server is unavailable.

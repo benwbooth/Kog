@@ -1,10 +1,12 @@
 //! Process owner for the optional, separately licensed Nuked SC-55 helper.
 
 use std::fs::File;
+use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdout, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -31,6 +33,7 @@ pub struct Sc55 {
     cache_reader: File,
     cache_state: Arc<Sc55CacheState>,
     cache_worker: Option<JoinHandle<()>>,
+    stream_shutdown: Option<TcpStream>,
     sample_rate: u32,
     total_frames: u64,
     rendered_frames: u64,
@@ -102,7 +105,45 @@ impl Sc55 {
         schedule_file
             .flush()
             .map_err(|error| format!("flushing SC-55 schedule: {error}"))?;
+        // Fast path first: a booted persistent server renders without the
+        // per-file emulator startup. Silent fallback keeps today's
+        // one-shot behavior whenever servers are unavailable.
+        match acquire_sc55_server(rom_directory) {
+            Ok(server) => match Self::open_via_server(&server, schedule_file, path) {
+                Ok(source) => Ok(source),
+                Err(_) => Self::open_oneshot(midi, rom_directory, path),
+            },
+            Err(_) => Self::open_oneshot(midi, rom_directory, path),
+        }
+    }
 
+    fn open_via_server(
+        server: &Arc<Sc55Server>,
+        schedule_file: NamedTempFile,
+        path: &Path,
+    ) -> Result<Self, String> {
+        let job = server.start_job(schedule_file.path(), 0)?;
+        if let Err(error) = validate_header(&job.header, 0, path) {
+            return Err(error);
+        }
+        let ServerJobStream {
+            header,
+            pcm,
+            shutdown,
+        } = job;
+        Self::from_stream(schedule_file, header, pcm, None, Some(shutdown))
+    }
+
+    /// Shared tail: cache tempfiles, background PCM copy, and struct.
+    /// One-shot jobs own their helper child; server jobs own a stream
+    /// shutdown handle that aborts the render on drop instead.
+    fn from_stream(
+        schedule_file: NamedTempFile,
+        header: HelperHeader,
+        pcm: impl Read + Send + 'static,
+        child: Option<Child>,
+        stream_shutdown: Option<TcpStream>,
+    ) -> Result<Self, String> {
         let cache = NamedTempFile::new()
             .map_err(|error| format!("creating SC-55 PCM seek cache: {error}"))?;
         let cache_reader = cache
@@ -111,27 +152,20 @@ impl Sc55 {
         let cache_writer = cache
             .reopen()
             .map_err(|error| format!("opening SC-55 PCM seek cache for rendering: {error}"))?;
-        let (process, header) = spawn_helper(schedule_file.path(), rom_directory, 0)?;
-        if let Err(error) = validate_header(&header, 0, path) {
-            let mut process = process;
-            stop_process(&mut process);
-            return Err(error);
-        }
         let expected_bytes = header
             .total_frames
             .checked_mul(BYTES_PER_FRAME)
             .ok_or_else(|| "Nuked SC-55 PCM cache size overflowed".to_owned())?;
-        let Sc55Process { child, stdout } = process;
         let cache_state = Arc::new(Sc55CacheState {
             progress: Mutex::new(Sc55CacheProgress::default()),
             ready: Condvar::new(),
-            child: Mutex::new(Some(child)),
+            child: Mutex::new(child),
             stopping: AtomicBool::new(false),
         });
         let worker_state = cache_state.clone();
         let cache_worker = match std::thread::Builder::new()
             .name("kog-sc55-cache".to_owned())
-            .spawn(move || cache_helper_pcm(stdout, cache_writer, expected_bytes, worker_state))
+            .spawn(move || cache_helper_pcm(pcm, cache_writer, expected_bytes, worker_state))
         {
             Ok(worker) => worker,
             Err(error) => {
@@ -146,6 +180,7 @@ impl Sc55 {
             cache_reader,
             cache_state,
             cache_worker: Some(cache_worker),
+            stream_shutdown,
             sample_rate: header.sample_rate,
             total_frames: header.total_frames,
             rendered_frames: 0,
@@ -153,6 +188,24 @@ impl Sc55 {
             model: header.model,
             native_bytes: Vec::new(),
         })
+    }
+
+    fn open_oneshot(midi: &[u8], rom_directory: &Path, path: &Path) -> Result<Self, String> {
+        let schedule = Sc55Schedule::parse(midi)?;
+        let mut schedule_file =
+            NamedTempFile::new().map_err(|error| format!("creating SC-55 schedule: {error}"))?;
+        schedule.write(&mut schedule_file)?;
+        schedule_file
+            .flush()
+            .map_err(|error| format!("flushing SC-55 schedule: {error}"))?;
+        let (process, header) = spawn_helper(schedule_file.path(), rom_directory, 0)?;
+        if let Err(error) = validate_header(&header, 0, path) {
+            let mut process = process;
+            stop_process(&mut process);
+            return Err(error);
+        }
+        let Sc55Process { child, stdout } = process;
+        Self::from_stream(schedule_file, header, stdout, Some(child), None)
     }
 
     pub fn duration(&self) -> Duration {
@@ -259,6 +312,9 @@ impl Drop for Sc55 {
     fn drop(&mut self) {
         self.cache_state.stopping.store(true, Ordering::Release);
         self.cache_state.ready.notify_all();
+        if let Some(shutdown) = self.stream_shutdown.take() {
+            let _ = shutdown.shutdown(std::net::Shutdown::Both);
+        }
         stop_cache_child(&self.cache_state);
         if let Some(worker) = self.cache_worker.take() {
             let _ = worker.join();
@@ -626,7 +682,7 @@ fn spawn_helper(
 }
 
 fn cache_helper_pcm(
-    mut stdout: ChildStdout,
+    mut input: impl Read + Send,
     mut cache: File,
     expected_bytes: u64,
     state: Arc<Sc55CacheState>,
@@ -638,7 +694,7 @@ fn cache_helper_pcm(
             if state.stopping.load(Ordering::Acquire) {
                 return Ok(());
             }
-            let count = stdout
+            let count = input
                 .read(&mut buffer)
                 .map_err(|error| format!("reading PCM from the Nuked SC-55 helper: {error}"))?;
             if count == 0 {
@@ -753,6 +809,222 @@ fn stop_process(process: &mut Sc55Process) {
     let _ = process.child.wait();
 }
 
+/// A booted persistent helper: one 24M-step startup per ROM directory,
+/// then one render job after another with only a fast GS reset between
+/// songs. Render targets arrive per job over loopback TCP so every job
+/// has clean EOF-delimited framing; a new job supersedes the in-flight
+/// render, whose writes then fail fast instead of wedging.
+pub(crate) struct Sc55Server {
+    child: Mutex<Option<Child>>,
+    stdin: Mutex<Option<ChildStdin>>,
+    stderr_log: Arc<Mutex<VecDeque<String>>>,
+    rom_dir: PathBuf,
+    next_job: AtomicU64,
+    ops: Mutex<()>,
+}
+
+type ServerPool = Mutex<HashMap<PathBuf, Arc<Sc55Server>>>;
+
+fn server_pool() -> &'static ServerPool {
+    use std::sync::OnceLock;
+    static POOL: OnceLock<ServerPool> = OnceLock::new();
+    POOL.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn server_supports_protocol_two(helper: &Path) -> bool {
+    let output = Command::new(helper).arg("--version").output();
+    let Ok(output) = output else {
+        return false;
+    };
+    String::from_utf8_lossy(&output.stdout).contains("protocol 2")
+}
+
+/// Boot (or reuse) the persistent server for a ROM directory. The pool
+/// owns servers; dropping the last Arc kills the child.
+fn acquire_sc55_server(rom_dir: &Path) -> Result<Arc<Sc55Server>, String> {
+    let helper = helper_path()?;
+    if !server_supports_protocol_two(&helper) {
+        return Err("helper predates persistent servers".to_owned());
+    }
+    let mut pool = lock_unpoisoned(server_pool());
+    if let Some(server) = pool.get(rom_dir) {
+        if server_child_alive(server) {
+            return Ok(Arc::clone(server));
+        }
+        pool.remove(rom_dir);
+    }
+    let server = Arc::new(Sc55Server::boot(&helper, rom_dir)?);
+    pool.insert(rom_dir.to_path_buf(), Arc::clone(&server));
+    Ok(server)
+}
+
+fn server_child_alive(server: &Sc55Server) -> bool {
+    let mut guard = lock_unpoisoned(&server.child);
+    let Some(child) = guard.as_mut() else {
+        return false;
+    };
+    matches!(child.try_wait(), Ok(None))
+}
+
+/// Drop every pooled server (helper processes exit on stdin EOF).
+/// Best-effort shutdown hook for application quit; an idle server only
+/// blocks on stdin and burns no CPU if one ever outlives us.
+pub(crate) fn shutdown_sc55_servers() {
+    server_pool()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clear();
+}
+
+/// One render job against a persistent server: header plus a PCM stream
+/// that ends at exactly total_frames bytes, then EOF.
+pub(crate) struct ServerJobStream {
+    pub header: HelperHeader,
+    pub pcm: TcpStream,
+    shutdown: TcpStream,
+}
+
+impl Sc55Server {
+    fn boot(helper: &Path, rom_dir: &Path) -> Result<Self, String> {
+        let mut child = Command::new(helper)
+            .arg("--server")
+            .arg(rom_dir)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("launching {}: {error}", helper.display()))?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| "Nuked SC-55 server stdin was not captured".to_owned())?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| "Nuked SC-55 server diagnostics were not captured".to_owned())?;
+        let log = Arc::new(Mutex::new(VecDeque::<String>::new()));
+        let worker_log = Arc::clone(&log);
+        std::thread::Builder::new()
+            .name("kog-sc55-server-log".to_owned())
+            .spawn(move || drain_server_log(stderr, worker_log))
+            .map_err(|error| format!("starting SC-55 server log drain: {error}"))?;
+        // Block for READY: boot takes seconds (the whole point is doing it
+        // once), while an old helper exits immediately with usage text.
+        let deadline = std::time::Instant::now() + Duration::from_secs(180);
+        loop {
+            if log_ready(&log) {
+                break;
+            }
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    let _ = child.wait();
+                    return Err(format!(
+                        "Nuked SC-55 server exited during boot ({status}): {}",
+                        last_log_lines(&log)
+                    ));
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    let _ = child.kill();
+                    return Err(format!("watching the Nuked SC-55 server: {error}"));
+                }
+            }
+            if std::time::Instant::now() > deadline {
+                let _ = child.kill();
+                return Err("Nuked SC-55 server did not become ready".to_owned());
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        Ok(Self {
+            child: Mutex::new(Some(child)),
+            stdin: Mutex::new(Some(stdin)),
+            stderr_log: log,
+            rom_dir: rom_dir.to_path_buf(),
+            next_job: AtomicU64::new(1),
+            ops: Mutex::new(()),
+        })
+    }
+
+    /// Render one schedule through the booted server. Abandoning a stream
+    /// mid-render is safe: dropping it closes the socket, the server fails
+    /// that write fast, and the next job starts clean.
+    fn start_job(
+        &self,
+        schedule_path: &Path,
+        start_frame: u64,
+    ) -> Result<ServerJobStream, String> {
+        let _op = lock_unpoisoned(&self.ops);
+        let schedule = schedule_path.to_string_lossy();
+        if schedule.contains(['\n', '\t', '\r']) {
+            return Err("SC-55 schedule path is not transmittable".to_owned());
+        }
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .map_err(|error| format!("binding SC-55 render target: {error}"))?;
+        let port = listener
+            .local_addr()
+            .map_err(|error| format!("reading SC-55 render target: {error}"))?
+            .port();
+        let id = self.next_job.fetch_add(1, Ordering::Relaxed);
+        {
+            let mut stdin = lock_unpoisoned(&self.stdin);
+            let Some(stdin) = stdin.as_mut() else {
+                return Err("Nuked SC-55 server is shut down".to_owned());
+            };
+            writeln!(stdin, "JOB\t{id}\t{start_frame}\t{port}\t{schedule}")
+                .and_then(|()| stdin.flush())
+                .map_err(|error| format!("sending SC-55 render job: {error}"))?;
+        }
+        let (stream, _) = listener
+            .accept()
+            .map_err(|error| format!("accepting SC-55 render stream: {error}"))?;
+        let shutdown = stream
+            .try_clone()
+            .map_err(|error| format!("duplicating SC-55 render stream: {error}"))?;
+        let mut stream = stream;
+        let header =
+            HelperHeader::read(&mut stream).map_err(|error| format!("reading Nuked SC-55 render header: {error}"))?;
+        Ok(ServerJobStream {
+            header,
+            pcm: stream,
+            shutdown,
+        })
+    }
+}
+
+impl Drop for Sc55Server {
+    fn drop(&mut self) {
+        if let Ok(mut stdin) = self.stdin.lock() {
+            stdin.take();
+        }
+        if let Ok(mut child) = self.child.lock() {
+            if let Some(mut child) = child.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+}
+
+fn log_ready(log: &Arc<Mutex<VecDeque<String>>>) -> bool {
+    lock_unpoisoned(log).iter().any(|line| line == "READY")
+}
+
+fn last_log_lines(log: &Arc<Mutex<VecDeque<String>>>) -> String {
+    lock_unpoisoned(log).iter().cloned().collect::<Vec<_>>().join(" | ")
+}
+
+fn drain_server_log(stderr: ChildStderr, log: Arc<Mutex<VecDeque<String>>>) {
+    use std::io::BufRead;
+    let reader = std::io::BufReader::new(stderr);
+    for line in reader.lines().map_while(Result::ok) {
+        let mut guard = lock_unpoisoned(&log);
+        guard.push_back(line);
+        while guard.len() > 64 {
+            guard.pop_front();
+        }
+    }
+}
+
 fn read_stderr(child: &mut Child) -> String {
     let mut stderr = String::new();
     if let Some(mut stream) = child.stderr.take() {
@@ -844,6 +1116,12 @@ mod tests {
         assert_eq!(schedule.events[1].bytes, [0x80, 67, 0]);
     }
 
+    // NOTE: The persistent-server ergonomics (boot once, fall back when
+    // the helper cannot serve) were validated by hand. Automated coverage
+    // is deferred: it needs a test-only helper injection hook, because the
+    // KOG_SC55_HELPER environment override is process-global and races
+    // with the other sc55 tests under the harness's parallel runner.
+
     #[test]
     fn built_helper_reports_its_pinned_protocol_version() {
         let output = Command::new(helper_path().expect("build helper path"))
@@ -853,7 +1131,7 @@ mod tests {
         assert!(output.status.success());
         assert_eq!(
             String::from_utf8_lossy(&output.stdout).trim(),
-            "kog-sc55-helper protocol 1; Nuked SC-55 0.6.1 (50dcdde)"
+            "kog-sc55-helper protocol 2; Nuked SC-55 0.6.1 (50dcdde)"
         );
     }
 

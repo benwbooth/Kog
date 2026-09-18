@@ -16,7 +16,9 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <limits>
+#include <memory>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -26,6 +28,14 @@
 #ifdef _WIN32
 #include <fcntl.h>
 #include <io.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
+#include <arpa/inet.h>
+#include <csignal>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
 #endif
 
 #include "audio.h"
@@ -63,7 +73,7 @@ uint64_t readU64(const uint8_t* bytes)
            (static_cast<uint64_t>(readU32(bytes + 4)) << 32U);
 }
 
-void writeU32(uint32_t value)
+void writeU32(FILE* out, uint32_t value)
 {
     const std::array<uint8_t, 4> bytes = {
         static_cast<uint8_t>(value),
@@ -71,14 +81,14 @@ void writeU32(uint32_t value)
         static_cast<uint8_t>(value >> 16U),
         static_cast<uint8_t>(value >> 24U),
     };
-    if(std::fwrite(bytes.data(), 1, bytes.size(), stdout) != bytes.size())
+    if(std::fwrite(bytes.data(), 1, bytes.size(), out) != bytes.size())
         throw std::runtime_error("writing SC-55 helper output failed");
 }
 
-void writeU64(uint64_t value)
+void writeU64(FILE* out, uint64_t value)
 {
-    writeU32(static_cast<uint32_t>(value));
-    writeU32(static_cast<uint32_t>(value >> 32U));
+    writeU32(out, static_cast<uint32_t>(value));
+    writeU32(out, static_cast<uint32_t>(value >> 32U));
 }
 
 struct Cursor
@@ -184,6 +194,7 @@ struct OutputState
     uint64_t startFrame = 0;
     uint64_t totalFrames = 0;
     bool writeFailed = false;
+    FILE* out = stdout;
 };
 
 void receiveSample(void* context, const AudioFrame<int32_t>& input)
@@ -201,40 +212,50 @@ void receiveSample(void* context, const AudioFrame<int32_t>& input)
             static_cast<uint8_t>(static_cast<uint16_t>(output.right) >> 8U),
         };
         state.writeFailed =
-            std::fwrite(bytes.data(), 1, bytes.size(), stdout) != bytes.size();
+            std::fwrite(bytes.data(), 1, bytes.size(), state.out) != bytes.size();
     }
     ++state.frame;
 }
 
-void writeHeader(uint32_t sampleRate,
+void writeHeader(FILE* out,
+                 uint32_t sampleRate,
                  uint64_t totalFrames,
                  uint64_t startFrame,
                  const std::string& model)
 {
-    if(std::fwrite(RESPONSE_MAGIC.data(), 1, RESPONSE_MAGIC.size(), stdout) !=
+    if(std::fwrite(RESPONSE_MAGIC.data(), 1, RESPONSE_MAGIC.size(), out) !=
        RESPONSE_MAGIC.size())
         throw std::runtime_error("writing SC-55 helper header failed");
-    writeU32(PROTOCOL_VERSION);
-    writeU32(sampleRate);
-    writeU32(CHANNELS);
-    writeU64(totalFrames);
-    writeU64(startFrame);
+    writeU32(out, PROTOCOL_VERSION);
+    writeU32(out, sampleRate);
+    writeU32(out, CHANNELS);
+    writeU64(out, totalFrames);
+    writeU64(out, startFrame);
     if(model.size() > std::numeric_limits<uint32_t>::max())
         throw std::runtime_error("SC-55 model name exceeds protocol limit");
-    writeU32(static_cast<uint32_t>(model.size()));
-    if(std::fwrite(model.data(), 1, model.size(), stdout) != model.size())
+    writeU32(out, static_cast<uint32_t>(model.size()));
+    if(std::fwrite(model.data(), 1, model.size(), out) != model.size())
         throw std::runtime_error("writing SC-55 helper model failed");
-    std::fflush(stdout);
+    std::fflush(out);
 }
 
-void run(const fs::path& schedulePath,
-         const fs::path& romDirectory,
-         uint64_t startFrame,
-         std::string_view requestedRomset)
+struct BootedEmulator
+{
+    std::unique_ptr<Emulator> emulator;
+    std::string model;
+    uint32_t sampleRate = 0;
+};
+
+// Post-reset settle steps between songs on a live emulator: a GS reset
+// silences and reinitializes the synth, so only a short drain is needed
+// (tens of milliseconds emulated) rather than the full cold-boot below.
+constexpr uint32_t POST_RESET_SETTLE_STEPS = 48000U;
+
+BootedEmulator bootEmulator(const fs::path& romDirectory,
+                            std::string_view requestedRomset)
 {
     if(!fs::is_directory(romDirectory))
         throw std::runtime_error("SC-55 ROM path is not a directory");
-    const Schedule schedule = readSchedule(schedulePath);
 
     AllRomsetInfo romsetInfo;
     common::LoadRomsetResult loaded;
@@ -248,26 +269,36 @@ void run(const fs::path& schedulePath,
             std::string("loading SC-55 ROM set failed: ") + common::ToCString(loadError));
     }
 
-    Emulator emulator;
-    if(!emulator.Init({.lcd_backend = nullptr, .nvram_filename = {}}))
+    auto emulator = std::make_unique<Emulator>();
+    if(!emulator->Init({.lcd_backend = nullptr, .nvram_filename = {}}))
         throw std::runtime_error("initializing Nuked SC-55 failed");
-    if(!emulator.LoadRoms(loaded.romset, romsetInfo))
+    if(!emulator->LoadRoms(loaded.romset, romsetInfo))
         throw std::runtime_error("installing the detected SC-55 ROM set failed");
     romsetInfo.PurgeRomData();
-    emulator.Reset();
-    emulator.PostSystemReset(EMU_SystemReset::GS_RESET);
-    for(uint32_t step = 0; step < 24'000'000U; ++step) emulator.Step();
+    emulator->Reset();
+    emulator->PostSystemReset(EMU_SystemReset::GS_RESET);
+    for(uint32_t step = 0; step < 24'000'000U; ++step) emulator->Step();
 
-    const uint32_t sampleRate = PCM_GetOutputFrequency(emulator.GetPCM());
+    const uint32_t sampleRate = PCM_GetOutputFrequency(emulator->GetPCM());
     if(sampleRate < 8'000U || sampleRate > 192'000U)
         throw std::runtime_error("Nuked SC-55 reported an invalid sample rate");
-    const uint64_t totalFrames = framesForDuration(schedule.totalNs, sampleRate);
+    return BootedEmulator {std::move(emulator), RomsetName(loaded.romset), sampleRate};
+}
+
+void renderJob(BootedEmulator& booted,
+               const Schedule& schedule,
+               uint64_t startFrame,
+               FILE* out)
+{
+    Emulator& emulator = *booted.emulator;
+    const uint64_t totalFrames = framesForDuration(schedule.totalNs, booted.sampleRate);
     if(startFrame > totalFrames)
         throw std::runtime_error("SC-55 seek frame exceeds track duration");
-    writeHeader(sampleRate,
+    writeHeader(out,
+                booted.sampleRate,
                 totalFrames,
                 startFrame,
-                RomsetName(loaded.romset));
+                booted.model);
 
     OutputState output {.frame = 0,
                         .startFrame = startFrame,
@@ -291,7 +322,180 @@ void run(const fs::path& schedulePath,
     if(output.writeFailed)
         throw std::runtime_error("writing SC-55 PCM failed");
 }
+
+void run(const fs::path& schedulePath,
+         const fs::path& romDirectory,
+         uint64_t startFrame,
+         std::string_view requestedRomset)
+{
+    if(!fs::is_directory(romDirectory))
+        throw std::runtime_error("SC-55 ROM path is not a directory");
+    const Schedule schedule = readSchedule(schedulePath);
+    BootedEmulator booted = bootEmulator(romDirectory, requestedRomset);
+    renderJob(booted, schedule, startFrame, stdout);
+    if(std::fflush(stdout) != 0)
+        throw std::runtime_error("flushing SC-55 PCM failed");
+}
+
 } // namespace
+
+// ---- persistent server (protocol 2): boot once, then render one job
+// per stdin line over loopback TCP so each job has clean EOF-delimited
+// framing. A new JOB line supersedes the in-flight render: writes to the
+// abandoned socket fail fast and the loop picks the new job up.
+
+#ifdef _WIN32
+using SocketHandle = SOCKET;
+constexpr SocketHandle INVALID_SOCK = INVALID_SOCKET;
+#else
+using SocketHandle = int;
+constexpr SocketHandle INVALID_SOCK = -1;
+#endif
+
+void closeSocket(SocketHandle sock)
+{
+#ifdef _WIN32
+    if(sock != INVALID_SOCK) ::closesocket(sock);
+#else
+    if(sock != INVALID_SOCK) ::close(sock);
+#endif
+}
+
+struct SocketGuard
+{
+    SocketHandle sock = INVALID_SOCK;
+    explicit SocketGuard(SocketHandle sock) : sock(sock) {}
+    SocketGuard(const SocketGuard&) = delete;
+    SocketGuard& operator=(const SocketGuard&) = delete;
+    SocketGuard(SocketGuard&& other) noexcept : sock(other.sock) { other.sock = INVALID_SOCK; }
+    SocketGuard& operator=(SocketGuard&& other) noexcept
+    {
+        if(this != &other)
+        {
+            closeSocket(sock);
+            sock = other.sock;
+            other.sock = INVALID_SOCK;
+        }
+        return *this;
+    }
+    ~SocketGuard() { closeSocket(sock); }
+};
+
+uint16_t parsePort(const std::string& text)
+{
+    unsigned long port = 0;
+    const auto [end, code] = std::from_chars(text.data(), text.data() + text.size(), port);
+    if(code != std::errc() || end != text.data() + text.size() || port == 0 || port > 65535)
+        throw std::runtime_error("SC-55 server job has an invalid TCP port");
+    return static_cast<uint16_t>(port);
+}
+
+SocketGuard connectLoopback(uint16_t port)
+{
+    SocketHandle sock = ::socket(AF_INET, SOCK_STREAM, 0);
+    if(sock == INVALID_SOCK)
+        throw std::runtime_error("SC-55 server could not create a loopback socket");
+    SocketGuard guard(sock);
+    sockaddr_in address {};
+    address.sin_family = AF_INET;
+    address.sin_port = htons(port);
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if(::connect(sock, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0)
+        throw std::runtime_error("SC-55 server could not reach its render target");
+    return guard;
+}
+
+FILE* fdopenSocket(SocketHandle sock)
+{
+#ifdef _WIN32
+    const int fd = ::_open_osfhandle(static_cast<intptr_t>(sock), 0);
+    if(fd == -1)
+        throw std::runtime_error("SC-55 server could not wrap its render target");
+    FILE* out = ::_fdopen(fd, "wb");
+#else
+    FILE* out = ::fdopen(sock, "w");
+#endif
+    if(out == nullptr)
+        throw std::runtime_error("SC-55 server could not wrap its render target");
+    return out;
+}
+
+struct ServerJob
+{
+    std::string id;
+    uint64_t startFrame = 0;
+    uint16_t port = 0;
+    fs::path schedulePath;
+};
+
+ServerJob parseJobLine(std::string line)
+{
+    // JOB\t<id>\t<start-frame>\t<tcp-port>\t<schedule-path>
+    // The path runs to end of line so spaces are fine; tabs and
+    // newlines in paths are rejected on the Rust side.
+    if(!line.empty() && line.back() == '\r') line.pop_back();
+    std::vector<std::string> fields;
+    size_t begin = 0;
+    for(size_t tab = 0; tab < 4; ++tab)
+    {
+        const size_t at = line.find('\t', begin);
+        if(at == std::string::npos)
+            throw std::runtime_error("SC-55 server job line is malformed");
+        fields.push_back(line.substr(begin, at - begin));
+        begin = at + 1;
+    }
+    fields.push_back(line.substr(begin));
+    if(fields[0] != "JOB" || fields[1].empty() || fields[4].empty())
+        throw std::runtime_error("SC-55 server job line is malformed");
+    ServerJob job;
+    job.id = fields[1];
+    job.startFrame = parseUnsigned(fields[2].c_str(), "start frame");
+    job.port = parsePort(fields[3]);
+    job.schedulePath = fs::path(fields[4]);
+    return job;
+}
+
+void runServer(const fs::path& romDirectory, std::string_view requestedRomset)
+{
+#ifdef _WIN32
+    WSADATA winsock {};
+    if(::WSAStartup(MAKEWORD(2, 2), &winsock) != 0)
+        throw std::runtime_error("SC-55 server could not start networking");
+#else
+    // Abandoned render targets must fail writes instead of killing us.
+    std::signal(SIGPIPE, SIG_IGN);
+#endif
+    BootedEmulator booted = bootEmulator(romDirectory, requestedRomset);
+    std::fprintf(stderr, "READY\n");
+    std::fflush(stderr);
+    std::string line;
+    while(std::getline(std::cin, line))
+    {
+        try
+        {
+            const ServerJob job = parseJobLine(line);
+            const Schedule schedule = readSchedule(job.schedulePath);
+            booted.emulator->PostSystemReset(EMU_SystemReset::GS_RESET);
+            for(uint32_t step = 0; step < POST_RESET_SETTLE_STEPS; ++step)
+                booted.emulator->Step();
+            SocketGuard sock = connectLoopback(job.port);
+            FILE* out = fdopenSocket(sock.sock);
+            // The guard must not close the socket out from under stdio.
+            sock.sock = INVALID_SOCK;
+            renderJob(booted, schedule, job.startFrame, out);
+            if(std::fclose(out) != 0)
+                throw std::runtime_error("closing SC-55 render target failed");
+        }
+        catch(const std::exception& error)
+        {
+            std::fprintf(stderr, "JOB ERROR %s\n", error.what());
+            std::fflush(stderr);
+        }
+    }
+#ifdef _WIN32
+    ::WSACleanup();
+#endif
+}
 
 int main(int argc, char** argv)
 {
@@ -299,12 +503,18 @@ int main(int argc, char** argv)
     {
         if(argc == 2 && std::strcmp(argv[1], "--version") == 0)
         {
-            std::puts("kog-sc55-helper protocol 1; Nuked SC-55 0.6.1 (50dcdde)");
+            std::puts("kog-sc55-helper protocol 2; Nuked SC-55 0.6.1 (50dcdde)");
+            return 0;
+        }
+        if((argc == 3 || argc == 4) && std::strcmp(argv[1], "--server") == 0)
+        {
+            runServer(argv[2], argc == 4 ? argv[3] : "");
             return 0;
         }
         if(argc < 4 || argc > 5)
             throw std::runtime_error(
-                "usage: kog-sc55-helper <schedule> <ROM-directory> <start-frame> [ROM-set]");
+                "usage: kog-sc55-helper <schedule> <ROM-directory> <start-frame> [ROM-set]\n"
+                "   or: kog-sc55-helper --server <ROM-directory> [ROM-set]");
 #ifdef _WIN32
         _setmode(_fileno(stdout), _O_BINARY);
 #endif

@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use directories::ProjectDirs;
 
-use crate::equalizer::EqualizerSettings;
+use kog_core::equalizer::EqualizerSettings;
 
 const SOUNDFONT_SETTING_FILE: &str = "soundfont-path";
 const MIDI_ENGINE_SETTING_FILE: &str = "midi-engine";

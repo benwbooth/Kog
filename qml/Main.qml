@@ -89,6 +89,7 @@ ApplicationWindow {
             return
         }
         applicationQuitRequested = true
+        appController.shutdown_synth_helpers()
         Qt.callLater(Qt.quit)
     }
     onVisibilityChanged: function(visibility) {

@@ -160,7 +160,7 @@ impl ExtractedArchive {
                             continue;
                         }
                     };
-                    if crate::media_path::is_metadata(&relative) {
+                    if kog_core::media_path::is_metadata(&relative) {
                         current = CurrentEntry::Discard { written: 0 };
                         continue;
                     }
@@ -596,7 +596,7 @@ pub fn portable_name(path: &Path) -> String {
 }
 
 fn decode_archive_name(bytes: &[u8]) -> compress_tools::Result<String> {
-    Ok(crate::text_encoding::decode(bytes))
+    Ok(kog_core::text_encoding::decode(bytes))
 }
 
 #[cfg(test)]

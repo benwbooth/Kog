@@ -10,7 +10,7 @@ use rodio::source::{SeekError, Zero};
 use rodio::{ChannelCount, DeviceSinkBuilder, MixerDeviceSink, Player, SampleRate, Source, mixer};
 
 use crate::decoder::{DecoderRegistry, PlaybackSource, SelectedBackend};
-use crate::equalizer::{EqualizerControl, EqualizerSettings, EqualizerSource};
+use kog_core::equalizer::{EqualizerControl, EqualizerSettings, EqualizerSource};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PlaybackState {

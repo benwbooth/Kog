@@ -35,7 +35,7 @@ pub struct DesktopApplication(cxx::UniquePtr<ffi::QApplication>);
 
 impl DesktopApplication {
     pub fn new() -> Self {
-        ffi::configure_archive_decoder(crate::text_encoding::decode);
+        ffi::configure_archive_decoder(kog_core::text_encoding::decode);
         Self(ffi::application_new())
     }
 
