@@ -1,24 +1,43 @@
-/* Kog web frontend: a compact, dark, mobile-first take on the desktop UI. */
+/* Kog web player.
+ *
+ * Mirrors the desktop layout: a toolbar, a sidebar holding the file tree and
+ * playlists, the playlist pane with a column header, and the transport bar.
+ * The whole thing is a fixed-height grid, so the only thing that scrolls is
+ * the pane you are looking at - never the page. Below 820px the sidebar
+ * becomes a drawer and the rows get compact.
+ */
 
 :root {
-  --bg: #1b1e20;
-  --panel: #23272a;
-  --panel-2: #2b3034;
+  --window: #1b1e20;
+  --base: #23272a;
+  --alternate: #2b3034;
+  --surface: #202427;
   --text: #eff0f1;
   --muted: #9aa0a6;
-  --accent: #3daee9;
-  --danger: #e05c5c;
-  --radius: 10px;
-  --transport-height: 92px;
+  --faint: #7b848c;
+  --highlight: #3daee9;
+  --highlight-text: #08131a;
+  --border: #34393d;
+  --row-height: 26px;
+  --sidebar-width: 260px;
+  --transport-height: 84px;
+  --toolbar-height: 44px;
+  color-scheme: dark;
 }
 
 @media (prefers-color-scheme: light) {
   :root {
-    --bg: #eff0f1;
-    --panel: #ffffff;
-    --panel-2: #f3f4f6;
+    --window: #eff0f1;
+    --base: #ffffff;
+    --alternate: #f2f3f5;
+    --surface: #e7e9ec;
     --text: #232629;
     --muted: #6b7280;
+    --faint: #8b929a;
+    --highlight: #1d78b8;
+    --highlight-text: #ffffff;
+    --border: #c9ccd1;
+    color-scheme: light;
   }
 }
 
@@ -30,55 +49,76 @@ html,
 body {
   margin: 0;
   height: 100%;
-  background: var(--bg);
+  overflow: hidden;
+}
+
+body {
+  background: var(--window);
   color: var(--text);
-  font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font: 13px/1.35 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   -webkit-text-size-adjust: 100%;
 }
 
-#app {
+#app,
+.app {
   height: 100%;
 }
 
+/* Fixed-height shell: toolbar / workspace / transport. */
 .app {
-  display: flex;
-  flex-direction: column;
-  min-height: 100%;
-  /* Keep the transport clear of phones with a home indicator. */
-  padding-bottom: env(safe-area-inset-bottom, 0);
+  display: grid;
+  grid-template-rows: var(--toolbar-height) minmax(0, 1fr) var(--transport-height);
+  overflow: hidden;
 }
 
-.topbar {
+/* ---------------------------------------------------------------- toolbar */
+
+.toolbar {
   display: flex;
-  gap: 8px;
   align-items: center;
-  padding: 10px 12px;
-  background: var(--panel);
-  border-bottom: 1px solid var(--panel-2);
-  position: sticky;
-  top: 0;
-  z-index: 5;
+  gap: 6px;
+  padding: 0 8px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
 }
 
-.brand {
+.toolbar .brand {
   font-weight: 700;
   letter-spacing: 0.02em;
+  padding: 0 6px 0 2px;
+}
+
+.toolbar .grow {
+  flex: 1;
+  min-width: 0;
+}
+
+.toolbar .search {
+  flex: 1;
+  min-width: 0;
+  max-width: 420px;
+  margin: 0 auto;
 }
 
 input,
 select,
-button {
+button,
+textarea {
   font: inherit;
   color: inherit;
-  background: var(--panel-2);
-  border: 1px solid transparent;
-  border-radius: var(--radius);
-  padding: 8px 10px;
-  min-height: 38px;
+  background: var(--base);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 8px;
 }
 
 button {
   cursor: pointer;
+  background: transparent;
+}
+
+button:hover:not(:disabled) {
+  background: var(--alternate);
 }
 
 button:disabled {
@@ -86,198 +126,550 @@ button:disabled {
   cursor: default;
 }
 
-button.primary,
-.tabs button.active {
-  background: var(--accent);
-  color: #08131a;
+button.flat {
+  border-color: transparent;
+  padding: 4px 7px;
+}
+
+button.primary {
+  background: var(--highlight);
+  color: var(--highlight-text);
+  border-color: transparent;
   font-weight: 600;
 }
 
-.server {
-  flex: 1;
-  min-width: 0;
+input:focus-visible,
+select:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--highlight);
+  outline-offset: -1px;
 }
 
-.connect {
+/* -------------------------------------------------------------- workspace */
+
+.workspace {
   display: grid;
-  gap: 10px;
-  padding: 16px;
-  max-width: 420px;
-}
-
-.connect label {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  color: var(--muted);
-}
-
-.hint,
-.message {
-  color: var(--muted);
-  font-size: 13px;
-  padding: 0 12px 12px;
-}
-
-.message {
-  padding-bottom: calc(var(--transport-height) + 12px);
-}
-
-.tabs {
-  display: flex;
-  gap: 6px;
-  padding: 8px 12px;
-  background: var(--panel);
-  border-bottom: 1px solid var(--panel-2);
-}
-
-.tabs button {
-  flex: 1;
-}
-
-main {
-  flex: 1;
-  overflow-y: auto;
-  padding: 8px 12px calc(var(--transport-height) + 16px);
-}
-
-.crumbs {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  margin-bottom: 8px;
-}
-
-.crumbs .search {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-}
-
-.crumbs .search input {
-  width: 100%;
-}
-
-.crumbs .clear {
-  padding: 8px 10px;
-}
-
-.new-playlist {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 10px;
-}
-
-.new-playlist input {
-  flex: 1;
-  min-width: 0;
-}
-
-.crumbs .path {
-  color: var(--muted);
-  font-size: 12px;
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+  min-height: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
-.rows {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  gap: 2px;
+.workspace.sidebar-hidden {
+  grid-template-columns: 0 minmax(0, 1fr);
 }
 
-.rows .row {
+/* ---------------------------------------------------------------- sidebar */
+
+.sidebar {
+  min-width: 0;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
   display: flex;
-  gap: 6px;
-  align-items: center;
+  flex-direction: column;
+  overflow: hidden;
 }
 
-.rows button {
+.workspace.sidebar-hidden .sidebar {
+  display: none;
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.section + .section {
+  border-top: 1px solid var(--border);
+}
+
+.section-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
   background: transparent;
+  border: 0;
+  width: 100%;
   text-align: left;
-  border-radius: 8px;
-  padding: 10px;
 }
 
-.rows button.grow {
+.section-body {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  min-height: 0;
+}
+
+.section.files .section-body {
   flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
-.rows button:hover,
-.rows button:focus-visible {
-  background: var(--panel-2);
-}
-
-.rows .icon {
-  color: #eab308;
-}
-
-.rows .count {
-  color: var(--muted);
-  font-size: 12px;
-  padding-right: 8px;
-}
-
-.transport {
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  display: grid;
-  gap: 6px;
-  padding: 8px 12px calc(8px + env(safe-area-inset-bottom, 0));
-  background: var(--panel);
-  border-top: 1px solid var(--panel-2);
-}
-
-.transport .now {
-  font-size: 13px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.transport .controls {
+/* Tree rows: indentation, expander, name. */
+.tree-row {
   display: flex;
-  gap: 8px;
   align-items: center;
+  gap: 4px;
+  width: 100%;
+  border: 0;
+  border-radius: 0;
+  padding: 3px 8px 3px 0;
+  text-align: left;
+  white-space: nowrap;
+  color: var(--text);
 }
 
-.transport .controls .play {
-  background: var(--accent);
-  color: #08131a;
-  min-width: 48px;
+.tree-row:hover {
+  background: var(--alternate);
 }
 
-.transport .controls select {
+.tree-row.directory {
+  color: var(--text);
+}
+
+.tree-row .twisty {
+  width: 14px;
+  flex: none;
+  text-align: center;
+  color: var(--faint);
+  font-size: 10px;
+}
+
+.tree-row .label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ------------------------------------------------------- playlist / table */
+
+.playlist {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  min-height: 0;
+  background: var(--base);
+}
+
+.playlist-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.playlist-head .name {
+  font-weight: 600;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.playlist-head .count {
   margin-left: auto;
 }
 
-.transport .player {
-  width: 100%;
-  height: 32px;
+/* Column header: same grid as the rows, so they line up. */
+.columns,
+.track {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 3fr) minmax(0, 2fr) 64px;
+  align-items: center;
 }
 
-/* Phones: a bottom tab bar reads better than tabs under the header. */
-@media (max-width: 640px) {
-  .tabs {
-    position: fixed;
-    left: 0;
-    right: 0;
-    bottom: var(--transport-height);
-    border-top: 1px solid var(--panel-2);
-    border-bottom: none;
-    z-index: 4;
+.columns {
+  padding: 3px 0;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.columns button {
+  border: 0;
+  border-radius: 0;
+  padding: 0 8px;
+  text-align: left;
+  color: inherit;
+  font-size: inherit;
+}
+
+.columns .cell,
+.track .cell {
+  padding: 0 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.track {
+  border: 0;
+  border-radius: 0;
+  width: 100%;
+  text-align: left;
+  color: var(--text);
+  height: var(--row-height);
+  padding: 0;
+  background: transparent;
+}
+
+.track:nth-child(even) {
+  background: color-mix(in srgb, var(--alternate) 45%, transparent);
+}
+
+.track:hover {
+  background: var(--alternate);
+}
+
+.track .index,
+.track .length {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.track.current {
+  background: var(--highlight);
+  color: var(--highlight-text);
+}
+
+.track.current .index,
+.track.current .length,
+.track.current .location {
+  color: var(--highlight-text);
+  opacity: 0.85;
+}
+
+.rows {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  min-height: 0;
+}
+
+.empty {
+  padding: 18px 12px;
+  color: var(--muted);
+}
+
+/* -------------------------------------------------------------- transport */
+
+.transport {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+}
+
+.now {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.art {
+  width: 52px;
+  height: 52px;
+  flex: none;
+  border-radius: 6px;
+  background: var(--base);
+  border: 1px solid var(--border);
+  display: grid;
+  place-items: center;
+  font-size: 22px;
+  overflow: hidden;
+}
+
+.now-text {
+  min-width: 0;
+}
+
+.now-text .title {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.now-text .subtitle,
+.now-text .stamp {
+  color: var(--muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.now-text .subtitle {
+  color: var(--faint);
+}
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.controls button {
+  min-width: 34px;
+  min-height: 30px;
+}
+
+.controls .play {
+  min-width: 42px;
+  min-height: 34px;
+  background: var(--highlight);
+  color: var(--highlight-text);
+  border-color: transparent;
+  font-size: 15px;
+}
+
+.right {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+
+.seek {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.seek input[type="range"] {
+  flex: 1;
+  min-width: 40px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  accent-color: var(--highlight);
+}
+
+.volume {
+  width: 80px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  accent-color: var(--highlight);
+}
+
+.codec {
+  padding: 3px 6px;
+}
+
+.audio {
+  display: none;
+}
+
+/* ---------------------------------------------------------------- drawer */
+
+.drawer-scrim {
+  display: none;
+}
+
+/* -------------------------------------------------------------- settings */
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 30;
+}
+
+.settings {
+  position: fixed;
+  z-index: 31;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(92vw, 420px);
+  max-height: 90vh;
+  overflow-y: auto;
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+}
+
+.settings h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.settings label {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.settings label:has(input[type="checkbox"]) {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  justify-content: start;
+  gap: 8px;
+}
+
+.settings input[type="checkbox"] {
+  width: auto;
+}
+
+.settings-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.hint {
+  margin: 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.hint.error {
+  color: #e05c5c;
+}
+
+/* ---------------------------------------------------------------- mobile */
+
+@media (max-width: 820px) {
+  :root {
+    --row-height: 34px;
+    --transport-height: 64px;
+    --toolbar-height: 46px;
   }
 
-  main {
-    padding-bottom: calc(var(--transport-height) + 72px);
+  .app {
+    grid-template-rows: var(--toolbar-height) minmax(0, 1fr) var(--transport-height);
+  }
+
+  .workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* The sidebar slides over the playlist instead of squeezing it. */
+  .sidebar {
+    position: fixed;
+    top: var(--toolbar-height);
+    bottom: var(--transport-height);
+    left: 0;
+    width: min(84vw, 320px);
+    z-index: 20;
+    transform: translateX(-102%);
+    transition: transform 0.16s ease-out;
+    border-right: 1px solid var(--border);
+  }
+
+  .workspace.sidebar-open .sidebar {
+    transform: translateX(0);
+  }
+
+  .workspace.sidebar-hidden .sidebar {
+    display: flex;
+  }
+
+  .drawer-scrim {
+    display: block;
+    position: fixed;
+    inset: var(--toolbar-height) 0 var(--transport-height) 0;
+    background: rgba(0, 0, 0, 0.45);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.16s ease-out;
+    z-index: 10;
+  }
+
+  .workspace.sidebar-open .drawer-scrim {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  /* Two lines per track: title, then location. */
+  .columns {
+    grid-template-columns: 34px minmax(0, 1fr) 52px;
+  }
+
+  .track {
+    grid-template-columns: 34px minmax(0, 1fr) 52px;
+    grid-template-rows: auto auto;
+    height: auto;
+    padding: 4px 0;
+  }
+
+  .track .index {
+    grid-row: 1 / span 2;
+  }
+
+  .track .name-cell {
+    grid-column: 2;
+  }
+
+  .track .location {
+    grid-column: 2;
+    grid-row: 2;
+    font-size: 11px;
+    color: var(--faint);
+  }
+
+  .columns .location-cell,
+  .track .length {
+    display: none;
+  }
+
+  .columns .length-cell {
+    display: block;
+    grid-column: 3;
+  }
+
+  .transport {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    padding: 6px 10px;
+  }
+
+  .transport .seek {
+    display: none;
+  }
+
+  .transport .right {
+    gap: 4px;
+  }
+
+  .transport .volume {
+    display: none;
+  }
+
+  .art {
+    width: 40px;
+    height: 40px;
+    font-size: 18px;
+  }
+
+  .now-text .stamp {
+    display: none;
+  }
+}
+
+/* Compact the transport further on very short screens. */
+@media (max-height: 560px) {
+  .now-text .subtitle {
+    display: none;
   }
 }

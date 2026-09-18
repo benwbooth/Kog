@@ -949,6 +949,38 @@ Window {
                             detail = result && result.ok
                                 ? qsTr("Saved") : qsTr("Could not save the settings")
                         }
+
+                        // The run switch is persistent: it saves the setting
+                        // and starts or stops the server to match, so there is
+                        // no separate start/stop step to forget.
+                        function applyEnabled() {
+                            save()
+                            const running = !!(status && status.running)
+                            if (enabled && !running) {
+                                start()
+                            } else if (!enabled && running) {
+                                root.app.stop_api_server()
+                                detail = qsTr("Server stopped")
+                                load()
+                            }
+                        }
+
+                        function start() {
+                            let result = null
+                            try {
+                                result = JSON.parse(root.app.start_api_server())
+                            } catch (error) {
+                                result = null
+                            }
+                            if (result && result.ok) {
+                                detail = qsTr("Serving at %1").arg(result.url || "")
+                            } else if (result && result.error) {
+                                detail = result.error
+                            } else {
+                                detail = qsTr("Could not start the server")
+                            }
+                            load()
+                        }
                     }
 
                     PreferenceGroup {
@@ -966,9 +998,12 @@ Window {
                                 color: root.palette.placeholderText
                             }
                             PreferenceCheckBox {
-                                text: qsTr("Enable the API server")
+                                text: qsTr("Run the API server")
                                 checked: serverState.enabled
-                                onToggled: serverState.enabled = checked
+                                onToggled: {
+                                    serverState.enabled = checked
+                                    serverState.applyEnabled()
+                                }
                             }
 
                             GridLayout {
@@ -1176,23 +1211,6 @@ Window {
                                 Button {
                                     text: qsTr("Save Settings")
                                     onClicked: serverState.save()
-                                }
-                                Button {
-                                    text: qsTr("Start Server")
-                                    enabled: !(serverState.status && serverState.status.running)
-                                    onClicked: {
-                                        serverState.save()
-                                        root.app.start_api_server()
-                                        serverState.load()
-                                    }
-                                }
-                                Button {
-                                    text: qsTr("Stop Server")
-                                    enabled: serverState.status && serverState.status.running
-                                    onClicked: {
-                                        root.app.stop_api_server()
-                                        serverState.load()
-                                    }
                                 }
                                 Button {
                                     text: qsTr("Copy Address")

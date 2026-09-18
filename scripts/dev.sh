@@ -50,16 +50,23 @@ done
 profile_args=()
 [[ "$profile" == "release" ]] && profile_args=(--release)
 
-# Only the sources matter; watchexec otherwise skips gitignored paths (target/,
-# the generated web assets) on its own.
+# Only the sources matter. Build output must be ignored explicitly: watchexec
+# does not skip it here, and the web crate's target dir churns thousands of
+# files per build, which would restart the loop (and kill the app) endlessly.
 watch_args=(
   --watch src
   --watch crates
   --watch qml
   --watch build.rs
   --watch Cargo.toml
+  --ignore target
+  --ignore crates/kog-web/target
+  --ignore "**/*.tmp"
   --exts rs,qml,toml,json,svg,css,html
-  --debounce 300ms
+  # Wait for the filesystem to go quiet before acting. A build writes in
+  # bursts, so a short debounce would restart mid-build and kill the app that
+  # just launched; the longer settle window coalesces the whole burst.
+  --debounce 3s
   # Ask the app to quit, but do not let a wedged one hold up the restart.
   --stop-signal SIGTERM
   --stop-timeout 3s
