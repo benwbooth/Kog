@@ -132,22 +132,69 @@ fn unauthorized(error: AuthError) -> Response {
     response
 }
 
-/// Bind and serve until cancelled. TLS is added in a later step; the config
-/// validation already refuses unsafe combinations.
+/// Bind and serve until cancelled, over TLS when configured.
 pub async fn serve(state: AppState) -> Result<(), String> {
-    let (address, enabled) = {
+    let config = {
         let config = state.config.read().await;
-        (config.socket_address(), config.enabled)
+        config.clone()
     };
-    if !enabled {
+    if !config.enabled {
         return Err("the API server is disabled".to_owned());
     }
+    // Refuse to start on a configuration that would be unsafe or unusable.
+    config.validate()?;
+    let address = config.socket_address();
     let listener = tokio::net::TcpListener::bind(address)
         .await
         .map_err(|error| format!("binding {address}: {error}"))?;
-    axum::serve(listener, router(state))
-        .await
-        .map_err(|error| format!("serving on {address}: {error}"))
+    let app = router(state);
+    if config.tls.mode == crate::TlsMode::Off {
+        return axum::serve(listener, app)
+            .await
+            .map_err(|error| format!("serving on {address}: {error}"));
+    }
+    serve_tls(listener, app, &config, address).await
+}
+
+/// TLS accept loop. Uses hyper's auto connection builder so HTTP/1.1 and
+/// HTTP/2 clients both work over the encrypted socket.
+async fn serve_tls(
+    listener: tokio::net::TcpListener,
+    app: Router,
+    config: &ServerConfig,
+    address: std::net::SocketAddr,
+) -> Result<(), String> {
+    use hyper_util::rt::{TokioExecutor, TokioIo};
+    use hyper_util::server::conn::auto::Builder;
+
+    let tls = crate::tls::server_config(&config.tls, address)?;
+    let acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(tls));
+    loop {
+        let (stream, peer) = listener
+            .accept()
+            .await
+            .map_err(|error| format!("accepting on {address}: {error}"))?;
+        let acceptor = acceptor.clone();
+        let app = app.clone();
+        tokio::spawn(async move {
+            match acceptor.accept(stream).await {
+                Ok(stream) => {
+                    let service = hyper_util::service::TowerToHyperService::new(app);
+                    let builder = Builder::new(TokioExecutor::new());
+                    let connection =
+                        builder.serve_connection_with_upgrades(TokioIo::new(stream), service);
+                    if let Err(error) = connection.await {
+                        eprintln!("kog-server: TLS connection from {peer} ended: {error}");
+                    }
+                }
+                Err(error) => {
+                    // A failed handshake is routine (port scanners, wrong
+                    // scheme); report it without stopping the server.
+                    eprintln!("kog-server: TLS handshake with {peer} failed: {error}");
+                }
+            }
+        });
+    }
 }
 
 #[cfg(test)]
