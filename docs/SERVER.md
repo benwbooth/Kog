@@ -61,7 +61,7 @@ when one is set.
 | `GET` | `/api/version` | Server version; used to verify a connection |
 | `GET` | `/api/codecs` | Advertised stream formats, bitrates, and cache limits |
 | `GET` | `/api/library?path=` | Directories and files below a path |
-| `GET` | `/api/search?q=&limit=` | Search the library |
+| `GET` | `/api/library/search?q=&limit=` | Search the library by file name |
 | `GET` | `/api/playlists` | Playlists and their entry counts |
 | `GET` | `/api/playlists/{id}` | A playlist's entries |
 | `POST` | `/api/playlists` | Create a playlist |

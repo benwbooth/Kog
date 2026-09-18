@@ -117,6 +117,34 @@ pub struct CreatePlaylistRequest {
     pub name: String,
 }
 
+/// One entry as a client sends it. Optional fields default, so a minimal
+/// `{"kind": "local", "path": "..."}` is valid.
+#[derive(Debug, Deserialize)]
+pub struct EntryRequest {
+    pub kind: String,
+    pub path: String,
+    #[serde(default)]
+    pub entry: String,
+    #[serde(default)]
+    pub fragment: String,
+}
+
+impl EntryRequest {
+    fn into_stored(self) -> StoredEntry {
+        StoredEntry {
+            kind: self.kind,
+            path: self.path,
+            entry: self.entry,
+            fragment: (!self.fragment.trim().is_empty()).then_some(self.fragment),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AppendEntriesRequest {
+    pub entries: Vec<EntryRequest>,
+}
+
 /// `GET /api/library` — one directory level.
 pub async fn browse(State(state): State<AppState>, Query(query): Query<BrowseQuery>) -> Response {
     let library = state.library.clone();
@@ -333,6 +361,40 @@ pub async fn create_playlist(
     }
 }
 
+/// `POST /api/playlists/{id}/entries` — append entries to a playlist.
+///
+/// Favorites (id 0) are managed through `/api/stars`, so appending to them is
+/// refused rather than silently doing something else.
+pub async fn append_playlist_entries(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<i64>,
+    axum::Json(request): axum::Json<AppendEntriesRequest>,
+) -> Response {
+    if id == 0 {
+        return bad_request("Favorites are managed through /api/stars");
+    }
+    if request.entries.is_empty() {
+        return bad_request("no entries were supplied");
+    }
+    let library = state.library.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let entries: Vec<StoredEntry> = request
+            .entries
+            .into_iter()
+            .map(EntryRequest::into_stored)
+            .collect();
+        let added = entries.len();
+        library.db().append_entries(id, &entries)?;
+        Ok::<_, String>(serde_json::json!({ "ok": true, "id": id, "added": added }))
+    })
+    .await
+    .unwrap_or_else(|error| Err(format!("appending to the playlist failed: {error}")));
+    match result {
+        Ok(value) => axum::Json(value).into_response(),
+        Err(error) => bad_request(&error),
+    }
+}
+
 /// `DELETE /api/playlists/{id}`
 pub async fn delete_playlist(
     State(state): State<AppState>,
@@ -416,7 +478,7 @@ fn entry_json(entry: StoredEntry) -> serde_json::Value {
 
 /// Router fragment for the library endpoints, so `routes` stays readable.
 pub fn router() -> axum::Router<AppState> {
-    use axum::routing::get;
+    use axum::routing::{get, post};
     axum::Router::new()
         .route("/api/library", get(browse))
         .route("/api/library/search", get(search))
@@ -425,5 +487,6 @@ pub fn router() -> axum::Router<AppState> {
             "/api/playlists/{id}",
             get(playlist_entries).delete(delete_playlist),
         )
+        .route("/api/playlists/{id}/entries", post(append_playlist_entries))
         .route("/api/stars", get(list_stars).post(set_star))
 }

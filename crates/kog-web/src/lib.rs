@@ -122,6 +122,9 @@ fn App() -> impl IntoView {
     let (directories, set_directories) = signal(Vec::<(String, String)>::new());
     let (files, set_files) = signal(Vec::<Entry>::new());
     let (stack, set_stack) = signal(Vec::<String>::new());
+    let (search_query, set_search_query) = signal(String::new());
+    let (searching, set_searching) = signal(false);
+    let (new_playlist, set_new_playlist) = signal(String::new());
 
     let (playlists, set_playlists) = signal(Vec::<(i64, String, i64)>::new());
     let (stars, set_stars) = signal(Vec::<Entry>::new());
@@ -151,6 +154,30 @@ fn App() -> impl IntoView {
             if let Some(header) = header {
                 request = request.header("Authorization", &header);
             }
+            let response = request.send().await.map_err(|error| error.to_string())?;
+            if response.status() == 401 {
+                return Err("Sign in to continue".to_owned());
+            }
+            if !response.ok() {
+                return Err(format!("Request failed ({})", response.status()));
+            }
+            response
+                .json::<serde_json::Value>()
+                .await
+                .map_err(|error| error.to_string())
+        }
+    };
+
+    // One place that writes JSON, mirroring `get_json`.
+    let post_json = move |route: String, body: serde_json::Value| {
+        let url = format!("{}{route}", base());
+        let header = auth().header();
+        async move {
+            let mut request = Request::post(&url);
+            if let Some(header) = header {
+                request = request.header("Authorization", &header);
+            }
+            let request = request.json(&body).map_err(|error| error.to_string())?;
             let response = request.send().await.map_err(|error| error.to_string())?;
             if response.status() == 401 {
                 return Err("Sign in to continue".to_owned());
@@ -227,6 +254,7 @@ fn App() -> impl IntoView {
                             .unwrap_or_default();
                         set_directories.set(dirs);
                         set_files.set(entries);
+                        set_searching.set(false);
                     }
                     Err(error) => set_message.set(error),
                 }
@@ -336,6 +364,81 @@ fn App() -> impl IntoView {
         }
     };
 
+    // Name search across the library. Results replace the directory listing
+    // and the "Up" trail until the user browses again.
+    let load_search = {
+        let get_json = get_json;
+        move |query: String| {
+            let trimmed = query.trim().to_owned();
+            if trimmed.is_empty() {
+                return;
+            }
+            let route = format!("/api/library/search?q={}", url_encode(&trimmed));
+            leptos::task::spawn_local(async move {
+                match get_json(route).await {
+                    Ok(value) => {
+                        let found: Vec<Entry> = value["results"]
+                            .as_array()
+                            .map(|items| items.iter().map(entry_from_json).collect())
+                            .unwrap_or_default();
+                        set_directories.set(Vec::new());
+                        set_files.set(found);
+                        set_searching.set(true);
+                        set_stack.set(Vec::new());
+                        set_path.set(format!("Search: {trimmed}"));
+                    }
+                    Err(error) => set_message.set(error),
+                }
+            });
+        }
+    };
+
+    let create_playlist = {
+        let post_json = post_json;
+        let load_playlists = load_playlists.clone();
+        move |name: String| {
+            let trimmed = name.trim().to_owned();
+            if trimmed.is_empty() {
+                return;
+            }
+            let load = load_playlists.clone();
+            leptos::task::spawn_local(async move {
+                match post_json(
+                    "/api/playlists".to_owned(),
+                    serde_json::json!({ "name": trimmed }),
+                )
+                .await
+                {
+                    Ok(_) => {
+                        set_message.set("Playlist created".to_owned());
+                        load();
+                    }
+                    Err(error) => set_message.set(error),
+                }
+            });
+        }
+    };
+
+    let add_to_playlist = {
+        let post_json = post_json;
+        move |id: i64, entry: Entry| {
+            let body = serde_json::json!({
+                "entries": [{
+                    "kind": entry.kind,
+                    "path": entry.path,
+                    "entry": entry.entry,
+                    "fragment": entry.fragment.clone().unwrap_or_default(),
+                }]
+            });
+            leptos::task::spawn_local(async move {
+                match post_json(format!("/api/playlists/{id}/entries"), body).await {
+                    Ok(_) => set_message.set("Added to the playlist".to_owned()),
+                    Err(error) => set_message.set(error),
+                }
+            });
+        }
+    };
+
     let toggle_star = move |entry: Entry, starred: bool| {
         let url = format!("{}/api/stars", base());
         let header = auth().header();
@@ -358,6 +461,21 @@ fn App() -> impl IntoView {
     };
 
     let current_entry = move || queue.get().get(current.get()).cloned();
+    let audio_ref = NodeRef::<leptos::html::Audio>::new();
+
+    // The transport button and the element have to stay in step, and a track
+    // that reaches its end should roll on to the next one.
+    Effect::new(move |_| {
+        let index = current.get();
+        let playing = playing.get();
+        if let Some(audio) = audio_ref.get() {
+            if playing && index < queue.get().len() {
+                let _ = audio.play();
+            } else {
+                let _ = audio.pause();
+            }
+        }
+    });
     let audio_src = move || current_entry().map(|entry| stream_url(&entry)).unwrap_or_default();
 
     view! {
@@ -453,6 +571,33 @@ fn App() -> impl IntoView {
                                 }
                             >"Up"</button>
                             <span class="path">{move || path.get()}</span>
+                            <form
+                                class="search"
+                                on:submit=move |event| {
+                                    event.prevent_default();
+                                    load_search(search_query.get());
+                                }
+                            >
+                                <input
+                                    type="search"
+                                    placeholder="Search"
+                                    prop:value=move || search_query.get()
+                                    on:input=move |event| set_search_query.set(event_target_value(&event))
+                                />
+                            </form>
+                            <button
+                                class="clear"
+                                disabled=move || !searching.get()
+                                title="Leave the search results"
+                                on:click={
+                                    let browse = browse.clone();
+                                    move |_| {
+                                        set_searching.set(false);
+                                        set_search_query.set(String::new());
+                                        browse(String::new());
+                                    }
+                                }
+                            >"✕"</button>
                         </div>
                         <ul class="rows">
                             <For each=move || directories.get() key=|item| item.1.clone() let:item>
@@ -506,16 +651,49 @@ fn App() -> impl IntoView {
                     </Show>
 
                     <Show when=move || tab.get() == "playlists">
+                        <form
+                            class="new-playlist"
+                            on:submit=move |event| {
+                                event.prevent_default();
+                                create_playlist(new_playlist.get());
+                                set_new_playlist.set(String::new());
+                            }
+                        >
+                            <input
+                                type="text"
+                                placeholder="New playlist"
+                                prop:value=move || new_playlist.get()
+                                on:input=move |event| set_new_playlist.set(event_target_value(&event))
+                            />
+                            <button type="submit">"Create"</button>
+                        </form>
                         <ul class="rows">
                             <For each=move || playlists.get() key=|item| item.0 let:item>
                                 {
                                     let load = load_playlist_into_queue.clone();
+                                    let add = add_to_playlist.clone();
+                                    let current_entry = current_entry.clone();
                                     let id = item.0;
                                     view! {
                                         <li class="row">
                                             <button class="grow" on:click=move |_| load(id)>
                                                 {item.1.clone()}
                                             </button>
+                                            <button
+                                                class="icon"
+                                                title="Add the current track"
+                                                disabled=move || current_entry().is_none()
+                                                on:click={
+                                                    let add = add.clone();
+                                                    let current_entry = current_entry.clone();
+                                                    let id = id;
+                                                    move |_| {
+                                                        if let Some(entry) = current_entry() {
+                                                            add(id, entry);
+                                                        }
+                                                    }
+                                                }
+                                            >"＋"</button>
                                             <span class="count">{item.2}</span>
                                         </li>
                                     }
@@ -576,7 +754,21 @@ fn App() -> impl IntoView {
                             <option value="flac">"FLAC"</option>
                         </select>
                     </div>
-                    <audio class="player" controls prop:src=audio_src></audio>
+                    <audio
+                        class="player"
+                        controls
+                        preload="auto"
+                        node_ref=audio_ref
+                        prop:src=audio_src
+                        on:ended=move |_| {
+                            if current.get() + 1 < queue.get().len() {
+                                set_current.update(|index| *index += 1);
+                                set_playing.set(true);
+                            } else {
+                                set_playing.set(false);
+                            }
+                        }
+                    ></audio>
                 </footer>
             </Show>
 

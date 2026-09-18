@@ -5182,6 +5182,11 @@ impl qobject::AppController {
                 kog_server::TlsMode::Pem => Some(config.tls.certificate_path.clone()),
                 kog_server::TlsMode::Off => None,
             };
+            // Fail fast on a port that is already taken: the server thread's
+            // error would otherwise only reach stderr, leaving the pane
+            // claiming the server is running.
+            std::net::TcpListener::bind(address)
+                .map_err(|error| format!("could not bind {address}: {error}"))?;
             std::thread::Builder::new()
                 .name("kog-api-server".to_owned())
                 .spawn(move || {

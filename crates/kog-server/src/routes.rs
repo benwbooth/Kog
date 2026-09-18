@@ -526,17 +526,55 @@ mod tests {
         )
     }
 
-    /// A library rooted in a throwaway directory, so browsing tests never
-    /// touch the developer's real music folder.
-    fn library() -> crate::api::Library {
+    /// A minimal, valid 8-bit mono WAV, so the decoder registry accepts it
+    /// whether it filters by extension or by probing the content.
+    fn write_wav(path: &std::path::Path) {
+        let data: &[u8] = &[0x80];
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36_u32 + data.len() as u32).to_le_bytes());
+        wav.extend_from_slice(b"WAVE");
+        wav.extend_from_slice(b"fmt ");
+        wav.extend_from_slice(&16_u32.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&8_000_u32.to_le_bytes());
+        wav.extend_from_slice(&8_000_u32.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&8_u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        wav.extend_from_slice(data);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, wav).unwrap();
+    }
+
+    /// A library rooted in a throwaway directory populated with `files`
+    /// (relative paths), so browsing tests never touch the real music folder.
+    fn library_with(files: &[&str]) -> (crate::api::Library, std::path::PathBuf) {
         let directory = Box::leak(Box::new(tempfile::tempdir().unwrap()));
-        crate::api::Library::new(
-            Some(directory.path().to_path_buf()),
+        let root = directory.path().to_path_buf();
+        for file in files {
+            write_wav(&root.join(file));
+        }
+        let library = crate::api::Library::new(
+            Some(root.clone()),
             kog_core::db::LibraryDb::open_in_memory().expect("in-memory library"),
-        )
+        );
+        (library, root)
+    }
+
+    fn library() -> crate::api::Library {
+        library_with(&[]).0
     }
 
     fn state(auth: AuthMode, token: &str) -> AppState {
+        state_with(auth, token, library())
+    }
+
+    fn state_with(auth: AuthMode, token: &str, library: crate::api::Library) -> AppState {
         let mut config = ServerConfig {
             enabled: true,
             auth,
@@ -545,7 +583,7 @@ mod tests {
         if !token.is_empty() {
             config.token = token.to_owned();
         }
-        AppState::new(config, "9.9.9", streams(), library())
+        AppState::new(config, "9.9.9", streams(), library)
     }
 
     #[test]
@@ -701,6 +739,195 @@ mod tests {
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
         (status, json)
+    }
+
+    /// Send a request with an optional JSON body and read the JSON reply.
+    async fn request_json(
+        state: AppState,
+        method: &str,
+        path: &str,
+        body: Option<serde_json::Value>,
+    ) -> (StatusCode, serde_json::Value) {
+        let mut builder = HttpRequest::builder().method(method).uri(path);
+        let body = match body {
+            Some(value) => {
+                builder = builder.header(header::CONTENT_TYPE, "application/json");
+                Body::from(value.to_string())
+            }
+            None => Body::empty(),
+        };
+        let response = router(state)
+            .oneshot(builder.body(body).unwrap())
+            .await
+            .expect("router responds");
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        (status, json)
+    }
+
+    #[tokio::test]
+    async fn browsing_lists_the_music_directory_and_stays_inside_it() {
+        let (library, root) = library_with(&["Album/one.wav", "Album/two.wav"]);
+        let album = root.join("Album");
+        // One library, shared through the cloneable AppState.
+        let state = state_with(AuthMode::None, "", library);
+
+        let (status, body) = get_json(
+            state.clone(),
+            &format!("/api/library?path={}", album.display()),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let mut names: Vec<&str> = body["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|file| file["name"].as_str().unwrap())
+            .collect();
+        names.sort_unstable();
+        assert_eq!(names, ["one.wav", "two.wav"]);
+        // Files carry their absolute path, which is what clients then stream.
+        assert!(body["files"][0]["path"]
+            .as_str()
+            .unwrap()
+            .starts_with(&root.to_string_lossy().into_owned()));
+
+        // Leaving the root is refused rather than clamped to it.
+        let (status, body) = get_json(state.clone(), "/api/library?path=..", None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body["error"].as_str().unwrap().contains("outside"));
+
+        let outside = root.parent().unwrap();
+        let (status, _) = get_json(
+            state,
+            &format!("/api/library?path={}", outside.display()),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn searching_finds_files_by_name() {
+        let (library, _root) = library_with(&["Album/one.wav", "Other/two.wav"]);
+        let state = state_with(AuthMode::None, "", library);
+        let (status, body) =
+            get_json(state.clone(), "/api/library/search?q=one", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let names: Vec<&str> = body["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|file| file["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["one.wav"]);
+
+        // An empty query is a client error, not a full listing.
+        let (status, _) = get_json(state, "/api/library/search?q=%20", None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn playlists_can_be_created_appended_and_deleted() {
+        let state = state(AuthMode::None, "");
+        let (status, body) = request_json(
+            state.clone(),
+            "POST",
+            "/api/playlists",
+            Some(serde_json::json!({ "name": "Road trip" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let id = body["id"].as_i64().expect("a new playlist has an id");
+        assert!(id > 0, "Favorites is 0 and never created by clients");
+
+        let (status, body) = request_json(
+            state.clone(),
+            "POST",
+            &format!("/api/playlists/{id}/entries"),
+            Some(serde_json::json!({
+                "entries": [
+                    { "kind": "local", "path": "/music/a.flac" },
+                    { "kind": "archive", "path": "/music/pack.zip", "entry": "Disc/b.wav", "fragment": "2" },
+                ]
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["added"], 2);
+
+        let (status, body) = get_json(state.clone(), &format!("/api/playlists/{id}"), None).await;
+        assert_eq!(status, StatusCode::OK);
+        let entries = body["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["path"], "/music/a.flac");
+        assert_eq!(entries[1]["entry"], "Disc/b.wav");
+        assert_eq!(entries[1]["fragment"], "2");
+
+        let (_, body) = get_json(state.clone(), "/api/playlists", None).await;
+        assert!(body["playlists"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|playlist| playlist["id"] == id && playlist["entryCount"] == 2));
+
+        // Favorites is managed through stars, not by appending.
+        let (status, _) = request_json(
+            state.clone(),
+            "POST",
+            "/api/playlists/0/entries",
+            Some(serde_json::json!({ "entries": [{ "kind": "local", "path": "/music/a.flac" }] })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        let (status, _) = request_json(
+            state.clone(),
+            "DELETE",
+            &format!("/api/playlists/{id}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (_, body) = get_json(state, "/api/playlists", None).await;
+        assert!(!body["playlists"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|playlist| playlist["id"] == id));
+    }
+
+    #[tokio::test]
+    async fn stars_round_trip_with_the_locator_scheme() {
+        let state = state(AuthMode::None, "");
+        let entry = serde_json::json!({
+            "kind": "archive",
+            "path": "/music/pack.zip",
+            "entry": "Disc/a.wav",
+            "fragment": "2",
+        });
+
+        let mut starred = entry.clone();
+        starred["starred"] = serde_json::json!(true);
+        let (status, _) = request_json(state.clone(), "POST", "/api/stars", Some(starred)).await;
+        assert_eq!(status, StatusCode::OK);
+
+        let (status, body) = get_json(state.clone(), "/api/stars", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let entries = body["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 1, "exactly the one entry that was starred");
+        assert_eq!(entries[0]["path"], "/music/pack.zip");
+        assert_eq!(entries[0]["entry"], "Disc/a.wav");
+        assert_eq!(entries[0]["fragment"], "2");
+
+        let mut unstarred = entry;
+        unstarred["starred"] = serde_json::json!(false);
+        let (status, _) = request_json(state.clone(), "POST", "/api/stars", Some(unstarred)).await;
+        assert_eq!(status, StatusCode::OK);
+        let (_, body) = get_json(state, "/api/stars", None).await;
+        assert!(body["entries"].as_array().unwrap().is_empty());
     }
 
     #[tokio::test]

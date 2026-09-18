@@ -148,6 +148,31 @@ main {
   margin-bottom: 8px;
 }
 
+.crumbs .search {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+}
+
+.crumbs .search input {
+  width: 100%;
+}
+
+.crumbs .clear {
+  padding: 8px 10px;
+}
+
+.new-playlist {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.new-playlist input {
+  flex: 1;
+  min-width: 0;
+}
+
 .crumbs .path {
   color: var(--muted);
   font-size: 12px;
