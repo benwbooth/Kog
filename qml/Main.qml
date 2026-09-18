@@ -773,7 +773,12 @@ ApplicationWindow {
         }
     }
 
-    Component.onCompleted: fileTreeModel.set_root_path_text(appController.directory_path)
+    Component.onCompleted: {
+        fileTreeModel.set_root_path_text(appController.directory_path)
+        // Warm the selected synth backend in the background so the first
+        // MIDI track starts immediately instead of booting an emulator.
+        appController.prewarm_synths()
+    }
 
     Timer {
         interval: 200

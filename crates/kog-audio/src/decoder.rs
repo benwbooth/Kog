@@ -1176,6 +1176,29 @@ fn global_soundfont_cache() -> &'static Mutex<SoundFontCache> {
     CACHE.get_or_init(|| Mutex::new(SoundFontCache::default()))
 }
 
+/// Parse a SoundFont into the process-wide cache ahead of playback so the
+/// first MIDI track starts without paying the load. Best-effort.
+pub fn warm_soundfont(path: &Path) -> Result<(), String> {
+    let metadata = path
+        .metadata()
+        .map_err(|error| format!("reading SoundFont metadata for {}: {error}", path.display()))?;
+    let modified = metadata.modified().ok();
+    let mut cache = global_soundfont_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if cache.path.as_ref() == Some(&path.to_path_buf())
+        && cache.modified == modified
+        && cache.soundfont.is_some()
+    {
+        return Ok(());
+    }
+    let soundfont = Arc::new(load_soundfont_file(path)?);
+    cache.path = Some(path.to_path_buf());
+    cache.modified = modified;
+    cache.soundfont = Some(soundfont);
+    Ok(())
+}
+
 impl MidiBackend {
     fn new(settings: DecoderSettings) -> Self {
         Self { settings }

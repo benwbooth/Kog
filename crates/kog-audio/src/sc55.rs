@@ -848,6 +848,13 @@ fn server_supports_protocol_two(helper: &Path) -> bool {
     String::from_utf8_lossy(&output.stdout).contains("protocol 2")
 }
 
+/// Kick off the background server boot for a ROM directory so the first
+/// MIDI track starts without the emulator startup cost. Never blocks and
+/// is a no-op when a server is already booted or booting.
+pub fn warm_sc55_server(rom_dir: &Path) {
+    let _ = acquire_sc55_server(rom_dir);
+}
+
 /// A ready server for a ROM directory, or an error while one is still
 /// warming up. Never blocks: the first MIDI play kicks off a background
 /// boot and falls back to the one-shot helper, and later plays use the

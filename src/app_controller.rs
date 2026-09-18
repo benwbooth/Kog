@@ -352,6 +352,8 @@ pub mod qobject {
         #[qinvokable]
         fn update_track_notifications(self: Pin<&mut AppController>, enabled: bool);
         #[qinvokable]
+        fn prewarm_synths(self: &AppController);
+        #[qinvokable]
         fn update_download_cover_art(self: Pin<&mut AppController>, enabled: bool);
         #[qinvokable]
         fn poll_cover_art(self: Pin<&mut AppController>);
@@ -6189,6 +6191,33 @@ impl qobject::AppController {
         } else {
             "Track change notifications disabled"
         }));
+    }
+
+    /// Load whichever synthesis backend the user selected ahead of the
+    /// first MIDI track, on a background thread: SoundFont parsing and
+    /// SC-55 emulator boot are both slow one-time costs that would
+    /// otherwise be paid on the first play.
+    pub fn prewarm_synths(&self) {
+        let settings = self.rust().decoder_settings.clone();
+        let engine = settings.midi_engine();
+        let spawned = std::thread::Builder::new()
+            .name("kog-synth-prewarm".to_owned())
+            .spawn(move || match engine {
+                MidiEngine::Sc55 => {
+                    if let Some(rom_directory) = settings.sc55_rom_path() {
+                        kog_audio::sc55::warm_sc55_server(&rom_directory);
+                    }
+                }
+                MidiEngine::RustySynth => {
+                    if let Some(path) = settings.soundfont_path() {
+                        let _ = kog_audio::decoder::warm_soundfont(&path);
+                    }
+                }
+                // The remaining engines synthesize in-process with no
+                // startup cost worth caching.
+                MidiEngine::Opl3Windows | MidiEngine::Mt32 => {}
+            });
+        let _ = spawned;
     }
 
     pub fn update_download_cover_art(mut self: Pin<&mut Self>, enabled: bool) {
