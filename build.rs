@@ -192,6 +192,11 @@ fn emit_build_revision() {
 /// Run a git command, returning its trimmed stdout when it succeeds.
 fn git(args: &[&str]) -> Option<String> {
     let output = std::process::Command::new("git")
+        // Never let a build refresh the index or the submodule gitdirs:
+        // `native/*/.git` files live inside directories the decoder build
+        // scripts watch with rerun-if-changed, so a write here marks
+        // kog-audio stale and recompiles the whole workspace on every build.
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .args(args)
         .output()
         .ok()?;
