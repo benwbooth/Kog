@@ -15,6 +15,9 @@ Window {
     property real bottomMargin: placement.bottomMargin
     readonly property bool dragging: false
     readonly property bool pointerInside: hover.hovered
+    // Move controls (corner jumps, edge nudges, close) stay out of the
+    // way until the pointer is over the notification.
+    readonly property bool controlsVisible: hover.hovered
     readonly property bool playing: app.playback_state === "playing"
     readonly property string detail: [app.now_artist, app.current_album]
         .filter(value => value.length > 0).join("  ·  ")
@@ -61,19 +64,24 @@ Window {
     // drag uses, so every placement shares one code path: a top-left
     // corner is just large right/bottom margins. Exact, no tracking.
     function moveToCorner(corner) {
-        // Available geometry, not full output: a top panel would
-        // otherwise cover the window's own top buttons.
+        // Available geometry, not full output: a panel would otherwise
+        // cover the window's own controls. The reserved-area inset is
+        // subtracted again for the top corners because some compositors
+        // apply layer-shell margins against the full output while still
+        // excluding panels, which clipped the window's top edge.
         const availW = root.screen.desktopAvailableWidth
         const availH = root.screen.desktopAvailableHeight
+        const panelInset = Math.max(0, root.screen.height - availH)
         const maxRight = Math.max(0, availW - root.width)
         const maxBottom = Math.max(0, availH - root.height)
         const edge = 16
+        const topClearance = Math.max(0, maxBottom - edge - panelInset - edge)
         if (corner === "topLeft") {
             rightMargin = Math.max(0, maxRight - edge)
-            bottomMargin = Math.max(0, maxBottom - edge)
+            bottomMargin = topClearance
         } else if (corner === "topRight") {
             rightMargin = edge
-            bottomMargin = Math.max(0, maxBottom - edge)
+            bottomMargin = topClearance
         } else if (corner === "bottomLeft") {
             rightMargin = Math.max(0, maxRight - edge)
             bottomMargin = edge
@@ -81,6 +89,18 @@ Window {
             rightMargin = edge
             bottomMargin = edge
         }
+        savePosition()
+        if (!root.layerPlacement)
+            root.applyPosition()
+    }
+
+    // Shift the notification by a screen-space delta (right/down
+    // positive), clamped to the available desktop.
+    function nudge(dx, dy) {
+        const availW = root.screen.desktopAvailableWidth
+        const availH = root.screen.desktopAvailableHeight
+        rightMargin = Math.max(0, Math.min(rightMargin - dx, availW - width))
+        bottomMargin = Math.max(0, Math.min(bottomMargin - dy, availH - height))
         savePosition()
         if (!root.layerPlacement)
             root.applyPosition()
@@ -261,6 +281,10 @@ Window {
                     implicitHeight: 24
                     icon.width: 14
                     icon.height: 14
+                    // Hover-only like the move controls, but kept in the
+                    // layout so the header does not reflow when it appears.
+                    opacity: root.controlsVisible ? 1 : 0
+                    enabled: root.controlsVisible
                     onClicked: root.dismiss()
                 }
             }
@@ -355,7 +379,14 @@ Window {
             implicitWidth: 18
             implicitHeight: 18
             font.pixelSize: 10
+            visible: root.controlsVisible
             opacity: hovered ? 1 : 0.55
+        }
+
+        // Edge nudges: one straight arrow per side, shifting the window
+        // by a small step so it can be positioned finely.
+        component NudgeMoveButton: CornerMoveButton {
+            readonly property int step: 24
         }
 
         CornerMoveButton {
@@ -397,6 +428,47 @@ Window {
             toolTip: qsTr("Move to bottom right")
             Accessible.name: toolTip
             onClicked: root.moveToCorner("bottomRight")
+        }
+
+        NudgeMoveButton {
+            objectName: "nudgeUp"
+            anchors.top: card.top
+            anchors.horizontalCenter: card.horizontalCenter
+            anchors.topMargin: 2
+            glyph: "↑"
+            toolTip: qsTr("Nudge up")
+            Accessible.name: toolTip
+            onClicked: root.nudge(0, -step)
+        }
+        NudgeMoveButton {
+            objectName: "nudgeDown"
+            anchors.bottom: card.bottom
+            anchors.horizontalCenter: card.horizontalCenter
+            anchors.bottomMargin: 2
+            glyph: "↓"
+            toolTip: qsTr("Nudge down")
+            Accessible.name: toolTip
+            onClicked: root.nudge(0, step)
+        }
+        NudgeMoveButton {
+            objectName: "nudgeLeft"
+            anchors.left: card.left
+            anchors.verticalCenter: card.verticalCenter
+            anchors.leftMargin: 2
+            glyph: "←"
+            toolTip: qsTr("Nudge left")
+            Accessible.name: toolTip
+            onClicked: root.nudge(-step, 0)
+        }
+        NudgeMoveButton {
+            objectName: "nudgeRight"
+            anchors.right: card.right
+            anchors.verticalCenter: card.verticalCenter
+            anchors.rightMargin: 2
+            glyph: "→"
+            toolTip: qsTr("Nudge right")
+            Accessible.name: toolTip
+            onClicked: root.nudge(step, 0)
         }
     }
 }

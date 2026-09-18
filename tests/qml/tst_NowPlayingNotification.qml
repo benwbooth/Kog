@@ -149,6 +149,34 @@ TestCase {
         compare(notification.bottomMargin, 16)
     }
 
+    function test_move_controls_appear_only_on_hover() {
+        notification.present()
+        mouseMove(notification.contentItem, -20, -20)
+        tryCompare(notification, "controlsVisible", false)
+        compare(findChild(notification, "cornerTopLeft").visible, false)
+        compare(findChild(notification, "nudgeUp").visible, false)
+        compare(findChild(notification, "dismissNotification").opacity, 0)
+        mouseMove(notification.contentItem, notification.width / 2, notification.height / 2)
+        tryCompare(notification, "controlsVisible", true)
+        compare(findChild(notification, "cornerTopLeft").visible, true)
+        compare(findChild(notification, "nudgeUp").visible, true)
+        compare(findChild(notification, "dismissNotification").opacity, 1)
+    }
+
+    function test_edge_nudges_shift_by_a_step() {
+        notification.moveToCorner("bottomRight")
+        const startRight = notification.rightMargin
+        const startBottom = notification.bottomMargin
+        findChild(notification, "nudgeLeft").clicked()
+        findChild(notification, "nudgeUp").clicked()
+        compare(notification.rightMargin, startRight + 24, "left nudge moves right margin in")
+        compare(notification.bottomMargin, startBottom + 24, "up nudge moves bottom margin up")
+        findChild(notification, "nudgeRight").clicked()
+        findChild(notification, "nudgeDown").clicked()
+        compare(notification.rightMargin, startRight)
+        compare(notification.bottomMargin, startBottom)
+    }
+
     function test_drag_remembers_position_and_reset() {
         notification.resetPosition()
         compare(notification.rightMargin, 16)

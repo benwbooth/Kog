@@ -823,7 +823,16 @@ pub struct Sc55Server {
     ops: Mutex<()>,
 }
 
-type ServerPool = Mutex<HashMap<PathBuf, Arc<Sc55Server>>>;
+/// One ROM directory's server slot. Booting happens on a helper thread:
+/// the UI thread only ever observes an already-ready server, so emulator
+/// startup can never freeze playback.
+#[derive(Default)]
+struct ServerSlot {
+    server: Mutex<Option<Arc<Sc55Server>>>,
+    booting: AtomicBool,
+}
+
+type ServerPool = Mutex<HashMap<PathBuf, Arc<ServerSlot>>>;
 
 fn server_pool() -> &'static ServerPool {
     use std::sync::OnceLock;
@@ -839,23 +848,43 @@ fn server_supports_protocol_two(helper: &Path) -> bool {
     String::from_utf8_lossy(&output.stdout).contains("protocol 2")
 }
 
-/// Boot (or reuse) the persistent server for a ROM directory. The pool
-/// owns servers; dropping the last Arc kills the child.
+/// A ready server for a ROM directory, or an error while one is still
+/// warming up. Never blocks: the first MIDI play kicks off a background
+/// boot and falls back to the one-shot helper, and later plays use the
+/// booted server with no startup cost.
 fn acquire_sc55_server(rom_dir: &Path) -> Result<Arc<Sc55Server>, String> {
     let helper = helper_path()?;
-    if !server_supports_protocol_two(&helper) {
-        return Err("helper predates persistent servers".to_owned());
-    }
-    let mut pool = lock_unpoisoned(server_pool());
-    if let Some(server) = pool.get(rom_dir) {
-        if server_child_alive(server) {
-            return Ok(Arc::clone(server));
+    let slot = {
+        let mut pool = lock_unpoisoned(server_pool());
+        Arc::clone(
+            pool.entry(rom_dir.to_path_buf())
+                .or_insert_with(|| Arc::new(ServerSlot::default())),
+        )
+    };
+    let ready = lock_unpoisoned(&slot.server).clone();
+    if let Some(server) = ready {
+        if server_child_alive(&server) {
+            return Ok(server);
         }
-        pool.remove(rom_dir);
+        *lock_unpoisoned(&slot.server) = None;
     }
-    let server = Arc::new(Sc55Server::boot(&helper, rom_dir)?);
-    pool.insert(rom_dir.to_path_buf(), Arc::clone(&server));
-    Ok(server)
+    if !slot.booting.swap(true, Ordering::SeqCst) {
+        let slot = Arc::clone(&slot);
+        let rom_dir = rom_dir.to_path_buf();
+        std::thread::Builder::new()
+            .name("kog-sc55-boot".to_owned())
+            .spawn(move || {
+                let booted = server_supports_protocol_two(&helper)
+                    .then(|| Sc55Server::boot(&helper, &rom_dir))
+                    .and_then(Result::ok);
+                if let Some(server) = booted {
+                    *lock_unpoisoned(&slot.server) = Some(Arc::new(server));
+                }
+                slot.booting.store(false, Ordering::SeqCst);
+            })
+            .ok();
+    }
+    Err("Nuked SC-55 server is warming up".to_owned())
 }
 
 fn server_child_alive(server: &Sc55Server) -> bool {
@@ -870,10 +899,13 @@ fn server_child_alive(server: &Sc55Server) -> bool {
 /// Best-effort shutdown hook for application quit; an idle server only
 /// blocks on stdin and burns no CPU if one ever outlives us.
 pub fn shutdown_sc55_servers() {
-    server_pool()
+    let mut pool = server_pool()
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .clear();
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    for slot in pool.values() {
+        lock_unpoisoned(&slot.server).take();
+    }
+    pool.clear();
 }
 
 /// One render job against a persistent server: header plus a PCM stream
@@ -974,12 +1006,33 @@ impl Sc55Server {
                 .and_then(|()| stdin.flush())
                 .map_err(|error| format!("sending SC-55 render job: {error}"))?;
         }
-        let (stream, _) = listener
-            .accept()
-            .map_err(|error| format!("accepting SC-55 render stream: {error}"))?;
+        // Bounded handshake: a helper still finishing an abandoned render
+        // must not stall the caller. Timing out falls back to the one-shot
+        // path rather than freezing playback.
+        listener
+            .set_nonblocking(true)
+            .map_err(|error| format!("configuring SC-55 render target: {error}"))?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    if std::time::Instant::now() > deadline {
+                        return Err("Nuked SC-55 server is busy".to_owned());
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => {
+                    return Err(format!("accepting SC-55 render stream: {error}"));
+                }
+            }
+        };
         let shutdown = stream
             .try_clone()
             .map_err(|error| format!("duplicating SC-55 render stream: {error}"))?;
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .map_err(|error| format!("configuring SC-55 render stream: {error}"))?;
         let mut stream = stream;
         let header =
             HelperHeader::read(&mut stream).map_err(|error| format!("reading Nuked SC-55 render header: {error}"))?;
