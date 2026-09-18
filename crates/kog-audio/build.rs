@@ -519,7 +519,7 @@ fn build_hivelytracker() {
     cc::Build::new()
         .std("c11")
         .include(source)
-        .include("native")
+        .include("../../native")
         .flag_if_supported("-fcommon")
         .files([
             source.join("hvl_replay.c"),
@@ -1191,8 +1191,8 @@ fn build_ncsf(mgba_output: &Path) {
             // provide on 64-bit targets. Force-include Kog's compatible
             // _controlfp_s wrapper before LazyUSF2's fpu.h.
             usf_build
-                .include("native")
-                .flag("/FIlazyusf2_msvc_fenv.h");
+                .include("../../native")
+                .flag("/FI../../native/lazyusf2_msvc_fenv.h");
         }
     } else {
         // Upstream's CMake build uses compiler extensions and relies on the
