@@ -93,7 +93,7 @@
                     open(manifest, "w").write(head + sep + tail)
                 lock = os.path.join(root, "Cargo.lock")
                 text = open(lock).read()
-                for name in ("kog", "kog-core"):
+                for name in ("kog", "kog-core", "kog-audio"):
                     text, count = re.subn(
                         r'(\[\[package\]\]\nname = "' + name + r'"\nversion = ")[^"]*(")',
                         r"\g<1>0.0.0\g<2>",
