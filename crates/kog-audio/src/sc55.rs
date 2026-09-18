@@ -108,7 +108,15 @@ impl Sc55 {
         // Fast path first: a booted persistent server renders without the
         // per-file emulator startup. Silent fallback keeps today's
         // one-shot behavior whenever servers are unavailable.
-        match acquire_sc55_server(rom_directory) {
+        // Escape hatch: KOG_SC55_SERVER=0 forces the one-shot helper, which
+        // is slower per track but has no long-lived process.
+        let server_disabled = std::env::var("KOG_SC55_SERVER")
+            .is_ok_and(|value| matches!(value.trim(), "0" | "off" | "false"));
+        match if server_disabled {
+            Err("disabled by KOG_SC55_SERVER".to_owned())
+        } else {
+            acquire_sc55_server(rom_directory)
+        } {
             Ok(server) => match Self::open_via_server(&server, schedule_file, path) {
                 Ok(source) => Ok(source),
                 Err(error) => {
@@ -1099,8 +1107,13 @@ fn last_log_lines(log: &Arc<Mutex<VecDeque<String>>>) -> String {
 
 fn drain_server_log(stderr: ChildStderr, log: Arc<Mutex<VecDeque<String>>>) {
     use std::io::BufRead;
+    // KOG_SC55_DEBUG=1 mirrors the helper's diagnostics for troubleshooting.
+    let debug = std::env::var("KOG_SC55_DEBUG").is_ok();
     let reader = std::io::BufReader::new(stderr);
     for line in reader.lines().map_while(Result::ok) {
+        if debug {
+            eprintln!("sc55-helper: {line}");
+        }
         let mut guard = lock_unpoisoned(&log);
         guard.push_back(line);
         while guard.len() > 64 {
@@ -1237,15 +1250,34 @@ mod tests {
         }
         println!("server ready after {:?}", cold.elapsed());
 
-        let first = Instant::now();
-        let source = Sc55::open(&bytes, Path::new("probe-one.mid"), &roms).expect("server job 1");
-        println!("first server job open: {:?}", first.elapsed());
-        drop(source);
-
-        let second = Instant::now();
-        let source = Sc55::open(&bytes, Path::new("probe-two.mid"), &roms).expect("server job 2");
-        println!("second server job open: {:?}", second.elapsed());
-        drop(source);
+        // Render real audio from consecutive tracks: this is what playback
+        // does, and it catches a server that opens fast but yields no PCM.
+        let mut probe = |label: &str| {
+            let started = Instant::now();
+            let mut source =
+                Sc55::open(&bytes, Path::new("probe.mid"), &roms).expect("server job");
+            let opened = started.elapsed();
+            let mut pcm = vec![0.0_f32; 4_096];
+            let mut frames = 0_usize;
+            let mut loud = 0_usize;
+            for _ in 0..24 {
+                let produced = source.render(&mut pcm).expect("render");
+                if produced == 0 {
+                    break;
+                }
+                frames += produced;
+                loud += pcm[..produced * 2]
+                    .iter()
+                    .filter(|sample| sample.abs() > 0.000_1)
+                    .count();
+            }
+            println!(
+                "{label}: open {opened:?}, {frames} frames, {loud} loud samples"
+            );
+        };
+        probe("job1");
+        probe("job2");
+        probe("job3");
         shutdown_sc55_servers();
     }
 

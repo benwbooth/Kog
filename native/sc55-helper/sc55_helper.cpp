@@ -320,6 +320,7 @@ void renderJob(BootedEmulator& booted,
                         .startFrame = startFrame,
                         .totalFrames = totalFrames,
                         .writeFailed = false,
+                        .out = out,
                         .epoch = epoch,
                         .expectedEpoch = expectedEpoch};
     emulator.SetSampleCallback(receiveSample, &output);
