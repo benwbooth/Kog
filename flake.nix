@@ -60,7 +60,12 @@
             kogWeb = craneLib.buildPackage {
               pname = "kog-web";
               version = (builtins.fromTOML (builtins.readFile ./crates/kog-web/Cargo.toml)).package.version;
-              src = craneLib.cleanCargoSource ./crates/kog-web;
+              # Not cleanCargoSource: the frontend's HTML and CSS are part of
+              # the derivation, not just the Rust sources.
+              src = pkgs.lib.cleanSource ./crates/kog-web;
+              cargoVendorDir = craneLib.vendorCargoDeps {
+                src = pkgs.lib.cleanSource ./crates/kog-web;
+              };
               cargoArtifacts = null;
               doCheck = false;
               nativeBuildInputs = [ pkgs.wasm-bindgen-cli pkgs.lld ];

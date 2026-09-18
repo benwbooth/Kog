@@ -54,10 +54,6 @@ impl Auth {
             }
         }
     }
-
-    fn authorized(&self) -> bool {
-        !matches!(self, Self::None)
-    }
 }
 
 /// Minimal base64 so the app does not need a dependency for one header.
