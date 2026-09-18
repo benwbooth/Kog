@@ -10,6 +10,7 @@
 
 use std::io::Read;
 use std::num::{NonZeroU16, NonZeroU32};
+use std::path::Path;
 
 use rodio::Player;
 use rodio::mixer::{MixerSource, mixer};
@@ -117,6 +118,27 @@ impl Read for PcmReader {
         self.position += count;
         Ok(count)
     }
+}
+
+/// Resolve a playlist entry to the single source a stream can be built from.
+///
+/// Reuses the same path the app uses for imports: the entry is written to a
+/// one-line playlist and expanded by the registry, which is what gives archive
+/// members, cue fragments and subsongs their correct addressing. A cue or
+/// multi-song file addressed without a fragment yields its first track.
+pub fn resolve_entry(
+    entry: &crate::playlist::PlaylistEntry,
+    decoders: &DecoderRegistry,
+    scratch: &Path,
+) -> Result<PlaybackSource, String> {
+    let scratch_path = scratch.join("stream-entry.m3u");
+    crate::playlist::Playlist::save(&scratch_path, std::slice::from_ref(entry))?;
+    let expansion = decoders.expand_detailed(scratch_path)?;
+    expansion
+        .sources
+        .into_iter()
+        .next()
+        .ok_or_else(|| "the entry did not resolve to a playable source".to_owned())
 }
 
 #[cfg(test)]

@@ -12,7 +12,10 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use tokio::sync::RwLock;
 
+use kog_audio::decoder::DecoderSettings;
+
 use crate::auth::{AuthError, ConfigView, authorize};
+use crate::stream::StreamKey;
 use crate::{ServerConfig, StreamCodec};
 
 /// Shared server state. The config is behind a lock so the Preferences pane can
@@ -21,14 +24,33 @@ use crate::{ServerConfig, StreamCodec};
 pub struct AppState {
     pub config: Arc<RwLock<ServerConfig>>,
     pub version: &'static str,
+    pub streams: Arc<crate::service::StreamService>,
 }
 
 impl AppState {
-    pub fn new(config: ServerConfig, version: &'static str) -> Self {
+    pub fn new(
+        config: ServerConfig,
+        version: &'static str,
+        streams: crate::service::StreamService,
+    ) -> Self {
         Self {
             config: Arc::new(RwLock::new(config)),
             version,
+            streams: Arc::new(streams),
         }
+    }
+
+    /// Build the streaming service from the running configuration.
+    pub fn stream_service(config: &ServerConfig, decoder_settings: DecoderSettings) -> crate::service::StreamService {
+        crate::service::StreamService::new(
+            crate::stream::StreamCache::new(
+                crate::service::cache_root(),
+                config.cache_bytes,
+            ),
+            decoder_settings,
+            crate::service::StreamService::default_encoder(),
+            crate::service::scratch_root(),
+        )
     }
 }
 
@@ -38,6 +60,7 @@ pub fn router(state: AppState) -> Router {
     let protected = Router::new()
         .route("/api/codecs", get(codecs))
         .route("/api/config", get(read_config))
+        .route("/api/stream", get(stream_audio))
         .layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
     Router::new()
@@ -85,6 +108,217 @@ async fn read_config(State(state): State<AppState>) -> impl IntoResponse {
         "defaultCodec": config.default_codec.setting_value(),
         "tls": config.tls.mode,
     }))
+}
+
+/// Streaming request parameters. The locator fields mirror the library's
+/// stored-entry shape (`kind`, `path`, `entry`, `fragment`), so stars,
+/// playlists and streaming all address a track the same way.
+#[derive(Debug, serde::Deserialize)]
+pub struct StreamQuery {
+    /// `local`, `archive` or `remote`.
+    pub kind: String,
+    pub path: String,
+    #[serde(default)]
+    pub entry: String,
+    #[serde(default)]
+    pub fragment: String,
+    pub codec: Option<String>,
+    pub bitrate: Option<u16>,
+}
+
+impl StreamQuery {
+    /// The cache locator: the same key shape the library uses for identity, so
+    /// one track maps to one cache entry regardless of which client asked.
+    pub fn locator(&self) -> String {
+        let base = match (self.kind.as_str(), self.entry.is_empty()) {
+            ("archive", false) => format!("{}::{}", self.path, self.entry),
+            _ => self.path.clone(),
+        };
+        if self.fragment.trim().is_empty() {
+            base
+        } else {
+            format!("{base}#{}", self.fragment.trim())
+        }
+    }
+
+    fn location(&self) -> Result<kog_audio::playlist::PlaylistLocation, String> {
+        use kog_audio::playlist::PlaylistLocation;
+        if self.path.trim().is_empty() {
+            return Err("a track path is required".to_owned());
+        }
+        match self.kind.as_str() {
+            "local" => Ok(PlaylistLocation::Local(std::path::PathBuf::from(&self.path))),
+            "archive" => {
+                if self.entry.trim().is_empty() {
+                    return Err("an archive member name is required".to_owned());
+                }
+                Ok(PlaylistLocation::Archive {
+                    archive_path: std::path::PathBuf::from(&self.path),
+                    entry_name: self.entry.clone(),
+                })
+            }
+            "remote" => Ok(PlaylistLocation::Remote(self.path.clone())),
+            other => Err(format!("unknown track kind: {other}")),
+        }
+    }
+
+    fn codec(&self, default_codec: StreamCodec) -> Result<StreamCodec, String> {
+        match self.codec.as_deref() {
+            None | Some("") => Ok(default_codec),
+            Some(value) => {
+                StreamCodec::from_setting(value).ok_or_else(|| format!("unknown codec: {value}"))
+            }
+        }
+    }
+}
+
+/// Serve one track: the cached encode when we have it (with `Range`, so
+/// clients can seek), otherwise encode on the fly while teeing into the cache.
+async fn stream_audio(
+    State(state): State<AppState>,
+    axum::extract::Query(query): axum::extract::Query<StreamQuery>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let default_codec = { state.config.read().await.default_codec };
+    let codec = match query.codec(default_codec) {
+        Ok(codec) => codec,
+        Err(error) => return bad_request(&error),
+    };
+    let location = match query.location() {
+        Ok(location) => location,
+        Err(error) => return bad_request(&error),
+    };
+    let entry = kog_audio::playlist::PlaylistEntry {
+        location,
+        fragment: (!query.fragment.trim().is_empty()).then(|| query.fragment.trim().to_owned()),
+    };
+    let bitrate = query.bitrate.unwrap_or(crate::stream::DEFAULT_BITRATE_KBPS);
+    let key = StreamKey::new(query.locator(), codec, bitrate);
+
+    match state.streams.open(entry, key) {
+        Ok(crate::service::StreamSource::Cached(path)) => {
+            serve_cached(&path, codec, &headers).await
+        }
+        Ok(crate::service::StreamSource::Encoding { receiver }) => {
+            // Progressive: no Range support until the cache entry exists, but
+            // playback starts immediately instead of waiting for the encode.
+            let body = axum::body::Body::from_stream(
+                tokio_stream::wrappers::ReceiverStream::new(receiver),
+            );
+            let mut response = Response::new(body);
+            response
+                .headers_mut()
+                .insert(header::CONTENT_TYPE, HeaderValue::from_static(codec.content_type()));
+            response
+                .headers_mut()
+                .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+            response
+        }
+        Err(error) => {
+            eprintln!("kog-server: stream request failed: {error}");
+            bad_request(&error)
+        }
+    }
+}
+
+/// Serve a finished encode, honouring a single `Range` request so browsers can
+/// seek within a cached track.
+async fn serve_cached(
+    path: &std::path::Path,
+    codec: StreamCodec,
+    headers: &axum::http::HeaderMap,
+) -> Response {
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+
+    let Ok(mut file) = tokio::fs::File::open(path).await else {
+        return bad_request("the cached stream is unavailable");
+    };
+    let Ok(total) = file.metadata().await.map(|metadata| metadata.len()) else {
+        return bad_request("the cached stream is unavailable");
+    };
+    let range = headers
+        .get(header::RANGE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| parse_range(value, total));
+
+    let (start, end) = match range {
+        Some(range) => range,
+        None => {
+            let body = axum::body::Body::from_stream(
+                tokio_util::io::ReaderStream::new(file),
+            );
+            let mut response = Response::new(body);
+            response
+                .headers_mut()
+                .insert(header::CONTENT_TYPE, HeaderValue::from_static(codec.content_type()));
+            response
+                .headers_mut()
+                .insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+            response.headers_mut().insert(
+                header::CONTENT_LENGTH,
+                HeaderValue::from(total),
+            );
+            return response;
+        }
+    };
+
+    let length = end - start + 1;
+    if file.seek(std::io::SeekFrom::Start(start)).await.is_err() {
+        return bad_request("the cached stream could not be read");
+    }
+    let body = axum::body::Body::from_stream(
+        tokio_util::io::ReaderStream::new(file.take(length)),
+    );
+    let mut response = Response::new(body);
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static(codec.content_type()));
+    response
+        .headers_mut()
+        .insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    response
+        .headers_mut()
+        .insert(header::CONTENT_LENGTH, HeaderValue::from(length));
+    if let Ok(value) = HeaderValue::from_str(&format!("bytes {start}-{end}/{total}")) {
+        response
+            .headers_mut()
+            .insert(header::CONTENT_RANGE, value);
+    }
+    *response.status_mut() = StatusCode::PARTIAL_CONTENT;
+    response
+}
+
+/// Parse a single `bytes=start-end` range. Returns inclusive bounds clamped to
+/// the file, or `None` when the request is not a satisfiable byte range.
+pub fn parse_range(value: &str, total: u64) -> Option<(u64, u64)> {
+    let spec = value.trim().strip_prefix("bytes=")?;
+    // Multi-range requests are answered with the whole file: browsers fall back
+    // happily, and it keeps the response a single seekable stream.
+    if spec.contains(',') {
+        return None;
+    }
+    let (start, end) = spec.split_once('-')?;
+    let (start, end) = match (start.trim(), end.trim()) {
+        ("", "") => return None,
+        ("", suffix) => {
+            let suffix: u64 = suffix.parse().ok()?;
+            if suffix == 0 || total == 0 {
+                return None;
+            }
+            (total.saturating_sub(suffix), total - 1)
+        }
+        (start, "") => (start.parse().ok()?, total.checked_sub(1)?),
+        (start, end) => (start.parse().ok()?, end.parse::<u64>().ok()?.min(total.checked_sub(1)?)),
+    };
+    (start <= end && start < total).then_some((start, end))
+}
+
+fn bad_request(message: &str) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        axum::Json(serde_json::json!({ "ok": false, "error": message })),
+    )
+        .into_response()
 }
 
 /// Reject unauthenticated requests before they reach a handler.
@@ -206,6 +440,18 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
+    /// A service backed by a throwaway cache. The tempdir is leaked so it
+    /// outlives the state the router holds.
+    fn streams() -> crate::service::StreamService {
+        let directory = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+        crate::service::StreamService::new(
+            crate::stream::StreamCache::new(directory.path().join("streams"), 1 << 20),
+            kog_audio::decoder::DecoderSettings::default(),
+            std::path::PathBuf::from("ffmpeg"),
+            directory.path().join("scratch"),
+        )
+    }
+
     fn state(auth: AuthMode, token: &str) -> AppState {
         let mut config = ServerConfig {
             enabled: true,
@@ -215,7 +461,143 @@ mod tests {
         if !token.is_empty() {
             config.token = token.to_owned();
         }
-        AppState::new(config, "9.9.9")
+        AppState::new(config, "9.9.9", streams())
+    }
+
+    #[test]
+    fn range_requests_cover_the_usual_shapes() {
+        // Whole-file prefix, suffix, explicit window, and clamping.
+        assert_eq!(parse_range("bytes=0-99", 1_000), Some((0, 99)));
+        assert_eq!(parse_range("bytes=-100", 1_000), Some((900, 999)));
+        assert_eq!(parse_range("bytes=900-", 1_000), Some((900, 999)));
+        assert_eq!(parse_range("bytes=0-99999", 1_000), Some((0, 999)));
+        // Unsatisfiable or unsupported forms fall back to the whole file.
+        assert_eq!(parse_range("bytes=1000-1200", 1_000), None);
+        assert_eq!(parse_range("bytes=0-10,20-30", 1_000), None);
+        assert_eq!(parse_range("items=0-10", 1_000), None);
+        assert_eq!(parse_range("bytes=-", 1_000), None);
+        assert_eq!(parse_range("bytes=abc-def", 1_000), None);
+        assert_eq!(parse_range("bytes=0-0", 0), None);
+    }
+
+    #[test]
+    fn stream_locators_match_the_library_key_scheme() {
+        let local = StreamQuery {
+            kind: "local".to_owned(),
+            path: "/music/a.flac".to_owned(),
+            entry: String::new(),
+            fragment: String::new(),
+            codec: None,
+            bitrate: None,
+        };
+        assert_eq!(local.locator(), "/music/a.flac");
+        assert_eq!(local.codec(StreamCodec::Aac).unwrap(), StreamCodec::Aac);
+        assert_eq!(
+            local.codec(StreamCodec::Flac).unwrap(),
+            StreamCodec::Flac,
+            "an explicit codec wins over the default"
+        );
+
+        let archived = StreamQuery {
+            kind: "archive".to_owned(),
+            path: "/music/pack.zip".to_owned(),
+            entry: "Disc/a.wav".to_owned(),
+            fragment: "2".to_owned(),
+            codec: Some("opus".to_owned()),
+            bitrate: None,
+        };
+        assert_eq!(archived.locator(), "/music/pack.zip::Disc/a.wav#2");
+        assert_eq!(archived.codec(StreamCodec::Aac).unwrap(), StreamCodec::Opus);
+        assert!(archived.location().is_ok());
+
+        let unknown = StreamQuery {
+            codec: Some("mp3".to_owned()),
+            ..local
+        };
+        assert!(unknown.codec(StreamCodec::Aac).is_err());
+    }
+
+    #[test]
+    fn unknown_kinds_and_missing_paths_are_rejected() {
+        let missing = StreamQuery {
+            kind: "local".to_owned(),
+            path: String::new(),
+            entry: String::new(),
+            fragment: String::new(),
+            codec: None,
+            bitrate: None,
+        };
+        assert!(missing.location().is_err());
+        let bogus = StreamQuery {
+            kind: "ftp".to_owned(),
+            ..missing
+        };
+        assert!(bogus.location().is_err());
+        let archive_without_member = StreamQuery {
+            kind: "archive".to_owned(),
+            path: "/music/pack.zip".to_owned(),
+            entry: String::new(),
+            fragment: String::new(),
+            codec: None,
+            bitrate: None,
+        };
+        assert!(archive_without_member.location().is_err());
+    }
+
+    #[tokio::test]
+    async fn a_cached_track_streams_with_range_support() {
+        let state = state(AuthMode::None, "");
+        let key = StreamKey::new("/music/cached.flac", StreamCodec::Aac, crate::stream::DEFAULT_BITRATE_KBPS);
+        let entry = state.streams.cache().entry_path(&key);
+        std::fs::create_dir_all(entry.parent().unwrap()).unwrap();
+        std::fs::write(&entry, b"0123456789").unwrap();
+
+        let uri = "/api/stream?kind=local&path=/music/cached.flac";
+        let (status, body) = get_json(state.clone(), uri, None).await;
+        assert_eq!(status, StatusCode::OK, "cached encode is served directly");
+
+        // Now a range request: the bytes must be exactly the requested window.
+        let response = router(state)
+            .oneshot(
+                HttpRequest::builder()
+                    .uri(uri)
+                    .header(header::RANGE, "bytes=2-5")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        let content_range = response
+            .headers()
+            .get(header::CONTENT_RANGE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(content_range, "bytes 2-5/10");
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(bytes.as_ref(), b"2345");
+    }
+
+    #[tokio::test]
+    async fn a_bad_codec_parameter_is_a_client_error() {
+        let (status, body) = get_json(
+            state(AuthMode::None, ""),
+            "/api/stream?kind=local&path=/music/a.flac&codec=mp3",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body["error"].as_str().unwrap().contains("mp3"));
+
+        let (status, _) = get_json(
+            state(AuthMode::None, ""),
+            "/api/stream?kind=ftp&path=/music/a.flac",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
     async fn get_json(

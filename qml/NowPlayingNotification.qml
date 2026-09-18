@@ -123,7 +123,9 @@ Window {
     }
 
     function present() {
-        if (app.current_index < 0)
+        // A track can outlive the pane (clearing the playlist detaches it),
+        // so the guard is "nothing loaded", not "no current row".
+        if (app.current_index < 0 && app.playback_state === "stopped")
             return
         rightMargin = Math.max(0, Math.min(rightMargin,
             root.screen.desktopAvailableWidth - width))
@@ -332,7 +334,7 @@ Window {
                     objectName: "notificationPrevious"
                     iconName: "media-skip-backward"
                     toolTip: qsTr("Previous")
-                    enabled: root.app.playlist_count > 0
+                    enabled: root.app.playlist_count > 0 || root.app.playback_state !== "stopped"
                     onClicked: root.app.previous()
                 }
                 TransportButton {
@@ -340,21 +342,21 @@ Window {
                     primary: true
                     iconName: root.playing ? "media-playback-pause" : "media-playback-start"
                     toolTip: root.playing ? qsTr("Pause") : qsTr("Play")
-                    enabled: root.app.playlist_count > 0
+                    enabled: root.app.playlist_count > 0 || root.app.playback_state !== "stopped"
                     onClicked: root.app.play_pause()
                 }
                 TransportButton {
                     objectName: "notificationStop"
                     iconName: "media-playback-stop"
                     toolTip: qsTr("Stop")
-                    enabled: root.app.current_index >= 0 && root.app.playback_state !== "stopped"
+                    enabled: root.app.playback_state !== "stopped"
                     onClicked: root.app.stop()
                 }
                 TransportButton {
                     objectName: "notificationNext"
                     iconName: "media-skip-forward"
                     toolTip: qsTr("Next")
-                    enabled: root.app.playlist_count > 0
+                    enabled: root.app.playlist_count > 0 || root.app.playback_state !== "stopped"
                     onClicked: root.app.next()
                 }
             }

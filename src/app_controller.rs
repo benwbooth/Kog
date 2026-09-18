@@ -3916,8 +3916,11 @@ impl qobject::AppController {
         encode_row_indices(&new_indices)
     }
 
+    /// Empty the pane without touching playback: whatever is playing stays
+    /// loaded and can still be paused, resumed, or stopped. The track is
+    /// detached from the list, so when it ends there is nothing to advance to
+    /// and playback stops.
     pub fn clear_playlist(mut self: Pin<&mut Self>) {
-        self.as_mut().stop();
         {
             let mut rust = self.as_mut().rust_mut();
             rust.tracks.clear();
@@ -3925,9 +3928,13 @@ impl qobject::AppController {
         }
         self.as_mut().set_queue_count(0);
         self.as_mut().set_current_index(-1);
-        self.as_mut().reset_now_playing();
         self.as_mut().rebuild_playlist();
-        self.as_mut().set_status(qstring("Playlist cleared"));
+        let playing = self.as_ref().rust().playback.state() != PlaybackState::Stopped;
+        self.as_mut().set_status(qstring(if playing {
+            "Playlist cleared — the current track keeps playing"
+        } else {
+            "Playlist cleared"
+        }));
     }
 
     pub fn filter_playlist(mut self: Pin<&mut Self>, query: QString) {
@@ -4918,7 +4925,10 @@ impl qobject::AppController {
     }
 
     pub fn play_pause(mut self: Pin<&mut Self>) {
-        if self.as_ref().rust().tracks.is_empty() {
+        // A track can outlive the pane: clearing the playlist detaches what is
+        // playing, and pause/resume must keep working for it.
+        let loaded = self.as_ref().rust().playback.state() != PlaybackState::Stopped;
+        if self.as_ref().rust().tracks.is_empty() && !loaded {
             // Empty playlist with radio on: (re)arm kickstart so the next
             // staged track autoplays, or play one right now if buffered.
             // Without radio this stays a silent no-op as before.

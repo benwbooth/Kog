@@ -89,9 +89,24 @@ TestCase {
     }
 
     function test_empty_queue_does_not_open() {
+        // Nothing loaded at all: no current row and nothing playing.
         playback.current_index = -1
+        playback.playback_state = "stopped"
         notification.present()
         compare(notification.visible, false)
+    }
+
+    function test_a_detached_track_still_has_a_notification() {
+        // Clearing the playlist detaches the playing track (no current row)
+        // but the music continues, so its notification must still open.
+        playback.current_index = -1
+        playback.playback_state = "playing"
+        notification.present()
+        compare(notification.visible, true)
+        const play = findChild(notification, "notificationPlayPause")
+        compare(play.enabled, true, "transport stays usable for a detached track")
+        const stop = findChild(notification, "notificationStop")
+        compare(stop.enabled, true)
     }
 
     function test_hover_keeps_controls_available() {

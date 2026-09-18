@@ -9,11 +9,13 @@
 pub mod auth;
 pub mod config;
 pub mod routes;
+pub mod service;
 pub mod stream;
 pub mod tls;
 
 pub use auth::{AuthMode, Credentials};
 pub use stream::{StreamCache, StreamKey};
+pub use service::{StreamService, StreamSource};
 pub use tls::{TlsMaterial, import_pem_pair, server_config};
 pub use config::{ServerConfig, TlsMode};
 

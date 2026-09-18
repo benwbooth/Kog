@@ -190,7 +190,7 @@ Window {
                         from: 0
                         to: Math.max(1, root.app.duration_seconds)
                         value: root.app.position_seconds
-                        enabled: root.app.current_index >= 0
+                        enabled: root.app.playback_state !== "stopped"
                         Accessible.name: qsTr("Playback position")
                         onMoved: root.app.seek(value)
                     }
@@ -212,7 +212,7 @@ Window {
                     MiniButton {
                         objectName: "miniPrevious"
                         iconName: "media-skip-backward"
-                        enabled: root.app.playlist_count > 0
+                        enabled: root.app.playlist_count > 0 || root.app.playback_state !== "stopped"
                         toolTip: qsTr("Previous")
                         onClicked: root.app.previous()
                     }
@@ -222,7 +222,7 @@ Window {
                         iconName: root.app.playback_state === "playing"
                             ? "media-playback-pause"
                             : "media-playback-start"
-                        enabled: root.app.playlist_count > 0
+                        enabled: root.app.playlist_count > 0 || root.app.playback_state !== "stopped"
                         toolTip: root.app.playback_state === "playing"
                             ? qsTr("Pause") : qsTr("Play")
                         onClicked: root.app.play_pause()
@@ -230,15 +230,14 @@ Window {
                     MiniButton {
                         objectName: "miniStop"
                         iconName: "media-playback-stop"
-                        enabled: root.app.current_index >= 0
-                            && root.app.playback_state !== "stopped"
+                        enabled: root.app.playback_state !== "stopped"
                         toolTip: qsTr("Stop")
                         onClicked: root.app.stop()
                     }
                     MiniButton {
                         objectName: "miniNext"
                         iconName: "media-skip-forward"
-                        enabled: root.app.playlist_count > 0
+                        enabled: root.app.playlist_count > 0 || root.app.playback_state !== "stopped"
                         toolTip: qsTr("Next")
                         onClicked: root.app.next()
                     }

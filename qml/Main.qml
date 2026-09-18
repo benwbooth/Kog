@@ -35,6 +35,12 @@ ApplicationWindow {
     property alias playlistsSectionExpanded: mainWindowSettings.playlistsSectionExpanded
     MainWindowSettings { id: mainWindowSettings }
     property string playlistHighlightQuery: ""
+    // A track can outlive the pane: clearing the playlist detaches what is
+    // playing, so transport that acts on the loaded track must not be gated
+    // on the list being populated.
+    readonly property bool hasLoadedTrack: appController.playback_state !== "stopped"
+    readonly property bool transportReady:
+        appController.playlist_count > 0 || appController.radio_active || hasLoadedTrack
     property int selectedRow: -1
     property int selectionAnchor: -1
     property var selectedRows: []
@@ -727,8 +733,7 @@ ApplicationWindow {
             Platform.MenuItem {
                 text: qsTr("Show Now Playing Notification")
                 icon.name: "dialog-information"
-                enabled: appController.current_index >= 0
-                    && appController.playback_state !== "stopped"
+                enabled: root.hasLoadedTrack
                 onTriggered: appController.show_now_playing_notification()
             }
             Platform.MenuSeparator {}
@@ -737,14 +742,13 @@ ApplicationWindow {
                     ? qsTr("Pause") : qsTr("Play")
                 icon.name: appController.playback_state === "playing"
                     ? "media-playback-pause" : "media-playback-start"
-                enabled: appController.playlist_count > 0 || appController.radio_active
+                enabled: root.transportReady
                 onTriggered: appController.play_pause()
             }
             Platform.MenuItem {
                 text: qsTr("Stop")
                 icon.name: "media-playback-stop"
-                enabled: appController.current_index >= 0
-                    && appController.playback_state !== "stopped"
+                enabled: root.hasLoadedTrack
                 onTriggered: appController.stop()
             }
             Platform.MenuItem {
@@ -2093,7 +2097,7 @@ ApplicationWindow {
                             ? "media-playback-pause"
                             : "media-playback-start"
                         toolTip: qsTr("Play/Pause")
-                        enabled: appController.playlist_count > 0 || appController.radio_active
+                        enabled: root.transportReady
                         onClicked: appController.play_pause()
                     }
                     ToolbarButton {
@@ -2102,8 +2106,7 @@ ApplicationWindow {
                         glyph: "■"
                         iconName: "media-playback-stop"
                         toolTip: qsTr("Stop")
-                        enabled: appController.current_index >= 0
-                            && appController.playback_state !== "stopped"
+                        enabled: root.hasLoadedTrack
                         onClicked: appController.stop()
                     }
                     ToolbarButton {
@@ -2164,7 +2167,7 @@ ApplicationWindow {
                         from: 0
                         to: Math.max(1, appController.duration_seconds)
                         value: appController.position_seconds
-                        enabled: appController.current_index >= 0
+                        enabled: root.hasLoadedTrack
                         Accessible.name: qsTr("Playback position")
                         onMoved: appController.seek(value)
                     }
