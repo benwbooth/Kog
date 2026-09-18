@@ -206,7 +206,9 @@
         devShells.default = pkgs.mkShell {
           packages =
             (with pkgs; [
+              bacon
               cargo
+              cargo-watch
               clang
               clippy
               cmake
@@ -215,10 +217,12 @@
               nodejs
               pkg-config
               lld
+              mold
               rust-analyzer
               rustc
               rustfmt
               wasm-bindgen-cli
+              watchexec
               zlib
             ])
             ++ [ kogFfmpeg ]
@@ -235,6 +239,10 @@
 
           shellHook = ''
             export PATH="${qtEnv}/bin:${qtEnv}/libexec:$PATH"
+            # Kog's final link is large; mold cuts it to a few seconds, which
+            # is what makes the dev loop feel instant. Kept in the shell (not
+            # a script) so every cargo invocation here shares one fingerprint.
+            export RUSTFLAGS="''${RUSTFLAGS:-} -C link-arg=-fuse-ld=mold"
             export QMAKE="${qtEnv}/bin/qmake"
             export QT_INCLUDE_PATH="${qtEnv}/include"
             export QT_LIBEXEC_PATH="${qtEnv}/libexec"
