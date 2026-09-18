@@ -2832,9 +2832,13 @@ ApplicationWindow {
                                 onDoubleClicked: mouse => {
                                     if (mouse.button !== Qt.LeftButton)
                                         return
+                                    // Add to the pane without touching
+                                    // playback: double-clicking a playlist
+                                    // must never interrupt the current song.
+                                    // Playback stays on the context menu.
                                     playlistRenameTimer.stop()
                                     root.renamingPlaylistId = -2
-                                    root.enqueueSelectedPlaylists(true)
+                                    root.enqueueSelectedPlaylists(false)
                                 }
                                 onReleased: mouse => {
                                     if (!dragging)
