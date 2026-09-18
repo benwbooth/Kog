@@ -1,6 +1,6 @@
 [package]
 name = "kog-core"
-version = "0.9.36"
+version = "0.9.37"
 edition = "2024"
 license = "GPL-3.0-or-later"
 description = "Shared foundations for Kog: settings, library store, encodings, paths, EQ, MPRIS"
