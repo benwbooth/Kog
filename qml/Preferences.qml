@@ -11,10 +11,12 @@ Window {
 
     required property var app
 
-    width: 760
-    height: 520
-    minimumWidth: 660
-    minimumHeight: 430
+    // Roomy enough for the densest page (Server, with its groups of fields);
+    // every page scrolls, so a smaller window still reaches the rest.
+    width: 880
+    height: 660
+    minimumWidth: 680
+    minimumHeight: 520
     title: qsTr("Kog Preferences")
     color: palette.window
     readonly property real windowLuminance: 0.2126 * palette.window.r
@@ -820,6 +822,8 @@ Window {
             ScrollView {
                 clip: true
                 contentWidth: availableWidth
+                ScrollBar.vertical.policy: ScrollBar.AsNeeded
+                ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
 
                 // Copies tokens and addresses to the system clipboard.
                 TextEdit {
