@@ -12,6 +12,8 @@ members = ["crates/kog-core", "crates/kog-audio", "crates/kog-server"]
 [dependencies]
 kog-core = { path = "crates/kog-core" }
 kog-audio = { path = "crates/kog-audio" }
+kog-server = { path = "crates/kog-server" }
+tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
 base64 = "0.22.1"
 chardetng = "1.0.0"
 cxx = "1.0.176"

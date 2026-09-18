@@ -68,6 +68,12 @@ pub fn load_material(settings: &TlsSettings, bind: SocketAddr) -> Result<TlsMate
     }
 }
 
+/// Where the generated self-signed certificate lives. Clients can import this
+/// to trust the server; it is created on first use.
+pub fn self_signed_certificate_path() -> Result<PathBuf, String> {
+    Ok(tls_dir()?.join("self-signed.pem"))
+}
+
 fn self_signed(bind: SocketAddr) -> Result<TlsMaterial, String> {
     let directory = tls_dir()?;
     let certificate_path = directory.join("self-signed.pem");

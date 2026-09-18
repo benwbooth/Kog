@@ -4,6 +4,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Controls.impl as ControlsImpl
 import QtQuick.Layouts
+import Qt.labs.platform
 
 Window {
     id: root
@@ -154,7 +155,8 @@ Window {
                         { title: qsTr("Output"), iconName: "audio-volume-high" },
                         { title: qsTr("General"), iconName: "configure" },
                         { title: qsTr("Synthesis"), iconName: "audio-midi" },
-                        { title: qsTr("Formats"), iconName: "audio-x-generic" }
+                        { title: qsTr("Formats"), iconName: "audio-x-generic" },
+                        { title: qsTr("Server"), iconName: "network-server" }
                     ]
 
                     ItemDelegate {
@@ -815,6 +817,410 @@ Window {
                     }
                 }
             }
+            ScrollView {
+                clip: true
+                contentWidth: availableWidth
+
+                // Copies tokens and addresses to the system clipboard.
+                TextEdit {
+                    id: clipboardHelper
+                    visible: false
+                    width: 0
+                    height: 0
+                }
+
+                // One dialog serves both halves of the pair: the key is
+                // requested immediately after the certificate.
+                Platform.FileDialog {
+                    id: certificateDialog
+                    title: qsTr("Choose a certificate (PEM)")
+                    nameFilters: [qsTr("Certificates (*.pem *.crt *.cer)"), qsTr("All files (*)")]
+                    onAccepted: {
+                        chosenCertificate = file.toString()
+                        keyDialog.open()
+                    }
+                }
+                Platform.FileDialog {
+                    id: keyDialog
+                    title: qsTr("Choose the matching private key (PEM)")
+                    nameFilters: [qsTr("Private keys (*.pem *.key)"), qsTr("All files (*)")]
+                    onAccepted: {
+                        let result = null
+                        try {
+                            result = JSON.parse(root.app.import_server_certificate(
+                                chosenCertificate, file.toString()))
+                        } catch (error) {
+                            result = null
+                        }
+                        serverState.detail = result && result.ok
+                            ? qsTr("Certificate imported")
+                            : qsTr("Could not import that certificate pair")
+                        serverState.load()
+                    }
+                }
+
+                property string chosenCertificate: ""
+
+                onVisibleChanged: if (visible && serverState.loaded === false)
+                    serverState.load()
+
+                ColumnLayout {
+                    x: 22
+                    width: parent.width - 44
+                    spacing: 18
+
+                    PreferenceLabel {
+                        text: qsTr("Server")
+                        font.pixelSize: 22
+                        font.bold: true
+                    }
+
+                    QtObject {
+                        id: serverState
+                        property bool loaded: false
+                        property bool enabled: false
+                        property string address: "127.0.0.1"
+                        property int port: 8420
+                        property string auth: "token"
+                        property string token: ""
+                        property string username: ""
+                        property string password: ""
+                        property bool hasPassword: false
+                        property string tls: "off"
+                        property string certificatePath: ""
+                        property string codec: "aac"
+                        property int cacheMegabytes: 2048
+                        property var problems: []
+                        property var status: null
+                        property string detail: ""
+
+                        function load() {
+                            let payload = null
+                            try {
+                                payload = JSON.parse(root.app.server_settings_json())
+                            } catch (error) {
+                                payload = null
+                            }
+                            if (!payload)
+                                return
+                            enabled = payload.enabled
+                            address = payload.address
+                            port = payload.port
+                            auth = payload.auth
+                            token = payload.token
+                            username = payload.username
+                            hasPassword = payload.hasPassword
+                            password = ""
+                            tls = payload.tls
+                            certificatePath = payload.certificatePath
+                            codec = payload.defaultCodec
+                            cacheMegabytes = Math.round((payload.cacheBytes || 0) / (1024 * 1024))
+                            problems = payload.problems || []
+                            status = payload.status || null
+                            loaded = true
+                        }
+
+                        function payload() {
+                            const body = {
+                                "enabled": enabled,
+                                "address": address,
+                                "port": port,
+                                "auth": auth,
+                                "token": token,
+                                "username": username,
+                                "tls": tls,
+                                "defaultCodec": codec,
+                                "cacheBytes": cacheMegabytes * 1024 * 1024
+                            }
+                            if (password.length > 0)
+                                body["password"] = password
+                            return JSON.stringify(body)
+                        }
+
+                        function save() {
+                            let result = null
+                            try {
+                                result = JSON.parse(root.app.save_server_settings(payload()))
+                            } catch (error) {
+                                result = null
+                            }
+                            password = ""
+                            load()
+                            detail = result && result.ok
+                                ? qsTr("Saved") : qsTr("Could not save the settings")
+                        }
+                    }
+
+                    PreferenceGroup {
+                        title: qsTr("Web API and streaming")
+                        Layout.fillWidth: true
+
+                        ColumnLayout {
+                            anchors.fill: parent
+                            spacing: 8
+
+                            PreferenceLabel {
+                                Layout.fillWidth: true
+                                text: qsTr("Serve your library to other devices. Streams are transcoded per client, so each listener gets their own copy. The server binds to loopback unless you choose otherwise.")
+                                wrapMode: Text.Wrap
+                                color: root.palette.placeholderText
+                            }
+                            PreferenceCheckBox {
+                                text: qsTr("Enable the API server")
+                                checked: serverState.enabled
+                                onToggled: serverState.enabled = checked
+                            }
+
+                            GridLayout {
+                                Layout.fillWidth: true
+                                columns: 4
+                                columnSpacing: 8
+
+                                PreferenceLabel { text: qsTr("Address") }
+                                TextField {
+                                    Layout.preferredWidth: 160
+                                    text: serverState.address
+                                    selectByMouse: true
+                                    onTextChanged: serverState.address = text.trim()
+                                }
+                                PreferenceLabel { text: qsTr("Port") }
+                                SpinBox {
+                                    from: 1
+                                    to: 65535
+                                    value: serverState.port
+                                    editable: true
+                                    onValueModified: serverState.port = value
+                                }
+                            }
+                        }
+                    }
+
+                    PreferenceGroup {
+                        title: qsTr("Authentication")
+                        Layout.fillWidth: true
+
+                        ColumnLayout {
+                            anchors.fill: parent
+                            spacing: 8
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                PreferenceLabel { text: qsTr("Require") }
+                                ComboBox {
+                                    Layout.fillWidth: true
+                                    model: [qsTr("An API token"), qsTr("Username and password"), qsTr("Nothing (loopback only)")]
+                                    currentIndex: serverState.auth === "basic" ? 1
+                                        : (serverState.auth === "none" ? 2 : 0)
+                                    onActivated: serverState.auth =
+                                        ["token", "basic", "none"][currentIndex]
+                                }
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                visible: serverState.auth === "token"
+                                TextField {
+                                    Layout.fillWidth: true
+                                    placeholderText: qsTr("API token")
+                                    text: serverState.token
+                                    selectByMouse: true
+                                    onTextChanged: serverState.token = text
+                                }
+                                Button {
+                                    text: qsTr("Generate")
+                                    onClicked: {
+                                        let result = null
+                                        try {
+                                            result = JSON.parse(root.app.generate_api_token())
+                                        } catch (error) {
+                                            result = null
+                                        }
+                                        if (result && result.ok)
+                                            serverState.token = result.token
+                                    }
+                                }
+                                Button {
+                                    text: qsTr("Copy")
+                                    enabled: serverState.token.length > 0
+                                    onClicked: {
+                                        clipboardHelper.text = serverState.token
+                                        clipboardHelper.selectAll()
+                                        clipboardHelper.copy()
+                                        serverState.detail = qsTr("Token copied")
+                                    }
+                                }
+                            }
+                            GridLayout {
+                                Layout.fillWidth: true
+                                visible: serverState.auth === "basic"
+                                columns: 2
+                                columnSpacing: 8
+                                PreferenceLabel { text: qsTr("Username") }
+                                TextField {
+                                    Layout.fillWidth: true
+                                    text: serverState.username
+                                    selectByMouse: true
+                                    onTextChanged: serverState.username = text.trim()
+                                }
+                                PreferenceLabel { text: qsTr("Password") }
+                                TextField {
+                                    Layout.fillWidth: true
+                                    placeholderText: serverState.hasPassword
+                                        ? qsTr("Leave blank to keep the current password")
+                                        : qsTr("Set a password")
+                                    echoMode: TextInput.Password
+                                    selectByMouse: true
+                                    onTextChanged: serverState.password = text
+                                }
+                            }
+                        }
+                    }
+
+                    PreferenceGroup {
+                        title: qsTr("Encryption and codec")
+                        Layout.fillWidth: true
+
+                        ColumnLayout {
+                            anchors.fill: parent
+                            spacing: 8
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                PreferenceLabel { text: qsTr("HTTPS") }
+                                ComboBox {
+                                    Layout.fillWidth: true
+                                    model: [qsTr("Off (plain HTTP)"), qsTr("Self-signed certificate"),
+                                        qsTr("My own certificate")]
+                                    currentIndex: serverState.tls === "selfSigned" ? 1
+                                        : (serverState.tls === "pem" ? 2 : 0)
+                                    onActivated: serverState.tls =
+                                        ["off", "selfSigned", "pem"][currentIndex]
+                                }
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                visible: serverState.tls === "pem"
+                                Button {
+                                    text: qsTr("Choose certificate…")
+                                    onClicked: certificateDialog.open()
+                                }
+                                PreferenceLabel {
+                                    Layout.fillWidth: true
+                                    text: serverState.certificatePath.length > 0
+                                        ? serverState.certificatePath : qsTr("No certificate chosen")
+                                    elide: Text.ElideMiddle
+                                    color: root.palette.placeholderText
+                                }
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                PreferenceLabel { text: qsTr("Stream format") }
+                                ComboBox {
+                                    Layout.fillWidth: true
+                                    model: ["aac", "opus", "flac"]
+                                    currentIndex: Math.max(0, model.indexOf(serverState.codec))
+                                    onActivated: serverState.codec = model[currentIndex]
+                                }
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                PreferenceLabel { text: qsTr("Stream cache (MB)") }
+                                SpinBox {
+                                    from: 0
+                                    to: 102400
+                                    stepSize: 256
+                                    value: serverState.cacheMegabytes
+                                    editable: true
+                                    onValueModified: serverState.cacheMegabytes = value
+                                }
+                            }
+                            PreferenceLabel {
+                                Layout.fillWidth: true
+                                text: qsTr("AAC plays everywhere. Opus is smaller but not supported by every iOS browser. FLAC is lossless and best on a home network.")
+                                wrapMode: Text.Wrap
+                                color: root.palette.placeholderText
+                            }
+                        }
+                    }
+
+                    PreferenceGroup {
+                        title: qsTr("Status")
+                        Layout.fillWidth: true
+
+                        ColumnLayout {
+                            anchors.fill: parent
+                            spacing: 8
+
+                            PreferenceLabel {
+                                Layout.fillWidth: true
+                                visible: serverState.problems.length > 0
+                                text: serverState.problems.join("\n")
+                                wrapMode: Text.Wrap
+                                color: "#e05c5c"
+                            }
+                            PreferenceLabel {
+                                Layout.fillWidth: true
+                                text: serverState.status && serverState.status.running
+                                    ? qsTr("Running at %1").arg(serverState.status.url)
+                                    : qsTr("Not running")
+                            }
+                            PreferenceLabel {
+                                Layout.fillWidth: true
+                                visible: serverState.status && serverState.status.running
+                                    && serverState.status.certificatePath
+                                text: serverState.status && serverState.status.certificatePath
+                                    ? qsTr("Certificate: %1").arg(serverState.status.certificatePath) : ""
+                                elide: Text.ElideMiddle
+                                color: root.palette.placeholderText
+                            }
+                            RowLayout {
+                                Button {
+                                    text: qsTr("Save Settings")
+                                    onClicked: serverState.save()
+                                }
+                                Button {
+                                    text: qsTr("Start Server")
+                                    enabled: !(serverState.status && serverState.status.running)
+                                    onClicked: {
+                                        serverState.save()
+                                        root.app.start_api_server()
+                                        serverState.load()
+                                    }
+                                }
+                                Button {
+                                    text: qsTr("Stop Server")
+                                    enabled: serverState.status && serverState.status.running
+                                    onClicked: {
+                                        root.app.stop_api_server()
+                                        serverState.load()
+                                    }
+                                }
+                                Button {
+                                    text: qsTr("Copy Address")
+                                    onClicked: {
+                                        const payload = JSON.parse(root.app.server_addresses_json())
+                                        if (payload.addresses && payload.addresses.length > 0) {
+                                            clipboardHelper.text = payload.addresses[0]
+                                            clipboardHelper.selectAll()
+                                            clipboardHelper.copy()
+                                            serverState.detail = qsTr("Address copied: %1")
+                                                .arg(payload.addresses[0])
+                                        }
+                                    }
+                                }
+                            }
+                            PreferenceLabel {
+                                Layout.fillWidth: true
+                                text: serverState.detail
+                                wrapMode: Text.Wrap
+                                color: root.palette.placeholderText
+                            }
+                        }
+                    }
+
+                    Item { Layout.fillHeight: true }
+                }
+            }
+
         }
     }
 }

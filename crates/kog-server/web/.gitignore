@@ -1,0 +1,5 @@
+# Built by crates/kog-web/build.sh (or the nix derivation) and embedded at
+# compile time. The committed placeholder is what a plain `cargo build` serves.
+*
+!.gitignore
+!placeholder.html

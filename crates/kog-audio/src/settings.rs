@@ -4,6 +4,8 @@ use directories::ProjectDirs;
 
 use kog_core::equalizer::EqualizerSettings;
 
+use crate::decoder::DecoderSettings;
+
 const SOUNDFONT_SETTING_FILE: &str = "soundfont-path";
 const MIDI_ENGINE_SETTING_FILE: &str = "midi-engine";
 const SC55_ROM_SETTING_FILE: &str = "sc55-rom-directory";
@@ -349,6 +351,15 @@ impl AppSettings {
 
     pub fn save_mt32_gm_program_mapping(enabled: bool) -> Result<(), String> {
         save_bool(MT32_GM_PROGRAM_MAPPING_SETTING_FILE, enabled)
+    }
+
+    /// Decoder configuration implied by these settings. Shared by the app and
+    /// the API server so both decode with the same engines, ROMs and font.
+    pub fn decoder_settings(&self) -> DecoderSettings {
+        DecoderSettings::new(self.soundfont_path.clone(), self.midi_engine)
+            .with_sc55_rom_path(self.sc55_rom_path.clone())
+            .with_mt32_rom_path(self.mt32_rom_path.clone())
+            .with_mt32_gm_program_mapping(self.mt32_gm_program_mapping)
     }
 
     pub fn save_music_directory(path: &Path) -> Result<(), String> {

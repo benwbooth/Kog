@@ -25,6 +25,8 @@ pub struct AppState {
     pub config: Arc<RwLock<ServerConfig>>,
     pub version: &'static str,
     pub streams: Arc<crate::service::StreamService>,
+    /// Library browsing and the playlist/star store.
+    pub library: Arc<crate::api::Library>,
 }
 
 impl AppState {
@@ -32,11 +34,13 @@ impl AppState {
         config: ServerConfig,
         version: &'static str,
         streams: crate::service::StreamService,
+        library: crate::api::Library,
     ) -> Self {
         Self {
             config: Arc::new(RwLock::new(config)),
             version,
             streams: Arc::new(streams),
+            library: Arc::new(library),
         }
     }
 
@@ -61,12 +65,16 @@ pub fn router(state: AppState) -> Router {
         .route("/api/codecs", get(codecs))
         .route("/api/config", get(read_config))
         .route("/api/stream", get(stream_audio))
+        .merge(crate::api::router())
         .layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
     Router::new()
         .route("/api/health", get(health))
         .route("/api/version", get(version))
         .merge(protected)
+        // Anything else is the web frontend, so a phone can bookmark the
+        // server's own address and get the player.
+        .fallback(web_asset)
         .with_state(state)
 }
 
@@ -313,7 +321,57 @@ pub fn parse_range(value: &str, total: u64) -> Option<(u64, u64)> {
     (start <= end && start < total).then_some((start, end))
 }
 
-fn bad_request(message: &str) -> Response {
+/// The frontend built by `crates/kog-web/build.sh`, embedded so the server is
+/// a single artifact and the UI can never version-skew from the API it talks
+/// to. A placeholder page ships when the frontend has not been built.
+static WEB_ASSETS: include_dir::Dir<'_> =
+    include_dir::include_dir!("$CARGO_MANIFEST_DIR/web");
+
+async fn web_asset(uri: axum::http::Uri) -> Response {
+    let path = uri.path().trim_start_matches('/');
+    // "/" is the frontend; a build without one still explains itself instead
+    // of returning a bare 404.
+    let path = if path.is_empty() { "index.html" } else { path };
+    let path = if WEB_ASSETS.get_file(path).is_some() {
+        path
+    } else if path == "index.html" {
+        "placeholder.html"
+    } else {
+        path
+    };
+    match WEB_ASSETS.get_file(path) {
+        Some(file) => {
+            let content_type = content_type_for(path);
+            let body = axum::body::Body::from(file.contents().to_vec());
+            let mut response = Response::new(body);
+            response
+                .headers_mut()
+                .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+            response
+        }
+        None => (
+            StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({ "ok": false, "error": "not found" })),
+        )
+            .into_response(),
+    }
+}
+
+fn content_type_for(path: &str) -> &'static str {
+    match path.rsplit('.').next() {
+        Some("html") => "text/html; charset=utf-8",
+        Some("css") => "text/css; charset=utf-8",
+        Some("js") => "text/javascript; charset=utf-8",
+        Some("wasm") => "application/wasm",
+        Some("json") => "application/json",
+        Some("svg") => "image/svg+xml",
+        Some("png") => "image/png",
+        Some("ico") => "image/x-icon",
+        _ => "application/octet-stream",
+    }
+}
+
+pub(crate) fn bad_request(message: &str) -> Response {
     (
         StatusCode::BAD_REQUEST,
         axum::Json(serde_json::json!({ "ok": false, "error": message })),
@@ -366,8 +424,17 @@ fn unauthorized(error: AuthError) -> Response {
     response
 }
 
-/// Bind and serve until cancelled, over TLS when configured.
+/// Bind and serve forever, over TLS when configured.
 pub async fn serve(state: AppState) -> Result<(), String> {
+    serve_with_shutdown(state, std::future::pending::<()>()).await
+}
+
+/// Bind and serve until `shutdown` resolves. The desktop app uses this so the
+/// Preferences pane can start and stop the API server without restarting Kog.
+pub async fn serve_with_shutdown(
+    state: AppState,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) -> Result<(), String> {
     let config = {
         let config = state.config.read().await;
         config.clone()
@@ -382,12 +449,15 @@ pub async fn serve(state: AppState) -> Result<(), String> {
         .await
         .map_err(|error| format!("binding {address}: {error}"))?;
     let app = router(state);
+    let scheme = if config.tls.mode == crate::TlsMode::Off { "http" } else { "https" };
+    eprintln!("kog-server: listening on {scheme}://{address}");
     if config.tls.mode == crate::TlsMode::Off {
         return axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown)
             .await
             .map_err(|error| format!("serving on {address}: {error}"));
     }
-    serve_tls(listener, app, &config, address).await
+    serve_tls(listener, app, &config, address, shutdown).await
 }
 
 /// TLS accept loop. Uses hyper's auto connection builder so HTTP/1.1 and
@@ -397,16 +467,20 @@ async fn serve_tls(
     app: Router,
     config: &ServerConfig,
     address: std::net::SocketAddr,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> Result<(), String> {
     use hyper_util::rt::{TokioExecutor, TokioIo};
     use hyper_util::server::conn::auto::Builder;
 
     let tls = crate::tls::server_config(&config.tls, address)?;
     let acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(tls));
+    tokio::pin!(shutdown);
     loop {
-        let (stream, peer) = listener
-            .accept()
-            .await
+        let accepted = tokio::select! {
+            result = listener.accept() => result,
+            () = &mut shutdown => return Ok(()),
+        };
+        let (stream, peer) = accepted
             .map_err(|error| format!("accepting on {address}: {error}"))?;
         let acceptor = acceptor.clone();
         let app = app.clone();
@@ -452,6 +526,16 @@ mod tests {
         )
     }
 
+    /// A library rooted in a throwaway directory, so browsing tests never
+    /// touch the developer's real music folder.
+    fn library() -> crate::api::Library {
+        let directory = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+        crate::api::Library::new(
+            Some(directory.path().to_path_buf()),
+            kog_core::db::LibraryDb::open_in_memory().expect("in-memory library"),
+        )
+    }
+
     fn state(auth: AuthMode, token: &str) -> AppState {
         let mut config = ServerConfig {
             enabled: true,
@@ -461,7 +545,7 @@ mod tests {
         if !token.is_empty() {
             config.token = token.to_owned();
         }
-        AppState::new(config, "9.9.9", streams())
+        AppState::new(config, "9.9.9", streams(), library())
     }
 
     #[test]

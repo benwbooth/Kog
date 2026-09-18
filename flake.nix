@@ -54,6 +54,25 @@
         packages = pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux (
           let
             craneLib = crane.mkLib pkgs;
+            # The web frontend is wasm-only and lives outside the desktop
+            # workspace, so it gets its own derivation and is embedded into
+            # the server at compile time.
+            kogWeb = craneLib.buildPackage {
+              pname = "kog-web";
+              version = (builtins.fromTOML (builtins.readFile ./crates/kog-web/Cargo.toml)).package.version;
+              src = craneLib.cleanCargoSource ./crates/kog-web;
+              cargoArtifacts = null;
+              doCheck = false;
+              nativeBuildInputs = [ pkgs.wasm-bindgen-cli pkgs.lld ];
+              CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER = "wasm-ld";
+              cargoBuildCommand = "cargoWithProfile build --target wasm32-unknown-unknown";
+              installPhaseCommand = ''
+                mkdir -p $out
+                wasm-bindgen --target web --no-typescript --out-dir $out \
+                  target/wasm32-unknown-unknown/release/kog_web.wasm
+                cp index.html style.css $out/
+              '';
+            };
             # Shared build environment for the dependency closure and the
             # final crate: third-party dependencies compile once and stay
             # cached while only Kog itself rebuilds per tag.
@@ -119,6 +138,12 @@
               QMAKE = "${qtEnv}/bin/qmake";
               LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
               preBuild = ''
+                # Embed the real frontend: the crate falls back to a
+                # placeholder page when these assets are absent.
+                chmod -R u+w crates/kog-server/web
+                rm -rf crates/kog-server/web
+                mkdir -p crates/kog-server/web
+                cp -r ${kogWeb}/. crates/kog-server/web/
                 export PATH="${qtEnv}/bin:${qtEnv}/libexec:$PATH"
                 # Qt's setup hook can replace QMAKE with qtbase's split output.
                 # CXX-Qt needs the combined installation's QML .prl metadata.
@@ -176,9 +201,11 @@
               ninja
               nodejs
               pkg-config
+              lld
               rust-analyzer
               rustc
               rustfmt
+              wasm-bindgen-cli
               zlib
             ])
             ++ [ kogFfmpeg ]

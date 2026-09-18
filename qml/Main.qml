@@ -882,6 +882,11 @@ ApplicationWindow {
     }
     Preferences { id: preferences; app: appController }
     AboutKog { id: aboutKog }
+    RemoteBrowser {
+        id: remoteBrowser
+        app: appController
+        onOpenPlayer: root.showFromTray()
+    }
     Shortcut {
         sequence: "F1"
         context: Qt.ApplicationShortcut
@@ -1634,6 +1639,15 @@ ApplicationWindow {
             icon.name: "network-connect"
             shortcut: "Ctrl+Shift+O"
             onTriggered: openUrlDialog.open()
+        }
+        MenuItem {
+            text: qsTr("Connect to Server…")
+            icon.name: "network-server"
+            onTriggered: {
+                remoteBrowser.show()
+                remoteBrowser.raise()
+                remoteBrowser.requestActivate()
+            }
         }
         MenuItem {
             text: qsTr("Choose Music Folder…")

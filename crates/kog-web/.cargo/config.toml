@@ -1,0 +1,4 @@
+# The web app is cross-compiled to wasm; name the linker explicitly so the
+# build does not depend on rustc's default resolution finding it.
+[target.wasm32-unknown-unknown]
+linker = "wasm-ld"

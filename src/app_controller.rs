@@ -211,6 +211,24 @@ pub mod qobject {
         #[qinvokable]
         fn shutdown_synth_helpers(self: &AppController);
         #[qinvokable]
+        fn server_settings_json(self: &AppController) -> QString;
+        #[qinvokable]
+        fn save_server_settings(self: Pin<&mut AppController>, json: QString) -> QString;
+        #[qinvokable]
+        fn generate_api_token(self: &AppController) -> QString;
+        #[qinvokable]
+        fn import_server_certificate(
+            self: Pin<&mut AppController>,
+            certificate: QUrl,
+            private_key: QUrl,
+        ) -> QString;
+        #[qinvokable]
+        fn start_api_server(self: Pin<&mut AppController>) -> QString;
+        #[qinvokable]
+        fn stop_api_server(self: Pin<&mut AppController>) -> QString;
+        #[qinvokable]
+        fn server_addresses_json(self: &AppController) -> QString;
+        #[qinvokable]
         fn previous(self: Pin<&mut AppController>);
         #[qinvokable]
         fn next(self: Pin<&mut AppController>);
@@ -1829,6 +1847,15 @@ fn sort_visible_indices(
     });
 }
 
+/// A running API server: the shutdown channel plus what to show the user.
+struct ApiServerHandle {
+    shutdown: Option<tokio::sync::oneshot::Sender<()>>,
+    address: std::net::SocketAddr,
+    scheme: &'static str,
+    /// Certificate clients should trust, when TLS is on.
+    certificate_path: Option<std::path::PathBuf>,
+}
+
 pub struct AppControllerRust {
     playlist_count: i32,
     playlist_revision: i32,
@@ -1920,6 +1947,7 @@ pub struct AppControllerRust {
     directory_scan: Option<DirectoryScanState>,
     tree_delete: Option<TreeDeleteState>,
     mpris: MprisService,
+    api_server: Option<ApiServerHandle>,
 }
 
 impl Default for AppControllerRust {
@@ -2121,6 +2149,7 @@ impl Default for AppControllerRust {
             directory_scan: None,
             tree_delete: None,
             mpris: MprisService::default(),
+            api_server: None,
         };
 
         // Startup restore for radio users: resume the persisted round so
@@ -4971,6 +5000,276 @@ impl qobject::AppController {
     /// persistent SC-55 server): called on real application quit so no
     /// booted emulator outlives the player. An idle server only blocks on
     /// stdin, so a missed shutdown is harmless.
+    /// The API server settings plus live status, for the Preferences pane.
+    pub fn server_settings_json(&self) -> QString {
+        let config = kog_server::config::load_config();
+        let running = self.rust().api_server.as_ref();
+        json_result(Ok(serde_json::json!({
+            "ok": true,
+            "enabled": config.enabled,
+            "address": config.address.to_string(),
+            "port": config.port,
+            "auth": config.auth,
+            "token": config.token,
+            "username": config.credentials.username,
+            "hasPassword": config.credentials.is_usable(),
+            "tls": config.tls.mode,
+            "certificatePath": config.tls.certificate_path.to_string_lossy(),
+            "privateKeyPath": config.tls.private_key_path.to_string_lossy(),
+            "defaultCodec": config.default_codec.setting_value(),
+            "cacheBytes": config.cache_bytes,
+            "problems": config.problems(),
+            "status": running.map(|server| serde_json::json!({
+                "running": true,
+                "url": format!("{}://{}", server.scheme, server.address),
+                "certificatePath": server
+                    .certificate_path
+                    .as_ref()
+                    .map(|path| path.to_string_lossy().into_owned()),
+            })),
+        })))
+    }
+
+    /// Persist the API server settings. Token auth never leaves the token
+    /// empty, and an unusable configuration is reported before it is saved.
+    pub fn save_server_settings(mut self: Pin<&mut Self>, json: QString) -> QString {
+        let outcome: Result<serde_json::Value, String> = (|| {
+            let value: serde_json::Value = serde_json::from_str(&json.to_string())
+                .map_err(|error| format!("reading the server settings: {error}"))?;
+            let mut config = kog_server::config::load_config();
+            if let Some(enabled) = value.get("enabled").and_then(|value| value.as_bool()) {
+                config.enabled = enabled;
+            }
+            if let Some(address) = value.get("address").and_then(|value| value.as_str()) {
+                config.address = address
+                    .trim()
+                    .parse()
+                    .map_err(|_| format!("{address} is not a valid bind address"))?;
+            }
+            if let Some(port) = value.get("port").and_then(|value| value.as_u64()) {
+                config.port = u16::try_from(port)
+                    .map_err(|_| "the port must be between 1 and 65535".to_owned())?;
+            }
+            if let Some(auth) = value.get("auth").and_then(|value| value.as_str()) {
+                config.auth = match auth {
+                    "none" => kog_server::AuthMode::None,
+                    "token" => kog_server::AuthMode::Token,
+                    "basic" => kog_server::AuthMode::Basic,
+                    other => return Err(format!("unknown authentication mode: {other}")),
+                };
+            }
+            if let Some(token) = value.get("token").and_then(|value| value.as_str()) {
+                config.token = token.trim().to_owned();
+            }
+            if let Some(username) = value.get("username").and_then(|value| value.as_str()) {
+                config.credentials.username = username.trim().to_owned();
+            }
+            // The password arrives in the clear once and is stored hashed.
+            if let Some(password) = value.get("password").and_then(|value| value.as_str()) {
+                if !password.is_empty() {
+                    config.credentials.set_password(password)?;
+                }
+            }
+            if let Some(tls) = value.get("tls").and_then(|value| value.as_str()) {
+                config.tls.mode = match tls {
+                    "off" => kog_server::TlsMode::Off,
+                    "selfSigned" => kog_server::TlsMode::SelfSigned,
+                    "pem" => kog_server::TlsMode::Pem,
+                    other => return Err(format!("unknown TLS mode: {other}")),
+                };
+            }
+            if let Some(codec) = value.get("defaultCodec").and_then(|value| value.as_str()) {
+                config.default_codec = kog_server::StreamCodec::from_setting(codec)
+                    .ok_or_else(|| format!("unknown codec: {codec}"))?;
+            }
+            if let Some(bytes) = value.get("cacheBytes").and_then(|value| value.as_u64()) {
+                config.cache_bytes = bytes;
+            }
+            config.ensure_credentials();
+            config.validate()?;
+            kog_server::config::save_config(&config)?;
+            Ok(serde_json::json!({ "ok": true, "problems": config.problems() }))
+        })();
+        self.as_mut().server_result(outcome)
+    }
+
+    pub fn generate_api_token(&self) -> QString {
+        json_result(kog_server::auth::generate_token().map(|token| {
+            serde_json::json!({ "ok": true, "token": token })
+        }))
+    }
+
+    /// Copy a user-supplied certificate and key into Kog's TLS directory.
+    pub fn import_server_certificate(
+        mut self: Pin<&mut Self>,
+        certificate: QUrl,
+        private_key: QUrl,
+    ) -> QString {
+        let outcome: Result<serde_json::Value, String> = (|| {
+            let certificate = certificate
+                .to_local_file()
+                .ok_or_else(|| "Choose a local certificate file".to_owned())?;
+            let private_key = private_key
+                .to_local_file()
+                .ok_or_else(|| "Choose a local private key file".to_owned())?;
+            let tls = kog_server::import_pem_pair(
+                std::path::Path::new(certificate.as_ref()),
+                std::path::Path::new(private_key.as_ref()),
+            )?;
+            let mut config = kog_server::config::load_config();
+            config.tls = tls;
+            kog_server::config::save_config(&config)?;
+            Ok(serde_json::json!({
+                "ok": true,
+                "certificatePath": config.tls.certificate_path.to_string_lossy(),
+            }))
+        })();
+        self.as_mut().server_result(outcome)
+    }
+
+    /// Start the API server on a dedicated runtime thread. Stopping it signals
+    /// the same server for a graceful shutdown.
+    pub fn start_api_server(mut self: Pin<&mut Self>) -> QString {
+        if self.rust().api_server.is_some() {
+            return json_result(Ok(serde_json::json!({ "ok": true, "alreadyRunning": true })));
+        }
+        let outcome: Result<serde_json::Value, String> = (|| {
+            let config = kog_server::config::load_config();
+            config.validate()?;
+            let settings = kog_audio::settings::AppSettings::load();
+            let state = kog_server::routes::AppState::new(
+                config.clone(),
+                env!("CARGO_PKG_VERSION"),
+                kog_server::routes::AppState::stream_service(
+                    &config,
+                    settings.decoder_settings(),
+                ),
+                kog_server::api::Library::open(),
+            );
+            let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+            let address = config.socket_address();
+            let scheme = if config.tls.mode == kog_server::TlsMode::Off {
+                "http"
+            } else {
+                "https"
+            };
+            let certificate_path = match config.tls.mode {
+                kog_server::TlsMode::SelfSigned => kog_server::tls::self_signed_certificate_path().ok(),
+                kog_server::TlsMode::Pem => Some(config.tls.certificate_path.clone()),
+                kog_server::TlsMode::Off => None,
+            };
+            std::thread::Builder::new()
+                .name("kog-api-server".to_owned())
+                .spawn(move || {
+                    let runtime = match tokio::runtime::Builder::new_multi_thread()
+                        .enable_all()
+                        .build()
+                    {
+                        Ok(runtime) => runtime,
+                        Err(error) => {
+                            eprintln!("kog-server: could not start the runtime: {error}");
+                            return;
+                        }
+                    };
+                    runtime.block_on(async move {
+                        if let Err(error) = kog_server::routes::serve_with_shutdown(
+                            state,
+                            async move {
+                                let _ = shutdown_rx.await;
+                            },
+                        )
+                        .await
+                        {
+                            eprintln!("kog-server: {error}");
+                        }
+                    });
+                })
+                .map_err(|error| format!("starting the API server thread: {error}"))?;
+            self.as_mut().rust_mut().api_server = Some(ApiServerHandle {
+                shutdown: Some(shutdown_tx),
+                address,
+                scheme,
+                certificate_path,
+            });
+            Ok(serde_json::json!({
+                "ok": true,
+                "url": format!("{scheme}://{address}"),
+            }))
+        })();
+        self.as_mut().server_result(outcome)
+    }
+
+    pub fn stop_api_server(mut self: Pin<&mut Self>) -> QString {
+        match self.as_mut().rust_mut().api_server.take() {
+            Some(mut server) => {
+                if let Some(shutdown) = server.shutdown.take() {
+                    let _ = shutdown.send(());
+                }
+                self.as_mut()
+                    .set_status(qstring("API server stopped"));
+                json_result(Ok(serde_json::json!({ "ok": true, "running": false })))
+            }
+            None => json_result(Ok(serde_json::json!({ "ok": true, "running": false }))),
+        }
+    }
+
+    /// URLs a phone or another machine can use, so the UI can show something
+    /// copyable instead of making the user guess their host address.
+    pub fn server_addresses_json(&self) -> QString {
+        let config = kog_server::config::load_config();
+        let scheme = if config.tls.mode == kog_server::TlsMode::Off {
+            "http"
+        } else {
+            "https"
+        };
+        let mut addresses = Vec::new();
+        if let Ok(interfaces) = local_ip_addresses() {
+            for ip in interfaces {
+                addresses.push(format!("{scheme}://{ip}:{}", config.port));
+            }
+        }
+        json_result(Ok(serde_json::json!({
+            "ok": true,
+            "addresses": addresses,
+            "port": config.port,
+        })))
+    }
+
+/// Best-effort list of this machine's reachable IPv4 addresses, so the
+/// Preferences pane can show a URL a phone can actually open. Uses the
+/// UDP-connect trick: no packets are sent, it just asks the routing table which
+/// local address would be used.
+fn local_ip_addresses() -> Result<Vec<std::net::IpAddr>, String> {
+    let mut addresses = Vec::new();
+    for probe in ["8.8.8.8:80", "1.1.1.1:80"] {
+        let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0") else {
+            continue;
+        };
+        if socket.connect(probe).is_ok()
+            && let Ok(local) = socket.local_addr()
+        {
+            let ip = local.ip();
+            if !ip.is_loopback() && !addresses.contains(&ip) {
+                addresses.push(ip);
+            }
+        }
+    }
+    if addresses.is_empty() {
+        return Err("no network address was found".to_owned());
+    }
+    Ok(addresses)
+}
+
+    fn server_result(
+        mut self: Pin<&mut Self>,
+        outcome: Result<serde_json::Value, String>,
+    ) -> QString {
+        if let Err(error) = &outcome {
+            self.as_mut().set_status(qstring(error));
+        }
+        json_result(outcome)
+    }
+
     pub fn shutdown_synth_helpers(&self) {
         kog_audio::sc55::shutdown_sc55_servers();
     }

@@ -6,8 +6,10 @@
 //! without Qt, and the UI can grow a settings pane without touching the
 //! transport layer.
 
+pub mod api;
 pub mod auth;
 pub mod config;
+pub mod media_filter;
 pub mod routes;
 pub mod service;
 pub mod stream;
