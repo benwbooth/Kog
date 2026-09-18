@@ -1,0 +1,36 @@
+[package]
+name = "kog-server"
+version = "0.9.38"
+edition = "2024"
+license = "GPL-3.0-or-later"
+description = "Kog's HTTP/HTTPS API and audio streaming server"
+repository = "https://github.com/benwbooth/Kog"
+
+[dependencies]
+kog-core = { path = "../kog-core" }
+kog-audio = { path = "../kog-audio" }
+axum = { version = "0.8", features = ["ws", "macros"] }
+tokio = { version = "1", features = [
+  "rt-multi-thread",
+  "net",
+  "signal",
+  "sync",
+  "time",
+  "macros",
+  "io-util",
+] }
+tower-http = { version = "0.6", features = ["trace", "cors"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0.149"
+rustls = "0.23"
+tokio-rustls = "0.26"
+rcgen = "0.13"
+subtle = "2.6"
+sha2 = "0.10"
+base64 = "0.22.1"
+getrandom = "0.4"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+tempfile = "3.27.0"

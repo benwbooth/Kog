@@ -7,7 +7,7 @@ description = "A cross-platform, format-comprehensive local music player"
 repository = "https://github.com/benwbooth/Kog"
 
 [workspace]
-members = ["crates/kog-core", "crates/kog-audio"]
+members = ["crates/kog-core", "crates/kog-audio", "crates/kog-server"]
 
 [dependencies]
 kog-core = { path = "crates/kog-core" }
