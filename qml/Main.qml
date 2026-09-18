@@ -2557,7 +2557,9 @@ ApplicationWindow {
                         }
                         ToolTip.visible: treePointer.containsMouse
                         ToolTip.delay: 700
-                        ToolTip.text: fileTreeModel.displayPath(treeDelegate.dragPath)
+                        // The full path: the label is elided, so hovering is
+                        // how you read where a file actually lives.
+                        ToolTip.text: treeDelegate.filePath
                         MouseArea {
                             id: treePointer
                             property real pressX: 0

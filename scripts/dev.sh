@@ -1,18 +1,23 @@
 #!/usr/bin/env bash
 #
-# Fast change -> compile -> run loop, built on watchexec.
+# Fast change -> compile -> run loop.
 #
-# Run inside the dev shell (`nix develop`, then `scripts/dev.sh`). watchexec
-# rebuilds and restarts the app on every change, killing the previous instance
-# first, so a Qt window reopens with your change already in it.
+# The app is only replaced once a new build is ready: watchexec triggers a
+# build step, and that step builds first and swaps the running binary
+# afterwards. A failed build leaves the app you already have running alone, so
+# you are never left without a window.
+#
+# Run inside the dev shell (`nix develop`, then `scripts/dev.sh`).
 #
 # Usage:
-#   scripts/dev.sh                     # debug build, restart the app on change
+#   scripts/dev.sh                     # debug build, run, restart on change
 #   scripts/dev.sh --release           # release build
-#   scripts/dev.sh --check             # cargo check only (no link, fastest)
+#   scripts/dev.sh --check             # cargo check only (no link, no app)
 #   scripts/dev.sh --test              # rerun the workspace tests on change
-#   scripts/dev.sh --web               # also rebuild the wasm frontend each restart
+#   scripts/dev.sh --web               # also rebuild the wasm frontend
 #   scripts/dev.sh -- <app args...>    # pass arguments through to the app
+#
+# The app's own output goes to target/dev-app.log.
 #
 # Editing flake.nix rebuilds the whole dev shell environment and invalidates
 # cargo's cache; avoid it while iterating.
@@ -25,16 +30,18 @@ cd "$root" || exit 1
 mode="run"        # run | check | test
 profile="debug"
 web=0
+step=0
 app_args=()
 
 while (( $# )); do
   case "$1" in
+    --step) step=1 ;;
     --release) profile="release" ;;
     --check) mode="check" ;;
     --test) mode="test" ;;
     --web) web=1 ;;
     --) shift; app_args=("$@"); break ;;
-    -h|--help) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1 (try --help)" >&2; exit 2 ;;
   esac
   shift
@@ -49,10 +56,73 @@ done
 
 profile_args=()
 [[ "$profile" == "release" ]] && profile_args=(--release)
+binary="target/$profile/kog"
+pidfile="target/dev-app.pid"
+app_log="target/dev-app.log"
 
-# Only the sources matter. Build output must be ignored explicitly: watchexec
-# does not skip it here, and the web crate's target dir churns thousands of
-# files per build, which would restart the loop (and kill the app) endlessly.
+# --------------------------------------------------------------------- step
+#
+# One build-and-swap pass. This is what watchexec runs on every settled change.
+if (( step )); then
+  if (( web )) && [[ "$mode" != "test" ]]; then
+    if ! crates/kog-web/build.sh; then
+      echo "[dev] frontend build failed; keeping the running app" >&2
+      exit 1
+    fi
+  fi
+
+  case "$mode" in
+    check) command=(cargo check "${profile_args[@]}" --workspace) ;;
+    test) command=(cargo test "${profile_args[@]}" --workspace) ;;
+    run) command=(cargo build "${profile_args[@]}") ;;
+  esac
+
+  if ! "${command[@]}"; then
+    echo "[dev] build failed; keeping the running app" >&2
+    exit 1
+  fi
+
+  if [[ "$mode" == "run" ]]; then
+    # Only now is the old instance retired: the new binary is on disk and
+    # built, so the window is gone for a moment rather than for the build.
+    if [[ -f "$pidfile" ]]; then
+      old="$(cat "$pidfile" 2>/dev/null || true)"
+      if [[ -n "$old" ]] && kill -0 "$old" 2>/dev/null; then
+        kill "$old" 2>/dev/null || true
+        for _ in $(seq 1 30); do
+          kill -0 "$old" 2>/dev/null || break
+          sleep 0.1
+        done
+        kill -KILL "$old" 2>/dev/null || true
+      fi
+      rm -f "$pidfile"
+    fi
+    # Started in its own session so watchexec stopping the build step cannot
+    # take the app down with it.
+    setsid nohup "$root/$binary" "${app_args[@]}" >>"$app_log" 2>&1 </dev/null &
+    echo $! >"$pidfile"
+    echo "[dev] $(date +%T) started $binary (pid $(cat "$pidfile"), log $app_log)"
+  fi
+  exit 0
+fi
+
+# ---------------------------------------------------------------- supervisor
+
+stop_app() {
+  if [[ -f "$pidfile" ]]; then
+    local old
+    old="$(cat "$pidfile" 2>/dev/null || true)"
+    if [[ -n "$old" ]]; then
+      kill "$old" 2>/dev/null || true
+    fi
+    rm -f "$pidfile"
+  fi
+}
+trap stop_app EXIT INT TERM
+
+# Only the sources matter. Build output must be ignored explicitly: the web
+# crate's target dir churns thousands of files per build, which would restart
+# the loop endlessly.
 watch_args=(
   --watch src
   --watch crates
@@ -63,35 +133,21 @@ watch_args=(
   --ignore crates/kog-web/target
   --ignore "**/*.tmp"
   --exts rs,qml,toml,json,svg,css,html
-  # Wait for the filesystem to go quiet before acting. A build writes in
-  # bursts, so a short debounce would restart mid-build and kill the app that
-  # just launched; the longer settle window coalesces the whole burst.
+  # Let the filesystem settle before acting, so a build's output bursts do not
+  # trigger another pass.
   --debounce 3s
-  # Ask the app to quit, but do not let a wedged one hold up the restart.
-  --stop-signal SIGTERM
-  --stop-timeout 3s
-  --restart
 )
 
-case "$mode" in
-  check)
-    # Plain --workspace: test and bench targets are compile-checked by --test,
-    # and including them here would only slow the fastest feedback path down.
-    command=(cargo check "${profile_args[@]}" --workspace)
-    ;;
-  test)
-    command=(cargo test "${profile_args[@]}" --workspace)
-    ;;
-  run)
-    command=(cargo run "${profile_args[@]}")
-    (( ${#app_args[@]} )) && command+=(-- "${app_args[@]}")
-    ;;
-esac
-
-if (( web )) && [[ "$mode" != "test" ]]; then
-  # The app embeds the built frontend, so regenerate it before every run.
-  shell_command="crates/kog-web/build.sh && ${command[*]}"
-  exec watchexec "${watch_args[@]}" --shell=bash -- "$shell_command"
+step_args=(scripts/dev.sh --step)
+[[ "$profile" == "release" ]] && step_args+=(--release)
+[[ "$mode" != "run" ]] && step_args+=("--$mode")
+(( web )) && step_args+=(--web)
+if (( ${#app_args[@]} )); then
+  step_args+=(--)
+  for argument in "${app_args[@]}"; do
+    step_args+=("$(printf '%q' "$argument")")
+  done
 fi
 
-exec watchexec "${watch_args[@]}" -- "${command[@]}"
+echo "[dev] watching; app output goes to $app_log"
+exec watchexec "${watch_args[@]}" --shell=bash -- "${step_args[*]}"
