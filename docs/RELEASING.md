@@ -51,6 +51,18 @@ already do.
 Only run a full `cargo build --release --locked` when the release specifically
 changes native build scripts or linker inputs.
 
+The web frontend is built and embedded by each platform job (the AppImage,
+Flatpak, Windows, and macOS jobs all run `crates/kog-web/build.sh` before the
+Rust build), so nothing is committed from `crates/kog-server/web/` except the
+placeholder page. A release therefore still needs a runner with the wasm32
+target and a matching `wasm-bindgen-cli`; the packaged binary rather than the
+source tree is what carries the player.
+
+Streaming transcodes through the `ffmpeg` **CLI**, not just the libraries:
+the AppImage bundles it, the Flatpak builds ffmpeg with `--enable-ffmpeg`, and
+the nix wrapper sets `KOG_FFMPEG` to the store path. Windows and macOS rely on
+`ffmpeg` being on `PATH`.
+
 ## 5. Commit, tag, dispatch
 
 Tags carry `[skip ci]`, so the workflow must be dispatched manually:

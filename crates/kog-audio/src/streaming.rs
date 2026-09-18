@@ -24,6 +24,11 @@ pub const STREAM_CHANNELS: u16 = 2;
 /// Samples pulled per refill. Bounds the work done inside a single `read`.
 const PULL_BATCH: usize = 2_048;
 
+/// Upper bound on one streamed track, used when the decoder reports no
+/// duration. Six hours of 48 kHz stereo is far beyond any real track and keeps
+/// a mislabelled file from streaming silence forever.
+const MAX_STREAM_FRAMES: u64 = 6 * 60 * 60 * STREAM_SAMPLE_RATE as u64;
+
 /// Read-adapter over one decoded track, yielding interleaved little-endian
 /// f32 samples at [`STREAM_SAMPLE_RATE`] / [`STREAM_CHANNELS`].
 ///
@@ -32,11 +37,16 @@ const PULL_BATCH: usize = 2_048;
 /// would tear down the decoder the mixer is pulling from.
 pub struct PcmReader {
     source: MixerSource,
-    _player: Player,
+    /// Held so the decoded audio keeps being pushed into the mixer.
+    _player: Option<Player>,
     _registry: Option<DecoderRegistry>,
     pending: Vec<u8>,
     position: usize,
     finished: bool,
+    /// Frames to deliver before stopping. A rodio player keeps its mixer alive
+    /// by feeding silence, so end-of-stream has to come from the track's known
+    /// duration rather than from the mixer running dry.
+    remaining_frames: Option<u64>,
 }
 
 impl PcmReader {
@@ -44,16 +54,31 @@ impl PcmReader {
     /// the reader is polled, so opening is quick even for emulator backends.
     pub fn open(source: PlaybackSource, settings: DecoderSettings) -> Result<Self, String> {
         let registry = DecoderRegistry::new(settings);
+        // The track's declared length is the only reliable end marker here.
+        // A source that reports no duration falls back to the cap, so a
+        // mislabelled file can never stream forever.
+        let remaining_frames = Some(
+            registry
+                .probe(&source)
+                .ok()
+                .and_then(|properties| properties.duration)
+                .map(|duration| {
+                    (duration.as_secs_f64() * f64::from(STREAM_SAMPLE_RATE)).ceil() as u64
+                })
+                .unwrap_or(MAX_STREAM_FRAMES)
+                .min(MAX_STREAM_FRAMES),
+        );
         let (mixer_input, mixer_output) = stream_mixer();
         let player = Player::connect_new(&mixer_input);
         registry.append(&source, &player)?;
         Ok(Self {
             source: mixer_output,
-            _player: player,
+            _player: Some(player),
             _registry: Some(registry),
             pending: Vec::with_capacity(PULL_BATCH * 4),
             position: 0,
             finished: false,
+            remaining_frames,
         })
     }
 
@@ -67,25 +92,32 @@ impl PcmReader {
         mixer_input.add(source);
         Self {
             source: mixer_output,
-            _player: Player::connect_new(&mixer_input),
+            // No player: it would feed endless silence and the mixer would
+            // never report the end of the source.
+            _player: None,
             _registry: None,
             pending: Vec::with_capacity(PULL_BATCH * 4),
             position: 0,
             finished: false,
+            remaining_frames: None,
         }
     }
 
-    pub const fn sample_rate() -> u32 {
+    pub const fn sample_rate(&self) -> u32 {
         STREAM_SAMPLE_RATE
     }
 
-    pub const fn channels() -> u16 {
+    pub const fn channels(&self) -> u16 {
         STREAM_CHANNELS
     }
 
     fn refill(&mut self) {
         self.pending.clear();
         self.position = 0;
+        if self.remaining_frames == Some(0) {
+            self.finished = true;
+            return;
+        }
         for _ in 0..PULL_BATCH {
             match self.source.next() {
                 Some(sample) => self.pending.extend_from_slice(&sample.to_le_bytes()),
@@ -93,6 +125,13 @@ impl PcmReader {
                     self.finished = true;
                     break;
                 }
+            }
+        }
+        if let Some(remaining) = self.remaining_frames.as_mut() {
+            let delivered = (self.pending.len() / 4) as u64;
+            *remaining = remaining.saturating_sub(delivered);
+            if *remaining == 0 {
+                self.finished = true;
             }
         }
     }

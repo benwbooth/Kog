@@ -142,6 +142,9 @@
               buildInputs = qtModules ++ [ kogFfmpeg pkgs.libarchive pkgs.alsa-lib pkgs.zlib pkgs.libxcb-cursor ];
               QMAKE = "${qtEnv}/bin/qmake";
               LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+              # Streaming encodes through the ffmpeg CLI; name the store path
+              # so the app does not depend on the user's PATH.
+              qtWrapperArgs = [ "--set" "KOG_FFMPEG" "${kogFfmpeg}/bin/ffmpeg" ];
               preBuild = ''
                 export PATH="${qtEnv}/bin:${qtEnv}/libexec:$PATH"
                 # Qt's setup hook can replace QMAKE with qtbase's split output.

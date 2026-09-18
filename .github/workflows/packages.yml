@@ -41,7 +41,7 @@ jobs:
             qml6-module-qtwebchannel qml6-module-qtwebengine \
             qml6-module-qtquick qml6-module-qtquick-controls \
             qml6-module-qtquick-layouts qml6-module-qtquick-templates \
-            qml6-module-qtquick-window zlib1g-dev mold
+            qml6-module-qtquick-window zlib1g-dev mold ffmpeg
 
       - name: Install Rust
         run: |
@@ -54,6 +54,12 @@ jobs:
           # Release builds run on tags via workflow_dispatch, where the
           # default save-if is false: always refresh the cache instead.
           save-if: ${{ true }}
+
+      - name: Build web frontend
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo install wasm-bindgen-cli --version 0.2.121 --locked
+          crates/kog-web/build.sh
 
       - name: Build release binary
         env:
@@ -140,6 +146,17 @@ jobs:
             test -f /app/lib/qml/QtWebEngine/qmldir
             find /usr/lib -name "libQt6WebChannel.so*" -type f -print -quit | grep -q .
           '
+
+      - name: Install Rust for the web frontend
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Build web frontend
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo install wasm-bindgen-cli --version 0.2.121 --locked
+          crates/kog-web/build.sh
 
       - name: Build Flatpak and OSTree repository
         run: |
@@ -245,6 +262,13 @@ jobs:
             ~/.cargo/git
           key: cargo-windows-${{ hashFiles('Cargo.lock') }}
 
+      - name: Build web frontend
+        shell: bash
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo install wasm-bindgen-cli --version 0.2.121 --locked
+          crates/kog-web/build.sh
+
       - name: Build release binary
         shell: pwsh
         run: cargo build --release --locked
@@ -303,6 +327,12 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
           key: cargo-macos-${{ matrix.arch }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Build web frontend
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo install wasm-bindgen-cli --version 0.2.121 --locked
+          crates/kog-web/build.sh
 
       - name: Build release binary
         env:

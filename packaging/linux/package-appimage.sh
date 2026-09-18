@@ -10,6 +10,16 @@ tool_dir="$output_dir/tools"
 rm -rf "$app_dir" "$tool_dir"
 mkdir -p "$app_dir/usr/bin" "$tool_dir" "$output_dir"
 install -m755 "$root_dir/target/release/kog" "$app_dir/usr/bin/kog"
+
+# Streaming transcodes with the ffmpeg CLI. Bundle it (and its libraries,
+# via linuxdeploy below) so the AppImage does not need a host ffmpeg.
+ffmpeg_bin="$(command -v ffmpeg || true)"
+if [[ -z "$ffmpeg_bin" ]]; then
+  echo "ffmpeg is required to package the streaming encoder" >&2
+  exit 1
+fi
+install -m755 "$ffmpeg_bin" "$app_dir/usr/bin/ffmpeg"
+
 install -Dm644 "$root_dir/packaging/linux/org.kog.player.metainfo.xml" \
   "$app_dir/usr/share/metainfo/org.kog.player.metainfo.xml"
 desktop_icon="$tool_dir/org.kog.player.svg"
@@ -51,6 +61,7 @@ export LDAI_OUTPUT="$output_dir/Kog-$version-linux-x86_64.AppImage"
 "$linuxdeploy" \
   --appdir "$app_dir" \
   --executable "$app_dir/usr/bin/kog" \
+  --executable "$app_dir/usr/bin/ffmpeg" \
   "${helper_args[@]}" \
   --desktop-file "$root_dir/packaging/linux/org.kog.player.desktop" \
   --icon-file "$desktop_icon"

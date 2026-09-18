@@ -124,6 +124,10 @@ preset downloads are needed. MilkDrop/projectM effects are not included yet.
 - Decode undeclared legacy metadata with Japanese and other regional encoding
   heuristics, including Shift-JIS, EUC-JP, UTF-16, and UTF-32 inputs.
 - Follow the system audio output or remember a selected output device.
+- Serve the library over HTTP or HTTPS to phones and other machines, each
+  listener getting an independent transcoded stream (AAC, Opus, or FLAC), with
+  a built-in web player and a remote browser in the desktop app. See
+  [docs/SERVER.md](docs/SERVER.md).
 
 ## Format support
 

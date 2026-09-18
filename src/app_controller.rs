@@ -2607,6 +2607,31 @@ const fn selection_state_name(state: SelectionState) -> &'static str {
     }
 }
 
+/// Best-effort list of this machine's reachable IPv4 addresses, so the
+/// Preferences pane can show a URL a phone can actually open. Uses the
+/// UDP-connect trick: no packets are sent, it just asks the routing table which
+/// local address would be used.
+fn local_ip_addresses() -> Result<Vec<std::net::IpAddr>, String> {
+    let mut addresses = Vec::new();
+    for probe in ["8.8.8.8:80", "1.1.1.1:80"] {
+        let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0") else {
+            continue;
+        };
+        if socket.connect(probe).is_ok()
+            && let Ok(local) = socket.local_addr()
+        {
+            let ip = local.ip();
+            if !ip.is_loopback() && !addresses.contains(&ip) {
+                addresses.push(ip);
+            }
+        }
+    }
+    if addresses.is_empty() {
+        return Err("no network address was found".to_owned());
+    }
+    Ok(addresses)
+}
+
 fn json_result(result: Result<serde_json::Value, String>) -> QString {
     qstring(
         result
@@ -5112,10 +5137,9 @@ impl qobject::AppController {
             let private_key = private_key
                 .to_local_file()
                 .ok_or_else(|| "Choose a local private key file".to_owned())?;
-            let tls = kog_server::import_pem_pair(
-                std::path::Path::new(certificate.as_ref()),
-                std::path::Path::new(private_key.as_ref()),
-            )?;
+            let certificate = PathBuf::from(certificate.to_string());
+            let private_key = PathBuf::from(private_key.to_string());
+            let tls = kog_server::import_pem_pair(&certificate, &private_key)?;
             let mut config = kog_server::config::load_config();
             config.tls = tls;
             kog_server::config::save_config(&config)?;
@@ -5234,31 +5258,6 @@ impl qobject::AppController {
             "port": config.port,
         })))
     }
-
-/// Best-effort list of this machine's reachable IPv4 addresses, so the
-/// Preferences pane can show a URL a phone can actually open. Uses the
-/// UDP-connect trick: no packets are sent, it just asks the routing table which
-/// local address would be used.
-fn local_ip_addresses() -> Result<Vec<std::net::IpAddr>, String> {
-    let mut addresses = Vec::new();
-    for probe in ["8.8.8.8:80", "1.1.1.1:80"] {
-        let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0") else {
-            continue;
-        };
-        if socket.connect(probe).is_ok()
-            && let Ok(local) = socket.local_addr()
-        {
-            let ip = local.ip();
-            if !ip.is_loopback() && !addresses.contains(&ip) {
-                addresses.push(ip);
-            }
-        }
-    }
-    if addresses.is_empty() {
-        return Err("no network address was found".to_owned());
-    }
-    Ok(addresses)
-}
 
     fn server_result(
         mut self: Pin<&mut Self>,

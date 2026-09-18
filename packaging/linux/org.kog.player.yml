@@ -67,8 +67,8 @@ modules:
     build-commands:
       - >-
         ./configure --prefix=/app --disable-static --enable-shared
-        --disable-programs --disable-doc --disable-debug --disable-avdevice
-        --disable-swscale
+        --enable-ffmpeg --disable-ffplay --disable-ffprobe --disable-doc
+        --disable-debug --disable-avdevice
       - make -j${FLATPAK_BUILDER_N_JOBS}
       - make install
     cleanup:

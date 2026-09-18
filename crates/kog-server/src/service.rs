@@ -120,8 +120,8 @@ impl StreamService {
         let args = encoder_args(
             key.codec,
             key.bitrate_kbps,
-            PcmReader::sample_rate(),
-            PcmReader::channels(),
+            pcm.sample_rate(),
+            pcm.channels(),
         );
         let tee = TeeWriter {
             file: partial,
