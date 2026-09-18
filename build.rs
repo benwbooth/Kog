@@ -8,11 +8,11 @@ fn main() {
     println!("cargo:rerun-if-changed=qml");
     println!("cargo:rerun-if-changed=web");
     println!("cargo:rerun-if-changed=build.rs");
-    // Switching branch or commit rewrites .git/HEAD, which is when the stamped
-    // revision below can change. Absent when building from a source package.
-    if std::path::Path::new(".git/HEAD").exists() {
-        println!("cargo:rerun-if-changed=.git/HEAD");
-    }
+    // Note: deliberately not watching .git/HEAD. Every commit rewrites it, and
+    // rerunning this script regenerates the Qt QML module's C++, which costs
+    // minutes. The stamped revision only changes when you switch branch or
+    // commit anyway, and the build *time* shown in the UI comes from the
+    // binary's own mtime, so it stays correct.
     emit_build_revision();
     let qt_builder = CxxQtBuilder::new_qml_module(QmlModule::new("org.kog.player").qml_files([
         "qml/CogButton.qml",
