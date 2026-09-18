@@ -2235,13 +2235,6 @@ impl Default for AppControllerRust {
             controller.starred.extend(locators);
         }
         controller.mpris.publish(mpris_snapshot(&controller));
-
-        // The server switch is persistent: if the saved settings say it should
-        // be running, start it with the app instead of waiting for the user to
-        // visit Preferences.
-        if kog_server::config::load_config().enabled {
-            let _ = Pin::new(&mut controller).start_api_server();
-        }
         controller
     }
 }

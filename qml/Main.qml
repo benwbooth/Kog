@@ -792,6 +792,15 @@ ApplicationWindow {
         // Warm the selected synth backend in the background so the first
         // MIDI track starts immediately instead of booting an emulator.
         appController.prewarm_synths()
+        // The server switch is persistent: if it is switched on, serve with the
+        // app rather than waiting for someone to visit Preferences.
+        try {
+            const settings = JSON.parse(appController.server_settings_json())
+            const running = !!(settings && settings.status && settings.status.running)
+            if (settings && settings.enabled && !running)
+                appController.start_api_server()
+        } catch (error) {
+        }
     }
 
     Timer {
