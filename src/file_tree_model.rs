@@ -136,7 +136,7 @@ impl qobject::FileTreeModel {
     }
 
     pub fn icon_name(&self, path: QString) -> QString {
-        if let Ok(Some(location)) = crate::archive::tree_location(Path::new(&path.to_string())) {
+        if let Ok(Some(location)) = kog_audio::archive::tree_location(Path::new(&path.to_string())) {
             if location.directory {
                 return QString::from("folder");
             }
@@ -146,7 +146,7 @@ impl qobject::FileTreeModel {
     }
 
     fn set_tree_root(mut self: Pin<&mut Self>, path: PathBuf) {
-        let catalog = crate::decoder::DecoderRegistry::default().supported_formats_json();
+        let catalog = kog_audio::decoder::DecoderRegistry::default().supported_formats_json();
         self.as_mut().set_supported_formats(&QString::from(catalog));
         let path = std::fs::canonicalize(&path).unwrap_or(path);
         if !Path::new(&path).is_dir() {

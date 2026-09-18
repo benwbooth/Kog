@@ -371,7 +371,7 @@ use std::time::{Duration, Instant};
 use cxx_qt::CxxQtType;
 use cxx_qt_lib::{QString, QUrl};
 
-use crate::decoder::{
+use kog_audio::decoder::{
     DecoderRegistry, DecoderSettings, ExpansionResult, PlaybackSource, validate_soundfont,
 };
 use kog_core::equalizer::{
@@ -380,15 +380,15 @@ use kog_core::equalizer::{
 use kog_core::mpris::{
     MprisCommand, MprisLoopStatus, MprisPlaybackStatus, MprisService, MprisSnapshot,
 };
-use crate::playback::{OutputDevice, PlaybackEngine, PlaybackState, available_output_devices};
-use crate::playback_order::{PlaybackOrder, SelectionState};
-use crate::playlist::{Playlist, PlaylistEntry, PlaylistLocation};
+use kog_audio::playback::{OutputDevice, PlaybackEngine, PlaybackState, available_output_devices};
+use kog_audio::playback_order::{PlaybackOrder, SelectionState};
+use kog_audio::playlist::{Playlist, PlaylistEntry, PlaylistLocation};
 use crate::rom_import::{ImportedRomSet, RomKind, import_rom_archive};
-use crate::settings::{
+use kog_audio::settings::{
     AppSettings, MidiEngine, OpeningFilesBehavior, OutputDevicePreference, RepeatMode, ShuffleMode,
 };
 use crate::tag_editor::{artwork_file_json, parse_edits, snapshot_json, write_tags};
-use crate::track::{Track, canonical_path};
+use kog_audio::track::{Track, canonical_path};
 
 #[derive(Debug, Default)]
 struct AddPathResult {
@@ -471,7 +471,7 @@ struct RadioState {
     staged_count: u64,
     expand_jobs: Vec<RadioJob>,
     dead: Arc<Mutex<HashSet<String>>>,
-    blacklist: Arc<Mutex<crate::radio::Blacklist>>,
+    blacklist: Arc<Mutex<kog_audio::radio::Blacklist>>,
     staging: Option<StagingWorker>,
     kickstart_armed: bool,
     consecutive_dead: u32,
@@ -480,7 +480,7 @@ struct RadioState {
 /// Background staging thread handle: picks arrive on the bounded channel
 /// (which paces the thread), and the cancel flag stops it after teardown.
 struct StagingWorker {
-    picks: Receiver<crate::radio::StagingResponse>,
+    picks: Receiver<kog_audio::radio::StagingResponse>,
     cancel: Arc<AtomicBool>,
 }
 
@@ -492,21 +492,21 @@ fn spawn_staging_worker(
     root: PathBuf,
     settings: DecoderSettings,
     read_cue: bool,
-    initial: crate::radio::RoundInitial,
-    blacklist: crate::radio::Blacklist,
+    initial: kog_audio::radio::RoundInitial,
+    blacklist: kog_audio::radio::Blacklist,
 ) -> Result<
     (
         StagingWorker,
         Arc<Mutex<HashSet<String>>>,
-        Arc<Mutex<crate::radio::Blacklist>>,
+        Arc<Mutex<kog_audio::radio::Blacklist>>,
     ),
     String,
 > {
     let (sender, receiver) = std::sync::mpsc::sync_channel(4);
     let cancel = Arc::new(AtomicBool::new(false));
     let worker_cancel = Arc::clone(&cancel);
-    let nested_cache = crate::archive::nested_cache_dir();
-    let save_path = crate::settings::setting_path("radio-round.json");
+    let nested_cache = kog_audio::archive::nested_cache_dir();
+    let save_path = kog_audio::settings::setting_path("radio-round.json");
     let dead = Arc::new(Mutex::new(HashSet::new()));
     let worker_dead = Arc::clone(&dead);
     let blacklist = Arc::new(Mutex::new(blacklist));
@@ -514,7 +514,7 @@ fn spawn_staging_worker(
     std::thread::Builder::new()
         .name("kog-radio-stage".to_owned())
         .spawn(move || {
-            crate::radio::run_staging(
+            kog_audio::radio::run_staging(
                 root,
                 settings,
                 read_cue,
@@ -539,14 +539,14 @@ fn spawn_staging_worker(
 }
 
 /// Blacklist snapshot from the library store for radio staging.
-fn blacklist_snapshot(db: &kog_core::db::LibraryDb) -> crate::radio::Blacklist {
+fn blacklist_snapshot(db: &kog_core::db::LibraryDb) -> kog_audio::radio::Blacklist {
     let rows: Vec<(String, String, String)> = db
         .list_blacklist()
         .unwrap_or_default()
         .into_iter()
         .map(|entry| (entry.kind, entry.path, entry.entry))
         .collect();
-    crate::radio::Blacklist::from_rows(&rows)
+    kog_audio::radio::Blacklist::from_rows(&rows)
 }
 
 /// One blacklist row, with the path resolved best-effort so keys match
@@ -564,16 +564,16 @@ fn blacklist_row(kind: &str, path: &str, entry: &str) -> kog_core::db::Blacklist
 /// string for missing files so the row still records intent.
 fn blacklist_path(path: &str) -> String {
     let candidate = PathBuf::from(path);
-    crate::track::canonical_path(&candidate)
+    kog_audio::track::canonical_path(&candidate)
         .map(|canonical| canonical.to_string_lossy().into_owned())
         .unwrap_or_else(|_| path.to_owned())
 }
 
 /// Persisted round for `root`, or None when nothing valid waits. A wrong
 /// music folder never resumes another folder's positions.
-fn load_radio_round(root: &Path) -> Option<crate::radio::RoundInitial> {
-    let path = crate::settings::setting_path("radio-round.json")?;
-    crate::radio::RadioRound::load(&path, root)
+fn load_radio_round(root: &Path) -> Option<kog_audio::radio::RoundInitial> {
+    let path = kog_audio::settings::setting_path("radio-round.json")?;
+    kog_audio::radio::RadioRound::load(&path, root)
 }
 
 struct CoverArtRequest {
@@ -861,7 +861,7 @@ fn run_tree_delete_job(
 
 fn cover_art_cache_dir() -> PathBuf {
     directories::ProjectDirs::from("org", "Kog", "Kog")
-        .map(|directories| crate::cover_art::cache_directory(directories.cache_dir()))
+        .map(|directories| kog_audio::cover_art::cache_directory(directories.cache_dir()))
         .unwrap_or_else(|| std::env::temp_dir().join("kog-covers"))
 }
 
@@ -883,8 +883,8 @@ fn fetch_cover(url: &str, max_bytes: u32) -> Result<Vec<u8>, String> {
 }
 
 fn fetch_validated_cover(url: &str) -> Option<Vec<u8>> {
-    let bytes = fetch_cover(url, crate::cover_art::MAX_COVER_BYTES).ok()?;
-    if crate::cover_art::sniff_image_kind(&bytes).is_some() {
+    let bytes = fetch_cover(url, kog_audio::cover_art::MAX_COVER_BYTES).ok()?;
+    if kog_audio::cover_art::sniff_image_kind(&bytes).is_some() {
         Some(bytes)
     } else {
         None
@@ -908,16 +908,16 @@ fn musicbrainz_rate_limit() {
 
 fn resolve_cover_art(request: &CoverArtRequest, cancel: &AtomicBool) -> Option<PathBuf> {
     let cancelled = || cancel.load(AtomicOrdering::Relaxed);
-    let key = crate::cover_art::cache_key(&request.artist, &request.album);
-    let store = |bytes: Vec<u8>| crate::cover_art::store_cache(&request.cache_dir, &key, &bytes);
+    let key = kog_audio::cover_art::cache_key(&request.artist, &request.album);
+    let store = |bytes: Vec<u8>| kog_audio::cover_art::store_cache(&request.cache_dir, &key, &bytes);
 
     if !cancelled() {
-        let url = crate::cover_art::deezer_search_url(&request.artist, &request.album);
-        if let Ok(json) = fetch_cover(&url, crate::cover_art::MAX_SEARCH_BYTES)
+        let url = kog_audio::cover_art::deezer_search_url(&request.artist, &request.album);
+        if let Ok(json) = fetch_cover(&url, kog_audio::cover_art::MAX_SEARCH_BYTES)
             && let Ok(text) = String::from_utf8(json)
-            && let Some((title, artist, cover)) = crate::cover_art::parse_deezer_cover(&text)
+            && let Some((title, artist, cover)) = kog_audio::cover_art::parse_deezer_cover(&text)
             && !cover.is_empty()
-            && crate::cover_art::titles_match(&request.artist, &request.album, &title, &artist)
+            && kog_audio::cover_art::titles_match(&request.artist, &request.album, &title, &artist)
             && let Some(bytes) = fetch_validated_cover(&cover)
             && let Some(path) = store(bytes)
         {
@@ -925,12 +925,12 @@ fn resolve_cover_art(request: &CoverArtRequest, cancel: &AtomicBool) -> Option<P
         }
     }
     if !cancelled() {
-        let url = crate::cover_art::itunes_search_url(&request.artist, &request.album);
-        if let Ok(json) = fetch_cover(&url, crate::cover_art::MAX_SEARCH_BYTES)
+        let url = kog_audio::cover_art::itunes_search_url(&request.artist, &request.album);
+        if let Ok(json) = fetch_cover(&url, kog_audio::cover_art::MAX_SEARCH_BYTES)
             && let Ok(text) = String::from_utf8(json)
-            && let Some((title, artist, artwork)) = crate::cover_art::parse_itunes_cover(&text)
+            && let Some((title, artist, artwork)) = kog_audio::cover_art::parse_itunes_cover(&text)
             && !artwork.is_empty()
-            && crate::cover_art::titles_match(&request.artist, &request.album, &title, &artist)
+            && kog_audio::cover_art::titles_match(&request.artist, &request.album, &title, &artist)
             && let Some(bytes) = fetch_validated_cover(&artwork)
             && let Some(path) = store(bytes)
         {
@@ -940,15 +940,15 @@ fn resolve_cover_art(request: &CoverArtRequest, cancel: &AtomicBool) -> Option<P
     if !cancelled() {
         musicbrainz_rate_limit();
         if !cancelled() {
-            let url = crate::cover_art::mb_release_group_url(&request.artist, &request.album);
-            if let Ok(json) = fetch_cover(&url, crate::cover_art::MAX_SEARCH_BYTES)
+            let url = kog_audio::cover_art::mb_release_group_url(&request.artist, &request.album);
+            if let Ok(json) = fetch_cover(&url, kog_audio::cover_art::MAX_SEARCH_BYTES)
                 && let Ok(text) = String::from_utf8(json)
                 && let Some((title, artist, mbid)) =
-                    crate::cover_art::parse_mb_release_group(&text)
+                    kog_audio::cover_art::parse_mb_release_group(&text)
                 && !mbid.is_empty()
-                && crate::cover_art::titles_match(&request.artist, &request.album, &title, &artist)
+                && kog_audio::cover_art::titles_match(&request.artist, &request.album, &title, &artist)
                 && let Some(bytes) =
-                    fetch_validated_cover(&crate::cover_art::caa_front_url(&mbid))
+                    fetch_validated_cover(&kog_audio::cover_art::caa_front_url(&mbid))
                 && let Some(path) = store(bytes)
             {
                 return Some(path);
@@ -961,18 +961,18 @@ fn resolve_cover_art(request: &CoverArtRequest, cancel: &AtomicBool) -> Option<P
             .collect::<Vec<_>>()
             .join(" ");
         if let Ok(page) = fetch_cover(
-            &crate::cover_art::ddg_page_url(&query),
-            crate::cover_art::MAX_SEARCH_BYTES,
+            &kog_audio::cover_art::ddg_page_url(&query),
+            kog_audio::cover_art::MAX_SEARCH_BYTES,
         )
         && let Ok(html) = String::from_utf8(page)
-        && let Some(token) = crate::cover_art::ddg_token(&html)
+        && let Some(token) = kog_audio::cover_art::ddg_token(&html)
         && let Ok(results) = fetch_cover(
-            &crate::cover_art::ddg_image_url(&query, &token),
-            crate::cover_art::MAX_SEARCH_BYTES,
+            &kog_audio::cover_art::ddg_image_url(&query, &token),
+            kog_audio::cover_art::MAX_SEARCH_BYTES,
         )
         && let Ok(text) = String::from_utf8(results)
-        && let Some((title, thumbnail)) = crate::cover_art::parse_ddg_thumbnail(&text)
-        && crate::cover_art::titles_match(&request.artist, &request.album, &title, "")
+        && let Some((title, thumbnail)) = kog_audio::cover_art::parse_ddg_thumbnail(&text)
+        && kog_audio::cover_art::titles_match(&request.artist, &request.album, &title, "")
         && let Some(bytes) = fetch_validated_cover(&thumbnail)
         && let Some(path) = store(bytes)
         {
@@ -1029,7 +1029,7 @@ fn prepare_scan_file(
         return prepared;
     }
 
-    let path = match if crate::archive::is_tree_location(&path) {
+    let path = match if kog_audio::archive::is_tree_location(&path) {
         Ok(path)
     } else {
         canonical_path(&path)
@@ -1080,7 +1080,7 @@ fn scan_directory_paths(
         if cancel.load(AtomicOrdering::Relaxed) {
             break;
         }
-        if crate::archive::is_tree_location(&root) {
+        if kog_audio::archive::is_tree_location(&root) {
             files.push(root);
             continue;
         }
@@ -1312,9 +1312,9 @@ fn cover_art_key(artist: &str, tagged_album: &str, album: &str, file: &Path) -> 
     let untagged = artist.trim().is_empty() && tagged_album.trim().is_empty();
     if untagged {
         let scoped = format!("{} \0 {}", album, file.display());
-        (crate::cover_art::cache_key("", &scoped), false)
+        (kog_audio::cover_art::cache_key("", &scoped), false)
     } else {
-        (crate::cover_art::cache_key(artist, album), true)
+        (kog_audio::cover_art::cache_key(artist, album), true)
     }
 }
 
@@ -1684,7 +1684,7 @@ fn compare_tracks(
 /// fragment when one exists, so two cue tracks from one file star
 /// independently. Mirrors `playlist_entry_for_track` addressing.
 fn star_key_for_track(track: &Track) -> String {
-    let base = crate::radio::radio_track_key(track);
+    let base = kog_audio::radio::radio_track_key(track);
     match playlist_entry_for_track(track) {
         Ok(entry) => match entry.fragment {
             Some(fragment) => format!("{base}#{fragment}"),
@@ -1747,12 +1747,12 @@ fn stored_entry_is_missing(entry: &kog_core::db::StoredEntry) -> bool {
 fn stored_entry_for_track(track: &Track) -> Option<kog_core::db::StoredEntry> {
     let entry = playlist_entry_for_track(track).ok()?;
     let (kind, path, name) = match entry.location {
-        crate::playlist::PlaylistLocation::Local(path) => (
+        kog_audio::playlist::PlaylistLocation::Local(path) => (
             kog_core::db::KIND_LOCAL.to_owned(),
             path.to_string_lossy().into_owned(),
             String::new(),
         ),
-        crate::playlist::PlaylistLocation::Archive {
+        kog_audio::playlist::PlaylistLocation::Archive {
             archive_path,
             entry_name,
         } => (
@@ -1760,7 +1760,7 @@ fn stored_entry_for_track(track: &Track) -> Option<kog_core::db::StoredEntry> {
             archive_path.to_string_lossy().into_owned(),
             entry_name,
         ),
-        crate::playlist::PlaylistLocation::Remote(url) => {
+        kog_audio::playlist::PlaylistLocation::Remote(url) => {
             (kog_core::db::KIND_REMOTE.to_owned(), url, String::new())
         }
     };
@@ -1774,9 +1774,9 @@ fn stored_entry_for_track(track: &Track) -> Option<kog_core::db::StoredEntry> {
 
 /// Playlist entries back out of database rows. Remote entries keep their
 /// URL; anything malformed is left for the caller to skip and count.
-fn playlist_entry_from_stored(entry: &kog_core::db::StoredEntry) -> Option<crate::playlist::PlaylistEntry> {
+fn playlist_entry_from_stored(entry: &kog_core::db::StoredEntry) -> Option<kog_audio::playlist::PlaylistEntry> {
     use kog_core::db::{KIND_ARCHIVE, KIND_LOCAL, KIND_REMOTE};
-    use crate::playlist::{PlaylistEntry, PlaylistLocation};
+    use kog_audio::playlist::{PlaylistEntry, PlaylistLocation};
     let location = match entry.kind.as_str() {
         KIND_LOCAL => {
             if entry.path.is_empty() {
@@ -2132,7 +2132,7 @@ impl Default for AppControllerRust {
                 let restored = load_radio_round(&controller.directory);
                 let resumed = restored.is_some();
                 let initial = restored.unwrap_or_else(|| {
-                    crate::radio::RoundInitial::fresh(crate::radio::random_seed())
+                    kog_audio::radio::RoundInitial::fresh(kog_audio::radio::random_seed())
                 });
                 let staged = spawn_staging_worker(
                     controller.directory.clone(),
@@ -2810,7 +2810,7 @@ impl qobject::AppController {
         let (initial, resumed) = match load_radio_round(&root) {
             Some(initial) => (initial, true),
             None => (
-                crate::radio::RoundInitial::fresh(crate::radio::random_seed()),
+                kog_audio::radio::RoundInitial::fresh(kog_audio::radio::random_seed()),
                 false,
             ),
         };
@@ -2827,7 +2827,7 @@ impl qobject::AppController {
 
     /// Blacklist snapshot from the library store for radio staging:
     /// songs as locator keys, folders as paths.
-    fn load_blacklist_snapshot(&self) -> crate::radio::Blacklist {
+    fn load_blacklist_snapshot(&self) -> kog_audio::radio::Blacklist {
         blacklist_snapshot(&self.rust().library_db)
     }
 
@@ -2849,7 +2849,7 @@ impl qobject::AppController {
     fn begin_radio_session(
         mut self: Pin<&mut Self>,
         root: PathBuf,
-        initial: crate::radio::RoundInitial,
+        initial: kog_audio::radio::RoundInitial,
         status: String,
     ) {
         let blacklist = self.as_ref().load_blacklist_snapshot();
@@ -2908,8 +2908,8 @@ impl qobject::AppController {
         let dead: Vec<String> = load_radio_round(&root)
             .map(|loaded| loaded.dead)
             .unwrap_or_default();
-        let initial = crate::radio::RoundInitial {
-            seed: crate::radio::random_seed(),
+        let initial = kog_audio::radio::RoundInitial {
+            seed: kog_audio::radio::random_seed(),
             counter: 0,
             cursors: HashMap::new(),
             dead,
@@ -2951,7 +2951,7 @@ impl qobject::AppController {
                     }
                 }
                 if done {
-                    let key = empty.then(|| crate::radio::radio_locator_key(&job.locator));
+                    let key = empty.then(|| kog_audio::radio::radio_locator_key(&job.locator));
                     finished.push((index, key));
                 }
             }
@@ -3111,8 +3111,8 @@ impl qobject::AppController {
             // Every track indexed, or nobody is: a partial set would orphan
             // the unindexed tracks, so those stage whole as before.
             if indices.len() == staged.len() {
-                if let Some(order) = crate::radio::shuffle_subsong_order(
-                    &crate::radio::radio_locator_key(&locator),
+                if let Some(order) = kog_audio::radio::shuffle_subsong_order(
+                    &kog_audio::radio::radio_locator_key(&locator),
                     &indices,
                 ) {
                     let mut ordered = Vec::with_capacity(staged.len());
@@ -3190,7 +3190,7 @@ impl qobject::AppController {
             for job in radio.expand_jobs.drain(..) {
                 if now.duration_since(job.started) > EXPAND_TIMEOUT {
                     job.cancel.store(true, AtomicOrdering::Relaxed);
-                    timed_out.push(crate::radio::radio_locator_key(&job.locator));
+                    timed_out.push(kog_audio::radio::radio_locator_key(&job.locator));
                 } else {
                     kept.push(job);
                 }
@@ -3230,13 +3230,13 @@ impl qobject::AppController {
             .rust()
             .tracks
             .iter()
-            .map(crate::radio::radio_track_key)
+            .map(kog_audio::radio::radio_track_key)
             .chain(
                 self.as_ref()
                     .rust()
                     .radio
                     .as_ref()
-                    .map(|radio| radio.ready.iter().map(crate::radio::radio_track_key))
+                    .map(|radio| radio.ready.iter().map(kog_audio::radio::radio_track_key))
                     .into_iter()
                     .flatten(),
             )
@@ -3298,18 +3298,18 @@ impl qobject::AppController {
                     staging.picks.try_recv()
                 };
                 match response {
-                    Ok(crate::radio::StagingResponse::Pick(locator)) => {
-                        if staged.contains(&crate::radio::radio_locator_key(&locator)) {
+                    Ok(kog_audio::radio::StagingResponse::Pick(locator)) => {
+                        if staged.contains(&kog_audio::radio::radio_locator_key(&locator)) {
                             continue;
                         }
                         outcome = Drain::Pick(locator);
                         break;
                     }
-                    Ok(crate::radio::StagingResponse::Empty) => {
+                    Ok(kog_audio::radio::StagingResponse::Empty) => {
                         outcome = Drain::Empty;
                         break;
                     }
-                    Ok(crate::radio::StagingResponse::Barren) => {
+                    Ok(kog_audio::radio::StagingResponse::Barren) => {
                         outcome = Drain::Barren;
                         break;
                     }
@@ -3404,7 +3404,7 @@ impl qobject::AppController {
         // Staged playlist imports live here: duplicates are legitimate
         // playlist content, so they bypass the known-source filter below.
         // Compare canonical paths since prepared paths are canonicalized.
-        let staged_dir = crate::track::canonical_path(&playlist_cache_dir())
+        let staged_dir = kog_audio::track::canonical_path(&playlist_cache_dir())
             .unwrap_or_else(|_| playlist_cache_dir());
         for event in events {
             match event {
@@ -4222,7 +4222,7 @@ impl qobject::AppController {
         {
             path.set_extension("m3u");
         }
-        match crate::playlist::Playlist::save_portable(&path, &entries) {
+        match kog_audio::playlist::Playlist::save_portable(&path, &entries) {
             Ok(()) => self.as_mut().set_status(qstring(format!(
                 "Exported {} {} to {}{}",
                 entries.len(),
@@ -4273,7 +4273,7 @@ impl qobject::AppController {
             std::fs::create_dir_all(parent)
                 .map_err(|_| "Could not stage the playlist for import".to_owned())?;
         }
-        crate::playlist::Playlist::save(&cache_file, &entries)?;
+        kog_audio::playlist::Playlist::save(&cache_file, &entries)?;
         Ok((cache_file, skipped))
     }
 
@@ -4313,7 +4313,7 @@ impl qobject::AppController {
             let mut skipped = 0_usize;
             for path in &paths {
                 if folders {
-                    if let Ok(Some(location)) = crate::archive::tree_location(path) {
+                    if let Ok(Some(location)) = kog_audio::archive::tree_location(path) {
                         // Archive containers blacklist as folders: an empty
                         // member means the whole archive, otherwise the
                         // member subdirectory in key form.
@@ -4347,7 +4347,7 @@ impl qobject::AppController {
                     ));
                     continue;
                 }
-                if let Ok(Some(location)) = crate::archive::tree_location(path) {
+                if let Ok(Some(location)) = kog_audio::archive::tree_location(path) {
                     if location.entry.is_empty() {
                         skipped += 1;
                         continue;
@@ -4960,7 +4960,7 @@ impl qobject::AppController {
     /// booted emulator outlives the player. An idle server only blocks on
     /// stdin, so a missed shutdown is harmless.
     pub fn shutdown_synth_helpers(&self) {
-        crate::sc55::shutdown_sc55_servers();
+        kog_audio::sc55::shutdown_sc55_servers();
     }
 
     pub fn stop(mut self: Pin<&mut Self>) {
@@ -5865,7 +5865,7 @@ impl qobject::AppController {
                 return;
             }
         };
-        let model = match crate::sc55::validate_rom_directory(&imported.directory) {
+        let model = match kog_audio::sc55::validate_rom_directory(&imported.directory) {
             Ok(model) => model,
             Err(error) => {
                 let _ = std::fs::remove_dir_all(&imported.directory);
@@ -6003,7 +6003,7 @@ impl qobject::AppController {
                 return;
             }
         };
-        let model = match crate::mt32::validate_rom_directory(&imported.directory) {
+        let model = match kog_audio::mt32::validate_rom_directory(&imported.directory) {
             Ok(model) => model,
             Err(error) => {
                 let _ = std::fs::remove_dir_all(&imported.directory);
@@ -6264,19 +6264,19 @@ impl qobject::AppController {
         self.as_mut()
             .set_current_artwork_path(QString::default());
         let tagged_album = album.clone();
-        let album = crate::cover_art::fallback_album(&file, &album);
+        let album = kog_audio::cover_art::fallback_album(&file, &album);
         if album.is_empty() {
             return;
         }
         let cache_dir = cover_art_cache_dir();
         let (key, may_download) = cover_art_key(&artist, &tagged_album, &album, &file);
-        if let Some(cached) = crate::cover_art::cache_lookup(&cache_dir, &key) {
+        if let Some(cached) = kog_audio::cover_art::cache_lookup(&cache_dir, &key) {
             self.as_mut()
                 .set_current_artwork_path(qstring(cached.to_string_lossy()));
             return;
         }
-        if let Some(bytes) = crate::cover_art::embedded_cover_bytes(&file) {
-            if let Some(stored) = crate::cover_art::store_cache(&cache_dir, &key, &bytes) {
+        if let Some(bytes) = kog_audio::cover_art::embedded_cover_bytes(&file) {
+            if let Some(stored) = kog_audio::cover_art::store_cache(&cache_dir, &key, &bytes) {
                 self.as_mut()
                     .set_current_artwork_path(qstring(stored.to_string_lossy()));
                 return;
@@ -6288,15 +6288,15 @@ impl qobject::AppController {
         // subdirectory resolve here instead of downloading blind.
         if file.is_file() {
             if let Some(folder) = file.parent() {
-                let folder_key = crate::cover_art::folder_cover_key(folder);
-                if let Some(cached) = crate::cover_art::cache_lookup(&cache_dir, &folder_key) {
+                let folder_key = kog_audio::cover_art::folder_cover_key(folder);
+                if let Some(cached) = kog_audio::cover_art::cache_lookup(&cache_dir, &folder_key) {
                     self.as_mut()
                         .set_current_artwork_path(qstring(cached.to_string_lossy()));
                     return;
                 }
-                if let Some(bytes) = crate::cover_art::sibling_cover_bytes(&file) {
+                if let Some(bytes) = kog_audio::cover_art::sibling_cover_bytes(&file) {
                     if let Some(stored) =
-                        crate::cover_art::store_cache(&cache_dir, &folder_key, &bytes)
+                        kog_audio::cover_art::store_cache(&cache_dir, &folder_key, &bytes)
                     {
                         self.as_mut()
                             .set_current_artwork_path(qstring(stored.to_string_lossy()));
@@ -6951,7 +6951,7 @@ impl qobject::AppController {
             let (initial, resumed) = match load_radio_round(&path) {
                 Some(initial) => (initial, true),
                 None => (
-                    crate::radio::RoundInitial::fresh(crate::radio::random_seed()),
+                    kog_audio::radio::RoundInitial::fresh(kog_audio::radio::random_seed()),
                     false,
                 ),
             };
@@ -6981,11 +6981,11 @@ mod tests {
         star_key_for_track, stored_entry_is_missing, track_filename, track_path,
         valid_equalizer_gain,
     };
-    use crate::decoder::{ArchiveOrigin, DecoderRegistry, DecoderSettings, PlaybackSource};
-    use crate::playback::OutputDevice;
-    use crate::playlist::PlaylistLocation;
-    use crate::settings::OutputDevicePreference;
-    use crate::track::Track;
+    use kog_audio::decoder::{ArchiveOrigin, DecoderRegistry, DecoderSettings, PlaybackSource};
+    use kog_audio::playback::OutputDevice;
+    use kog_audio::playlist::PlaylistLocation;
+    use kog_audio::settings::OutputDevicePreference;
+    use kog_audio::track::Track;
     use std::cmp::Ordering;
     use std::collections::HashSet;
     use std::fs;
@@ -7301,12 +7301,12 @@ mod tests {
     fn archive_tree_selection_flows_through_background_import() {
         let fixture = tempfile::tempdir().unwrap();
         let archive = fixture.path().join("songs.zip");
-        let wav = crate::archive::tests::wav_bytes(100);
-        crate::archive::tests::write_stored_zip(
+        let wav = kog_audio::archive::tests::wav_bytes(100);
+        kog_audio::archive::tests::write_stored_zip(
             &archive,
             &[("Disc/b.wav", &wav), ("Disc/a.wav", &wav)],
         );
-        let paths = vec![crate::archive::tests::tree_url(&archive, "Disc", true)];
+        let paths = vec![kog_audio::archive::tests::tree_url(&archive, "Disc", true)];
         let (sender, receiver) = std::sync::mpsc::sync_channel(64);
         scan_directory_paths(
             paths,
@@ -7661,11 +7661,11 @@ mod tests {
     #[test]
     fn star_sort_groups_starred_first_when_ascending() {
         let plain = Track {
-            source: crate::decoder::PlaybackSource::from_path(PathBuf::from("/music/a.flac")),
+            source: kog_audio::decoder::PlaybackSource::from_path(PathBuf::from("/music/a.flac")),
             ..Track::default()
         };
         let favorite = Track {
-            source: crate::decoder::PlaybackSource::from_path(PathBuf::from("/music/b.flac")),
+            source: kog_audio::decoder::PlaybackSource::from_path(PathBuf::from("/music/b.flac")),
             ..Track::default()
         };
         let starred: HashSet<String> = [star_key_for_track(&favorite)].into_iter().collect();

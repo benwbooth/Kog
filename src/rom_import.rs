@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use directories::ProjectDirs;
 
-use crate::archive::ExtractedArchive;
+use kog_audio::archive::ExtractedArchive;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RomKind {

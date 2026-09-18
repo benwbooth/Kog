@@ -252,7 +252,7 @@ fn install_archive_in(
     }
     let mut snapshot = tempfile::NamedTempFile::new().map_err(|e| e.to_string())?;
     snapshot.write_all(&bytes).map_err(|e| e.to_string())?;
-    let archive = crate::archive::ExtractedArchive::open_skin(snapshot.path())?;
+    let archive = kog_audio::archive::ExtractedArchive::open_skin(snapshot.path())?;
     if !archive.warnings.is_empty() {
         return Err("Skin contains unsafe or ambiguous archive entries".into());
     }
@@ -572,7 +572,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("skin.wsz");
         let bmp = bitmap();
-        crate::archive::tests::write_stored_zip(
+        kog_audio::archive::tests::write_stored_zip(
             &path,
             &[
                 ("Skin/MAIN.BMP", &bmp),
@@ -608,7 +608,7 @@ mod tests {
         let path = dir.path().join("skin.wsz");
         let bmp = bitmap();
         let legacy_text = bitmap_with_size(150, 12);
-        crate::archive::tests::write_stored_zip(
+        kog_audio::archive::tests::write_stored_zip(
             &path,
             &[
                 ("main.bmp", &bmp),
@@ -633,7 +633,7 @@ mod tests {
         let path = dir.path().join("skin.wsz");
         let bmp = bitmap();
         let incomplete_text = bitmap_with_size(149, 12);
-        crate::archive::tests::write_stored_zip(
+        kog_audio::archive::tests::write_stored_zip(
             &path,
             &[
                 ("main.bmp", &bmp),
@@ -682,7 +682,7 @@ mod tests {
                 ("cbuttons.bmp", bmp.as_slice()),
             ],
         ] {
-            crate::archive::tests::write_stored_zip(&path, &entries);
+            kog_audio::archive::tests::write_stored_zip(&path, &entries);
             assert!(
                 install_archive_in(
                     &path,
@@ -700,7 +700,7 @@ mod tests {
     fn imports_modern_archive_and_preserves_only_validated_zip_and_manifest() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("modern.wal");
-        crate::archive::tests::write_stored_zip(&path, &[
+        kog_audio::archive::tests::write_stored_zip(&path, &[
             ("Example/skin.xml", b"<WinampAbstractionLayer version=\"1.0\"><skininfo><name>Example</name></skininfo></WinampAbstractionLayer>"),
             ("Example/readme.txt", b"Example attribution"),
         ]);
@@ -736,7 +736,7 @@ mod tests {
     fn imports_modern_skins_using_bundled_classicpro() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("cpro.wal");
-        crate::archive::tests::write_stored_zip(&path, &[
+        kog_audio::archive::tests::write_stored_zip(&path, &[
             ("skin.xml", br#"<WasabiXML><include file="@COLORTHEMESPATH@/../../Plugins/classicPro/engine/load.xml"/></WasabiXML>"#),
         ]);
         let installed = dir.path().join("installed");
@@ -749,7 +749,7 @@ mod tests {
     fn rejects_classicpro_paths_outside_the_bundled_engine() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("cpro.wal");
-        crate::archive::tests::write_stored_zip(&path, &[
+        kog_audio::archive::tests::write_stored_zip(&path, &[
             ("skin.xml", br#"<WasabiXML><include file="@WINAMPPATH@/Plugins/classicPro/engine/../../other/plugin.xml"/></WasabiXML>"#),
         ]);
         let installed = dir.path().join("installed");
@@ -766,7 +766,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("classic.wsz");
         let bmp = bitmap();
-        crate::archive::tests::write_stored_zip(
+        kog_audio::archive::tests::write_stored_zip(
             &path,
             &[
                 ("main.bmp", &bmp),

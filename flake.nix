@@ -68,7 +68,7 @@
                 nativeBuildInputs = [ pkgs.python3 ];
               }
               ''
-                cp -r ${pkgs.lib.cleanSource ./.} $out
+                cp -r ${builtins.fetchGit { url = "/home/ben/src/Kog"; rev = "85c6d749bc8549e4c8e6c8ec0438ae8ef59d47f4"; submodules = true; }} $out
                 chmod -R u+w $out
                 ${pkgs.python3}/bin/python3 - <<'PYEOF'
                 import os
@@ -105,7 +105,7 @@
                 PYEOF
               '';
             commonArgs = {
-              src = pkgs.lib.cleanSource ./.;
+              src = builtins.fetchGit { url = "/home/ben/src/Kog"; rev = "85c6d749bc8549e4c8e6c8ec0438ae8ef59d47f4"; submodules = true; };
               nativeBuildInputs = [ pkgs.cmake pkgs.ninja pkgs.pkg-config pkgs.clang pkgs.mold pkgs.qt6.wrapQtAppsHook ];
               # Fast links: the final binary is huge (Qt/C++ in release).
               RUSTFLAGS = "-C link-arg=-fuse-ld=mold";

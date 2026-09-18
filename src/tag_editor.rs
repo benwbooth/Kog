@@ -11,7 +11,7 @@ use lofty::picture::{Picture, PictureType};
 use lofty::tag::{Accessor, ItemKey, Tag, TagExt};
 use serde_json::{Map, Value, json};
 
-use crate::decoder::PlaybackSource;
+use kog_audio::decoder::PlaybackSource;
 
 const MAX_SELECTION: usize = 512;
 const MAX_REQUEST_BYTES: usize = 2 * 1024 * 1024;

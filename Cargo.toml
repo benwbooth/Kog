@@ -7,10 +7,11 @@ description = "A cross-platform, format-comprehensive local music player"
 repository = "https://github.com/benwbooth/Kog"
 
 [workspace]
-members = ["crates/kog-core"]
+members = ["crates/kog-core", "crates/kog-audio"]
 
 [dependencies]
 kog-core = { path = "crates/kog-core" }
+kog-audio = { path = "crates/kog-audio" }
 base64 = "0.22.1"
 chardetng = "1.0.0"
 cxx = "1.0.176"
@@ -46,3 +47,8 @@ cc = "1.2.38"
 cmake = "0.1.58"
 cxx-qt-build = { version = "0.10.0", features = ["link_qt_object_files"] }
 pkg-config = "0.3.32"
+
+[dev-dependencies]
+# The UI crate's tests reuse engine test fixtures; the feature is only
+# active for test builds, never in release artifacts.
+kog-audio = { path = "crates/kog-audio", features = ["test-util"] }

@@ -1268,6 +1268,7 @@ dependencies = [
  "directories",
  "encoding_rs",
  "futures-lite",
+ "kog-audio",
  "kog-core",
  "lofty",
  "midly",
@@ -1283,6 +1284,31 @@ dependencies = [
  "serde_json",
  "tempfile",
  "trash",
+ "url",
+]
+
+[[package]]
+name = "kog-audio"
+version = "0.9.33"
+dependencies = [
+ "async-channel",
+ "cc",
+ "cmake",
+ "compress-tools",
+ "directories",
+ "encoding_rs",
+ "futures-lite",
+ "kog-core",
+ "lofty",
+ "midly",
+ "orgorg",
+ "percent-encoding",
+ "pkg-config",
+ "rodio",
+ "rustysynth",
+ "self_cell",
+ "serde_json",
+ "tempfile",
  "url",
 ]
 
