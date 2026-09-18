@@ -5,7 +5,14 @@ fn main() {
     // QML, icons, and web runtime files are embedded into the binary:
     // without these, local builds silently keep shipping stale UI after
     // QML-only edits.
-    println!("cargo:rerun-if-changed=qml");
+    // With KOG_QML_DIR the app reads QML from the source tree, so watching the
+    // qml directory would only force a pointless rebuild of the Qt QML
+    // module's generated C++ (minutes) for every QML edit. Still emitted when
+    // unset, which is how packaged builds embed the QML.
+    println!("cargo:rerun-if-env-changed=KOG_QML_DIR");
+    if std::env::var_os("KOG_QML_DIR").is_none() {
+        println!("cargo:rerun-if-changed=qml");
+    }
     println!("cargo:rerun-if-changed=web");
     println!("cargo:rerun-if-changed=build.rs");
     // Note: deliberately not watching .git/HEAD. Every commit rewrites it, and

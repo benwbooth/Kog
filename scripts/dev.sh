@@ -149,5 +149,9 @@ if (( ${#app_args[@]} )); then
   done
 fi
 
+# Debug runs load QML from the source tree, so a QML edit only needs the app
+# restarted - no compile of the QML module's C++.
+[[ "$profile" == "debug" ]] && export KOG_QML_DIR="$root/qml"
+
 echo "[dev] watching; app output goes to $app_log"
 exec watchexec "${watch_args[@]}" --shell=bash -- "${step_args[*]}"

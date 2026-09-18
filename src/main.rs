@@ -42,7 +42,21 @@ fn main() {
     application.set_application_name(&QString::from("Kog"));
 
     if let Some(engine) = engine.as_mut() {
-        engine.load(&QUrl::from("qrc:/qt/qml/org/kog/player/qml/Main.qml"));
+        // Development shortcut: with KOG_QML_DIR pointing at the source tree,
+        // load the QML from disk so editing it needs no rebuild at all. Debug
+        // builds only, so a packaged binary cannot be redirected. Components
+        // in the same directory and the org.kog.player types (registered by the
+        // generated module, which is still embedded) both resolve as usual.
+        let from_disk = std::env::var_os("KOG_QML_DIR")
+            .filter(|_| cfg!(debug_assertions))
+            .map(std::path::PathBuf::from);
+        match from_disk {
+            Some(directory) => {
+                let main = directory.join("Main.qml");
+                engine.load(&QUrl::from(&format!("file://{}", main.display())));
+            }
+            None => engine.load(&QUrl::from("qrc:/qt/qml/org/kog/player/qml/Main.qml")),
+        }
     }
     desktop_integration::apply_application_icon();
     desktop_integration::restore_main_window();
