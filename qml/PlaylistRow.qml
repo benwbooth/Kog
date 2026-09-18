@@ -368,13 +368,27 @@ Item {
     // mid-row. This one centers over the hovered column just above it.
     Popup {
         id: fieldTip
+        // Parent to the view, not the row: the row lives inside the
+        // horizontally scrolled content, so row-local coordinates inherit
+        // contentX and push the tip off the left edge of the pane.
+        parent: root.ListView.view
+        readonly property Item viewport: root.ListView.view
         width: Math.min(tipLabel.implicitWidth + 18,
-            (root.ListView.view ? root.ListView.view.width : 400) - 16)
+            Math.max(80, (viewport ? viewport.width : 400) - 16))
         height: tipLabel.implicitHeight + 12
-        x: Math.round(Math.max(0, Math.min(
-            rowPointer.hoverX - width / 2,
-            (root.ListView.view ? root.ListView.view.width : 400) - width)))
-        y: -height - 4
+        x: {
+            if (!viewport)
+                return 0
+            const cursor = root.mapToItem(viewport, rowPointer.hoverX, 0).x
+            return Math.round(Math.max(4, Math.min(
+                cursor - width / 2, viewport.width - width - 4)))
+        }
+        y: {
+            if (!viewport)
+                return 0
+            const rowTop = root.mapToItem(viewport, 0, 0).y
+            return Math.round(Math.max(4, rowTop - height - 4))
+        }
         modal: false
         focus: false
         closePolicy: Popup.NoAutoClose

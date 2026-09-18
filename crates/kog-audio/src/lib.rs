@@ -49,6 +49,7 @@ pub mod sfm;
 pub mod sfm_decoder;
 pub mod sid;
 pub mod sid_decoder;
+pub mod streaming;
 pub mod spessasynth_midi;
 pub mod syntrax;
 pub mod syntrax_decoder;
