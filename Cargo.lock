@@ -1253,7 +1253,7 @@ dependencies = [
 
 [[package]]
 name = "kog"
-version = "0.9.32"
+version = "0.9.33"
 dependencies = [
  "async-channel",
  "base64",
