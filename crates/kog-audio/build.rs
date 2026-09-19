@@ -13,6 +13,28 @@ fn plain_absolute(path: PathBuf) -> PathBuf {
     PathBuf::from(text.replace('\\', "/"))
 }
 
+/// Watch a vendored library's sources without watching its git metadata.
+///
+/// Cargo watches a directory recursively, and every submodule carries a `.git`
+/// file that a plain git operation (status, add, commit) rewrites. Watching the
+/// submodule root therefore made every commit look like a source change and
+/// rebuilt this crate - and everything downstream - for minutes. Watching the
+/// entries instead, skipping `.git`, covers the same sources.
+fn watch_native(relative: &str) {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        // Missing submodule: the other checks report that properly.
+        println!("cargo:rerun-if-changed={relative}");
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry.file_name() == ".git" {
+            continue;
+        }
+        println!("cargo:rerun-if-changed={}", entry.path().display());
+    }
+}
+
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     build_spessasynth_midi();
@@ -67,7 +89,7 @@ fn main() {
         .compile("kog_libvgm");
     link_libvgm(&libvgm_output);
 
-    println!("cargo:rerun-if-changed=../../native/opl3w");
+    watch_native("../../native/opl3w");
 
 }
 
@@ -128,7 +150,7 @@ fn build_spessasynth_midi() {
         println!("cargo:rustc-link-lib=pthread");
     }
 
-    println!("cargo:rerun-if-changed=../../native/spessasynth-core/spessasynth_core");
+    watch_native("../../native/spessasynth-core/spessasynth_core");
     println!("cargo:rerun-if-changed=../../native/spessasynth_midi_bridge.c");
     println!("cargo:rerun-if-changed=../../native/spessasynth_midi_bridge.h");
 }
@@ -164,7 +186,7 @@ fn build_mt32emu() {
     println!("cargo:rustc-link-search=native={}/lib", output.display());
     println!("cargo:rustc-link-lib=static=mt32emu");
 
-    println!("cargo:rerun-if-changed=../../native/munt/mt32emu");
+    watch_native("../../native/munt/mt32emu");
     println!("cargo:rerun-if-changed=../../native/mt32emu_bridge.cpp");
     println!("cargo:rerun-if-changed=../../native/mt32emu_bridge.h");
 }
@@ -206,7 +228,7 @@ fn build_adlmidi() {
 
     println!("cargo:rustc-link-search=native={}/lib", output.display());
     println!("cargo:rustc-link-lib=static=ADLMIDI");
-    println!("cargo:rerun-if-changed=../../native/libadlmidi");
+    watch_native("../../native/libadlmidi");
 }
 
 fn build_ffmpeg() {
@@ -274,7 +296,7 @@ fn build_game_music_emu() {
 
     println!("cargo:rustc-link-search=native={}/lib", output.display());
     println!("cargo:rustc-link-lib=static=gme");
-    println!("cargo:rerun-if-changed=../../native/game-music-emu");
+    watch_native("../../native/game-music-emu");
 }
 
 fn build_sfm_helper() {
@@ -311,8 +333,8 @@ fn build_sfm_helper() {
         "cargo:rustc-env=KOG_BUILD_SFM_HELPER={}",
         executable.display()
     );
-    println!("cargo:rerun-if-changed=../../native/sfm-helper");
-    println!("cargo:rerun-if-changed=../../native/cog-gme-sfm");
+    watch_native("../../native/sfm-helper");
+    watch_native("../../native/cog-gme-sfm");
 }
 
 fn build_libvgm() -> std::path::PathBuf {
@@ -403,8 +425,8 @@ fn build_libvgm() -> std::path::PathBuf {
 
     let output = config.build();
 
-    println!("cargo:rerun-if-changed=../../native/libvgm");
-    println!("cargo:rerun-if-changed=../../native/libvgm-kog");
+    watch_native("../../native/libvgm");
+    watch_native("../../native/libvgm-kog");
     output
 }
 
@@ -498,7 +520,7 @@ fn build_openmpt() {
             .compile(name);
     }
 
-    println!("cargo:rerun-if-changed=../../native/openmpt");
+    watch_native("../../native/openmpt");
 }
 
 fn cpp_files(directory: &Path) -> Vec<PathBuf> {
@@ -532,7 +554,7 @@ fn build_hivelytracker() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         println!("cargo:rustc-link-lib=m");
     }
-    println!("cargo:rerun-if-changed=../../native/hivelytracker/Replayer_Windows");
+    watch_native("../../native/hivelytracker/Replayer_Windows");
     println!("cargo:rerun-if-changed=../../native/hively_bridge.c");
     println!("cargo:rerun-if-changed=../../native/hively_bridge.h");
 }
@@ -597,7 +619,7 @@ fn build_vgmstream() {
         println!("cargo:rustc-link-lib=m");
     }
 
-    println!("cargo:rerun-if-changed=../../native/vgmstream");
+    watch_native("../../native/vgmstream");
     println!("cargo:rerun-if-changed=../../native/vgmstream_bridge.c");
     println!("cargo:rerun-if-changed=../../native/vgmstream_bridge.h");
 }
@@ -685,8 +707,8 @@ fn build_adplug() {
         .warnings(false)
         .compile("kog_libbinio");
 
-    println!("cargo:rerun-if-changed=../../native/adplug");
-    println!("cargo:rerun-if-changed=../../native/libbinio");
+    watch_native("../../native/adplug");
+    watch_native("../../native/libbinio");
     println!("cargo:rerun-if-changed=../../native/adplug_bridge.cpp");
     println!("cargo:rerun-if-changed=../../native/adplug_bridge.h");
 }
@@ -823,8 +845,8 @@ fn build_libsidplayfp() {
         .warnings(false)
         .compile("kog_libsidplayfp");
 
-    println!("cargo:rerun-if-changed=../../native/libsidplayfp");
-    println!("cargo:rerun-if-changed=../../native/libsidplayfp-generated");
+    watch_native("../../native/libsidplayfp");
+    watch_native("../../native/libsidplayfp-generated");
     println!("cargo:rerun-if-changed=../../native/sid_bridge.cpp");
     println!("cargo:rerun-if-changed=../../native/sid_bridge.h");
 }
@@ -892,7 +914,7 @@ fn build_mgba() -> PathBuf {
     }
     let output = config.build();
 
-    println!("cargo:rerun-if-changed=../../native/mgba");
+    watch_native("../../native/mgba");
     output
 }
 
@@ -1290,11 +1312,11 @@ fn build_ncsf(mgba_output: &Path) {
         println!("cargo:rustc-link-lib=framework=Foundation");
     }
 
-    println!("cargo:rerun-if-changed=../../native/sseqplayer");
-    println!("cargo:rerun-if-changed=../../native/psflib");
-    println!("cargo:rerun-if-changed=../../native/highly-quixotic");
-    println!("cargo:rerun-if-changed=../../native/highly-theoretical");
-    println!("cargo:rerun-if-changed=../../native/lazyusf2");
+    watch_native("../../native/sseqplayer");
+    watch_native("../../native/psflib");
+    watch_native("../../native/highly-quixotic");
+    watch_native("../../native/highly-theoretical");
+    watch_native("../../native/lazyusf2");
     println!("cargo:rerun-if-changed=../../native/lazyusf2_msvc_fenv.h");
     println!("cargo:rerun-if-changed=../../native/ncsf_bridge.cpp");
     println!("cargo:rerun-if-changed=../../native/ncsf_bridge.h");
@@ -1341,8 +1363,8 @@ fn build_psf_helper() {
         "cargo:rustc-env=KOG_BUILD_PSF_HELPER={}",
         executable.display()
     );
-    println!("cargo:rerun-if-changed=../../native/psf-helper");
-    println!("cargo:rerun-if-changed=../../native/libupse");
+    watch_native("../../native/psf-helper");
+    watch_native("../../native/libupse");
 }
 
 fn build_psf2_helper() {
@@ -1396,8 +1418,8 @@ fn build_psf2_helper() {
         "cargo:rustc-env=KOG_BUILD_PSF2_HELPER={}",
         executable.display()
     );
-    println!("cargo:rerun-if-changed=../../native/psf2-helper");
-    println!("cargo:rerun-if-changed=../../native/play");
+    watch_native("../../native/psf2-helper");
+    watch_native("../../native/play");
 }
 
 fn build_twosf_helper() {
@@ -1415,8 +1437,8 @@ fn build_twosf_helper() {
             "cargo:rustc-env=KOG_BUILD_2SF_HELPER={}",
             unbuilt.display()
         );
-        println!("cargo:rerun-if-changed=../../native/twosf-helper");
-        println!("cargo:rerun-if-changed=../../native/melonds");
+        watch_native("../../native/twosf-helper");
+        watch_native("../../native/melonds");
         return;
     }
 
@@ -1463,8 +1485,8 @@ fn build_twosf_helper() {
         "cargo:rustc-env=KOG_BUILD_2SF_HELPER={}",
         executable.display()
     );
-    println!("cargo:rerun-if-changed=../../native/twosf-helper");
-    println!("cargo:rerun-if-changed=../../native/melonds");
+    watch_native("../../native/twosf-helper");
+    watch_native("../../native/melonds");
 }
 
 fn build_snsf_helper() {
@@ -1511,8 +1533,8 @@ fn build_snsf_helper() {
         "cargo:rustc-env=KOG_BUILD_SNSF_HELPER={}",
         executable.display()
     );
-    println!("cargo:rerun-if-changed=../../native/snsf-helper");
-    println!("cargo:rerun-if-changed=../../native/libsnsf9x");
+    watch_native("../../native/snsf-helper");
+    watch_native("../../native/libsnsf9x");
 }
 
 fn build_syntrax_helper() {
@@ -1551,8 +1573,8 @@ fn build_syntrax_helper() {
         "cargo:rustc-env=KOG_BUILD_SYNTRAX_HELPER={}",
         executable.display()
     );
-    println!("cargo:rerun-if-changed=../../native/syntrax-helper");
-    println!("cargo:rerun-if-changed=../../native/syntrax-c");
+    watch_native("../../native/syntrax-helper");
+    watch_native("../../native/syntrax-c");
 }
 
 fn build_sc55_helper() {
@@ -1591,6 +1613,6 @@ fn build_sc55_helper() {
         "cargo:rustc-env=KOG_BUILD_SC55_HELPER={}",
         executable.display()
     );
-    println!("cargo:rerun-if-changed=../../native/sc55-helper");
-    println!("cargo:rerun-if-changed=../../native/nuked-sc55");
+    watch_native("../../native/sc55-helper");
+    watch_native("../../native/nuked-sc55");
 }
