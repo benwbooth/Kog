@@ -59,7 +59,9 @@ body {
   -webkit-text-size-adjust: 100%;
 }
 
-#app,
+/* The app root is what fills the window. `#app` is only the mount point and
+   must not take space itself: as a block before the mounted `.app` a 100%
+   height there pushed the whole player below the viewport. */
 .app {
   height: 100%;
 }
