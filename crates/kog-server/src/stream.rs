@@ -273,12 +273,13 @@ pub fn encoder_args(
                 "aac".to_owned(),
                 "-b:a".to_owned(),
                 format!("{bitrate}k"),
-                // Fragmented MP4 so a client can start playing before the
-                // whole stream exists.
-                "-movflags".to_owned(),
-                "+frag_keyframe+empty_moov+default_base_moof".to_owned(),
+                // Raw ADTS, not a container: each frame is self-describing, so
+                // a client can start playing as soon as the first frame lands
+                // and never needs a finalized moov. The tradeoff is that ADTS
+                // carries no duration; the web UI reads that from
+                // `/api/metadata` instead.
                 "-f".to_owned(),
-                "mp4".to_owned(),
+                "adts".to_owned(),
             ]);
         }
         StreamCodec::Opus => {
@@ -493,9 +494,15 @@ mod tests {
     fn encoder_args_select_the_right_codec_and_container() {
         let aac = encoder_args(StreamCodec::Aac, 192, 44_100, 2);
         assert!(aac.windows(2).any(|pair| pair == ["-c:a", "aac"]));
-        assert!(aac.windows(2).any(|pair| pair == ["-f", "mp4"]));
+        assert!(
+            aac.windows(2).any(|pair| pair == ["-f", "adts"]),
+            "ADTS is the progressive, self-describing stream browsers can play"
+        );
+        assert!(
+            !aac.iter().any(|arg| arg.contains("moov")),
+            "ADTS has no container/moov"
+        );
         assert!(aac.windows(2).any(|pair| pair == ["-b:a", "192k"]));
-        assert!(aac.iter().any(|arg| arg.contains("empty_moov")), "streamable mp4");
         assert_eq!(aac.last().unwrap(), "pipe:1");
 
         let opus = encoder_args(StreamCodec::Opus, 128, 44_100, 2);

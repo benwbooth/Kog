@@ -26,7 +26,8 @@ pub use config::{ServerConfig, TlsMode};
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum StreamCodec {
-    /// AAC in fragmented MP4: plays everywhere, including iOS Safari.
+    /// Raw ADTS AAC: every browser plays it progressively, including iOS
+    /// Safari, and it streams without a container to finalize.
     #[default]
     Aac,
     /// Opus in Ogg: best quality per bit where the browser supports it.
@@ -58,7 +59,7 @@ impl StreamCodec {
     /// MIME type for the encoded stream.
     pub const fn content_type(self) -> &'static str {
         match self {
-            Self::Aac => "audio/mp4",
+            Self::Aac => "audio/aac",
             Self::Opus => "audio/ogg",
             Self::Flac => "audio/flac",
         }
@@ -67,7 +68,7 @@ impl StreamCodec {
     /// File extension for cached encodes.
     pub const fn extension(self) -> &'static str {
         match self {
-            Self::Aac => "m4a",
+            Self::Aac => "aac",
             Self::Opus => "ogg",
             Self::Flac => "flac",
         }
