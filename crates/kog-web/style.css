@@ -104,6 +104,14 @@ body {
   font-size: 16px;
 }
 
+/* The application-menu icon is an inlined desktop SVG, tinted like text. */
+.toolbar .icon-button > svg {
+  width: 18px;
+  height: 18px;
+  display: block;
+  fill: currentColor;
+}
+
 .icon-button:hover:not(:disabled) {
   background: var(--alternate);
 }
@@ -881,6 +889,16 @@ button:focus-visible {
   place-items: center;
   padding: 0;
   border-radius: 6px;
+}
+
+/* Inlined desktop icons (qml/icons/*.svg): 20px like CogButton's icon, tinted
+ * by the button text where the desktop swaps the -light variant. */
+.controls button > svg,
+.controls .glyph-icon svg {
+  width: 20px;
+  height: 20px;
+  display: block;
+  fill: currentColor;
 }
 
 .controls .play {

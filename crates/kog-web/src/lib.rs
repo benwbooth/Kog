@@ -12,7 +12,9 @@
 //!
 //! The toolbar carries the desktop's two separate controls: `☰` opens an
 //! application menu mirroring `qml/Main.qml`'s `hamburgerMenu`, and a checkable
-//! `«`/`»` toggles the file tree. The header context menu exposes the full
+//! `«`/`»` toggles the file tree. The transport buttons inline the same
+//! monochrome SVGs `CogButton` shows on the desktop, so no control depends on
+//! the browser emoji font. The header context menu exposes the full
 //! column set from `qml/PlaylistHeader.qml`; tags arrive from
 //! `POST /api/metadata` in one batch per refresh and are cached by locator, so
 //! re-renders never refetch. A background poll of `/kog_web.js`'s content-hash
@@ -29,6 +31,20 @@ use serde::{Deserialize, Serialize};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::JsCast;
+
+/// The desktop transport's SVG icons (`qml/icons/`), inlined verbatim. CSS
+/// tints them with the button's text color where the desktop picks the
+/// `-light` variant from the toolbar luminance.
+mod icons {
+    pub const MENU: &str = include_str!("../../../qml/icons/application-menu.svg");
+    pub const SHUFFLE: &str = include_str!("../../../qml/icons/media-playlist-shuffle.svg");
+    pub const SKIP_BACKWARD: &str = include_str!("../../../qml/icons/media-skip-backward.svg");
+    pub const PLAY: &str = include_str!("../../../qml/icons/media-playback-start.svg");
+    pub const PAUSE: &str = include_str!("../../../qml/icons/media-playback-pause.svg");
+    pub const STOP: &str = include_str!("../../../qml/icons/media-playback-stop.svg");
+    pub const SKIP_FORWARD: &str = include_str!("../../../qml/icons/media-skip-forward.svg");
+    pub const REPEAT: &str = include_str!("../../../qml/icons/media-playlist-repeat.svg");
+}
 
 /// One playable entry, addressed the way the whole API addresses tracks.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -2603,7 +2619,8 @@ fn App() -> impl IntoView {
                     class="flat icon-button"
                     title="Kog menu"
                     on:click=move |_| set_menu_open.update(|open| *open = !*open)
-                >"☰"</button>
+                    inner_html=icons::MENU
+                ></button>
                 <button
                     class="flat icon-button sidebar-toggle"
                     title=move || {
@@ -3229,18 +3246,25 @@ fn App() -> impl IntoView {
                             title=move || shuffle_tip()
                             disabled=move || queue.get().len() <= 1
                             on:click=move |_| set_shuffle.update(|value| *value = !*value)
-                        >"⇄"</button>
+                            inner_html=icons::SHUFFLE
+                        ></button>
                         <button
                             title="Previous"
                             disabled=move || queue.get().is_empty() || (!shuffle.get() && current.get() == 0 && repeat_mode.get() != Repeat::All)
                             on:click=move |_| step(-1)
-                        >"⏮"</button>
+                            inner_html=icons::SKIP_BACKWARD
+                        ></button>
                         <button
                             class="play"
                             title="Play or pause"
                             disabled=move || queue.get().is_empty()
                             on:click=move |_| set_playing.update(|value| *value = !*value)
-                        >{move || if playing.get() { "⏸" } else { "▶" }}</button>
+                        >
+                            <span
+                                class="glyph-icon"
+                                inner_html=move || if playing.get() { icons::PAUSE } else { icons::PLAY }
+                            ></span>
+                        </button>
                         <button
                             title="Stop"
                             disabled=move || queue.get().is_empty()
@@ -3251,12 +3275,14 @@ fn App() -> impl IntoView {
                                     let _ = audio.set_current_time(0.0);
                                 }
                             }
-                        >"⏹"</button>
+                            inner_html=icons::STOP
+                        ></button>
                         <button
                             title="Next"
                             disabled=move || queue.get().is_empty() || (current.get() + 1 >= queue.get().len() && repeat_mode.get() != Repeat::All && !shuffle.get() && !radio_on.get())
                             on:click=move |_| step(1)
-                        >"⏭"</button>
+                            inner_html=icons::SKIP_FORWARD
+                        ></button>
                         <button
                             class="toggle repeat"
                             class:active=move || repeat_mode.get() != Repeat::Off
@@ -3272,7 +3298,7 @@ fn App() -> impl IntoView {
                                 });
                             }
                         >
-                            "↻"
+                            <span class="glyph-icon" inner_html=icons::REPEAT></span>
                             <Show when=move || !repeat_badge().is_empty() fallback=|| ()>
                                 <span class="badge">{move || repeat_badge()}</span>
                             </Show>
@@ -3292,7 +3318,7 @@ fn App() -> impl IntoView {
                                 let next = !radio_on.get_untracked();
                                 set_radio(next);
                             }
-                        >"⚄"</button>
+                        >"⚄\u{FE0E}"</button>
                     </div>
                     <div class="seek-row">
                         <span class="time elapsed">{move || clock(position.get())}</span>
