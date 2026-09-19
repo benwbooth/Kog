@@ -70,6 +70,9 @@ ApplicationWindow {
             ? appController.stop_after_selection_state(selectedRows.join(","))
             : "none"
     }
+    // Full path of the row under the pointer in the file tree; shown in the
+    // pane itself, because tooltips do not pop in that view.
+    property string treeHoverPath: ""
     readonly property bool compactToolbar: width < 980
     // Which build is running: the stamped revision plus, when it is known,
     // when the binary was linked. Shown small in the toolbar and in About.
@@ -2469,6 +2472,19 @@ ApplicationWindow {
                     opacity: 0.75
                 }
 
+                Label {
+                    objectName: "treeHoverPathLabel"
+                    Layout.fillWidth: true
+                    Layout.leftMargin: 8
+                    Layout.rightMargin: 8
+                    Layout.bottomMargin: visible ? 4 : 0
+                    visible: root.treeHoverPath.length > 0
+                    text: root.treeHoverPath
+                    font.pointSize: root.font.pointSize * 0.85
+                    wrapMode: Text.Wrap
+                    opacity: 0.75
+                }
+
                 ItemDelegate {
                     id: parentDirectoryRow
 
@@ -2569,21 +2585,20 @@ ApplicationWindow {
                         // An explicit ToolTip item rather than the attached
                         // property: the attached form did not show inside this
                         // tree delegate at all.
+                        HoverHandler {
+                            id: treeRowHover
+                            onHoveredChanged: root.treeHoverPath = hovered
+                                ? (treeDelegate.filePath.length > 0
+                                    ? treeDelegate.filePath
+                                    : root.treePathAtRow(treeDelegate.row))
+                                : ""
+                        }
                         ToolTip {
                             id: treeRowToolTip
-                            // Drive this from the Control's own hover state.
-                            // The delegate's MouseArea containsMouse never
-                            // became true here, so the tooltip never showed.
-                            visible: treeDelegate.hovered
-                            delay: 700
+                            visible: treeRowHover.hovered
+                            delay: 500
                             y: treeDelegate.height
-                            // The delegate's own path role first: it is the
-                            // absolute path for every row. path_for_index is
-                            // the fallback, but it can come back empty for the
-                            // root row, which is the common case.
-                            text: treeDelegate.filePath.length > 0
-                                ? treeDelegate.filePath
-                                : root.treePathAtRow(treeDelegate.row)
+                            text: root.treeHoverPath
                         }
                         MouseArea {
                             id: treePointer
