@@ -2571,7 +2571,10 @@ ApplicationWindow {
                         // tree delegate at all.
                         ToolTip {
                             id: treeRowToolTip
-                            visible: treePointer.containsMouse
+                            // Drive this from the Control's own hover state.
+                            // The delegate's MouseArea containsMouse never
+                            // became true here, so the tooltip never showed.
+                            visible: treeDelegate.hovered
                             delay: 700
                             y: treeDelegate.height
                             // The delegate's own path role first: it is the
