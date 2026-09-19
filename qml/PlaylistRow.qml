@@ -92,6 +92,8 @@ Item {
         rowPointer.manualDragging = false
         rowPointer.suppressNextClick = false
         rowPointer.hoverX = -1
+        rowPointer.hoverViewX = -1
+        rowPointer.hoverViewY = -1
         tipTimer.stop()
         fieldTip.visible = false
     }
@@ -277,6 +279,13 @@ Item {
         preventStealing: true
         scrollGestureEnabled: false
         property real hoverX: -1
+        // The cursor in view coordinates, kept as properties so the tooltip's
+        // bindings re-evaluate on every hover move. A mapToItem call inside a
+        // binding is opaque to QML: it evaluates once, goes stale when the
+        // view scrolls or the pooled delegate is reused, and pinned the tip
+        // to wherever the row was first created.
+        property real hoverViewX: -1
+        property real hoverViewY: -1
         onEntered: {
             root.hovered = true
             hoverX = -1
@@ -284,6 +293,8 @@ Item {
         onExited: {
             root.hovered = false
             hoverX = -1
+            hoverViewX = -1
+            hoverViewY = -1
         }
         onPressed: mouse => {
             pressX = mouse.x
@@ -292,6 +303,11 @@ Item {
         }
         onPositionChanged: mouse => {
             hoverX = mouse.x
+            const view = root.ListView.view
+            const viewPoint = view ? root.mapToItem(view, mouse.x, mouse.y)
+                : Qt.point(-1, -1)
+            hoverViewX = viewPoint.x
+            hoverViewY = viewPoint.y
             if ((mouse.buttons & Qt.LeftButton) === 0)
                 return
             if (!manualDragging
@@ -365,7 +381,8 @@ Item {
 
     // Field tooltip as an explicitly positioned popup: the attached
     // ToolTip cannot take coordinates, and its default placement lands
-    // mid-row. This one centers over the hovered column just above it.
+    // mid-row. This one follows the cursor: just above it, flipped below
+    // when the row hugs the pane top.
     Popup {
         id: fieldTip
         // Parent to the view, not the row: the row lives inside the
@@ -373,21 +390,25 @@ Item {
         // contentX and push the tip off the left edge of the pane.
         parent: root.ListView.view
         readonly property Item viewport: root.ListView.view
-        width: Math.min(tipLabel.implicitWidth + 18,
-            Math.max(80, (viewport ? viewport.width : 400) - 16))
+        // Wide enough for whatever the cell elided — the whole point of the
+        // tip is the full text — with wrapping only past this cap.
+        width: Math.min(tipLabel.implicitWidth + 18, 560)
         height: tipLabel.implicitHeight + 12
         x: {
-            if (!viewport)
+            if (!viewport || rowPointer.hoverViewX < 0)
                 return 0
-            const cursor = root.mapToItem(viewport, rowPointer.hoverX, 0).x
             return Math.round(Math.max(4, Math.min(
-                cursor - width / 2, viewport.width - width - 4)))
+                rowPointer.hoverViewX - width / 2,
+                viewport.width - width - 4)))
         }
         y: {
-            if (!viewport)
+            if (!viewport || rowPointer.hoverViewY < 0)
                 return 0
-            const rowTop = root.mapToItem(viewport, 0, 0).y
-            return Math.round(Math.max(4, rowTop - height - 4))
+            const above = rowPointer.hoverViewY - height - 6
+            if (above >= 4)
+                return Math.round(above)
+            return Math.round(Math.min(viewport.height - height - 4,
+                rowPointer.hoverViewY + 20))
         }
         modal: false
         focus: false
@@ -403,6 +424,7 @@ Item {
         }
         contentItem: Label {
             id: tipLabel
+            width: fieldTip.availableWidth
             leftPadding: 9
             rightPadding: 9
             topPadding: 6
@@ -410,7 +432,7 @@ Item {
             text: root.hoverTip
             color: root.theme.text
             font.pixelSize: 12
-            elide: Text.ElideRight
+            wrapMode: Text.Wrap
             verticalAlignment: Text.AlignVCenter
         }
     }
