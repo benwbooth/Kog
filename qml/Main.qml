@@ -2566,13 +2566,23 @@ ApplicationWindow {
                                     : treeDelegate.palette.text
                             }
                         }
-                        ToolTip.visible: treePointer.containsMouse
-                        ToolTip.delay: 700
-                        // The full path: the label is elided, so hovering is
-                        // how you read where a file actually lives.
-                        ToolTip.text: root.treePathAtRow(treeDelegate.row)
+                        // An explicit ToolTip item rather than the attached
+                        // property: the attached form did not show inside this
+                        // tree delegate at all.
+                        ToolTip {
+                            id: treeRowToolTip
+                            visible: treePointer.containsMouse
+                                && treePointer.tipText.length > 0
+                            delay: 700
+                            y: treeDelegate.height
+                            text: treePointer.tipText
+                        }
                         MouseArea {
                             id: treePointer
+                            // Resolved on hover: the full path of the row.
+                            readonly property string tipText: containsMouse
+                                ? root.treePathAtRow(treeDelegate.row)
+                                : ""
                             property real pressX: 0
                             property real pressY: 0
                             property bool manualDragging: false
