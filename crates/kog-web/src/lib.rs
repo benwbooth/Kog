@@ -1505,6 +1505,19 @@ fn App() -> impl IntoView {
         }
     };
 
+    // Root at one of the listed folders directly from its row.
+    let root_at_folder = {
+        let goto_root = goto_root.clone();
+        move |dir: String| {
+            set_picker_open.set(false);
+            if dir == library_root.get_untracked() {
+                goto_root(String::new());
+            } else {
+                goto_root(dir);
+            }
+        }
+    };
+
     // Rebuild the remembered tree once the library root is known. Children
     // load lazily, so a folder is only re-expanded after its parent level has
     // arrived; the effect runs again as each level lands and converges on the
@@ -3689,13 +3702,29 @@ fn App() -> impl IntoView {
                             key=|entry| entry.1.clone()
                             let:entry
                         >
-                            <button
-                                class="folder-picker-row"
-                                on:click=move |_| set_picker_dir.set(entry.1.clone())
-                            >
-                                <span class="tree-icon dir"></span>
-                                {entry.0.clone()}
-                            </button>
+                            {
+                                let name = entry.0.clone();
+                                let browse_path = entry.1.clone();
+                                let root_path = entry.1.clone();
+                                view! {
+                                    <div class="folder-picker-row">
+                                        <button
+                                            class="folder-picker-open"
+                                            title="Browse this folder"
+                                            on:click=move |_| set_picker_dir.set(browse_path.clone())
+                                        >
+                                            <span class="tree-icon dir"></span>
+                                            {name.clone()}
+                                        </button>
+                                        <button
+                                            class="icon-button folder-picker-root"
+                                            title={format!("Use {name} as Tree Root")}
+                                            on:click=move |_| root_at_folder(root_path.clone())
+                                            inner_html=icons::FOLDER_OPEN
+                                        ></button>
+                                    </div>
+                                }
+                            }
                         </For>
                     </div>
                     <div class="settings-actions">

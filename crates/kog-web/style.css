@@ -1140,19 +1140,13 @@ button:focus-visible {
   margin-bottom: 12px;
 }
 
+/* A picker row: the folder name descends into it, the trailing folder button
+ * roots the tree at it directly. */
 .folder-picker-row {
   display: flex;
   align-items: center;
-  gap: 8px;
   width: 100%;
-  padding: 0 10px;
-  height: 32px;
-  border: 0;
   border-bottom: 1px solid var(--border);
-  background: transparent;
-  color: var(--text);
-  text-align: left;
-  font-size: 12px;
 }
 
 .folder-picker-row:last-child {
@@ -1163,11 +1157,61 @@ button:focus-visible {
   background: color-mix(in srgb, var(--highlight) 14%, transparent);
 }
 
+.folder-picker-open {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  padding: 0 10px;
+  height: 32px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font-size: 12px;
+}
+
+.folder-picker-open .tree-icon,
 .folder-picker-row .tree-icon {
   flex: none;
 }
 
+.folder-picker-root {
+  width: 30px;
+  height: 30px;
+  flex: none;
+  margin-right: 4px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  opacity: 0.62;
+}
+
+.folder-picker-root:hover {
+  opacity: 1;
+  color: var(--highlight);
+  background: color-mix(in srgb, var(--highlight) 16%, transparent);
+}
+
+.folder-picker-root svg {
+  width: 15px;
+  height: 15px;
+  display: block;
+}
+
+.folder-picker-root svg path {
+  fill: currentColor;
+}
+
 .folder-picker-row.parent {
+  height: 32px;
+  padding: 0 10px;
+  gap: 8px;
+  border: 0;
+  background: transparent;
+  font-size: 12px;
+  text-align: left;
   color: var(--faint);
 }
 
