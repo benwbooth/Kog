@@ -22,6 +22,7 @@ use gloo_net::http::Request;
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::wasm_bindgen;
+use wasm_bindgen::JsCast;
 
 /// One playable entry, addressed the way the whole API addresses tracks.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -94,8 +95,239 @@ enum SortKey {
     Title,
     Artist,
     Album,
+    Genre,
+    Year,
     Duration,
     Track,
+}
+
+/// Every column the pane can show, in the fixed order they render.
+///
+/// The first six defaults mirror `qml/PlaylistHeader.qml`; Genre and Year are
+/// available from `POST /api/metadata` and start hidden, as they do in the
+/// desktop's default layout.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum ColumnId {
+    Index,
+    Title,
+    Artist,
+    Album,
+    Genre,
+    Year,
+    Length,
+    Track,
+}
+
+impl ColumnId {
+    const ALL: [ColumnId; 8] = [
+        ColumnId::Index,
+        ColumnId::Title,
+        ColumnId::Artist,
+        ColumnId::Album,
+        ColumnId::Genre,
+        ColumnId::Year,
+        ColumnId::Length,
+        ColumnId::Track,
+    ];
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::Index => "index",
+            Self::Title => "title",
+            Self::Artist => "artist",
+            Self::Album => "album",
+            Self::Genre => "genre",
+            Self::Year => "year",
+            Self::Length => "length",
+            Self::Track => "track",
+        }
+    }
+
+    fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|column| column.key() == key)
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Index => "#",
+            Self::Title => "Title",
+            Self::Artist => "Artist",
+            Self::Album => "Album",
+            Self::Genre => "Genre",
+            Self::Year => "Year",
+            Self::Length => "Length",
+            Self::Track => "№",
+        }
+    }
+
+    fn class(self) -> &'static str {
+        match self {
+            Self::Index => "index-cell",
+            Self::Title => "title-cell",
+            Self::Artist => "artist-cell",
+            Self::Album => "album-cell",
+            Self::Genre => "genre-cell",
+            Self::Year => "year-cell",
+            Self::Length => "duration-cell",
+            Self::Track => "trackno-cell",
+        }
+    }
+
+    fn sort_key(self) -> SortKey {
+        match self {
+            Self::Index => SortKey::Index,
+            Self::Title => SortKey::Title,
+            Self::Artist => SortKey::Artist,
+            Self::Album => SortKey::Album,
+            Self::Genre => SortKey::Genre,
+            Self::Year => SortKey::Year,
+            Self::Length => SortKey::Duration,
+            Self::Track => SortKey::Track,
+        }
+    }
+
+    fn default_width(self) -> f64 {
+        match self {
+            Self::Index => 54.0,
+            Self::Title => 220.0,
+            Self::Artist => 190.0,
+            Self::Album => 220.0,
+            Self::Genre => 120.0,
+            Self::Year => 58.0,
+            Self::Length => 70.0,
+            Self::Track => 54.0,
+        }
+    }
+
+    fn min_width(self) -> f64 {
+        match self {
+            Self::Index => 28.0,
+            Self::Title => 96.0,
+            Self::Artist => 96.0,
+            Self::Album => 96.0,
+            Self::Genre => 48.0,
+            Self::Year => 42.0,
+            Self::Length => 44.0,
+            Self::Track => 32.0,
+        }
+    }
+
+    /// Text columns share the spare width the way the desktop flexes them.
+    fn flexible(self) -> bool {
+        matches!(self, Self::Title | Self::Artist | Self::Album | Self::Genre)
+    }
+
+    fn align_right(self) -> bool {
+        matches!(self, Self::Index | Self::Year | Self::Length | Self::Track)
+    }
+
+    fn default_visible(self) -> bool {
+        !matches!(self, Self::Genre | Self::Year)
+    }
+}
+
+/// One persisted column: its width and whether it is shown.
+#[derive(Clone, Copy, PartialEq)]
+struct Column {
+    id: ColumnId,
+    width: f64,
+    visible: bool,
+}
+
+fn default_columns() -> Vec<Column> {
+    ColumnId::ALL
+        .into_iter()
+        .map(|id| Column {
+            id,
+            width: id.default_width(),
+            visible: id.default_visible(),
+        })
+        .collect()
+}
+
+/// `id:width:visible;...`, the layout the pane caches.
+fn encode_columns(columns: &[Column]) -> String {
+    columns
+        .iter()
+        .map(|column| {
+            format!(
+                "{}:{:.1}:{}",
+                column.id.key(),
+                column.width,
+                if column.visible { 1 } else { 0 }
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(";")
+}
+
+/// Restore a persisted layout, filling in any column the saved string missed so
+/// a layout saved before a column was added still works.
+fn decode_columns(raw: &str) -> Vec<Column> {
+    let mut columns = default_columns();
+    for entry in raw.split(';') {
+        let fields: Vec<&str> = entry.split(':').collect();
+        if fields.len() != 3 {
+            continue;
+        }
+        let Some(id) = ColumnId::from_key(fields[0].trim()) else {
+            continue;
+        };
+        let Ok(width) = fields[1].trim().parse::<f64>() else {
+            continue;
+        };
+        if let Some(column) = columns.iter_mut().find(|column| column.id == id) {
+            column.width = width.max(id.min_width());
+            column.visible = fields[2].trim() == "1";
+        }
+    }
+    if !columns.iter().any(|column| column.visible) {
+        return default_columns();
+    }
+    columns
+}
+
+/// A content-based width: the widest of the label and the visible values,
+/// roughly seven pixels per character plus the cell padding.
+fn content_width(id: ColumnId, texts: &[String]) -> f64 {
+    let widest = texts
+        .iter()
+        .map(|text| text.chars().count())
+        .max()
+        .unwrap_or(0) as f64;
+    (widest * 7.0 + 22.0).clamp(id.min_width(), 1024.0)
+}
+
+/// The text a column shows for one queue row, shared by the cell and auto-fit.
+fn column_text(
+    id: ColumnId,
+    index: usize,
+    entry: &Entry,
+    meta: Option<&MetaRow>,
+    live_duration: Option<f64>,
+) -> String {
+    match id {
+        ColumnId::Index => (index + 1).to_string(),
+        ColumnId::Title => meta
+            .and_then(|meta| meta.title.clone())
+            .unwrap_or_else(|| entry.name.clone()),
+        ColumnId::Artist => meta.and_then(|meta| meta.artist.clone()).unwrap_or_default(),
+        ColumnId::Album => meta.and_then(|meta| meta.album.clone()).unwrap_or_default(),
+        ColumnId::Genre => meta.and_then(|meta| meta.genre.clone()).unwrap_or_default(),
+        ColumnId::Year => meta
+            .and_then(|meta| meta.year)
+            .map(|year| year.to_string())
+            .unwrap_or_default(),
+        ColumnId::Length => meta
+            .and_then(|meta| meta.duration)
+            .map(clock)
+            .or_else(|| live_duration.map(clock))
+            .unwrap_or_default(),
+        ColumnId::Track => meta
+            .and_then(|meta| meta.track_number)
+            .map(|number| number.to_string())
+            .unwrap_or_default(),
+    }
 }
 
 /// Repeat policy, cycled by the transport's repeat toggle.
@@ -324,6 +556,56 @@ fn flatten(
     }
 }
 
+/// One `/api/library?path=` response as entries: directories first, then files,
+/// exactly as the API returns them.
+fn library_entries(value: &serde_json::Value) -> Vec<Entry> {
+    let mut items: Vec<Entry> = Vec::new();
+    if let Some(dirs) = value["directories"].as_array() {
+        for dir in dirs {
+            let path = dir["path"].as_str().unwrap_or_default().to_owned();
+            let name = dir["name"]
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| last_segment(&path));
+            let where_ = dir["relative"]
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| name.clone());
+            items.push(Entry {
+                kind: "dir".to_owned(),
+                path,
+                entry: String::new(),
+                fragment: None,
+                name,
+                location: where_,
+            });
+        }
+    }
+    if let Some(files) = value["files"].as_array() {
+        items.extend(files.iter().map(|file| {
+            let path = file["path"].as_str().unwrap_or_default().to_owned();
+            let name = file["name"]
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| last_segment(&path));
+            let where_ = file["relative"]
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| name.clone());
+            Entry::local(&path, &name, &where_)
+        }));
+    }
+    items
+}
+
+/// The playable files in a library response.
+fn library_files(value: &serde_json::Value) -> Vec<Entry> {
+    library_entries(value)
+        .into_iter()
+        .filter(|entry| !entry.is_dir())
+        .collect()
+}
+
 #[wasm_bindgen(start)]
 pub fn start() {
     console_error_panic_hook::set_once();
@@ -345,8 +627,11 @@ fn App() -> impl IntoView {
     let (connected, set_connected) = signal(false);
     let (message, set_message) = signal(String::new());
     let (settings_open, set_settings_open) = signal(false);
-    // Desktop shows the sidebar inline; phones open it as a drawer.
+    // Desktop shows the sidebar inline; phones open it as a drawer. The
+    // desktop choice is persisted, the drawer state is not.
     let (sidebar_open, set_sidebar_open) = signal(false);
+    let (sidebar_visible, set_sidebar_visible) =
+        signal(load("kog.sidebar").map(|value| value != "0").unwrap_or(true));
     let (files_expanded, set_files_expanded) = signal(true);
     let (playlists_expanded, set_playlists_expanded) = signal(true);
 
@@ -357,7 +642,25 @@ fn App() -> impl IntoView {
     // The directory the tree is rooted at: "" means the server's library root.
     let (tree_root, set_tree_root) = signal(String::new());
     let (tree_selected, set_tree_selected) = signal(String::new());
+    // Whether the selected tree row is a folder, so the root button knows
+    // whether to re-root or step up.
+    let (tree_selected_dir, set_tree_selected_dir) = signal(false);
     let (tree_search, set_tree_search) = signal(String::new());
+    // Right-click menu anchor and target row.
+    let (tree_menu, set_tree_menu) = signal(Option::<(f64, f64, TreeRow)>::None);
+    // The row being dragged from the tree onto the playlist pane.
+    let (dragging_tree, set_dragging_tree) = signal(Option::<TreeRow>::None);
+    let (playlist_drop_active, set_playlist_drop_active) = signal(false);
+    // Playlist columns, their widths and visibility, persisted like the Qt
+    // window's saved column layout.
+    let (columns, set_columns) = signal(
+        load("kog.columns")
+            .map(|raw| decode_columns(&raw))
+            .unwrap_or_else(default_columns),
+    );
+    let (column_menu, set_column_menu) = signal(Option::<(f64, f64)>::None);
+    // (column, pointer start x, width at pointer-down) while a divider drags.
+    let (resizing, set_resizing) = signal(Option::<(ColumnId, f64, f64)>::None);
 
     let (playlists, set_playlists) = signal(Vec::<(i64, String, i64)>::new());
     let (queue, set_queue) = signal(Vec::<Entry>::new());
@@ -413,10 +716,12 @@ fn App() -> impl IntoView {
         }
     };
 
-    // Load one directory level. The library root is keyed as "".
+    // Load one directory level. The library root is keyed as "". When the load
+    // was a re-root, a rejection puts the previous root back instead of leaving
+    // the tree pointing at a directory the server will not browse.
     let load_dir = {
         let get_json = get_json;
-        move |directory: String| {
+        move |directory: String, revert_root: Option<String>| {
             let route = if directory.is_empty() {
                 "/api/library".to_owned()
             } else {
@@ -425,53 +730,22 @@ fn App() -> impl IntoView {
             leptos::task::spawn_local(async move {
                 match get_json(route).await {
                     Ok(value) => {
-                        let relative = value["path"].as_str().unwrap_or_default().to_owned();
                         if directory.is_empty() {
+                            let relative =
+                                value["path"].as_str().unwrap_or_default().to_owned();
                             set_library_root.set(relative);
                         }
-                        let mut items: Vec<Entry> = Vec::new();
-                        if let Some(dirs) = value["directories"].as_array() {
-                            for dir in dirs {
-                                let path =
-                                    dir["path"].as_str().unwrap_or_default().to_owned();
-                                let name = dir["name"]
-                                    .as_str()
-                                    .map(str::to_owned)
-                                    .unwrap_or_else(|| last_segment(&path));
-                                let where_ = dir["relative"]
-                                    .as_str()
-                                    .map(str::to_owned)
-                                    .unwrap_or_else(|| name.clone());
-                                items.push(Entry {
-                                    kind: "dir".to_owned(),
-                                    path,
-                                    entry: String::new(),
-                                    fragment: None,
-                                    name,
-                                    location: where_,
-                                });
-                            }
-                        }
-                        if let Some(files) = value["files"].as_array() {
-                            items.extend(files.iter().map(|file| {
-                                let path =
-                                    file["path"].as_str().unwrap_or_default().to_owned();
-                                let name = file["name"]
-                                    .as_str()
-                                    .map(str::to_owned)
-                                    .unwrap_or_else(|| last_segment(&path));
-                                let where_ = file["relative"]
-                                    .as_str()
-                                    .map(str::to_owned)
-                                    .unwrap_or_else(|| name.clone());
-                                Entry::local(&path, &name, &where_)
-                            }));
-                        }
+                        let items = library_entries(&value);
                         set_children.update(|map| {
                             map.insert(directory.clone(), items);
                         });
                     }
-                    Err(error) => set_message.set(error),
+                    Err(error) => {
+                        set_message.set(error);
+                        if let Some(previous) = revert_root {
+                            set_tree_root.set(previous);
+                        }
+                    }
                 }
             });
         }
@@ -492,7 +766,7 @@ fn App() -> impl IntoView {
             if now_open {
                 let loaded = children.get().contains_key(&path);
                 if !loaded {
-                    load_dir(path);
+                    load_dir(path, None);
                 }
             }
         }
@@ -503,12 +777,14 @@ fn App() -> impl IntoView {
     let goto_root = {
         let load_dir = load_dir.clone();
         move |path: String| {
+            let previous = tree_root.get_untracked();
             set_tree_selected.set(String::new());
+            set_tree_selected_dir.set(false);
             set_expanded.set(HashSet::new());
             let loaded = children.get().contains_key(&path);
             set_tree_root.set(path.clone());
             if !loaded {
-                load_dir(path);
+                load_dir(path, Some(previous));
             }
         }
     };
@@ -625,7 +901,7 @@ fn App() -> impl IntoView {
                         set_connected.set(true);
                         set_settings_open.set(false);
                         set_message.set(String::new());
-                        load_dir(String::new());
+                        load_dir(String::new(), None);
                         load_playlists();
                     }
                     Ok(response) if response.status() == 401 => {
@@ -878,6 +1154,11 @@ fn App() -> impl IntoView {
                         .unwrap_or_else(|| entry.name.clone()),
                     SortKey::Artist => meta.and_then(|meta| meta.artist).unwrap_or_default(),
                     SortKey::Album => meta.and_then(|meta| meta.album).unwrap_or_default(),
+                    SortKey::Genre => meta.and_then(|meta| meta.genre).unwrap_or_default(),
+                    SortKey::Year => meta
+                        .and_then(|meta| meta.year)
+                        .map(|year| format!("{year:010}"))
+                        .unwrap_or_default(),
                     SortKey::Duration => meta
                         .and_then(|meta| meta.duration)
                         .map(|seconds| format!("{seconds:010.3}"))
@@ -918,6 +1199,133 @@ fn App() -> impl IntoView {
         } else {
             ""
         }
+    };
+
+    let visible_columns = move || -> Vec<Column> {
+        columns
+            .get()
+            .into_iter()
+            .filter(|column| column.visible)
+            .collect()
+    };
+
+    // Header and rows read the same custom property, so they never drift.
+    let grid_template = move || {
+        visible_columns()
+            .into_iter()
+            .map(|column| {
+                if column.id.flexible() {
+                    format!("minmax({:.0}px, {:.0}fr)", column.width, column.width)
+                } else {
+                    format!("{:.0}px", column.width)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+
+    let persist_columns = move |columns: &[Column]| {
+        store("kog.columns", &encode_columns(columns));
+    };
+
+    // Append to the pane without ever touching the transport: the current song
+    // keeps playing, exactly as the desktop tree's "Add to Playlist" does.
+    let append_entries = move |entries: Vec<Entry>| {
+        if entries.is_empty() {
+            return;
+        }
+        set_queue.update(|items| {
+            for entry in entries {
+                let key = meta_key(&entry);
+                if !items.iter().any(|item| meta_key(item) == key) {
+                    items.push(entry);
+                }
+            }
+        });
+    };
+
+    // Add one tree row: a file is appended directly, a folder contributes its
+    // immediate files (fetched if that level was never expanded).
+    let add_row_to_playlist = {
+        let get_json = get_json;
+        let queue_files = queue_files.clone();
+        let append_entries = append_entries;
+        move |row: TreeRow| {
+            if !row.is_dir {
+                if let Some(entry) = queue_files(&row.parent)
+                    .into_iter()
+                    .find(|item| item.path == row.path)
+                {
+                    append_entries(vec![entry]);
+                }
+                return;
+            }
+            let route = format!("/api/library?path={}", url_encode(&row.path));
+            let append_entries = append_entries;
+            leptos::task::spawn_local(async move {
+                if let Ok(value) = get_json(route).await {
+                    append_entries(library_files(&value));
+                }
+            });
+        }
+    };
+
+    let apply_width = move |id: ColumnId, width: f64| {
+        set_columns.update(|columns| {
+            if let Some(column) = columns.iter_mut().find(|column| column.id == id) {
+                column.width = width.clamp(id.min_width(), 1024.0);
+            }
+        });
+    };
+
+    let auto_fit_column = {
+        move |id: ColumnId| {
+            let rows = view_rows();
+            let cache = metadata.get();
+            let mut texts = vec![id.label().to_owned()];
+            for (index, entry) in &rows {
+                texts.push(column_text(
+                    id,
+                    *index,
+                    entry,
+                    meta_for(&cache, entry).as_ref(),
+                    None,
+                ));
+            }
+            let width = content_width(id, &texts);
+            apply_width(id, width);
+            persist_columns(&columns.get_untracked());
+        }
+    };
+
+    let auto_fit_all = {
+        let auto_fit_column = auto_fit_column.clone();
+        move || {
+            for id in ColumnId::ALL {
+                if columns.get_untracked().iter().any(|column| column.id == id && column.visible) {
+                    auto_fit_column(id);
+                }
+            }
+        }
+    };
+
+    let toggle_column = move |id: ColumnId| {
+        let mut next = columns.get_untracked();
+        let shown = next.iter().filter(|column| column.visible).count();
+        if let Some(column) = next.iter_mut().find(|column| column.id == id) {
+            if column.visible && shown <= 1 {
+                return;
+            }
+            column.visible = !column.visible;
+        }
+        persist_columns(&next);
+        set_columns.set(next);
+    };
+
+    let reset_columns = move || {
+        let next = default_columns();
+        persist_columns(&next);
+        set_columns.set(next);
     };
 
     // The transport shows the current row's tags, with the file name as the
@@ -963,12 +1371,31 @@ fn App() -> impl IntoView {
     };
 
     view! {
-        <div class="app">
+        <div
+            class="app"
+            on:pointermove=move |ev: web_sys::PointerEvent| {
+                if let Some((id, start_x, start_width)) = resizing.get_untracked() {
+                    apply_width(id, start_width + (ev.client_x() as f64 - start_x));
+                }
+            }
+            on:pointerup=move |_| {
+                if resizing.get_untracked().is_some() {
+                    set_resizing.set(None);
+                    persist_columns(&columns.get_untracked());
+                }
+            }
+        >
             <header class="toolbar">
                 <button
                     class="flat icon-button"
                     title="Show or hide the sidebar"
-                    on:click=move |_| set_sidebar_open.update(|open| *open = !*open)
+                    on:click=move |_| {
+                        let next = !sidebar_visible.get_untracked();
+                        set_sidebar_visible.set(next);
+                        // On a phone the same control opens the drawer.
+                        set_sidebar_open.set(next);
+                        store("kog.sidebar", if next { "1" } else { "0" });
+                    }
                 >"☰"</button>
                 <img class="logo" src="/icons/kog.svg" alt="Kog" />
                 <div class="search">
@@ -1008,7 +1435,11 @@ fn App() -> impl IntoView {
                 >{move || if connected.get() { "● Server" } else { "○ Server" }}</button>
             </header>
 
-            <div class:sidebar-open=move || sidebar_open.get() class="workspace">
+            <div
+                class:sidebar-open=move || sidebar_open.get()
+                class:sidebar-hidden=move || !sidebar_visible.get()
+                class="workspace"
+            >
                 <div
                     class="drawer-scrim"
                     on:click=move |_| set_sidebar_open.set(false)
@@ -1039,14 +1470,18 @@ fn App() -> impl IntoView {
                                         <button
                                             class="icon-button"
                                             title="Root the tree at the selected folder, or go up"
-                                            on:click=move |_| {
-                                                let selected = tree_selected.get();
-                                                if !selected.is_empty()
-                                                    && children.get().contains_key(&selected)
-                                                {
-                                                    goto_root(selected);
-                                                } else {
-                                                    go_up();
+                                            on:click={
+                                                let goto_root = goto_root.clone();
+                                                let go_up = go_up.clone();
+                                                move |_| {
+                                                    let selected = tree_selected.get();
+                                                    if tree_selected_dir.get()
+                                                        && !selected.is_empty()
+                                                    {
+                                                        goto_root(selected);
+                                                    } else {
+                                                        go_up();
+                                                    }
                                                 }
                                             }
                                         >"▣"</button>
@@ -1057,7 +1492,7 @@ fn App() -> impl IntoView {
                                                 let load_dir = load_dir.clone();
                                                 move |_| {
                                                     let root = tree_root.get();
-                                                    load_dir(root);
+                                                    load_dir(root, None);
                                                 }
                                             }
                                         >"↻"</button>
@@ -1082,10 +1517,27 @@ fn App() -> impl IntoView {
                                         <Show when=move || !tree_root.get().is_empty() fallback=|| ()>
                                             <button
                                                 class="tree-row parent-row"
-                                                title="Go to parent folder"
+                                                title=move || format!("Go to {}", parent_path(&tree_root.get()))
                                                 on:click={
                                                     let go_up = go_up.clone();
                                                     move |_| go_up()
+                                                }
+                                                on:contextmenu=move |ev: web_sys::MouseEvent| {
+                                                    ev.prevent_default();
+                                                    let root = tree_root.get_untracked();
+                                                    let row = TreeRow {
+                                                        name: "..".to_owned(),
+                                                        path: parent_path(&root),
+                                                        parent: root,
+                                                        is_dir: true,
+                                                        depth: 0,
+                                                        expanded: false,
+                                                    };
+                                                    set_tree_menu.set(Some((
+                                                        ev.client_x() as f64,
+                                                        ev.client_y() as f64,
+                                                        row,
+                                                    )));
                                                 }
                                             >
                                                 <span class="twisty"></span>
@@ -1101,8 +1553,10 @@ fn App() -> impl IntoView {
                                             {
                                                 let row_click = row.clone();
                                                 let row_dbl = row.clone();
+                                                let row_menu = row.clone();
+                                                let row_drag = row.clone();
                                                 let toggle_dir = toggle_dir.clone();
-                                                let queue_files = queue_files.clone();
+                                                let add_row_to_playlist = add_row_to_playlist.clone();
                                                 let selected = row.path.clone();
                                                 let twisty = if row.is_dir {
                                                     if row.expanded { "▾" } else { "▸" }
@@ -1119,8 +1573,10 @@ fn App() -> impl IntoView {
                                                         }
                                                         style=format!("padding-left: {indent}px")
                                                         title=row.path.clone()
+                                                        draggable="true"
                                                         on:click=move |_| {
                                                             set_tree_selected.set(row_click.path.clone());
+                                                            set_tree_selected_dir.set(row_click.is_dir);
                                                             if row_click.is_dir {
                                                                 toggle_dir(row_click.path.clone());
                                                             }
@@ -1128,29 +1584,36 @@ fn App() -> impl IntoView {
                                                         on:dblclick=move |_| {
                                                             if row_dbl.is_dir {
                                                                 toggle_dir(row_dbl.path.clone());
-                                                            } else if let Some(entry) =
-                                                                queue_files(&row_dbl.parent)
-                                                                    .into_iter()
-                                                                    .find(|item| {
-                                                                        item.path == row_dbl.path
-                                                                    })
-                                                            {
-                                                                // Queue without starting playback: adding
-                                                                // to the pane must never interrupt the
-                                                                // current song, exactly as in the desktop
-                                                                // tree.
-                                                                let key = meta_key(&entry);
-                                                                let present = queue
-                                                                    .get_untracked()
-                                                                    .iter()
-                                                                    .any(|item| meta_key(item) == key);
-                                                                if !present {
-                                                                    set_queue.update(|items| {
-                                                                        items.push(entry)
-                                                                    });
-                                                                }
+                                                            } else {
+                                                                // Queue without starting playback:
+                                                                // adding to the pane must never
+                                                                // interrupt the current song, exactly
+                                                                // as in the desktop tree.
+                                                                add_row_to_playlist(row_dbl.clone());
                                                             }
                                                         }
+                                                        on:contextmenu=move |ev: web_sys::MouseEvent| {
+                                                            ev.prevent_default();
+                                                            ev.stop_propagation();
+                                                            set_tree_selected.set(row_menu.path.clone());
+                                                            set_tree_selected_dir.set(row_menu.is_dir);
+                                                            set_tree_menu.set(Some((
+                                                                ev.client_x() as f64,
+                                                                ev.client_y() as f64,
+                                                                row_menu.clone(),
+                                                            )));
+                                                        }
+                                                        on:dragstart=move |ev: web_sys::DragEvent| {
+                                                            set_dragging_tree.set(Some(row_drag.clone()));
+                                                            if let Some(transfer) = ev.data_transfer() {
+                                                                let _ = transfer.set_data(
+                                                                    "text/plain",
+                                                                    &row_drag.path,
+                                                                );
+                                                                transfer.set_effect_allowed("copy");
+                                                            }
+                                                        }
+                                                        on:dragend=move |_| set_dragging_tree.set(None)
                                                     >
                                                         <span class="twisty">{twisty}</span>
                                                         <span class=if row.is_dir {
@@ -1267,28 +1730,96 @@ fn App() -> impl IntoView {
                         </span>
                     </div>
 
-                    <div class="columns">
-                        <button class="cell index-cell" on:click=move |_| toggle_sort(SortKey::Index)>
-                            {move || format!("#{}", sort_arrow(SortKey::Index))}
-                        </button>
-                        <button class="cell title-cell" on:click=move |_| toggle_sort(SortKey::Title)>
-                            {move || format!("Title{}", sort_arrow(SortKey::Title))}
-                        </button>
-                        <button class="cell artist-cell" on:click=move |_| toggle_sort(SortKey::Artist)>
-                            {move || format!("Artist{}", sort_arrow(SortKey::Artist))}
-                        </button>
-                        <button class="cell album-cell" on:click=move |_| toggle_sort(SortKey::Album)>
-                            {move || format!("Album{}", sort_arrow(SortKey::Album))}
-                        </button>
-                        <button class="cell duration-cell" on:click=move |_| toggle_sort(SortKey::Duration)>
-                            {move || format!("Length{}", sort_arrow(SortKey::Duration))}
-                        </button>
-                        <button class="cell trackno-cell" on:click=move |_| toggle_sort(SortKey::Track)>
-                            {move || format!("№{}", sort_arrow(SortKey::Track))}
-                        </button>
+                    <div
+                        class="columns"
+                        style=move || format!("--cols:{}", grid_template())
+                        on:contextmenu=move |ev: web_sys::MouseEvent| {
+                            ev.prevent_default();
+                            set_column_menu.set(Some((
+                                ev.client_x() as f64,
+                                ev.client_y() as f64,
+                            )));
+                        }
+                    >
+                        <For each=visible_columns key=|column| column.id.key() let:column>
+                            {
+                                let id = column.id;
+                                let sort = id.sort_key();
+                                let align = if id.align_right() { "right" } else { "left" };
+                                let start_column = id;
+                                view! {
+                                    <div class=format!("cell col-head {}", id.class())>
+                                        <button
+                                            class="col-sort"
+                                            style=format!("text-align: {align}")
+                                            on:click=move |_| toggle_sort(sort)
+                                        >
+                                            {move || format!("{}{}", id.label(), sort_arrow(sort))}
+                                        </button>
+                                        <span
+                                            class="col-resize"
+                                            title="Drag to resize, double-click to auto-fit"
+                                            on:pointerdown=move |ev: web_sys::PointerEvent| {
+                                                ev.prevent_default();
+                                                ev.stop_propagation();
+                                                if let Some(target) = ev.current_target() {
+                                                    if let Ok(element) =
+                                                        target.dyn_into::<web_sys::Element>()
+                                                    {
+                                                        let _ = element
+                                                            .set_pointer_capture(ev.pointer_id());
+                                                    }
+                                                }
+                                                let width = columns
+                                                    .get_untracked()
+                                                    .iter()
+                                                    .find(|column| column.id == start_column)
+                                                    .map(|column| column.width)
+                                                    .unwrap_or(0.0);
+                                                set_resizing.set(Some((
+                                                    start_column,
+                                                    ev.client_x() as f64,
+                                                    width,
+                                                )));
+                                            }
+                                            on:dblclick={
+                                                let auto_fit_column = auto_fit_column.clone();
+                                                move |ev: web_sys::MouseEvent| {
+                                                    ev.stop_propagation();
+                                                    auto_fit_column(start_column);
+                                                }
+                                            }
+                                        ></span>
+                                    </div>
+                                }
+                            }
+                        </For>
                     </div>
 
-                    <div class="rows">
+                    <div
+                        class="rows"
+                        class:drop-active=move || playlist_drop_active.get()
+                        style=move || format!("--cols:{}", grid_template())
+                        on:dragover=move |ev: web_sys::DragEvent| {
+                            ev.prevent_default();
+                            if let Some(transfer) = ev.data_transfer() {
+                                transfer.set_drop_effect("copy");
+                            }
+                            set_playlist_drop_active.set(true);
+                        }
+                        on:dragleave=move |_| set_playlist_drop_active.set(false)
+                        on:drop={
+                            let add_row_to_playlist = add_row_to_playlist.clone();
+                            move |ev: web_sys::DragEvent| {
+                                ev.prevent_default();
+                                set_playlist_drop_active.set(false);
+                                if let Some(row) = dragging_tree.get_untracked() {
+                                    add_row_to_playlist(row);
+                                }
+                                set_dragging_tree.set(None);
+                            }
+                        }
+                    >
                         <Show
                             when=move || !view_rows().is_empty()
                             fallback=move || view! {
@@ -1308,47 +1839,6 @@ fn App() -> impl IntoView {
                             >
                                 {
                                     let (index, entry) = row;
-                                    let entry_title = entry.clone();
-                                    let entry_artist = entry.clone();
-                                    let entry_album = entry.clone();
-                                    let entry_duration = entry.clone();
-                                    let entry_track = entry;
-                                    let title_text = move || {
-                                        meta_for(&metadata.get(), &entry_title)
-                                            .and_then(|meta| meta.title)
-                                            .unwrap_or_else(|| entry_title.name.clone())
-                                    };
-                                    let title_tip = title_text.clone();
-                                    let artist_text = move || {
-                                        meta_for(&metadata.get(), &entry_artist)
-                                            .and_then(|meta| meta.artist)
-                                            .unwrap_or_default()
-                                    };
-                                    let artist_tip = artist_text.clone();
-                                    let album_text = move || {
-                                        meta_for(&metadata.get(), &entry_album)
-                                            .and_then(|meta| meta.album)
-                                            .unwrap_or_default()
-                                    };
-                                    let album_tip = album_text.clone();
-                                    let duration_text = move || {
-                                        if let Some(seconds) = meta_for(&metadata.get(), &entry_duration)
-                                            .and_then(|meta| meta.duration)
-                                        {
-                                            return clock(seconds);
-                                        }
-                                        if current.get() == index && duration.get() > 0.0 {
-                                            clock(duration.get())
-                                        } else {
-                                            String::new()
-                                        }
-                                    };
-                                    let track_text = move || {
-                                        meta_for(&metadata.get(), &entry_track)
-                                            .and_then(|meta| meta.track_number)
-                                            .map(|number| number.to_string())
-                                            .unwrap_or_default()
-                                    };
                                     view! {
                                         <button
                                             class="track"
@@ -1360,18 +1850,42 @@ fn App() -> impl IntoView {
                                                 set_playing.set(true);
                                             }
                                         >
-                                            <span class="cell index-cell">{index + 1}</span>
-                                            <span class="cell title-cell" title=move || title_tip()>
-                                                {move || title_text()}
-                                            </span>
-                                            <span class="cell artist-cell" title=move || artist_tip()>
-                                                {move || artist_text()}
-                                            </span>
-                                            <span class="cell album-cell" title=move || album_tip()>
-                                                {move || album_text()}
-                                            </span>
-                                            <span class="cell duration-cell">{move || duration_text()}</span>
-                                            <span class="cell trackno-cell">{move || track_text()}</span>
+                                            <For
+                                                each=visible_columns
+                                                key=|column| column.id.key()
+                                                let:column
+                                            >
+                                                {
+                                                    let id = column.id;
+                                                    let entry = entry.clone();
+                                                    let text = move || {
+                                                        let meta = meta_for(&metadata.get(), &entry);
+                                                        let live = if current.get() == index
+                                                            && duration.get() > 0.0
+                                                        {
+                                                            Some(duration.get())
+                                                        } else {
+                                                            None
+                                                        };
+                                                        column_text(
+                                                            id,
+                                                            index,
+                                                            &entry,
+                                                            meta.as_ref(),
+                                                            live,
+                                                        )
+                                                    };
+                                                    let tip = text.clone();
+                                                    view! {
+                                                        <span
+                                                            class=format!("cell {}", id.class())
+                                                            title=move || tip()
+                                                        >
+                                                            {text}
+                                                        </span>
+                                                    }
+                                                }
+                                            </For>
                                         </button>
                                     }
                                 }
@@ -1591,6 +2105,114 @@ fn App() -> impl IntoView {
                     <Show when=move || !message.get().is_empty() fallback=|| ()>
                         <p class="hint error">{move || message.get()}</p>
                     </Show>
+                </div>
+            </Show>
+
+            <Show when=move || tree_menu.get().is_some() fallback=|| ()>
+                {
+                    let row_is_dir = move || {
+                        tree_menu.get().map(|(_, _, row)| row.is_dir).unwrap_or(false)
+                    };
+                    view! {
+                        <div class="menu-scrim" on:click=move |_| set_tree_menu.set(None)></div>
+                        <div
+                            class="context-menu"
+                            style=move || match tree_menu.get() {
+                                Some((x, y, _)) => format!("left:{x}px; top:{y}px;"),
+                                None => String::new(),
+                            }
+                        >
+                            <button
+                                class="menu-item"
+                                disabled=move || !row_is_dir()
+                                on:click={
+                                    let goto_root = goto_root.clone();
+                                    move |_| {
+                                        if let Some((_, _, row)) = tree_menu.get() {
+                                            goto_root(row.path.clone());
+                                        }
+                                        set_tree_menu.set(None);
+                                    }
+                                }
+                            >
+                                "Use as Tree Root"
+                            </button>
+                            <button
+                                class="menu-item"
+                                disabled=move || tree_root.get().is_empty()
+                                on:click={
+                                    let go_up = go_up.clone();
+                                    move |_| {
+                                        go_up();
+                                        set_tree_menu.set(None);
+                                    }
+                                }
+                            >
+                                "Go Up"
+                            </button>
+                            <div class="menu-separator"></div>
+                            <button
+                                class="menu-item"
+                                on:click={
+                                    let add_row_to_playlist = add_row_to_playlist.clone();
+                                    move |_| {
+                                        if let Some((_, _, row)) = tree_menu.get() {
+                                            add_row_to_playlist(row);
+                                        }
+                                        set_tree_menu.set(None);
+                                    }
+                                }
+                            >
+                                "Add to Playlist"
+                            </button>
+                        </div>
+                    }
+                }
+            </Show>
+
+            <Show when=move || column_menu.get().is_some() fallback=|| ()>
+                <div class="menu-scrim" on:click=move |_| set_column_menu.set(None)></div>
+                <div
+                    class="context-menu column-menu"
+                    style=move || match column_menu.get() {
+                        Some((x, y)) => format!("left:{x}px; top:{y}px;"),
+                        None => String::new(),
+                    }
+                >
+                    <For each=move || ColumnId::ALL key=|id| id.key() let:id>
+                        {
+                            let visible = move || {
+                                columns
+                                    .get()
+                                    .iter()
+                                    .any(|column| column.id == id && column.visible)
+                            };
+                            let only_visible = move || {
+                                let shown =
+                                    columns.get().iter().filter(|column| column.visible).count();
+                                visible() && shown <= 1
+                            };
+                            view! {
+                                <button
+                                    class="menu-item"
+                                    disabled=only_visible
+                                    on:click=move |_| toggle_column(id)
+                                >
+                                    <span class="menu-check">
+                                        {move || if visible() { "✓" } else { "" }}
+                                    </span>
+                                    {id.label()}
+                                </button>
+                            }
+                        }
+                    </For>
+                    <div class="menu-separator"></div>
+                    <button class="menu-item" on:click=move |_| auto_fit_all()>
+                        "Auto-Fit All Columns"
+                    </button>
+                    <button class="menu-item" on:click=move |_| reset_columns()>
+                        "Reset Columns"
+                    </button>
                 </div>
             </Show>
         </div>

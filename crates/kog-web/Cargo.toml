@@ -26,9 +26,15 @@ web-sys = { version = "=0.3.98", features = [
   "Location",
   "Document",
   "Element",
+  "Event",
+  "EventTarget",
   "HtmlElement",
   "HtmlAudioElement",
   "HtmlMediaElement",
+  "DataTransfer",
+  "DragEvent",
+  "MouseEvent",
+  "PointerEvent",
   "console",
 ] }
 
