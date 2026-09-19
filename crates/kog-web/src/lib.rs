@@ -966,14 +966,6 @@ fn parent_path(path: &str) -> String {
 }
 
 /// Whether `child` is `root` or lives inside it.
-fn is_under(child: &str, root: &str) -> bool {
-    if root.trim().is_empty() {
-        return false;
-    }
-    let root = root.trim_end_matches('/');
-    child == root || child.starts_with(&format!("{root}/"))
-}
-
 /// A random queue position other than `current`, for shuffle playback.
 fn random_other(current: usize, len: usize) -> usize {
     if len <= 1 {
@@ -1140,6 +1132,14 @@ fn App() -> impl IntoView {
     // the server reports, shown in About.
     let (menu_open, set_menu_open) = signal(false);
     let (about_open, set_about_open) = signal(false);
+    // The server-side folder picker opened by the tree toolbar's folder
+    // button: `picker_open` shows it, `picker_dir` is the directory it is
+    // currently listing, and `picker_entries`/`picker_parent` mirror the
+    // browse response for that directory.
+    let (picker_open, set_picker_open) = signal(false);
+    let (picker_dir, set_picker_dir) = signal(String::new());
+    let (picker_entries, set_picker_entries) = signal(Vec::<(String, String)>::new());
+    let (picker_parent, set_picker_parent) = signal(Option::<String>::None);
     let (version, set_version) = signal(String::new());
     // Rows the pane actions act on. A plain click selects a row (and plays it),
     // Ctrl/Cmd-click adds to the selection, matching the desktop's multi-select.
@@ -1410,21 +1410,98 @@ fn App() -> impl IntoView {
     let go_up = {
         let goto_root = goto_root.clone();
         move || {
-            let current = tree_root.get();
-            if current.is_empty() {
+            // "" is the server's music directory; its real path is the way up
+            // past it, all the way to the filesystem root.
+            let current = if tree_root.get().is_empty() {
+                library_root.get()
+            } else {
+                tree_root.get()
+            };
+            if current.is_empty() || current == "/" {
                 return;
             }
-            let library = library_root.get();
-            let parent = parent_path(&current);
-            let target = if parent.is_empty()
-                || parent == library
-                || !is_under(&parent, &library)
-            {
-                String::new()
+            goto_root(parent_path(&current));
+        }
+    };
+
+    // Whether a level above the tree's current root exists to climb to.
+    let can_go_up = move || {
+        let current = if tree_root.get().is_empty() {
+            library_root.get()
+        } else {
+            tree_root.get()
+        };
+        !current.is_empty() && current != "/"
+    };
+
+    // The directory the tree is effectively showing: "" means the music
+    // directory, whose absolute path the server reports on first browse.
+    let effective_root = move || {
+        if tree_root.get().is_empty() {
+            library_root.get()
+        } else {
+            tree_root.get()
+        }
+    };
+
+    // The folder picker lists directories through the same browse endpoint,
+    // so it can climb anywhere on the server; outside the music directory the
+    // server answers with subfolders only.
+    {
+        let url_encode = url_encode;
+        let get_json = get_json;
+        Effect::new(move |_| {
+            if !picker_open.get() {
+                return;
+            }
+            let dir = picker_dir.get();
+            if dir.is_empty() {
+                return;
+            }
+            let url = format!("/api/library?path={}", url_encode(&dir));
+            leptos::task::spawn_local(async move {
+                if let Ok(value) = get_json(url).await {
+                    let mut entries = Vec::new();
+                    if let Some(dirs) = value["directories"].as_array() {
+                        for entry in dirs {
+                            let name = entry["name"].as_str().unwrap_or_default().to_owned();
+                            let path = entry["path"].as_str().unwrap_or_default().to_owned();
+                            if !path.is_empty() {
+                                entries.push((name, path));
+                            }
+                        }
+                    }
+                    set_picker_entries.set(entries);
+                    set_picker_parent.set(
+                        value["parent"]
+                            .as_str()
+                            .map(str::to_owned),
+                    );
+                }
+            });
+        });
+    }
+
+    let open_folder_picker = move |_| {
+        set_picker_dir.set(effective_root());
+        set_picker_entries.set(Vec::new());
+        set_picker_open.set(true);
+    };
+
+    let use_picked_folder = {
+        let goto_root = goto_root.clone();
+        move |_| {
+            let dir = picker_dir.get_untracked();
+            set_picker_open.set(false);
+            if dir.is_empty() {
+                return;
+            }
+            // The music directory itself stays the "" root the tree began with.
+            if dir == library_root.get_untracked() {
+                goto_root(String::new());
             } else {
-                parent
-            };
-            goto_root(target);
+                goto_root(dir);
+            }
         }
     };
 
@@ -1729,6 +1806,7 @@ fn App() -> impl IntoView {
             set_tree_menu.set(None);
             set_about_open.set(false);
             set_settings_open.set(false);
+            set_picker_open.set(false);
         }
     });
     on_cleanup(move || escape_handle.remove());
@@ -2756,19 +2834,8 @@ fn App() -> impl IntoView {
                                     <div class="tree-root">
                                         <button
                                             class="icon-button"
-                                            title="Use as Tree Root"
-                                            disabled=move || !tree_selected_dir.get()
-                                            on:click={
-                                                let goto_root = goto_root.clone();
-                                                move |_| {
-                                                    let selected = tree_selected.get();
-                                                    if tree_selected_dir.get_untracked()
-                                                        && !selected.is_empty()
-                                                    {
-                                                        goto_root(selected);
-                                                    }
-                                                }
-                                            }
+                                            title="Choose a folder on the server to root the tree at"
+                                            on:click=open_folder_picker
                                             inner_html=icons::FOLDER_OPEN
                                         ></button>
                                         <button
@@ -2800,17 +2867,17 @@ fn App() -> impl IntoView {
                                         />
                                     </div>
                                     <div class="tree-list">
-                                        <Show when=move || !tree_root.get().is_empty() fallback=|| ()>
+                                        <Show when=move || can_go_up() fallback=|| ()>
                                             <button
                                                 class="tree-row parent-row"
-                                                title=move || format!("Go to {}", parent_path(&tree_root.get()))
+                                                title=move || format!("Go to {}", parent_path(&effective_root()))
                                                 on:click={
                                                     let go_up = go_up.clone();
                                                     move |_| go_up()
                                                 }
                                                 on:contextmenu=move |ev: web_sys::MouseEvent| {
                                                     ev.prevent_default();
-                                                    let root = tree_root.get_untracked();
+                                                    let root = effective_root();
                                                     let row = TreeRow {
                                                         name: "..".to_owned(),
                                                         path: parent_path(&root),
@@ -3580,6 +3647,42 @@ fn App() -> impl IntoView {
                     </p>
                     <div class="settings-actions">
                         <button class="primary" on:click=move |_| set_about_open.set(false)>"Close"</button>
+                    </div>
+                </div>
+            </Show>
+
+            <Show when=move || picker_open.get() fallback=|| ()>
+                <div class="scrim" on:click=move |_| set_picker_open.set(false)></div>
+                <div class="settings folder-picker" role="dialog">
+                    <h2>"Choose a Folder"</h2>
+                    <p class="folder-picker-path">{move || picker_dir.get()}</p>
+                    <div class="folder-picker-list">
+                        <Show when=move || !parent_path(&picker_dir.get()).is_empty() fallback=|| ()>
+                            <button
+                                class="folder-picker-row parent"
+                                on:click=move |_| set_picker_dir.set(parent_path(&picker_dir.get()))
+                            >
+                                <span class="tree-icon up" inner_html=icons::GO_UP></span>
+                                ".."
+                            </button>
+                        </Show>
+                        <For
+                            each=move || picker_entries.get()
+                            key=|entry| entry.1.clone()
+                            let:entry
+                        >
+                            <button
+                                class="folder-picker-row"
+                                on:click=move |_| set_picker_dir.set(entry.1.clone())
+                            >
+                                <span class="tree-icon dir"></span>
+                                {entry.0.clone()}
+                            </button>
+                        </For>
+                    </div>
+                    <div class="settings-actions">
+                        <button on:click=move |_| set_picker_open.set(false)>"Cancel"</button>
+                        <button class="primary" on:click=use_picked_folder>"Use as Tree Root"</button>
                     </div>
                 </div>
             </Show>

@@ -1122,6 +1122,55 @@ button:focus-visible {
   justify-content: flex-end;
 }
 
+/* The server-side folder picker: a scrollable list of the directory the tree
+ * can be rooted at, climbing anywhere above the music directory. */
+.folder-picker-path {
+  font-size: 11px;
+  color: var(--faint);
+  font-family: monospace;
+  word-break: break-all;
+  margin: 0 0 8px;
+}
+
+.folder-picker-list {
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin-bottom: 12px;
+}
+
+.folder-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 0 10px;
+  height: 32px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font-size: 12px;
+}
+
+.folder-picker-row:last-child {
+  border-bottom: 0;
+}
+
+.folder-picker-row:hover {
+  background: color-mix(in srgb, var(--highlight) 14%, transparent);
+}
+
+.folder-picker-row .tree-icon {
+  flex: none;
+}
+
+.folder-picker-row.parent {
+  color: var(--faint);
+}
+
 .hint {
   margin: 0;
   font-size: 11px;

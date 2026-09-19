@@ -722,8 +722,73 @@ fn is_gme_companion(
     })
 }
 
+/// The directory a browse request names, plus whether it sits inside the
+/// music directory. Directories outside it are listable (the tree can root
+/// anywhere on the server) but carry no streamable tracks.
+fn resolve_browse_directory(
+    library: &Arc<Library>,
+    requested: Option<&str>,
+) -> Result<(PathBuf, bool), String> {
+    let root = library
+        .root()
+        .ok_or_else(|| "no music directory is configured".to_owned())?;
+    let root = root
+        .canonicalize()
+        .map_err(|error| format!("reading the music directory: {error}"))?;
+    let candidate = match requested.filter(|value| !value.trim().is_empty()) {
+        Some(value) => PathBuf::from(value),
+        None => root.clone(),
+    };
+    let candidate = candidate
+        .canonicalize()
+        .map_err(|error| format!("reading {}: {error}", candidate.display()))?;
+    let inside = candidate == root || candidate.starts_with(&root);
+    Ok((candidate, inside))
+}
+
+/// A directories-only listing for a folder outside the music directory: the
+/// tree can climb and re-root through it, but there is nothing to play.
+fn directories_only(directory: &std::path::Path) -> Result<serde_json::Value, String> {
+    let entries = std::fs::read_dir(directory)
+        .map_err(|error| format!("reading {}: {error}", directory.display()))?;
+    let mut directories = Vec::new();
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        if crate::media_filter::is_hidden(&path) {
+            continue;
+        }
+        if entry.file_type().map(|file_type| file_type.is_dir()).unwrap_or(false) {
+            directories.push(path);
+        }
+    }
+    directories.sort();
+    let list: Vec<serde_json::Value> = directories
+        .into_iter()
+        .map(|path| {
+            serde_json::json!({
+                "name": path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default(),
+                "path": path.to_string_lossy(),
+                "relative": "",
+            })
+        })
+        .collect();
+    Ok(serde_json::json!({
+        "path": directory.to_string_lossy(),
+        "parent": directory.parent().map(|parent| parent.to_string_lossy().into_owned()),
+        "directories": list,
+        "files": [],
+    }))
+}
+
 fn browse_blocking(library: &Arc<Library>, requested: Option<&str>) -> Result<serde_json::Value, String> {
-    let directory = library.resolve(requested)?;
+    // A directory inside the music directory gets the full listing with
+    // streamable tracks. Any other directory on the server lists only its
+    // subfolders: the web tree climbs above the music directory to re-root,
+    // but tracks outside it cannot stream.
+    let (directory, inside) = resolve_browse_directory(library, requested)?;
+    if !inside {
+        return directories_only(&directory);
+    }
     if !directory.is_dir() {
         return Err(format!("{} is not a directory", directory.display()));
     }
