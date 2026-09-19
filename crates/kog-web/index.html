@@ -14,7 +14,15 @@
     <div id="app"></div>
     <script type="module">
       import init from "/kog_web.js";
-      init();
+      // A failure here used to leave a blank page. Say so instead, and point at
+      // the usual cause: a stale cached script from a previous build.
+      init().catch((error) => {
+        const target = document.getElementById("app");
+        target.style.padding = "24px";
+        target.textContent =
+          "The player failed to load (" + error + "). Reload the page with " +
+          "Ctrl+Shift+R to clear a stale cached build.";
+      });
     </script>
   </body>
 </html>

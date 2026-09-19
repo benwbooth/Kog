@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::extract::{Request, State};
-use axum::http::{HeaderValue, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -335,7 +335,7 @@ pub fn parse_range(value: &str, total: u64) -> Option<(u64, u64)> {
 static WEB_ASSETS: include_dir::Dir<'_> =
     include_dir::include_dir!("$CARGO_MANIFEST_DIR/web");
 
-async fn web_asset(uri: axum::http::Uri) -> Response {
+async fn web_asset(uri: axum::http::Uri, headers: HeaderMap) -> Response {
     let path = uri.path().trim_start_matches('/');
     // "/" is the frontend; a build without one still explains itself instead
     // of returning a bare 404.
@@ -350,11 +350,35 @@ async fn web_asset(uri: axum::http::Uri) -> Response {
     match WEB_ASSETS.get_file(path) {
         Some(file) => {
             let content_type = content_type_for(path);
-            let body = axum::body::Body::from(file.contents().to_vec());
-            let mut response = Response::new(body);
+            // The assets sit at fixed URLs and a wasm-bindgen pair only works
+            // when the script and the module come from the same build. Browsers
+            // cache them heuristically when nothing says otherwise, so a rebuild
+            // could pair an old script with a new wasm and render a blank page.
+            // Always revalidate, and answer 304 while the bytes are unchanged.
+            let etag = format!("W/\"{}\"", content_etag(file.contents()));
+            let unchanged = headers
+                .get(header::IF_NONE_MATCH)
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value.split(',').any(|part| part.trim() == etag));
+            let mut response = if unchanged {
+                let mut response = Response::new(axum::body::Body::empty());
+                *response.status_mut() = StatusCode::NOT_MODIFIED;
+                response
+            } else {
+                let body = axum::body::Body::from(file.contents().to_vec());
+                let mut response = Response::new(body);
+                response
+                    .headers_mut()
+                    .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+                response
+            };
             response
                 .headers_mut()
-                .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+                .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+            response.headers_mut().insert(
+                header::ETAG,
+                HeaderValue::from_str(&etag).expect("an etag is ASCII"),
+            );
             response
         }
         None => (
@@ -363,6 +387,17 @@ async fn web_asset(uri: axum::http::Uri) -> Response {
         )
             .into_response(),
     }
+}
+
+/// A cheap content validator for an embedded asset. The length alone could
+/// repeat across a rebuild, which would let a browser keep a stale wasm/script
+/// pair, so hash the bytes.
+fn content_etag(bytes: &[u8]) -> String {
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    format!("{:x}-{}", hasher.finish(), bytes.len())
 }
 
 fn content_type_for(path: &str) -> &'static str {
