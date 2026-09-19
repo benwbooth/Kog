@@ -1918,6 +1918,16 @@ fn App() -> impl IntoView {
             .join(" ")
     };
 
+    // The pane's scrollable content is never narrower than the columns it
+    // holds: when the column set is wider than the pane, the shared scroll
+    // container overflows and the header and rows scroll together.
+    let table_width = move || -> f64 {
+        visible_columns()
+            .into_iter()
+            .map(|column| column.width)
+            .sum()
+    };
+
     let persist_columns = move |columns: &[Column]| {
         store("kog.columns", &encode_columns(columns));
     };
@@ -2668,9 +2678,38 @@ fn App() -> impl IntoView {
                     </div>
 
                     <div
-                        class="columns"
-                        style=move || format!("--cols:{}", grid_template())
-                        on:contextmenu=move |ev: web_sys::MouseEvent| {
+                        class="rows"
+                        class:drop-active=move || playlist_drop_active.get()
+                        style=move || {
+                            format!(
+                                "--cols:{}; --table-width:{:.0}px",
+                                grid_template(),
+                                table_width()
+                            )
+                        }
+                        on:dragover=move |ev: web_sys::DragEvent| {
+                            ev.prevent_default();
+                            if let Some(transfer) = ev.data_transfer() {
+                                transfer.set_drop_effect("copy");
+                            }
+                            set_playlist_drop_active.set(true);
+                        }
+                        on:dragleave=move |_| set_playlist_drop_active.set(false)
+                        on:drop={
+                            let add_row_to_playlist = add_row_to_playlist.clone();
+                            move |ev: web_sys::DragEvent| {
+                                ev.prevent_default();
+                                set_playlist_drop_active.set(false);
+                                if let Some(row) = dragging_tree.get_untracked() {
+                                    add_row_to_playlist(row);
+                                }
+                                set_dragging_tree.set(None);
+                            }
+                        }
+                    >
+                        <div
+                            class="columns"
+                            on:contextmenu=move |ev: web_sys::MouseEvent| {
                             ev.prevent_default();
                             // Empty header space targets the first column so
                             // the Move items still have something to act on.
@@ -2757,30 +2796,6 @@ fn App() -> impl IntoView {
                         </For>
                     </div>
 
-                    <div
-                        class="rows"
-                        class:drop-active=move || playlist_drop_active.get()
-                        style=move || format!("--cols:{}", grid_template())
-                        on:dragover=move |ev: web_sys::DragEvent| {
-                            ev.prevent_default();
-                            if let Some(transfer) = ev.data_transfer() {
-                                transfer.set_drop_effect("copy");
-                            }
-                            set_playlist_drop_active.set(true);
-                        }
-                        on:dragleave=move |_| set_playlist_drop_active.set(false)
-                        on:drop={
-                            let add_row_to_playlist = add_row_to_playlist.clone();
-                            move |ev: web_sys::DragEvent| {
-                                ev.prevent_default();
-                                set_playlist_drop_active.set(false);
-                                if let Some(row) = dragging_tree.get_untracked() {
-                                    add_row_to_playlist(row);
-                                }
-                                set_dragging_tree.set(None);
-                            }
-                        }
-                    >
                         <Show
                             when=move || !view_rows().is_empty()
                             fallback=move || view! {

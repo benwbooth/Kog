@@ -489,7 +489,7 @@ button:focus-visible {
 
 .playlist {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   min-height: 0;
   background: var(--base);
 }
@@ -534,9 +534,15 @@ button:focus-visible {
   display: grid;
   grid-template-columns: var(--cols);
   align-items: center;
+  /* Shared horizontal scroll content: the pane scrolls rather than squeezing
+   * columns below their widths when the set is wider than the pane. */
+  min-width: var(--table-width);
 }
 
 .columns {
+  position: sticky;
+  top: 0;
+  z-index: 1;
   height: var(--row-height);
   background: var(--surface);
   border-bottom: 1px solid var(--border);
@@ -688,7 +694,7 @@ button:focus-visible {
 }
 
 .rows {
-  overflow-y: auto;
+  overflow: auto;
   overscroll-behavior: contain;
   min-height: 0;
 }
@@ -1102,6 +1108,9 @@ button:focus-visible {
   .columns,
   .track {
     grid-template-columns: 34px minmax(0, 1fr) 52px;
+    /* The phone layout always fits; the desktop table width must not force a
+     * horizontal scrollbar here. */
+    min-width: 0;
   }
 
   .columns {
