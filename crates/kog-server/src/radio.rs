@@ -7,14 +7,12 @@
 //! round file, walks the library root with the shared pick logic, and hands the
 //! web client a window of playable entries.
 //!
-//! What is deliberately *not* shared is the desktop's per-pick expansion
-//! (`prepare_scan_file`), which expands cue sheets and multi-song files into
-//! individual tracks. That path is private to the desktop controller and
-//! `DecoderRegistry::expand` is test-only, so the server walks with
-//! `read_cue = false` and maps one pick to one streamable entry. On this
-//! platform the difference is cue sheets and multi-song files: a cue sheet is
-//! skipped and a multi-song file plays as a single entry rather than one entry
-//! per subsong.
+//! Picks are expanded and proved exactly as the desktop does. The shared
+//! [`DecoderRegistry::expand_detailed`] turns a cue sheet or multi-song file
+//! into its individual tracks, and every candidate is probed before it is
+//! handed out: a pick that yields nothing playable joins the round's `dead`
+//! set, so both clients skip the same broken files. `read_cue` follows the
+//! user's folder setting, matching the desktop's radio session.
 //!
 //! Because the round file is the desktop's, the server roots itself where the
 //! desktop left off: a persisted round whose root is a directory inside the
@@ -30,8 +28,10 @@ use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 
-use kog_audio::decoder::DecoderRegistry;
-use kog_audio::radio::{RadioCtx, RadioRound, RoundInitial, random_seed};
+use kog_audio::decoder::{DecoderRegistry, PlaybackSource, StreamProperties};
+use kog_audio::radio::{
+    RadioCtx, RadioRound, RoundInitial, radio_locator_key, random_seed,
+};
 use kog_audio::settings::AppSettings;
 
 use crate::routes::{AppState, bad_request};
@@ -44,6 +44,11 @@ const ROUND_FILE: &str = "radio-round.json";
 /// Big enough to browse, small enough that a request stays a quick filesystem
 /// walk.
 const WINDOW: usize = 60;
+
+/// Consecutive unplayable picks one window tolerates before giving up. Mirrors
+/// the desktop staging thread's cap: a library of nothing but junk must not
+/// spin forever re-proving itself.
+const MAX_SKIPS: usize = 16_384;
 
 /// One playable pick, shaped like every other API entry so the web pane can
 /// render it with the existing row code.
@@ -257,6 +262,12 @@ impl Radio {
     /// Fill the window with the next `target` picks, rotating the round (and
     /// its seed) on exhaustion and giving up after two barren rounds, as the
     /// desktop staging thread does.
+    ///
+    /// Each pick is expanded into its tracks and probed; anything unplayable is
+    /// skipped and remembered in the round's `dead` set, exactly like the
+    /// desktop's staging thread. Dead knowledge clears on rotation only when
+    /// the finished round actually played something, so an all-junk library
+    /// reaches a stop instead of re-proving forever.
     fn generate(inner: &mut Inner, target: usize) {
         let Some(root) = inner.root.clone() else {
             return;
@@ -268,9 +279,9 @@ impl Radio {
         let ctx = RadioCtx {
             decoders: &decoders,
             audio_exts: &audio_exts,
-            // Cue sheets would need the desktop's per-track expansion, which
-            // the server cannot share; see the module comment.
-            read_cue: false,
+            // Cue sheets become their tracks through the same shared expansion
+            // the desktop uses; honour the user's folder setting.
+            read_cue: settings.read_cue_sheets_in_folders,
             nested_cache: &nested_cache,
         };
         let Some(mut round) = inner.round.take() else {
@@ -278,14 +289,36 @@ impl Radio {
         };
         let mut made = 0_usize;
         let mut empty_rounds = 0_usize;
+        let mut round_live = false;
+        let mut skips = 0_usize;
         while made < target {
             match round.next_pick(&root, &ctx) {
                 Some(pick) => {
                     empty_rounds = 0;
-                    if let Some(entry) = entry_from_pick(&pick, &root) {
-                        inner.entries.push(entry);
-                        made += 1;
+                    let key = radio_locator_key(&pick);
+                    if inner.dead.contains(&key) {
+                        skips += 1;
+                        if skips >= MAX_SKIPS {
+                            break;
+                        }
+                        continue;
                     }
+                    let entries = entries_from_pick(&decoders, &pick, &root);
+                    if entries.is_empty() {
+                        // The pick cannot produce a single playable track;
+                        // prove it dead for both clients, as the desktop does
+                        // when an expansion comes back empty.
+                        inner.dead.insert(key);
+                        skips += 1;
+                        if skips >= MAX_SKIPS {
+                            break;
+                        }
+                        continue;
+                    }
+                    skips = 0;
+                    round_live = true;
+                    made += entries.len();
+                    inner.entries.extend(entries);
                 }
                 None => {
                     empty_rounds += 1;
@@ -294,7 +327,12 @@ impl Radio {
                     }
                     let seed = random_seed();
                     inner.seed = seed;
-                    inner.dead.clear();
+                    // Mirror the desktop: only a round that yielded something
+                    // clears the dead proof. A fruitless round keeps it.
+                    if round_live {
+                        round_live = false;
+                        inner.dead.clear();
+                    }
                     round = RadioRound::new(seed);
                 }
             }
@@ -358,33 +396,89 @@ fn persisted_root(path: &Path) -> Option<String> {
     Some(document.get("root")?.as_str()?.to_owned())
 }
 
-/// Map one round pick to a streamable entry. Archive members become `archive`
-/// entries; everything else is a `local` file.
-fn entry_from_pick(pick: &Path, root: &Path) -> Option<RadioEntry> {
-    if let Ok(Some(location)) = kog_audio::archive::tree_location(pick) {
-        let relative = format!(
-            "{}::{}",
-            relative_from(root, &location.archive),
-            location.entry
-        );
+/// Expand one round pick into its playable tracks. The shared
+/// [`DecoderRegistry::expand_detailed`] handles cue sheets, subsong files and
+/// archives exactly as the desktop does; every expanded source is then probed,
+/// and unopenable ones are dropped. An empty result proves the whole pick dead.
+fn entries_from_pick(decoders: &DecoderRegistry, pick: &Path, root: &Path) -> Vec<RadioEntry> {
+    let Ok(expansion) = decoders.expand_detailed(pick.to_path_buf()) else {
+        return Vec::new();
+    };
+    let mut entries = Vec::new();
+    for source in expansion.sources {
+        let Ok(properties) = decoders.probe(&source) else {
+            continue;
+        };
+        if let Some(entry) = entry_from_source(decoders, &source, &properties, root) {
+            entries.push(entry);
+        }
+    }
+    entries
+}
+
+/// Map one played-back source to a streamable entry, shaped like every other
+/// API entry so the web pane can render it with the existing row code.
+fn entry_from_source(
+    decoders: &DecoderRegistry,
+    source: &PlaybackSource,
+    properties: &StreamProperties,
+    root: &Path,
+) -> Option<RadioEntry> {
+    let fragment = fragment_for_source(decoders, source, properties)?;
+    if let Some(origin) = &source.archive_origin {
         return Some(RadioEntry {
             kind: "archive".to_owned(),
-            path: location.archive.display().to_string(),
-            entry: location.entry,
-            fragment: None,
-            relative,
+            path: origin.archive_path.display().to_string(),
+            entry: origin.entry_name.clone(),
+            fragment,
+            relative: format!(
+                "{}::{}",
+                relative_from(root, &origin.archive_path),
+                origin.entry_name
+            ),
         });
     }
-    if !pick.is_file() {
-        return None;
+    if let Some(url) = &source.remote_url {
+        return Some(RadioEntry {
+            kind: "remote".to_owned(),
+            path: url.clone(),
+            entry: String::new(),
+            fragment,
+            relative: url.clone(),
+        });
     }
     Some(RadioEntry {
         kind: "local".to_owned(),
-        path: pick.display().to_string(),
+        path: source.path.display().to_string(),
         entry: String::new(),
-        fragment: None,
-        relative: relative_from(root, pick),
+        fragment,
+        relative: relative_from(root, &source.path),
     })
+}
+
+/// The fragment a client must send back to address this source again. The
+/// outer `Option` is `None` when the source cannot be addressed (a cue track
+/// without a declared number), which makes the caller skip it; the inner value
+/// is the fragment itself. `resolve_entry` expects subsongs as their index but
+/// cue tracks as their declared track number, so cue sources read the probed
+/// number rather than the internal index.
+fn fragment_for_source(
+    decoders: &DecoderRegistry,
+    source: &PlaybackSource,
+    properties: &StreamProperties,
+) -> Option<Option<String>> {
+    match source.subsong {
+        None => Some(None),
+        Some(subsong) => {
+            if decoders.selected_backend_id(source) == Some("cuesheet") {
+                properties
+                    .track_number
+                    .map(|number| Some(number.to_string()))
+            } else {
+                Some(Some(subsong.to_string()))
+            }
+        }
+    }
 }
 
 fn relative_from(root: &Path, path: &Path) -> String {
@@ -467,8 +561,11 @@ mod tests {
     use axum::http::StatusCode;
     use std::sync::Arc;
 
+    /// A short but genuinely decodable 8-bit mono WAV, so probing succeeds the
+    /// way it does for a real library file.
     fn write_wav(path: &Path) {
-        let data: &[u8] = &[0x80];
+        let data: Vec<u8> = vec![0x80; 800];
+        let data: &[u8] = &data;
         let mut wav = Vec::new();
         wav.extend_from_slice(b"RIFF");
         wav.extend_from_slice(&(36_u32 + data.len() as u32).to_le_bytes());
@@ -484,6 +581,34 @@ mod tests {
         wav.extend_from_slice(b"data");
         wav.extend_from_slice(&(data.len() as u32).to_le_bytes());
         wav.extend_from_slice(data);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, wav).unwrap();
+    }
+
+    /// A 16-bit mono PCM WAV long enough for a small cue sheet, so the cue
+    /// backend's FFmpeg probe has real frames to range over.
+    fn write_pcm_wav(path: &Path, sample_rate: u32, seconds: u32) {
+        let frames = sample_rate * seconds;
+        let data_len = frames * 2;
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + data_len).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16_u32.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&sample_rate.to_le_bytes());
+        wav.extend_from_slice(&(sample_rate * 2).to_le_bytes());
+        wav.extend_from_slice(&2_u16.to_le_bytes());
+        wav.extend_from_slice(&16_u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data_len.to_le_bytes());
+        for frame in 0..frames {
+            let sample = ((frame % 64) as i32 - 32) as i16 * 500;
+            wav.extend_from_slice(&sample.to_le_bytes());
+        }
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).unwrap();
         }
@@ -528,6 +653,92 @@ mod tests {
         assert!(fresh.enabled);
         assert_ne!(on.seed, fresh.seed, "a reshuffle uses a new seed");
         assert_ne!(paths(&on), paths(&fresh), "a reshuffle changes the order");
+    }
+
+    /// The dead set persisted for a round file rooted at `root`.
+    fn persisted_dead(save: &Path, root: &Path) -> Vec<String> {
+        RadioRound::load(save, root)
+            .map(|round| round.dead)
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn unplayable_picks_are_skipped_and_remembered_dead() {
+        let directory = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+        let root = directory.path().to_path_buf();
+        // A file the decoders accept by name but cannot open: the pick must be
+        // skipped and proved dead, not handed to a client that would fail to
+        // stream it.
+        let broken = root.join("broken.wav");
+        std::fs::write(&broken, b"this is not a wave file").unwrap();
+        let save = root.join("radio-round.json");
+        let radio = Radio::new(Some(root.clone()), Some(save.clone()), true);
+
+        let status = radio.snapshot(Some(&root));
+        assert!(status.entries.is_empty(), "the only pick is unplayable");
+        assert_eq!(
+            persisted_dead(&save, &root),
+            vec![radio_locator_key(&broken)],
+            "the unplayable locator is persisted in the round"
+        );
+    }
+
+    #[test]
+    fn a_window_keeps_playable_picks_and_drops_unplayable_ones() {
+        let directory = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+        let root = directory.path().to_path_buf();
+        let good = root.join("good.wav");
+        let broken = root.join("broken.wav");
+        write_wav(&good);
+        std::fs::write(&broken, b"this is not a wave file").unwrap();
+        let save = root.join("radio-round.json");
+        let radio = Radio::new(Some(root.clone()), Some(save), true);
+
+        let status = radio.snapshot(Some(&root));
+        assert!(!status.entries.is_empty(), "the playable pick is staged");
+        assert!(
+            status
+                .entries
+                .iter()
+                .all(|entry| entry.path == good.display().to_string()),
+            "only the playable pick reaches the client: {:?}",
+            paths(&status)
+        );
+    }
+
+    #[test]
+    fn a_cue_pick_expands_into_its_tracks_addressed_by_number() {
+        let directory = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+        let root = directory.path().to_path_buf();
+        write_pcm_wav(&root.join("image.wav"), 8_000, 2);
+        let cue = root.join("album.cue");
+        std::fs::write(
+            &cue,
+            concat!(
+                "FILE \"image.wav\" WAVE\n",
+                "  TRACK 01 AUDIO\n",
+                "    INDEX 01 00:00:00\n",
+                "  TRACK 02 AUDIO\n",
+                "    INDEX 01 00:01:00\n",
+            ),
+        )
+        .unwrap();
+
+        let decoders = DecoderRegistry::new(AppSettings::load().decoder_settings());
+        let entries = entries_from_pick(&decoders, &cue, &root);
+        assert_eq!(entries.len(), 2, "a cue pick becomes its tracks");
+        assert!(entries.iter().all(|entry| entry.kind == "local"));
+        assert!(entries
+            .iter()
+            .all(|entry| entry.path == cue.display().to_string()));
+        // The fragment is the declared CUE track number, which is what
+        // `resolve_entry` reads back, not the internal subsong index.
+        let mut fragments: Vec<String> = entries
+            .iter()
+            .filter_map(|entry| entry.fragment.clone())
+            .collect();
+        fragments.sort();
+        assert_eq!(fragments, vec!["1".to_owned(), "2".to_owned()]);
     }
 
     #[test]
