@@ -403,7 +403,7 @@ async fn web_asset(uri: axum::http::Uri, headers: HeaderMap) -> Response {
             // cache them heuristically when nothing says otherwise, so a rebuild
             // could pair an old script with a new wasm and render a blank page.
             // Always revalidate, and answer 304 while the bytes are unchanged.
-            let etag = format!("W/\"{}\"", content_etag(file.contents()));
+            let etag = build_etag();
             let unchanged = headers
                 .get(header::IF_NONE_MATCH)
                 .and_then(|value| value.to_str().ok())
@@ -437,15 +437,30 @@ async fn web_asset(uri: axum::http::Uri, headers: HeaderMap) -> Response {
     }
 }
 
-/// A cheap content validator for an embedded asset. The length alone could
-/// repeat across a rebuild, which would let a browser keep a stale wasm/script
-/// pair, so hash the bytes.
-fn content_etag(bytes: &[u8]) -> String {
+/// One validator for the whole embedded frontend. Any asset changing (the
+/// wasm, the script, or a stylesheet-only rebuild) changes every asset's ETag,
+/// so a browser revalidates the complete build and the page's live-reload poll
+/// notices a CSS-only change too. Hashing the bytes also stops a rebuild whose
+/// length repeats from pairing a stale script with a new module.
+fn build_etag() -> &'static str {
     use std::hash::{Hash, Hasher};
 
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    bytes.hash(&mut hasher);
-    format!("{:x}-{}", hasher.finish(), bytes.len())
+    fn walk(dir: &include_dir::Dir<'_>, hasher: &mut impl Hasher) {
+        for file in dir.files() {
+            file.path().hash(hasher);
+            file.contents().hash(hasher);
+        }
+        for sub in dir.dirs() {
+            walk(sub, hasher);
+        }
+    }
+
+    static ETAG: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ETAG.get_or_init(|| {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        walk(&WEB_ASSETS, &mut hasher);
+        format!("W/\"build-{:x}\"", hasher.finish())
+    })
 }
 
 fn content_type_for(path: &str) -> &'static str {
