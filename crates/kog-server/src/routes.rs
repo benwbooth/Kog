@@ -838,6 +838,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn metadata_reports_probed_audio_and_handles_bad_entries() {
+        let (library, root) = library_with(&["Album/one.wav"]);
+        let path = root.join("Album/one.wav").to_string_lossy().into_owned();
+        let state = state_with(AuthMode::None, "", library);
+
+        // The batch is a bare JSON array and keeps its order and length.
+        let (status, body) = request_json(
+            state.clone(),
+            "POST",
+            "/api/metadata",
+            Some(serde_json::json!([
+                { "kind": "local", "path": path, "entry": "", "fragment": null },
+                { "kind": "local", "path": "/does/not/exist.wav", "entry": "", "fragment": null },
+            ])),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let rows = body.as_array().unwrap();
+        assert_eq!(rows.len(), 2, "one row per entry, in order");
+        assert_eq!(rows[0]["sampleRate"], 8000);
+        assert_eq!(rows[0]["channels"], 1);
+        assert!(rows[0]["duration"].as_f64().is_some(), "a WAV has a known duration");
+        assert_eq!(rows[0]["title"], serde_json::Value::Null);
+        assert_eq!(rows[1], serde_json::Value::Null, "unprobeable entries are null");
+
+        // The single-entry GET shares the shape, and distinguishes 400 from 404.
+        let (status, body) = get_json(
+            state.clone(),
+            &format!("/api/metadata?kind=local&path={path}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["sampleRate"], 8000);
+
+        let (status, _) = get_json(state.clone(), "/api/metadata?kind=local&path=/nope.wav", None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, _) = get_json(state.clone(), "/api/metadata?kind=ftp&path=/nope.wav", None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        // Oversized batches are refused rather than pinning a worker.
+        let too_many: Vec<serde_json::Value> = (0..1001)
+            .map(|_| serde_json::json!({ "kind": "local", "path": "/music/a.wav" }))
+            .collect();
+        let (status, _) = request_json(
+            state,
+            "POST",
+            "/api/metadata",
+            Some(serde_json::Value::Array(too_many)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
     async fn playlists_can_be_created_appended_and_deleted() {
         let state = state(AuthMode::None, "");
         let (status, body) = request_json(

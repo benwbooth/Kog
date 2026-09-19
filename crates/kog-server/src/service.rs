@@ -12,9 +12,10 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use axum::body::Bytes;
-use kog_audio::decoder::{DecoderSettings, PlaybackSource};
+use kog_audio::decoder::{DecoderRegistry, DecoderSettings, PlaybackSource, StreamProperties};
 use kog_audio::playlist::PlaylistEntry;
 use kog_audio::streaming::{PcmReader, resolve_entry};
 
@@ -44,6 +45,8 @@ pub struct StreamService {
     /// Encoder executable; `ffmpeg` by default.
     encoder: PathBuf,
     scratch: PathBuf,
+    /// Serializes `probe_entry`, whose scratch playlist path is fixed.
+    probe_lock: Arc<Mutex<()>>,
 }
 
 impl StreamService {
@@ -62,6 +65,7 @@ impl StreamService {
             decoder_settings,
             encoder,
             scratch,
+            probe_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -94,6 +98,26 @@ impl StreamService {
         let decoders = kog_audio::decoder::DecoderRegistry::new(self.decoder_settings.clone());
         let source = resolve_entry(&entry, &decoders, &self.scratch)?;
         self.start_encode(source, key)
+    }
+
+    /// Read one entry's tags without encoding it, using the same resolution
+    /// path streaming uses, so archive members, cue fragments and subsongs are
+    /// addressed identically. Probing is blocking; callers run it on a
+    /// blocking thread.
+    ///
+    /// Serialized: `resolve_entry` writes a fixed one-line playlist into its
+    /// scratch directory, so two probes at once would read each other's file.
+    /// A dedicated `metadata` subdirectory keeps that file clear of the
+    /// streaming path's.
+    pub fn probe_entry(&self, entry: PlaylistEntry) -> Result<StreamProperties, String> {
+        let _guard = self
+            .probe_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let decoders = DecoderRegistry::new(self.decoder_settings.clone());
+        let scratch = self.scratch.join("metadata");
+        let source = resolve_entry(&entry, &decoders, &scratch)?;
+        decoders.probe(&source)
     }
 
     /// The encoder runs as a subprocess; a missing one is a configuration
