@@ -1224,11 +1224,8 @@ Window {
                                             clipboardHelper.text = payload.addresses[0]
                                             clipboardHelper.selectAll()
                                             clipboardHelper.copy()
-                                            serverState.detail = payload.shared
-                                                ? qsTr("Address copied: %1")
-                                                    .arg(payload.addresses[0])
-                                                : qsTr("Address copied: %1 — this machine only. Set the address to 0.0.0.0 to serve other devices.")
-                                                    .arg(payload.addresses[0])
+                                            serverState.detail = qsTr("Address copied: %1")
+                                                .arg(payload.addresses[0])
                                         }
                                     }
                                 }

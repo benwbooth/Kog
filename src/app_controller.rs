@@ -5246,9 +5246,8 @@ impl qobject::AppController {
         }
     }
 
-    /// URLs another machine can actually use, given how the server is bound.
-    /// A loopback bind answers only here, so say so instead of handing out a
-    /// LAN address that will not connect.
+    /// URLs a phone or another machine can use, so the UI can show something
+    /// copyable instead of making the user guess their host address.
     pub fn server_addresses_json(&self) -> QString {
         let config = kog_server::config::load_config();
         let scheme = if config.tls.mode == kog_server::TlsMode::Off {
@@ -5256,28 +5255,41 @@ impl qobject::AppController {
         } else {
             "https"
         };
-        let port = config.port;
         let mut addresses = Vec::new();
-        if config.address.is_loopback() {
-            addresses.push(format!("{scheme}://127.0.0.1:{port}"));
-        } else if config.address.is_unspecified() {
-            // Bound to every interface, so this machine's addresses all answer.
-            if let Ok(interfaces) = local_ip_addresses() {
-                for ip in interfaces {
-                    addresses.push(format!("{scheme}://{ip}:{port}"));
-                }
+        if let Ok(interfaces) = local_ip_addresses() {
+            for ip in interfaces {
+                addresses.push(format!("{scheme}://{ip}:{}", config.port));
             }
-        } else {
-            addresses.push(format!("{scheme}://{}:{port}", config.address));
         }
-        addresses.sort();
-        addresses.dedup();
         json_result(Ok(serde_json::json!({
             "ok": true,
             "addresses": addresses,
-            "port": port,
-            "shared": !config.address.is_loopback(),
+            "port": config.port,
         })))
+    }
+
+    /// The revision stamped into this build, for the title bar and About box.
+    pub fn build_revision(&self) -> QString {
+        qstring(env!("KOG_BUILD_REV"))
+    }
+
+    /// When this binary was linked, in milliseconds since the epoch, so QML can
+    /// format it for the user's locale. Zero means "not known": a nix store
+    /// path carries a 1970 mtime, and showing that would be worse than a blank.
+    pub fn build_timestamp(&self) -> f64 {
+        const EARLIEST_PLAUSIBLE_MS: f64 = 946_684_800_000.0; // 2000-01-01
+        let millis = std::env::current_exe()
+            .ok()
+            .and_then(|path| std::fs::metadata(path).ok())
+            .and_then(|metadata| metadata.modified().ok())
+            .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|since| since.as_millis() as f64)
+            .unwrap_or(0.0);
+        if millis < EARLIEST_PLAUSIBLE_MS {
+            0.0
+        } else {
+            millis
+        }
     }
 
     fn server_result(
