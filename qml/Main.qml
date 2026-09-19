@@ -2572,17 +2572,18 @@ ApplicationWindow {
                         ToolTip {
                             id: treeRowToolTip
                             visible: treePointer.containsMouse
-                                && treePointer.tipText.length > 0
                             delay: 700
                             y: treeDelegate.height
-                            text: treePointer.tipText
+                            // The delegate's own path role first: it is the
+                            // absolute path for every row. path_for_index is
+                            // the fallback, but it can come back empty for the
+                            // root row, which is the common case.
+                            text: treeDelegate.filePath.length > 0
+                                ? treeDelegate.filePath
+                                : root.treePathAtRow(treeDelegate.row)
                         }
                         MouseArea {
                             id: treePointer
-                            // Resolved on hover: the full path of the row.
-                            readonly property string tipText: containsMouse
-                                ? root.treePathAtRow(treeDelegate.row)
-                                : ""
                             property real pressX: 0
                             property real pressY: 0
                             property bool manualDragging: false
