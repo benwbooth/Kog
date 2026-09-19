@@ -1107,10 +1107,20 @@ fn App() -> impl IntoView {
         })
     };
 
-    // Accept the element's duration only once it is a real number.
+    // Measure the element once it is real. Progressive streams (ADTS, FLAC)
+    // can report `Infinity` for `duration` while their `seekable` range already
+    // knows the end, so fall back to that before letting the tag guess win.
     let refresh_media_duration = move |_event: web_sys::Event| {
         if let Some(audio) = audio_ref.get() {
-            set_media_duration.set(finite_duration(audio.duration()));
+            let measured = finite_duration(audio.duration()).or_else(|| {
+                let seekable = audio.seekable();
+                if seekable.length() > 0 {
+                    seekable.end(0).ok().and_then(finite_duration)
+                } else {
+                    None
+                }
+            });
+            set_media_duration.set(measured);
         }
     };
 
@@ -2185,7 +2195,31 @@ fn App() -> impl IntoView {
                             step="0.5"
                             prop:value=move || position.get()
                             on:input=move |event| {
-                                let target: f64 = event_target_value(&event).parse().unwrap_or(0.0);
+                                let requested: f64 =
+                                    event_target_value(&event).parse().unwrap_or(0.0);
+                                // The element's own end beats the tag fallback:
+                                // a wrong tag must never send a seek past the
+                                // real audio.
+                                let mut end = duration.get_untracked();
+                                if let Some(audio) = audio_ref.get() {
+                                    if let Some(real) = finite_duration(audio.duration()) {
+                                        end = real;
+                                    } else {
+                                        let seekable = audio.seekable();
+                                        if seekable.length() > 0 {
+                                            if let Some(real) =
+                                                seekable.end(0).ok().and_then(finite_duration)
+                                            {
+                                                end = real;
+                                            }
+                                        }
+                                    }
+                                }
+                                let target = if end.is_finite() && end > 0.0 {
+                                    requested.clamp(0.0, end)
+                                } else {
+                                    requested
+                                };
                                 if let Some(audio) = audio_ref.get() {
                                     audio.set_current_time(target);
                                 }

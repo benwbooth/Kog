@@ -128,8 +128,19 @@ impl PcmReader {
             }
         }
         if let Some(remaining) = self.remaining_frames.as_mut() {
-            let delivered = (self.pending.len() / 4) as u64;
-            *remaining = remaining.saturating_sub(delivered);
+            // `pending` is interleaved samples at STREAM_CHANNELS, but the
+            // bound is in frames. Dividing by one f32 counted two stereo
+            // samples as two frames, so every stream stopped at half its
+            // declared length once the mixer padded past the real audio.
+            let frame_bytes = std::mem::size_of::<f32>() * usize::from(STREAM_CHANNELS);
+            let delivered = (self.pending.len() / frame_bytes) as u64;
+            let allowed = delivered.min(*remaining);
+            *remaining -= allowed;
+            if allowed < delivered {
+                // Never deliver past the declared end: trim the final batch.
+                self.pending.truncate(allowed as usize * frame_bytes);
+                self.finished = true;
+            }
             if *remaining == 0 {
                 self.finished = true;
             }
@@ -270,5 +281,25 @@ mod tests {
             assert!(count <= small.len());
         }
         assert_eq!(total, 16, "four f32 samples are still delivered in full");
+    }
+
+    #[test]
+    fn the_duration_bound_counts_frames_not_samples() {
+        // One second of stereo audio against a one-second bound: the reader
+        // must deliver all 48 000 frames (two samples each), not 48 000
+        // samples, which would stop at half a second.
+        let frames = STREAM_SAMPLE_RATE as usize;
+        let mut reader = PcmReader::from_rodio_source(Ramp {
+            remaining: frames * usize::from(STREAM_CHANNELS),
+            next: 0.0,
+        });
+        reader.remaining_frames = Some(frames as u64);
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes).expect("read pcm");
+        assert_eq!(
+            bytes.len(),
+            frames * usize::from(STREAM_CHANNELS) * std::mem::size_of::<f32>(),
+            "the bound is frames, and the final batch is trimmed to it"
+        );
     }
 }
