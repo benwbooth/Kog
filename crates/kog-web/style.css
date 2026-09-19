@@ -157,6 +157,17 @@ body {
   font-size: 14px;
 }
 
+/* The search pill's inlined desktop find icon, tinted like the glyph was. */
+.pill-icon svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
+
+.pill-icon svg path {
+  fill: currentColor;
+}
+
 .search-clear {
   width: 24px;
   height: 24px;
