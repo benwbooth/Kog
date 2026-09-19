@@ -20,8 +20,8 @@
   --border: #34393d;
   --row-height: 26px;
   --sidebar-width: 260px;
-  --transport-height: 84px;
-  --toolbar-height: 44px;
+  --transport-height: 92px;
+  --toolbar-height: 48px;
   color-scheme: dark;
 }
 
@@ -186,13 +186,12 @@ button:focus-visible {
 .section-header {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 8px;
+  gap: 4px;
+  height: 30px;
+  padding: 0 6px;
   font-size: 11px;
   font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--muted);
+  color: var(--text);
   background: transparent;
   border: 0;
   width: 100%;
@@ -215,9 +214,10 @@ button:focus-visible {
   align-items: center;
   gap: 4px;
   width: 100%;
+  height: var(--row-height);
   border: 0;
   border-radius: 0;
-  padding: 3px 8px 3px 0;
+  padding: 0 8px 0 0;
   text-align: left;
   white-space: nowrap;
   color: var(--text);
@@ -672,4 +672,49 @@ button:focus-visible {
   .now-text .subtitle {
     display: none;
   }
+}
+
+/* Scrollbars: Qt draws a slim groove with a rounded handle. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border: 2px solid transparent;
+  border-radius: 6px;
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+  background-clip: content-box;
+}
+
+/* The toolbar search is a centred pill, as in the desktop window. */
+.toolbar .search input {
+  height: 34px;
+  border-radius: 17px;
+  padding: 0 14px;
+}
+
+.toolbar .search {
+  max-width: 460px;
+}
+
+/* Playlist column header: 26px tall like the rows it labels. */
+.columns {
+  height: var(--row-height);
+  padding: 0;
+  align-items: center;
 }
