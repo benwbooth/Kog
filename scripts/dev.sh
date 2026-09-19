@@ -64,7 +64,17 @@ app_log="target/dev-app.log"
 #
 # One build-and-swap pass. This is what watchexec runs on every settled change.
 if (( step )); then
-  if (( web )) && [[ "$mode" != "test" ]]; then
+  # watchexec passes the changed paths in the environment, so a frontend edit
+  # rebuilds the wasm without needing --web on every run. The generated assets
+  # land under crates/kog-server/web, which is a different path, so running the
+  # frontend build again cannot retrigger itself.
+  rebuild_web=$web
+  if [[ "$mode" != "test" ]]; then
+    case "${WATCHEXEC_WRITTEN_PATH:-}${WATCHEXEC_CREATED_PATH:-}${WATCHEXEC_RENAMED_PATH:-}${WATCHEXEC_META_CHANGED_PATH:-}" in
+      *crates/kog-web/*) rebuild_web=1 ;;
+    esac
+  fi
+  if (( rebuild_web )); then
     if ! crates/kog-web/build.sh; then
       echo "[dev] frontend build failed; keeping the running app" >&2
       exit 1
