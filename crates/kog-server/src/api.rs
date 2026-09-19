@@ -1161,6 +1161,55 @@ fn entry_json(entry: StoredEntry) -> serde_json::Value {
 }
 
 /// Router fragment for the library endpoints, so `routes` stays readable.
+/// The synthesizer choices, labeled like the desktop's Preferences combo.
+fn midi_options() -> Vec<serde_json::Value> {
+    use kog_audio::settings::MidiEngine;
+    [MidiEngine::RustySynth, MidiEngine::Opl3Windows, MidiEngine::Sc55, MidiEngine::Mt32]
+        .into_iter()
+        .map(|engine| {
+            serde_json::json!({
+                "value": engine.setting_value(),
+                "label": match engine {
+                    MidiEngine::RustySynth => "RustySynth (SF2)",
+                    MidiEngine::Opl3Windows => "OPL3Windows (Nuked OPL3)",
+                    MidiEngine::Sc55 => "Nuked SC-55",
+                    MidiEngine::Mt32 => "Munt (MT-32 / CM-32L)",
+                },
+            })
+        })
+        .collect()
+}
+
+/// `GET /api/settings/midi` — the active MIDI synthesizer and the choices.
+pub async fn midi_settings(State(state): State<AppState>) -> Response {
+    let engine = state.streams.midi_engine();
+    axum::Json(serde_json::json!({
+        "engine": engine.setting_value(),
+        "options": midi_options(),
+    }))
+    .into_response()
+}
+
+/// `POST /api/settings/midi` — switch the synthesizer used for MIDI streams.
+/// Persists the choice so the desktop's next start uses it too; the running
+/// service is retuned so the client's next stream hears it.
+pub async fn set_midi_setting(
+    State(state): State<AppState>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> Response {
+    let Some(value) = body["engine"].as_str() else {
+        return bad_request("an engine value is required");
+    };
+    let Some(engine) = kog_audio::settings::MidiEngine::from_setting(value) else {
+        return bad_request(&format!("unknown MIDI engine: {value}"));
+    };
+    if let Err(error) = kog_audio::settings::AppSettings::save_midi_engine(engine) {
+        return bad_request(&error);
+    }
+    state.streams.set_midi_engine(engine);
+    axum::Json(serde_json::json!({ "engine": engine.setting_value() })).into_response()
+}
+
 pub fn router() -> axum::Router<AppState> {
     use axum::routing::{get, post};
     axum::Router::new()
@@ -1174,6 +1223,7 @@ pub fn router() -> axum::Router<AppState> {
         )
         .route("/api/playlists/{id}/entries", post(append_playlist_entries))
         .route("/api/stars", get(list_stars).post(set_star))
+        .route("/api/settings/midi", get(midi_settings).post(set_midi_setting))
 }
 
 #[cfg(test)]

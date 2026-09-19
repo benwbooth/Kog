@@ -52,6 +52,7 @@ mod icons {
     pub const FIND: &str = include_str!("../../../qml/icons/edit-find.svg");
     pub const GO_UP: &str = include_str!("../../../qml/icons/go-up.svg");
     pub const FOLDER_OPEN: &str = include_str!("../../../qml/icons/folder-open.svg");
+    pub const VIEW_LIST_TREE: &str = include_str!("../../../qml/icons/view-list-tree.svg");
 }
 
 /// One playable entry, addressed the way the whole API addresses tracks.
@@ -1140,6 +1141,10 @@ fn App() -> impl IntoView {
     let (picker_dir, set_picker_dir) = signal(String::new());
     let (picker_entries, set_picker_entries) = signal(Vec::<(String, String)>::new());
     let (picker_parent, set_picker_parent) = signal(Option::<String>::None);
+    // The MIDI synthesizer the server decodes with, editable like the
+    // desktop's Preferences > Synthesis backend.
+    let (midi_engine, set_midi_engine) = signal(String::new());
+    let (midi_options, set_midi_options) = signal(Vec::<(String, String)>::new());
     let (version, set_version) = signal(String::new());
     // Rows the pane actions act on. A plain click selects a row (and plays it),
     // Ctrl/Cmd-click adds to the selection, matching the desktop's multi-select.
@@ -1685,6 +1690,28 @@ fn App() -> impl IntoView {
 
     // Stars live on the server (`GET/POST /api/stars`) under the desktop's
     // locator scheme, so a star set from the web shows up on the desktop.
+    let load_midi = {
+        let get_json = get_json;
+        move || {
+            leptos::task::spawn_local(async move {
+                if let Ok(value) = get_json("/api/settings/midi".to_owned()).await {
+                    set_midi_engine.set(value["engine"].as_str().unwrap_or_default().to_owned());
+                    let mut options = Vec::new();
+                    if let Some(list) = value["options"].as_array() {
+                        for option in list {
+                            let value = option["value"].as_str().unwrap_or_default().to_owned();
+                            let label = option["label"].as_str().unwrap_or_default().to_owned();
+                            if !value.is_empty() {
+                                options.push((value, label));
+                            }
+                        }
+                    }
+                    set_midi_options.set(options);
+                }
+            });
+        }
+    };
+
     let load_stars = {
         let get_json = get_json;
         move || {
@@ -1751,6 +1778,7 @@ fn App() -> impl IntoView {
         let load_playlists = load_playlists.clone();
         let load_radio = load_radio.clone();
         let load_stars = load_stars.clone();
+        let load_midi = load_midi.clone();
         move || {
             let header = auth().header();
             let url = format!("{}/api/version", base());
@@ -1763,6 +1791,7 @@ fn App() -> impl IntoView {
             let load_playlists = load_playlists.clone();
             let load_radio = load_radio.clone();
             let load_stars = load_stars.clone();
+            let load_midi = load_midi.clone();
             leptos::task::spawn_local(async move {
                 let mut request = Request::get(&url);
                 if let Some(header) = header {
@@ -1785,6 +1814,7 @@ fn App() -> impl IntoView {
                         load_playlists();
                         load_radio();
                         load_stars();
+                        load_midi();
                     }
                     Ok(response) if response.status() == 401 => {
                         set_message.set("That token or password was rejected".to_owned())
@@ -2794,11 +2824,13 @@ fn App() -> impl IntoView {
                 ></button>
                 <button
                     class="flat icon-button sidebar-toggle"
+                    class:active=move || sidebar_shown()
                     title=move || {
                         if sidebar_shown() { "Hide File Tree" } else { "Show File Tree" }
                     }
                     on:click=move |_| toggle_sidebar()
-                >{move || if sidebar_shown() { "«" } else { "»" }}</button>
+                    inner_html=icons::VIEW_LIST_TREE
+                ></button>
                 <img class="logo" src="/icons/kog.svg" alt="Kog" />
                 <div class="search">
                     <span class="pill-icon" aria-hidden="true" inner_html=icons::FIND></span>
@@ -3648,6 +3680,36 @@ fn App() -> impl IntoView {
                                 on:input=move |event| set_password.set(event_target_value(&event))
                             />
                         </label>
+                    </Show>
+                    <Show when=move || connected.get() fallback=|| ()>
+                        <label>
+                            "MIDI synth"
+                            <select
+                                prop:value=move || {
+                                    midi_options.track();
+                                    midi_engine.get()
+                                }
+                                on:change=move |event| {
+                                    let value = event_target_value(&event);
+                                    let header = auth().header();
+                                    let url = format!("{}/api/settings/midi", base());
+                                    leptos::task::spawn_local(async move {
+                                        match post_json(url, header, serde_json::json!({ "engine": value })).await {
+                                            Ok(reply) => {
+                                                set_midi_engine.set(reply["engine"].as_str().unwrap_or_default().to_owned());
+                                                set_message.set(String::new());
+                                            }
+                                            Err(error) => set_message.set(error),
+                                        }
+                                    });
+                                }
+                            >
+                                <For each=move || midi_options.get() key=|option| option.0.clone() let:option>
+                                    <option value={option.0.clone()}>{option.1.clone()}</option>
+                                </For>
+                            </select>
+                        </label>
+                        <p class="hint">"Used the next time a MIDI file streams. The SF2 and ROM engines need the assets the desktop's Preferences sets."</p>
                     </Show>
                     <p class="hint">
                         "The address and token are shown in Kog's Preferences → Server on the machine serving the library."

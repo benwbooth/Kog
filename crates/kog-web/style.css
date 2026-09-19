@@ -117,6 +117,12 @@ body {
   fill: currentColor;
 }
 
+/* The sidebar toggle dims when the tree is hidden, like the desktop's
+ * unchecked toolbar button. */
+.toolbar .sidebar-toggle:not(.active) {
+  opacity: 0.62;
+}
+
 .icon-button:hover:not(:disabled) {
   background: var(--alternate);
 }

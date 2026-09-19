@@ -126,6 +126,20 @@ impl StreamService {
         Ok(properties)
     }
 
+    /// The synthesizer new MIDI streams decode with. `DecoderSettings`
+    /// shares its options through Arc'd locks, so setting this retunes every
+    /// holder, including the clones the streaming path already made.
+    pub fn midi_engine(&self) -> kog_audio::settings::MidiEngine {
+        self.decoder_settings.midi_engine()
+    }
+
+    /// Retune the running service: new streams decode with the chosen
+    /// synthesizer, and the choice is persisted for the desktop's next start
+    /// by the caller.
+    pub fn set_midi_engine(&self, engine: kog_audio::settings::MidiEngine) {
+        self.decoder_settings.set_midi_engine(engine);
+    }
+
     /// The encoder runs as a subprocess; a missing one is a configuration
     /// problem the listener should hear about immediately.
     fn check_encoder(&self) -> Result<(), String> {
