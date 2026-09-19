@@ -605,7 +605,7 @@ fn App() -> impl IntoView {
     let connect = {
         let load_dir = load_dir.clone();
         let load_playlists = load_playlists.clone();
-        move |_| {
+        move || {
             let header = auth().header();
             let url = format!("{}/api/version", base());
             let basic = use_basic.get();
@@ -639,6 +639,18 @@ fn App() -> impl IntoView {
             });
         }
     };
+
+    // The page is served by the Kog server itself, so connect on load rather
+    // than landing on an empty shell until the user finds the server settings.
+    let (auto_connected, set_auto_connected) = signal(false);
+    let auto_connect = connect.clone();
+    Effect::new(move |_| {
+        if auto_connected.get_untracked() {
+            return;
+        }
+        set_auto_connected.set(true);
+        auto_connect();
+    });
 
     let stream_url = move |entry: &Entry| {
         format!(
@@ -1578,7 +1590,7 @@ fn App() -> impl IntoView {
                         "The address and token are shown in Kog's Preferences → Server on the machine serving the library."
                     </p>
                     <div class="settings-actions">
-                        <button class="primary" on:click=connect>
+                        <button class="primary" on:click=move |_| connect()>
                             {move || if connected.get() { "Reconnect" } else { "Connect" }}
                         </button>
                         <button on:click=move |_| set_settings_open.set(false)>"Close"</button>
