@@ -19,6 +19,7 @@
 //! ETag reloads the page once a newer build is being served, deferring while a
 //! track plays.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -601,8 +602,9 @@ fn sample_rate_label(sample_rate: Option<u32>) -> String {
 }
 
 /// Repeat policy, cycled by the transport's repeat toggle.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum Repeat {
+    #[default]
     Off,
     One,
     All,
@@ -663,6 +665,142 @@ fn store(key: &str, value: &str) {
 
 fn load(key: &str) -> Option<String> {
     storage()?.get_item(key).ok()?
+}
+
+/// Everything the web player remembers across a reload, in one localStorage
+/// value. Deliberately client-side: the desktop's session.json is shared by
+/// every client, so a phone must never overwrite the desktop's pane.
+#[derive(Default)]
+struct RestoredSession {
+    queue: Vec<Entry>,
+    current: usize,
+    list_name: String,
+    tree_root: String,
+    expanded: Vec<String>,
+    volume: Option<f64>,
+    shuffle: bool,
+    repeat: Repeat,
+    radio_on: bool,
+}
+
+/// Parse the persisted session, skipping anything that no longer resolves.
+/// Missing or malformed values are not fatal: the pane simply comes back empty
+/// or with defaults, exactly as the desktop tolerates a missing session.json.
+fn decode_session(raw: &str) -> RestoredSession {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return RestoredSession::default();
+    };
+    let mut session = RestoredSession::default();
+    if let Some(entries) = value["queue"].as_array() {
+        // A stored row that no longer resolves is dropped rather than aborting
+        // the whole restore.
+        session.queue = entries
+            .iter()
+            .filter_map(|entry| {
+                let parsed = entry_from_json(entry);
+                if parsed.path.trim().is_empty() {
+                    None
+                } else {
+                    Some(parsed)
+                }
+            })
+            .collect();
+    }
+    session.current = value["current"].as_u64().unwrap_or(0) as usize;
+    // A remembered row that no longer exists falls back to the first row.
+    if session.queue.is_empty() {
+        session.current = 0;
+    } else {
+        session.current = session.current.min(session.queue.len() - 1);
+    }
+    session.list_name = value["listName"].as_str().unwrap_or_default().to_owned();
+    session.tree_root = value["treeRoot"].as_str().unwrap_or_default().to_owned();
+    session.expanded = value["expanded"]
+        .as_array()
+        .map(|paths| {
+            paths
+                .iter()
+                .filter_map(|path| path.as_str().map(str::to_owned))
+                .filter(|path| !path.trim().is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    session.volume = value["volume"].as_f64().filter(|volume| volume.is_finite());
+    session.shuffle = value["shuffle"].as_bool().unwrap_or(false);
+    session.repeat = match value["repeat"].as_str() {
+        Some("one") => Repeat::One,
+        Some("all") => Repeat::All,
+        _ => Repeat::Off,
+    };
+    session.radio_on = value["radioOn"].as_bool().unwrap_or(false);
+    session
+}
+
+/// Encode a session the way `decode_session` reads it. Only the locator fields
+/// of an entry are stored; the display name and location are derived on load.
+fn encode_session(
+    queue: &[Entry],
+    current: usize,
+    list_name: &str,
+    tree_root: &str,
+    expanded: &HashSet<String>,
+    volume: f64,
+    shuffle: bool,
+    repeat: Repeat,
+    radio_on: bool,
+) -> String {
+    let entries: Vec<serde_json::Value> = queue
+        .iter()
+        .map(|entry| {
+            serde_json::json!({
+                "kind": entry.kind,
+                "path": entry.path,
+                "entry": entry.entry,
+                "fragment": entry.fragment,
+            })
+        })
+        .collect();
+    // A stable order keeps the value identical between saves, so an unchanged
+    // session never rewrites localStorage.
+    let mut expanded: Vec<&String> = expanded.iter().collect();
+    expanded.sort();
+    let repeat = match repeat {
+        Repeat::Off => "off",
+        Repeat::One => "one",
+        Repeat::All => "all",
+    };
+    serde_json::json!({
+        "queue": entries,
+        "current": current,
+        "listName": list_name,
+        "treeRoot": tree_root,
+        "expanded": expanded,
+        "volume": volume,
+        "shuffle": shuffle,
+        "repeat": repeat,
+        "radioOn": radio_on,
+    })
+    .to_string()
+}
+
+/// The session's writer. Writes are deduplicated against the last value, so
+/// restoring the pane and the auto-refresh reload can never fight over the
+/// stored value, and a change that does not alter the snapshot never rewrites
+/// localStorage.
+#[derive(Clone, Default)]
+struct SessionPersist {
+    last: Rc<RefCell<Option<String>>>,
+}
+
+impl SessionPersist {
+    fn save(&self, snapshot: String) {
+        let mut last = self.last.borrow_mut();
+        if last.as_deref() == Some(snapshot.as_str()) {
+            return;
+        }
+        *last = Some(snapshot.clone());
+        store("kog.session", &snapshot);
+    }
 }
 
 /// A usable media duration. ADTS and FLAC report `Infinity` (or `NaN`) until
@@ -1011,25 +1149,38 @@ fn App() -> impl IntoView {
     let (resizing, set_resizing) = signal(Option::<(ColumnId, f64, f64)>::None);
 
     let (playlists, set_playlists) = signal(Vec::<(i64, String, i64)>::new());
-    let (queue, set_queue) = signal(Vec::<Entry>::new());
-    let (list_name, set_list_name) = signal(String::new());
-    let (current, set_current) = signal(0_usize);
+    // The remembered session (pane, tree, transport modes) is restored here,
+    // before any signal is read by the view, so the first paint already shows
+    // the saved pane. `restoring` suppresses persistence until the initial
+    // restore has settled, so the empty defaults never overwrite the saved
+    // session.
+    let restored = load("kog.session")
+        .map(|raw| decode_session(&raw))
+        .unwrap_or_default();
+    // While this is true the session effect ignores signal changes, so the
+    // empty defaults never overwrite the saved session before the restore has
+    // run.
+    let restoring = Rc::new(RefCell::new(true));
+    let persist = SessionPersist::default();
+    let (queue, set_queue) = signal(restored.queue.clone());
+    let (list_name, set_list_name) = signal(restored.list_name.clone());
+    let (current, set_current) = signal(restored.current);
     let (playing, set_playing) = signal(false);
     let (filter, set_filter) = signal(String::new());
     let (sort_key, set_sort_key) = signal(SortKey::Index);
     let (sort_asc, set_sort_asc) = signal(true);
-    let (volume, set_volume) = signal(0.9_f64);
+    let (volume, set_volume) = signal(restored.volume.unwrap_or(0.9).clamp(0.0, 1.0));
     let (volume_before_mute, set_volume_before_mute) = signal(0.9_f64);
     let (position, set_position) = signal(0.0_f64);
     // The media element's own duration, reset per track. ADTS and FLAC report
     // Infinity here, so the effective duration falls back to the tag duration
     // until the browser can measure it.
     let (media_duration, set_media_duration) = signal(Option::<f64>::None);
-    let (shuffle, set_shuffle) = signal(false);
-    let (repeat_mode, set_repeat_mode) = signal(Repeat::Off);
+    let (shuffle, set_shuffle) = signal(restored.shuffle);
+    let (repeat_mode, set_repeat_mode) = signal(restored.repeat);
     // Random Radio: the server owns the shuffled round; the web shows its
     // window and plays it. `radio_busy` guards the async window top-up.
-    let (radio_on, set_radio_on) = signal(false);
+    let (radio_on, set_radio_on) = signal(restored.radio_on);
     let (radio_busy, set_radio_busy) = signal(false);
     // Tag cache keyed by locator. An `Rc` so reading it clones a pointer, not
     // the map, on every cell render.
@@ -1272,6 +1423,97 @@ fn App() -> impl IntoView {
             goto_root(target);
         }
     };
+
+    // Rebuild the remembered tree once the library root is known. Children
+    // load lazily, so a folder is only re-expanded after its parent level has
+    // arrived; the effect runs again as each level lands and converges on the
+    // saved expansion without fetching anything the user had not already
+    // opened. The queue itself is restored synchronously above, so the pane is
+    // already correct while the tree is still filling in.
+    {
+        let load_dir = load_dir.clone();
+        let root = restored.tree_root.clone();
+        let targets = restored.expanded.clone();
+        let restore_flag = restoring.clone();
+        let done = Rc::new(RefCell::new(false));
+        Effect::new(move |_| {
+            if *done.borrow() {
+                return;
+            }
+            let loaded = children.get();
+            if !loaded.contains_key(&root) {
+                // The library root ("") is loaded by `connect`; a deeper root
+                // is fetched here and the effect re-runs when it arrives.
+                if !root.is_empty() {
+                    load_dir(root.clone(), None);
+                }
+                return;
+            }
+            set_tree_root.set(root.clone());
+            let missing: Vec<String> = targets
+                .iter()
+                .filter(|path| !loaded.contains_key(*path))
+                .cloned()
+                .collect();
+            if !missing.is_empty() {
+                for path in missing {
+                    load_dir(path, None);
+                }
+                return;
+            }
+            set_expanded.set(targets.iter().cloned().collect());
+            *restore_flag.borrow_mut() = false;
+            *done.borrow_mut() = true;
+        });
+        // A stored root that the server will not browse must not leave the
+        // session permanently unpersisted: after a grace period the restore is
+        // declared finished so changes start being saved again.
+        let restoring = restoring.clone();
+        if let Some(window) = web_sys::window() {
+            let callback = Closure::<dyn FnMut()>::new(move || {
+                *restoring.borrow_mut() = false;
+            });
+            let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+                callback.as_ref().unchecked_ref(),
+                10_000,
+            );
+            callback.forget();
+        }
+    }
+
+    // Persist the session whenever a remembered value changes. The effect reads
+    // every persisted signal, so a change to any of them schedules a write;
+    // `restoring` keeps the pre-restore defaults from overwriting the saved
+    // session, and `SessionPersist` drops writes that do not change the value.
+    {
+        let restoring = restoring.clone();
+        let persist = persist.clone();
+        Effect::new(move |_| {
+            let queue = queue.get();
+            let current = current.get();
+            let list_name = list_name.get();
+            let tree_root = tree_root.get();
+            let expanded = expanded.get();
+            let volume = volume.get();
+            let shuffle = shuffle.get();
+            let repeat = repeat_mode.get();
+            let radio_on = radio_on.get();
+            if *restoring.borrow() {
+                return;
+            }
+            persist.save(encode_session(
+                &queue,
+                current,
+                &list_name,
+                &tree_root,
+                &expanded,
+                volume,
+                shuffle,
+                repeat,
+                radio_on,
+            ));
+        });
+    }
 
     let load_playlists = {
         let get_json = get_json;
@@ -1608,6 +1850,24 @@ fn App() -> impl IntoView {
             }
         }
     });
+
+    // Starting a row sets `current` and `playing` together. The reactive
+    // `prop:src` then rewrites the element's source, which aborts a `play()`
+    // issued in the same tick and leaves the track paused. Re-issue play once
+    // the new source is actually ready, so a row click always starts playback.
+    // The transport button is unaffected: it does not change the source, so the
+    // effect above is the only thing that runs.
+    let resume_when_ready = {
+        let refresh_media_duration = refresh_media_duration.clone();
+        move |event: web_sys::Event| {
+            refresh_media_duration(event);
+            if playing.get_untracked() {
+                if let Some(audio) = audio_ref.get() {
+                    let _ = audio.play();
+                }
+            }
+        }
+    };
 
     Effect::new(move |_| {
         if let Some(audio) = audio_ref.get() {
@@ -2498,10 +2758,20 @@ fn App() -> impl IntoView {
                                                 let toggle_dir = toggle_dir.clone();
                                                 let add_row_to_playlist = add_row_to_playlist.clone();
                                                 let selected = row.path.clone();
-                                                let twisty = if row.is_dir {
-                                                    if row.expanded { "▾" } else { "▸" }
-                                                } else {
-                                                    ""
+                                                // The arrow reads `expanded` reactively: the
+                                                // `For` key is the path, so a programmatic
+                                                // expand (a restore) reuses the row and a
+                                                // captured string would go stale.
+                                                let twisty_path = row.path.clone();
+                                                let is_dir = row.is_dir;
+                                                let twisty = move || {
+                                                    if !is_dir {
+                                                        ""
+                                                    } else if expanded.get().contains(&twisty_path) {
+                                                        "▾"
+                                                    } else {
+                                                        "▸"
+                                                    }
                                                 };
                                                 let indent = 6 + row.depth * 16;
                                                 view! {
@@ -2555,7 +2825,7 @@ fn App() -> impl IntoView {
                                                         }
                                                         on:dragend=move |_| set_dragging_tree.set(None)
                                                     >
-                                                        <span class="twisty">{twisty}</span>
+                                                        <span class="twisty">{move || twisty()}</span>
                                                         <span class=if row.is_dir {
                                                             "tree-icon dir"
                                                         } else {
@@ -3081,9 +3351,9 @@ fn App() -> impl IntoView {
                             set_position.set(audio.current_time());
                         }
                     }
-                    on:loadedmetadata=refresh_media_duration
+                    on:loadedmetadata=resume_when_ready
                     on:durationchange=refresh_media_duration
-                    on:canplay=refresh_media_duration
+                    on:canplay=resume_when_ready
                     on:ended=move |_| {
                         if repeat_mode.get() == Repeat::One {
                             if let Some(audio) = audio_ref.get() {
