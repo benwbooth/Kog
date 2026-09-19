@@ -2402,8 +2402,17 @@ ApplicationWindow {
                 Label {
                     Layout.fillWidth: true
                     horizontalAlignment: Text.AlignRight
-                    text: root.footer.transientStatus
-                        ? appController.status : appController.total_duration
+                    text: {
+                        if (root.footer.transientStatus)
+                            return appController.status
+                        const count = appController.playlist_count
+                        const tracks = count === 1
+                            ? qsTr("1 track")
+                            : qsTr("%1 tracks").arg(count)
+                        return count > 0
+                            ? tracks + " · " + appController.total_duration
+                            : appController.total_duration
+                    }
                     font.pixelSize: 10
                     color: root.palette.placeholderText
                     elide: Text.ElideRight

@@ -2291,6 +2291,35 @@ fn App() -> impl IntoView {
         rows
     };
 
+    // The pane's status line, shared by the header and the transport: how many
+    // tracks the pane shows (all of the queue, or the filter's matches) and
+    // their total probed duration, in the desktop's footer spirit.
+    let status_line = move || -> String {
+        let total = queue.get().len();
+        let rows = view_rows();
+        let shown = rows.len();
+        let mut text = if shown == total {
+            if total == 1 {
+                "1 track".to_owned()
+            } else {
+                format!("{total} tracks")
+            }
+        } else {
+            format!("{shown} of {total}")
+        };
+        let cache = metadata.get();
+        let seconds: f64 = rows
+            .iter()
+            .filter_map(|(_, entry)| meta_for(&cache, entry))
+            .filter_map(|meta| meta.duration)
+            .sum();
+        if seconds > 0.0 {
+            text.push_str(" · ");
+            text.push_str(&clock(seconds));
+        }
+        text
+    };
+
     let queue_files = move |directory: &str| -> Vec<Entry> {
         children
             .get()
@@ -3091,15 +3120,7 @@ fn App() -> impl IntoView {
                             {move || if list_name.get().is_empty() { "Playlist".to_owned() } else { list_name.get() }}
                         </span>
                         <span class="count">
-                            {move || {
-                                let total = queue.get().len();
-                                let shown = view_rows().len();
-                                if shown == total {
-                                    format!("{total} tracks")
-                                } else {
-                                    format!("{shown} of {total}")
-                                }
-                            }}
+                            {move || status_line()}
                         </span>
                         <Show when=move || radio_on.get() fallback=|| ()>
                             <button
@@ -3532,10 +3553,7 @@ fn App() -> impl IntoView {
                         />
                     </div>
                     <div class="transport-status">
-                        {move || {
-                            let total = queue.get().len();
-                            if total == 1 { "1 track".to_owned() } else { format!("{total} tracks") }
-                        }}
+                        {move || status_line()}
                     </div>
                 </div>
 
