@@ -27,6 +27,8 @@ pub struct AppState {
     pub streams: Arc<crate::service::StreamService>,
     /// Library browsing and the playlist/star store.
     pub library: Arc<crate::api::Library>,
+    /// Server-owned random radio, sharing the desktop's round file.
+    pub radio: Arc<crate::radio::Radio>,
 }
 
 impl AppState {
@@ -36,11 +38,31 @@ impl AppState {
         streams: crate::service::StreamService,
         library: crate::api::Library,
     ) -> Self {
+        Self::with_radio(
+            config,
+            version,
+            streams,
+            library,
+            crate::radio::Radio::disabled(),
+        )
+    }
+
+    /// Build state with an explicit radio session. The desktop server uses
+    /// this so radio reads and writes Kog's real settings and round file;
+    /// tests get the disabled default from [`AppState::new`].
+    pub fn with_radio(
+        config: ServerConfig,
+        version: &'static str,
+        streams: crate::service::StreamService,
+        library: crate::api::Library,
+        radio: crate::radio::Radio,
+    ) -> Self {
         Self {
             config: Arc::new(RwLock::new(config)),
             version,
             streams: Arc::new(streams),
             library: Arc::new(library),
+            radio: Arc::new(radio),
         }
     }
 
@@ -66,6 +88,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/config", get(read_config))
         .route("/api/stream", get(stream_audio))
         .merge(crate::api::router())
+        .merge(crate::radio::router())
         .layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
     Router::new()

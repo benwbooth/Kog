@@ -460,6 +460,15 @@ fn entry_from_json(value: &serde_json::Value) -> Entry {
     }
 }
 
+/// Radio entries come back with the same locator fields plus a `relative`
+/// location; the pane's row parser handles both.
+fn radio_entries(value: &serde_json::Value) -> Vec<Entry> {
+    value["entries"]
+        .as_array()
+        .map(|items| items.iter().map(entry_from_json).collect())
+        .unwrap_or_default()
+}
+
 /// The metadata cache key: the same locator fields the server hashes.
 fn meta_key(entry: &Entry) -> String {
     format!(
@@ -689,6 +698,10 @@ fn App() -> impl IntoView {
     let (media_duration, set_media_duration) = signal(Option::<f64>::None);
     let (shuffle, set_shuffle) = signal(false);
     let (repeat_mode, set_repeat_mode) = signal(Repeat::Off);
+    // Random Radio: the server owns the shuffled round; the web shows its
+    // window and plays it. `radio_busy` guards the async window top-up.
+    let (radio_on, set_radio_on) = signal(false);
+    let (radio_busy, set_radio_busy) = signal(false);
     // Tag cache keyed by locator. An `Rc` so reading it clones a pointer, not
     // the map, on every cell render.
     let (metadata, set_metadata) =
@@ -726,6 +739,111 @@ fn App() -> impl IntoView {
                 .json::<serde_json::Value>()
                 .await
                 .map_err(|error| error.to_string())
+        }
+    };
+
+    // ---------------------------------------------------------------- radio
+    // Random Radio is server-owned: the server shuffles the library (sharing
+    // the desktop's radio-round.json) and returns a window of tracks. The web
+    // displays that window and asks for the next one when it runs out.
+    let apply_radio = move |value: &serde_json::Value| {
+        let enabled = value["enabled"].as_bool().unwrap_or(false);
+        set_radio_on.set(enabled);
+        if !enabled {
+            return;
+        }
+        let entries = radio_entries(value);
+        if entries.is_empty() {
+            return;
+        }
+        // Radio is a playback mode: repeat and shuffle would fight the round,
+        // just as the desktop forces repeat off when radio is enabled.
+        set_repeat_mode.set(Repeat::Off);
+        set_shuffle.set(false);
+        set_list_name.set("Random Radio".to_owned());
+        set_queue.set(entries);
+        set_current.set(0);
+        set_position.set(0.0);
+        set_media_duration.set(None);
+    };
+
+    let load_radio = {
+        let get_json = get_json;
+        let apply_radio = apply_radio.clone();
+        move || {
+            leptos::task::spawn_local(async move {
+                if let Ok(value) = get_json("/api/radio".to_owned()).await {
+                    apply_radio(&value);
+                }
+            });
+        }
+    };
+
+    let set_radio = {
+        let apply_radio = apply_radio.clone();
+        move |enabled: bool| {
+            let url = format!("{}/api/radio/enabled", base());
+            let header = auth().header();
+            let apply_radio = apply_radio.clone();
+            leptos::task::spawn_local(async move {
+                let body = serde_json::json!({ "enabled": enabled });
+                match post_json(url, header, body).await {
+                    Ok(value) => apply_radio(&value),
+                    Err(error) => set_message.set(error),
+                }
+            });
+        }
+    };
+
+    let reshuffle_radio = {
+        let apply_radio = apply_radio.clone();
+        move || {
+            let url = format!("{}/api/radio/reshuffle", base());
+            let header = auth().header();
+            let apply_radio = apply_radio.clone();
+            leptos::task::spawn_local(async move {
+                match post_json(url, header, serde_json::json!({})).await {
+                    Ok(value) => apply_radio(&value),
+                    Err(error) => set_message.set(error),
+                }
+            });
+        }
+    };
+
+    // Append the next window of the running round and continue from its first
+    // track. A barren round reshuffles so radio never stalls silently.
+    let advance_radio = {
+        let reshuffle_radio = reshuffle_radio.clone();
+        move || {
+            if radio_busy.get_untracked() {
+                return;
+            }
+            set_radio_busy.set(true);
+            let url = format!("{}/api/radio/advance", base());
+            let header = auth().header();
+            let reshuffle_radio = reshuffle_radio.clone();
+            leptos::task::spawn_local(async move {
+                let result = post_json(url, header, serde_json::json!({})).await;
+                set_radio_busy.set(false);
+                match result {
+                    Ok(value) => {
+                        let entries = radio_entries(&value);
+                        if entries.is_empty() {
+                            if value["exhausted"].as_bool().unwrap_or(true) {
+                                reshuffle_radio();
+                            }
+                            return;
+                        }
+                        let start = queue.get_untracked().len();
+                        set_queue.update(|items| items.extend(entries));
+                        set_current.set(start);
+                        set_position.set(0.0);
+                        set_media_duration.set(None);
+                        set_playing.set(true);
+                    }
+                    Err(error) => set_message.set(error),
+                }
+            });
         }
     };
 
@@ -853,7 +971,13 @@ fn App() -> impl IntoView {
     // window swaps the playlist pane when you pick one in the sidebar.
     let load_playlist = {
         let get_json = get_json;
+        let set_radio = set_radio.clone();
         move |id: i64, name: String| {
+            // Picking a playlist is choosing a different playback source, so
+            // leave radio mode rather than letting the round take over later.
+            if radio_on.get_untracked() {
+                set_radio(false);
+            }
             leptos::task::spawn_local(async move {
                 match get_json(format!("/api/playlists/{id}")).await {
                     Ok(value) => {
@@ -894,6 +1018,7 @@ fn App() -> impl IntoView {
     let connect = {
         let load_dir = load_dir.clone();
         let load_playlists = load_playlists.clone();
+        let load_radio = load_radio.clone();
         move || {
             let header = auth().header();
             let url = format!("{}/api/version", base());
@@ -904,6 +1029,7 @@ fn App() -> impl IntoView {
             }
             let load_dir = load_dir.clone();
             let load_playlists = load_playlists.clone();
+            let load_radio = load_radio.clone();
             leptos::task::spawn_local(async move {
                 let mut request = Request::get(&url);
                 if let Some(header) = header {
@@ -916,6 +1042,7 @@ fn App() -> impl IntoView {
                         set_message.set(String::new());
                         load_dir(String::new(), None);
                         load_playlists();
+                        load_radio();
                     }
                     Ok(response) if response.status() == 401 => {
                         set_message.set("That token or password was rejected".to_owned())
@@ -1074,51 +1201,72 @@ fn App() -> impl IntoView {
         set_playing.set(true);
     };
 
-    // End-of-track advance: shuffle picks any other row, otherwise step the
-    // queue and wrap only when repeat is on.
-    let advance_after_track = move || -> Option<usize> {
-        let len = queue.get().len();
-        if len == 0 {
-            return None;
+    // End-of-track advance: radio pulls its next window, shuffle picks any
+    // other row, otherwise step the queue and wrap only when repeat is on.
+    let advance_after_track = {
+        let advance_radio = advance_radio.clone();
+        move || -> Option<usize> {
+            let len = queue.get().len();
+            if len == 0 {
+                return None;
+            }
+            if radio_on.get() && current.get() + 1 >= len {
+                advance_radio();
+                return None;
+            }
+            if shuffle.get() {
+                return Some(random_other(current.get(), len));
+            }
+            if current.get() + 1 < len {
+                return Some(current.get() + 1);
+            }
+            if repeat_mode.get() == Repeat::All {
+                return Some(0);
+            }
+            None
         }
-        if shuffle.get() {
-            return Some(random_other(current.get(), len));
-        }
-        if current.get() + 1 < len {
-            return Some(current.get() + 1);
-        }
-        if repeat_mode.get() == Repeat::All {
-            return Some(0);
-        }
-        None
     };
 
-    let step = move |delta: i64| {
-        let len = queue.get().len();
-        if len == 0 {
-            return;
-        }
-        let next = if shuffle.get() {
-            random_other(current.get(), len)
-        } else if delta < 0 {
-            if current.get() == 0 {
-                if repeat_mode.get() == Repeat::All {
-                    len - 1
-                } else {
-                    0
-                }
-            } else {
-                current.get() - 1
+    let step = {
+        let advance_radio = advance_radio.clone();
+        move |delta: i64| {
+            let len = queue.get().len();
+            if len == 0 {
+                return;
             }
-        } else if current.get() + 1 < len {
-            current.get() + 1
-        } else if repeat_mode.get() == Repeat::All {
-            0
-        } else {
-            current.get()
-        };
-        if next != current.get() {
-            jump(next);
+            // Next at the end of a radio round pulls the following window
+            // instead of stopping.
+            if delta > 0
+                && radio_on.get()
+                && current.get() + 1 >= len
+                && repeat_mode.get() != Repeat::All
+                && !shuffle.get()
+            {
+                advance_radio();
+                return;
+            }
+            let next = if shuffle.get() {
+                random_other(current.get(), len)
+            } else if delta < 0 {
+                if current.get() == 0 {
+                    if repeat_mode.get() == Repeat::All {
+                        len - 1
+                    } else {
+                        0
+                    }
+                } else {
+                    current.get() - 1
+                }
+            } else if current.get() + 1 < len {
+                current.get() + 1
+            } else if repeat_mode.get() == Repeat::All {
+                0
+            } else {
+                current.get()
+            };
+            if next != current.get() {
+                jump(next);
+            }
         }
     };
 
@@ -1766,6 +1914,13 @@ fn App() -> impl IntoView {
                                 }
                             }}
                         </span>
+                        <Show when=move || radio_on.get() fallback=|| ()>
+                            <button
+                                class="flat radio-reshuffle"
+                                title="Reshuffle Random Radio"
+                                on:click=move |_| reshuffle_radio()
+                            >"↻ Reshuffle"</button>
+                        </Show>
                     </div>
 
                     <div
@@ -1977,7 +2132,7 @@ fn App() -> impl IntoView {
                         >"⏹"</button>
                         <button
                             title="Next"
-                            disabled=move || queue.get().is_empty() || (current.get() + 1 >= queue.get().len() && repeat_mode.get() != Repeat::All && !shuffle.get())
+                            disabled=move || queue.get().is_empty() || (current.get() + 1 >= queue.get().len() && repeat_mode.get() != Repeat::All && !shuffle.get() && !radio_on.get())
                             on:click=move |_| step(1)
                         >"⏭"</button>
                         <button
@@ -2000,6 +2155,22 @@ fn App() -> impl IntoView {
                                 <span class="badge">{move || repeat_badge()}</span>
                             </Show>
                         </button>
+                        <button
+                            class="toggle radio"
+                            class:active=move || radio_on.get()
+                            title=move || {
+                                if radio_on.get() {
+                                    "Random Radio on — click to turn off"
+                                } else {
+                                    "Random Radio off — click to turn on"
+                                }
+                            }
+                            disabled=move || !connected.get()
+                            on:click=move |_| {
+                                let next = !radio_on.get_untracked();
+                                set_radio(next);
+                            }
+                        >"⚄"</button>
                     </div>
                     <div class="seek-row">
                         <span class="time elapsed">{move || clock(position.get())}</span>

@@ -501,6 +501,16 @@ button:focus-visible {
   margin-left: auto;
 }
 
+/* The radio reshuffle action sits at the right of the pane header and only
+ * appears while random radio is on. */
+.playlist-head .radio-reshuffle {
+  flex: none;
+  padding: 2px 8px;
+  font-size: 11px;
+  border-radius: 6px;
+  color: var(--text);
+}
+
 /* Column header and rows share the `--cols` template the app writes from the
  * persisted layout, so they line up at every width. The defaults follow
  * qml/PlaylistHeader.qml: index 54, title 220, artist 190, album 220,

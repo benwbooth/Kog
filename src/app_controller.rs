@@ -5396,7 +5396,7 @@ impl qobject::AppController {
             let config = kog_server::config::load_config();
             config.validate()?;
             let settings = kog_audio::settings::AppSettings::load();
-            let state = kog_server::routes::AppState::new(
+            let state = kog_server::routes::AppState::with_radio(
                 config.clone(),
                 env!("CARGO_PKG_VERSION"),
                 kog_server::routes::AppState::stream_service(
@@ -5404,6 +5404,7 @@ impl qobject::AppController {
                     settings.decoder_settings(),
                 ),
                 kog_server::api::Library::open(),
+                kog_server::radio::Radio::from_settings(),
             );
             let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
             let address = config.socket_address();
