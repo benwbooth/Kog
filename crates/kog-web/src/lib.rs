@@ -669,20 +669,6 @@ fn App() -> impl IntoView {
         )
     };
 
-    // Playing a list: the pane's rows are the queue, like the desktop playlist.
-    let play_list = move |entries: Vec<Entry>, name: String, start: usize| {
-        if entries.is_empty() {
-            return;
-        }
-        let len = entries.len();
-        set_list_name.set(name);
-        set_queue.set(entries);
-        set_current.set(start.min(len.saturating_sub(1)));
-        set_position.set(0.0);
-        set_duration.set(0.0);
-        set_playing.set(true);
-    };
-
     let audio_ref = NodeRef::<leptos::html::Audio>::new();
     let current_entry = move || queue.get().get(current.get()).cloned();
     let audio_src = move || current_entry().map(|entry| stream_url(&entry)).unwrap_or_default();
@@ -1116,7 +1102,6 @@ fn App() -> impl IntoView {
                                                 let row_click = row.clone();
                                                 let row_dbl = row.clone();
                                                 let toggle_dir = toggle_dir.clone();
-                                                let play_list = play_list.clone();
                                                 let queue_files = queue_files.clone();
                                                 let selected = row.path.clone();
                                                 let twisty = if row.is_dir {
@@ -1143,19 +1128,27 @@ fn App() -> impl IntoView {
                                                         on:dblclick=move |_| {
                                                             if row_dbl.is_dir {
                                                                 toggle_dir(row_dbl.path.clone());
-                                                            } else {
-                                                                let files = queue_files(&row_dbl.parent);
-                                                                let index = files
-                                                                    .iter()
-                                                                    .position(|item| {
+                                                            } else if let Some(entry) =
+                                                                queue_files(&row_dbl.parent)
+                                                                    .into_iter()
+                                                                    .find(|item| {
                                                                         item.path == row_dbl.path
                                                                     })
-                                                                    .unwrap_or(0);
-                                                                play_list(
-                                                                    files,
-                                                                    last_segment(&row_dbl.parent),
-                                                                    index,
-                                                                );
+                                                            {
+                                                                // Queue without starting playback: adding
+                                                                // to the pane must never interrupt the
+                                                                // current song, exactly as in the desktop
+                                                                // tree.
+                                                                let key = meta_key(&entry);
+                                                                let present = queue
+                                                                    .get_untracked()
+                                                                    .iter()
+                                                                    .any(|item| meta_key(item) == key);
+                                                                if !present {
+                                                                    set_queue.update(|items| {
+                                                                        items.push(entry)
+                                                                    });
+                                                                }
                                                             }
                                                         }
                                                     >
