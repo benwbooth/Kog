@@ -70,9 +70,12 @@ ApplicationWindow {
             ? appController.stop_after_selection_state(selectedRows.join(","))
             : "none"
     }
-    // Full path of the row under the pointer in the file tree; shown in the
-    // pane itself, because tooltips do not pop in that view.
+    // Full path of the row under the pointer in the file tree, and where that
+    // row sits in the pane. Shown as a popup parented to the view: a ToolTip
+    // attached to the row is positioned in the row's own (scrolled) content
+    // coordinates, which lands it outside the pane.
     property string treeHoverPath: ""
+    property real treeHoverY: 0
     readonly property bool compactToolbar: width < 980
     // Which build is running: the stamped revision plus, when it is known,
     // when the binary was linked. Shown small in the toolbar and in About.
@@ -2476,6 +2479,42 @@ ApplicationWindow {
                 // tooltips do not pop in this view, so put the path here: the
                 // tree's own root when nothing is hovered, and the hovered row's
                 // path while the pointer is over it.
+                Popup {
+                    id: treePathTip
+                    parent: directoryTree
+                    visible: root.treeHoverPath.length > 0
+                    width: Math.min(tipLabel.implicitWidth + 18,
+                        Math.max(120, directoryTree.width - 16))
+                    height: tipLabel.implicitHeight + 12
+                    x: 4
+                    y: Math.max(4, Math.min(directoryTree.height - height - 4,
+                        root.treeHoverY + 28))
+                    modal: false
+                    focus: false
+                    closePolicy: Popup.NoAutoClose
+                    padding: 0
+                    opacity: 0.96
+
+                    background: Rectangle {
+                        radius: 5
+                        color: root.palette.window
+                        border.width: 1
+                        border.color: root.palette.mid
+                    }
+                    contentItem: Label {
+                        id: tipLabel
+                        leftPadding: 9
+                        rightPadding: 9
+                        topPadding: 6
+                        bottomPadding: 6
+                        text: root.treeHoverPath
+                        color: root.palette.text
+                        font.pixelSize: 12
+                        elide: Text.ElideMiddle
+                        verticalAlignment: Text.AlignVCenter
+                    }
+                }
+
                 Label {
                     objectName: "treePathLabel"
                     Layout.fillWidth: true
@@ -2483,9 +2522,7 @@ ApplicationWindow {
                     Layout.rightMargin: 8
                     Layout.bottomMargin: visible ? 4 : 0
                     visible: text.length > 0
-                    text: root.treeHoverPath.length > 0
-                        ? root.treeHoverPath
-                        : fileTreeModel.root_path
+                    text: fileTreeModel.root_path
                     font.pointSize: root.font.pointSize * 0.85
                     wrapMode: Text.Wrap
                     opacity: 0.75
@@ -2591,21 +2628,6 @@ ApplicationWindow {
                         // An explicit ToolTip item rather than the attached
                         // property: the attached form did not show inside this
                         // tree delegate at all.
-                        HoverHandler {
-                            id: treeRowHover
-                            onHoveredChanged: root.treeHoverPath = hovered
-                                ? (treeDelegate.filePath.length > 0
-                                    ? treeDelegate.filePath
-                                    : root.treePathAtRow(treeDelegate.row))
-                                : ""
-                        }
-                        ToolTip {
-                            id: treeRowToolTip
-                            visible: treeRowHover.hovered
-                            delay: 500
-                            y: treeDelegate.height
-                            text: root.treeHoverPath
-                        }
                         MouseArea {
                             id: treePointer
                             property real pressX: 0
@@ -2617,6 +2639,14 @@ ApplicationWindow {
                             z: 2
                             acceptedButtons: Qt.LeftButton | Qt.RightButton
                             hoverEnabled: true
+                            onEntered: {
+                                root.treeHoverPath = treeDelegate.filePath.length > 0
+                                    ? treeDelegate.filePath
+                                    : root.treePathAtRow(treeDelegate.row)
+                                root.treeHoverY = treeDelegate.mapToItem(
+                                    directoryTree, 0, 0).y
+                            }
+                            onExited: root.treeHoverPath = ""
                             preventStealing: true
                             scrollGestureEnabled: false
 
