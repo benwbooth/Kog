@@ -50,6 +50,8 @@ mod icons {
     pub const VOLUME: &str = include_str!("../../../qml/icons/audio-volume-high.svg");
     pub const VOLUME_MUTED: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><path fill=\"#000\" d=\"M4.27 3 3 4.27 7.73 9H3v6h4l5 4v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4 9.91 6.09 12 8.18V4z\"/></svg>";
     pub const FIND: &str = include_str!("../../../qml/icons/edit-find.svg");
+    pub const GO_UP: &str = include_str!("../../../qml/icons/go-up.svg");
+    pub const FOLDER_OPEN: &str = include_str!("../../../qml/icons/folder-open.svg");
 }
 
 /// One playable entry, addressed the way the whole API addresses tracks.
@@ -2754,22 +2756,21 @@ fn App() -> impl IntoView {
                                     <div class="tree-root">
                                         <button
                                             class="icon-button"
-                                            title="Root the tree at the selected folder, or go up"
+                                            title="Use as Tree Root"
+                                            disabled=move || !tree_selected_dir.get()
                                             on:click={
                                                 let goto_root = goto_root.clone();
-                                                let go_up = go_up.clone();
                                                 move |_| {
                                                     let selected = tree_selected.get();
-                                                    if tree_selected_dir.get()
+                                                    if tree_selected_dir.get_untracked()
                                                         && !selected.is_empty()
                                                     {
                                                         goto_root(selected);
-                                                    } else {
-                                                        go_up();
                                                     }
                                                 }
                                             }
-                                        >"▣"</button>
+                                            inner_html=icons::FOLDER_OPEN
+                                        ></button>
                                         <button
                                             class="icon-button"
                                             title="Refresh this folder"
@@ -2829,7 +2830,7 @@ fn App() -> impl IntoView {
                                                 }
                                             >
                                                 <span class="twisty"></span>
-                                                <span class="tree-icon up"></span>
+                                                <span class="tree-icon up" inner_html=icons::GO_UP></span>
                                                 <span class="label">".."</span>
                                             </button>
                                         </Show>

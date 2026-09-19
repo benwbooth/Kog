@@ -386,6 +386,18 @@ button:focus-visible {
   font-size: 14px;
 }
 
+/* Inlined desktop icons in the tree toolbar (folder-open on the root
+ * button), tinted like the button text. */
+.tree-root .icon-button svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+
+.tree-root .icon-button svg path {
+  fill: currentColor;
+}
+
 .root-path {
   flex: 1;
   min-width: 0;
@@ -1299,5 +1311,16 @@ button:focus-visible {
 }
 
 .tree-icon.up {
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='none' stroke='%239aa0a6' stroke-width='1.4' d='M8 3.2v9.6M4 7l4-4 4 4'/%3E%3C/svg%3E");
+  /* The desktop's go-up.svg, inlined and tinted like the row text. */
+  background-image: none;
+}
+
+.tree-icon.up svg {
+  width: 15px;
+  height: 15px;
+  display: block;
+}
+
+.tree-icon.up svg path {
+  fill: currentColor;
 }
