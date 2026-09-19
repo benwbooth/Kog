@@ -577,6 +577,7 @@ fn App() -> impl IntoView {
                     title="Show or hide the sidebar"
                     on:click=move |_| set_sidebar_open.update(|open| *open = !*open)
                 >"☰"</button>
+                <img class="logo" src="/icons/kog.svg" alt="" />
                 <span class="brand">"Kog"</span>
                 <div class="search">
                     <input
@@ -656,6 +657,13 @@ fn App() -> impl IntoView {
                                                 }
                                             >
                                                 <span class="twisty"></span>
+                                                <span
+                                                    class=if row_for_click.is_dir {
+                                                        "tree-icon dir"
+                                                    } else {
+                                                        "tree-icon file"
+                                                    }
+                                                ></span>
                                                 <span class="label">{label}</span>
                                             </button>
                                         }

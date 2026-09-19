@@ -31,5 +31,6 @@ wasm-bindgen --target web --no-typescript --out-dir "$out_dir" "$wasm"
 
 cp "$here/index.html" "$out_dir/index.html"
 cp "$here/style.css" "$out_dir/style.css"
+cp -r "$here/icons" "$out_dir/icons"
 
 echo "web frontend written to $out_dir"
