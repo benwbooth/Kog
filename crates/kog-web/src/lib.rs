@@ -92,6 +92,8 @@ struct MetaRow {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SortKey {
     Index,
+    Star,
+    Status,
     Title,
     Artist,
     Album,
@@ -109,6 +111,8 @@ enum SortKey {
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum ColumnId {
     Index,
+    Star,
+    Status,
     Title,
     Artist,
     Album,
@@ -119,8 +123,10 @@ enum ColumnId {
 }
 
 impl ColumnId {
-    const ALL: [ColumnId; 8] = [
+    const ALL: [ColumnId; 10] = [
         ColumnId::Index,
+        ColumnId::Star,
+        ColumnId::Status,
         ColumnId::Title,
         ColumnId::Artist,
         ColumnId::Album,
@@ -133,6 +139,8 @@ impl ColumnId {
     fn key(self) -> &'static str {
         match self {
             Self::Index => "index",
+            Self::Star => "star",
+            Self::Status => "status",
             Self::Title => "title",
             Self::Artist => "artist",
             Self::Album => "album",
@@ -150,6 +158,10 @@ impl ColumnId {
     fn label(self) -> &'static str {
         match self {
             Self::Index => "#",
+            // The desktop's star and status headers are empty; a glyph keeps
+            // the web header discoverable and its auto-fit width sane.
+            Self::Star => "★",
+            Self::Status => "●",
             Self::Title => "Title",
             Self::Artist => "Artist",
             Self::Album => "Album",
@@ -163,6 +175,8 @@ impl ColumnId {
     fn class(self) -> &'static str {
         match self {
             Self::Index => "index-cell",
+            Self::Star => "star-cell",
+            Self::Status => "status-cell",
             Self::Title => "title-cell",
             Self::Artist => "artist-cell",
             Self::Album => "album-cell",
@@ -176,6 +190,8 @@ impl ColumnId {
     fn sort_key(self) -> SortKey {
         match self {
             Self::Index => SortKey::Index,
+            Self::Star => SortKey::Star,
+            Self::Status => SortKey::Status,
             Self::Title => SortKey::Title,
             Self::Artist => SortKey::Artist,
             Self::Album => SortKey::Album,
@@ -189,6 +205,8 @@ impl ColumnId {
     fn default_width(self) -> f64 {
         match self {
             Self::Index => 54.0,
+            Self::Star => 40.0,
+            Self::Status => 38.0,
             Self::Title => 220.0,
             Self::Artist => 190.0,
             Self::Album => 220.0,
@@ -202,6 +220,8 @@ impl ColumnId {
     fn min_width(self) -> f64 {
         match self {
             Self::Index => 28.0,
+            Self::Star => 28.0,
+            Self::Status => 38.0,
             Self::Title => 96.0,
             Self::Artist => 96.0,
             Self::Album => 96.0,
@@ -219,6 +239,10 @@ impl ColumnId {
 
     fn align_right(self) -> bool {
         matches!(self, Self::Index | Self::Year | Self::Length | Self::Track)
+    }
+
+    fn align_center(self) -> bool {
+        matches!(self, Self::Star | Self::Status)
     }
 
     fn default_visible(self) -> bool {
@@ -261,10 +285,11 @@ fn encode_columns(columns: &[Column]) -> String {
         .join(";")
 }
 
-/// Restore a persisted layout, filling in any column the saved string missed so
-/// a layout saved before a column was added still works.
+/// Restore a persisted layout in its saved order, so a Move Left/Right survives
+/// a reload. Any column the saved string missed (one added since) is inserted
+/// at its default position.
 fn decode_columns(raw: &str) -> Vec<Column> {
-    let mut columns = default_columns();
+    let mut columns = Vec::new();
     for entry in raw.split(';') {
         let fields: Vec<&str> = entry.split(':').collect();
         if fields.len() != 3 {
@@ -276,10 +301,32 @@ fn decode_columns(raw: &str) -> Vec<Column> {
         let Ok(width) = fields[1].trim().parse::<f64>() else {
             continue;
         };
-        if let Some(column) = columns.iter_mut().find(|column| column.id == id) {
-            column.width = width.max(id.min_width());
-            column.visible = fields[2].trim() == "1";
+        if columns.iter().any(|column: &Column| column.id == id) {
+            continue;
         }
+        columns.push(Column {
+            id,
+            width: width.max(id.min_width()),
+            visible: fields[2].trim() == "1",
+        });
+    }
+    for id in ColumnId::ALL {
+        if columns.iter().any(|column| column.id == id) {
+            continue;
+        }
+        let position = ColumnId::ALL
+            .iter()
+            .position(|candidate| *candidate == id)
+            .unwrap_or(columns.len())
+            .min(columns.len());
+        columns.insert(
+            position,
+            Column {
+                id,
+                width: id.default_width(),
+                visible: id.default_visible(),
+            },
+        );
     }
     if !columns.iter().any(|column| column.visible) {
         return default_columns();
@@ -305,9 +352,15 @@ fn column_text(
     entry: &Entry,
     meta: Option<&MetaRow>,
     live_duration: Option<f64>,
+    starred: bool,
+    status: &str,
 ) -> String {
     match id {
         ColumnId::Index => (index + 1).to_string(),
+        // Filled vs outline star, the desktop's two icon states rendered as
+        // glyphs.
+        ColumnId::Star => if starred { "★" } else { "☆" }.to_owned(),
+        ColumnId::Status => status.to_owned(),
         ColumnId::Title => meta
             .and_then(|meta| meta.title.clone())
             .unwrap_or_else(|| entry.name.clone()),
@@ -467,6 +520,31 @@ fn radio_entries(value: &serde_json::Value) -> Vec<Entry> {
         .as_array()
         .map(|items| items.iter().map(entry_from_json).collect())
         .unwrap_or_default()
+}
+
+/// The star locator, matching `kog_server::media_filter::locator_for`: `path`
+/// for local/remote, `archive::member` for archives, `#fragment` for subsongs.
+fn star_locator(kind: &str, path: &str, entry: &str, fragment: &str) -> String {
+    let base = if kind == "archive" {
+        format!("{path}::{entry}")
+    } else {
+        path.to_owned()
+    };
+    if fragment.trim().is_empty() {
+        base
+    } else {
+        format!("{base}#{}", fragment.trim())
+    }
+}
+
+/// The star locator for one playlist entry.
+fn entry_star_locator(entry: &Entry) -> String {
+    star_locator(
+        &entry.kind,
+        &entry.path,
+        &entry.entry,
+        entry.fragment.as_deref().unwrap_or_default(),
+    )
 }
 
 /// The metadata cache key: the same locator fields the server hashes.
@@ -677,7 +755,9 @@ fn App() -> impl IntoView {
             .map(|raw| decode_columns(&raw))
             .unwrap_or_else(default_columns),
     );
-    let (column_menu, set_column_menu) = signal(Option::<(f64, f64)>::None);
+    // (x, y, the column the menu acts on). The target drives Move Left/Right
+    // and Auto-Fit Column, matching the Qt header menu.
+    let (column_menu, set_column_menu) = signal(Option::<(f64, f64, ColumnId)>::None);
     // (column, pointer start x, width at pointer-down) while a divider drags.
     let (resizing, set_resizing) = signal(Option::<(ColumnId, f64, f64)>::None);
 
@@ -706,6 +786,9 @@ fn App() -> impl IntoView {
     // the map, on every cell render.
     let (metadata, set_metadata) =
         signal_local(Rc::new(HashMap::<String, Option<MetaRow>>::new()));
+    // Starred locators from `GET /api/stars`, in the same scheme the server
+    // stores them under. An `Rc` for the same reason as `metadata`.
+    let (stars, set_stars) = signal_local(Rc::new(HashSet::<String>::new()));
 
     let base = move || server.get().trim_end_matches('/').to_owned();
     let auth = move || {
@@ -1015,10 +1098,74 @@ fn App() -> impl IntoView {
         }
     };
 
+    // Stars live on the server (`GET/POST /api/stars`) under the desktop's
+    // locator scheme, so a star set from the web shows up on the desktop.
+    let load_stars = {
+        let get_json = get_json;
+        move || {
+            leptos::task::spawn_local(async move {
+                if let Ok(value) = get_json("/api/stars".to_owned()).await {
+                    let locators: HashSet<String> = value["entries"]
+                        .as_array()
+                        .map(|items| {
+                            items
+                                .iter()
+                                .filter_map(|item| {
+                                    Some(star_locator(
+                                        item["kind"].as_str()?,
+                                        item["path"].as_str()?,
+                                        item["entry"].as_str().unwrap_or_default(),
+                                        item["fragment"].as_str().unwrap_or_default(),
+                                    ))
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    set_stars.set(Rc::new(locators));
+                }
+            });
+        }
+    };
+
+    let toggle_star = {
+        let base = base.clone();
+        let auth = auth.clone();
+        move |entry: Entry, currently: bool| {
+            let starred = !currently;
+            // Optimistic: the row flips now; the server is the source of truth
+            // on the next `/api/stars` refresh.
+            set_stars.update(|set| {
+                let set = Rc::make_mut(set);
+                let key = entry_star_locator(&entry);
+                if starred {
+                    set.insert(key);
+                } else {
+                    set.remove(&key);
+                }
+            });
+            let url = format!("{}/api/stars", base());
+            let header = auth().header();
+            let body = serde_json::json!({
+                "kind": entry.kind,
+                "path": entry.path,
+                "entry": entry.entry,
+                // The server's star request takes a string; `null` is a 422.
+                "fragment": entry.fragment.clone().unwrap_or_default(),
+                "starred": starred,
+            });
+            leptos::task::spawn_local(async move {
+                if let Err(error) = post_json(url, header, body).await {
+                    set_message.set(error);
+                }
+            });
+        }
+    };
+
     let connect = {
         let load_dir = load_dir.clone();
         let load_playlists = load_playlists.clone();
         let load_radio = load_radio.clone();
+        let load_stars = load_stars.clone();
         move || {
             let header = auth().header();
             let url = format!("{}/api/version", base());
@@ -1030,6 +1177,7 @@ fn App() -> impl IntoView {
             let load_dir = load_dir.clone();
             let load_playlists = load_playlists.clone();
             let load_radio = load_radio.clone();
+            let load_stars = load_stars.clone();
             leptos::task::spawn_local(async move {
                 let mut request = Request::get(&url);
                 if let Some(header) = header {
@@ -1043,6 +1191,7 @@ fn App() -> impl IntoView {
                         load_dir(String::new(), None);
                         load_playlists();
                         load_radio();
+                        load_stars();
                     }
                     Ok(response) if response.status() == 401 => {
                         set_message.set("That token or password was rejected".to_owned())
@@ -1345,6 +1494,16 @@ fn App() -> impl IntoView {
                 let meta = meta_for(&cache, entry);
                 match key {
                     SortKey::Index => String::new(),
+                    SortKey::Star => {
+                        if stars.get().contains(&entry_star_locator(entry)) {
+                            "1".to_owned()
+                        } else {
+                            "0".to_owned()
+                        }
+                    }
+                    // No server-side rating/status value to order by; keeps the
+                    // header toggle from reordering the pane.
+                    SortKey::Status => String::new(),
                     SortKey::Title => meta
                         .and_then(|meta| meta.title)
                         .unwrap_or_else(|| entry.name.clone()),
@@ -1478,6 +1637,7 @@ fn App() -> impl IntoView {
         move |id: ColumnId| {
             let rows = view_rows();
             let cache = metadata.get();
+            let starred = stars.get();
             let mut texts = vec![id.label().to_owned()];
             for (index, entry) in &rows {
                 texts.push(column_text(
@@ -1486,6 +1646,8 @@ fn App() -> impl IntoView {
                     entry,
                     meta_for(&cache, entry).as_ref(),
                     None,
+                    starred.contains(&entry_star_locator(entry)),
+                    "",
                 ));
             }
             let width = content_width(id, &texts);
@@ -1516,6 +1678,59 @@ fn App() -> impl IntoView {
         }
         persist_columns(&next);
         set_columns.set(next);
+    };
+
+    // The column the header menu acts on, and the Qt Move Column Left/Right
+    // actions. Moving swaps the target with its visible neighbour, so hidden
+    // columns never shift the visible order.
+    let menu_column = move || {
+        column_menu
+            .get()
+            .map(|(_, _, id)| id)
+            .unwrap_or(ColumnId::Index)
+    };
+
+    let can_move_column = move |direction: i64| -> bool {
+        let visible = columns.get();
+        let visible: Vec<ColumnId> = visible
+            .iter()
+            .filter(|column| column.visible)
+            .map(|column| column.id)
+            .collect();
+        match visible.iter().position(|candidate| *candidate == menu_column()) {
+            Some(position) => {
+                let target = position as i64 + direction;
+                target >= 0 && (target as usize) < visible.len()
+            }
+            None => false,
+        }
+    };
+
+    let move_column = move |direction: i64| {
+        let id = menu_column();
+        set_columns.update(|columns| {
+            let visible: Vec<ColumnId> = columns
+                .iter()
+                .filter(|column| column.visible)
+                .map(|column| column.id)
+                .collect();
+            let Some(position) = visible.iter().position(|candidate| *candidate == id) else {
+                return;
+            };
+            let target = position as i64 + direction;
+            if target < 0 || target as usize >= visible.len() {
+                return;
+            }
+            let neighbor = visible[target as usize];
+            if let (Some(source), Some(other)) = (
+                columns.iter().position(|column| column.id == id),
+                columns.iter().position(|column| column.id == neighbor),
+            ) {
+                columns.swap(source, other);
+            }
+        });
+        persist_columns(&columns.get_untracked());
+        set_column_menu.set(None);
     };
 
     let reset_columns = move || {
@@ -1938,9 +2153,16 @@ fn App() -> impl IntoView {
                         style=move || format!("--cols:{}", grid_template())
                         on:contextmenu=move |ev: web_sys::MouseEvent| {
                             ev.prevent_default();
+                            // Empty header space targets the first column so
+                            // the Move items still have something to act on.
+                            let target = visible_columns()
+                                .first()
+                                .map(|column| column.id)
+                                .unwrap_or(ColumnId::Index);
                             set_column_menu.set(Some((
                                 ev.client_x() as f64,
                                 ev.client_y() as f64,
+                                target,
                             )));
                         }
                     >
@@ -1948,10 +2170,27 @@ fn App() -> impl IntoView {
                             {
                                 let id = column.id;
                                 let sort = id.sort_key();
-                                let align = if id.align_right() { "right" } else { "left" };
+                                let align = if id.align_right() {
+                                    "right"
+                                } else if id.align_center() {
+                                    "center"
+                                } else {
+                                    "left"
+                                };
                                 let start_column = id;
                                 view! {
-                                    <div class=format!("cell col-head {}", id.class())>
+                                    <div
+                                        class=format!("cell col-head {}", id.class())
+                                        on:contextmenu=move |ev: web_sys::MouseEvent| {
+                                            ev.prevent_default();
+                                            ev.stop_propagation();
+                                            set_column_menu.set(Some((
+                                                ev.client_x() as f64,
+                                                ev.client_y() as f64,
+                                                id,
+                                            )));
+                                        }
+                                    >
                                         <button
                                             class="col-sort"
                                             style=format!("text-align: {align}")
@@ -2061,6 +2300,8 @@ fn App() -> impl IntoView {
                                                 {
                                                     let id = column.id;
                                                     let entry = entry.clone();
+                                                    let star_entry = entry.clone();
+                                                    let toggle_star = toggle_star.clone();
                                                     let text = move || {
                                                         let meta = meta_for(&metadata.get(), &entry);
                                                         let live = if current.get() == index
@@ -2070,12 +2311,22 @@ fn App() -> impl IntoView {
                                                         } else {
                                                             None
                                                         };
+                                                        let starred = stars
+                                                            .get()
+                                                            .contains(&entry_star_locator(&entry));
+                                                        let status = if current.get() == index {
+                                                            if playing.get() { "▶" } else { "Ⅱ" }
+                                                        } else {
+                                                            ""
+                                                        };
                                                         column_text(
                                                             id,
                                                             index,
                                                             &entry,
                                                             meta.as_ref(),
                                                             live,
+                                                            starred,
+                                                            status,
                                                         )
                                                     };
                                                     let tip = text.clone();
@@ -2083,6 +2334,18 @@ fn App() -> impl IntoView {
                                                         <span
                                                             class=format!("cell {}", id.class())
                                                             title=move || tip()
+                                                            on:click=move |ev: web_sys::MouseEvent| {
+                                                                // The star cell toggles without
+                                                                // selecting or playing the row.
+                                                                if id == ColumnId::Star {
+                                                                    ev.stop_propagation();
+                                                                    let entry = star_entry.clone();
+                                                                    let starred = stars
+                                                                        .get_untracked()
+                                                                        .contains(&entry_star_locator(&entry));
+                                                                    toggle_star(entry, starred);
+                                                                }
+                                                            }
                                                         >
                                                             {text}
                                                         </span>
@@ -2419,10 +2682,46 @@ fn App() -> impl IntoView {
                 <div
                     class="context-menu column-menu"
                     style=move || match column_menu.get() {
-                        Some((x, y)) => format!("left:{x}px; top:{y}px;"),
+                        Some((x, y, _)) => format!("left:{x}px; top:{y}px;"),
                         None => String::new(),
                     }
                 >
+                    <button
+                        class="menu-item"
+                        disabled=move || !can_move_column(-1)
+                        on:click=move |_| move_column(-1)
+                    >
+                        "Move Column Left"
+                    </button>
+                    <button
+                        class="menu-item"
+                        disabled=move || !can_move_column(1)
+                        on:click=move |_| move_column(1)
+                    >
+                        "Move Column Right"
+                    </button>
+                    <button
+                        class="menu-item"
+                        on:click={
+                            let auto_fit_column = auto_fit_column.clone();
+                            move |_| {
+                                auto_fit_column(menu_column());
+                                set_column_menu.set(None);
+                            }
+                        }
+                    >
+                        "Auto-Fit Column"
+                    </button>
+                    <button
+                        class="menu-item"
+                        on:click=move |_| {
+                            auto_fit_all();
+                            set_column_menu.set(None);
+                        }
+                    >
+                        "Auto-Fit All Columns"
+                    </button>
+                    <div class="menu-separator"></div>
                     <For each=move || ColumnId::ALL key=|id| id.key() let:id>
                         {
                             let visible = move || {
@@ -2451,10 +2750,13 @@ fn App() -> impl IntoView {
                         }
                     </For>
                     <div class="menu-separator"></div>
-                    <button class="menu-item" on:click=move |_| auto_fit_all()>
-                        "Auto-Fit All Columns"
-                    </button>
-                    <button class="menu-item" on:click=move |_| reset_columns()>
+                    <button
+                        class="menu-item"
+                        on:click=move |_| {
+                            reset_columns();
+                            set_column_menu.set(None);
+                        }
+                    >
                         "Reset Columns"
                     </button>
                 </div>

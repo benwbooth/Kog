@@ -621,6 +621,24 @@ button:focus-visible {
   text-align: right;
 }
 
+/* Star and status glyphs are centered like the desktop's icon columns. */
+.columns .star-cell,
+.columns .status-cell,
+.track .star-cell,
+.track .status-cell {
+  text-align: center;
+}
+
+.track .star-cell {
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.track .status-cell {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
 .track.current {
   background: var(--highlight);
   color: var(--highlight-text);
@@ -633,6 +651,12 @@ button:focus-visible {
 .track.current .album-cell {
   color: var(--highlight-text);
   opacity: 0.85;
+}
+
+.track.current .star-cell,
+.track.current .status-cell {
+  color: var(--highlight-text);
+  opacity: 0.9;
 }
 
 .rows {
@@ -1022,6 +1046,8 @@ button:focus-visible {
     height: 24px;
   }
 
+  .columns .star-cell,
+  .columns .status-cell,
   .columns .artist-cell,
   .columns .album-cell,
   .columns .genre-cell,
@@ -1058,6 +1084,8 @@ button:focus-visible {
     color: var(--faint);
   }
 
+  .track .star-cell,
+  .track .status-cell,
   .track .album-cell,
   .track .genre-cell,
   .track .year-cell,
