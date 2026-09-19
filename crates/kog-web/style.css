@@ -4,7 +4,9 @@
  * and the playlists, the playlist pane with a column header, and a 92px
  * transport bar. The whole thing is a fixed-height grid, so the only thing that
  * scrolls is the pane you are looking at - never the page. Below 820px the
- * sidebar becomes a drawer and the rows go compact for phones.
+ * sidebar becomes a drawer; the playlist table itself keeps the desktop
+ * behavior at every width: columns hold their widths and the pane scrolls
+ * horizontally when the window is smaller than the column set.
  */
 
 :root {
@@ -1153,90 +1155,9 @@ button:focus-visible {
     pointer-events: auto;
   }
 
-  /* Two lines per track: title/artist, then the length on the right. */
-  .columns,
-  .track {
-    grid-template-columns: 34px minmax(0, 1fr) 52px;
-    /* The phone layout always fits; the desktop table width must not force a
-     * horizontal scrollbar here. */
-    min-width: 0;
-  }
-
-  .columns {
-    height: 24px;
-  }
-
-  .columns .star-cell,
-  .columns .status-cell,
-  .columns .rating-cell,
-  .columns .albumartist-cell,
-  .columns .artist-cell,
-  .columns .composer-cell,
-  .columns .album-cell,
-  .columns .genre-cell,
-  .columns .year-cell,
-  .columns .trackno-cell,
-  .columns .playcount-cell,
-  .columns .path-cell,
-  .columns .filename-cell,
-  .columns .codec-cell,
-  .columns .samplerate-cell,
-  .columns .bitspersample-cell,
-  .columns .bitrate-cell {
-    display: none;
-  }
-
-  /* Column resizing is a desktop affordance; the phone layout is fixed. */
-  .columns .col-resize {
-    display: none;
-  }
-
-  .track {
-    grid-template-rows: auto auto;
-    height: auto;
-    min-height: 34px;
-    padding: 4px 0;
-  }
-
-  .track .index-cell {
-    grid-row: 1 / span 2;
-  }
-
-  .track .title-cell {
-    grid-column: 2;
-    grid-row: 1;
-  }
-
-  .track .artist-cell {
-    grid-column: 2;
-    grid-row: 2;
-    font-size: 11px;
-    color: var(--faint);
-  }
-
-  .track .star-cell,
-  .track .status-cell,
-  .track .rating-cell,
-  .track .albumartist-cell,
-  .track .composer-cell,
-  .track .album-cell,
-  .track .genre-cell,
-  .track .year-cell,
-  .track .trackno-cell,
-  .track .playcount-cell,
-  .track .path-cell,
-  .track .filename-cell,
-  .track .codec-cell,
-  .track .samplerate-cell,
-  .track .bitspersample-cell,
-  .track .bitrate-cell {
-    display: none;
-  }
-
-  .track .duration-cell {
-    grid-column: 3;
-    grid-row: 1 / span 2;
-  }
+  /* The playlist keeps the desktop table at every width: columns hold their
+   * widths and the pane scrolls horizontally, exactly like the Qt window when
+   * it is resized small. It never collapses to a squeezed fit. */
 
   /* The transport keeps the controls and a thin seek row, and drops the
    * volume block and the subtitle to stay compact. */
