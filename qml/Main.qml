@@ -2472,14 +2472,20 @@ ApplicationWindow {
                     opacity: 0.75
                 }
 
+                // The full path of a row cannot be read when it is elided, and
+                // tooltips do not pop in this view, so put the path here: the
+                // tree's own root when nothing is hovered, and the hovered row's
+                // path while the pointer is over it.
                 Label {
-                    objectName: "treeHoverPathLabel"
+                    objectName: "treePathLabel"
                     Layout.fillWidth: true
                     Layout.leftMargin: 8
                     Layout.rightMargin: 8
                     Layout.bottomMargin: visible ? 4 : 0
-                    visible: root.treeHoverPath.length > 0
-                    text: root.treeHoverPath
+                    visible: text.length > 0
+                    text: root.treeHoverPath.length > 0
+                        ? root.treeHoverPath
+                        : fileTreeModel.root_path
                     font.pointSize: root.font.pointSize * 0.85
                     wrapMode: Text.Wrap
                     opacity: 0.75
