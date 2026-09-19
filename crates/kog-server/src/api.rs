@@ -9,7 +9,7 @@
 //! path is canonicalised and checked to be inside it, so the API cannot be used
 //! to read arbitrary files on the host.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -18,8 +18,8 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 
-use kog_audio::decoder::StreamProperties;
-use kog_audio::playlist::{PlaylistEntry, PlaylistLocation};
+use kog_audio::decoder::{PlaybackSource, StreamProperties};
+use kog_audio::playlist::{Playlist, PlaylistEntry, PlaylistLocation};
 use kog_core::db::{LibraryDb, StoredEntry};
 
 use crate::routes::{AppState, bad_request};
@@ -31,14 +31,28 @@ pub struct Library {
     /// Tag lookups are the expensive part of a playlist refresh, so the server
     /// remembers each answer (including "no metadata") across requests.
     metadata: Mutex<MetadataCache>,
+    /// Mirrors `AppSettings::read_playlists_in_folders`: when a folder is
+    /// browsed, playlist files are expanded into their entries instead of being
+    /// offered as track files. The desktop applies the same preference while
+    /// scanning a folder. Defaults to on, matching the setting's default.
+    read_playlists_in_folders: Mutex<bool>,
 }
 
 impl Library {
     pub fn new(root: Option<PathBuf>, db: LibraryDb) -> Self {
+        Self::with_read_playlists_in_folders(root, db, true)
+    }
+
+    pub fn with_read_playlists_in_folders(
+        root: Option<PathBuf>,
+        db: LibraryDb,
+        read_playlists_in_folders: bool,
+    ) -> Self {
         Self {
             root: Mutex::new(root),
             db: Mutex::new(db),
             metadata: Mutex::new(MetadataCache::default()),
+            read_playlists_in_folders: Mutex::new(read_playlists_in_folders),
         }
     }
 
@@ -48,16 +62,25 @@ impl Library {
     pub fn open() -> Self {
         let settings = kog_audio::settings::AppSettings::load();
         let db = LibraryDb::open().or_else(|_| LibraryDb::open_in_memory());
-        Self::new(
+        Self::with_read_playlists_in_folders(
             settings.music_directory.clone(),
             db.unwrap_or_else(|_| {
                 LibraryDb::open_in_memory().expect("in-memory library always opens")
             }),
+            settings.read_playlists_in_folders,
         )
     }
 
     pub fn root(&self) -> Option<PathBuf> {
         lock(&self.root).clone()
+    }
+
+    pub fn read_playlists_in_folders(&self) -> bool {
+        *lock(&self.read_playlists_in_folders)
+    }
+
+    pub fn set_read_playlists_in_folders(&self, enabled: bool) {
+        *lock(&self.read_playlists_in_folders) = enabled;
     }
 
     pub fn set_root(&self, root: Option<PathBuf>) {
@@ -408,6 +431,188 @@ pub async fn browse(State(state): State<AppState>, Query(query): Query<BrowseQue
     }
 }
 
+/// One file line in a `/api/library` response.
+///
+/// `kind`/`entry`/`fragment` address the track the same way `/api/stream` and
+/// `/api/metadata` do; a plain audio file carries `kind: "local"`, an empty
+/// entry and no fragment. Playlist files in a folder are expanded into their
+/// entries, so they never appear as a bare `local` file that cannot stream.
+#[derive(Clone, Debug, serde::Serialize)]
+struct BrowseFile {
+    name: String,
+    path: String,
+    relative: String,
+    kind: String,
+    entry: String,
+    fragment: Option<String>,
+}
+
+fn browse_file_name(path: &std::path::Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+fn browse_file_relative(root: Option<&std::path::Path>, path: &std::path::Path) -> String {
+    root.and_then(|root| path.strip_prefix(root).ok())
+        .map(|relative| relative.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// The line for a file that is offered as-is (not expanded).
+fn local_browse_file(path: &std::path::Path, root: Option<&std::path::Path>) -> BrowseFile {
+    BrowseFile {
+        name: browse_file_name(path),
+        path: path.to_string_lossy().into_owned(),
+        relative: browse_file_relative(root, path),
+        kind: "local".to_owned(),
+        entry: String::new(),
+        fragment: None,
+    }
+}
+
+/// Map one playlist entry to a browse line, or `None` when it cannot be
+/// resolved to something streamable. A plain local path is only accepted when
+/// it exists: GME companion playlists write `file.gbs::GBS,0,title` lines that
+/// are metadata for the emulator, not paths, and must not be offered.
+fn playlist_entry_browse_file(
+    entry: &PlaylistEntry,
+    root: Option<&std::path::Path>,
+) -> Option<BrowseFile> {
+    match &entry.location {
+        PlaylistLocation::Local(path) => {
+            if !path.exists() {
+                return None;
+            }
+            Some(BrowseFile {
+                name: browse_file_name(path),
+                path: path.to_string_lossy().into_owned(),
+                relative: browse_file_relative(root, path),
+                kind: "local".to_owned(),
+                entry: String::new(),
+                fragment: entry.fragment.clone(),
+            })
+        }
+        PlaylistLocation::Archive {
+            archive_path,
+            entry_name,
+        } => Some(BrowseFile {
+            name: PathBuf::from(entry_name)
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| entry_name.clone()),
+            path: archive_path.to_string_lossy().into_owned(),
+            relative: browse_file_relative(root, archive_path),
+            kind: "archive".to_owned(),
+            entry: entry_name.clone(),
+            fragment: entry.fragment.clone(),
+        }),
+        PlaylistLocation::Remote(url) => Some(BrowseFile {
+            name: url.rsplit('/').next().unwrap_or(url).to_owned(),
+            path: url.clone(),
+            relative: url.clone(),
+            kind: "remote".to_owned(),
+            entry: String::new(),
+            fragment: entry.fragment.clone(),
+        }),
+    }
+}
+
+/// The same letterbox a bare [`PlaybackSource`] gets, used for the HLS
+/// fallback where the playlist parser refuses a stream it cannot expand.
+fn playback_source_browse_file(
+    source: &PlaybackSource,
+    root: Option<&std::path::Path>,
+) -> BrowseFile {
+    if let Some(origin) = &source.archive_origin {
+        return BrowseFile {
+            name: PathBuf::from(&origin.entry_name)
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| origin.entry_name.clone()),
+            path: origin.archive_path.to_string_lossy().into_owned(),
+            relative: browse_file_relative(root, &origin.archive_path),
+            kind: "archive".to_owned(),
+            entry: origin.entry_name.clone(),
+            fragment: source.subsong.map(|subsong| subsong.to_string()),
+        };
+    }
+    if let Some(url) = &source.remote_url {
+        return BrowseFile {
+            name: url.rsplit('/').next().unwrap_or(url).to_owned(),
+            path: url.clone(),
+            relative: url.clone(),
+            kind: "remote".to_owned(),
+            entry: String::new(),
+            fragment: source.subsong.map(|subsong| subsong.to_string()),
+        };
+    }
+    BrowseFile {
+        name: browse_file_name(&source.path),
+        path: source.path.to_string_lossy().into_owned(),
+        relative: browse_file_relative(root, &source.path),
+        kind: "local".to_owned(),
+        entry: String::new(),
+        fragment: source.subsong.map(|subsong| subsong.to_string()),
+    }
+}
+
+/// Expand a playlist file found during a folder browse into the entries the
+/// desktop's folder scanner would add. Empty when nothing resolves (a GME
+/// companion, or a malformed playlist), so no unplayable line is ever offered.
+fn playlist_browse_files(
+    playlist_path: &std::path::Path,
+    decoders: &kog_audio::decoder::DecoderRegistry,
+    root: Option<&std::path::Path>,
+) -> Vec<BrowseFile> {
+    match Playlist::open(playlist_path) {
+        Ok(playlist) => playlist
+            .entries()
+            .iter()
+            .filter_map(|entry| playlist_entry_browse_file(entry, root))
+            .collect(),
+        // HLS playlists (and anything else the M3U/PLS parser rejects) are
+        // still playable through FFmpeg: the registry hands back the playlist
+        // file itself as the source, exactly as the desktop does.
+        Err(_) => decoders
+            .expand_detailed(playlist_path.to_path_buf())
+            .map(|expansion| {
+                expansion
+                    .sources
+                    .iter()
+                    .map(|source| playback_source_browse_file(source, root))
+                    .collect()
+            })
+            .unwrap_or_default(),
+    }
+}
+
+/// An `.m3u` whose stem matches a sibling playable file is GME's companion
+/// playlist: metadata for the emulator, never a track of its own.
+fn is_gme_companion(
+    path: &std::path::Path,
+    directory: &[PathBuf],
+    decoders: &kog_audio::decoder::DecoderRegistry,
+) -> bool {
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    if !extension.eq_ignore_ascii_case("m3u") && !extension.eq_ignore_ascii_case("m3u8") {
+        return false;
+    }
+    let Some(stem) = path.file_stem() else {
+        return false;
+    };
+    directory.iter().any(|sibling| {
+        sibling != path
+            && sibling.file_stem() == Some(stem)
+            && !Playlist::is_path(sibling)
+            && !kog_audio::archive::is_path(sibling)
+            && decoders.accepts_path(sibling)
+    })
+}
+
 fn browse_blocking(library: &Arc<Library>, requested: Option<&str>) -> Result<serde_json::Value, String> {
     let directory = library.resolve(requested)?;
     if !directory.is_dir() {
@@ -416,8 +621,12 @@ fn browse_blocking(library: &Arc<Library>, requested: Option<&str>) -> Result<se
     let decoders = kog_audio::decoder::DecoderRegistry::new(
         kog_audio::settings::AppSettings::load().decoder_settings(),
     );
+    let read_playlists = library.read_playlists_in_folders();
+    let root = library.root();
+    let root = root.as_deref();
+
     let mut directories = Vec::new();
-    let mut files = Vec::new();
+    let mut candidates = Vec::new();
     let entries = std::fs::read_dir(&directory)
         .map_err(|error| format!("reading {}: {error}", directory.display()))?;
     for entry in entries.filter_map(Result::ok) {
@@ -431,12 +640,47 @@ fn browse_blocking(library: &Arc<Library>, requested: Option<&str>) -> Result<se
         if file_type.is_dir() {
             directories.push(path);
         } else if file_type.is_file() && decoders.accepts_path(&path) {
-            files.push(path);
+            candidates.push(path);
         }
     }
     directories.sort();
-    files.sort();
-    let root = library.root();
+    candidates.sort();
+
+    let mut files: Vec<BrowseFile> = Vec::new();
+    for path in &candidates {
+        if Playlist::is_path(path) {
+            // The companion check applies even when playlist reading is off:
+            // it is emulator metadata, never a track to offer.
+            if is_gme_companion(path, &candidates, &decoders) {
+                continue;
+            }
+            if read_playlists {
+                files.extend(playlist_browse_files(path, &decoders, root));
+                continue;
+            }
+        }
+        files.push(local_browse_file(path, root));
+    }
+    // A playlist entry can name a file that is also sitting in the folder, so
+    // drop repeats exactly as the desktop's scanner does. The locator fields
+    // are the same identity the stream and metadata endpoints use.
+    let mut seen = HashSet::new();
+    files.retain(|file| {
+        seen.insert(format!(
+            "{}|{}|{}|{}",
+            file.kind,
+            file.path,
+            file.entry,
+            file.fragment.clone().unwrap_or_default()
+        ))
+    });
+    files.sort_by(|left, right| {
+        left.path
+            .cmp(&right.path)
+            .then_with(|| left.entry.cmp(&right.entry))
+            .then_with(|| left.fragment.cmp(&right.fragment))
+    });
+
     let list = |paths: Vec<PathBuf>| -> Vec<serde_json::Value> {
         paths
             .into_iter()
@@ -445,7 +689,6 @@ fn browse_blocking(library: &Arc<Library>, requested: Option<&str>) -> Result<se
                     "name": path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default(),
                     "path": path.to_string_lossy(),
                     "relative": root
-                        .as_deref()
                         .and_then(|root| path.strip_prefix(root).ok())
                         .map(|relative| relative.to_string_lossy().into_owned())
                         .unwrap_or_default(),
@@ -457,7 +700,7 @@ fn browse_blocking(library: &Arc<Library>, requested: Option<&str>) -> Result<se
         "path": directory.to_string_lossy(),
         "parent": directory.parent().map(|parent| parent.to_string_lossy().into_owned()),
         "directories": list(directories),
-        "files": list(files),
+        "files": files,
     }))
 }
 

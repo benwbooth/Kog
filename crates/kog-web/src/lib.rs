@@ -46,18 +46,6 @@ impl Entry {
     fn is_dir(&self) -> bool {
         self.kind == "dir"
     }
-
-    /// A minimal local entry for a path the API only named.
-    fn local(path: &str, name: &str, location: &str) -> Self {
-        Self {
-            kind: "local".to_owned(),
-            path: path.to_owned(),
-            entry: String::new(),
-            fragment: None,
-            name: name.to_owned(),
-            location: location.to_owned(),
-        }
-    }
 }
 
 /// One rendered tree line: a flattened view of the expanded directories.
@@ -918,7 +906,27 @@ fn library_entries(value: &serde_json::Value) -> Vec<Entry> {
                 .as_str()
                 .map(str::to_owned)
                 .unwrap_or_else(|| name.clone());
-            Entry::local(&path, &name, &where_)
+            // The server expands folder playlists into `kind`/`entry`/
+            // `fragment` locators; older responses (and plain files) fall back
+            // to a bare local entry.
+            let kind = file["kind"]
+                .as_str()
+                .filter(|kind| !kind.is_empty())
+                .unwrap_or("local")
+                .to_owned();
+            let entry = file["entry"].as_str().unwrap_or_default().to_owned();
+            let fragment = file["fragment"]
+                .as_str()
+                .filter(|fragment| !fragment.is_empty())
+                .map(str::to_owned);
+            Entry {
+                kind,
+                path,
+                entry,
+                fragment,
+                name,
+                location: where_,
+            }
         }));
     }
     items

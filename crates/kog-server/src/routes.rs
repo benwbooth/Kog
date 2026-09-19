@@ -901,6 +901,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn browsing_expands_folder_playlists_and_drops_gme_companions() {
+        let (library, root) = library_with(&["Album/one.wav"]);
+        let album = root.join("Album");
+        // A plain one-line playlist: its entry replaces the bare .m3u line.
+        std::fs::write(album.join("list.m3u"), "one.wav\n").unwrap();
+        // GME's companion .m3u (stem matches the sibling audio) is emulator
+        // metadata, never a track of its own.
+        std::fs::write(album.join("one.m3u"), "# @TITLE x\none.wav::WAV,0,title\n").unwrap();
+        // A numbered GME playlist that does not resolve to a path contributes
+        // nothing rather than a line that would 400 on stream.
+        std::fs::write(album.join("02 track.m3u"), "one.wav::WAV,1,title\n").unwrap();
+        let state = state_with(AuthMode::None, "", library);
+
+        let (status, body) = get_json(
+            state.clone(),
+            &format!("/api/library?path={}", album.display()),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let files = body["files"].as_array().unwrap();
+        assert_eq!(files.len(), 1, "playlist expanded and deduplicated: {files:?}");
+        assert_eq!(files[0]["name"].as_str(), Some("one.wav"));
+        assert_eq!(files[0]["kind"].as_str(), Some("local"));
+        assert_eq!(files[0]["entry"].as_str(), Some(""));
+        assert!(files[0]["fragment"].is_null());
+        assert!(
+            files
+                .iter()
+                .all(|file| !file["path"].as_str().unwrap().ends_with(".m3u")),
+            "no bare playlist line is offered"
+        );
+
+        // With the preference off, playlists found in a folder stay bare files
+        // (the current behaviour), but the GME companion is still hidden.
+        let (_replaced, root) = library_with(&["Album/one.wav"]);
+        let album = root.join("Album");
+        std::fs::write(album.join("list.m3u"), "one.wav\n").unwrap();
+        std::fs::write(album.join("one.m3u"), "# @TITLE x\n").unwrap();
+        let library = crate::api::Library::with_read_playlists_in_folders(
+            Some(root.clone()),
+            kog_core::db::LibraryDb::open_in_memory().expect("in-memory library"),
+            false,
+        );
+        let state = state_with(AuthMode::None, "", library);
+        let (status, body) = get_json(
+            state,
+            &format!("/api/library?path={}", album.display()),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let mut names: Vec<&str> = body["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|file| file["name"].as_str().unwrap())
+            .collect();
+        names.sort_unstable();
+        assert_eq!(names, ["list.m3u", "one.wav"]);
+    }
+
+    #[tokio::test]
     async fn searching_finds_files_by_name() {
         let (library, _root) = library_with(&["Album/one.wav", "Other/two.wav"]);
         let state = state_with(AuthMode::None, "", library);
