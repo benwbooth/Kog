@@ -44,6 +44,11 @@ mod icons {
     pub const STOP: &str = include_str!("../../../qml/icons/media-playback-stop.svg");
     pub const SKIP_FORWARD: &str = include_str!("../../../qml/icons/media-skip-forward.svg");
     pub const REPEAT: &str = include_str!("../../../qml/icons/media-playlist-repeat.svg");
+    /// Desktop's volume icon, plus a muted variant in the same style for the
+    /// mute toggle (the desktop keeps the high icon, but a mute button that
+    /// never changes reads as broken).
+    pub const VOLUME: &str = include_str!("../../../qml/icons/audio-volume-high.svg");
+    pub const VOLUME_MUTED: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><path fill=\"#000\" d=\"M4.27 3 3 4.27 7.73 9H3v6h4l5 4v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4 9.91 6.09 12 8.18V4z\"/></svg>";
 }
 
 /// One playable entry, addressed the way the whole API addresses tracks.
@@ -3432,7 +3437,18 @@ fn App() -> impl IntoView {
                             class="flat mute"
                             title=move || if volume.get() <= 0.0 { "Unmute" } else { "Mute" }
                             on:click=toggle_mute
-                        >{move || if volume.get() <= 0.0 { "♪" } else { "♪" }}</button>
+                        >
+                            <span
+                                class="glyph-icon"
+                                inner_html=move || {
+                                    if volume.get() <= 0.0 {
+                                        icons::VOLUME_MUTED
+                                    } else {
+                                        icons::VOLUME
+                                    }
+                                }
+                            ></span>
+                        </button>
                         <input
                             class="volume"
                             type="range"

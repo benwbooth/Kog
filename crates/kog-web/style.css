@@ -109,6 +109,9 @@ body {
   width: 18px;
   height: 18px;
   display: block;
+}
+
+.toolbar .icon-button > svg path {
   fill: currentColor;
 }
 
@@ -241,8 +244,19 @@ button:focus-visible {
 }
 
 /* The toolbar's hamburger hides the inline sidebar on desktop, so the pane
- * takes the full width, exactly like the Qt window's sidebar toggle. */
+ * takes the full width, exactly like the Qt window's sidebar toggle. The
+ * children are pinned to their columns: a display:none sidebar would
+ * otherwise leave column 1 empty and auto-placement would drop the playlist
+ * into the 0px track. */
 @media (min-width: 821px) {
+  .sidebar {
+    grid-column: 1;
+  }
+
+  .playlist {
+    grid-column: 2;
+  }
+
   .workspace.sidebar-hidden {
     grid-template-columns: 0 minmax(0, 1fr);
   }
@@ -891,13 +905,19 @@ button:focus-visible {
   border-radius: 6px;
 }
 
-/* Inlined desktop icons (qml/icons/*.svg): 20px like CogButton's icon, tinted
- * by the button text where the desktop swaps the -light variant. */
+/* Inlined desktop icons (qml/icons/*.svg): 20px like CogButton's icon. The
+ * tint goes on the path: the SVGs carry fill="#000" presentation attributes,
+ * which beat any inherited value, so a fill rule on the svg element alone
+ * leaves the icons black on dark backgrounds. */
 .controls button > svg,
 .controls .glyph-icon svg {
   width: 20px;
   height: 20px;
   display: block;
+}
+
+.controls button > svg path,
+.controls .glyph-icon svg path {
   fill: currentColor;
 }
 
@@ -981,6 +1001,17 @@ button:focus-visible {
   padding: 0;
   border: 0;
   font-size: 14px;
+}
+
+/* The mute button's inlined desktop speaker icon, tinted like its text. */
+.volume-row .mute .glyph-icon svg {
+  width: 17px;
+  height: 17px;
+  display: block;
+}
+
+.volume-row .mute .glyph-icon svg path {
+  fill: currentColor;
 }
 
 .transport-right .volume {
