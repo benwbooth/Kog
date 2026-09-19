@@ -1211,6 +1211,10 @@ fn App() -> impl IntoView {
     // window and plays it. `radio_busy` guards the async window top-up.
     let (radio_on, set_radio_on) = signal(restored.radio_on);
     let (radio_busy, set_radio_busy) = signal(false);
+    // The desktop stages radio picks into a hidden buffer and moves one onto
+    // the playlist at a time; the pool is that buffer. Only shifted tracks
+    // become rows.
+    let (radio_pool, set_radio_pool) = signal(Vec::<Entry>::new());
     // Tag cache keyed by locator. An `Rc` so reading it clones a pointer, not
     // the map, on every cell render.
     let (metadata, set_metadata) =
@@ -1256,12 +1260,15 @@ fn App() -> impl IntoView {
 
     // ---------------------------------------------------------------- radio
     // Random Radio is server-owned: the server shuffles the library (sharing
-    // the desktop's radio-round.json) and returns a window of tracks. The web
-    // displays that window and asks for the next one when it runs out.
+    // the desktop's radio-round.json) and returns a window of tracks. Like the
+    // desktop, the window is a hidden staging buffer: the visible playlist
+    // only ever grows by one shifted track at a time, appended at the end.
+    // Toggling or reshuffling never disturbs the queue that is playing.
     let apply_radio = move |value: &serde_json::Value| {
         let enabled = value["enabled"].as_bool().unwrap_or(false);
         set_radio_on.set(enabled);
         if !enabled {
+            set_radio_pool.set(Vec::new());
             return;
         }
         let entries = radio_entries(value);
@@ -1273,10 +1280,7 @@ fn App() -> impl IntoView {
         set_repeat_mode.set(Repeat::Off);
         set_shuffle.set(false);
         set_list_name.set("Random Radio".to_owned());
-        set_queue.set(entries);
-        set_current.set(0);
-        set_position.set(0.0);
-        set_media_duration.set(None);
+        set_radio_pool.set(entries);
     };
 
     let load_radio = {
@@ -1316,43 +1320,6 @@ fn App() -> impl IntoView {
             leptos::task::spawn_local(async move {
                 match post_json(url, header, serde_json::json!({})).await {
                     Ok(value) => apply_radio(&value),
-                    Err(error) => set_message.set(error),
-                }
-            });
-        }
-    };
-
-    // Append the next window of the running round and continue from its first
-    // track. A barren round reshuffles so radio never stalls silently.
-    let advance_radio = {
-        let reshuffle_radio = reshuffle_radio.clone();
-        move || {
-            if radio_busy.get_untracked() {
-                return;
-            }
-            set_radio_busy.set(true);
-            let url = format!("{}/api/radio/advance", base());
-            let header = auth().header();
-            let reshuffle_radio = reshuffle_radio.clone();
-            leptos::task::spawn_local(async move {
-                let result = post_json(url, header, serde_json::json!({})).await;
-                set_radio_busy.set(false);
-                match result {
-                    Ok(value) => {
-                        let entries = radio_entries(&value);
-                        if entries.is_empty() {
-                            if value["exhausted"].as_bool().unwrap_or(true) {
-                                reshuffle_radio();
-                            }
-                            return;
-                        }
-                        let start = queue.get_untracked().len();
-                        set_queue.update(|items| items.extend(entries));
-                        set_current.set(start);
-                        set_position.set(0.0);
-                        set_media_duration.set(None);
-                        set_playing.set(true);
-                    }
                     Err(error) => set_message.set(error),
                 }
             });
@@ -1971,8 +1938,79 @@ fn App() -> impl IntoView {
         set_playing.set(true);
     };
 
-    // End-of-track advance: radio pulls its next window, shuffle picks any
-    // other row, otherwise step the queue and wrap only when repeat is on.
+    // The desktop's shift_radio_track: move one staged radio track to the end
+    // of the playlist and play it. Skips picks already queued so a window
+    // refetched after a reload never duplicates restored rows.
+    let shift_radio = {
+        let jump = jump.clone();
+        move || -> bool {
+            let mut pool = radio_pool.get_untracked();
+            let Some(pos) = pool
+                .iter()
+                .position(|entry| {
+                    !queue
+                        .get_untracked()
+                        .iter()
+                        .any(|queued| entry_star_locator(queued) == entry_star_locator(entry))
+                })
+            else {
+                set_radio_pool.set(pool);
+                return false;
+            };
+            let entry = pool.remove(pos);
+            set_radio_pool.set(pool);
+            let index = queue.get_untracked().len();
+            set_queue.update(|items| items.push(entry));
+            jump(index);
+            true
+        }
+    };
+
+    // Radio advances one track at a time: shift from the staged pool, and
+    // only when it runs dry ask the server for the next window. A barren
+    // round reshuffles so radio never stalls silently.
+    let advance_radio = {
+        let shift_radio = shift_radio.clone();
+        let reshuffle_radio = reshuffle_radio.clone();
+        move || {
+            if radio_busy.get_untracked() {
+                return;
+            }
+            if shift_radio() {
+                return;
+            }
+            set_radio_busy.set(true);
+            let url = format!("{}/api/radio/advance", base());
+            let header = auth().header();
+            let shift_radio = shift_radio.clone();
+            let reshuffle_radio = reshuffle_radio.clone();
+            leptos::task::spawn_local(async move {
+                let result = post_json(url, header, serde_json::json!({})).await;
+                set_radio_busy.set(false);
+                match result {
+                    Ok(value) => {
+                        let entries = radio_entries(&value);
+                        if entries.is_empty() {
+                            if value["exhausted"].as_bool().unwrap_or(true) {
+                                reshuffle_radio();
+                            }
+                            return;
+                        }
+                        set_radio_pool.set(entries);
+                        if !shift_radio() {
+                            set_radio_pool.set(Vec::new());
+                            reshuffle_radio();
+                        }
+                    }
+                    Err(error) => set_message.set(error),
+                }
+            });
+        }
+    };
+
+    // End-of-track advance: radio shifts in one staged track when the queue
+    // runs out, shuffle picks any other row, otherwise step the queue and
+    // wrap only when repeat is on.
     let advance_after_track = {
         let advance_radio = advance_radio.clone();
         move || -> Option<usize> {
@@ -2002,6 +2040,11 @@ fn App() -> impl IntoView {
         move |delta: i64| {
             let len = queue.get().len();
             if len == 0 {
+                // Radio kickstart: with nothing queued, play/next shifts the
+                // first staged track in and plays it, as the desktop does.
+                if radio_on.get() && delta > 0 {
+                    advance_radio();
+                }
                 return;
             }
             // Next at the end of a radio round pulls the following window
@@ -3257,8 +3300,17 @@ fn App() -> impl IntoView {
                         <button
                             class="play"
                             title="Play or pause"
-                            disabled=move || queue.get().is_empty()
-                            on:click=move |_| set_playing.update(|value| *value = !*value)
+                            disabled=move || queue.get().is_empty() && !radio_on.get()
+                            on:click=move |_| {
+                                if queue.get().is_empty() {
+                                    // Radio kickstart: nothing queued yet.
+                                    if radio_on.get() {
+                                        advance_radio();
+                                    }
+                                } else {
+                                    set_playing.update(|value| *value = !*value);
+                                }
+                            }
                         >
                             <span
                                 class="glyph-icon"
@@ -3279,7 +3331,13 @@ fn App() -> impl IntoView {
                         ></button>
                         <button
                             title="Next"
-                            disabled=move || queue.get().is_empty() || (current.get() + 1 >= queue.get().len() && repeat_mode.get() != Repeat::All && !shuffle.get() && !radio_on.get())
+                            disabled=move || {
+                                (queue.get().is_empty() && !radio_on.get())
+                                    || (current.get() + 1 >= queue.get().len()
+                                        && repeat_mode.get() != Repeat::All
+                                        && !shuffle.get()
+                                        && !radio_on.get())
+                            }
                             on:click=move |_| step(1)
                             inner_html=icons::SKIP_FORWARD
                         ></button>
