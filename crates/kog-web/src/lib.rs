@@ -10,10 +10,14 @@
 //! scrolls, never the page. Below 820px the sidebar becomes a drawer and the
 //! rows go compact for phones.
 //!
-//! The playlist columns mirror `qml/PlaylistHeader.qml`'s defaults: the index,
-//! Title, Artist, Album, Length and track number. Tags arrive from
+//! The toolbar carries the desktop's two separate controls: `☰` opens an
+//! application menu mirroring `qml/Main.qml`'s `hamburgerMenu`, and a checkable
+//! `«`/`»` toggles the file tree. The header context menu exposes the full
+//! column set from `qml/PlaylistHeader.qml`; tags arrive from
 //! `POST /api/metadata` in one batch per refresh and are cached by locator, so
-//! re-renders never refetch.
+//! re-renders never refetch. A background poll of `/kog_web.js`'s content-hash
+//! ETag reloads the page once a newer build is being served, deferring while a
+//! track plays.
 
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -21,6 +25,7 @@ use std::rc::Rc;
 use gloo_net::http::Request;
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
+use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::JsCast;
 
@@ -94,46 +99,103 @@ enum SortKey {
     Index,
     Star,
     Status,
+    Rating,
     Title,
+    AlbumArtist,
     Artist,
+    Composer,
     Album,
-    Genre,
+    Length,
     Year,
-    Duration,
+    Genre,
     Track,
+    PlayCount,
+    Path,
+    Filename,
+    Codec,
+    SampleRate,
+    BitsPerSample,
+    Bitrate,
 }
 
 /// Every column the pane can show, in the fixed order they render.
 ///
-/// The first six defaults mirror `qml/PlaylistHeader.qml`; Genre and Year are
-/// available from `POST /api/metadata` and start hidden, as they do in the
-/// desktop's default layout.
+/// The order mirrors `qml/PlaylistHeader.qml`'s `defaultColumns`, so a Move
+/// Column and a Reset Columns land where the desktop would put them. Rating,
+/// Album Artist, Composer and Play Count have no value in the API: they render
+/// empty exactly as `AppController::track_value_at` does for Rating/Play Count
+/// (and the web has no tag source for Album Artist/Composer).
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum ColumnId {
     Index,
     Star,
     Status,
+    Rating,
     Title,
+    AlbumArtist,
     Artist,
+    Composer,
     Album,
-    Genre,
-    Year,
     Length,
+    Year,
+    Genre,
     Track,
+    PlayCount,
+    Path,
+    Filename,
+    Codec,
+    SampleRate,
+    BitsPerSample,
+    Bitrate,
 }
 
 impl ColumnId {
-    const ALL: [ColumnId; 10] = [
+    const ALL: [ColumnId; 20] = [
         ColumnId::Index,
         ColumnId::Star,
         ColumnId::Status,
+        ColumnId::Rating,
         ColumnId::Title,
+        ColumnId::AlbumArtist,
         ColumnId::Artist,
+        ColumnId::Composer,
         ColumnId::Album,
-        ColumnId::Genre,
-        ColumnId::Year,
         ColumnId::Length,
+        ColumnId::Year,
+        ColumnId::Genre,
         ColumnId::Track,
+        ColumnId::PlayCount,
+        ColumnId::Path,
+        ColumnId::Filename,
+        ColumnId::Codec,
+        ColumnId::SampleRate,
+        ColumnId::BitsPerSample,
+        ColumnId::Bitrate,
+    ];
+
+    /// The order the header context menu lists the visibility toggles in,
+    /// alphabetised by menu label exactly as `qml/PlaylistHeader.qml` does.
+    /// Like the desktop, the menu does not offer to hide the Star column.
+    const MENU_ORDER: [ColumnId; 19] = [
+        ColumnId::Album,
+        ColumnId::AlbumArtist,
+        ColumnId::Artist,
+        ColumnId::Bitrate,
+        ColumnId::BitsPerSample,
+        ColumnId::Codec,
+        ColumnId::Composer,
+        ColumnId::Filename,
+        ColumnId::Genre,
+        ColumnId::Index,
+        ColumnId::Length,
+        ColumnId::Path,
+        ColumnId::PlayCount,
+        ColumnId::Rating,
+        ColumnId::SampleRate,
+        ColumnId::Status,
+        ColumnId::Title,
+        ColumnId::Track,
+        ColumnId::Year,
     ];
 
     fn key(self) -> &'static str {
@@ -141,13 +203,23 @@ impl ColumnId {
             Self::Index => "index",
             Self::Star => "star",
             Self::Status => "status",
+            Self::Rating => "rating",
             Self::Title => "title",
+            Self::AlbumArtist => "albumartist",
             Self::Artist => "artist",
+            Self::Composer => "composer",
             Self::Album => "album",
-            Self::Genre => "genre",
-            Self::Year => "year",
             Self::Length => "length",
+            Self::Year => "year",
+            Self::Genre => "genre",
             Self::Track => "track",
+            Self::PlayCount => "playcount",
+            Self::Path => "path",
+            Self::Filename => "filename",
+            Self::Codec => "codec",
+            Self::SampleRate => "samplerate",
+            Self::BitsPerSample => "bitspersample",
+            Self::Bitrate => "bitrate",
         }
     }
 
@@ -155,6 +227,7 @@ impl ColumnId {
         Self::ALL.into_iter().find(|column| column.key() == key)
     }
 
+    /// The header text, matching `defaultColumns()` in `PlaylistHeader.qml`.
     fn label(self) -> &'static str {
         match self {
             Self::Index => "#",
@@ -162,13 +235,49 @@ impl ColumnId {
             // the web header discoverable and its auto-fit width sane.
             Self::Star => "★",
             Self::Status => "●",
+            Self::Rating => "Rating",
             Self::Title => "Title",
+            Self::AlbumArtist => "Album Artist",
             Self::Artist => "Artist",
+            Self::Composer => "Composer",
             Self::Album => "Album",
-            Self::Genre => "Genre",
-            Self::Year => "Year",
             Self::Length => "Length",
+            Self::Year => "Year",
+            Self::Genre => "Genre",
             Self::Track => "№",
+            Self::PlayCount => "Plays",
+            Self::Path => "Path",
+            Self::Filename => "Filename",
+            Self::Codec => "Codec",
+            Self::SampleRate => "Sample Rate",
+            Self::BitsPerSample => "Bits",
+            Self::Bitrate => "Bitrate",
+        }
+    }
+
+    /// The name the header menu uses, matching `defaultColumns()`'s menuLabel.
+    fn menu_label(self) -> &'static str {
+        match self {
+            Self::Index => "Index",
+            Self::Star => "Star",
+            Self::Status => "Status",
+            Self::Rating => "Rating",
+            Self::Title => "Title",
+            Self::AlbumArtist => "Album Artist",
+            Self::Artist => "Artist",
+            Self::Composer => "Composer",
+            Self::Album => "Album",
+            Self::Length => "Length",
+            Self::Year => "Year",
+            Self::Genre => "Genre",
+            Self::Track => "Track",
+            Self::PlayCount => "Play Count",
+            Self::Path => "Path",
+            Self::Filename => "Filename",
+            Self::Codec => "Codec",
+            Self::SampleRate => "Sample Rate",
+            Self::BitsPerSample => "Bits Per Sample",
+            Self::Bitrate => "Bitrate",
         }
     }
 
@@ -177,13 +286,23 @@ impl ColumnId {
             Self::Index => "index-cell",
             Self::Star => "star-cell",
             Self::Status => "status-cell",
+            Self::Rating => "rating-cell",
             Self::Title => "title-cell",
+            Self::AlbumArtist => "albumartist-cell",
             Self::Artist => "artist-cell",
+            Self::Composer => "composer-cell",
             Self::Album => "album-cell",
-            Self::Genre => "genre-cell",
-            Self::Year => "year-cell",
             Self::Length => "duration-cell",
+            Self::Year => "year-cell",
+            Self::Genre => "genre-cell",
             Self::Track => "trackno-cell",
+            Self::PlayCount => "playcount-cell",
+            Self::Path => "path-cell",
+            Self::Filename => "filename-cell",
+            Self::Codec => "codec-cell",
+            Self::SampleRate => "samplerate-cell",
+            Self::BitsPerSample => "bitspersample-cell",
+            Self::Bitrate => "bitrate-cell",
         }
     }
 
@@ -192,13 +311,23 @@ impl ColumnId {
             Self::Index => SortKey::Index,
             Self::Star => SortKey::Star,
             Self::Status => SortKey::Status,
+            Self::Rating => SortKey::Rating,
             Self::Title => SortKey::Title,
+            Self::AlbumArtist => SortKey::AlbumArtist,
             Self::Artist => SortKey::Artist,
+            Self::Composer => SortKey::Composer,
             Self::Album => SortKey::Album,
-            Self::Genre => SortKey::Genre,
+            Self::Length => SortKey::Length,
             Self::Year => SortKey::Year,
-            Self::Length => SortKey::Duration,
+            Self::Genre => SortKey::Genre,
             Self::Track => SortKey::Track,
+            Self::PlayCount => SortKey::PlayCount,
+            Self::Path => SortKey::Path,
+            Self::Filename => SortKey::Filename,
+            Self::Codec => SortKey::Codec,
+            Self::SampleRate => SortKey::SampleRate,
+            Self::BitsPerSample => SortKey::BitsPerSample,
+            Self::Bitrate => SortKey::Bitrate,
         }
     }
 
@@ -207,13 +336,23 @@ impl ColumnId {
             Self::Index => 54.0,
             Self::Star => 40.0,
             Self::Status => 38.0,
+            Self::Rating => 78.0,
             Self::Title => 220.0,
+            Self::AlbumArtist => 150.0,
             Self::Artist => 190.0,
+            Self::Composer => 151.0,
             Self::Album => 220.0,
-            Self::Genre => 120.0,
-            Self::Year => 58.0,
             Self::Length => 70.0,
+            Self::Year => 58.0,
+            Self::Genre => 120.0,
             Self::Track => 54.0,
+            Self::PlayCount => 71.0,
+            Self::Path => 180.0,
+            Self::Filename => 180.0,
+            Self::Codec => 80.0,
+            Self::SampleRate => 92.0,
+            Self::BitsPerSample => 64.0,
+            Self::Bitrate => 84.0,
         }
     }
 
@@ -222,31 +361,66 @@ impl ColumnId {
             Self::Index => 28.0,
             Self::Star => 28.0,
             Self::Status => 38.0,
+            Self::Rating => 48.0,
             Self::Title => 96.0,
+            Self::AlbumArtist => 96.0,
             Self::Artist => 96.0,
+            Self::Composer => 96.0,
             Self::Album => 96.0,
-            Self::Genre => 48.0,
-            Self::Year => 42.0,
             Self::Length => 44.0,
+            Self::Year => 42.0,
+            Self::Genre => 48.0,
             Self::Track => 32.0,
+            Self::PlayCount => 42.0,
+            Self::Path => 64.0,
+            Self::Filename => 64.0,
+            Self::Codec => 48.0,
+            Self::SampleRate => 64.0,
+            Self::BitsPerSample => 48.0,
+            Self::Bitrate => 56.0,
         }
     }
 
     /// Text columns share the spare width the way the desktop flexes them.
     fn flexible(self) -> bool {
-        matches!(self, Self::Title | Self::Artist | Self::Album | Self::Genre)
+        matches!(
+            self,
+            Self::Title
+                | Self::AlbumArtist
+                | Self::Artist
+                | Self::Composer
+                | Self::Album
+                | Self::Genre
+                | Self::Path
+                | Self::Filename
+        )
     }
 
     fn align_right(self) -> bool {
-        matches!(self, Self::Index | Self::Year | Self::Length | Self::Track)
+        matches!(
+            self,
+            Self::Index
+                | Self::Year
+                | Self::Length
+                | Self::Track
+                | Self::PlayCount
+                | Self::SampleRate
+                | Self::BitsPerSample
+                | Self::Bitrate
+        )
     }
 
     fn align_center(self) -> bool {
         matches!(self, Self::Star | Self::Status)
     }
 
+    /// The web's default layout: the desktop's visible set minus Genre, Year
+    /// and the ten columns this pass added.
     fn default_visible(self) -> bool {
-        !matches!(self, Self::Genre | Self::Year)
+        matches!(
+            self,
+            Self::Index | Self::Star | Self::Status | Self::Title | Self::Artist | Self::Album | Self::Length | Self::Track
+        )
     }
 }
 
@@ -361,6 +535,11 @@ fn column_text(
         // glyphs.
         ColumnId::Star => if starred { "★" } else { "☆" }.to_owned(),
         ColumnId::Status => status.to_owned(),
+        // No rating/play-count/album-artist/composer value crosses the API, so
+        // these stay blank; the desktop renders rating and play count blank too.
+        ColumnId::Rating | ColumnId::PlayCount | ColumnId::AlbumArtist | ColumnId::Composer => {
+            String::new()
+        }
         ColumnId::Title => meta
             .and_then(|meta| meta.title.clone())
             .unwrap_or_else(|| entry.name.clone()),
@@ -380,6 +559,56 @@ fn column_text(
             .and_then(|meta| meta.track_number)
             .map(|number| number.to_string())
             .unwrap_or_default(),
+        ColumnId::Path => entry_path(entry),
+        ColumnId::Filename => entry_filename(entry),
+        ColumnId::Codec => meta.and_then(|meta| meta.codec.clone()).unwrap_or_default(),
+        ColumnId::SampleRate => sample_rate_label(meta.and_then(|meta| meta.sample_rate)),
+        ColumnId::BitsPerSample => meta
+            .and_then(|meta| meta.bits_per_sample)
+            .map(|bits| bits.to_string())
+            .unwrap_or_default(),
+        ColumnId::Bitrate => meta
+            .and_then(|meta| meta.bitrate)
+            .map(|bitrate| format!("{bitrate} kbps"))
+            .unwrap_or_default(),
+    }
+}
+
+/// The full location for the Path column, mirroring `track_path`: an archive's
+/// outer file with its member appended, or the local path / remote URL.
+fn entry_path(entry: &Entry) -> String {
+    if entry.kind == "archive" && !entry.entry.trim().is_empty() {
+        format!("{}::{}", entry.path, entry.entry)
+    } else {
+        entry.path.clone()
+    }
+}
+
+/// The file name for the Filename column, mirroring `track_filename`: an
+/// archive shows the member name, everything else its own last path segment.
+fn entry_filename(entry: &Entry) -> String {
+    if entry.kind == "archive" && !entry.entry.trim().is_empty() {
+        last_segment(&entry.entry)
+    } else {
+        last_segment(&entry.path)
+    }
+}
+
+/// `44.1 kHz`, `48 kHz` or `500 Hz`, matching the desktop's
+/// `sample_rate_label`.
+fn sample_rate_label(sample_rate: Option<u32>) -> String {
+    let Some(sample_rate) = sample_rate else {
+        return String::new();
+    };
+    if sample_rate >= 1_000 {
+        let kilohertz = f64::from(sample_rate) / 1_000.0;
+        if sample_rate.is_multiple_of(1_000) {
+            format!("{kilohertz:.0} kHz")
+        } else {
+            format!("{kilohertz:.1} kHz")
+        }
+    } else {
+        format!("{sample_rate} Hz")
     }
 }
 
@@ -724,6 +953,18 @@ fn App() -> impl IntoView {
     let (connected, set_connected) = signal(false);
     let (message, set_message) = signal(String::new());
     let (settings_open, set_settings_open) = signal(false);
+    // The application (`☰`) menu, the separate About dialog, and the version
+    // the server reports, shown in About.
+    let (menu_open, set_menu_open) = signal(false);
+    let (about_open, set_about_open) = signal(false);
+    let (version, set_version) = signal(String::new());
+    // Rows the pane actions act on. A plain click selects a row (and plays it),
+    // Ctrl/Cmd-click adds to the selection, matching the desktop's multi-select.
+    let (selected, set_selected) = signal(HashSet::<usize>::new());
+    // Live-reload: the content hash of the running `/kog_web.js`, and whether a
+    // newer build has appeared. A change reloads on the next pause or idle.
+    let (asset_etag, set_asset_etag) = signal(Option::<String>::None);
+    let (update_ready, set_update_ready) = signal(false);
     // Desktop shows the sidebar inline; phones open it as a drawer. The
     // desktop choice is persisted, the drawer state is not.
     let (sidebar_open, set_sidebar_open) = signal(false);
@@ -1185,6 +1426,14 @@ fn App() -> impl IntoView {
                 }
                 match request.send().await {
                     Ok(response) if response.ok() => {
+                        let version = response
+                            .json::<serde_json::Value>()
+                            .await
+                            .ok()
+                            .and_then(|value| value["version"].as_str().map(str::to_owned));
+                        if let Some(version) = version {
+                            set_version.set(version);
+                        }
                         set_connected.set(true);
                         set_settings_open.set(false);
                         set_message.set(String::new());
@@ -1215,6 +1464,71 @@ fn App() -> impl IntoView {
         }
         set_auto_connected.set(true);
         auto_connect();
+    });
+
+    // Escape dismisses any open menu or dialog from anywhere on the page, not
+    // just when a control inside it holds focus.
+    let escape_handle = window_event_listener(leptos::ev::keydown, move |ev: web_sys::KeyboardEvent| {
+        if ev.key() == "Escape" {
+            set_menu_open.set(false);
+            set_column_menu.set(None);
+            set_tree_menu.set(None);
+            set_about_open.set(false);
+            set_settings_open.set(false);
+        }
+    });
+    on_cleanup(move || escape_handle.remove());
+
+    // ------------------------------------------------------------ live reload
+    // Poll the running `/kog_web.js` for its content-hash ETag and reload once
+    // the server serves a different build. A transient failure (say, the dev
+    // loop restarting) counts as "unchanged", and a reload waits until no track
+    // is playing so an update never interrupts playback.
+    let poll_assets = {
+        move || {
+            let baseline = asset_etag.get_untracked();
+            let set_asset_etag = set_asset_etag;
+            let set_update_ready = set_update_ready;
+            leptos::task::spawn_local(async move {
+                // A cache-busting query forces a fresh 200 with the ETag; the
+                // asset handler ignores the query and serves the same bytes.
+                let url = format!("/kog_web.js?_={}", js_sys::Date::now());
+                let Ok(response) = Request::get(&url).send().await else {
+                    return;
+                };
+                if !response.ok() {
+                    return;
+                }
+                let Some(etag) = response.headers().get("etag") else {
+                    return;
+                };
+                match baseline {
+                    None => set_asset_etag.set(Some(etag)),
+                    Some(previous) if previous != etag => set_update_ready.set(true),
+                    _ => {}
+                }
+            });
+        }
+    };
+    poll_assets();
+    let poll_interval = {
+        let poll_assets = poll_assets.clone();
+        Closure::<dyn FnMut()>::new(move || poll_assets())
+    };
+    if let Some(window) = web_sys::window() {
+        let _ = window.set_interval_with_callback_and_timeout_and_arguments_0(
+            poll_interval.as_ref().unchecked_ref(),
+            5_000,
+        );
+    }
+    poll_interval.forget();
+
+    Effect::new(move |_| {
+        if update_ready.get() && !playing.get() {
+            if let Some(window) = web_sys::window() {
+                let _ = window.location().reload();
+            }
+        }
     });
 
     let stream_url = move |entry: &Entry| {
@@ -1503,10 +1817,12 @@ fn App() -> impl IntoView {
                     }
                     // No server-side rating/status value to order by; keeps the
                     // header toggle from reordering the pane.
-                    SortKey::Status => String::new(),
+                    SortKey::Status | SortKey::Rating | SortKey::PlayCount => String::new(),
                     SortKey::Title => meta
                         .and_then(|meta| meta.title)
                         .unwrap_or_else(|| entry.name.clone()),
+                    // No API value for these either; the cell is empty.
+                    SortKey::AlbumArtist | SortKey::Composer => String::new(),
                     SortKey::Artist => meta.and_then(|meta| meta.artist).unwrap_or_default(),
                     SortKey::Album => meta.and_then(|meta| meta.album).unwrap_or_default(),
                     SortKey::Genre => meta.and_then(|meta| meta.genre).unwrap_or_default(),
@@ -1514,13 +1830,28 @@ fn App() -> impl IntoView {
                         .and_then(|meta| meta.year)
                         .map(|year| format!("{year:010}"))
                         .unwrap_or_default(),
-                    SortKey::Duration => meta
+                    SortKey::Length => meta
                         .and_then(|meta| meta.duration)
                         .map(|seconds| format!("{seconds:010.3}"))
                         .unwrap_or_default(),
                     SortKey::Track => meta
                         .and_then(|meta| meta.track_number)
                         .map(|number| format!("{number:06}"))
+                        .unwrap_or_default(),
+                    SortKey::Path => entry_path(entry),
+                    SortKey::Filename => entry_filename(entry),
+                    SortKey::Codec => meta.and_then(|meta| meta.codec).unwrap_or_default(),
+                    SortKey::SampleRate => meta
+                        .and_then(|meta| meta.sample_rate)
+                        .map(|rate| format!("{rate:010}"))
+                        .unwrap_or_default(),
+                    SortKey::BitsPerSample => meta
+                        .and_then(|meta| meta.bits_per_sample)
+                        .map(|bits| format!("{bits:06}"))
+                        .unwrap_or_default(),
+                    SortKey::Bitrate => meta
+                        .and_then(|meta| meta.bitrate)
+                        .map(|bitrate| format!("{bitrate:010}"))
                         .unwrap_or_default(),
                 }
             };
@@ -1597,6 +1928,180 @@ fn App() -> impl IntoView {
                 }
             }
         });
+    };
+
+    // ------------------------------------------------------- shell actions
+    // The application (`☰`) menu's playlist/queue actions. The web pane is the
+    // queue, so Clear Playlist and Clear Queue both empty it: the desktop's
+    // separate up-next queue has no web counterpart.
+    let open_add_url = move || {
+        let Some(window) = web_sys::window() else {
+            return;
+        };
+        let Ok(Some(url)) = window.prompt_with_message("Stream URL") else {
+            return;
+        };
+        let url = url.trim().to_owned();
+        if url.is_empty() {
+            return;
+        }
+        let entry = Entry {
+            kind: "remote".to_owned(),
+            path: url.clone(),
+            entry: String::new(),
+            fragment: None,
+            name: last_segment(&url),
+            location: url,
+        };
+        set_queue.update(|items| items.push(entry));
+        set_menu_open.set(false);
+    };
+
+    // Save the current pane as a new server playlist, then append its entries,
+    // the same two calls the desktop makes.
+    let save_playlist_as = {
+        let load_playlists = load_playlists.clone();
+        move || {
+            let entries = queue.get_untracked();
+            if entries.is_empty() {
+                set_message.set("There is nothing to save".to_owned());
+                set_menu_open.set(false);
+                return;
+            }
+            let Some(window) = web_sys::window() else {
+                return;
+            };
+            let Ok(Some(name)) = window.prompt_with_message("Save playlist as") else {
+                return;
+            };
+            let name = name.trim().to_owned();
+            if name.is_empty() {
+                return;
+            }
+            set_menu_open.set(false);
+            let root = base();
+            let header = auth().header();
+            let load_playlists = load_playlists.clone();
+            leptos::task::spawn_local(async move {
+                let body = serde_json::json!({ "name": name.clone() });
+                let id = match post_json(format!("{root}/api/playlists"), header.clone(), body).await
+                {
+                    Ok(value) => value["id"].as_i64(),
+                    Err(error) => {
+                        set_message.set(error);
+                        return;
+                    }
+                };
+                let Some(id) = id else {
+                    return;
+                };
+                let body = serde_json::json!({
+                    "entries": entries
+                        .iter()
+                        .map(|entry| serde_json::json!({
+                            "kind": entry.kind,
+                            "path": entry.path,
+                            "entry": entry.entry,
+                            "fragment": entry.fragment.clone().unwrap_or_default(),
+                        }))
+                        .collect::<Vec<_>>(),
+                });
+                match post_json(format!("{root}/api/playlists/{id}/entries"), header, body).await {
+                    Ok(_) => {
+                        set_list_name.set(name);
+                        load_playlists();
+                    }
+                    Err(error) => set_message.set(error),
+                }
+            });
+        }
+    };
+
+    // Remove the selected rows from the pane. A row is selected by clicking it;
+    // there is no server call, the pane is client-owned like the desktop queue.
+    let remove_selected = move || {
+        let mut indices: Vec<usize> = selected.get_untracked().into_iter().collect();
+        if indices.is_empty() {
+            return;
+        }
+        indices.sort_unstable();
+        let current_index = current.get_untracked();
+        let removed_before_current = indices.iter().filter(|index| **index < current_index).count();
+        set_queue.update(|items| {
+            for index in indices.iter().rev() {
+                if *index < items.len() {
+                    items.remove(*index);
+                }
+            }
+        });
+        let len = queue.get_untracked().len();
+        let next = if len == 0 {
+            0
+        } else {
+            current_index.saturating_sub(removed_before_current).min(len - 1)
+        };
+        if next != current_index {
+            set_current.set(next);
+            set_position.set(0.0);
+            set_media_duration.set(None);
+        }
+        set_selected.set(HashSet::new());
+        set_menu_open.set(false);
+    };
+
+    // Clear Playlist / Clear Queue: the web pane is the queue, so both empty it.
+    let clear_pane = move || {
+        set_queue.set(Vec::new());
+        set_current.set(0);
+        set_position.set(0.0);
+        set_media_duration.set(None);
+        set_playing.set(false);
+        set_selected.set(HashSet::new());
+        set_list_name.set(String::new());
+        set_menu_open.set(false);
+    };
+
+    let open_preferences = move || {
+        set_menu_open.set(false);
+        set_settings_open.set(true);
+    };
+
+    let open_about = move || {
+        set_menu_open.set(false);
+        set_about_open.set(true);
+    };
+
+    // The dedicated sidebar toggle: on the desktop it hides the inline tree, on
+    // a phone it drives the drawer.
+    let toggle_sidebar = move || {
+        let mobile = web_sys::window()
+            .map(|window| {
+                window.inner_width().ok().and_then(|width| width.as_f64()).unwrap_or(1024.0)
+                    <= 820.0
+            })
+            .unwrap_or(false);
+        let open = if mobile {
+            sidebar_open.get_untracked()
+        } else {
+            sidebar_visible.get_untracked()
+        };
+        let next = !open;
+        set_sidebar_visible.set(next);
+        set_sidebar_open.set(next);
+        store("kog.sidebar", if next { "1" } else { "0" });
+    };
+    let sidebar_shown = move || {
+        let mobile = web_sys::window()
+            .map(|window| {
+                window.inner_width().ok().and_then(|width| width.as_f64()).unwrap_or(1024.0)
+                    <= 820.0
+            })
+            .unwrap_or(false);
+        if mobile {
+            sidebar_open.get()
+        } else {
+            sidebar_visible.get()
+        }
     };
 
     // Add one tree row: a file is appended directly, a folder contributes its
@@ -1799,15 +2304,16 @@ fn App() -> impl IntoView {
             <header class="toolbar">
                 <button
                     class="flat icon-button"
-                    title="Show or hide the sidebar"
-                    on:click=move |_| {
-                        let next = !sidebar_visible.get_untracked();
-                        set_sidebar_visible.set(next);
-                        // On a phone the same control opens the drawer.
-                        set_sidebar_open.set(next);
-                        store("kog.sidebar", if next { "1" } else { "0" });
-                    }
+                    title="Kog menu"
+                    on:click=move |_| set_menu_open.update(|open| *open = !*open)
                 >"☰"</button>
+                <button
+                    class="flat icon-button sidebar-toggle"
+                    title=move || {
+                        if sidebar_shown() { "Hide File Tree" } else { "Show File Tree" }
+                    }
+                    on:click=move |_| toggle_sidebar()
+                >{move || if sidebar_shown() { "«" } else { "»" }}</button>
                 <img class="logo" src="/icons/kog.svg" alt="Kog" />
                 <div class="search">
                     <span class="pill-icon" aria-hidden="true">"⌕"</span>
@@ -1843,7 +2349,12 @@ fn App() -> impl IntoView {
                     class="flat server"
                     title=move || if connected.get() { "Connected" } else { "Not connected" }
                     on:click=move |_| set_settings_open.update(|open| *open = !*open)
-                >{move || if connected.get() { "● Server" } else { "○ Server" }}</button>
+                >
+                    <span class=move || {
+                        if connected.get() { "server-dot online" } else { "server-dot offline" }
+                    }>{move || if connected.get() { "●" } else { "○" }}</span>
+                    <span class="server-label">" Server"</span>
+                </button>
             </header>
 
             <div
@@ -2285,7 +2796,23 @@ fn App() -> impl IntoView {
                                         <button
                                             class="track"
                                             class:current=move || current.get() == index
-                                            on:click=move |_| {
+                                            class:selected=move || selected.get().contains(&index)
+                                            on:click=move |ev: web_sys::MouseEvent| {
+                                                // Ctrl/Cmd/Shift add to the
+                                                // selection; a plain click selects
+                                                // the row and starts it.
+                                                if ev.ctrl_key()
+                                                    || ev.meta_key()
+                                                    || ev.shift_key()
+                                                {
+                                                    set_selected.update(|set| {
+                                                        if !set.remove(&index) {
+                                                            set.insert(index);
+                                                        }
+                                                    });
+                                                    return;
+                                                }
+                                                set_selected.set(HashSet::from([index]));
                                                 set_current.set(index);
                                                 set_position.set(0.0);
                                                 set_media_duration.set(None);
@@ -2615,6 +3142,24 @@ fn App() -> impl IntoView {
                 </div>
             </Show>
 
+            <Show when=move || about_open.get() fallback=|| ()>
+                <div class="scrim" on:click=move |_| set_about_open.set(false)></div>
+                <div class="settings about" role="dialog">
+                    <h2>"About Kog"</h2>
+                    <p class="hint">"Kog web player, served by the local Kog server."</p>
+                    <p class="hint">
+                        {move || if version.get().is_empty() {
+                            "Server version unavailable".to_owned()
+                        } else {
+                            format!("Server version {}", version.get())
+                        }}
+                    </p>
+                    <div class="settings-actions">
+                        <button class="primary" on:click=move |_| set_about_open.set(false)>"Close"</button>
+                    </div>
+                </div>
+            </Show>
+
             <Show when=move || tree_menu.get().is_some() fallback=|| ()>
                 {
                     let row_is_dir = move || {
@@ -2722,7 +3267,7 @@ fn App() -> impl IntoView {
                         "Auto-Fit All Columns"
                     </button>
                     <div class="menu-separator"></div>
-                    <For each=move || ColumnId::ALL key=|id| id.key() let:id>
+                    <For each=move || ColumnId::MENU_ORDER key=|id| id.key() let:id>
                         {
                             let visible = move || {
                                 columns
@@ -2744,7 +3289,7 @@ fn App() -> impl IntoView {
                                     <span class="menu-check">
                                         {move || if visible() { "✓" } else { "" }}
                                     </span>
-                                    {id.label()}
+                                    {id.menu_label()}
                                 </button>
                             }
                         }
@@ -2758,6 +3303,175 @@ fn App() -> impl IntoView {
                         }
                     >
                         "Reset Columns"
+                    </button>
+                </div>
+            </Show>
+
+            <Show when=move || update_ready.get() fallback=|| ()>
+                <div class="update-banner">
+                    "A new Kog build is ready — it will reload when playback pauses."
+                </div>
+            </Show>
+
+            <Show when=move || menu_open.get() fallback=|| ()>
+                <div class="menu-scrim" on:click=move |_| set_menu_open.set(false)></div>
+                <div class="context-menu app-menu" role="menu">
+                    <button class="menu-item" on:click=move |_| open_add_url()>
+                        "Add URL…"
+                    </button>
+                    <div class="menu-separator"></div>
+                    <button
+                        class="menu-item"
+                        disabled=move || queue.get().is_empty()
+                        on:click=move |_| save_playlist_as()
+                    >
+                        "Save Playlist…"
+                    </button>
+                    <div class="menu-separator"></div>
+                    <button
+                        class="menu-item"
+                        disabled=move || selected.get().is_empty()
+                        on:click=move |_| remove_selected()
+                    >
+                        "Remove Selected"
+                    </button>
+                    <button
+                        class="menu-item"
+                        disabled=move || queue.get().is_empty()
+                        on:click=move |_| clear_pane()
+                    >
+                        "Clear Playlist"
+                    </button>
+                    <div class="menu-separator"></div>
+                    <div class="menu-group">"View"</div>
+                    <button class="menu-item" on:click=move |_| toggle_sidebar()>
+                        <span class="menu-check">
+                            {move || if sidebar_shown() { "✓" } else { "" }}
+                        </span>
+                        "Show File Tree"
+                    </button>
+                    <div class="menu-separator"></div>
+                    <div class="menu-group">"Playback"</div>
+                    <button
+                        class="menu-item"
+                        disabled=move || queue.get().is_empty()
+                        on:click=move |_| {
+                            set_playing.update(|playing| *playing = !*playing);
+                            set_menu_open.set(false);
+                        }
+                    >
+                        "Play/Pause"
+                    </button>
+                    <button
+                        class="menu-item"
+                        disabled=move || queue.get().is_empty()
+                        on:click=move |_| {
+                            set_playing.set(false);
+                            set_position.set(0.0);
+                            if let Some(audio) = audio_ref.get() {
+                                let _ = audio.set_current_time(0.0);
+                            }
+                            set_menu_open.set(false);
+                        }
+                    >
+                        "Stop"
+                    </button>
+                    <button
+                        class="menu-item"
+                        disabled=move || queue.get().is_empty() || (!shuffle.get() && current.get() == 0 && repeat_mode.get() != Repeat::All)
+                        on:click=move |_| {
+                            step(-1);
+                            set_menu_open.set(false);
+                        }
+                    >
+                        "Previous"
+                    </button>
+                    <button
+                        class="menu-item"
+                        disabled=move || queue.get().is_empty() || (current.get() + 1 >= queue.get().len() && repeat_mode.get() != Repeat::All && !shuffle.get() && !radio_on.get())
+                        on:click=move |_| {
+                            step(1);
+                            set_menu_open.set(false);
+                        }
+                    >
+                        "Next"
+                    </button>
+                    <div class="menu-group">"Shuffle"</div>
+                    <button
+                        class="menu-item"
+                        on:click=move |_| {
+                            set_shuffle.set(false);
+                            set_menu_open.set(false);
+                        }
+                    >
+                        <span class="menu-check">{move || if !shuffle.get() { "●" } else { "" }}</span>
+                        "Off"
+                    </button>
+                    <button
+                        class="menu-item"
+                        on:click=move |_| {
+                            set_shuffle.set(true);
+                            set_menu_open.set(false);
+                        }
+                    >
+                        <span class="menu-check">{move || if shuffle.get() { "●" } else { "" }}</span>
+                        "All Tracks"
+                    </button>
+                    <div class="menu-group">"Repeat"</div>
+                    <button
+                        class="menu-item"
+                        on:click=move |_| {
+                            set_repeat_mode.set(Repeat::Off);
+                            set_menu_open.set(false);
+                        }
+                    >
+                        <span class="menu-check">{move || if repeat_mode.get() == Repeat::Off { "●" } else { "" }}</span>
+                        "Off"
+                    </button>
+                    <button
+                        class="menu-item"
+                        on:click=move |_| {
+                            set_repeat_mode.set(Repeat::One);
+                            set_menu_open.set(false);
+                        }
+                    >
+                        <span class="menu-check">{move || if repeat_mode.get() == Repeat::One { "●" } else { "" }}</span>
+                        "One Track"
+                    </button>
+                    <button
+                        class="menu-item"
+                        on:click=move |_| {
+                            set_repeat_mode.set(Repeat::All);
+                            set_menu_open.set(false);
+                        }
+                    >
+                        <span class="menu-check">{move || if repeat_mode.get() == Repeat::All { "●" } else { "" }}</span>
+                        "All Tracks"
+                    </button>
+                    <button
+                        class="menu-item"
+                        disabled=move || !radio_on.get()
+                        on:click=move |_| {
+                            reshuffle_radio();
+                            set_menu_open.set(false);
+                        }
+                    >
+                        "Reshuffle Radio"
+                    </button>
+                    <div class="menu-separator"></div>
+                    <button
+                        class="menu-item"
+                        disabled=move || queue.get().is_empty()
+                        on:click=move |_| clear_pane()
+                    >
+                        "Clear Queue"
+                    </button>
+                    <div class="menu-separator"></div>
+                    <button class="menu-item" on:click=move |_| open_preferences()>
+                        "Preferences…"
+                    </button>
+                    <button class="menu-item" on:click=move |_| open_about()>
+                        "About Kog…"
                     </button>
                 </div>
             </Show>

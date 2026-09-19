@@ -209,6 +209,20 @@ button:focus-visible {
   white-space: nowrap;
 }
 
+/* The connection dot carries its own colour; the label stays in the normal
+ * text colour. */
+.server-dot.online {
+  color: #3ecf6a;
+}
+
+.server-dot.offline {
+  color: var(--muted);
+}
+
+.server-label {
+  color: inherit;
+}
+
 /* -------------------------------------------------------------- workspace */
 
 .workspace {
@@ -590,7 +604,11 @@ button:focus-visible {
 
 .columns .index-cell,
 .columns .duration-cell,
-.columns .trackno-cell {
+.columns .trackno-cell,
+.columns .playcount-cell,
+.columns .samplerate-cell,
+.columns .bitspersample-cell,
+.columns .bitrate-cell {
   text-align: right;
 }
 
@@ -615,7 +633,11 @@ button:focus-visible {
 
 .track .index-cell,
 .track .duration-cell,
-.track .trackno-cell {
+.track .trackno-cell,
+.track .playcount-cell,
+.track .samplerate-cell,
+.track .bitspersample-cell,
+.track .bitrate-cell {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
   text-align: right;
@@ -637,6 +659,12 @@ button:focus-visible {
 .track .status-cell {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
+}
+
+/* A selected row (the menu's Remove Selected acts on these). */
+.track.selected,
+.track.selected:hover {
+  background: color-mix(in srgb, var(--highlight) 26%, transparent);
 }
 
 .track.current {
@@ -731,6 +759,40 @@ button:focus-visible {
   height: 1px;
   margin: 4px 2px;
   background: var(--border);
+}
+
+/* The application (`☰`) menu: opened from the toolbar, anchored top-left, and
+ * never taller than the fixed shell so it cannot scroll the page. */
+.context-menu.app-menu {
+  left: 6px;
+  top: calc(var(--toolbar-height) + 2px);
+  min-width: 220px;
+  max-height: calc(100vh - var(--toolbar-height) - var(--transport-height) - 12px);
+}
+
+.context-menu .menu-group {
+  padding: 6px 8px 2px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+/* A fixed, non-flow banner for a ready frontend update. */
+.update-banner {
+  position: fixed;
+  z-index: 25;
+  top: calc(var(--toolbar-height) + 8px);
+  right: 10px;
+  max-width: min(80vw, 360px);
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--highlight) 22%, var(--surface));
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 11px;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.35);
 }
 
 /* -------------------------------------------------------------- transport */
@@ -1048,11 +1110,21 @@ button:focus-visible {
 
   .columns .star-cell,
   .columns .status-cell,
+  .columns .rating-cell,
+  .columns .albumartist-cell,
   .columns .artist-cell,
+  .columns .composer-cell,
   .columns .album-cell,
   .columns .genre-cell,
   .columns .year-cell,
-  .columns .trackno-cell {
+  .columns .trackno-cell,
+  .columns .playcount-cell,
+  .columns .path-cell,
+  .columns .filename-cell,
+  .columns .codec-cell,
+  .columns .samplerate-cell,
+  .columns .bitspersample-cell,
+  .columns .bitrate-cell {
     display: none;
   }
 
@@ -1086,10 +1158,20 @@ button:focus-visible {
 
   .track .star-cell,
   .track .status-cell,
+  .track .rating-cell,
+  .track .albumartist-cell,
+  .track .composer-cell,
   .track .album-cell,
   .track .genre-cell,
   .track .year-cell,
-  .track .trackno-cell {
+  .track .trackno-cell,
+  .track .playcount-cell,
+  .track .path-cell,
+  .track .filename-cell,
+  .track .codec-cell,
+  .track .samplerate-cell,
+  .track .bitspersample-cell,
+  .track .bitrate-cell {
     display: none;
   }
 
