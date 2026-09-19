@@ -5255,16 +5255,28 @@ impl qobject::AppController {
         } else {
             "https"
         };
+        // Only advertise addresses the server is actually bound to. A loopback
+        // bind answers nowhere else, and handing out a LAN address for it was
+        // the bug: the address looked usable and could never connect.
         let mut addresses = Vec::new();
-        if let Ok(interfaces) = local_ip_addresses() {
-            for ip in interfaces {
-                addresses.push(format!("{scheme}://{ip}:{}", config.port));
+        if config.address.is_loopback() {
+            addresses.push(format!("{scheme}://127.0.0.1:{}", config.port));
+        } else if config.address.is_unspecified() {
+            if let Ok(interfaces) = local_ip_addresses() {
+                for ip in interfaces {
+                    addresses.push(format!("{scheme}://{ip}:{}", config.port));
+                }
             }
+        } else {
+            addresses.push(format!("{scheme}://{}:{}", config.address, config.port));
         }
+        addresses.sort();
+        addresses.dedup();
         json_result(Ok(serde_json::json!({
             "ok": true,
             "addresses": addresses,
             "port": config.port,
+            "shared": !config.address.is_loopback(),
         })))
     }
 
