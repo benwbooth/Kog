@@ -21,6 +21,7 @@ pub mod qobject {
         #[qproperty(QString, playlist_sort_column)]
         #[qproperty(bool, playlist_sort_ascending)]
         #[qproperty(QString, playlist_column_layout)]
+        #[qproperty(QString, session_expanded_json)]
         #[qproperty(i32, current_index)]
         #[qproperty(QString, playback_state)]
         #[qproperty(i32, mpris_raise_serial)]
@@ -173,6 +174,8 @@ pub mod qobject {
         fn enqueue_playlist(self: Pin<&mut AppController>, id: i32, start_playback: bool);
         #[qinvokable]
         fn load_playlist_into_pane(self: Pin<&mut AppController>, id: i32);
+        #[qinvokable]
+        fn flush_session(self: Pin<&mut AppController>, expanded: QString);
         #[qinvokable]
         fn prune_missing_playlist_entries(self: Pin<&mut AppController>, id: i32) -> QString;
         #[qinvokable]
@@ -1831,6 +1834,138 @@ fn playlist_entry_from_stored(entry: &kog_core::db::StoredEntry) -> Option<kog_a
     })
 }
 
+/// Name of the pane/tree snapshot kept beside the other Kog settings.
+const SESSION_FILE: &str = "session.json";
+
+/// One session.json entry, shaped like a stored database row. Anything
+/// malformed is dropped so a corrupt file can never panic the startup path.
+fn stored_entry_from_json(value: &serde_json::Value) -> Option<kog_core::db::StoredEntry> {
+    let kind = value.get("kind")?.as_str()?.to_owned();
+    let path = value.get("path")?.as_str()?.to_owned();
+    if path.is_empty() {
+        return None;
+    }
+    let entry = value
+        .get("entry")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .to_owned();
+    let fragment = value
+        .get("fragment")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    Some(kog_core::db::StoredEntry {
+        kind,
+        path,
+        entry,
+        fragment,
+    })
+}
+
+/// Expanded tree folders handed in by QML, bounded and tolerant of garbage.
+fn parse_session_expanded(value: &str) -> Vec<String> {
+    if value.len() > 4 * 1024 * 1024 {
+        return Vec::new();
+    }
+    serde_json::from_str::<Vec<String>>(value)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|path| !path.is_empty() && path.len() <= 8_192)
+        .take(20_000)
+        .collect()
+}
+
+/// Everything session.json remembers besides the pane snapshot, loaded once
+/// at startup. Any read/parse failure simply yields None: a missing or
+/// corrupt file starts an empty session instead of blocking the app.
+struct RestoredSession {
+    directory: Option<PathBuf>,
+    expanded: Vec<String>,
+    entries: Vec<PlaylistEntry>,
+    current_index: i32,
+}
+
+fn load_session() -> Option<RestoredSession> {
+    let path = kog_audio::settings::setting_path(SESSION_FILE)?;
+    let contents = std::fs::read_to_string(path).ok()?;
+    if contents.len() > 64 * 1024 * 1024 {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(&contents).ok()?;
+    let directory = value
+        .get("directory")
+        .and_then(|value| value.as_str())
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from);
+    let expanded = value
+        .get("expanded")
+        .and_then(|value| value.as_array())
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|value| value.as_str())
+                .filter(|path| !path.is_empty() && path.len() <= 8_192)
+                .take(20_000)
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let entries = value
+        .get("tracks")
+        .and_then(|value| value.as_array())
+        .map(|values| {
+            values
+                .iter()
+                .take(100_000)
+                .filter_map(stored_entry_from_json)
+                .filter_map(|entry| playlist_entry_from_stored(&entry))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let current_index = value
+        .get("currentIndex")
+        .and_then(|value| value.as_i64())
+        .and_then(|value| i32::try_from(value).ok())
+        .unwrap_or(-1);
+    Some(RestoredSession {
+        directory,
+        expanded,
+        entries,
+        current_index,
+    })
+}
+
+/// Stage remembered entries as a cache `.m3u` so the normal playlist
+/// expansion path (`add_path` -> `expand_playlist`) rebuilds them with the
+/// same archive, subsong, cue, and remote handling as any saved playlist.
+fn stage_session_playlist(entries: &[PlaylistEntry]) -> Result<PathBuf, String> {
+    let cache_file = playlist_cache_dir().join("session-restore.m3u");
+    if let Some(parent) = cache_file.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|_| "Could not stage the session playlist".to_owned())?;
+    }
+    Playlist::save(&cache_file, entries)?;
+    Ok(cache_file)
+}
+
+/// Write session.json atomically: a temp file beside it, then a rename, so a
+/// kill during the write can never leave a truncated file behind.
+fn write_session_atomic(contents: &str) -> Result<(), String> {
+    let path = kog_audio::settings::setting_path(SESSION_FILE)
+        .ok_or_else(|| "The platform configuration directory is unavailable".to_owned())?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| "The Kog configuration directory is unavailable".to_owned())?;
+    std::fs::create_dir_all(parent)
+        .map_err(|error| format!("creating {}: {error}", parent.display()))?;
+    let temp = parent.join(format!(".session-{}.tmp", std::process::id()));
+    std::fs::write(&temp, contents)
+        .map_err(|error| format!("writing {}: {error}", temp.display()))?;
+    std::fs::rename(&temp, &path)
+        .map_err(|error| format!("replacing {}: {error}", path.display()))
+}
+
 fn sort_visible_indices(
     tracks: &[Track],
     visible_indices: &mut [usize],
@@ -1867,6 +2002,8 @@ pub struct AppControllerRust {
     playlist_sort_column: QString,
     playlist_sort_ascending: bool,
     playlist_column_layout: QString,
+    session_expanded_json: QString,
+    session_last_written: String,
     current_index: i32,
     playback_state: QString,
     mpris_raise_serial: i32,
@@ -2052,6 +2189,7 @@ impl Default for AppControllerRust {
                 .map(|device| device.id.clone()),
         );
         playback.set_volume(app_settings.output_volume as f32);
+        let restored_session = load_session();
         let mut controller = Self {
             playlist_count: 0,
             playlist_revision: 0,
@@ -2059,6 +2197,8 @@ impl Default for AppControllerRust {
             playlist_sort_column: qstring(PlaylistSortColumn::Index.identifier()),
             playlist_sort_ascending: true,
             playlist_column_layout,
+            session_expanded_json: QString::default(),
+            session_last_written: String::new(),
             current_index: -1,
             playback_state: qstring(PlaybackState::Stopped.as_str()),
             mpris_raise_serial: 0,
@@ -2156,6 +2296,23 @@ impl Default for AppControllerRust {
             api_server: None,
         };
 
+        // Restore the remembered tree root and expanded folders before radio
+        // stages anything from `directory`. Malformed values fall back to the
+        // settings' music directory.
+        if let Some(session) = &restored_session {
+            if let Some(directory) = session.directory.as_ref()
+                && directory.is_dir()
+            {
+                controller.directory = directory.clone();
+                controller.directory_path = qstring(directory.to_string_lossy());
+            }
+            if !session.expanded.is_empty() {
+                controller.session_expanded_json = qstring(
+                    serde_json::to_string(&session.expanded).unwrap_or_else(|_| "[]".to_owned()),
+                );
+            }
+        }
+
         // Startup restore for radio users: resume the persisted round so
         // picks continue instead of replaying openers, and the first pick
         // only needs a short descent. Skipped when repeat is on (radio and
@@ -2228,6 +2385,12 @@ impl Default for AppControllerRust {
         {
             let (playback_order, tracks) = (&mut controller.playback_order, &controller.tracks);
             playback_order.tracks_changed(tracks, None);
+        }
+        // Restore the remembered playlist pane last, after any KOG_OPEN_FILES
+        // additions, without touching playback: the current row is selected,
+        // the engine stays stopped, and a later play press resumes there.
+        if let Some(session) = restored_session {
+            controller.restore_session_tracks(session);
         }
         // In-memory star cache for column display and star sorting; the
         // database stays the source of truth on every toggle.
@@ -2496,6 +2659,59 @@ impl AppControllerRust {
             result.added += 1;
         }
         result
+    }
+
+    /// JSON body persisted to session.json: the pane rows, the current row,
+    /// the tree root, and the expanded folders QML handed in.
+    fn session_snapshot(&self, expanded: &[String]) -> String {
+        let (entries, _) = collect_stored_entries(&self.tracks);
+        let tracks = entries
+            .iter()
+            .map(|entry| {
+                serde_json::json!({
+                    "kind": entry.kind,
+                    "path": entry.path,
+                    "entry": entry.entry,
+                    "fragment": entry.fragment,
+                })
+            })
+            .collect::<Vec<_>>();
+        serde_json::json!({
+            "tracks": tracks,
+            "currentIndex": self.current_index,
+            "directory": self.directory_path.to_string(),
+            "expanded": expanded,
+        })
+        .to_string()
+    }
+
+    /// Rebuild the pane from a remembered session without starting playback.
+    /// The current row is selected so a later play press resumes there.
+    fn restore_session_tracks(&mut self, session: RestoredSession) {
+        if !session.entries.is_empty()
+            && let Ok(cache_file) = stage_session_playlist(&session.entries)
+        {
+            let _ = self.add_path(cache_file);
+        }
+        self.rebuild_visible_indices();
+        self.playlist_count = saturating_i32(self.visible_indices.len());
+        self.playlist_revision = self.playlist_revision.wrapping_add(1);
+        self.total_duration = self.total_duration_value();
+        self.current_index = if self.tracks.is_empty() || session.current_index < 0 {
+            -1
+        } else {
+            saturating_i32(
+                usize::try_from(session.current_index)
+                    .unwrap_or_default()
+                    .min(self.tracks.len() - 1),
+            )
+        };
+        let current = usize::try_from(self.current_index).ok();
+        {
+            let (playback_order, tracks) = (&mut self.playback_order, &self.tracks);
+            playback_order.tracks_changed(tracks, current);
+        }
+        self.queue_count = saturating_i32(self.playback_order.queue_count());
     }
 
     fn add_directory(&mut self, directory: &Path) -> Result<AddPathResult, String> {
@@ -4659,6 +4875,21 @@ impl qobject::AppController {
         }
         self.as_mut()
             .add_local_paths(vec![cache_file], OpeningFilesBehavior::ClearAndPlay);
+    }
+
+    /// Snapshot the pane, current row, tree root, and the expanded folders
+    /// QML collected, then write session.json only when the snapshot changed.
+    /// Runs periodically and on quit, so a signal kill loses at most one
+    /// interval and never a half-written file.
+    pub fn flush_session(mut self: Pin<&mut Self>, expanded: QString) {
+        let expanded = parse_session_expanded(&expanded.to_string());
+        let snapshot = self.as_ref().rust().session_snapshot(&expanded);
+        if self.as_ref().rust().session_last_written == snapshot {
+            return;
+        }
+        if write_session_atomic(&snapshot).is_ok() {
+            self.as_mut().rust_mut().session_last_written = snapshot;
+        }
     }
 
     /// Save the current pane as a new playlist at the bottom of the list.

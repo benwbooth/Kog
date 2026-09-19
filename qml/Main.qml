@@ -57,6 +57,8 @@ ApplicationWindow {
     property bool applicationQuitRequested: false
     property var treeSelectedPaths: []
     property int treeSelectionAnchorRow: -1
+    property var pendingTreeExpanded: []
+    property int treeExpandRestoreAttempts: 0
     property string treeContextPath: ""
     readonly property string selectedQueueState: {
         appController.playlist_revision
@@ -111,6 +113,10 @@ ApplicationWindow {
             return
         }
         applicationQuitRequested = true
+        try {
+            appController.flush_session(root.collectTreeExpanded())
+        } catch (error) {
+        }
         appController.shutdown_synth_helpers()
         Qt.callLater(Qt.quit)
     }
@@ -309,6 +315,7 @@ ApplicationWindow {
         appController.choose_music_folder()
         fileTreeModel.set_root_path_text(appController.directory_path)
         clearTreeSelection()
+        clearTreeExpandRestore()
     }
 
     function useTreeRoot(path) {
@@ -317,6 +324,7 @@ ApplicationWindow {
         appController.choose_directory(fileTreeModel.path_url(path))
         fileTreeModel.set_root_path_text(appController.directory_path)
         clearTreeSelection()
+        clearTreeExpandRestore()
     }
 
     function showFromTray() {
@@ -387,6 +395,86 @@ ApplicationWindow {
         if (row < 0 || row >= directoryTree.rows)
             return ""
         return fileTreeModel.path_for_index(directoryTree.index(row, 0))
+    }
+
+    // JSON array of the visible tree rows that are currently expanded.
+    // Collection must never break the UI: any failure reports an empty list.
+    function collectTreeExpanded() {
+        try {
+            const expanded = []
+            for (let row = 0; row < directoryTree.rows; ++row) {
+                if (!directoryTree.isExpanded(row))
+                    continue
+                const path = treePathAtRow(row)
+                if (path.length > 0 && expanded.indexOf(path) === -1)
+                    expanded.push(path)
+            }
+            return JSON.stringify(expanded)
+        } catch (error) {
+            return "[]"
+        }
+    }
+
+    // Re-expand the folders remembered by a previous run. The tree loads
+    // children lazily, so this retries on a timer: each pass expands whatever
+    // is visible and keeps the rest for the next one.
+    function requestTreeExpandRestore() {
+        try {
+            const list = JSON.parse(appController.session_expanded_json)
+            if (!Array.isArray(list)) {
+                root.pendingTreeExpanded = []
+                return
+            }
+            const paths = list.filter(path => typeof path === "string" && path.length > 0)
+            paths.sort((left, right) => {
+                const leftDepth = left.split("/").length
+                const rightDepth = right.split("/").length
+                return leftDepth - rightDepth || left.length - right.length
+            })
+            root.pendingTreeExpanded = paths
+            root.treeExpandRestoreAttempts = 0
+            if (paths.length > 0)
+                treeExpandRestoreTimer.restart()
+        } catch (error) {
+            root.pendingTreeExpanded = []
+        }
+    }
+
+    function clearTreeExpandRestore() {
+        root.pendingTreeExpanded = []
+        root.treeExpandRestoreAttempts = 0
+        treeExpandRestoreTimer.stop()
+    }
+
+    function expandPendingTreeFolders() {
+        if (root.pendingTreeExpanded.length === 0) {
+            treeExpandRestoreTimer.stop()
+            return
+        }
+        const remaining = []
+        for (const path of root.pendingTreeExpanded) {
+            let row = -1
+            try {
+                for (let candidate = 0; candidate < directoryTree.rows; ++candidate) {
+                    if (treePathAtRow(candidate) === path) {
+                        row = candidate
+                        break
+                    }
+                }
+            } catch (error) {
+                row = -1
+            }
+            if (row === -1) {
+                remaining.push(path)
+                continue
+            }
+            if (!directoryTree.isExpanded(row))
+                directoryTree.toggleExpanded(row)
+        }
+        root.pendingTreeExpanded = remaining
+        root.treeExpandRestoreAttempts += 1
+        if (remaining.length === 0 || root.treeExpandRestoreAttempts >= 40)
+            treeExpandRestoreTimer.stop()
     }
 
     function setTreeSelection(paths, currentRow, anchorRow) {
@@ -795,6 +883,7 @@ ApplicationWindow {
 
     Component.onCompleted: {
         fileTreeModel.set_root_path_text(appController.directory_path)
+        root.requestTreeExpandRestore()
         // Warm the selected synth backend in the background so the first
         // MIDI track starts immediately instead of booting an emulator.
         appController.prewarm_synths()
@@ -894,6 +983,29 @@ ApplicationWindow {
         repeat: false
         onTriggered: if (appController.directory_scan_active)
             directoryScanDialog.open()
+    }
+
+    Timer {
+        id: sessionFlushTimer
+
+        interval: 1500
+        running: true
+        repeat: true
+        onTriggered: {
+            try {
+                appController.flush_session(root.collectTreeExpanded())
+            } catch (error) {
+            }
+        }
+    }
+
+    Timer {
+        id: treeExpandRestoreTimer
+
+        interval: 250
+        running: false
+        repeat: true
+        onTriggered: root.expandPendingTreeFolders()
     }
 
     InfoInspector { id: infoInspector; app: appController }
@@ -2555,6 +2667,7 @@ ApplicationWindow {
                         fileTreeModel.set_root_path_text(
                             appController.directory_path)
                         root.clearTreeSelection()
+                        root.clearTreeExpandRestore()
                     }
                 }
 
