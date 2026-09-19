@@ -76,6 +76,31 @@ pub fn router(state: AppState) -> Router {
         // server's own address and get the player.
         .fallback(web_asset)
         .with_state(state)
+        .layer(middleware::from_fn(log_request))
+}
+
+/// Log each request with the client's user agent. The frontend runs in the
+/// browser, where a blank page leaves no trace on the server; without this a
+/// client that never fetches the wasm is impossible to tell from one that
+/// fetches it and fails to start.
+async fn log_request(request: Request, next: Next) -> Response {
+    let method = request.method().clone();
+    let path = request.uri().path().to_owned();
+    let agent = request
+        .headers()
+        .get(header::USER_AGENT)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("-")
+        .to_owned();
+    let response = next.run(request).await;
+    // Streaming is chatty and long-lived; a page load is what matters here.
+    if !path.starts_with("/api/stream") {
+        eprintln!(
+            "kog-server: {method} {path} -> {} | {agent}",
+            response.status().as_u16()
+        );
+    }
+    response
 }
 
 async fn health() -> impl IntoResponse {
