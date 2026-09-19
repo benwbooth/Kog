@@ -10,6 +10,8 @@ use std::time::Duration;
 use std::time::SystemTime;
 
 use midly::{Format, Fps, Header, MetaMessage, MidiMessage, Smf, Timing, TrackEventKind};
+use lofty::file::TaggedFileExt;
+use lofty::tag::ItemKey;
 use rodio::source::SeekError;
 use rodio::{ChannelCount, Decoder, Player, SampleRate, Source};
 use rustysynth::{MidiFile, MidiFileSequencer, SoundFont, Synthesizer, SynthesizerSettings};
@@ -55,6 +57,10 @@ pub struct StreamProperties {
     pub title: Option<String>,
     pub artist: Option<String>,
     pub album: Option<String>,
+    /// Album artist and composer, read from the file's tags. Only the probe
+    /// path's tag enrichment fills these; the decoder backends never do.
+    pub album_artist: Option<String>,
+    pub composer: Option<String>,
     pub genre: Option<String>,
     pub lyrics: Option<String>,
     pub year: Option<u32>,
@@ -63,6 +69,22 @@ pub struct StreamProperties {
     pub bitrate: Option<u32>,
     pub bits_per_sample: Option<u8>,
     pub warning: Option<String>,
+}
+
+impl StreamProperties {
+    /// Fill the album artist and composer from the file's tags, reading the
+    /// same lofty keys `Track::new` reads so the desktop and the probe path
+    /// agree. Best-effort: an unreadable or untagged file leaves both unset.
+    pub fn fill_local_tags(&mut self, path: &Path) {
+        let Ok(tagged) = lofty::read_from_path(path) else {
+            return;
+        };
+        let Some(tag) = tagged.primary_tag().or_else(|| tagged.first_tag()) else {
+            return;
+        };
+        self.album_artist = tag.get_string(ItemKey::AlbumArtist).map(str::to_owned);
+        self.composer = tag.get_string(ItemKey::Composer).map(str::to_owned);
+    }
 }
 
 #[derive(Clone, Debug, Default)]

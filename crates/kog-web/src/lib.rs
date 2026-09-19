@@ -76,6 +76,8 @@ struct MetaRow {
     title: Option<String>,
     artist: Option<String>,
     album: Option<String>,
+    album_artist: Option<String>,
+    composer: Option<String>,
     genre: Option<String>,
     year: Option<u32>,
     track_number: Option<u32>,
@@ -115,10 +117,9 @@ enum SortKey {
 /// Every column the pane can show, in the fixed order they render.
 ///
 /// The order mirrors `qml/PlaylistHeader.qml`'s `defaultColumns`, so a Move
-/// Column and a Reset Columns land where the desktop would put them. Rating,
-/// Album Artist, Composer and Play Count have no value in the API: they render
-/// empty exactly as `AppController::track_value_at` does for Rating/Play Count
-/// (and the web has no tag source for Album Artist/Composer).
+/// Column and a Reset Columns land where the desktop would put them. Rating
+/// and Play Count have no value in the API: they render empty exactly as
+/// `AppController::track_value_at` does on the desktop.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum ColumnId {
     Index,
@@ -529,11 +530,15 @@ fn column_text(
         // glyphs.
         ColumnId::Star => if starred { "★" } else { "☆" }.to_owned(),
         ColumnId::Status => status.to_owned(),
-        // No rating/play-count/album-artist/composer value crosses the API, so
-        // these stay blank; the desktop renders rating and play count blank too.
-        ColumnId::Rating | ColumnId::PlayCount | ColumnId::AlbumArtist | ColumnId::Composer => {
-            String::new()
-        }
+        // No rating/play-count value crosses the API, so those stay blank; the
+        // desktop renders rating and play count blank too.
+        ColumnId::Rating | ColumnId::PlayCount => String::new(),
+        ColumnId::AlbumArtist => meta
+            .and_then(|meta| meta.album_artist.clone())
+            .unwrap_or_default(),
+        ColumnId::Composer => meta
+            .and_then(|meta| meta.composer.clone())
+            .unwrap_or_default(),
         ColumnId::Title => meta
             .and_then(|meta| meta.title.clone())
             .unwrap_or_else(|| entry.name.clone()),
@@ -2097,8 +2102,10 @@ fn App() -> impl IntoView {
                     SortKey::Title => meta
                         .and_then(|meta| meta.title)
                         .unwrap_or_else(|| entry.name.clone()),
-                    // No API value for these either; the cell is empty.
-                    SortKey::AlbumArtist | SortKey::Composer => String::new(),
+                    SortKey::AlbumArtist => meta
+                        .and_then(|meta| meta.album_artist)
+                        .unwrap_or_default(),
+                    SortKey::Composer => meta.and_then(|meta| meta.composer).unwrap_or_default(),
                     SortKey::Artist => meta.and_then(|meta| meta.artist).unwrap_or_default(),
                     SortKey::Album => meta.and_then(|meta| meta.album).unwrap_or_default(),
                     SortKey::Genre => meta.and_then(|meta| meta.genre).unwrap_or_default(),

@@ -117,7 +117,13 @@ impl StreamService {
         let decoders = DecoderRegistry::new(self.decoder_settings.clone());
         let scratch = self.scratch.join("metadata");
         let source = resolve_entry(&entry, &decoders, &scratch)?;
-        decoders.probe(&source)
+        let mut properties = decoders.probe(&source)?;
+        // The album artist and composer never come from a decoder backend;
+        // read them the way the desktop's tag path does.
+        if !source.is_remote() {
+            properties.fill_local_tags(&source.path);
+        }
+        Ok(properties)
     }
 
     /// The encoder runs as a subprocess; a missing one is a configuration

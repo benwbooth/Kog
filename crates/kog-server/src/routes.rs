@@ -657,6 +657,49 @@ mod tests {
         std::fs::write(path, wav).unwrap();
     }
 
+    /// A WAV "id3 " chunk carrying an ID3v2.3 tag with TPE2 (album artist)
+    /// and TCOM (composer) text frames, for fixtures that exercise the tag
+    /// path. Sizes are big-endian; the header size is synchsafe as v2.3
+    /// requires.
+    fn id3_chunk(album_artist: &str, composer: &str) -> Vec<u8> {
+        let frame = |id: &[u8; 4], text: &str| {
+            let mut frame = Vec::new();
+            frame.extend_from_slice(id);
+            // Payload: encoding byte + text + terminating null.
+            frame.extend_from_slice(&(text.len() as u32 + 2).to_be_bytes());
+            frame.extend_from_slice(&[0, 0]);
+            frame.push(0); // ISO-8859-1
+            frame.extend_from_slice(text.as_bytes());
+            frame.push(0);
+            frame
+        };
+        let mut body = Vec::new();
+        body.extend(frame(b"TPE2", album_artist));
+        body.extend(frame(b"TCOM", composer));
+        let synchsafe = |total: u32, out: &mut Vec<u8>| {
+            out.extend_from_slice(&[
+                (total >> 21) as u8 & 0x7f,
+                (total >> 14) as u8 & 0x7f,
+                (total >> 7) as u8 & 0x7f,
+                total as u8 & 0x7f,
+            ]);
+        };
+        let mut id3 = Vec::new();
+        id3.extend_from_slice(b"ID3");
+        id3.extend_from_slice(&[3, 0, 0]);
+        synchsafe(body.len() as u32, &mut id3);
+        id3.extend_from_slice(&body);
+
+        let mut chunk = Vec::new();
+        chunk.extend_from_slice(b"id3 ");
+        chunk.extend_from_slice(&(id3.len() as u32).to_le_bytes());
+        chunk.extend_from_slice(&id3);
+        if id3.len() % 2 == 1 {
+            chunk.push(0);
+        }
+        chunk
+    }
+
     /// A library rooted in a throwaway directory populated with `files`
     /// (relative paths), so browsing tests never touch the real music folder.
     fn library_with(files: &[&str]) -> (crate::api::Library, std::path::PathBuf) {
@@ -1077,6 +1120,8 @@ mod tests {
         assert_eq!(rows[0]["channels"], 1);
         assert!(rows[0]["duration"].as_f64().is_some(), "a WAV has a known duration");
         assert_eq!(rows[0]["title"], serde_json::Value::Null);
+        assert_eq!(rows[0]["albumArtist"], serde_json::Value::Null);
+        assert_eq!(rows[0]["composer"], serde_json::Value::Null);
         assert_eq!(rows[1], serde_json::Value::Null, "unprobeable entries are null");
 
         // The single-entry GET shares the shape, and distinguishes 400 from 404.
@@ -1106,6 +1151,51 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn metadata_surfaces_album_artist_and_composer_from_tags() {
+        let (library, root) = library_with(&["Album/one.wav", "Album/plain.wav"]);
+        let state = state_with(AuthMode::None, "", library);
+
+        // Tag one file with album artist and composer. lofty 0.25 cannot write
+        // Id3v2 onto a WAV, so the fixture carries a hand-built ID3v2.3 "id3 "
+        // chunk with the TPE2/TCOM frames the desktop's tag path reads.
+        let tagged_path = root.join("Album/one.wav");
+        let mut tagged = std::fs::read(&tagged_path).unwrap();
+        if tagged.len() % 2 == 1 {
+            tagged.push(0);
+        }
+        tagged.extend_from_slice(id3_chunk("Session Orchestra", "Ada Lane").as_slice());
+        std::fs::write(&tagged_path, tagged).unwrap();
+
+        let tagged_file = root.join("Album/one.wav").to_string_lossy().into_owned();
+        let (_, tagged_row) = request_json(
+            state.clone(),
+            "POST",
+            "/api/metadata",
+            Some(serde_json::json!([
+                { "kind": "local", "path": tagged_file, "entry": "", "fragment": null },
+            ])),
+        )
+        .await;
+        let rows = tagged_row.as_array().unwrap();
+        assert_eq!(rows[0]["albumArtist"], "Session Orchestra");
+        assert_eq!(rows[0]["composer"], "Ada Lane");
+
+        let plain_file = root.join("Album/plain.wav").to_string_lossy().into_owned();
+        let (_, plain_row) = request_json(
+            state.clone(),
+            "POST",
+            "/api/metadata",
+            Some(serde_json::json!([
+                { "kind": "local", "path": plain_file, "entry": "", "fragment": null },
+            ])),
+        )
+        .await;
+        let rows = plain_row.as_array().unwrap();
+        assert_eq!(rows[0]["albumArtist"], serde_json::Value::Null);
+        assert_eq!(rows[0]["composer"], serde_json::Value::Null);
     }
 
     #[tokio::test]
