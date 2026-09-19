@@ -964,6 +964,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn browsing_expands_subsong_playlists_without_duplicating_the_rom() {
+        let (library, root) = library_with(&["Album/game.gbs"]);
+        let album = root.join("Album");
+        // Eight one-line track playlists, each naming one subsong of the ROM.
+        for subsong in 0..8 {
+            std::fs::write(
+                album.join(format!("{:02} BGM #{:02}.m3u", subsong + 1, subsong + 1)),
+                format!("game.gbs::GBS,{subsong},BGM #{:02},1:53,,10\n", subsong + 1),
+            )
+            .unwrap();
+        }
+        // The same-stem companion is emulator metadata, never a row of its own.
+        std::fs::write(
+            album.join("game.m3u"),
+            "# @TITLE x\ngame.gbs::GBS,0,BGM #01,1:53,,10\n",
+        )
+        .unwrap();
+        let state = state_with(AuthMode::None, "", library);
+
+        let (status, body) = get_json(
+            state,
+            &format!("/api/library?path={}", album.display()),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let files = body["files"].as_array().unwrap();
+        assert_eq!(files.len(), 8, "one row per subsong playlist: {files:?}");
+        let mut fragments: Vec<&str> = files
+            .iter()
+            .map(|file| file["fragment"].as_str().unwrap())
+            .collect();
+        fragments.sort_unstable();
+        assert_eq!(fragments, ["0", "1", "2", "3", "4", "5", "6", "7"]);
+        assert!(
+            files
+                .iter()
+                .all(|file| file["path"].as_str().unwrap().ends_with("game.gbs")),
+            "every row streams the ROM with a subsong"
+        );
+        assert!(
+            files
+                .iter()
+                .all(|file| file["name"].as_str().unwrap().starts_with("BGM #")),
+            "the playlist title names the row"
+        );
+        assert!(
+            files
+                .iter()
+                .all(|file| !file["path"].as_str().unwrap().ends_with(".m3u")),
+            "the companion and bare playlists are absent"
+        );
+    }
+
+    #[tokio::test]
     async fn searching_finds_files_by_name() {
         let (library, _root) = library_with(&["Album/one.wav", "Other/two.wav"]);
         let state = state_with(AuthMode::None, "", library);

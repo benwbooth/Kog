@@ -50,6 +50,8 @@ impl Entry {
 }
 
 /// One rendered tree line: a flattened view of the expanded directories.
+/// The locator fields are carried through so two playlist-expanded rows that
+/// share a path (one per subsong) stay distinct and queue their own track.
 #[derive(Clone, Debug, PartialEq)]
 struct TreeRow {
     name: String,
@@ -58,6 +60,9 @@ struct TreeRow {
     is_dir: bool,
     depth: usize,
     expanded: bool,
+    kind: String,
+    entry: String,
+    fragment: Option<String>,
 }
 
 /// One row of `POST /api/metadata`, shaped like the playlist columns.
@@ -1001,6 +1006,9 @@ fn flatten(
             is_dir: item.is_dir(),
             depth,
             expanded: is_expanded,
+            kind: item.kind.clone(),
+            entry: item.entry.clone(),
+            fragment: item.fragment.clone(),
         });
         if item.is_dir() && is_expanded {
             flatten(children, expanded, &item.path, depth + 1, out);
@@ -2390,10 +2398,14 @@ fn App() -> impl IntoView {
         let append_entries = append_entries;
         move |row: TreeRow| {
             if !row.is_dir {
-                if let Some(entry) = queue_files(&row.parent)
-                    .into_iter()
-                    .find(|item| item.path == row.path)
-                {
+                // Match the whole locator, not just the path: a subsong
+                // playlist lists several rows for one file.
+                if let Some(entry) = queue_files(&row.parent).into_iter().find(|item| {
+                    item.kind == row.kind
+                        && item.path == row.path
+                        && item.entry == row.entry
+                        && item.fragment == row.fragment
+                }) {
                     append_entries(vec![entry]);
                 }
                 return;
@@ -2732,6 +2744,9 @@ fn App() -> impl IntoView {
                                                         is_dir: true,
                                                         depth: 0,
                                                         expanded: false,
+                                                        kind: "dir".to_owned(),
+                                                        entry: String::new(),
+                                                        fragment: None,
                                                     };
                                                     set_tree_menu.set(Some((
                                                         ev.client_x() as f64,
@@ -2747,7 +2762,14 @@ fn App() -> impl IntoView {
                                         </Show>
                                         <For
                                             each=tree_rows
-                                            key=|row| format!("{}#{}", row.path, row.depth)
+                                            key=|row| format!(
+                                                "{}#{}#{}#{}#{}",
+                                                row.kind,
+                                                row.path,
+                                                row.entry,
+                                                row.fragment.clone().unwrap_or_default(),
+                                                row.depth,
+                                            )
                                             let:row
                                         >
                                             {

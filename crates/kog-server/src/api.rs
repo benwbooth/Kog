@@ -565,7 +565,7 @@ fn playlist_browse_files(
     decoders: &kog_audio::decoder::DecoderRegistry,
     root: Option<&std::path::Path>,
 ) -> Vec<BrowseFile> {
-    match Playlist::open(playlist_path) {
+    let expanded: Vec<BrowseFile> = match Playlist::open(playlist_path) {
         Ok(playlist) => playlist
             .entries()
             .iter()
@@ -584,7 +584,112 @@ fn playlist_browse_files(
                     .collect()
             })
             .unwrap_or_default(),
+    };
+    if !expanded.is_empty() {
+        return expanded;
     }
+    // GME's own `.m3u` syntax (`file.gbs::GBS,0,title`) is not a path, so the
+    // M3U parser cannot resolve it. A one-line playlist in this shape is a
+    // track reference into a sibling music-emulator container; expand it into
+    // one row per entry, each carrying its subsong as the fragment.
+    gme_playlist_browse_files(playlist_path, decoders, root)
+}
+
+/// One GME `.m3u` track line: `file.gbs::GBS,0,Title,length,...`. Only
+/// accepted when `file` resolves to an existing music-emulator container, so a
+/// non-GME line such as `song.wav::WAV,1,title` stays unresolvable and
+/// contributes nothing rather than a track that would 400 on stream.
+fn gme_track_browse_file(
+    line: &str,
+    playlist_dir: &std::path::Path,
+    decoders: &kog_audio::decoder::DecoderRegistry,
+    root: Option<&std::path::Path>,
+) -> Option<BrowseFile> {
+    let line = line.trim();
+    if line.is_empty() || line.starts_with('#') {
+        return None;
+    }
+    let (file, fields) = line.split_once("::")?;
+    let (_, fields) = fields.split_once(',')?; // the GME system name
+    let (subsong, title) = fields.split_once(',')?;
+    let subsong = subsong.trim();
+    subsong.parse::<u32>().ok()?;
+    let file = file.trim().replace('\\', "/");
+    if file.is_empty() {
+        return None;
+    }
+    let path = std::path::Path::new(&file);
+    let target = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        playlist_dir.join(path)
+    };
+    if !target.is_file() {
+        return None;
+    }
+    let source = PlaybackSource::from_path(target.clone());
+    if decoders.selected_backend_id(&source) != Some("game-music-emu") {
+        return None;
+    }
+    let title = gme_title_field(title);
+    Some(BrowseFile {
+        name: if title.is_empty() {
+            browse_file_name(&target)
+        } else {
+            title
+        },
+        path: target.to_string_lossy().into_owned(),
+        relative: browse_file_relative(root, &target),
+        kind: "local".to_owned(),
+        entry: String::new(),
+        fragment: Some(subsong.to_owned()),
+    })
+}
+
+/// The title field of a GME track line, honouring backslash escapes and
+/// stopping at the comma that begins the length/time field, exactly as GME's
+/// own parser does.
+fn gme_title_field(field: &str) -> String {
+    let mut title = String::new();
+    let mut chars = field.chars();
+    while let Some(character) = chars.next() {
+        match character {
+            '\\' => {
+                if let Some(escaped) = chars.next() {
+                    title.push(escaped);
+                }
+            }
+            ',' => {
+                let rest = chars.as_str().trim_start();
+                if rest.starts_with(',')
+                    || rest.starts_with('-')
+                    || rest.chars().next().is_some_and(|c| c.is_ascii_digit())
+                {
+                    break;
+                }
+                title.push(',');
+            }
+            _ => title.push(character),
+        }
+    }
+    title.trim().to_owned()
+}
+
+fn gme_playlist_browse_files(
+    playlist_path: &std::path::Path,
+    decoders: &kog_audio::decoder::DecoderRegistry,
+    root: Option<&std::path::Path>,
+) -> Vec<BrowseFile> {
+    let Ok(bytes) = std::fs::read(playlist_path) else {
+        return Vec::new();
+    };
+    let text = kog_core::text_encoding::decode(&bytes).replace('\r', "\n");
+    let directory = playlist_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    text.lines()
+        .filter_map(|line| gme_track_browse_file(line, directory, decoders, root))
+        .collect()
 }
 
 /// An `.m3u` whose stem matches a sibling playable file is GME's companion
@@ -673,6 +778,23 @@ fn browse_blocking(library: &Arc<Library>, requested: Option<&str>) -> Result<se
             file.entry,
             file.fragment.clone().unwrap_or_default()
         ))
+    });
+    // A subsong playlist points at a sibling container, so the bare container
+    // repeats the same file as a whole song. Keep the specific track rows and
+    // drop the bare one, the way a repeated playlist entry is dropped above.
+    let subsong_targets: HashSet<(String, String, String)> = files
+        .iter()
+        .filter(|file| {
+            file.fragment
+                .as_deref()
+                .is_some_and(|fragment| !fragment.is_empty())
+        })
+        .map(|file| (file.kind.clone(), file.path.clone(), file.entry.clone()))
+        .collect();
+    files.retain(|file| {
+        let bare = file.fragment.as_deref().map_or(true, str::is_empty);
+        !bare
+            || !subsong_targets.contains(&(file.kind.clone(), file.path.clone(), file.entry.clone()))
     });
     files.sort_by(|left, right| {
         left.path
