@@ -395,6 +395,16 @@ fn load(key: &str) -> Option<String> {
     storage()?.get_item(key).ok()?
 }
 
+/// A usable media duration. ADTS and FLAC report `Infinity` (or `NaN`) until
+/// the browser has buffered enough, so those must never reach the transport.
+fn finite_duration(value: f64) -> Option<f64> {
+    if value.is_finite() && value > 0.0 {
+        Some(value)
+    } else {
+        None
+    }
+}
+
 /// `m:ss`, or `h:mm:ss` past an hour, matching the desktop's `timeLabel`.
 fn clock(seconds: f64) -> String {
     if !seconds.is_finite() || seconds < 0.0 {
@@ -673,7 +683,10 @@ fn App() -> impl IntoView {
     let (volume, set_volume) = signal(0.9_f64);
     let (volume_before_mute, set_volume_before_mute) = signal(0.9_f64);
     let (position, set_position) = signal(0.0_f64);
-    let (duration, set_duration) = signal(0.0_f64);
+    // The media element's own duration, reset per track. ADTS and FLAC report
+    // Infinity here, so the effective duration falls back to the tag duration
+    // until the browser can measure it.
+    let (media_duration, set_media_duration) = signal(Option::<f64>::None);
     let (shuffle, set_shuffle) = signal(false);
     let (repeat_mode, set_repeat_mode) = signal(Repeat::Off);
     // Tag cache keyed by locator. An `Rc` so reading it clones a pointer, not
@@ -852,7 +865,7 @@ fn App() -> impl IntoView {
                         set_queue.set(entries);
                         set_current.set(0);
                         set_position.set(0.0);
-                        set_duration.set(0.0);
+                        set_media_duration.set(None);
                         set_playing.set(false);
                     }
                     Err(error) => set_message.set(error),
@@ -949,6 +962,31 @@ fn App() -> impl IntoView {
     let current_entry = move || queue.get().get(current.get()).cloned();
     let audio_src = move || current_entry().map(|entry| stream_url(&entry)).unwrap_or_default();
 
+    // The transport's duration: the element's value when it is finite, else the
+    // current track's tag duration from the metadata cache. Reactive, so the
+    // bar and the total label are right before the media has been measured.
+    let duration = {
+        let current_entry = current_entry.clone();
+        Memo::new(move |_| {
+            if let Some(value) = media_duration.get() {
+                return value;
+            }
+            current_entry()
+                .as_ref()
+                .and_then(|entry| meta_for(&metadata.get(), entry))
+                .and_then(|meta| meta.duration)
+                .and_then(finite_duration)
+                .unwrap_or(0.0)
+        })
+    };
+
+    // Accept the element's duration only once it is a real number.
+    let refresh_media_duration = move |_event: web_sys::Event| {
+        if let Some(audio) = audio_ref.get() {
+            set_media_duration.set(finite_duration(audio.duration()));
+        }
+    };
+
     // Keep the element in step with the transport button, and roll on when a
     // track ends.
     Effect::new(move |_| {
@@ -1032,7 +1070,7 @@ fn App() -> impl IntoView {
     let jump = move |index: usize| {
         set_current.set(index);
         set_position.set(0.0);
-        set_duration.set(0.0);
+        set_media_duration.set(None);
         set_playing.set(true);
     };
 
@@ -1846,7 +1884,7 @@ fn App() -> impl IntoView {
                                             on:click=move |_| {
                                                 set_current.set(index);
                                                 set_position.set(0.0);
-                                                set_duration.set(0.0);
+                                                set_media_duration.set(None);
                                                 set_playing.set(true);
                                             }
                                         >
@@ -1969,7 +2007,10 @@ fn App() -> impl IntoView {
                             class="seek"
                             type="range"
                             min="0"
-                            max=move || (if duration.get() > 0.0 { duration.get() } else { 1.0 })
+                            max=move || {
+                                let value = duration.get();
+                                if value.is_finite() && value > 0.0 { value } else { 1.0 }
+                            }
                             step="0.5"
                             prop:value=move || position.get()
                             on:input=move |event| {
@@ -2022,11 +2063,9 @@ fn App() -> impl IntoView {
                             set_position.set(audio.current_time());
                         }
                     }
-                    on:loadedmetadata=move |_| {
-                        if let Some(audio) = audio_ref.get() {
-                            set_duration.set(audio.duration());
-                        }
-                    }
+                    on:loadedmetadata=refresh_media_duration
+                    on:durationchange=refresh_media_duration
+                    on:canplay=refresh_media_duration
                     on:ended=move |_| {
                         if repeat_mode.get() == Repeat::One {
                             if let Some(audio) = audio_ref.get() {
