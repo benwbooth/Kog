@@ -1984,6 +1984,26 @@ ApplicationWindow {
         color: root.toolbarSurface
         border.width: 0
 
+        // Which build is running, tucked into the lower-right corner beneath
+        // the transport controls.
+        Label {
+            objectName: "buildStampFooter"
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            anchors.rightMargin: 10
+            anchors.bottomMargin: 4
+            visible: !root.compactToolbar && root.buildStamp.length > 0
+            text: qsTr("v%1 · %2").arg(Qt.application.version).arg(root.buildStamp)
+            font.pixelSize: 10
+            color: Qt.darker(root.palette.placeholderText, 1.2)
+            Accessible.name: text
+            ToolTip.visible: buildStampCornerHover.hovered
+            ToolTip.text: qsTr("Version %1, build %2")
+                .arg(Qt.application.version).arg(root.buildStamp)
+
+            HoverHandler { id: buildStampCornerHover }
+        }
+
         Rectangle {
             anchors.left: parent.left
             anchors.right: parent.right
@@ -2082,24 +2102,6 @@ ApplicationWindow {
                         font.pixelSize: 11
                         color: root.palette.placeholderText
                         elide: Text.ElideRight
-                    }
-                    Label {
-                        objectName: "buildStampFooter"
-                        Layout.fillWidth: true
-                        // Sit clear of the title/subtitle above rather than
-                        // crowding them.
-                        Layout.topMargin: 8
-                        visible: !root.compactToolbar && root.buildStamp.length > 0
-                        text: qsTr("v%1 · %2").arg(Qt.application.version).arg(root.buildStamp)
-                        font.pixelSize: 10
-                        color: Qt.darker(root.palette.placeholderText, 1.2)
-                        elide: Text.ElideRight
-                        Accessible.name: text
-                        ToolTip.visible: buildStampFooterHover.hovered
-                        ToolTip.text: qsTr("Version %1, build %2")
-                            .arg(Qt.application.version).arg(root.buildStamp)
-
-                        HoverHandler { id: buildStampFooterHover }
                     }
                 }
             }
