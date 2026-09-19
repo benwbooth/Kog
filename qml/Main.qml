@@ -2373,7 +2373,27 @@ ApplicationWindow {
                                 toolTip: qsTr("Refresh file tree")
                                 onClicked: fileTreeModel.refresh_tree()
                             }
-                            Label { Layout.fillWidth: true; text: appController.directory_path; font.bold: true; elide: Text.ElideMiddle }
+                            // The root path is elided when the pane is narrow;
+                            // the tooltip carries all of it.
+                            Label {
+                                id: treeRootLabel
+                                Layout.fillWidth: true
+                                text: appController.directory_path
+                                font.bold: true
+                                elide: Text.ElideMiddle
+                                Accessible.name: qsTr("Music folder: %1").arg(text)
+
+                                MouseArea {
+                                    id: treeRootHover
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    acceptedButtons: Qt.NoButton
+                                }
+                                ToolTip.visible: treeRootHover.containsMouse
+                                    && text.length > 0
+                                ToolTip.delay: 600
+                                ToolTip.text: appController.directory_path
+                            }
                         }
                     }
 
@@ -2475,10 +2495,10 @@ ApplicationWindow {
                     opacity: 0.75
                 }
 
-                // The full path of a row cannot be read when it is elided, and
-                // tooltips do not pop in this view, so put the path here: the
-                // tree's own root when nothing is hovered, and the hovered row's
-                // path while the pointer is over it.
+                // The full path of a row cannot be read when it is elided, and a
+                // ToolTip attached to the row is positioned in the row's own
+                // scrolled content coordinates, which lands it outside the pane.
+                // Show it in a popup parented to the view instead.
                 Popup {
                     id: treePathTip
                     parent: directoryTree
@@ -2513,19 +2533,6 @@ ApplicationWindow {
                         elide: Text.ElideMiddle
                         verticalAlignment: Text.AlignVCenter
                     }
-                }
-
-                Label {
-                    objectName: "treePathLabel"
-                    Layout.fillWidth: true
-                    Layout.leftMargin: 8
-                    Layout.rightMargin: 8
-                    Layout.bottomMargin: visible ? 4 : 0
-                    visible: text.length > 0
-                    text: fileTreeModel.root_path
-                    font.pointSize: root.font.pointSize * 0.85
-                    wrapMode: Text.Wrap
-                    opacity: 0.75
                 }
 
                 ItemDelegate {
