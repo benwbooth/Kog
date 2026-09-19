@@ -12,17 +12,61 @@
   </head>
   <body>
     <div id="app"></div>
+    <!-- The player mounts into <body>. This note stays on screen until it does,
+         so a browser that cannot run the wasm says why instead of showing an
+         empty window. -->
+    <div
+      id="boot"
+      style="font: 14px/1.5 system-ui, sans-serif; padding: 24px; color: CanvasText"
+    >
+      <p>Loading the Kog player…</p>
+      <p id="boot-detail"></p>
+    </div>
+    <noscript>
+      <p style="font: 14px/1.5 system-ui, sans-serif; padding: 24px">
+        Kog needs JavaScript, and it is turned off in this browser.
+      </p>
+    </noscript>
     <script type="module">
-      import init from "/kog_web.js";
-      // A failure here used to leave a blank page. Say so instead, and point at
-      // the usual cause: a stale cached script from a previous build.
-      init().catch((error) => {
-        const target = document.getElementById("app");
-        target.style.padding = "24px";
-        target.textContent =
-          "The player failed to load (" + error + "). Reload the page with " +
-          "Ctrl+Shift+R to clear a stale cached build.";
-      });
+      const boot = document.getElementById("boot");
+      const detail = document.getElementById("boot-detail");
+      const environment =
+        "This browser: " +
+        navigator.userAgent +
+        " — WebAssembly: " +
+        (typeof WebAssembly !== "undefined");
+      const report = (message) => {
+        if (detail) detail.textContent = message;
+      };
+      const mounted = () => document.querySelector(".app") !== null;
+
+      addEventListener("error", (event) =>
+        report("A script error occurred: " + (event.message || event.error)));
+      addEventListener("unhandledrejection", (event) =>
+        report("A promise was rejected: " + event.reason));
+
+      // A dynamic import so a module that will not parse or download is also
+      // reported, not just a wasm that fails to start.
+      import("/kog_web.js")
+        .then((module) => module.default())
+        .then(() => {
+          if (mounted()) {
+            boot.remove();
+          } else {
+            report("The player started but drew nothing. " + environment);
+          }
+        })
+        .catch((error) => report("The player failed to load: " + error));
+
+      setTimeout(() => {
+        if (!mounted()) {
+          report(
+            (detail && detail.textContent ? detail.textContent + " " : "") +
+              "Still nothing after 10 seconds. " +
+              environment,
+          );
+        }
+      }, 10000);
     </script>
   </body>
 </html>
