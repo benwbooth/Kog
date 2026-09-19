@@ -1,10 +1,10 @@
 /* Kog web player.
  *
- * Mirrors the desktop layout: a toolbar, a sidebar holding the file tree and
- * playlists, the playlist pane with a column header, and the transport bar.
- * The whole thing is a fixed-height grid, so the only thing that scrolls is
- * the pane you are looking at - never the page. Below 820px the sidebar
- * becomes a drawer and the rows get compact.
+ * Mirrors the desktop layout: a 48px toolbar, a sidebar holding the file tree
+ * and the playlists, the playlist pane with a column header, and a 92px
+ * transport bar. The whole thing is a fixed-height grid, so the only thing that
+ * scrolls is the pane you are looking at - never the page. Below 820px the
+ * sidebar becomes a drawer and the rows go compact for phones.
  */
 
 :root {
@@ -76,28 +76,80 @@ body {
 .toolbar {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 0 8px;
+  gap: 4px;
+  padding: 0 6px;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
 }
 
-.toolbar .brand {
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  padding: 0 6px 0 2px;
+.toolbar .logo {
+  width: 28px;
+  height: 28px;
+  flex: none;
+  margin: 0 2px;
 }
 
-.toolbar .grow {
-  flex: 1;
-  min-width: 0;
+.icon-button {
+  width: 34px;
+  height: 34px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  font-size: 16px;
+}
+
+.icon-button:hover:not(:disabled) {
+  background: var(--alternate);
 }
 
 .toolbar .search {
   flex: 1;
   min-width: 0;
-  max-width: 420px;
+  max-width: 460px;
   margin: 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 10px;
+  border-radius: 17px;
+  background: var(--base);
+  border: 1px solid var(--border);
+}
+
+.toolbar .search:focus-within {
+  border-color: var(--highlight);
+}
+
+.toolbar .search input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  outline: none;
+}
+
+.pill-icon {
+  flex: none;
+  color: var(--faint);
+  font-size: 14px;
+}
+
+.search-clear {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 12px;
+  font-size: 14px;
+  line-height: 1;
 }
 
 input,
@@ -145,6 +197,16 @@ button:focus-visible {
   outline-offset: -1px;
 }
 
+.codec {
+  flex: none;
+  padding: 3px 6px;
+}
+
+.server {
+  flex: none;
+  white-space: nowrap;
+}
+
 /* -------------------------------------------------------------- workspace */
 
 .workspace {
@@ -152,10 +214,6 @@ button:focus-visible {
   grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
   min-height: 0;
   overflow: hidden;
-}
-
-.workspace.sidebar-hidden {
-  grid-template-columns: 0 minmax(0, 1fr);
 }
 
 /* ---------------------------------------------------------------- sidebar */
@@ -169,10 +227,6 @@ button:focus-visible {
   overflow: hidden;
 }
 
-.workspace.sidebar-hidden .sidebar {
-  display: none;
-}
-
 .section {
   display: flex;
   flex-direction: column;
@@ -183,19 +237,62 @@ button:focus-visible {
   border-top: 1px solid var(--border);
 }
 
+.section.files {
+  flex: 1;
+}
+
+/* VSCode-style accordion header, 30px like the desktop's. */
 .section-header {
   display: flex;
   align-items: center;
   gap: 4px;
   height: 30px;
-  padding: 0 6px;
+  flex: none;
+  padding: 0 6px 0 8px;
   font-size: 11px;
   font-weight: 700;
   color: var(--text);
+  cursor: pointer;
+  user-select: none;
+}
+
+.section-header:hover {
+  background: var(--alternate);
+}
+
+.section-header .expander {
+  width: 12px;
+  flex: none;
+  color: var(--faint);
+  font-size: 11px;
+}
+
+.section-header .section-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.section-add {
+  width: 24px;
+  height: 24px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 5px;
   background: transparent;
-  border: 0;
-  width: 100%;
-  text-align: left;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.section-add:hover {
+  background: var(--alternate);
+  border-color: var(--border);
 }
 
 .section-body {
@@ -208,7 +305,77 @@ button:focus-visible {
   flex: 1;
 }
 
-/* Tree rows: indentation, expander, name. */
+/* The music-folder affordance: icon buttons plus the elided root path. */
+.tree-root {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 40px;
+  flex: none;
+  padding: 0 7px;
+  background: var(--alternate);
+  border-bottom: 1px solid var(--border);
+}
+
+.tree-root .icon-button {
+  width: 30px;
+  height: 30px;
+  font-size: 14px;
+}
+
+.root-path {
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  text-align: left;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.root-path:hover {
+  background: var(--surface);
+}
+
+/* The sidebar search, a 34px pill like the desktop tree search. */
+.tree-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  flex: none;
+  margin: 6px;
+  padding: 0 10px;
+  border-radius: 17px;
+  background: var(--base);
+  border: 1px solid var(--border);
+}
+
+.tree-search:focus-within {
+  border-color: var(--highlight);
+}
+
+.tree-search input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  outline: none;
+}
+
+/* Tree rows: indentation comes from each row's padding-left. */
+.tree-list {
+  min-height: 0;
+}
+
 .tree-row {
   display: flex;
   align-items: center;
@@ -221,10 +388,28 @@ button:focus-visible {
   text-align: left;
   white-space: nowrap;
   color: var(--text);
+  background: transparent;
+}
+
+/* Alternating rows, as the desktop tree draws them. */
+.tree-row:nth-child(even) {
+  background: color-mix(in srgb, var(--alternate) 55%, transparent);
 }
 
 .tree-row:hover {
   background: var(--alternate);
+}
+
+.tree-row.selected,
+.tree-row.selected:hover {
+  background: var(--highlight);
+  color: var(--highlight-text);
+}
+
+.tree-row.selected .twisty,
+.tree-row.selected .count {
+  color: var(--highlight-text);
+  opacity: 0.85;
 }
 
 .tree-row.directory {
@@ -240,8 +425,36 @@ button:focus-visible {
 }
 
 .tree-row .label {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.tree-row .count {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.tree-row.parent-row {
+  font-weight: 600;
+}
+
+.favorite-star {
+  width: 16px;
+  flex: none;
+  color: var(--highlight);
+  text-align: center;
+}
+
+.tree-row.favorite-row,
+.tree-row.playlist-row {
+  height: 30px;
+}
+
+.empty {
+  padding: 16px 12px;
+  color: var(--muted);
 }
 
 /* ------------------------------------------------------- playlist / table */
@@ -274,16 +487,24 @@ button:focus-visible {
   margin-left: auto;
 }
 
-/* Column header: same grid as the rows, so they line up. */
+/* Column header and rows share one grid, so they line up at every width.
+ * Widths follow qml/PlaylistHeader.qml's defaults: index 54, title 220,
+ * artist 190, album 220, length 70, track 54. */
 .columns,
 .track {
   display: grid;
-  grid-template-columns: 40px minmax(0, 3fr) minmax(0, 2fr) 64px;
+  grid-template-columns:
+    54px
+    minmax(0, 220fr)
+    minmax(0, 190fr)
+    minmax(0, 220fr)
+    70px
+    54px;
   align-items: center;
 }
 
 .columns {
-  padding: 3px 0;
+  height: var(--row-height);
   background: var(--surface);
   border-bottom: 1px solid var(--border);
   font-size: 11px;
@@ -291,12 +512,18 @@ button:focus-visible {
 }
 
 .columns button {
+  height: 100%;
   border: 0;
   border-radius: 0;
-  padding: 0 8px;
+  padding: 0;
   text-align: left;
   color: inherit;
   font-size: inherit;
+  background: transparent;
+}
+
+.columns button:hover {
+  background: var(--alternate);
 }
 
 .columns .cell,
@@ -307,14 +534,20 @@ button:focus-visible {
   white-space: nowrap;
 }
 
+.columns .index-cell,
+.columns .duration-cell,
+.columns .trackno-cell {
+  text-align: right;
+}
+
 .track {
   border: 0;
   border-radius: 0;
   width: 100%;
-  text-align: left;
-  color: var(--text);
   height: var(--row-height);
   padding: 0;
+  text-align: left;
+  color: var(--text);
   background: transparent;
 }
 
@@ -326,10 +559,12 @@ button:focus-visible {
   background: var(--alternate);
 }
 
-.track .index,
-.track .length {
+.track .index-cell,
+.track .duration-cell,
+.track .trackno-cell {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
+  text-align: right;
 }
 
 .track.current {
@@ -337,9 +572,11 @@ button:focus-visible {
   color: var(--highlight-text);
 }
 
-.track.current .index,
-.track.current .length,
-.track.current .location {
+.track.current .index-cell,
+.track.current .duration-cell,
+.track.current .trackno-cell,
+.track.current .artist-cell,
+.track.current .album-cell {
   color: var(--highlight-text);
   opacity: 0.85;
 }
@@ -350,21 +587,17 @@ button:focus-visible {
   min-height: 0;
 }
 
-.empty {
-  padding: 18px 12px;
-  color: var(--muted);
-}
-
 /* -------------------------------------------------------------- transport */
 
 .transport {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  grid-template-columns: 240px minmax(220px, 1fr) 240px;
   align-items: center;
-  gap: 10px;
-  padding: 6px 12px;
+  gap: 12px;
+  padding: 8px 12px;
   background: var(--surface);
   border-top: 1px solid var(--border);
+  overflow: hidden;
 }
 
 .now {
@@ -378,13 +611,17 @@ button:focus-visible {
   width: 52px;
   height: 52px;
   flex: none;
-  border-radius: 6px;
-  background: var(--base);
+  border-radius: 8px;
+  background: var(--alternate);
   border: 1px solid var(--border);
   display: grid;
   place-items: center;
-  font-size: 22px;
   overflow: hidden;
+}
+
+.art img {
+  width: 36px;
+  height: 36px;
 }
 
 .now-text {
@@ -392,16 +629,8 @@ button:focus-visible {
 }
 
 .now-text .title {
+  font-size: 13px;
   font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.now-text .subtitle,
-.now-text .stamp {
-  color: var(--muted);
-  font-size: 11px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -409,48 +638,89 @@ button:focus-visible {
 
 .now-text .subtitle {
   color: var(--faint);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.transport-center {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
 }
 
 .controls {
   display: flex;
   align-items: center;
-  gap: 4px;
+  justify-content: center;
+  gap: 2px;
 }
 
 .controls button {
-  min-width: 34px;
-  min-height: 30px;
+  position: relative;
+  width: 34px;
+  height: 34px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border-radius: 6px;
 }
 
 .controls .play {
-  min-width: 42px;
-  min-height: 34px;
+  width: 40px;
+  height: 40px;
   background: var(--highlight);
   color: var(--highlight-text);
   border-color: transparent;
   font-size: 15px;
 }
 
-.right {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  min-width: 0;
+.controls .toggle {
+  opacity: 0.62;
 }
 
-.seek {
+.controls .toggle.active {
+  opacity: 1;
+  color: var(--highlight);
+  border-color: color-mix(in srgb, var(--highlight) 60%, transparent);
+  background: color-mix(in srgb, var(--highlight) 16%, transparent);
+}
+
+.controls .badge {
+  position: absolute;
+  right: 1px;
+  bottom: 1px;
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.seek-row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  flex: 1;
-  min-width: 0;
-  color: var(--muted);
+  gap: 8px;
+}
+
+.seek-row .time {
+  width: 48px;
+  flex: none;
   font-size: 11px;
+  color: var(--text);
   font-variant-numeric: tabular-nums;
 }
 
-.seek input[type="range"] {
+.seek-row .elapsed {
+  text-align: right;
+}
+
+.seek-row .total {
+  color: var(--faint);
+}
+
+.seek-row .seek {
   flex: 1;
   min-width: 40px;
   padding: 0;
@@ -459,16 +729,43 @@ button:focus-visible {
   accent-color: var(--highlight);
 }
 
-.volume {
-  width: 80px;
+.transport-right {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.volume-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+}
+
+.volume-row .mute {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  font-size: 14px;
+}
+
+.transport-right .volume {
+  width: 140px;
   padding: 0;
   background: transparent;
   border: 0;
   accent-color: var(--highlight);
 }
 
-.codec {
-  padding: 3px 6px;
+.transport-status {
+  text-align: right;
+  font-size: 10px;
+  color: var(--faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .audio {
@@ -551,13 +848,9 @@ button:focus-visible {
 
 @media (max-width: 820px) {
   :root {
-    --row-height: 34px;
-    --transport-height: 64px;
+    --row-height: 30px;
+    --transport-height: 76px;
     --toolbar-height: 46px;
-  }
-
-  .app {
-    grid-template-rows: var(--toolbar-height) minmax(0, 1fr) var(--transport-height);
   }
 
   .workspace {
@@ -581,10 +874,6 @@ button:focus-visible {
     transform: translateX(0);
   }
 
-  .workspace.sidebar-hidden .sidebar {
-    display: flex;
-  }
-
   .drawer-scrim {
     display: block;
     position: fixed;
@@ -601,76 +890,130 @@ button:focus-visible {
     pointer-events: auto;
   }
 
-  /* Two lines per track: title, then location. */
-  .columns {
+  /* Two lines per track: title/artist, then the length on the right. */
+  .columns,
+  .track {
     grid-template-columns: 34px minmax(0, 1fr) 52px;
+  }
+
+  .columns {
+    height: 24px;
+  }
+
+  .columns .artist-cell,
+  .columns .album-cell,
+  .columns .trackno-cell {
+    display: none;
   }
 
   .track {
-    grid-template-columns: 34px minmax(0, 1fr) 52px;
     grid-template-rows: auto auto;
     height: auto;
+    min-height: 34px;
     padding: 4px 0;
   }
 
-  .track .index {
+  .track .index-cell {
     grid-row: 1 / span 2;
   }
 
-  .track .name-cell {
+  .track .title-cell {
     grid-column: 2;
+    grid-row: 1;
   }
 
-  .track .location {
+  .track .artist-cell {
     grid-column: 2;
     grid-row: 2;
     font-size: 11px;
     color: var(--faint);
   }
 
-  .columns .location-cell,
-  .track .length {
+  .track .album-cell,
+  .track .trackno-cell {
     display: none;
   }
 
-  .columns .length-cell {
-    display: block;
+  .track .duration-cell {
     grid-column: 3;
+    grid-row: 1 / span 2;
   }
 
+  /* The transport keeps the controls and a thin seek row, and drops the
+   * volume block and the subtitle to stay compact. */
   .transport {
     grid-template-columns: minmax(0, 1fr) auto;
-    gap: 8px;
-    padding: 6px 10px;
+    grid-template-rows: auto auto;
+    gap: 4px 8px;
+    padding: 4px 10px;
   }
 
-  .transport .seek {
-    display: none;
+  .now {
+    grid-column: 1;
+    grid-row: 1;
   }
 
-  .transport .right {
-    gap: 4px;
-  }
-
-  .transport .volume {
-    display: none;
-  }
-
-  .art {
+  .now .art {
     width: 40px;
     height: 40px;
-    font-size: 18px;
   }
 
-  .now-text .stamp {
+  .now .art img {
+    width: 30px;
+    height: 30px;
+  }
+
+  .now-text .subtitle {
+    display: none;
+  }
+
+  .transport-center {
+    display: contents;
+  }
+
+  .controls {
+    grid-column: 2;
+    grid-row: 1;
+    justify-content: flex-end;
+  }
+
+  .controls button {
+    width: 32px;
+    height: 32px;
+  }
+
+  .controls .play {
+    width: 36px;
+    height: 36px;
+  }
+
+  .seek-row {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .transport-right {
     display: none;
   }
 }
 
-/* Compact the transport further on very short screens. */
-@media (max-height: 560px) {
-  .now-text .subtitle {
+/* Compact the toolbar further on very narrow screens. */
+@media (max-width: 560px) {
+  .toolbar .logo {
     display: none;
+  }
+
+  .toolbar .codec {
+    display: none;
+  }
+
+  .toolbar .search {
+    height: 32px;
+    border-radius: 16px;
+  }
+
+  .now-text .title {
+    font-size: 12px;
   }
 }
 
@@ -701,32 +1044,11 @@ button:focus-visible {
   background-clip: content-box;
 }
 
-/* The toolbar search is a centred pill, as in the desktop window. */
-.toolbar .search input {
-  height: 34px;
-  border-radius: 17px;
-  padding: 0 14px;
+.tree-row .twisty:empty {
+  width: 12px;
 }
 
-.toolbar .search {
-  max-width: 460px;
-}
-
-/* Playlist column header: 26px tall like the rows it labels. */
-.columns {
-  height: var(--row-height);
-  padding: 0;
-  align-items: center;
-}
-
-/* The desktop window's mark sits at the left of its toolbar. */
-.logo {
-  width: 26px;
-  height: 26px;
-  margin-right: 2px;
-}
-
-/* Folder and file marks in the tree, as the Qt tree shows. */
+/* Folder, file and parent marks in the tree, as the Qt tree shows. */
 .tree-icon {
   width: 16px;
   height: 16px;
@@ -745,6 +1067,6 @@ button:focus-visible {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='none' stroke='%239aa0a6' stroke-width='1.2' d='M4.2 1.8h5.2l2.4 2.4v10H4.2z'/%3E%3C/svg%3E");
 }
 
-.tree-row .twisty:empty {
-  width: 12px;
+.tree-icon.up {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='none' stroke='%239aa0a6' stroke-width='1.4' d='M8 3.2v9.6M4 7l4-4 4 4'/%3E%3C/svg%3E");
 }
