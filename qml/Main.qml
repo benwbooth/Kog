@@ -498,15 +498,17 @@ ApplicationWindow {
                 const index = directoryTree.index(candidate, 0)
                 directoryTree.selectionModel.select(index,
                     ItemSelectionModel.Select | ItemSelectionModel.Rows)
-                directoryTree.positionViewAtIndex(candidate, ListView.Contain)
-                root.pendingShowPath = ""
+                // The delegate centers the pane; selection order matters, so
+                // the flag is only cleared after it has fired.
                 showSelectTimer.stop()
                 return
             }
         } catch (error) { /* the model may still be settling */ }
         root.showSelectAttempts += 1
-        if (root.showSelectAttempts >= 40)
+        if (root.showSelectAttempts >= 40) {
             showSelectTimer.stop()
+            root.pendingShowPath = ""
+        }
     }
 
     function expandPendingTreeFolders() {
@@ -2807,6 +2809,22 @@ ApplicationWindow {
                         required property string filePath
                         required property string fileIcon
                         readonly property string dragPath: filePath
+                        // Show in File Tree: when this row is the reveal
+                        // target, center it. Creation and selection both land
+                        // here, so the row scrolls no matter which fires.
+                        readonly property bool revealTarget:
+                            root.pendingShowPath === filePath && filePath.length > 0
+                        onFilePathChanged: maybeRevealScroll()
+                        onSelectedChanged: maybeRevealScroll()
+                        Component.onCompleted: maybeRevealScroll()
+                        function maybeRevealScroll() {
+                            if (!revealTarget)
+                                return
+                            const center = mapToItem(directoryTree, 0, height / 2).y
+                            directoryTree.contentY +=
+                                center - directoryTree.height / 2
+                            root.pendingShowPath = ""
+                        }
                         width: Math.max(0,
                             directoryTree.width - directoryTree.scrollGutter)
                         implicitHeight: 26
