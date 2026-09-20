@@ -579,55 +579,13 @@ button:focus-visible {
 
 .playlist {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   min-height: 0;
   background: var(--base);
 }
 
-.playlist-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
-  font-size: 11px;
-  color: var(--muted);
-}
-
-.playlist-head .name {
-  font-weight: 600;
-  color: var(--text);
-  font-size: 12px;
-}
-
-.playlist-head .count {
-  margin-left: auto;
-}
-
 .playlist-row.reorder-above {
   box-shadow: 0 -2px 0 0 var(--highlight);
-}
-
-.playlist-head .scroll-left,
-.playlist-head .scroll-right {
-  width: 24px;
-  height: 24px;
-  flex: none;
-  display: grid;
-  place-items: center;
-  padding: 0;
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  background: var(--surface);
-  color: var(--muted);
-  font-size: 14px;
-}
-
-.playlist-head .scroll-left:hover:not(:disabled),
-.playlist-head .scroll-right:hover:not(:disabled) {
-  color: var(--text);
-  background: var(--alternate);
 }
 
 .playlist-rename {
@@ -636,50 +594,6 @@ button:focus-visible {
   height: 22px;
   padding: 0 4px;
   font-size: 11px;
-}
-
-/* The pane's clear-playlist button: the desktop toolbar's edit-clear-list
- * icon, tinted like the header text. */
-.playlist-head .clear-playlist {
-  width: 26px;
-  height: 26px;
-  flex: none;
-  display: grid;
-  place-items: center;
-  padding: 0;
-  border: 1px solid transparent;
-  border-radius: 5px;
-  background: transparent;
-  color: var(--muted);
-}
-
-.playlist-head .clear-playlist:hover:not(:disabled) {
-  color: var(--text);
-  background: var(--alternate);
-}
-
-.playlist-head .clear-playlist:disabled {
-  opacity: 0.4;
-}
-
-.playlist-head .clear-playlist svg {
-  width: 15px;
-  height: 15px;
-  display: block;
-}
-
-.playlist-head .clear-playlist svg path {
-  fill: currentColor;
-}
-
-/* The radio reshuffle action sits at the right of the pane header and only
- * appears while random radio is on. */
-.playlist-head .radio-reshuffle {
-  flex: none;
-  padding: 2px 8px;
-  font-size: 11px;
-  border-radius: 6px;
-  color: var(--text);
 }
 
 /* Column header and rows share the `--cols` template the app writes from the
