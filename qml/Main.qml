@@ -507,20 +507,25 @@ ApplicationWindow {
             showSelectTimer.stop()
             return
         }
-        try {
-            for (let candidate = 0; candidate < directoryTree.rows; ++candidate) {
-                if (treePathAtRow(candidate) !== path)
-                    continue
-                directoryTree.selectionModel.clear()
-                const index = directoryTree.index(candidate, 0)
-                directoryTree.selectionModel.select(index,
-                    ItemSelectionModel.Select | ItemSelectionModel.Rows)
-                // The delegate centers the pane; selection order matters, so
-                // the flag is only cleared after it has fired.
-                showSelectTimer.stop()
-                return
-            }
-        } catch (error) { /* the model may still be settling */ }
+            try {
+                for (let candidate = 0; candidate < directoryTree.rows; ++candidate) {
+                    if (treePathAtRow(candidate) !== path)
+                        continue
+                    directoryTree.selectionModel.clear()
+                    const index = directoryTree.index(candidate, 0)
+                    directoryTree.selectionModel.select(index,
+                        ItemSelectionModel.Select | ItemSelectionModel.Rows)
+                    // Selecting does not scroll: a row far outside the
+                    // viewport has no delegate yet, so the delegate's own
+                    // centering cannot fire either. Pull the row in first;
+                    // its delegate then finishes the centering once it exists.
+                    directoryTree.positionViewAtRow(candidate, TableView.Contain)
+                    // The delegate centers the pane; selection order matters, so
+                    // the flag is only cleared after it has fired.
+                    showSelectTimer.stop()
+                    return
+                }
+            } catch (error) { /* the model may still be settling */ }
         root.showSelectAttempts += 1
         if (root.showSelectAttempts >= 40) {
             showSelectTimer.stop()
