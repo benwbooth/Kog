@@ -568,6 +568,27 @@ button:focus-visible {
   margin-left: auto;
 }
 
+.playlist-head .scroll-left,
+.playlist-head .scroll-right {
+  width: 24px;
+  height: 24px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.playlist-head .scroll-left:hover:not(:disabled),
+.playlist-head .scroll-right:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--alternate);
+}
+
 .playlist-rename {
   width: 100%;
   min-width: 0;

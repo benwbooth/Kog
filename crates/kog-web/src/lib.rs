@@ -2500,6 +2500,18 @@ fn App() -> impl IntoView {
         rows
     };
 
+    // Nudge the playlist's horizontal scroll by `delta` pixels. The buttons
+    // are a guaranteed affordance when wheel and scrollbar do not cooperate.
+    let scroll_columns = move |delta: f64| {
+        if let Some(window) = web_sys::window()
+            && let Some(rows) = window
+                .document()
+                .and_then(|document| document.get_element_by_id("playlist-rows"))
+        {
+            rows.set_scroll_left(rows.scroll_left() + delta as i32);
+        }
+    };
+
     // The pane's status line, shared by the header and the transport: how many
     // tracks the pane shows (all of the queue, or the filter's matches) and
     // their total probed duration, in the desktop's footer spirit.
@@ -3464,6 +3476,16 @@ fn App() -> impl IntoView {
                             on:click=move |_| clear_pane()
                             inner_html=icons::CLEAR_LIST
                         ></button>
+                        <button
+                            class="flat scroll-left"
+                            title="Scroll the columns left"
+                            on:click=move |_| scroll_columns(-400.0)
+                        >"‹"</button>
+                        <button
+                            class="flat scroll-right"
+                            title="Scroll the columns right"
+                            on:click=move |_| scroll_columns(400.0)
+                        >"›"</button>
                         <Show when=move || radio_on.get() fallback=|| ()>
                             <button
                                 class="flat radio-reshuffle"
@@ -3475,6 +3497,7 @@ fn App() -> impl IntoView {
 
                     <div
                         class="rows"
+                        id="playlist-rows"
                         class:drop-active=move || playlist_drop_active.get()
                         on:wheel=move |event: web_sys::WheelEvent| {
                             // The wide column set must be reachable with the
