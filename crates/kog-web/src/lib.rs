@@ -1231,6 +1231,11 @@ fn App() -> impl IntoView {
     let (song_menu, set_song_menu) = signal(Option::<(f64, f64, usize, Entry)>::None);
     // The row being dragged from the tree onto the playlist pane.
     let (dragging_tree, set_dragging_tree) = signal(Option::<TreeRow>::None);
+    // A playlist row dragged toward the pane (append its tracks), and a queue
+    // row dragged to a new position (reorder).
+    let (dragging_playlist, set_dragging_playlist) = signal(Option::<i64>::None);
+    let (dragging_track, set_dragging_track) = signal(Option::<usize>::None);
+    let (reorder_to, set_reorder_to) = signal(Option::<usize>::None);
     let (playlist_drop_active, set_playlist_drop_active) = signal(false);
     // Playlist columns, their widths and visibility, persisted like the Qt
     // window's saved column layout.
@@ -1773,35 +1778,39 @@ fn App() -> impl IntoView {
         }
     };
 
-    // Selecting a playlist loads its entries into the pane, the way the desktop
-    // window swaps the playlist pane when you pick one in the sidebar.
-    let load_playlist = {
-        let get_json = get_json;
-        let set_radio = set_radio.clone();
-        move |id: i64, name: String| {
-            // Picking a playlist is choosing a different playback source, so
-            // leave radio mode rather than letting the round take over later.
-            if radio_on.get_untracked() {
-                set_radio(false);
-            }
-            leptos::task::spawn_local(async move {
-                match get_json(format!("/api/playlists/{id}")).await {
-                    Ok(value) => {
-                        let entries: Vec<Entry> = value["entries"]
-                            .as_array()
-                            .map(|items| items.iter().map(entry_from_json).collect())
-                            .unwrap_or_default();
-                        set_list_name.set(name);
-                        set_queue.set(entries);
-                        set_current.set(0);
-                        set_position.set(0.0);
-                        set_media_duration.set(None);
-                        set_playing.set(false);
-                    }
-                    Err(error) => set_message.set(error),
-                }
-            });
+    // Move one queued row to another position, keeping the current track
+    // playing and its index pointing at the same song.
+    let move_track = move |from: usize, to: usize| {
+        let total = queue.get_untracked().len();
+        if from >= total {
+            return;
         }
+        let to = to.min(total);
+        // A row dropped on itself or on its lower edge is a no-op.
+        if to == from || to == from + 1 {
+            return;
+        }
+        let insert_at = if to < from { to } else { to - 1 };
+        let current_index = current.get_untracked();
+        set_queue.update(|items| {
+            let moved = items.remove(from);
+            items.insert(insert_at.min(items.len()), moved);
+        });
+        let new_current = if from == current_index {
+            insert_at
+        } else {
+            let adjusted = if from < current_index {
+                current_index - 1
+            } else {
+                current_index
+            };
+            if insert_at <= adjusted {
+                adjusted + 1
+            } else {
+                adjusted
+            }
+        };
+        set_current.set(new_current.min(total - 1));
     };
 
     // The playlists header's "+", as the desktop sidebar offers.
@@ -2588,6 +2597,27 @@ fn App() -> impl IntoView {
         });
     };
 
+    // Opening a playlist appends its tracks to the pane - like the desktop's
+    // tree, where adding a playlist never throws away what is queued.
+    let append_playlist = {
+        let get_json = get_json;
+        let append_entries = append_entries;
+        move |id: i64| {
+            leptos::task::spawn_local(async move {
+                match get_json(format!("/api/playlists/{id}")).await {
+                    Ok(value) => {
+                        let entries: Vec<Entry> = value["entries"]
+                            .as_array()
+                            .map(|items| items.iter().map(entry_from_json).collect())
+                            .unwrap_or_default();
+                        append_entries(entries);
+                    }
+                    Err(error) => set_message.set(error),
+                }
+            });
+        }
+    };
+
     // ------------------------------------------------------- shell actions
     // The application (`☰`) menu's playlist/queue actions. The web pane is the
     // queue, so Clear Playlist and Clear Queue both empty it: the desktop's
@@ -3263,33 +3293,48 @@ fn App() -> impl IntoView {
                             <div class="section-body">
                                 <Show when=move || connected.get() fallback=|| ()>
                                     {
-                                        let load_favorites = load_playlist.clone();
                                         view! {
-                                            <button
-                                                class="tree-row favorite-row"
-                                                on:click=move |_| {
-                                                    load_favorites(0, "Favorites".to_owned())
+                                        <button
+                                            class="tree-row favorite-row"
+                                            title="Double-click to add to the playlist, or drag it there"
+                                            draggable="true"
+                                            on:dragstart=move |ev: web_sys::DragEvent| {
+                                                set_dragging_playlist.set(Some(0));
+                                                if let Some(transfer) = ev.data_transfer() {
+                                                    let _ = transfer.set_data("text/plain", "Favorites");
+                                                    transfer.set_effect_allowed("copy");
                                                 }
-                                            >
-                                                <span class="twisty"></span>
-                                                <span class="favorite-star">"★"</span>
-                                                <span class="label">"Favorites"</span>
-                                            </button>
+                                            }
+                                            on:dragend=move |_| set_dragging_playlist.set(None)
+                                            on:dblclick=move |_| append_playlist(0)
+                                        >
+                                            <span class="twisty"></span>
+                                            <span class="favorite-star">"★"</span>
+                                            <span class="label">"Favorites"</span>
+                                        </button>
                                         }
                                     }
                                     <For each=move || playlists.get() key=|item| item.0 let:item>
                                         {
-                                            let load_one = load_playlist.clone();
                                             let id = item.0;
-                                            let name = item.1.clone();
                                             let count = item.2;
-                                            let label = name.clone();
+                                            let label = item.1.clone();
+                                            let drag_id = id;
+                                            let drag_label = label.clone();
                                             view! {
                                                 <button
                                                     class="tree-row playlist-row"
-                                                    on:click=move |_| {
-                                                        load_one(id, name.clone())
+                                                    title="Double-click to add to the playlist, or drag it there"
+                                                    draggable="true"
+                                                    on:dragstart=move |ev: web_sys::DragEvent| {
+                                                        set_dragging_playlist.set(Some(drag_id));
+                                                        if let Some(transfer) = ev.data_transfer() {
+                                                            let _ = transfer.set_data("text/plain", &drag_label);
+                                                            transfer.set_effect_allowed("copy");
+                                                        }
                                                     }
+                                                    on:dragend=move |_| set_dragging_playlist.set(None)
+                                                    on:dblclick=move |_| append_playlist(drag_id)
                                                 >
                                                     <span class="twisty"></span>
                                                     <span class="label">{label}</span>
@@ -3360,6 +3405,36 @@ fn App() -> impl IntoView {
                         }
                         on:dragover=move |ev: web_sys::DragEvent| {
                             ev.prevent_default();
+                            // Reordering a queue row: highlight the insertion
+                            // point under the cursor.
+                            if let Some(from) = dragging_track.get_untracked() {
+                                let client_y = ev.client_y();
+                                let marker = js_sys::eval(&format!(
+                                    "(() => {{
+                                        const rows = document.querySelector('.rows');
+                                        const tracks = [...rows.querySelectorAll('.track')];
+                                        tracks.forEach(t => t.classList.remove('reorder-above'));
+                                        const y = {client_y};
+                                        let index = tracks.length;
+                                        for (let i = 0; i < tracks.length; i++) {{
+                                            const r = tracks[i].getBoundingClientRect();
+                                            if (y < r.top + r.height / 2) {{
+                                                index = i;
+                                                if (i !== from && i !== from + 1)
+                                                    tracks[i].classList.add('reorder-above');
+                                                break;
+                                            }}
+                                        }}
+                                        return index;
+                                    }})()"
+                                ));
+                                if let Ok(value) = marker
+                                    && let Some(index) = value.as_f64()
+                                {
+                                    set_reorder_to.set(Some(index as usize));
+                                }
+                                return;
+                            }
                             if let Some(transfer) = ev.data_transfer() {
                                 transfer.set_drop_effect("copy");
                             }
@@ -3368,13 +3443,26 @@ fn App() -> impl IntoView {
                         on:dragleave=move |_| set_playlist_drop_active.set(false)
                         on:drop={
                             let add_row_to_playlist = add_row_to_playlist.clone();
+                            let move_track = move_track.clone();
                             move |ev: web_sys::DragEvent| {
                                 ev.prevent_default();
                                 set_playlist_drop_active.set(false);
                                 if let Some(row) = dragging_tree.get_untracked() {
                                     add_row_to_playlist(row);
+                                } else if let Some(id) = dragging_playlist.get_untracked() {
+                                    append_playlist(id);
+                                } else if let Some(from) = dragging_track.get_untracked()
+                                    && let Some(to) = reorder_to.get_untracked()
+                                {
+                                    move_track(from, to);
                                 }
+                                let _ = js_sys::eval(
+                                    "document.querySelectorAll('.track.reorder-above').forEach(t => t.classList.remove('reorder-above'))",
+                                );
                                 set_dragging_tree.set(None);
+                                set_dragging_playlist.set(None);
+                                set_dragging_track.set(None);
+                                set_reorder_to.set(None);
                             }
                         }
                     >
@@ -3490,8 +3578,23 @@ fn App() -> impl IntoView {
                                     view! {
                                         <button
                                             class="track"
+                                            draggable="true"
                                             class:current=move || current.get() == index
                                             class:selected=move || selected.get().contains(&index)
+                                            on:dragstart=move |ev: web_sys::DragEvent| {
+                                                set_dragging_track.set(Some(index));
+                                                if let Some(transfer) = ev.data_transfer() {
+                                                    let _ = transfer.set_data("text/plain", &index.to_string());
+                                                    transfer.set_effect_allowed("move");
+                                                }
+                                            }
+                                            on:dragend=move |_| {
+                                                set_dragging_track.set(None);
+                                                set_reorder_to.set(None);
+                                                let _ = js_sys::eval(
+                                                    "document.querySelectorAll('.track.reorder-above').forEach(t => t.classList.remove('reorder-above'))",
+                                                );
+                                            }
                                             on:contextmenu=move |ev: web_sys::MouseEvent| {
                                                 ev.prevent_default();
                                                 set_selected.update(|set| {
