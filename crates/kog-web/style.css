@@ -596,6 +596,10 @@ button:focus-visible {
   margin-left: auto;
 }
 
+.playlist-row.reorder-above {
+  box-shadow: 0 -2px 0 0 var(--highlight);
+}
+
 .playlist-head .scroll-left,
 .playlist-head .scroll-right {
   width: 24px;

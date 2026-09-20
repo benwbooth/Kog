@@ -1086,6 +1086,33 @@ pub async fn set_columns(axum::Json(body): axum::Json<serde_json::Value>) -> Res
     axum::Json(serde_json::json!({ "ok": true })).into_response()
 }
 
+/// `POST /api/playlists/{id}/move` — reorder a playlist.
+pub async fn move_playlist(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<i64>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> Response {
+    let Some(to) = body["to"].as_u64() else {
+        return bad_request("a target position is required");
+    };
+    let Ok(to) = usize::try_from(to) else {
+        return bad_request("the position is out of range");
+    };
+    let library = state.library.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        library
+            .db()
+            .move_playlist(id, to)
+            .map(|()| serde_json::json!({ "ok": true, "id": id, "to": to }))
+    })
+    .await
+    .unwrap_or_else(|error| Err(format!("moving the playlist failed: {error}")));
+    match result {
+        Ok(value) => axum::Json(value).into_response(),
+        Err(error) => bad_request(&error),
+    }
+}
+
 /// `GET /api/stars`
 pub async fn list_stars(State(state): State<AppState>) -> Response {
     let library = state.library.clone();
@@ -1209,6 +1236,7 @@ pub fn router() -> axum::Router<AppState> {
             get(playlist_entries).delete(delete_playlist),
         )
         .route("/api/playlists/{id}/rename", post(rename_playlist))
+        .route("/api/playlists/{id}/move", post(move_playlist))
         .route("/api/playlists/{id}/entries", post(append_playlist_entries))
         .route("/api/stars", get(list_stars).post(set_star))
         .route("/api/settings/midi", get(midi_settings).post(set_midi_setting))

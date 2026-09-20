@@ -1266,6 +1266,8 @@ fn App() -> impl IntoView {
     // A playlist row dragged toward the pane (append its tracks), and a queue
     // row dragged to a new position (reorder).
     let (dragging_playlist, set_dragging_playlist) = signal(Option::<i64>::None);
+    // Reordering the saved playlists by dragging rows in their section.
+    let (playlist_reorder_to, set_playlist_reorder_to) = signal(Option::<usize>::None);
     let (dragging_track, set_dragging_track) = signal(Option::<usize>::None);
     let (reorder_to, set_reorder_to) = signal(Option::<usize>::None);
     let (playlist_drop_active, set_playlist_drop_active) = signal(false);
@@ -3591,7 +3593,44 @@ fn App() -> impl IntoView {
                             >"+"</button>
                         </div>
                         <Show when=move || playlists_expanded.get() fallback=|| ()>
-                            <div class="section-body">
+                            <div
+                                class="section-body"
+                                on:dragover=move |ev: web_sys::DragEvent| {
+                                    ev.prevent_default();
+                                    if dragging_playlist.get_untracked().is_none() {
+                                        return;
+                                    }
+                                    let client_y = ev.client_y();
+                                    let rows = js_sys::eval(&format!(
+                                        "(() => {{ const rows = [...document.querySelectorAll('.playlist-row')]; const y = {client_y}; let index = rows.length; for (let i = 0; i < rows.length; i++) {{ const r = rows[i].getBoundingClientRect(); if (y < r.top + r.height / 2) {{ index = i; break; }} }} return index; }})()"
+                                    ));
+                                    if let Ok(value) = rows
+                                        && let Some(index) = value.as_f64()
+                                    {
+                                        set_playlist_reorder_to.set(Some(index as usize));
+                                    }
+                                }
+                                on:drop=move |ev: web_sys::DragEvent| {
+                                    ev.prevent_default();
+                                    if let Some(id) = dragging_playlist.get_untracked()
+                                        && let Some(to) = playlist_reorder_to.get_untracked()
+                                    {
+                                        let url = format!("{}/api/playlists/{id}/move", base());
+                                        let header = auth().header();
+                                        leptos::task::spawn_local(async move {
+                                            let _ = post_json(
+                                                url,
+                                                header,
+                                                serde_json::json!({ "to": to }),
+                                            )
+                                            .await;
+                                            load_playlists();
+                                        });
+                                    }
+                                    set_dragging_playlist.set(None);
+                                    set_playlist_reorder_to.set(None);
+                                }
+                            >
                                 <Show when=move || connected.get() fallback=|| ()>
                                     {
                                         view! {
@@ -3979,6 +4018,12 @@ fn App() -> impl IntoView {
                                                             set.insert(index);
                                                         }
                                                     });
+                                                    return;
+                                                }
+                                                if current.get_untracked() == index {
+                                                    // Clicking the playing row pauses it; clicking a paused one
+                                                    // resumes where it stopped.
+                                                    set_playing.update(|value| *value = !*value);
                                                     return;
                                                 }
                                                 set_selected.set(HashSet::from([index]));
