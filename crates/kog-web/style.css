@@ -194,6 +194,7 @@ textarea {
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 5px 8px;
+  touch-action: manipulation;
 }
 
 button {
@@ -270,11 +271,19 @@ button:focus-visible {
 
 /* The splitter between the tree and the playlist. */
 .pane-resizer {
+  position: relative;
   width: 6px;
   flex: none;
   cursor: col-resize;
   background: transparent;
   touch-action: none;
+}
+
+/* A wider invisible touch zone around the thin splitter. */
+.pane-resizer::before {
+  content: "";
+  position: absolute;
+  inset: 0 -7px;
 }
 
 .pane-resizer:hover,
@@ -693,6 +702,34 @@ button:focus-visible {
   box-shadow: 0 -2px 0 0 var(--highlight);
 }
 
+/* Touch reorder handle: press and drag to move the row. Hidden on mouse
+ * screens where the row itself drags via selection. */
+.drag-grip {
+  display: none;
+  position: absolute;
+  left: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 18px;
+  height: 20px;
+  touch-action: none;
+  color: var(--muted);
+  cursor: grab;
+  font-size: 13px;
+  line-height: 1;
+  text-align: center;
+}
+
+@media (pointer: coarse) {
+  .drag-grip {
+    display: block;
+  }
+
+  .drag-grip:active {
+    color: var(--highlight);
+  }
+}
+
 .columns {
   position: sticky;
   top: 0;
@@ -789,6 +826,10 @@ button:focus-visible {
 
 .track:hover {
   background: var(--alternate);
+}
+
+.track .index-cell {
+  position: relative;
 }
 
 .track .index-cell,

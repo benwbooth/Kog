@@ -3976,6 +3976,7 @@ fn App() -> impl IntoView {
                                         <button
                                             class="track"
                                             draggable="true"
+                                            style="position: relative"
                                             class:current=move || current.get() == index
                                             class:selected=move || selected.get().contains(&index)
                                             on:dragstart=move |ev: web_sys::DragEvent| {
@@ -4093,7 +4094,43 @@ fn App() -> impl IntoView {
                                                     }
                                                 }
                                             </For>
-                                        </button>
+                                        <span
+                                            class="drag-grip"
+                                            title="Drag to reorder"
+                                            on:pointerdown=move |ev: web_sys::PointerEvent| {
+                                                if let Some(target) = ev.target().and_then(|t| t.dyn_into::<web_sys::Element>().ok()) {
+                                                    let _ = target.set_pointer_capture(ev.pointer_id());
+                                                }
+                                                set_dragging_track.set(Some(index));
+                                                set_reorder_to.set(None);
+                                            }
+                                            on:pointermove=move |ev: web_sys::PointerEvent| {
+                                                if dragging_track.get_untracked() != Some(index) {
+                                                    return;
+                                                }
+                                                let client_y = ev.client_y();
+                                                let marker = js_sys::eval(&format!(
+                                                    "(() => {{ const rows = [...document.querySelectorAll('.track')]; const y = {client_y}; let index = rows.length; for (let i = 0; i < rows.length; i++) {{ const r = rows[i].getBoundingClientRect(); if (y < r.top + r.height / 2) {{ index = i; break; }} }} return index; }})()",
+                                                ));
+                                                if let Ok(value) = marker && let Some(index) = value.as_f64() {
+                                                    set_reorder_to.set(Some(index as usize));
+                                                }
+                                            }
+                                            on:pointerup=move |ev: web_sys::PointerEvent| {
+                                                if dragging_track.get_untracked() == Some(index)
+                                                    && let Some(to) = reorder_to.get_untracked()
+                                                {
+                                                    move_track(index, to);
+                                                }
+                                                set_dragging_track.set(None);
+                                                set_reorder_to.set(None);
+                                                let _ = js_sys::eval(
+                                                    "document.querySelectorAll('.track.reorder-above').forEach(t => t.classList.remove('reorder-above'))",
+                                                );
+                                            }
+                                            on:click=move |ev: web_sys::MouseEvent| ev.stop_propagation()
+                                        >"⠿"</span>
+</button>
                                     }
                                 }
                             </For>
