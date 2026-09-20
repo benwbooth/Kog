@@ -2841,6 +2841,7 @@ fn App() -> impl IntoView {
             }
         >
             <header class="toolbar">
+                <img class="logo" src="/icons/kog.svg" alt="Kog" />
                 <button
                     class="flat icon-button"
                     title="Kog menu"
@@ -2856,7 +2857,6 @@ fn App() -> impl IntoView {
                     on:click=move |_| toggle_sidebar()
                     inner_html=icons::VIEW_LIST_TREE
                 ></button>
-                <img class="logo" src="/icons/kog.svg" alt="Kog" />
                 <div class="search">
                     <span class="pill-icon" aria-hidden="true" inner_html=icons::FIND></span>
                     <input
