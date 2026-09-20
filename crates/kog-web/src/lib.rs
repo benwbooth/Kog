@@ -2609,6 +2609,46 @@ fn App() -> impl IntoView {
         }
     });
 
+    // A stream request that fails around a track change — the server
+    // restarting, a flaky network — leaves the element errored or paused
+    // while the transport still says playing: the pane highlights the next
+    // row and nothing sounds until the visitor pokes it again. Watch the
+    // element so playback self-heals: re-issue play after a spurious pause,
+    // and force a fresh load when the source itself failed.
+    {
+        let window = web_sys::window().expect("window for the playback watchdog");
+        let playing = playing.clone();
+        let audio_ref = audio_ref.clone();
+        let current = current.clone();
+        let queue = queue.clone();
+        let watchdog = Closure::<dyn FnMut()>::new(move || {
+            let Some(audio) = audio_ref.get() else {
+                return;
+            };
+            if !playing.get_untracked() || current.get_untracked() >= queue.get_untracked().len()
+            {
+                return;
+            }
+            if audio.error().is_some() {
+                // Re-assigning the source restarts the load; the ready
+                // handlers take over and resume playback from zero.
+                let src = audio.src();
+                let _ = audio.set_src(&src);
+                return;
+            }
+            if audio.paused() && !audio.ended() {
+                let _ = audio.play();
+            }
+        });
+        window
+            .set_interval_with_callback_and_timeout_and_arguments_0(
+                watchdog.as_ref().unchecked_ref(),
+                2000,
+            )
+            .expect("playback watchdog interval");
+        watchdog.forget();
+    }
+
     // One batched tag lookup for everything the pane currently shows. The cache
     // is read untracked so a successful fetch does not immediately schedule the
     // same request again; a re-render of the rows is the only effect.
