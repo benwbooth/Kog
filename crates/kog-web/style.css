@@ -1362,12 +1362,12 @@ button:focus-visible {
 /* Scrollbars: Qt draws a slim groove with a rounded handle. */
 * {
   scrollbar-width: thin;
-  scrollbar-color: var(--border) transparent;
+  scrollbar-color: var(--muted) transparent;
 }
 
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 11px;
+  height: 11px;
 }
 
 ::-webkit-scrollbar-track {
@@ -1375,7 +1375,7 @@ button:focus-visible {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--border);
+  background: var(--muted);
   border: 2px solid transparent;
   border-radius: 6px;
   background-clip: content-box;

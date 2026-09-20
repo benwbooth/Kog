@@ -3203,6 +3203,23 @@ fn App() -> impl IntoView {
                     <div
                         class="rows"
                         class:drop-active=move || playlist_drop_active.get()
+                        on:wheel=move |event: web_sys::WheelEvent| {
+                            // A wheel over a playlist that cannot scroll
+                            // vertically scrolls horizontally instead, so the
+                            // wide column set is reachable without shift.
+                            let element = event
+                                .current_target()
+                                .expect("wheel target exists")
+                                .unchecked_into::<web_sys::Element>();
+                            if element.scroll_height() <= element.client_height()
+                                && event.delta_y() != 0.0
+                            {
+                                element.set_scroll_left(
+                                    element.scroll_left() + event.delta_y() as i32,
+                                );
+                                event.prevent_default();
+                            }
+                        }
                         style=move || {
                             format!(
                                 "--cols:{}; --table-width:{:.0}px",
