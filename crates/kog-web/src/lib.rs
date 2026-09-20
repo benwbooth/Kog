@@ -1610,7 +1610,12 @@ fn App() -> impl IntoView {
 
     let set_radio = {
         let apply_radio = apply_radio.clone();
+        let radio_on = radio_on.clone();
         move |enabled: bool| {
+            // Flip at once: building the first round can keep the server busy
+            // for a long while on a huge library, and a toggle that waits for
+            // that reads as broken. The response still lands here and wins.
+            set_radio_on.set(enabled);
             let url = format!("{}/api/radio/enabled", base());
             let header = auth().header();
             let apply_radio = apply_radio.clone();
