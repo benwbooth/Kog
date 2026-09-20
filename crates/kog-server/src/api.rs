@@ -858,8 +858,9 @@ pub async fn search(State(state): State<AppState>, Query(query): Query<SearchQue
         let root = library.resolve(None)?;
         let mut session = SearchSession {
             tokens,
-            pending: vec![(root, None)],
+            pending: vec![(root, None, false)],
             found: Vec::new(),
+            matched_dirs: Vec::new(),
         };
         run_search_slice(&mut session, limit);
         Ok::<_, String>(session)
@@ -915,14 +916,13 @@ fn finish_session(state: AppState, generation: u64, mut session: SearchSession) 
 fn finish_search(
     _state: AppState,
     generation: u64,
-    found: Vec<std::path::PathBuf>,
+    found: Vec<(std::path::PathBuf, bool)>,
     done: bool,
 ) -> Response {
-    let rootless = found;
     axum::Json(serde_json::json!({
-        "results": rootless
+        "results": found
             .into_iter()
-            .map(|path| {
+            .map(|(path, is_dir)| {
                 let name = path
                     .file_name()
                     .map(|name| name.to_string_lossy().into_owned())
@@ -930,6 +930,7 @@ fn finish_search(
                 serde_json::json!({
                     "name": name,
                     "path": path.to_string_lossy(),
+                    "is_dir": is_dir,
                 })
             })
             .collect::<Vec<_>>(),
@@ -940,12 +941,15 @@ fn finish_search(
 }
 
 /// One active search: the words to match, the directories still to visit
-/// (with the file to resume from when a slice stopped mid-directory), and the
-/// matches gathered so far.
+/// (with the file to resume from when a slice stopped mid-directory, and
+/// whether the walk already knows the directory sits under a folder whose
+/// own name matched), the matches gathered so far, and the folders that
+/// matched by name — everything inside those is exposed as a match.
 struct SearchSession {
     tokens: Vec<String>,
-    pending: Vec<(std::path::PathBuf, Option<String>)>,
-    found: Vec<std::path::PathBuf>,
+    pending: Vec<(std::path::PathBuf, Option<String>, bool)>,
+    found: Vec<(std::path::PathBuf, bool)>,
+    matched_dirs: Vec<std::path::PathBuf>,
 }
 
 /// The server's single active search walk. The newest query owns it: starting
@@ -962,6 +966,10 @@ pub struct SearchState {
 /// `cap` new matches. A directory interrupted by the cap or the budget is
 /// re-queued with the name to resume after; sorting entries by name makes
 /// that resume point stable, so nothing is reported twice.
+///
+/// A folder whose own name matches every word exposes all of it: the folder
+/// lands in the results and every file below it counts as a match no matter
+/// what its own name is, so "audiobooks" reaches the chapters inside.
 fn run_search_slice(session: &mut SearchSession, cap: usize) {
     const SLICE: std::time::Duration = std::time::Duration::from_millis(400);
     let started = std::time::Instant::now();
@@ -969,11 +977,16 @@ fn run_search_slice(session: &mut SearchSession, cap: usize) {
         kog_audio::settings::AppSettings::load().decoder_settings(),
     );
     let mut limit = cap;
-    while let Some((directory, resume_after)) = session.pending.pop() {
+    while let Some((directory, resume_after, inherited)) = session.pending.pop() {
         if started.elapsed() >= SLICE {
-            session.pending.push((directory, resume_after));
+            session.pending.push((directory, resume_after, inherited));
             return;
         }
+        let under_matched_folder = inherited
+            || session
+                .matched_dirs
+                .iter()
+                .any(|matched| directory.starts_with(matched));
         let Ok(entries) = std::fs::read_dir(&directory) else {
             continue;
         };
@@ -992,6 +1005,17 @@ fn run_search_slice(session: &mut SearchSession, cap: usize) {
         // A resumed directory replays from the top but skips everything
         // through the entry the previous slice had last seen.
         let mut skipping = resume_after.clone();
+        // Subdirectories queue behind a reversed push so the LIFO walk climbs
+        // them in ascending name order; they must all be flushed before this
+        // directory can be left unfinished, or some would never be scanned.
+        let mut queued_subdirs: Vec<(std::path::PathBuf, bool)> = Vec::new();
+        let flush_subdirs =
+            |session: &mut SearchSession, queued: &mut Vec<(std::path::PathBuf, bool)>| {
+                for entry in queued.drain(..).rev() {
+                    let (path, inherit) = entry;
+                    session.pending.push((path, None, inherit));
+                }
+            };
         for (name, is_dir) in rows {
             if let Some(after) = &skipping {
                 if *after != name {
@@ -1001,27 +1025,39 @@ fn run_search_slice(session: &mut SearchSession, cap: usize) {
                 continue;
             }
             let path = directory.join(&name);
+            let folded = name.to_lowercase();
+            let name_match = session
+                .tokens
+                .iter()
+                .all(|token| folded.contains(token.as_str()));
             if is_dir {
-                session.pending.push((path, None));
+                if name_match {
+                    session.matched_dirs.push(path.clone());
+                    session.found.push((path.clone(), true));
+                    limit -= 1;
+                    if limit == 0 {
+                        flush_subdirs(session, &mut queued_subdirs);
+                        session.pending.push((directory, Some(name), inherited));
+                        return;
+                    }
+                }
+                queued_subdirs.push((path, under_matched_folder || name_match));
                 continue;
             }
             if !decoders.accepts_path(&path) {
                 continue;
             }
-            let folded = name.to_lowercase();
-            if session
-                .tokens
-                .iter()
-                .all(|token| folded.contains(token.as_str()))
-            {
-                session.found.push(path);
+            if under_matched_folder || name_match {
+                session.found.push((path, false));
                 limit -= 1;
                 if limit == 0 {
-                    session.pending.push((directory, Some(name)));
+                    flush_subdirs(session, &mut queued_subdirs);
+                    session.pending.push((directory, Some(name), inherited));
                     return;
                 }
             }
         }
+        flush_subdirs(session, &mut queued_subdirs);
     }
 }
 

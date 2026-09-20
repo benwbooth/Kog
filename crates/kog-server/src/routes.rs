@@ -1352,6 +1352,61 @@ mod tests {
         assert!(body["results"].as_array().unwrap().is_empty());
     }
 
+    #[tokio::test]
+    async fn searching_a_folder_exposes_its_contents() {
+        // "Audiobooks" matches the folder's own name, so everything inside it
+        // counts as a match even though the files' names share no word with
+        // the query. Files outside the matched folder stay out.
+        let (library, _root) =
+            library_with(&["Audiobooks/Novel/chapter1.wav", "Other/thing.wav"]);
+        let state = state_with(AuthMode::None, "", library);
+        let (status, mut body) =
+            get_json(state.clone(), "/api/library/search?q=audiobooks", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let generation = body["generation"].as_u64().unwrap();
+        // search_names removes the name fields, so collect the folder results
+        // of a batch before pulling its names out.
+        let mut dirs: Vec<String> = body["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|file| file["is_dir"].as_bool().unwrap_or(false))
+            .map(|file| file["name"].as_str().unwrap().to_string())
+            .collect();
+        let mut names = search_names(&mut body);
+        while body["done"].as_bool() != Some(true) {
+            let (status, mut more) = get_json(
+                state.clone(),
+                &format!("/api/library/search/more?g={generation}"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            names.extend(search_names(&mut more));
+            dirs.extend(
+                more["results"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|file| file["is_dir"].as_bool().unwrap_or(false))
+                    .map(|file| file["name"].as_str().unwrap().to_string()),
+            );
+            body = more;
+        }
+        assert!(
+            names.contains(&"chapter1.wav".to_owned()),
+            "folder contents should surface: {names:?}"
+        );
+        assert!(
+            dirs.contains(&"Audiobooks".to_owned()),
+            "the matched folder should appear: {dirs:?}"
+        );
+        assert!(
+            !names.contains(&"thing.wav".to_owned()),
+            "files outside the matched folder must not surface: {names:?}"
+        );
+    }
+
     fn search_names(body: &mut serde_json::Value) -> Vec<String> {
         body["results"]
             .as_array_mut()

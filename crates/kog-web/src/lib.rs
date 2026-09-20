@@ -1505,7 +1505,9 @@ fn App() -> impl IntoView {
                                 name,
                                 path,
                                 parent: String::new(),
-                                is_dir: false,
+                                // A folder whose own name matched is itself a
+                                // result; its contents stream in behind it.
+                                is_dir: item["is_dir"].as_bool().unwrap_or(false),
                                 depth: 0,
                                 expanded: false,
                                 kind: "local".to_owned(),
@@ -4233,7 +4235,7 @@ fn App() -> impl IntoView {
                                                                 }
                                                                 on:dragend=move |_| set_dragging_tree.set(None)
                                                             >
-                                                                <span class="tree-icon file"></span>
+                                                                <span class={if row.is_dir { "tree-icon dir" } else { "tree-icon file" }}></span>
                                                                 <span class="label">{move || highlight_label(row.name.clone(), tree_search.get())}</span>
                                                                 <span class="search-path">{row.parent.clone()}</span>
                                                             </button>
