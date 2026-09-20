@@ -1915,7 +1915,10 @@ fn App() -> impl IntoView {
         let load_midi = load_midi.clone();
         move || {
             let header = auth().header();
-            let url = format!("{}/api/version", base());
+            // A protected endpoint: the version call is open to everyone, so it
+            // cannot tell a missing token from a working connection — and with
+            // token auth on, that silence left the tree quietly empty.
+            let url = format!("{}/api/codecs", base());
             let basic = use_basic.get();
             store("kog.server", &server.get());
             if !basic {
@@ -1933,17 +1936,23 @@ fn App() -> impl IntoView {
                 }
                 match request.send().await {
                     Ok(response) if response.ok() => {
-                        let version = response
-                            .json::<serde_json::Value>()
-                            .await
-                            .ok()
-                            .and_then(|value| value["version"].as_str().map(str::to_owned));
-                        if let Some(version) = version {
-                            set_version.set(version);
-                        }
                         set_connected.set(true);
                         set_settings_open.set(false);
                         set_message.set(String::new());
+                        // Informational only: the codecs call above is what
+                        // proved the token.
+                        if let Ok(reply) = Request::get(&format!("{}/api/version", base()))
+                            .send()
+                            .await
+                        {
+                            if let Ok(value) = reply.json::<serde_json::Value>().await {
+                                if let Some(version) =
+                                    value["version"].as_str().map(str::to_owned)
+                                {
+                                    set_version.set(version);
+                                }
+                            }
+                        }
                         load_dir(String::new(), None);
                         load_playlists();
                         load_radio();
@@ -1951,7 +1960,9 @@ fn App() -> impl IntoView {
                         load_midi();
                     }
                     Ok(response) if response.status() == 401 => {
-                        set_message.set("That token or password was rejected".to_owned())
+                        set_connected.set(false);
+                        set_message.set("That token or password was rejected".to_owned());
+                        set_settings_open.set(true);
                     }
                     Ok(response) => {
                         set_message.set(format!("Server returned {}", response.status()))
