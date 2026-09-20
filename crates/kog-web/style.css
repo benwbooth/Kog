@@ -70,10 +70,15 @@ body {
   height: 100%;
 }
 
-/* Fixed-height shell: toolbar / workspace / transport. */
+/* Fixed-height shell: toolbar / workspace / transport. The second template
+ * adds the iOS standalone safe areas — with viewport-fit=cover the page draws
+ * under the status bar and home indicator, whose system blur smeared the top
+ * of the page. Browsers without env() keep the first declaration. */
 .app {
   display: grid;
   grid-template-rows: var(--toolbar-height) minmax(0, 1fr) var(--transport-height);
+  grid-template-rows: calc(var(--toolbar-height) + env(safe-area-inset-top, 0px)) minmax(0, 1fr)
+    calc(var(--transport-height) + env(safe-area-inset-bottom, 0px));
   overflow: hidden;
 }
 
@@ -84,6 +89,7 @@ body {
   align-items: center;
   gap: 4px;
   padding: 0 6px;
+  padding-top: env(safe-area-inset-top, 0px);
   background: var(--surface);
   border-bottom: 1px solid var(--border);
 }
@@ -952,6 +958,7 @@ button:focus-visible {
   align-items: center;
   gap: 12px;
   padding: 8px 12px;
+  padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
   background: var(--surface);
   border-top: 1px solid var(--border);
   overflow: hidden;
@@ -1382,6 +1389,7 @@ button:focus-visible {
     grid-template-rows: auto auto;
     gap: 4px 8px;
     padding: 4px 10px;
+    padding-bottom: calc(4px + env(safe-area-inset-bottom, 0px));
   }
 
   .now {

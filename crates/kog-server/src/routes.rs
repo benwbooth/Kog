@@ -461,11 +461,31 @@ async fn web_asset(uri: axum::http::Uri, headers: HeaderMap) -> Response {
             // when the script and the module come from the same build. Browsers
             // cache them heuristically when nothing says otherwise, so a rebuild
             // could pair an old script with a new wasm and render a blank page.
-            // Always revalidate, and answer 304 while the bytes are unchanged.
-            let etag = build_etag();
+            // The page itself always revalidates; versioned asset URLs (they
+            // carry this build's etag) are immutable and cache for good, and
+            // unversioned extras ride a short window.
+            let has_version = uri.query().is_some();
+            let cache_control = match path {
+                "index.html" | "manifest.webmanifest" => "no-cache",
+                _ if has_version => "public, max-age=31536000, immutable",
+                _ => "public, max-age=300",
+            };
+            // Precompressed variants: the wasm is the whole boot cost on a
+            // phone. index.html and kog_web.js are served uncompressed because
+            // their asset URLs get rewritten below.
+            let accepts_gzip = headers
+                .get(header::ACCEPT_ENCODING)
+                .and_then(|value| value.to_str().ok())
+                .map(|value| value.to_ascii_lowercase().contains("gzip"))
+                .unwrap_or(false);
+            let gz_path = format!("{path}.gz");
+            let gz = accepts_gzip
+                && !matches!(path, "index.html" | "kog_web.js")
+                && WEB_ASSETS.get_file(&gz_path).is_some();
             // Version the cross-references with the build ETag: a browser (or
             // extension) that ignores no-cache still sees a brand-new URL per
             // build instead of serving stale bytes for weeks.
+            let etag = build_etag();
             let version = format!(
                 "?v={}",
                 etag.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>()
@@ -493,19 +513,34 @@ async fn web_asset(uri: axum::http::Uri, headers: HeaderMap) -> Response {
                 *response.status_mut() = StatusCode::NOT_MODIFIED;
                 response
             } else {
-                let body = match text_body {
-                    Some(text) => axum::body::Body::from(text.into_bytes()),
-                    None => axum::body::Body::from(file.contents().to_vec()),
+                let body = match (text_body.as_deref(), gz) {
+                    (_, true) => {
+                        let compressed = WEB_ASSETS.get_file(&gz_path).expect("checked above");
+                        axum::body::Body::from(compressed.contents().to_vec())
+                    }
+                    (Some(text), false) => axum::body::Body::from(text.as_bytes().to_vec()),
+                    (None, false) => axum::body::Body::from(file.contents().to_vec()),
                 };
                 let mut response = Response::new(body);
+                if gz {
+                    response.headers_mut().insert(
+                        header::CONTENT_ENCODING,
+                        HeaderValue::from_static("gzip"),
+                    );
+                    response.headers_mut().insert(
+                        header::VARY,
+                        HeaderValue::from_static("Accept-Encoding"),
+                    );
+                }
                 response
                     .headers_mut()
                     .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
                 response
             };
-            response
-                .headers_mut()
-                .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+            response.headers_mut().insert(
+                header::CACHE_CONTROL,
+                HeaderValue::from_static(cache_control),
+            );
             response.headers_mut().insert(
                 header::ETAG,
                 HeaderValue::from_str(&etag).expect("an etag is ASCII"),
