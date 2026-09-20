@@ -543,7 +543,11 @@ fn content_width(id: ColumnId, texts: &[String]) -> f64 {
         .map(|text| text.chars().count())
         .max()
         .unwrap_or(0) as f64;
-    (widest * 7.0 + 22.0).clamp(id.min_width(), 1024.0)
+    // The header needs room for its label plus the sort arrow inside the
+    // sort button's padding - without this floor, narrow columns elide
+    // their own labels after an auto-fit.
+    let header_min = id.label().chars().count() as f64 * 9.0 + 48.0;
+    (widest * 7.0 + 22.0).clamp(id.min_width().max(header_min), 1024.0)
 }
 
 /// The text a column shows for one queue row, shared by the cell and auto-fit.
