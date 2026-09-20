@@ -1246,6 +1246,9 @@ fn App() -> impl IntoView {
     // whether to re-root or step up.
     let (tree_selected_dir, set_tree_selected_dir) = signal(false);
     let (tree_search, set_tree_search) = signal(String::new());
+    // Server-side search results for the tree box: while set, the pane shows
+    // these instead of the loaded tree folders.
+    let (tree_results, set_tree_results) = signal(Option::<Vec<TreeRow>>::None);
     // Right-click menu anchor and target row.
     let (tree_menu, set_tree_menu) = signal(Option::<(f64, f64, TreeRow)>::None);
     // Right-click on a playlist row: the Qt playlist context menu (play,
@@ -1359,6 +1362,63 @@ fn App() -> impl IntoView {
                 .json::<serde_json::Value>()
                 .await
                 .map_err(|error| error.to_string())
+        }
+    };
+
+    // The tree box searches the whole music folder on the server (like the
+    // desktop's tree search), not just the folders already loaded. Debounced:
+    // a stale reply for an older query is dropped when the text has moved on.
+    let run_tree_search = {
+        let get_json = get_json;
+        move |query: String| {
+            let trimmed = query.trim().to_owned();
+            leptos::task::spawn_local(async move {
+                sleep_ms(300).await;
+                if tree_search.get_untracked().trim() != trimmed {
+                    return;
+                }
+                if trimmed.is_empty() {
+                    set_tree_results.set(None);
+                    return;
+                }
+                match get_json(format!(
+                    "/api/library/search?q={}",
+                    url_encode(&trimmed)
+                ))
+                .await
+                {
+                    Ok(value) => {
+                        let mut rows = Vec::new();
+                        if let Some(list) = value["results"].as_array() {
+                            for item in list {
+                                let path = item["path"].as_str().unwrap_or_default().to_owned();
+                                if path.is_empty() {
+                                    continue;
+                                }
+                                let name = item["name"]
+                                    .as_str()
+                                    .map(str::to_owned)
+                                    .unwrap_or_else(|| last_segment(&path));
+                                rows.push(TreeRow {
+                                    name,
+                                    path,
+                                    parent: String::new(),
+                                    is_dir: false,
+                                    depth: 0,
+                                    expanded: false,
+                                    kind: "local".to_owned(),
+                                    entry: String::new(),
+                                    fragment: None,
+                                });
+                            }
+                        }
+                        if tree_search.get_untracked().trim() == trimmed {
+                            set_tree_results.set(Some(rows));
+                        }
+                    }
+                    Err(error) => set_message.set(error),
+                }
+            });
         }
     };
 
@@ -2947,6 +3007,17 @@ fn App() -> impl IntoView {
                         && item.fragment == row.fragment
                 }) {
                     append_entries(vec![entry]);
+                } else if row.parent.is_empty() {
+                    // Search-result rows are not part of the loaded tree:
+                    // build the entry from the row itself.
+                    append_entries(vec![Entry {
+                        kind: row.kind.clone(),
+                        path: row.path.clone(),
+                        entry: row.entry.clone(),
+                        fragment: row.fragment.clone(),
+                        name: row.name.clone(),
+                        location: row.path.clone(),
+                    }]);
                 }
                 return;
             }
@@ -3280,46 +3351,59 @@ fn App() -> impl IntoView {
                                             placeholder="Search files and folders…"
                                             prop:value=move || tree_search.get()
                                             on:input=move |event| {
-                                                set_tree_search.set(event_target_value(&event))
+                                                let query = event_target_value(&event);
+                                                set_tree_search.set(query.clone());
+                                                run_tree_search(query);
                                             }
                                         />
                                     </div>
                                     <div class="tree-list">
-                                        <Show when=move || !tree_root.get().is_empty() fallback=|| ()>
-                                            <button
-                                                class="tree-row parent-row"
-                                                title=move || format!("Go to {}", parent_path(&tree_root.get()))
-                                                on:click={
-                                                    let go_up = go_up.clone();
-                                                    move |_| go_up()
-                                                }
-                                                on:contextmenu=move |ev: web_sys::MouseEvent| {
-                                                    ev.prevent_default();
-                                                    let root = tree_root.get_untracked();
-                                                    let row = TreeRow {
-                                                        name: "..".to_owned(),
-                                                        path: parent_path(&root),
-                                                        parent: root,
-                                                        is_dir: true,
-                                                        depth: 0,
-                                                        expanded: false,
-                                                        kind: "dir".to_owned(),
-                                                        entry: String::new(),
-                                                        fragment: None,
-                                                    };
-                                                    set_tree_menu.set(Some((
-                                                        ev.client_x() as f64,
-                                                        ev.client_y() as f64,
-                                                        row,
-                                                    )));
-                                                }
+                                        <Show
+                                            when=move || {
+                                                let searching = !tree_search.get().trim().is_empty();
+                                                let rooted = !tree_root.get().is_empty();
+                                                searching || rooted
+                                            }
+                                            fallback=|| ()
+                                        >
+                                            <Show
+                                                when=move || tree_search.get().trim().is_empty()
+                                                fallback=|| ()
                                             >
-                                                <span class="twisty"></span>
-                                                <span class="tree-icon up" inner_html=icons::GO_UP></span>
-                                                <span class="label">".."</span>
-                                            </button>
-                                        </Show>
-                                        <For
+                                                <button
+                                                    class="tree-row parent-row"
+                                                    title=move || format!("Go to {}", parent_path(&tree_root.get()))
+                                                    on:click={
+                                                        let go_up = go_up.clone();
+                                                        move |_| go_up()
+                                                    }
+                                                    on:contextmenu=move |ev: web_sys::MouseEvent| {
+                                                        ev.prevent_default();
+                                                        let root = tree_root.get_untracked();
+                                                        let row = TreeRow {
+                                                            name: "..".to_owned(),
+                                                            path: parent_path(&root),
+                                                            parent: root,
+                                                            is_dir: true,
+                                                            depth: 0,
+                                                            expanded: false,
+                                                            kind: "dir".to_owned(),
+                                                            entry: String::new(),
+                                                            fragment: None,
+                                                        };
+                                                        set_tree_menu.set(Some((
+                                                            ev.client_x() as f64,
+                                                            ev.client_y() as f64,
+                                                            row,
+                                                        )));
+                                                    }
+                                                >
+                                                    <span class="twisty"></span>
+                                                    <span class="tree-icon up" inner_html=icons::GO_UP></span>
+                                                    <span class="label">".."</span>
+                                                </button>
+                                            </Show>
+<For
                                             each=tree_rows
                                             key=|row| format!(
                                                 "{}#{}#{}#{}#{}",
@@ -3417,10 +3501,61 @@ fn App() -> impl IntoView {
                                                 }
                                             }
                                         </For>
+                                        </Show>
+                                        <Show
+                                            when=move || {
+                                                let searching = !tree_search.get().trim().is_empty();
+                                                searching
+                                            }
+                                            fallback=|| ()
+                                        >
+                                            <Show
+                                                when=move || !tree_results.get().unwrap_or_default().is_empty()
+                                                fallback=move || view! {
+                                                    <p class="empty">"No matches."</p>
+                                                }
+                                            >
+                                                <For
+                                                    each=move || tree_results.get().unwrap_or_default()
+                                                    key=|row| format!("{}#{}", row.path, row.entry)
+                                                    let:row
+                                                >
+                                                    {
+                                                        let row_click = row.clone();
+                                                        let row_drag = row.clone();
+                                                        view! {
+                                                            <button
+                                                                class="tree-row search-result"
+                                                                title=row.path.clone()
+                                                                draggable="true"
+                                                                on:dblclick=move |_| {
+                                                                    add_row_to_playlist(row_click.clone());
+                                                                }
+                                                                on:dragstart=move |ev: web_sys::DragEvent| {
+                                                                    set_dragging_tree.set(Some(row_drag.clone()));
+                                                                    if let Some(transfer) = ev.data_transfer() {
+                                                                        let _ = transfer.set_data("text/plain", &row_drag.path);
+                                                                        transfer.set_effect_allowed("copy");
+                                                                    }
+                                                                }
+                                                                on:dragend=move |_| set_dragging_tree.set(None)
+                                                            >
+                                                                <span class="tree-icon file"></span>
+                                                                <span class="label">{row.name.clone()}</span>
+                                                                <span class="search-path">{row.parent.clone()}</span>
+                                                            </button>
+                                                        }
+                                                    }
+                                                </For>
+                                            </Show>
+                                        </Show>
                                     </div>
+
                                     <Show
                                         when=move || {
-                                            tree_rows().is_empty() && library_root.get().is_empty()
+                                            tree_rows().is_empty()
+                                                && library_root.get().is_empty()
+                                                && tree_search.get().trim().is_empty()
                                         }
                                         fallback=|| ()
                                     >
