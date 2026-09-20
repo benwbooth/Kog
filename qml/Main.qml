@@ -59,6 +59,8 @@ ApplicationWindow {
     property int treeSelectionAnchorRow: -1
     property var pendingTreeExpanded: []
     property int treeExpandRestoreAttempts: 0
+    property string pendingShowPath: ""
+    property int showSelectAttempts: 0
     property string treeContextPath: ""
     readonly property string selectedQueueState: {
         appController.playlist_revision
@@ -444,6 +446,67 @@ ApplicationWindow {
         root.pendingTreeExpanded = []
         root.treeExpandRestoreAttempts = 0
         treeExpandRestoreTimer.stop()
+    }
+
+    // Reveal a playlist song in the file tree: show the pane, expand the
+    // folders on the path (the restore timer retries while children load),
+    // then select the song's row and scroll it into view.
+    function showInFileTree(path) {
+        if (path.length === 0)
+            return
+        if (!root.sidebarVisible)
+            root.sidebarVisible = true
+        const music = appController.directory_path.replace(/\/+$/, "")
+        const cut = path.lastIndexOf("/")
+        const folder = cut > 0 ? path.slice(0, cut) : "/"
+        if (!path.startsWith(music)) {
+            // Outside the music folder the tree can only root at the folder.
+            root.useTreeRoot(folder)
+            root.pendingShowPath = path
+            root.showSelectAttempts = 0
+            showSelectTimer.restart()
+            return
+        }
+        const ancestors = []
+        let cursor = folder
+        while (cursor.length > music.length && cursor !== "/") {
+            ancestors.push(cursor)
+            const cut = cursor.lastIndexOf("/")
+            cursor = cut > 0 ? cursor.slice(0, cut) : "/"
+        }
+        ancestors.reverse()
+        root.pendingTreeExpanded = ancestors
+        root.treeExpandRestoreAttempts = 0
+        if (ancestors.length > 0)
+            treeExpandRestoreTimer.restart()
+        root.pendingShowPath = path
+        root.showSelectAttempts = 0
+        showSelectTimer.restart()
+    }
+
+    function trySelectPendingShow() {
+        const path = root.pendingShowPath
+        if (path.length === 0) {
+            showSelectTimer.stop()
+            return
+        }
+        try {
+            for (let candidate = 0; candidate < directoryTree.rows; ++candidate) {
+                if (treePathAtRow(candidate) !== path)
+                    continue
+                directoryTree.selectionModel.clear()
+                const index = directoryTree.index(candidate, 0)
+                directoryTree.selectionModel.select(index,
+                    ItemSelectionModel.Select | ItemSelectionModel.Rows)
+                directoryTree.positionViewAtIndex(candidate, ListView.Contain)
+                root.pendingShowPath = ""
+                showSelectTimer.stop()
+                return
+            }
+        } catch (error) { /* the model may still be settling */ }
+        root.showSelectAttempts += 1
+        if (root.showSelectAttempts >= 40)
+            showSelectTimer.stop()
     }
 
     function expandPendingTreeFolders() {
@@ -1006,6 +1069,15 @@ ApplicationWindow {
         running: false
         repeat: true
         onTriggered: root.expandPendingTreeFolders()
+    }
+
+    Timer {
+        id: showSelectTimer
+
+        interval: 300
+        running: false
+        repeat: true
+        onTriggered: root.trySelectPendingShow()
     }
 
     InfoInspector { id: infoInspector; app: appController }
@@ -1617,6 +1689,14 @@ ApplicationWindow {
             icon.name: "media-playback-start"
             enabled: root.selectedRow >= 0
             onTriggered: appController.play_index(root.selectedRow)
+        }
+        MenuSeparator {}
+        MenuItem {
+            text: qsTr("Show in File Tree")
+            icon.name: "folder-open"
+            enabled: root.selectedRow >= 0
+            onTriggered: root.showInFileTree(
+                String(appController.track_value_at(root.selectedRow, "path")))
         }
         MenuItem { action: toggleQueueAction }
         MenuItem { action: stopAfterSelectionAction }

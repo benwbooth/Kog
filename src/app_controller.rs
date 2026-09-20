@@ -5283,6 +5283,7 @@ impl qobject::AppController {
             "defaultCodec": config.default_codec.setting_value(),
             "cacheBytes": config.cache_bytes,
             "problems": config.problems(),
+            "musicDirectory": self.rust().directory_path.to_string(),
             "status": running.map(|server| serde_json::json!({
                 "running": true,
                 "url": format!("{}://{}", server.scheme, server.address),

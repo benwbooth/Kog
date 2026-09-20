@@ -563,6 +563,20 @@ async fn require_auth(
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok());
+    // The browser's audio element cannot set headers; it carries the token as
+    // a query parameter on stream URLs instead.
+    let query_token = if header.is_none() && mode == crate::AuthMode::Token {
+        request
+            .uri()
+            .query()
+            .and_then(|query| {
+                query.split('&').find_map(|pair| pair.strip_prefix("token="))
+            })
+            .map(|value| format!("Bearer {value}"))
+    } else {
+        None
+    };
+    let header = header.or_else(|| query_token.as_deref());
     match authorize(header, mode, &view) {
         Ok(()) => next.run(request).await,
         Err(error) => unauthorized(error),

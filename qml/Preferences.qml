@@ -13,8 +13,8 @@ Window {
 
     // Roomy enough for the densest page (Server, with its groups of fields);
     // every page scrolls, so a smaller window still reaches the rest.
-    width: 880
-    height: 660
+    width: 1120
+    height: 800
     minimumWidth: 680
     minimumHeight: 520
     title: qsTr("Kog Preferences")
@@ -897,6 +897,7 @@ Window {
                         property var problems: []
                         property var status: null
                         property string detail: ""
+                        property string musicDirectory: ""
 
                         function load() {
                             let payload = null
@@ -921,6 +922,7 @@ Window {
                             cacheMegabytes = Math.round((payload.cacheBytes || 0) / (1024 * 1024))
                             problems = payload.problems || []
                             status = payload.status || null
+                            musicDirectory = payload.musicDirectory || ""
                             loaded = true
                         }
 
@@ -1000,6 +1002,32 @@ Window {
                                 text: qsTr("Serve your library to other devices. Streams are transcoded per client, so each listener gets their own copy. The server binds to loopback unless you choose otherwise.")
                                 wrapMode: Text.Wrap
                                 color: root.palette.placeholderText
+                            }
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                PreferenceLabel { text: qsTr("Music folder") }
+                                PreferenceLabel {
+                                    Layout.fillWidth: true
+                                    text: serverState.musicDirectory
+                                    elide: Text.ElideMiddle
+                                    color: palette.placeholderText
+                                }
+                                Button {
+                                    text: qsTr("Choose…")
+                                    onClicked: {
+                                        root.app.choose_music_folder()
+                                        serverState.load()
+                                        // The web tree roots at the music
+                                        // folder: a restart lets the running
+                                        // server see a new folder.
+                                        const running = !!(serverState.status && serverState.status.running)
+                                        if (running) {
+                                            root.app.stop_api_server()
+                                            serverState.start()
+                                        }
+                                    }
+                                }
                             }
                             PreferenceCheckBox {
                                 text: qsTr("Run the API server")

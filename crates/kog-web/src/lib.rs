@@ -1040,12 +1040,24 @@ async fn post_json(
         return Err("Sign in to continue".to_owned());
     }
     if !response.ok() {
-        return Err(format!("Request failed ({})", response.status()));
+        return Err(error_text(response).await);
     }
     response
         .json::<serde_json::Value>()
         .await
         .map_err(|error| error.to_string())
+}
+
+/// The server's error message for refused requests (a blocked device says
+/// exactly what happened); falls back to the bare status.
+async fn error_text(response: gloo_net::http::Response) -> String {
+    let status = response.status();
+    if let Ok(value) = response.json::<serde_json::Value>().await {
+        if let Some(text) = value["error"].as_str() {
+            return text.to_owned();
+        }
+    }
+    format!("Request failed ({status})")
 }
 
 /// Walk the expanded directories into a flat list of tree lines.
@@ -1214,8 +1226,9 @@ fn App() -> impl IntoView {
     let (tree_search, set_tree_search) = signal(String::new());
     // Right-click menu anchor and target row.
     let (tree_menu, set_tree_menu) = signal(Option::<(f64, f64, TreeRow)>::None);
-    // Right-click on a playlist row: reveal the song's location in the tree.
-    let (song_menu, set_song_menu) = signal(Option::<(f64, f64, Entry)>::None);
+    // Right-click on a playlist row: the Qt playlist context menu (play,
+    // remove, select all, clear, reveal in the file tree).
+    let (song_menu, set_song_menu) = signal(Option::<(f64, f64, usize, Entry)>::None);
     // The row being dragged from the tree onto the playlist pane.
     let (dragging_tree, set_dragging_tree) = signal(Option::<TreeRow>::None);
     let (playlist_drop_active, set_playlist_drop_active) = signal(false);
@@ -1306,7 +1319,7 @@ fn App() -> impl IntoView {
                 return Err("Sign in to continue".to_owned());
             }
             if !response.ok() {
-                return Err(format!("Request failed ({})", response.status()));
+                return Err(error_text(response).await);
             }
             response
                 .json::<serde_json::Value>()
@@ -2030,7 +2043,7 @@ fn App() -> impl IntoView {
 
     let stream_url = move |entry: &Entry| {
         format!(
-            "{}/api/stream?kind={}&path={}&entry={}&codec={}{}&device={}",
+            "{}/api/stream?kind={}&path={}&entry={}&codec={}{}&device={}&token={}",
             base(),
             url_encode(&entry.kind),
             url_encode(&entry.path),
@@ -2043,6 +2056,8 @@ fn App() -> impl IntoView {
                 .map(|fragment| format!("&fragment={}", url_encode(fragment)))
                 .unwrap_or_default(),
             url_encode(&device_id()),
+            // The audio element cannot send the Authorization header.
+            url_encode(&token.get()),
         )
     };
 
@@ -3476,6 +3491,7 @@ fn App() -> impl IntoView {
                                                 set_song_menu.set(Some((
                                                     ev.client_x() as f64,
                                                     ev.client_y() as f64,
+                                                    index,
                                                     menu_entry.clone(),
                                                 )));
                                             }
@@ -4023,7 +4039,7 @@ fn App() -> impl IntoView {
                 <div
                     class="context-menu"
                     style=move || match song_menu.get() {
-                        Some((x, y, _)) => format!("left:{x}px; top:{y}px;"),
+                        Some((x, y, ..)) => format!("left:{x}px; top:{y}px;"),
                         None => String::new(),
                     }
                 >
@@ -4032,7 +4048,56 @@ fn App() -> impl IntoView {
                         on:click={
                             let reveal_in_tree = reveal_in_tree.clone();
                             move |_| {
-                                if let Some((_, _, entry)) = song_menu.get_untracked() {
+                                if let Some((_, _, index, entry)) = song_menu.get_untracked() {
+                                    set_song_menu.set(None);
+                                    jump(index);
+                                }
+                            }
+                        }
+                    >
+                        "Play"
+                    </button>
+                    <div class="menu-separator"></div>
+                    <button
+                        class="menu-item"
+                        on:click=move |_| {
+                            set_song_menu.set(None);
+                            remove_selected();
+                        }
+                    >
+                        "Remove Selected"
+                    </button>
+                    <button
+                        class="menu-item"
+                        on:click=move |_| {
+                            set_song_menu.set(None);
+                            let total = queue.get_untracked().len();
+                            set_selected.update(|set| {
+                                set.clear();
+                                for index in 0..total {
+                                    set.insert(index);
+                                }
+                            });
+                        }
+                    >
+                        "Select All"
+                    </button>
+                    <button
+                        class="menu-item"
+                        on:click=move |_| {
+                            set_song_menu.set(None);
+                            clear_pane();
+                        }
+                    >
+                        "Clear Playlist"
+                    </button>
+                    <div class="menu-separator"></div>
+                    <button
+                        class="menu-item"
+                        on:click={
+                            let reveal_in_tree = reveal_in_tree.clone();
+                            move |_| {
+                                if let Some((_, _, _, entry)) = song_menu.get_untracked() {
                                     set_song_menu.set(None);
                                     reveal_in_tree(entry);
                                 }
