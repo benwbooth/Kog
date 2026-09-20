@@ -80,6 +80,9 @@ ApplicationWindow {
     // coordinates, which lands it outside the pane.
     property string treeHoverPath: ""
     property real treeHoverY: 0
+    // The delegate the pointer is on: its live position keeps the popup glued
+    // to the right row while the tree scrolls.
+    property Item treeHoverItem: null
     readonly property bool compactToolbar: width < 980
     // Which build is running: the stamped revision plus, when it is known,
     // when the binary was linked. Shown small in the toolbar and in About.
@@ -397,6 +400,20 @@ ApplicationWindow {
         if (row < 0 || row >= directoryTree.rows)
             return ""
         return fileTreeModel.path_for_index(directoryTree.index(row, 0))
+    }
+
+    // Track the popup to the hovered row through the tree's scroll offset.
+    // A destroyed delegate is only ever the sign of a stale hover, so the
+    // tooltip goes with it.
+    function refreshTreeHoverY() {
+        if (treeHoverPath.length === 0 || !treeHoverItem)
+            return
+        try {
+            treeHoverY = treeHoverItem.mapToItem(treeSection, 0, 0).y
+        } catch (e) {
+            treeHoverPath = ""
+            treeHoverItem = null
+        }
     }
 
     // JSON array of the visible tree rows that are currently expanded.
@@ -2675,6 +2692,14 @@ ApplicationWindow {
                     interval: 250
                     onTriggered: fileTreeModel.searchText = treeSearchField.text
                 }
+                Timer {
+                    id: treeHoverClearTimer
+                    interval: 150
+                    onTriggered: {
+                        root.treeHoverPath = ""
+                        root.treeHoverItem = null
+                    }
+                }
                 Connections {
                     target: fileTreeModel
                     function onSearchResultsChanged() {
@@ -2701,16 +2726,18 @@ ApplicationWindow {
                 // The full path of a row cannot be read when it is elided, and a
                 // ToolTip attached to the row is positioned in the row's own
                 // scrolled content coordinates, which lands it outside the pane.
-                // Show it in a popup parented to the view instead.
+                // Show it in a popup parented to the pane instead: parenting it
+                // to the tree itself put the popup in the tree's scrolled
+                // coordinate space, where it wandered under the cursor and
+                // fought the row hover (flicker: visible, empty, gone).
                 Popup {
                     id: treePathTip
-                    parent: directoryTree
                     visible: root.treeHoverPath.length > 0
                     width: Math.min(tipLabel.implicitWidth + 18,
-                        Math.max(120, directoryTree.width - 16))
+                        Math.max(120, treeSection.width - 16))
                     height: tipLabel.implicitHeight + 12
                     x: 4
-                    y: Math.max(4, Math.min(directoryTree.height - height - 4,
+                    y: Math.max(4, Math.min(treeSection.height - height - 4,
                         root.treeHoverY + 28))
                     modal: false
                     focus: false
@@ -2750,7 +2777,7 @@ ApplicationWindow {
                     icon.height: 18
                     leftPadding: 9
                     Accessible.name: qsTr("Go to parent folder")
-                    ToolTip.visible: hovered
+                    ToolTip.visible: hovered && fileTreeModel.parent_path.length > 0
                     ToolTip.delay: 700
                     ToolTip.text: fileTreeModel.parent_path
                     onClicked: {
@@ -2792,6 +2819,7 @@ ApplicationWindow {
                     flickDeceleration: 2200
                     onDraggingChanged: if (dragging)
                         directoryKineticWheel.stop()
+                    onContentYChanged: root.refreshTreeHoverY()
                     readonly property real scrollGutter:
                         directoryScrollBar.visible
                             ? directoryScrollBar.implicitWidth + 4 : 0
@@ -2809,6 +2837,14 @@ ApplicationWindow {
                         required property string filePath
                         required property string fileIcon
                         readonly property string dragPath: filePath
+                        // A destroyed delegate must not leave the shared
+                        // tooltip showing its (now stale) path.
+                        Component.onDestruction: {
+                            if (root.treeHoverItem === treeDelegate) {
+                                root.treeHoverPath = ""
+                                root.treeHoverItem = null
+                            }
+                        }
                         // Show in File Tree: when this row is the reveal
                         // target, center it. Creation and selection both land
                         // here, so the row scrolls no matter which fires.
@@ -2867,13 +2903,24 @@ ApplicationWindow {
                             acceptedButtons: Qt.LeftButton | Qt.RightButton
                             hoverEnabled: true
                             onEntered: {
+                                treeHoverClearTimer.stop()
+                                root.treeHoverItem = treeDelegate
                                 root.treeHoverPath = treeDelegate.filePath.length > 0
                                     ? treeDelegate.filePath
                                     : root.treePathAtRow(treeDelegate.row)
                                 root.treeHoverY = treeDelegate.mapToItem(
-                                    directoryTree, 0, 0).y
+                                    treeSection, 0, 0).y
                             }
-                            onExited: root.treeHoverPath = ""
+                            onPositionChanged: (mouse) => {
+                                // Keep the popup pinned to the row while the
+                                // pointer moves and while the tree scrolls.
+                                root.treeHoverY = treeDelegate.mapToItem(
+                                    treeSection, 0, 0).y
+                            }
+                            // Delay the clear: moving to a neighbouring row
+                            // delivers this exit after that row's enter, and
+                            // an immediate clear ate the fresh tooltip.
+                            onExited: treeHoverClearTimer.restart()
                             preventStealing: true
                             scrollGestureEnabled: false
 
