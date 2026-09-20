@@ -6,10 +6,17 @@ WheelHandler {
     id: kineticWheel
 
     required property Flickable view
-    // Qt.Vertical drives contentY (the default); Qt.Horizontal drives
-    // contentX for panes wider than their viewport.
-    property int orientation: Qt.Vertical
+    // The native WheelHandler.orientation decides which axis Qt delivers at
+    // all: a vertical handler never sees x-only wheel events, and a
+    // horizontal one never sees y-only events. (Shadowing this property with
+    // a QML one used to leave the C++ filter on Vertical, so horizontal
+    // momentum silently never ran.) Shift+wheel is a y-axis event that must
+    // scroll sideways, so the vertical handler drives the horizontal engine
+    // itself via start(steps, true).
     readonly property bool horizontal: orientation === Qt.Horizontal
+    // The axis the active momentum run drives; Shift+wheel flips it on a
+    // vertical handler.
+    property bool drivingHorizontally: horizontal
     property real velocity: 0
     property real maximumVelocity: 9000
     property real impulsePerStep: 1250
@@ -22,19 +29,19 @@ WheelHandler {
     acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
 
     function minimumContent() {
-        return horizontal
+        return drivingHorizontally
             ? view.originX - view.leftMargin
             : view.originY - view.topMargin;
     }
 
     function maximumContent() {
-        return horizontal
+        return drivingHorizontally
             ? Math.max(minimumContent(), view.originX + view.contentWidth - view.width + view.rightMargin)
             : Math.max(minimumContent(), view.originY + view.contentHeight - view.height + view.bottomMargin);
     }
 
     function currentContent() {
-        return horizontal ? view.contentX : view.contentY;
+        return drivingHorizontally ? view.contentX : view.contentY;
     }
 
     function stop() {
@@ -44,24 +51,35 @@ WheelHandler {
         lastFrameTime = 0;
         lastPixelEventTime = 0;
         pixelVelocity = 0;
+        // A Shift+wheel run borrows the horizontal axis; ending the run hands
+        // the engine back to the handler's own orientation.
+        drivingHorizontally = horizontal;
     }
 
-    function start(steps) {
+    function start(steps, sideways) {
+        const axis = sideways !== undefined ? sideways : horizontal;
+        if (axis !== drivingHorizontally) {
+            // A momentum run left over from the other axis must not carry
+            // into this one.
+            velocity = 0;
+            drivingHorizontally = axis;
+        }
         if (steps === 0 || maximumContent() <= minimumContent())
-            return;
+            return false;
         const impulse = -steps * impulsePerStep;
         if (velocity * impulse < 0)
             velocity *= 0.2;
         velocity = Math.max(-maximumVelocity, Math.min(maximumVelocity, velocity + impulse));
         lastFrameTime = Date.now();
         momentumTimer.start();
+        return true;
     }
 
     function moveTo(position) {
         const minimum = minimumContent();
         const maximum = maximumContent();
         const clamped = Math.max(minimum, Math.min(maximum, position));
-        if (horizontal)
+        if (drivingHorizontally)
             view.contentX = clamped;
         else
             view.contentY = clamped;
@@ -127,8 +145,14 @@ WheelHandler {
     }
 
     function handleVerticalWheel(event) {
+        // Shift turns the wheel sideways. The event stays on the y axis, so
+        // this vertical handler is the only one Qt offers it to; drive the
+        // horizontal engine from here.
         if (event.modifiers & Qt.ShiftModifier) {
-            event.accepted = false;
+            let sidesteps = event.angleDelta.y / 120;
+            if (sidesteps === 0)
+                sidesteps = event.pixelDelta.y / 40;
+            event.accepted = sidesteps !== 0 && start(sidesteps, true);
             return;
         }
 
@@ -151,8 +175,8 @@ WheelHandler {
     }
 
     function handleHorizontalWheel(event) {
-        // Native horizontal wheels report angleDelta.x; Shift+wheel
-        // redirects the usual vertical detents sideways.
+        // Native horizontal wheels and trackpad swipes report on the x axis,
+        // which is the only axis Qt delivers to this handler.
         if (event.device.type === PointerDevice.TouchPad && event.pixelDelta.x !== 0) {
             applyPixelDelta(event.pixelDelta.x);
             event.accepted = true;
@@ -160,8 +184,6 @@ WheelHandler {
         }
 
         let steps = event.angleDelta.x / 120;
-        if (steps === 0 && (event.modifiers & Qt.ShiftModifier))
-            steps = event.angleDelta.y / 120;
         if (steps === 0)
             steps = event.pixelDelta.x / 40;
         if (steps === 0) {

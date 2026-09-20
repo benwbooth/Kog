@@ -58,6 +58,7 @@ Item {
             kineticWheel.stop();
             horizontalWheel.stop();
             view.contentY = 0;
+            view.contentX = 0;
             horizontalView.contentX = 0;
             horizontalView.visible = false;
         }
@@ -127,13 +128,31 @@ Item {
         }
 
         function test_shiftWheelDrivesHorizontalAxis() {
-            horizontalView.visible = true;
-            mouseWheel(horizontalView, 160, 100, 0, -240, Qt.NoButton, Qt.ShiftModifier);
-            wait(80);
-            verify(horizontalView.contentX > 0,
+            // Shift+wheel stays on the y axis, so Qt hands the event to the
+            // VERTICAL handler; that handler drives the horizontal engine
+            // itself. A lone horizontal handler never sees it.
+            view.contentWidth = 1200;
+            mouseWheel(view, 160, 100, 0, -240, Qt.NoButton, Qt.ShiftModifier);
+            tryVerify(function () {
+                return view.contentX > 0;
+            }, 100);
+            verify(view.contentX > 0,
                 "Shift+wheel should scroll horizontally with momentum");
             verify(view.contentY === 0,
                 "Shift+wheel must not scroll the vertical axis");
+        }
+
+        function test_nativeHorizontalWheelMomentum() {
+            // A native x-axis event reaches a horizontal-oriented handler
+            // directly and glides after the wheel stops.
+            horizontalView.visible = true;
+            waitForRendering(horizontalView);
+            mouseWheel(horizontalView, 160, 100, -120, 0, Qt.NoButton, Qt.NoModifier);
+            tryVerify(function () {
+                return horizontalView.contentX > 0;
+            }, 100);
+            verify(horizontalView.contentX > 0,
+                "native horizontal wheel should scroll with momentum");
         }
     }
 }
