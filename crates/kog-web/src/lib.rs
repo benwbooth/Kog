@@ -1613,10 +1613,23 @@ fn App() -> impl IntoView {
                 }
                 set_tree_selected.set(song);
                 set_tree_selected_dir.set(false);
-                sleep_ms(120).await;
-                let _ = js_sys::eval(
-                    "document.querySelector('.tree-row.selected')?.scrollIntoView({block: 'nearest'})",
-                );
+                // The selected row renders a tick after the state change, and
+                // only once the expanded folders have re-rendered. Poll until
+                // it exists, then land it mid-pane so it is plainly visible.
+                for _ in 0..20 {
+                    sleep_ms(100).await;
+                    let scrolled = js_sys::eval(
+                        "(() => { const row = document.querySelector('.tree-row.selected');\
+                          if (!row) return 'no';\
+                          row.scrollIntoView({ block: 'center' });\
+                          return 'yes'; })()",
+                    );
+                    if let Ok(value) = scrolled
+                        && value.as_string() == Some("yes".to_owned())
+                    {
+                        break;
+                    }
+                }
             });
         }
     };
