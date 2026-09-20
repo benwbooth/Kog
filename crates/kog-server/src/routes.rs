@@ -460,6 +460,27 @@ async fn web_asset(uri: axum::http::Uri, headers: HeaderMap) -> Response {
             // could pair an old script with a new wasm and render a blank page.
             // Always revalidate, and answer 304 while the bytes are unchanged.
             let etag = build_etag();
+            // Version the cross-references with the build ETag: a browser (or
+            // extension) that ignores no-cache still sees a brand-new URL per
+            // build instead of serving stale bytes for weeks.
+            let version = format!(
+                "?v={}",
+                etag.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>()
+            );
+            let versioned = |body: String| {
+                body.replace("kog_web_bg.wasm", &format!("kog_web_bg.wasm{version}"))
+                    .replace(
+                        "import(\"/kog_web.js\")",
+                        &format!("import(\"/kog_web.js{version}\")"),
+                    )
+                    .replace("\"/style.css\"", &format!("\"/style.css{version}\""))
+            };
+            let text_body = match path {
+                "index.html" | "kog_web.js" => Some(versioned(
+                    String::from_utf8_lossy(file.contents()).into_owned(),
+                )),
+                _ => None,
+            };
             let unchanged = headers
                 .get(header::IF_NONE_MATCH)
                 .and_then(|value| value.to_str().ok())
@@ -469,7 +490,10 @@ async fn web_asset(uri: axum::http::Uri, headers: HeaderMap) -> Response {
                 *response.status_mut() = StatusCode::NOT_MODIFIED;
                 response
             } else {
-                let body = axum::body::Body::from(file.contents().to_vec());
+                let body = match text_body {
+                    Some(text) => axum::body::Body::from(text.into_bytes()),
+                    None => axum::body::Body::from(file.contents().to_vec()),
+                };
                 let mut response = Response::new(body);
                 response
                     .headers_mut()
