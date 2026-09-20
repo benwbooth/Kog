@@ -1103,39 +1103,20 @@ mod tests {
             .unwrap()
             .starts_with(&root.to_string_lossy().into_owned()));
 
-        // Outside the music directory the tree can still climb and re-root,
-        // so those folders list their subfolders only: no streamable files.
-        // Relative requests resolve against the process directory, so the
-        // climb uses absolute paths the way the client's tree does.
-        let outside = root.parent().unwrap().to_path_buf();
-        // A plain-named sibling the hidden-file filter will pass through.
-        std::fs::create_dir_all(outside.join("sibling")).unwrap();
-        let (_, body) = get_json(
-            state.clone(),
-            &format!("/api/library?path={}", outside.to_string_lossy()),
+        // Leaving the music directory is refused: the web tree roots there
+        // and cannot climb past it.
+        let (status, body) = get_json(state.clone(), "/api/library?path=..", None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body["error"].as_str().unwrap().contains("outside"));
+
+        let outside = root.parent().unwrap();
+        let (status, _) = get_json(
+            state,
+            &format!("/api/library?path={}", outside.display()),
             None,
         )
         .await;
-        assert!(
-            body["files"].as_array().unwrap().is_empty(),
-            "nothing outside the music directory can stream"
-        );
-        let listed: Vec<&str> = body["directories"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|dir| dir["name"].as_str().unwrap())
-            .collect();
-        assert!(
-            listed.contains(&"sibling"),
-            "the climbable listing carries the parent's folders: {listed:?}"
-        );
-
-        // All the way up to the filesystem root, still directories only.
-        let (status, body) = get_json(state, "/api/library?path=/", None).await;
-        assert_eq!(status, StatusCode::OK);
-        assert!(body["files"].as_array().unwrap().is_empty());
-        assert!(!body["directories"].as_array().unwrap().is_empty());
+        assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

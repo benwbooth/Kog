@@ -1472,37 +1472,23 @@ fn App() -> impl IntoView {
     let go_up = {
         let goto_root = goto_root.clone();
         move || {
-            // "" is the server's music directory; its real path is the way up
-            // past it, all the way to the filesystem root.
-            let current = if tree_root.get().is_empty() {
-                library_root.get()
-            } else {
-                tree_root.get()
-            };
-            if current.is_empty() || current == "/" {
+            let current = tree_root.get();
+            if current.is_empty() {
                 return;
             }
-            goto_root(parent_path(&current));
-        }
-    };
-
-    // Whether a level above the tree's current root exists to climb to.
-    let can_go_up = move || {
-        let current = if tree_root.get().is_empty() {
-            library_root.get()
-        } else {
-            tree_root.get()
-        };
-        !current.is_empty() && current != "/"
-    };
-
-    // The directory the tree is effectively showing: "" means the music
-    // directory, whose absolute path the server reports on first browse.
-    let effective_root = move || {
-        if tree_root.get().is_empty() {
-            library_root.get()
-        } else {
-            tree_root.get()
+            // The music directory set in the desktop's Server settings is the
+            // ceiling: the tree climbs within it, never past it.
+            let library = library_root.get();
+            let parent = parent_path(&current);
+            let target = if parent.is_empty()
+                || parent == library
+                || !is_under(&parent, &library)
+            {
+                String::new()
+            } else {
+                parent
+            };
+            goto_root(target);
         }
     };
 
@@ -1635,7 +1621,7 @@ fn App() -> impl IntoView {
     };
 
     let open_folder_picker = move |_| {
-        set_picker_dir.set(effective_root());
+        set_picker_dir.set(library_root.get());
         set_picker_entries.set(Vec::new());
         set_picker_open.set(true);
     };
@@ -3103,17 +3089,17 @@ fn App() -> impl IntoView {
                                         />
                                     </div>
                                     <div class="tree-list">
-                                        <Show when=move || can_go_up() fallback=|| ()>
+                                        <Show when=move || !tree_root.get().is_empty() fallback=|| ()>
                                             <button
                                                 class="tree-row parent-row"
-                                                title=move || format!("Go to {}", parent_path(&effective_root()))
+                                                title=move || format!("Go to {}", parent_path(&tree_root.get()))
                                                 on:click={
                                                     let go_up = go_up.clone();
                                                     move |_| go_up()
                                                 }
                                                 on:contextmenu=move |ev: web_sys::MouseEvent| {
                                                     ev.prevent_default();
-                                                    let root = effective_root();
+                                                    let root = tree_root.get_untracked();
                                                     let row = TreeRow {
                                                         name: "..".to_owned(),
                                                         path: parent_path(&root),
@@ -3950,7 +3936,15 @@ fn App() -> impl IntoView {
                     <h2>"Choose a Folder"</h2>
                     <p class="folder-picker-path">{move || picker_dir.get()}</p>
                     <div class="folder-picker-list">
-                        <Show when=move || !parent_path(&picker_dir.get()).is_empty() fallback=|| ()>
+                        <Show
+                            when=move || {
+                                let dir = picker_dir.get();
+                                !dir.is_empty()
+                                    && dir != library_root.get_untracked()
+                                    && !parent_path(&dir).is_empty()
+                            }
+                            fallback=|| ()
+                        >
                             <button
                                 class="folder-picker-row parent"
                                 on:click=move |_| set_picker_dir.set(parent_path(&picker_dir.get()))
