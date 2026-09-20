@@ -31,6 +31,10 @@ wasm-bindgen --target web --no-typescript --out-dir "$out_dir" "$wasm"
 
 cp "$here/index.html" "$out_dir/index.html"
 cp "$here/style.css" "$out_dir/style.css"
-cp -r "$here/icons" "$out_dir/icons"
+cp "$here/manifest.webmanifest" "$out_dir/manifest.webmanifest"
+# The trailing slash matters: a plain `cp -r` into an existing icons dir would
+# nest a second icons directory instead of refreshing its contents.
+mkdir -p "$out_dir/icons"
+cp -r "$here/icons/." "$out_dir/icons/"
 
 echo "web frontend written to $out_dir"

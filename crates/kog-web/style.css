@@ -730,6 +730,23 @@ button:focus-visible {
   }
 }
 
+/* A long press opens the context menus on touch. The browser's own callout
+ * and text selection would fight the hold, so the rows opt out of both. */
+.tree-row,
+.track,
+.col-head,
+.drag-grip {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* A queued track held long enough to drag glows until the finger moves. */
+.track.drag-armed {
+  outline: 2px solid var(--highlight);
+  outline-offset: -2px;
+}
+
 .columns {
   position: sticky;
   top: 0;

@@ -1071,6 +1071,49 @@ async fn error_text(response: gloo_net::http::Response) -> String {
 }
 
 /// Walk the expanded directories into a flat list of tree lines.
+/// One in-flight long press. Phones have no right click and HTML5 drag never
+/// starts from a finger, so a held touch stands in for both: pending means the
+/// timer is still running, armed means a queued track held long enough to be
+/// dragged or menu-opened, dragging means the finger is reordering the queue.
+enum TouchPress {
+    Idle,
+    Pending {
+        row: web_sys::Element,
+        x: i32,
+        y: i32,
+        is_track: bool,
+        timer: i32,
+    },
+    Armed {
+        row: web_sys::Element,
+        x: i32,
+        y: i32,
+    },
+    Dragging {
+        from: usize,
+        to: Option<usize>,
+    },
+}
+
+/// Drop whatever the press was doing back to idle: stop its timer, unarm its
+/// row, and tear down drag state so nothing is committed by a dead gesture.
+fn cancel_touch_press(
+    press: &RefCell<TouchPress>,
+    window: &web_sys::Window,
+    cleanup_drag: &dyn Fn(),
+) {
+    let taken = std::mem::replace(&mut *press.borrow_mut(), TouchPress::Idle);
+    if let TouchPress::Pending { timer, .. } = taken {
+        window.clear_timeout_with_handle(timer);
+    }
+    if let TouchPress::Armed { row, .. } = &taken {
+        let _ = row.class_list().remove_1("drag-armed");
+    }
+    if matches!(taken, TouchPress::Dragging { .. }) {
+        cleanup_drag();
+    }
+}
+
 fn flatten(
     children: &HashMap<String, Vec<Entry>>,
     expanded: &HashSet<String>,
@@ -2101,6 +2144,289 @@ fn App() -> impl IntoView {
         set_auto_connected.set(true);
         auto_connect();
     });
+
+    // Touch gestures: a long press (about half a second) is the right click.
+    // Holding a tree, queue, or column-header row opens the same context menu
+    // a mouse would. Holding a queued track instead arms it; from there the
+    // finger reorders the queue and a lift without movement opens the menu.
+    // Moving before the press settles cancels it, so scrolling still works.
+    {
+        let window = web_sys::window().expect("window for touch gestures");
+        let document = window.document().expect("document for touch gestures");
+        let move_track = move_track.clone();
+        let press: Rc<RefCell<TouchPress>> = Rc::new(RefCell::new(TouchPress::Idle));
+        let suppress_click = Rc::new(std::cell::Cell::new(false));
+
+        let fire_menu = {
+            let suppress_click = suppress_click.clone();
+            move |row: &web_sys::Element, x: i32, y: i32| {
+                suppress_click.set(true);
+                let init = web_sys::MouseEventInit::new();
+                init.set_client_x(x);
+                init.set_client_y(y);
+                init.set_bubbles(true);
+                init.set_cancelable(true);
+                if let Ok(event) =
+                    web_sys::MouseEvent::new_with_mouse_event_init_dict("contextmenu", &init)
+                {
+                    let _ = row.dispatch_event(&event);
+                }
+            }
+        };
+        let cleanup_drag = {
+            let set_dragging_track = set_dragging_track.clone();
+            let set_reorder_to = set_reorder_to.clone();
+            move || {
+                set_dragging_track.set(None);
+                set_reorder_to.set(None);
+                let _ = js_sys::eval(
+                    "document.querySelectorAll('.track.reorder-above').forEach(t => t.classList.remove('reorder-above'))",
+                );
+            }
+        };
+
+        // Android fires its own contextmenu partway into a long press; while
+        // one of our gestures is in flight that native event is swallowed so
+        // the row handlers run once, from the timer. A mouse right click sees
+        // an idle state and passes through untouched.
+        let swallow = {
+            let press = press.clone();
+            Closure::<dyn FnMut(web_sys::MouseEvent)>::new(move |event: web_sys::MouseEvent| {
+                if !matches!(&*press.borrow(), TouchPress::Idle) {
+                    event.prevent_default();
+                    event.stop_propagation();
+                }
+            })
+        };
+        document
+            .add_event_listener_with_callback_and_bool(
+                "contextmenu",
+                swallow.as_ref().unchecked_ref(),
+                true,
+            )
+            .expect("contextmenu capture listener");
+        swallow.forget();
+
+        let on_timer = {
+            let press = press.clone();
+            let fire_menu = fire_menu.clone();
+            Closure::<dyn FnMut()>::new(move || {
+                let taken = std::mem::replace(&mut *press.borrow_mut(), TouchPress::Idle);
+                if let TouchPress::Pending { row, x, y, is_track, .. } = taken {
+                    if is_track {
+                        // A queued track waits for the lift: menu if the
+                        // finger stays, drag if it moves.
+                        let _ = row.class_list().add_1("drag-armed");
+                        *press.borrow_mut() = TouchPress::Armed { row, x, y };
+                    } else {
+                        fire_menu(&row, x, y);
+                    }
+                }
+            })
+        };
+
+        // The timer callback outlives every gesture, so the touchstart
+        // handler carries a plain function handle rather than the closure.
+        let timer_callback = on_timer
+            .as_ref()
+            .unchecked_ref::<js_sys::Function>()
+            .clone();
+        on_timer.forget();
+
+        let on_touch_start = {
+            let press = press.clone();
+            let window = window.clone();
+            let suppress_click = suppress_click.clone();
+            Closure::<dyn FnMut(web_sys::TouchEvent)>::new(move |event: web_sys::TouchEvent| {
+                suppress_click.set(false);
+                // A second finger is a pinch, never a press.
+                if event.touches().length() != 1 {
+                    cancel_touch_press(&press, &window, &|| cleanup_drag());
+                    return;
+                }
+                let Some(touch) = event.touches().get(0) else {
+                    cancel_touch_press(&press, &window, &|| cleanup_drag());
+                    return;
+                };
+                let row = event
+                    .target()
+                    .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+                    .and_then(|target| {
+                        target.closest(".tree-row, .track, .col-head").ok().flatten()
+                    });
+                let Some(row) = row else {
+                    cancel_touch_press(&press, &window, &|| cleanup_drag());
+                    return;
+                };
+                cancel_touch_press(&press, &window, &|| cleanup_drag());
+                let is_track = row.class_list().contains("track");
+                let timer = window
+                    .set_timeout_with_callback_and_timeout_and_arguments_0(
+                        &timer_callback,
+                        550,
+                    )
+                    .unwrap_or_default();
+                *press.borrow_mut() = TouchPress::Pending {
+                    row,
+                    x: touch.client_x(),
+                    y: touch.client_y(),
+                    is_track,
+                    timer,
+                };
+            })
+        };
+        document
+            .add_event_listener_with_callback(
+                "touchstart",
+                on_touch_start.as_ref().unchecked_ref(),
+            )
+            .expect("touchstart listener");
+        on_touch_start.forget();
+
+        // Registered non-passive: once a drag is running the page must not
+        // scroll under the finger.
+        let on_touch_move = {
+            let press = press.clone();
+            let window = window.clone();
+            let set_dragging_track = set_dragging_track.clone();
+            let set_reorder_to = set_reorder_to.clone();
+            Closure::<dyn FnMut(web_sys::TouchEvent)>::new(move |event: web_sys::TouchEvent| {
+                let Some(touch) = event.touches().get(0) else {
+                    return;
+                };
+                let taken = std::mem::replace(&mut *press.borrow_mut(), TouchPress::Idle);
+                match taken {
+                    TouchPress::Idle => {}
+                    TouchPress::Pending { row, x, y, is_track, timer } => {
+                        let moved = (touch.client_x() - x).abs() + (touch.client_y() - y).abs()
+                            > 10;
+                        if moved {
+                            window.clear_timeout_with_handle(timer);
+                        } else {
+                            *press.borrow_mut() =
+                                TouchPress::Pending { row, x, y, is_track, timer };
+                        }
+                    }
+                    TouchPress::Armed { row, x, y } => {
+                        event.prevent_default();
+                        let moved = (touch.client_x() - x).abs() + (touch.client_y() - y).abs()
+                            > 6;
+                        if moved {
+                            let _ = row.class_list().remove_1("drag-armed");
+                            if let Some(from) = row
+                                .get_attribute("data-index")
+                                .and_then(|value| value.parse::<usize>().ok())
+                            {
+                                set_dragging_track.set(Some(from));
+                                set_reorder_to.set(None);
+                                *press.borrow_mut() = TouchPress::Dragging { from, to: None };
+                            }
+                        } else {
+                            *press.borrow_mut() = TouchPress::Armed { row, x, y };
+                        }
+                    }
+                    TouchPress::Dragging { from, .. } => {
+                        event.prevent_default();
+                        // The same midpoint rule the mouse drag uses: drop
+                        // above a row's centre line, with the marker drawn.
+                        let y = touch.client_y();
+                        let marker = js_sys::eval(&format!(
+                            "(() => {{ const rows = [...document.querySelectorAll('.track')]; const y = {y}; let index = rows.length; for (let i = 0; i < rows.length; i++) {{ const r = rows[i].getBoundingClientRect(); if (y < r.top + r.height / 2) {{ index = i; break; }} }} rows.forEach(r => r.classList.remove('reorder-above')); if (index < rows.length) rows[index].classList.add('reorder-above'); return index; }})()",
+                        ));
+                        let to = marker.ok().and_then(|value| value.as_f64()).map(|v| v as usize);
+                        set_reorder_to.set(to);
+                        *press.borrow_mut() = TouchPress::Dragging { from, to };
+                    }
+                }
+            })
+        };
+        let move_options = web_sys::AddEventListenerOptions::new();
+        move_options.set_passive(false);
+        document
+            .add_event_listener_with_callback_and_add_event_listener_options(
+                "touchmove",
+                on_touch_move.as_ref().unchecked_ref(),
+                &move_options,
+            )
+            .expect("touchmove listener");
+        on_touch_move.forget();
+
+        let on_touch_end = {
+            let press = press.clone();
+            let window = window.clone();
+            let fire_menu = fire_menu.clone();
+            let move_track = move_track.clone();
+            let set_dragging_track = set_dragging_track.clone();
+            let set_reorder_to = set_reorder_to.clone();
+            let suppress_click = suppress_click.clone();
+            Closure::<dyn FnMut(web_sys::TouchEvent)>::new(move |_| {
+                let taken = std::mem::replace(&mut *press.borrow_mut(), TouchPress::Idle);
+                match taken {
+                    TouchPress::Idle => {}
+                    // A lift before the timer is an ordinary tap; the click
+                    // goes through untouched.
+                    TouchPress::Pending { timer, .. } => {
+                        window.clear_timeout_with_handle(timer);
+                    }
+                    TouchPress::Armed { row, x, y } => {
+                        let _ = row.class_list().remove_1("drag-armed");
+                        fire_menu(&row, x, y);
+                    }
+                    TouchPress::Dragging { from, to } => {
+                        set_dragging_track.set(None);
+                        set_reorder_to.set(None);
+                        let _ = js_sys::eval(
+                            "document.querySelectorAll('.track.reorder-above').forEach(t => t.classList.remove('reorder-above'))",
+                        );
+                        if let Some(to) = to {
+                            move_track(from, to);
+                        }
+                        // The release must not also click the row underneath.
+                        suppress_click.set(true);
+                    }
+                }
+            })
+        };
+        document
+            .add_event_listener_with_callback("touchend", on_touch_end.as_ref().unchecked_ref())
+            .expect("touchend listener");
+        on_touch_end.forget();
+
+        let on_touch_cancel = {
+            let press = press.clone();
+            let window = window.clone();
+            Closure::<dyn FnMut(web_sys::TouchEvent)>::new(move |_| {
+                cancel_touch_press(&press, &window, &|| cleanup_drag());
+            })
+        };
+        document
+            .add_event_listener_with_callback(
+                "touchcancel",
+                on_touch_cancel.as_ref().unchecked_ref(),
+            )
+            .expect("touchcancel listener");
+        on_touch_cancel.forget();
+
+        let on_click = {
+            let suppress_click = suppress_click.clone();
+            Closure::<dyn FnMut(web_sys::MouseEvent)>::new(move |event: web_sys::MouseEvent| {
+                if suppress_click.get() {
+                    suppress_click.set(false);
+                    event.stop_propagation();
+                    event.prevent_default();
+                }
+            })
+        };
+        document
+            .add_event_listener_with_callback_and_bool(
+                "click",
+                on_click.as_ref().unchecked_ref(),
+                true,
+            )
+            .expect("click capture listener");
+        on_click.forget();
+    }
+
 
     // Escape dismisses any open menu or dialog from anywhere on the page, not
     // just when a control inside it holds focus.
@@ -3975,6 +4301,7 @@ fn App() -> impl IntoView {
                                             class="track"
                                             draggable="true"
                                             style="position: relative"
+                                            data-index=move || index.to_string()
                                             class:current=move || current.get() == index
                                             class:selected=move || selected.get().contains(&index)
                                             on:dragstart=move |ev: web_sys::DragEvent| {

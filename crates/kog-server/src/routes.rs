@@ -550,6 +550,7 @@ fn content_type_for(path: &str) -> &'static str {
         Some("js") => "text/javascript; charset=utf-8",
         Some("wasm") => "application/wasm",
         Some("json") => "application/json",
+        Some("webmanifest") => "application/manifest+json",
         Some("svg") => "image/svg+xml",
         Some("png") => "image/png",
         Some("ico") => "image/x-icon",
