@@ -568,6 +568,14 @@ button:focus-visible {
   margin-left: auto;
 }
 
+.playlist-rename {
+  width: 100%;
+  min-width: 0;
+  height: 22px;
+  padding: 0 4px;
+  font-size: 11px;
+}
+
 /* The pane's clear-playlist button: the desktop toolbar's edit-clear-list
  * icon, tinted like the header text. */
 .playlist-head .clear-playlist {

@@ -1229,6 +1229,13 @@ fn App() -> impl IntoView {
     // Right-click on a playlist row: the Qt playlist context menu (play,
     // remove, select all, clear, reveal in the file tree).
     let (song_menu, set_song_menu) = signal(Option::<(f64, f64, usize, Entry)>::None);
+    // Right-click on a playlist row in the sidebar: rename or delete it.
+    // `renaming_playlist` swaps that row's label for an edit field.
+    let (playlist_menu, set_playlist_menu) =
+        signal(Option::<(f64, f64, i64, String)>::None);
+    let (renaming_playlist, set_renaming_playlist) = signal(Option::<i64>::None);
+    let (rename_text, set_rename_text) = signal(String::new());
+    let rename_input = NodeRef::<leptos::html::Input>::new();
     // The row being dragged from the tree onto the playlist pane.
     let (dragging_tree, set_dragging_tree) = signal(Option::<TreeRow>::None);
     // A playlist row dragged toward the pane (append its tracks), and a queue
@@ -2004,6 +2011,8 @@ fn App() -> impl IntoView {
             set_settings_open.set(false);
             set_picker_open.set(false);
             set_song_menu.set(None);
+            set_playlist_menu.set(None);
+            set_renaming_playlist.set(None);
         }
     });
     on_cleanup(move || escape_handle.remove());
@@ -2617,6 +2626,61 @@ fn App() -> impl IntoView {
             });
         }
     };
+
+    let commit_rename = {
+        let get_json = get_json;
+        let post_json = post_json;
+        let load_playlists = load_playlists.clone();
+        move || {
+            if let Some(id) = renaming_playlist.get_untracked() {
+                let name = rename_text.get_untracked().trim().to_owned();
+                set_renaming_playlist.set(None);
+                if name.is_empty() {
+                    return;
+                }
+                let url = format!("{}/api/playlists/{id}/rename", base());
+                let header = auth().header();
+                leptos::task::spawn_local(async move {
+                    if let Err(error) =
+                        post_json(url, header, serde_json::json!({ "name": name })).await
+                    {
+                        set_message.set(error);
+                    }
+                    load_playlists();
+                });
+            }
+        }
+    };
+
+    let delete_playlist = {
+        let get_json = get_json;
+        let load_playlists = load_playlists.clone();
+        move |id: i64| {
+            let url = format!("{}/api/playlists/{id}", base());
+            let header = auth().header();
+            leptos::task::spawn_local(async move {
+                let mut request = Request::delete(&url);
+                if let Some(header) = header {
+                    request = request.header("Authorization", &header);
+                }
+                match request.send().await {
+                    Ok(response) if !response.ok() => {
+                        set_message.set(format!("Request failed ({})", response.status()))
+                    }
+                    _ => load_playlists(),
+                }
+            });
+        }
+    };
+
+    Effect::new(move |_| {
+        if renaming_playlist.get().is_some() {
+            if let Some(input) = rename_input.get() {
+                let _ = input.focus();
+                let _ = input.select();
+            }
+        }
+    });
 
     // ------------------------------------------------------- shell actions
     // The application (`☰`) menu's playlist/queue actions. The web pane is the
@@ -3314,13 +3378,16 @@ fn App() -> impl IntoView {
                                         </button>
                                         }
                                     }
-                                    <For each=move || playlists.get() key=|item| item.0 let:item>
+                                    // The key carries the name: a rename must
+                                    // re-render the row's label, not reuse it.
+                                    <For each=move || playlists.get() key=|item| format!("{}#{}", item.0, item.1) let:item>
                                         {
                                             let id = item.0;
                                             let count = item.2;
                                             let label = item.1.clone();
                                             let drag_id = id;
                                             let drag_label = label.clone();
+                                            let menu_label = label.clone();
                                             view! {
                                                 <button
                                                     class="tree-row playlist-row"
@@ -3335,9 +3402,39 @@ fn App() -> impl IntoView {
                                                     }
                                                     on:dragend=move |_| set_dragging_playlist.set(None)
                                                     on:dblclick=move |_| append_playlist(drag_id)
+                                                    on:contextmenu=move |ev: web_sys::MouseEvent| {
+                                                        ev.prevent_default();
+                                                        ev.stop_propagation();
+                                                        set_playlist_menu.set(Some((
+                                                            ev.client_x() as f64,
+                                                            ev.client_y() as f64,
+                                                            drag_id,
+                                                            menu_label.clone(),
+                                                       )));
+                                                    }
                                                 >
                                                     <span class="twisty"></span>
-                                                    <span class="label">{label}</span>
+                                                    <Show
+                                                        when=move || renaming_playlist.get() == Some(drag_id)
+                                                        fallback=move || view! {
+                                                            <span class="label">{label.clone()}</span>
+                                                        }
+                                                    >
+                                                        <input
+                                                            class="playlist-rename"
+                                                            node_ref=rename_input
+                                                            prop:value=move || rename_text.get()
+                                                            on:input=move |event| set_rename_text.set(event_target_value(&event))
+                                                            on:keydown=move |event: web_sys::KeyboardEvent| {
+                                                                match event.key().as_str() {
+                                                                    "Enter" => commit_rename(),
+                                                                    "Escape" => set_renaming_playlist.set(None),
+                                                                    _ => {}
+                                                                }
+                                                            }
+                                                            on:blur=move |_| commit_rename()
+                                                        />
+                                                    </Show>
                                                     <span class="count">{count}</span>
                                                 </button>
                                             }
@@ -4226,6 +4323,41 @@ fn App() -> impl IntoView {
                         }
                     >
                         "Show in File Tree"
+                    </button>
+                </div>
+            </Show>
+
+            <Show when=move || playlist_menu.get().is_some() fallback=|| ()>
+                <div class="menu-scrim" on:click=move |_| set_playlist_menu.set(None)></div>
+                <div
+                    class="context-menu"
+                    style=move || match playlist_menu.get() {
+                        Some((x, y, ..)) => format!("left:{x}px; top:{y}px;"),
+                        None => String::new(),
+                    }
+                >
+                    <button
+                        class="menu-item"
+                        on:click=move |_| {
+                            if let Some((_, _, id, name)) = playlist_menu.get_untracked() {
+                                set_playlist_menu.set(None);
+                                set_rename_text.set(name);
+                                set_renaming_playlist.set(Some(id));
+                            }
+                        }
+                    >
+                        "Rename"
+                    </button>
+                    <button
+                        class="menu-item"
+                        on:click=move |_| {
+                            if let Some((_, _, id, _)) = playlist_menu.get_untracked() {
+                                set_playlist_menu.set(None);
+                                delete_playlist(id);
+                            }
+                        }
+                    >
+                        "Delete"
                     </button>
                 </div>
             </Show>

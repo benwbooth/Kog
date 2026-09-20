@@ -1034,6 +1034,38 @@ pub async fn delete_playlist(
     }
 }
 
+/// `POST /api/playlists/{id}/rename` — rename a playlist (Favorites exempt).
+pub async fn rename_playlist(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<i64>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> Response {
+    if id == 0 {
+        return bad_request("Favorites cannot be renamed");
+    }
+    let Some(name) = body["name"]
+        .as_str()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+    else {
+        return bad_request("a playlist name is required");
+    };
+    let library = state.library.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        library
+            .db()
+            .rename_playlist(id, &name)
+            .map(|()| serde_json::json!({ "ok": true, "id": id, "name": name }))
+    })
+    .await
+    .unwrap_or_else(|error| Err(format!("renaming the playlist failed: {error}")));
+    match result {
+        Ok(value) => axum::Json(value).into_response(),
+        Err(error) => bad_request(&error),
+    }
+}
+
 /// `GET /api/stars`
 pub async fn list_stars(State(state): State<AppState>) -> Response {
     let library = state.library.clone();
@@ -1156,6 +1188,7 @@ pub fn router() -> axum::Router<AppState> {
             "/api/playlists/{id}",
             get(playlist_entries).delete(delete_playlist),
         )
+        .route("/api/playlists/{id}/rename", post(rename_playlist))
         .route("/api/playlists/{id}/entries", post(append_playlist_entries))
         .route("/api/stars", get(list_stars).post(set_star))
         .route("/api/settings/midi", get(midi_settings).post(set_midi_setting))
