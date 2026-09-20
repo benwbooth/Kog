@@ -18,7 +18,9 @@
   --muted: #9aa0a6;
   --faint: #7b848c;
   --highlight: #3daee9;
-  --highlight-text: #08131a;
+  /* White on the highlight, like the desktop's Breeze palette: the darker
+   * navy previously here read as black-on-blue on the current row. */
+  --highlight-text: #ffffff;
   --border: #34393d;
   --row-height: 26px;
   --sidebar-width: 260px;
