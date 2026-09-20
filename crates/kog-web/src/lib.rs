@@ -1401,6 +1401,10 @@ fn App() -> impl IntoView {
     let (list_name, set_list_name) = signal(restored.list_name.clone());
     let (current, set_current) = signal(restored.current);
     let (playing, set_playing) = signal(false);
+    // Stopped is stricter than paused: nothing was played and nothing is held
+    // mid-song. A fresh page load starts stopped, and Stop returns here, so
+    // the current row shows no playing or paused glyph.
+    let (stopped, set_stopped) = signal(true);
     let (filter, set_filter) = signal(String::new());
     let (sort_key, set_sort_key) = signal(SortKey::Index);
     let (sort_asc, set_sort_asc) = signal(true);
@@ -2808,6 +2812,7 @@ fn App() -> impl IntoView {
         set_current.set(index);
         set_position.set(0.0);
         set_media_duration.set(None);
+        set_stopped.set(false);
         set_playing.set(true);
     };
 
@@ -3401,6 +3406,7 @@ fn App() -> impl IntoView {
         set_current.set(0);
         set_position.set(0.0);
         set_media_duration.set(None);
+        set_stopped.set(true);
         set_playing.set(false);
         set_selected.set(HashSet::new());
         set_list_name.set(String::new());
@@ -4449,12 +4455,14 @@ fn App() -> impl IntoView {
                                                     // Clicking the playing row pauses it; clicking a paused one
                                                     // resumes where it stopped.
                                                     set_playing.update(|value| *value = !*value);
+                                                    set_stopped.set(false);
                                                     return;
                                                 }
                                                 set_selected.set(HashSet::from([index]));
                                                 set_current.set(index);
                                                 set_position.set(0.0);
                                                 set_media_duration.set(None);
+                                                set_stopped.set(false);
                                                 set_playing.set(true);
                                             }
                                         >
@@ -4481,7 +4489,13 @@ fn App() -> impl IntoView {
                                                             .get()
                                                             .contains(&entry_star_locator(&entry));
                                                         let status = if current.get() == index {
-                                                            if playing.get() { "▶" } else { "Ⅱ" }
+                                                            if playing.get() {
+                                                                "▶"
+                                                            } else if !stopped.get() {
+                                                                "Ⅱ"
+                                                            } else {
+                                                                ""
+                                                            }
                                                         } else {
                                                             ""
                                                         };
@@ -4620,6 +4634,7 @@ fn App() -> impl IntoView {
                                     }
                                 } else {
                                     set_playing.update(|value| *value = !*value);
+                                    set_stopped.set(false);
                                 }
                             }
                         >
@@ -4633,6 +4648,7 @@ fn App() -> impl IntoView {
                             disabled=move || queue.get().is_empty()
                             on:click=move |_| {
                                 set_playing.set(false);
+                                set_stopped.set(true);
                                 set_position.set(0.0);
                                 if let Some(audio) = audio_ref.get() {
                                     let _ = audio.set_current_time(0.0);
@@ -4793,10 +4809,14 @@ fn App() -> impl IntoView {
                                 let _ = audio.play();
                             }
                             set_position.set(0.0);
+                            set_stopped.set(false);
                             set_playing.set(true);
                         } else if let Some(next) = advance_after_track() {
                             jump(next);
                         } else {
+                            // The queue ran out: the desktop calls this
+                            // Stopped, not Paused.
+                            set_stopped.set(true);
                             set_playing.set(false);
                         }
                     }
@@ -5303,6 +5323,7 @@ fn App() -> impl IntoView {
                         disabled=move || queue.get().is_empty()
                         on:click=move |_| {
                             set_playing.update(|playing| *playing = !*playing);
+                            set_stopped.set(false);
                             set_menu_open.set(false);
                         }
                     >
@@ -5313,6 +5334,7 @@ fn App() -> impl IntoView {
                         disabled=move || queue.get().is_empty()
                         on:click=move |_| {
                             set_playing.set(false);
+                            set_stopped.set(true);
                             set_position.set(0.0);
                             if let Some(audio) = audio_ref.get() {
                                 let _ = audio.set_current_time(0.0);
