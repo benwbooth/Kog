@@ -3523,6 +3523,209 @@ fn App() -> impl IntoView {
         }
     };
 
+    // The queue's drag-and-drop is bound by hand on the pane container rather
+    // than through the view's on: directives: dragstart, dragover, and drop
+    // listeners attached that way never saw their events here, which left
+    // mouse dragging unable to reorder. dragstart bubbles from whichever row
+    // was grabbed, so one container listener covers every row; the row's
+    // queue index travels in its data-index attribute. The pane element only
+    // exists once the view has rendered, hence the effect.
+    {
+        let drag_bound = Rc::new(std::cell::Cell::new(false));
+        let interval_cell: Rc<std::cell::Cell<Option<i32>>> =
+            Rc::new(std::cell::Cell::new(None));
+        let bind = {
+            let drag_bound = drag_bound.clone();
+            let interval_cell = interval_cell.clone();
+        Closure::<dyn FnMut()>::new(move || {
+            if drag_bound.get() {
+                if let Some(id) = interval_cell.get() {
+                    if let Some(window) = web_sys::window() {
+                        window.clear_interval_with_handle(id);
+                    }
+                }
+                return;
+            }
+            let Some(rows) = web_sys::window()
+                .and_then(|window| window.document())
+                .and_then(|document| document.get_element_by_id("playlist-rows"))
+            else {
+                return; // The pane has not rendered yet; poll again.
+            };
+            if let Some(id) = interval_cell.get() {
+                if let Some(window) = web_sys::window() {
+                    window.clear_interval_with_handle(id);
+                }
+            }
+            drag_bound.set(true);
+        let cleanup_drag = {
+            let set_dragging_track = set_dragging_track.clone();
+            let set_reorder_to = set_reorder_to.clone();
+            move || {
+                set_dragging_track.set(None);
+                set_reorder_to.set(None);
+                let _ = js_sys::eval(
+                    "document.querySelectorAll('.track.reorder-above').forEach(t => t.classList.remove('reorder-above'))",
+                );
+            }
+        };
+
+        let on_dragstart = {
+            let set_dragging_track = set_dragging_track.clone();
+            let set_reorder_to = set_reorder_to.clone();
+            Closure::<dyn FnMut(web_sys::DragEvent)>::new(move |ev: web_sys::DragEvent| {
+                let row = ev
+                    .target()
+                    .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+                    .and_then(|target| target.closest(".track").ok().flatten());
+                let Some(row) = row else {
+                    return;
+                };
+                let Some(index) = row
+                    .get_attribute("data-index")
+                    .and_then(|value| value.parse::<usize>().ok())
+                else {
+                    return;
+                };
+                set_dragging_track.set(Some(index));
+                set_reorder_to.set(None);
+                if let Some(transfer) = ev.data_transfer() {
+                    let _ = transfer.set_data("text/plain", &index.to_string());
+                    let _ = transfer.set_effect_allowed("move");
+                }
+            })
+        };
+        let _ = rows.add_event_listener_with_callback(
+            "dragstart",
+            on_dragstart.as_ref().unchecked_ref(),
+        );
+        on_dragstart.forget();
+
+        let on_dragover = {
+            let dragging_track = dragging_track.clone();
+            let set_reorder_to = set_reorder_to.clone();
+            let set_playlist_drop_active = set_playlist_drop_active.clone();
+            Closure::<dyn FnMut(web_sys::DragEvent)>::new(move |ev: web_sys::DragEvent| {
+                let current = dragging_track.get_untracked();
+                ev.prevent_default();
+                if let Some(from) = current {
+                    // Reordering a queue row: highlight the insertion point
+                    // under the cursor.
+                    let client_y = ev.client_y();
+                    let marker = js_sys::eval(&format!(
+                        "(() => {{
+                            const rows = document.querySelector('.rows');
+                            const tracks = [...rows.querySelectorAll('.track')];
+                            tracks.forEach(t => t.classList.remove('reorder-above'));
+                            const y = {client_y};
+                            const from = {from};
+                            let index = tracks.length;
+                            for (let i = 0; i < tracks.length; i++) {{
+                                const r = tracks[i].getBoundingClientRect();
+                                if (y < r.top + r.height / 2) {{
+                                    index = i;
+                                    if (i !== from && i !== from + 1)
+                                        tracks[i].classList.add('reorder-above');
+                                    break;
+                                }}
+                            }}
+                            return index;
+                        }})()"
+                    ));
+                    let marker_result = match marker {
+                        Ok(value) => match value.as_f64() {
+                            Some(index) => {
+                                set_reorder_to.set(Some(index as usize));
+                                String::new()
+                            }
+                            None => "eval returned non-number".to_owned(),
+                        },
+                        Err(error) => format!("eval threw: {error:?}"),
+                    };
+                    return;
+                }
+                if let Some(transfer) = ev.data_transfer() {
+                    let _ = transfer.set_drop_effect("copy");
+                }
+                set_playlist_drop_active.set(true);
+            })
+        };
+        let _ = rows.add_event_listener_with_callback(
+            "dragover",
+            on_dragover.as_ref().unchecked_ref(),
+        );
+        on_dragover.forget();
+
+        let on_dragleave = {
+            let set_playlist_drop_active = set_playlist_drop_active.clone();
+            Closure::<dyn FnMut(web_sys::DragEvent)>::new(move |_| {
+                set_playlist_drop_active.set(false);
+            })
+        };
+        let _ = rows.add_event_listener_with_callback(
+            "dragleave",
+            on_dragleave.as_ref().unchecked_ref(),
+        );
+        on_dragleave.forget();
+
+        let on_drop = {
+            let dragging_tree = dragging_tree.clone();
+            let dragging_playlist = dragging_playlist.clone();
+            let dragging_track = dragging_track.clone();
+            let reorder_to = reorder_to.clone();
+            let set_playlist_drop_active = set_playlist_drop_active.clone();
+            let add_row_to_playlist = add_row_to_playlist.clone();
+            let append_playlist = append_playlist.clone();
+            let move_track = move_track.clone();
+            Closure::<dyn FnMut(web_sys::DragEvent)>::new(move |ev: web_sys::DragEvent| {
+                ev.prevent_default();
+                set_playlist_drop_active.set(false);
+                if let Some(row) = dragging_tree.get_untracked() {
+                    add_row_to_playlist(row);
+                } else if let Some(id) = dragging_playlist.get_untracked() {
+                    append_playlist(id);
+                } else if let Some(from) = dragging_track.get_untracked()
+                    && let Some(to) = reorder_to.get_untracked()
+                {
+                    move_track(from, to);
+                }
+                set_dragging_tree.set(None);
+                set_dragging_playlist.set(None);
+                set_dragging_track.set(None);
+                set_reorder_to.set(None);
+                let _ = js_sys::eval(
+                    "document.querySelectorAll('.track.reorder-above').forEach(t => t.classList.remove('reorder-above'))",
+                );
+            })
+        };
+        let _ = rows.add_event_listener_with_callback("drop", on_drop.as_ref().unchecked_ref());
+        on_drop.forget();
+
+        let on_dragend = {
+            let cleanup_drag = cleanup_drag.clone();
+            Closure::<dyn FnMut(web_sys::DragEvent)>::new(move |_| {
+                cleanup_drag();
+            })
+        };
+        let _ = rows.add_event_listener_with_callback(
+            "dragend",
+            on_dragend.as_ref().unchecked_ref(),
+        );
+        on_dragend.forget();
+            })
+        };
+        if let Ok(handle) = web_sys::window()
+            .expect("window for queue drag bindings")
+            .set_interval_with_callback_and_timeout_and_arguments_0(
+                bind.as_ref().unchecked_ref(),
+                200,
+            )
+        {
+            interval_cell.set(Some(handle));
+        }
+        bind.forget();
+    }
+
     let apply_width = move |id: ColumnId, width: f64| {
         set_columns.update(|columns| {
             if let Some(column) = columns.iter_mut().find(|column| column.id == id) {
@@ -4255,68 +4458,7 @@ fn App() -> impl IntoView {
                                 table_width()
                             )
                         }
-                        on:dragover=move |ev: web_sys::DragEvent| {
-                            ev.prevent_default();
-                            // Reordering a queue row: highlight the insertion
-                            // point under the cursor.
-                            if let Some(from) = dragging_track.get_untracked() {
-                                let client_y = ev.client_y();
-                                let marker = js_sys::eval(&format!(
-                                    "(() => {{
-                                        const rows = document.querySelector('.rows');
-                                        const tracks = [...rows.querySelectorAll('.track')];
-                                        tracks.forEach(t => t.classList.remove('reorder-above'));
-                                        const y = {client_y};
-                                        let index = tracks.length;
-                                        for (let i = 0; i < tracks.length; i++) {{
-                                            const r = tracks[i].getBoundingClientRect();
-                                            if (y < r.top + r.height / 2) {{
-                                                index = i;
-                                                if (i !== from && i !== from + 1)
-                                                    tracks[i].classList.add('reorder-above');
-                                                break;
-                                            }}
-                                        }}
-                                        return index;
-                                    }})()"
-                                ));
-                                if let Ok(value) = marker
-                                    && let Some(index) = value.as_f64()
-                                {
-                                    set_reorder_to.set(Some(index as usize));
-                                }
-                                return;
-                            }
-                            if let Some(transfer) = ev.data_transfer() {
-                                transfer.set_drop_effect("copy");
-                            }
-                            set_playlist_drop_active.set(true);
-                        }
                         on:dragleave=move |_| set_playlist_drop_active.set(false)
-                        on:drop={
-                            let add_row_to_playlist = add_row_to_playlist.clone();
-                            let move_track = move_track.clone();
-                            move |ev: web_sys::DragEvent| {
-                                ev.prevent_default();
-                                set_playlist_drop_active.set(false);
-                                if let Some(row) = dragging_tree.get_untracked() {
-                                    add_row_to_playlist(row);
-                                } else if let Some(id) = dragging_playlist.get_untracked() {
-                                    append_playlist(id);
-                                } else if let Some(from) = dragging_track.get_untracked()
-                                    && let Some(to) = reorder_to.get_untracked()
-                                {
-                                    move_track(from, to);
-                                }
-                                let _ = js_sys::eval(
-                                    "document.querySelectorAll('.track.reorder-above').forEach(t => t.classList.remove('reorder-above'))",
-                                );
-                                set_dragging_tree.set(None);
-                                set_dragging_playlist.set(None);
-                                set_dragging_track.set(None);
-                                set_reorder_to.set(None);
-                            }
-                        }
                     >
                         <div
                             class="columns"
@@ -4435,20 +4577,6 @@ fn App() -> impl IntoView {
                                             data-index=move || index.to_string()
                                             class:current=move || current.get() == index
                                             class:selected=move || selected.get().contains(&index)
-                                            on:dragstart=move |ev: web_sys::DragEvent| {
-                                                set_dragging_track.set(Some(index));
-                                                if let Some(transfer) = ev.data_transfer() {
-                                                    let _ = transfer.set_data("text/plain", &index.to_string());
-                                                    transfer.set_effect_allowed("move");
-                                                }
-                                            }
-                                            on:dragend=move |_| {
-                                                set_dragging_track.set(None);
-                                                set_reorder_to.set(None);
-                                                let _ = js_sys::eval(
-                                                    "document.querySelectorAll('.track.reorder-above').forEach(t => t.classList.remove('reorder-above'))",
-                                                );
-                                            }
                                             on:contextmenu=move |ev: web_sys::MouseEvent| {
                                                 ev.prevent_default();
                                                 set_selected.update(|set| {
