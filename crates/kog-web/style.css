@@ -821,9 +821,13 @@ button:focus-visible {
 .track.selected,
 .track.selected:hover {
   background: color-mix(in srgb, var(--highlight) 26%, transparent);
+  color: var(--text);
 }
 
-.track.current {
+/* The current row keeps its bright, legible style while hovered - without
+ * this, the selected:hover tint would turn it dark-on-dark. */
+.track.current,
+.track.current:hover {
   background: var(--highlight);
   color: var(--highlight-text);
 }
