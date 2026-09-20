@@ -703,6 +703,15 @@ fn load(key: &str) -> Option<String> {
     storage()?.get_item(key).ok()?
 }
 
+/// Yield to the event loop for `ms` milliseconds (waiting on lazy tree loads).
+fn sleep_ms(ms: i32) -> wasm_bindgen_futures::JsFuture {
+    let promise = js_sys::Promise::new(&mut |resolve, _| {
+        let _ = web_sys::window().expect("window")
+            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms);
+    });
+    wasm_bindgen_futures::JsFuture::from(promise)
+}
+
 /// A stable id for this browser, so the server's device registry — and the
 /// desktop's connected-devices settings — can tell clients apart. Generated
 /// once and kept in localStorage.
@@ -973,6 +982,15 @@ fn meta_for(cache: &HashMap<String, Option<MetaRow>>, entry: &Entry) -> Option<M
 }
 
 /// The parent of an absolute path, or the empty string at the filesystem root.
+/// Whether `child` equals or lives below `root` ("" is never a root).
+fn is_under(child: &str, root: &str) -> bool {
+    if root.trim().is_empty() {
+        return false;
+    }
+    let root = root.trim_end_matches('/');
+    child == root || child.starts_with(&format!("{root}/"))
+}
+
 fn parent_path(path: &str) -> String {
     let trimmed = path.trim_end_matches('/');
     if trimmed.is_empty() {
@@ -1196,6 +1214,8 @@ fn App() -> impl IntoView {
     let (tree_search, set_tree_search) = signal(String::new());
     // Right-click menu anchor and target row.
     let (tree_menu, set_tree_menu) = signal(Option::<(f64, f64, TreeRow)>::None);
+    // Right-click on a playlist row: reveal the song's location in the tree.
+    let (song_menu, set_song_menu) = signal(Option::<(f64, f64, Entry)>::None);
     // The row being dragged from the tree onto the playlist pane.
     let (dragging_tree, set_dragging_tree) = signal(Option::<TreeRow>::None);
     let (playlist_drop_active, set_playlist_drop_active) = signal(false);
@@ -1510,6 +1530,83 @@ fn App() -> impl IntoView {
             });
         });
     }
+
+    // Reveal a song's location in the tree: re-root if the file lives outside
+    // the current root, expand every folder on the way down, then select and
+    // scroll to the song's row. Levels load lazily, so each step waits for the
+    // previous fetch to land.
+    let reveal_in_tree = {
+        let goto_root = goto_root.clone();
+        let load_dir = load_dir.clone();
+        move |entry: Entry| {
+            let goto_root = goto_root.clone();
+            let load_dir = load_dir.clone();
+            leptos::task::spawn_local(async move {
+                let song = entry.path.clone();
+                if entry.kind == "remote" || song.is_empty() {
+                    return;
+                }
+                let parent = parent_path(&song);
+                if parent.is_empty() {
+                    return;
+                }
+                let library = library_root.get_untracked();
+                // Inside the music directory the tree roots at the library
+                // root; a song outside it can only be approached to its own
+                // folder, since those listings carry no files.
+                let target_root = if is_under(&parent, &library) {
+                    String::new()
+                } else {
+                    parent.clone()
+                };
+                if tree_root.get_untracked() != target_root {
+                    goto_root(target_root.clone());
+                }
+                let root_dir = if target_root.is_empty() {
+                    library.clone()
+                } else {
+                    target_root.clone()
+                };
+                let mut chain = Vec::new();
+                let mut cursor = parent.clone();
+                while !cursor.is_empty() && cursor != root_dir {
+                    chain.push(cursor.clone());
+                    cursor = parent_path(&cursor);
+                }
+                chain.reverse();
+                // The root level is keyed the way `load_dir` stored it: ""
+                // for the music directory.
+                for _ in 0..50 {
+                    if children.get_untracked().contains_key(&target_root) {
+                        break;
+                    }
+                    sleep_ms(100).await;
+                }
+                for dir in chain {
+                    set_expanded.update(|set| {
+                        set.insert(dir.clone());
+                    });
+                    if !children.get_untracked().contains_key(&dir) {
+                        load_dir(dir.clone(), None);
+                        let mut waited = 0;
+                        while !children.get_untracked().contains_key(&dir) && waited < 50 {
+                            sleep_ms(100).await;
+                            waited += 1;
+                        }
+                        if !children.get_untracked().contains_key(&dir) {
+                            return;
+                        }
+                    }
+                }
+                set_tree_selected.set(song);
+                set_tree_selected_dir.set(false);
+                sleep_ms(120).await;
+                let _ = js_sys::eval(
+                    "document.querySelector('.tree-row.selected')?.scrollIntoView({block: 'nearest'})",
+                );
+            });
+        }
+    };
 
     let open_folder_picker = move |_| {
         set_picker_dir.set(effective_root());
@@ -1874,6 +1971,7 @@ fn App() -> impl IntoView {
             set_about_open.set(false);
             set_settings_open.set(false);
             set_picker_open.set(false);
+            set_song_menu.set(None);
         }
     });
     on_cleanup(move || escape_handle.remove());
@@ -3363,11 +3461,24 @@ fn App() -> impl IntoView {
                             >
                                 {
                                     let (index, entry) = row;
+                                    let menu_entry = entry.clone();
                                     view! {
                                         <button
                                             class="track"
                                             class:current=move || current.get() == index
                                             class:selected=move || selected.get().contains(&index)
+                                            on:contextmenu=move |ev: web_sys::MouseEvent| {
+                                                ev.prevent_default();
+                                                set_selected.update(|set| {
+                                                    set.clear();
+                                                    set.insert(index);
+                                                });
+                                                set_song_menu.set(Some((
+                                                    ev.client_x() as f64,
+                                                    ev.client_y() as f64,
+                                                    menu_entry.clone(),
+                                                )));
+                                            }
                                             on:click=move |ev: web_sys::MouseEvent| {
                                                 // Ctrl/Cmd/Shift add to the
                                                 // selection; a plain click selects
@@ -3905,6 +4016,32 @@ fn App() -> impl IntoView {
                         </div>
                     }
                 }
+            </Show>
+
+            <Show when=move || song_menu.get().is_some() fallback=|| ()>
+                <div class="menu-scrim" on:click=move |_| set_song_menu.set(None)></div>
+                <div
+                    class="context-menu"
+                    style=move || match song_menu.get() {
+                        Some((x, y, _)) => format!("left:{x}px; top:{y}px;"),
+                        None => String::new(),
+                    }
+                >
+                    <button
+                        class="menu-item"
+                        on:click={
+                            let reveal_in_tree = reveal_in_tree.clone();
+                            move |_| {
+                                if let Some((_, _, entry)) = song_menu.get_untracked() {
+                                    set_song_menu.set(None);
+                                    reveal_in_tree(entry);
+                                }
+                            }
+                        }
+                    >
+                        "Show in File Tree"
+                    </button>
+                </div>
             </Show>
 
             <Show when=move || column_menu.get().is_some() fallback=|| ()>
