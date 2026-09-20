@@ -1205,6 +1205,10 @@ fn App() -> impl IntoView {
     // newer build has appeared. A change reloads on the next pause or idle.
     let (asset_etag, set_asset_etag) = signal(Option::<String>::None);
     let (update_ready, set_update_ready) = signal(false);
+    // When the pending build first appeared. A deferred reload (music
+    // playing) force-applies after a grace period, or a tab with hours of
+    // playing never reaches the new build at all.
+    let (update_since, set_update_since) = signal(Option::<f64>::None);
     // Desktop shows the sidebar inline; phones open it as a drawer. The
     // desktop choice is persisted, the drawer state is not.
     let (sidebar_open, set_sidebar_open) = signal(false);
@@ -2027,6 +2031,7 @@ fn App() -> impl IntoView {
             let baseline = asset_etag.get_untracked();
             let set_asset_etag = set_asset_etag;
             let set_update_ready = set_update_ready;
+            let set_update_since = set_update_since;
             leptos::task::spawn_local(async move {
                 // A cache-busting query forces a fresh 200 with the ETag; the
                 // asset handler ignores the query and serves the same bytes.
@@ -2042,7 +2047,21 @@ fn App() -> impl IntoView {
                 };
                 match baseline {
                     None => set_asset_etag.set(Some(etag)),
-                    Some(previous) if previous != etag => set_update_ready.set(true),
+                    Some(previous) if previous != etag => {
+                        let now = js_sys::Date::now();
+                        if update_since.get_untracked().is_none() {
+                            set_update_since.set(Some(now));
+                        }
+                        set_update_ready.set(true);
+                        // Never stay stale for long: a deferred reload
+                        // force-applies after the grace period, even mid-song.
+                        if let Some(since) = update_since.get_untracked()
+                            && now - since > 45_000.0
+                            && let Some(window) = web_sys::window()
+                        {
+                            let _ = window.location().reload();
+                        }
+                    }
                     _ => {}
                 }
             });
@@ -4485,7 +4504,7 @@ fn App() -> impl IntoView {
 
             <Show when=move || update_ready.get() fallback=|| ()>
                 <div class="update-banner">
-                    <span>"A new Kog build is ready — it reloads when playback pauses."</span>
+                    <span>"A new Kog build is ready — reloading shortly."</span>
                     <button
                         class="update-reload"
                         on:click=move |_| {
