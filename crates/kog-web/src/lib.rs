@@ -916,6 +916,62 @@ fn last_segment(path: &str) -> String {
     path.rsplit('/').next().unwrap_or(path).to_owned()
 }
 
+/// Split `name` into (text, highlighted) runs: every occurrence of every
+/// whitespace-separated token in `query` is marked, the way the desktop's
+/// highlightedName paints matches. Folding is per character so the runs keep
+/// their offsets into the original spelling.
+fn highlight_runs(name: &str, query: &str) -> Vec<(String, bool)> {
+    let tokens: Vec<Vec<char>> = query
+        .split_whitespace()
+        .map(|word| word.to_lowercase().chars().collect())
+        .collect();
+    let chars: Vec<char> = name.chars().collect();
+    if tokens.is_empty() {
+        return vec![(name.to_owned(), false)];
+    }
+    let folded: Vec<char> = chars
+        .iter()
+        .map(|c| c.to_lowercase().next().unwrap_or(*c))
+        .collect();
+    let mut marked = vec![false; chars.len()];
+    for token in &tokens {
+        if token.is_empty() || token.len() > folded.len() {
+            continue;
+        }
+        for start in 0..=folded.len() - token.len() {
+            if folded[start..start + token.len()].iter().eq(token.iter()) {
+                for mark in &mut marked[start..start + token.len()] {
+                    *mark = true;
+                }
+            }
+        }
+    }
+    let mut runs: Vec<(String, bool)> = Vec::new();
+    for (at, hit) in marked.iter().enumerate() {
+        match runs.last_mut() {
+            Some((text, run_hit)) if *run_hit == *hit => text.push(chars[at]),
+            _ => runs.push((chars[at].to_string(), *hit)),
+        }
+    }
+    runs
+}
+
+/// The label text with matched tokens wrapped in a badge, or the plain text
+/// when the query is empty. Returns a single view either way.
+fn highlight_label(name: String, query: String) -> AnyView {
+    let runs = highlight_runs(&name, &query);
+    runs.into_iter()
+        .map(|(text, hit)| {
+            if hit {
+                view! { <mark class="search-hit">{text}</mark> }.into_any()
+            } else {
+                text.into_any()
+            }
+        })
+        .collect_view()
+        .into_any()
+}
+
 fn entry_from_json(value: &serde_json::Value) -> Entry {
     let path = value["path"].as_str().unwrap_or_default().to_owned();
     let entry = value["entry"].as_str().unwrap_or_default().to_owned();
@@ -1426,6 +1482,33 @@ fn App() -> impl IntoView {
                     set_tree_results.set(None);
                     return;
                 }
+                let parse = |value: &serde_json::Value| -> Vec<TreeRow> {
+                    let mut rows = Vec::new();
+                    if let Some(list) = value["results"].as_array() {
+                        for item in list {
+                            let path = item["path"].as_str().unwrap_or_default().to_owned();
+                            if path.is_empty() {
+                                continue;
+                            }
+                            let name = item["name"]
+                                .as_str()
+                                .map(str::to_owned)
+                                .unwrap_or_else(|| last_segment(&path));
+                            rows.push(TreeRow {
+                                name,
+                                path,
+                                parent: String::new(),
+                                is_dir: false,
+                                depth: 0,
+                                expanded: false,
+                                kind: "local".to_owned(),
+                                entry: String::new(),
+                                fragment: None,
+                            });
+                        }
+                    }
+                    rows
+                };
                 match get_json(format!(
                     "/api/library/search?q={}",
                     url_encode(&trimmed)
@@ -1433,32 +1516,44 @@ fn App() -> impl IntoView {
                 .await
                 {
                     Ok(value) => {
-                        let mut rows = Vec::new();
-                        if let Some(list) = value["results"].as_array() {
-                            for item in list {
-                                let path = item["path"].as_str().unwrap_or_default().to_owned();
-                                if path.is_empty() {
-                                    continue;
-                                }
-                                let name = item["name"]
-                                    .as_str()
-                                    .map(str::to_owned)
-                                    .unwrap_or_else(|| last_segment(&path));
-                                rows.push(TreeRow {
-                                    name,
-                                    path,
-                                    parent: String::new(),
-                                    is_dir: false,
-                                    depth: 0,
-                                    expanded: false,
-                                    kind: "local".to_owned(),
-                                    entry: String::new(),
-                                    fragment: None,
-                                });
-                            }
-                        }
+                        // The walk runs server-side in time-boxed slices, so
+                        // matches arrive the way the desktop's scan publishes
+                        // them: first batch immediately, then more pulls until
+                        // the walk reports done. A newer query supersedes this
+                        // one both here and on the server.
+                        let generation = value["generation"].as_u64().unwrap_or_default();
+                        let mut rows = parse(&value);
+                        let mut seen: HashSet<String> =
+                            rows.iter().map(|row| row.path.clone()).collect();
+                        let mut done = value["done"].as_bool().unwrap_or(true);
                         if tree_search.get_untracked().trim() == trimmed {
-                            set_tree_results.set(Some(rows));
+                            set_tree_results.set(Some(rows.clone()));
+                        }
+                        while !done && rows.len() < 200 {
+                            if tree_search.get_untracked().trim() != trimmed {
+                                break;
+                            }
+                            match get_json(format!(
+                                "/api/library/search/more?g={generation}"
+                            ))
+                            .await
+                            {
+                                Ok(value) => {
+                                    if value["generation"].as_u64() != Some(generation) {
+                                        break;
+                                    }
+                                    for row in parse(&value) {
+                                        if seen.insert(row.path.clone()) {
+                                            rows.push(row);
+                                        }
+                                    }
+                                    done = value["done"].as_bool().unwrap_or(true);
+                                    if tree_search.get_untracked().trim() == trimmed {
+                                        set_tree_results.set(Some(rows.clone()));
+                                    }
+                                }
+                                Err(_) => break,
+                            }
                         }
                     }
                     Err(error) => set_message.set(error),
@@ -2896,7 +2991,14 @@ fn App() -> impl IntoView {
     // The visible rows carry their index into the queue, so filtering and
     // sorting never change what plays next.
     let view_rows = move || {
-        let needle = filter.get().trim().to_lowercase();
+        // Desktop search semantics: the query is whitespace-separated words,
+        // and a row matches when every word appears somewhere in its name or
+        // tags — order-independent, so longer queries keep finding rows.
+        let tokens: Vec<String> = filter
+            .get()
+            .split_whitespace()
+            .map(|word| word.to_lowercase())
+            .collect();
         let cache = metadata.get();
         let key = sort_key.get();
         let mut rows: Vec<(usize, Entry)> = queue
@@ -2904,21 +3006,23 @@ fn App() -> impl IntoView {
             .into_iter()
             .enumerate()
             .filter(|(_, entry)| {
-                if needle.is_empty() {
+                if tokens.is_empty() {
                     return true;
                 }
-                if entry.name.to_lowercase().contains(&needle)
-                    || entry.location.to_lowercase().contains(&needle)
-                {
-                    return true;
+                let mut fields = vec![entry.name.to_lowercase(), entry.location.to_lowercase()];
+                if let Some(meta) = meta_for(&cache, entry) {
+                    fields.extend(
+                        [meta.title, meta.artist, meta.album]
+                            .into_iter()
+                            .flatten()
+                            .map(|value| value.to_lowercase()),
+                    );
                 }
-                match meta_for(&cache, entry) {
-                    Some(meta) => [meta.title, meta.artist, meta.album]
-                        .into_iter()
-                        .flatten()
-                        .any(|value| value.to_lowercase().contains(&needle)),
-                    None => false,
-                }
+                tokens.iter().all(|token| {
+                    fields
+                        .iter()
+                        .any(|field| field.contains(token.as_str()))
+                })
             })
             .collect();
         if key != SortKey::Index {
@@ -3895,7 +3999,7 @@ fn App() -> impl IntoView {
                                                                 on:dragend=move |_| set_dragging_tree.set(None)
                                                             >
                                                                 <span class="tree-icon file"></span>
-                                                                <span class="label">{row.name.clone()}</span>
+                                                                <span class="label">{move || highlight_label(row.name.clone(), tree_search.get())}</span>
                                                                 <span class="search-path">{row.parent.clone()}</span>
                                                             </button>
                                                         }
@@ -4391,7 +4495,25 @@ fn App() -> impl IntoView {
                                                             status,
                                                         )
                                                     };
+                                                    // The searchable text columns paint
+                                                    // matched tokens while the playlist
+                                                    // filter is active; the other columns
+                                                    // keep their plain text. The tooltip
+                                                    // always shows the raw text.
                                                     let tip = text.clone();
+                                                    let text = move || {
+                                                        let raw = text();
+                                                        if matches!(
+                                                            id,
+                                                            ColumnId::Title
+                                                                | ColumnId::Artist
+                                                                | ColumnId::Album
+                                                        ) {
+                                                            highlight_label(raw, filter.get())
+                                                        } else {
+                                                            raw.into_any()
+                                                        }
+                                                    };
                                                     view! {
                                                         <span
                                                             class=format!("cell {}", id.class())

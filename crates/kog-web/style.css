@@ -476,6 +476,13 @@ button:focus-visible {
   border: 1px solid var(--border);
 }
 
+/* Matched search tokens, the desktop's yellow badge. */
+.search-hit {
+  background: #f6d65a;
+  color: #1b1b1b;
+  border-radius: 2px;
+}
+
 .tree-search:focus-within {
   border-color: var(--highlight);
 }

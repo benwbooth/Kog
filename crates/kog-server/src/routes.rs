@@ -27,6 +27,8 @@ pub struct AppState {
     pub streams: Arc<crate::service::StreamService>,
     /// Library browsing and the playlist/star store.
     pub library: Arc<crate::api::Library>,
+    /// The single resumable library-search walk.
+    pub search: Arc<crate::api::SearchState>,
     /// Server-owned random radio, sharing the desktop's round file.
     pub radio: Arc<crate::radio::Radio>,
 }
@@ -62,6 +64,7 @@ impl AppState {
             version,
             streams: Arc::new(streams),
             library: Arc::new(library),
+            search: Arc::new(crate::api::SearchState::default()),
             radio: Arc::new(radio),
         }
     }
@@ -1266,20 +1269,61 @@ mod tests {
     async fn searching_finds_files_by_name() {
         let (library, _root) = library_with(&["Album/one.wav", "Other/two.wav"]);
         let state = state_with(AuthMode::None, "", library);
-        let (status, body) =
+        let (status, mut body) =
             get_json(state.clone(), "/api/library/search?q=one", None).await;
         assert_eq!(status, StatusCode::OK);
-        let names: Vec<&str> = body["results"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|file| file["name"].as_str().unwrap())
-            .collect();
+        // The walk is sliced; pull batches until it reports done.
+        let generation = body["generation"].as_u64().unwrap();
+        let mut names: Vec<String> = search_names(&mut body);
+        while body["done"].as_bool() != Some(true) {
+            let (status, mut more) = get_json(
+                state.clone(),
+                &format!("/api/library/search/more?g={generation}"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            names.extend(search_names(&mut more));
+            body = more;
+        }
         assert_eq!(names, ["one.wav"]);
 
-        // An empty query is a client error, not a full listing.
-        let (status, _) = get_json(state, "/api/library/search?q=%20", None).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
+        // Words match in any position, like the desktop's search: "moon blue"
+        // finds "blue moon.wav" even though no name contains that phrase.
+        let (library, _root) = library_with(&["Album/blue moon.wav", "Other/blue.wav"]);
+        let state = state_with(AuthMode::None, "", library);
+        let (status, mut body) =
+            get_json(state.clone(), "/api/library/search?q=moon%20blue", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let generation = body["generation"].as_u64().unwrap();
+        let mut names = search_names(&mut body);
+        while body["done"].as_bool() != Some(true) {
+            let (status, mut more) = get_json(
+                state.clone(),
+                &format!("/api/library/search/more?g={generation}"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            names.extend(search_names(&mut more));
+            body = more;
+        }
+        assert_eq!(names, ["blue moon.wav"]);
+
+        // A whitespace-only query matches nothing and finishes immediately.
+        let (status, body) = get_json(state, "/api/library/search?q=%20", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["done"].as_bool(), Some(true));
+        assert!(body["results"].as_array().unwrap().is_empty());
+    }
+
+    fn search_names(body: &mut serde_json::Value) -> Vec<String> {
+        body["results"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .map(|file| file["name"].take().as_str().unwrap().to_string())
+            .collect()
     }
 
     #[tokio::test]

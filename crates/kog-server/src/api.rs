@@ -11,6 +11,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use axum::extract::{Path as AxumPath, Query, State};
@@ -129,6 +130,11 @@ pub struct BrowseQuery {
 pub struct SearchQuery {
     pub q: String,
     pub limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MoreQuery {
+    pub g: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -831,81 +837,192 @@ fn browse_blocking(library: &Arc<Library>, requested: Option<&str>) -> Result<se
 }
 
 /// `GET /api/library/search` — filename search under the music directory.
+///
+/// The desktop's tree search streams matches while its walk proceeds; a plain
+/// request/response cannot, and on a library with a million files a whole
+/// walk takes tens of seconds — long enough to look hung. So the walk runs in
+/// time-boxed slices: this handler starts a session and returns the first
+/// batch, the client pulls further batches from [`search_more`], and every
+/// new query replaces the session (there is exactly one, so a stale walk is
+/// simply dropped, like the desktop's superseded scan).
 pub async fn search(State(state): State<AppState>, Query(query): Query<SearchQuery>) -> Response {
     let needle = query.q.trim().to_lowercase();
-    if needle.is_empty() {
-        return bad_request("provide a search query");
-    }
+    let tokens: Vec<String> = needle.split_whitespace().map(str::to_owned).collect();
+    let generation = state.search.generation.fetch_add(1, Ordering::Relaxed) + 1;
     let limit = query.limit.unwrap_or(200).min(1_000);
+    if tokens.is_empty() {
+        return finish_search(state, generation, Vec::new(), true);
+    }
     let library = state.library.clone();
-    let result = tokio::task::spawn_blocking(move || search_blocking(&library, &needle, limit))
-        .await
-        .unwrap_or_else(|error| Err(format!("library search failed: {error}")));
+    let result = tokio::task::spawn_blocking(move || {
+        let root = library.resolve(None)?;
+        let mut session = SearchSession {
+            tokens,
+            pending: vec![(root, None)],
+            found: Vec::new(),
+        };
+        run_search_slice(&mut session, limit);
+        Ok::<_, String>(session)
+    })
+    .await
+    .unwrap_or_else(|error| Err(format!("library search failed: {error}")));
     match result {
-        Ok(value) => axum::Json(value).into_response(),
+        Ok(session) => finish_session(state, generation, session),
         Err(error) => bad_request(&error),
     }
 }
 
-fn search_blocking(
-    library: &Arc<Library>,
-    needle: &str,
-    limit: usize,
-) -> Result<serde_json::Value, String> {
-    let root = library.resolve(None)?;
+/// `GET /api/library/search/more` — the next slice of the active walk. A
+/// generation older than the current one means the query was superseded and
+/// the session is gone: done, with nothing.
+pub async fn search_more(State(state): State<AppState>, Query(query): Query<MoreQuery>) -> Response {
+    let asked = query.g.unwrap_or_default();
+    let generation = state.search.generation.load(Ordering::Relaxed);
+    if asked != generation {
+        return finish_search(state, generation, Vec::new(), true);
+    }
+    let Some(mut session) = state.search.session.lock().unwrap().take() else {
+        return finish_search(state, generation, Vec::new(), true);
+    };
+    let result = tokio::task::spawn_blocking(move || {
+        run_search_slice(&mut session, 200);
+        session
+    })
+    .await
+    .map_err(|error| {
+        // The walk died; drop the session rather than wedging on it forever.
+        format!("library search failed: {error}")
+    });
+    match result {
+        Ok(session) => finish_session(state, generation, session),
+        Err(_) => finish_search(state, generation, Vec::new(), true),
+    }
+}
+
+/// Publish a slice's results: done walks release the session, unfinished ones
+/// go back so the next `more` can resume.
+fn finish_session(state: AppState, generation: u64, mut session: SearchSession) -> Response {
+    let done = session.pending.is_empty();
+    let found = std::mem::take(&mut session.found);
+    if done {
+        *state.search.session.lock().unwrap() = None;
+    } else {
+        *state.search.session.lock().unwrap() = Some(session);
+    }
+    finish_search(state, generation, found, done)
+}
+
+fn finish_search(
+    _state: AppState,
+    generation: u64,
+    found: Vec<std::path::PathBuf>,
+    done: bool,
+) -> Response {
+    let rootless = found;
+    axum::Json(serde_json::json!({
+        "results": rootless
+            .into_iter()
+            .map(|path| {
+                let name = path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                serde_json::json!({
+                    "name": name,
+                    "path": path.to_string_lossy(),
+                })
+            })
+            .collect::<Vec<_>>(),
+        "done": done,
+        "generation": generation,
+    }))
+    .into_response()
+}
+
+/// One active search: the words to match, the directories still to visit
+/// (with the file to resume from when a slice stopped mid-directory), and the
+/// matches gathered so far.
+struct SearchSession {
+    tokens: Vec<String>,
+    pending: Vec<(std::path::PathBuf, Option<String>)>,
+    found: Vec<std::path::PathBuf>,
+}
+
+/// The server's single active search walk. The newest query owns it: starting
+/// a search bumps the generation, which makes every earlier continuation ask
+/// for a superseded generation and end quietly, exactly like the desktop's
+/// superseded scan.
+#[derive(Default)]
+pub struct SearchState {
+    generation: AtomicU64,
+    session: Mutex<Option<SearchSession>>,
+}
+
+/// Walk for at most [`SEARCH_SLICE`] before yielding, collecting at most
+/// `cap` new matches. A directory interrupted by the cap or the budget is
+/// re-queued with the name to resume after; sorting entries by name makes
+/// that resume point stable, so nothing is reported twice.
+fn run_search_slice(session: &mut SearchSession, cap: usize) {
+    const SLICE: std::time::Duration = std::time::Duration::from_millis(400);
+    let started = std::time::Instant::now();
     let decoders = kog_audio::decoder::DecoderRegistry::new(
         kog_audio::settings::AppSettings::load().decoder_settings(),
     );
-    let mut found = Vec::new();
-    let mut pending = vec![root.clone()];
-    while let Some(directory) = pending.pop() {
-        if found.len() >= limit {
-            break;
+    let mut limit = cap;
+    while let Some((directory, resume_after)) = session.pending.pop() {
+        if started.elapsed() >= SLICE {
+            session.pending.push((directory, resume_after));
+            return;
         }
         let Ok(entries) = std::fs::read_dir(&directory) else {
             continue;
         };
-        for entry in entries.filter_map(Result::ok) {
-            let path = entry.path();
-            if crate::media_filter::is_hidden(&path) {
+        let mut rows: Vec<(String, bool)> = entries
+            .filter_map(Result::ok)
+            .filter(|entry| !crate::media_filter::is_hidden(&entry.path()))
+            .filter_map(|entry| {
+                let file_type = entry.file_type().ok()?;
+                Some((
+                    entry.file_name().to_string_lossy().into_owned(),
+                    file_type.is_dir(),
+                ))
+            })
+            .collect();
+        rows.sort_by(|a, b| a.0.cmp(&b.0));
+        // A resumed directory replays from the top but skips everything
+        // through the entry the previous slice had last seen.
+        let mut skipping = resume_after.clone();
+        for (name, is_dir) in rows {
+            if let Some(after) = &skipping {
+                if *after != name {
+                    continue;
+                }
+                skipping = None; // The next entry is an unseen one.
                 continue;
             }
-            let Ok(file_type) = entry.file_type() else {
+            let path = directory.join(&name);
+            if is_dir {
+                session.pending.push((path, None));
                 continue;
-            };
-            if file_type.is_dir() {
-                pending.push(path);
-            } else if file_type.is_file()
-                && decoders.accepts_path(&path)
-                && path
-                    .file_name()
-                    .map(|name| name.to_string_lossy().to_lowercase().contains(needle))
-                    .unwrap_or(false)
+            }
+            if !decoders.accepts_path(&path) {
+                continue;
+            }
+            let folded = name.to_lowercase();
+            if session
+                .tokens
+                .iter()
+                .all(|token| folded.contains(token.as_str()))
             {
-                found.push(path);
-                if found.len() >= limit {
-                    break;
+                session.found.push(path);
+                limit -= 1;
+                if limit == 0 {
+                    session.pending.push((directory, Some(name)));
+                    return;
                 }
             }
         }
     }
-    found.sort();
-    Ok(serde_json::json!({
-        "results": found
-            .into_iter()
-            .map(|path| {
-                let relative = path
-                    .strip_prefix(&root)
-                    .map(|relative| relative.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                serde_json::json!({
-                    "name": path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default(),
-                    "path": path.to_string_lossy(),
-                    "relative": relative,
-                })
-            })
-            .collect::<Vec<_>>(),
-    }))
 }
 
 /// `GET /api/playlists`
@@ -1229,6 +1346,7 @@ pub fn router() -> axum::Router<AppState> {
     axum::Router::new()
         .route("/api/library", get(browse))
         .route("/api/library/search", get(search))
+        .route("/api/library/search/more", get(search_more))
         .route("/api/metadata", get(metadata_one).post(metadata_batch))
         .route("/api/playlists", get(list_playlists).post(create_playlist))
         .route(
