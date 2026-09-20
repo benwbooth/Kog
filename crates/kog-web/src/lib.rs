@@ -245,6 +245,10 @@ impl ColumnId {
     }
 
     fn from_key(key: &str) -> Option<Self> {
+        // The desktop names the Year column "date" in its layouts.
+        if key == "date" {
+            return Some(Self::Year);
+        }
         Self::ALL.into_iter().find(|column| column.key() == key)
     }
 
@@ -470,7 +474,7 @@ fn encode_columns(columns: &[Column]) -> String {
         .iter()
         .map(|column| {
             format!(
-                "{}:{:.1}:{}",
+                "{},{:.2},{}",
                 column.id.key(),
                 column.width,
                 if column.visible { 1 } else { 0 }
@@ -486,7 +490,9 @@ fn encode_columns(columns: &[Column]) -> String {
 fn decode_columns(raw: &str) -> Vec<Column> {
     let mut columns = Vec::new();
     for entry in raw.split(';') {
-        let fields: Vec<&str> = entry.split(':').collect();
+        // Desktop layouts write `id,width,visible`; the pane's own cache
+        // writes `id:width:visible`. Both are accepted here.
+        let fields: Vec<&str> = entry.split([':', ',']).collect();
         if fields.len() != 3 {
             continue;
         }
@@ -1843,6 +1849,21 @@ fn App() -> impl IntoView {
 
     // Stars live on the server (`GET/POST /api/stars`) under the desktop's
     // locator scheme, so a star set from the web shows up on the desktop.
+    let load_shared_columns = {
+        let get_json = get_json;
+        move || {
+            leptos::task::spawn_local(async move {
+                if let Ok(value) = get_json("/api/columns".to_owned()).await {
+                    let layout = value["layout"].as_str().unwrap_or_default().to_owned();
+                    if !layout.trim().is_empty() {
+                        set_columns.set(decode_columns(&layout));
+                        store("kog.columns", &layout);
+                    }
+                }
+            });
+        }
+    };
+
     let load_midi = {
         let get_json = get_json;
         move || {
@@ -1932,6 +1953,7 @@ fn App() -> impl IntoView {
         let load_radio = load_radio.clone();
         let load_stars = load_stars.clone();
         let load_midi = load_midi.clone();
+        let load_shared_columns = load_shared_columns.clone();
         move || {
             let header = auth().header();
             // A protected endpoint: the version call is open to everyone, so it
@@ -1948,6 +1970,7 @@ fn App() -> impl IntoView {
             let load_radio = load_radio.clone();
             let load_stars = load_stars.clone();
             let load_midi = load_midi.clone();
+            let load_shared_columns = load_shared_columns.clone();
             leptos::task::spawn_local(async move {
                 let mut request = Request::get(&url);
                 if let Some(header) = header {
@@ -1977,6 +2000,7 @@ fn App() -> impl IntoView {
                         load_radio();
                         load_stars();
                         load_midi();
+                        load_shared_columns();
                     }
                     Ok(response) if response.status() == 401 => {
                         set_connected.set(false);
@@ -2618,7 +2642,14 @@ fn App() -> impl IntoView {
     };
 
     let persist_columns = move |columns: &[Column]| {
-        store("kog.columns", &encode_columns(columns));
+        let layout = encode_columns(columns);
+        store("kog.columns", &layout);
+        // Share the layout so every client - and the desktop - agrees.
+        let url = format!("{}/api/columns", base());
+        let header = auth().header();
+        leptos::task::spawn_local(async move {
+            let _ = post_json(url, header, serde_json::json!({ "layout": layout })).await;
+        });
     };
 
     // Append to the pane without ever touching the transport: the current song

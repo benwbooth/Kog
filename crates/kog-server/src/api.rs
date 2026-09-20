@@ -1066,6 +1066,26 @@ pub async fn rename_playlist(
     }
 }
 
+/// `GET /api/columns` — the shared playlist column layout, in the desktop's
+/// `id,width,visible;...` format. The web player roots its column set here.
+pub async fn get_columns() -> Response {
+    let layout = kog_audio::settings::AppSettings::load()
+        .playlist_column_layout
+        .unwrap_or_default();
+    axum::Json(serde_json::json!({ "layout": layout })).into_response()
+}
+
+/// `POST /api/columns` — persist the playlist column layout.
+pub async fn set_columns(axum::Json(body): axum::Json<serde_json::Value>) -> Response {
+    let Some(layout) = body["layout"].as_str() else {
+        return bad_request("a layout string is required");
+    };
+    if let Err(error) = kog_audio::settings::AppSettings::save_playlist_column_layout(layout) {
+        return bad_request(&error);
+    }
+    axum::Json(serde_json::json!({ "ok": true })).into_response()
+}
+
 /// `GET /api/stars`
 pub async fn list_stars(State(state): State<AppState>) -> Response {
     let library = state.library.clone();
@@ -1192,6 +1212,7 @@ pub fn router() -> axum::Router<AppState> {
         .route("/api/playlists/{id}/entries", post(append_playlist_entries))
         .route("/api/stars", get(list_stars).post(set_star))
         .route("/api/settings/midi", get(midi_settings).post(set_midi_setting))
+        .route("/api/columns", get(get_columns).post(set_columns))
 }
 
 #[cfg(test)]
