@@ -53,6 +53,7 @@ mod icons {
     pub const GO_UP: &str = include_str!("../../../qml/icons/go-up.svg");
     pub const FOLDER_OPEN: &str = include_str!("../../../qml/icons/folder-open.svg");
     pub const VIEW_LIST_TREE: &str = include_str!("../../../qml/icons/view-list-tree.svg");
+    pub const CLEAR_LIST: &str = include_str!("../../../qml/icons/edit-clear-list.svg");
 }
 
 /// One playable entry, addressed the way the whole API addresses tracks.
@@ -3191,6 +3192,13 @@ fn App() -> impl IntoView {
                         <span class="count">
                             {move || status_line()}
                         </span>
+                        <button
+                            class="flat clear-playlist"
+                            title="Clear playlist"
+                            disabled=move || queue.get().is_empty()
+                            on:click=move |_| clear_pane()
+                            inner_html=icons::CLEAR_LIST
+                        ></button>
                         <Show when=move || radio_on.get() fallback=|| ()>
                             <button
                                 class="flat radio-reshuffle"
