@@ -3360,16 +3360,15 @@ fn App() -> impl IntoView {
                                         />
                                     </div>
                                     <div class="tree-list">
-                                        <Show
-                                            when=move || {
-                                                let searching = !tree_search.get().trim().is_empty();
-                                                let rooted = !tree_root.get().is_empty();
-                                                searching || rooted
-                                            }
-                                            fallback=|| ()
-                                        >
                                             <Show
-                                                when=move || tree_search.get().trim().is_empty()
+                                                when=move || {
+                                                    // The ".." row climbs toward the root the
+                                                    // visitor chose; the library root itself is
+                                                    // the ceiling, so it lists its folders with
+                                                    // no climb row above them.
+                                                    tree_search.get().trim().is_empty()
+                                                        && !tree_root.get().is_empty()
+                                                }
                                                 fallback=|| ()
                                             >
                                                 <button
@@ -3503,7 +3502,6 @@ fn App() -> impl IntoView {
                                                 }
                                             }
                                         </For>
-                                        </Show>
                                         <Show
                                             when=move || {
                                                 let searching = !tree_search.get().trim().is_empty();
