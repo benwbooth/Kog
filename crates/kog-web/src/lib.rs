@@ -1405,6 +1405,9 @@ fn App() -> impl IntoView {
     // mid-song. A fresh page load starts stopped, and Stop returns here, so
     // the current row shows no playing or paused glyph.
     let (stopped, set_stopped) = signal(true);
+    // One-line outcomes for actions the pane itself shows nothing about,
+    // e.g. "Added to playlist"; shown where the track count normally lives.
+    let (status_note, set_status_note) = signal(String::new());
     let (filter, set_filter) = signal(String::new());
     let (sort_key, set_sort_key) = signal(SortKey::Index);
     let (sort_asc, set_sort_asc) = signal(true);
@@ -3190,19 +3193,21 @@ fn App() -> impl IntoView {
     };
 
     // Append to the pane without ever touching the transport: the current song
-    // keeps playing, exactly as the desktop tree's "Add to Playlist" does.
-    let append_entries = move |entries: Vec<Entry>| {
+    // keeps playing, exactly as the desktop tree's "Add to Playlist" does. The
+    // same song may appear twice — adds always append, and the count that
+    // landed is reported so the outcome is never a silent nothing.
+    let append_entries = move |entries: Vec<Entry>| -> usize {
         if entries.is_empty() {
-            return;
+            return 0;
         }
+        let mut added = 0_usize;
         set_queue.update(|items| {
             for entry in entries {
-                let key = meta_key(&entry);
-                if !items.iter().any(|item| meta_key(item) == key) {
-                    items.push(entry);
-                }
+                items.push(entry);
+                added += 1;
             }
         });
+        added
     };
 
     // Opening a playlist appends its tracks to the pane - like the desktop's
@@ -3462,36 +3467,57 @@ fn App() -> impl IntoView {
         let get_json = get_json;
         let queue_files = queue_files.clone();
         let append_entries = append_entries;
+        // Mirror the desktop's add-path status so an add is never a silent
+        // no-op from the visitor's point of view.
+        let report_add = {
+            let set_status_note = set_status_note.clone();
+            move |added: usize| {
+                set_status_note.set(match added {
+                    0 => "No tracks added".to_owned(),
+                    1 => "Added to playlist".to_owned(),
+                    count => format!("Added {count} tracks to playlist"),
+                });
+                if let Some(window) = web_sys::window() {
+                    let note = set_status_note.clone();
+                    let clear =
+                        Closure::<dyn FnMut()>::new(move || note.set(String::new()));
+                    let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+                        clear.as_ref().unchecked_ref(),
+                        4000,
+                    );
+                    clear.forget();
+                }
+            }
+        };
         move |row: TreeRow| {
             if !row.is_dir {
                 // Match the whole locator, not just the path: a subsong
-                // playlist lists several rows for one file.
-                if let Some(entry) = queue_files(&row.parent).into_iter().find(|item| {
+                // playlist lists several rows for one file. Rows the loaded
+                // tree does not know (search results, a stale listing) still
+                // append, built straight from the row.
+                let known = queue_files(&row.parent).into_iter().find(|item| {
                     item.kind == row.kind
                         && item.path == row.path
                         && item.entry == row.entry
                         && item.fragment == row.fragment
-                }) {
-                    append_entries(vec![entry]);
-                } else if row.parent.is_empty() {
-                    // Search-result rows are not part of the loaded tree:
-                    // build the entry from the row itself.
-                    append_entries(vec![Entry {
-                        kind: row.kind.clone(),
-                        path: row.path.clone(),
-                        entry: row.entry.clone(),
-                        fragment: row.fragment.clone(),
-                        name: row.name.clone(),
-                        location: row.path.clone(),
-                    }]);
-                }
+                });
+                let entry = known.unwrap_or_else(|| Entry {
+                    kind: row.kind.clone(),
+                    path: row.path.clone(),
+                    entry: row.entry.clone(),
+                    fragment: row.fragment.clone(),
+                    name: row.name.clone(),
+                    location: row.path.clone(),
+                });
+                report_add(append_entries(vec![entry]));
                 return;
             }
             let route = format!("/api/library?path={}", url_encode(&row.path));
             let append_entries = append_entries;
+            let report_add = report_add.clone();
             leptos::task::spawn_local(async move {
                 if let Ok(value) = get_json(route).await {
-                    append_entries(library_files(&value));
+                    report_add(append_entries(library_files(&value)));
                 }
             });
         }
@@ -4785,7 +4811,14 @@ fn App() -> impl IntoView {
                         />
                     </div>
                     <div class="transport-status">
-                        {move || status_line()}
+                        {move || {
+                            let note = status_note.get();
+                            if note.is_empty() {
+                                status_line()
+                            } else {
+                                note
+                            }
+                        }}
                     </div>
                 </div>
 
