@@ -3477,18 +3477,31 @@ fn App() -> impl IntoView {
                         class="rows"
                         class:drop-active=move || playlist_drop_active.get()
                         on:wheel=move |event: web_sys::WheelEvent| {
-                            // A wheel over a playlist that cannot scroll
-                            // vertically scrolls horizontally instead, so the
-                            // wide column set is reachable without shift.
+                            // The wide column set must be reachable with the
+                            // plain wheel: when the rows cannot scroll
+                            // vertically, or the wheel hits the top/bottom of
+                            // a long list, the delta scrolls horizontally.
                             let element = event
                                 .current_target()
                                 .expect("wheel target exists")
                                 .unchecked_into::<web_sys::Element>();
-                            if element.scroll_height() <= element.client_height()
-                                && event.delta_y() != 0.0
-                            {
+                            let vertical =
+                                element.scroll_height() > element.client_height();
+                            let delta = event.delta_y();
+                            if delta == 0.0 {
+                                return;
+                            }
+                            let redirect = !vertical || {
+                                let at_bottom = element.scroll_top()
+                                    + element.client_height()
+                                    >= element.scroll_height();
+                                let at_top = element.scroll_top() <= 0;
+                                (delta > 0.0 && at_bottom)
+                                    || (delta < 0.0 && at_top)
+                            };
+                            if redirect {
                                 element.set_scroll_left(
-                                    element.scroll_left() + event.delta_y() as i32,
+                                    element.scroll_left() + delta as i32,
                                 );
                                 event.prevent_default();
                             }
@@ -4449,7 +4462,17 @@ fn App() -> impl IntoView {
 
             <Show when=move || update_ready.get() fallback=|| ()>
                 <div class="update-banner">
-                    "A new Kog build is ready — it will reload when playback pauses."
+                    <span>"A new Kog build is ready — it reloads when playback pauses."</span>
+                    <button
+                        class="update-reload"
+                        on:click=move |_| {
+                            if let Some(window) = web_sys::window() {
+                                let _ = window.location().reload();
+                            }
+                        }
+                    >
+                        "Reload now"
+                    </button>
                 </div>
             </Show>
 
