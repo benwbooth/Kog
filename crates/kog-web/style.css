@@ -627,17 +627,17 @@ button:focus-visible {
 .columns,
 .track {
   display: grid;
+  grid-template-columns: var(--cols);
+  align-items: center;
+  /* Shared horizontal scroll content: the pane scrolls rather than squeezing
+   * columns below their widths when the set is wider than the pane. */
+  min-width: var(--table-width);
   cursor: grab;
 }
 
 /* The insertion point while a queue row is dragged to a new position. */
 .track.reorder-above {
   box-shadow: 0 -2px 0 0 var(--highlight);
-  grid-template-columns: var(--cols);
-  align-items: center;
-  /* Shared horizontal scroll content: the pane scrolls rather than squeezing
-   * columns below their widths when the set is wider than the pane. */
-  min-width: var(--table-width);
 }
 
 .columns {
