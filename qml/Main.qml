@@ -2911,12 +2911,6 @@ ApplicationWindow {
                                 root.treeHoverY = treeDelegate.mapToItem(
                                     treeSection, 0, 0).y
                             }
-                            onPositionChanged: (mouse) => {
-                                // Keep the popup pinned to the row while the
-                                // pointer moves and while the tree scrolls.
-                                root.treeHoverY = treeDelegate.mapToItem(
-                                    treeSection, 0, 0).y
-                            }
                             // Delay the clear: moving to a neighbouring row
                             // delivers this exit after that row's enter, and
                             // an immediate clear ate the fresh tooltip.
@@ -2943,6 +2937,10 @@ ApplicationWindow {
                                     mouse.modifiers)
                             }
                             onPositionChanged: mouse => {
+                                // Keep the popup pinned to the row while the
+                                // pointer moves within it.
+                                root.treeHoverY = treeDelegate.mapToItem(
+                                    treeSection, 0, 0).y
                                 if ((mouse.buttons & Qt.LeftButton) === 0)
                                     return
                                 if (!manualDragging
