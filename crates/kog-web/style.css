@@ -257,9 +257,29 @@ button:focus-visible {
 
 .workspace {
   display: grid;
-  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+  grid-template-columns: var(--sidebar-width) 6px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   min-height: 0;
   overflow: hidden;
+}
+
+.workspace.resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
+/* The splitter between the tree and the playlist. */
+.pane-resizer {
+  width: 6px;
+  flex: none;
+  cursor: col-resize;
+  background: transparent;
+  touch-action: none;
+}
+
+.pane-resizer:hover,
+.workspace.resizing .pane-resizer {
+  background: color-mix(in srgb, var(--highlight) 55%, transparent);
 }
 
 /* The toolbar's hamburger hides the inline sidebar on desktop, so the pane
@@ -270,17 +290,25 @@ button:focus-visible {
 @media (min-width: 821px) {
   .sidebar {
     grid-column: 1;
+    grid-row: 1;
+  }
+
+  .pane-resizer {
+    grid-column: 2;
+    grid-row: 1;
   }
 
   .playlist {
-    grid-column: 2;
+    grid-column: 3;
+    grid-row: 1;
   }
 
   .workspace.sidebar-hidden {
-    grid-template-columns: 0 minmax(0, 1fr);
+    grid-template-columns: 0 0 minmax(0, 1fr);
   }
 
-  .workspace.sidebar-hidden .sidebar {
+  .workspace.sidebar-hidden .sidebar,
+  .workspace.sidebar-hidden .pane-resizer {
     display: none;
   }
 }
@@ -1315,6 +1343,10 @@ button:focus-visible {
 
   .workspace {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .pane-resizer {
+    display: none;
   }
 
   /* The sidebar slides over the playlist instead of squeezing it. */

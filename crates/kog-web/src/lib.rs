@@ -1218,6 +1218,14 @@ fn App() -> impl IntoView {
     // Desktop shows the sidebar inline; phones open it as a drawer. The
     // desktop choice is persisted, the drawer state is not.
     let (sidebar_open, set_sidebar_open) = signal(false);
+    // Draggable tree-pane width (the splitter between the tree and the pane).
+    let (sidebar_width, set_sidebar_width) = signal(
+        load("kog.sidebar-width")
+            .and_then(|value| value.trim().parse::<f64>().ok())
+            .map(|value| value.clamp(180.0, 600.0))
+            .unwrap_or(260.0),
+    );
+    let (resizing_sidebar, set_resizing_sidebar) = signal(false);
     let (sidebar_visible, set_sidebar_visible) =
         signal(load("kog.sidebar").map(|value| value != "0").unwrap_or(true));
     let (files_expanded, set_files_expanded) = signal(true);
@@ -3181,11 +3189,39 @@ fn App() -> impl IntoView {
             <div
                 class:sidebar-open=move || sidebar_open.get()
                 class:sidebar-hidden=move || !sidebar_visible.get()
+                class:resizing=move || resizing_sidebar.get()
                 class="workspace"
+                style=move || format!("--sidebar-width: {:.0}px", sidebar_width.get())
             >
                 <div
                     class="drawer-scrim"
                     on:click=move |_| set_sidebar_open.set(false)
+                ></div>
+
+                <div
+                    class="pane-resizer"
+                    title="Drag to resize the file tree"
+                    on:pointerdown=move |ev: web_sys::PointerEvent| {
+                        ev.target().and_then(|target| {
+                            target.dyn_into::<web_sys::Element>().ok()
+                        })
+                        .and_then(|element| element.set_pointer_capture(ev.pointer_id()).ok());
+                        set_resizing_sidebar.set(true);
+                    }
+                    on:pointermove=move |ev: web_sys::PointerEvent| {
+                        if resizing_sidebar.get_untracked() {
+                            let width = (ev.client_x() as f64).clamp(180.0, 600.0);
+                            set_sidebar_width.set(width);
+                        }
+                    }
+                    on:pointerup=move |_| {
+                        set_resizing_sidebar.set(false);
+                        store(
+                            "kog.sidebar-width",
+                            &format!("{:.0}", sidebar_width.get_untracked()),
+                        );
+                    }
+                    on:pointercancel=move |_| set_resizing_sidebar.set(false)
                 ></div>
 
                 <aside class="sidebar">
