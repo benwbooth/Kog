@@ -1348,6 +1348,8 @@ fn App() -> impl IntoView {
     // Server-side search results for the tree box: while set, the pane shows
     // these instead of the loaded tree folders.
     let (tree_results, set_tree_results) = signal(Option::<Vec<TreeRow>>::None);
+    // True while a query's walk is still streaming results in.
+    let (tree_search_pending, set_tree_search_pending) = signal(false);
     // Right-click menu anchor and target row.
     let (tree_menu, set_tree_menu) = signal(Option::<(f64, f64, TreeRow)>::None);
     // Right-click on a playlist row: the Qt playlist context menu (play,
@@ -1487,8 +1489,12 @@ fn App() -> impl IntoView {
                 }
                 if trimmed.is_empty() {
                     set_tree_results.set(None);
+                    set_tree_search_pending.set(false);
                     return;
                 }
+                // A huge library takes a while to cross: the pane must say it
+                // is searching rather than declare "no matches" prematurely.
+                set_tree_search_pending.set(true);
                 let parse = |value: &serde_json::Value| -> Vec<TreeRow> {
                     let mut rows = Vec::new();
                     if let Some(list) = value["results"].as_array() {
@@ -1564,8 +1570,14 @@ fn App() -> impl IntoView {
                                 Err(_) => break,
                             }
                         }
+                        if done || rows.len() >= 200 {
+                            set_tree_search_pending.set(false);
+                        }
                     }
-                    Err(error) => set_message.set(error),
+                    Err(error) => {
+                        set_tree_search_pending.set(false);
+                        set_message.set(error);
+                    }
                 }
             });
         }
@@ -4209,12 +4221,18 @@ fn App() -> impl IntoView {
                                             }
                                             fallback=|| ()
                                         >
-                                            <Show
-                                                when=move || !tree_results.get().unwrap_or_default().is_empty()
-                                                fallback=move || view! {
-                                                    <p class="empty">"No matches."</p>
-                                                }
-                                            >
+                                                <Show
+                                                    when=move || !tree_results.get().unwrap_or_default().is_empty()
+                                                    fallback=move || view! {
+                                                        <p class="empty">
+                                                            {move || if tree_search_pending.get() {
+                                                                "Searching the music folder…"
+                                                            } else {
+                                                                "No matches."
+                                                            }}
+                                                        </p>
+                                                    }
+                                                >
                                                 <For
                                                     each=move || tree_results.get().unwrap_or_default()
                                                     key=|row| format!("{}#{}", row.path, row.entry)
