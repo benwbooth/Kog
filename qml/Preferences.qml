@@ -1115,6 +1115,99 @@ Window {
                     }
 
                     PreferenceGroup {
+                        title: qsTr("Connected devices")
+                        Layout.fillWidth: true
+
+                        ColumnLayout {
+                            id: deviceList
+
+                            anchors.fill: parent
+                            spacing: 8
+
+                            property var devices: []
+
+                            function refresh() {
+                                let list = []
+                                try {
+                                    list = JSON.parse(root.app.connected_devices_json()) || []
+                                } catch (error) {
+                                    list = []
+                                }
+                                devices = list
+                            }
+
+                            function ago(when) {
+                                const seconds = Math.max(0, Math.round((Date.now() - when) / 1000))
+                                if (seconds < 60)
+                                    return qsTr("active %1s ago").arg(seconds)
+                                const minutes = Math.round(seconds / 60)
+                                if (minutes < 60)
+                                    return qsTr("active %1m ago").arg(minutes)
+                                return qsTr("active %1h ago").arg(Math.round(minutes / 60))
+                            }
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                PreferenceLabel {
+                                    Layout.fillWidth: true
+                                    text: devices.length === 0
+                                        ? qsTr("No devices have connected yet. Browsers that open the player show up here.")
+                                        : qsTr("%1 device%2 have connected. Blocking refuses a device's requests at the API until you unblock it.")
+                                            .arg(devices.length).arg(devices.length === 1 ? " has" : "s have")
+                                    wrapMode: Text.Wrap
+                                    color: palette.placeholderText
+                                }
+                                Button {
+                                    text: qsTr("Refresh")
+                                    onClicked: deviceList.refresh()
+                                }
+                            }
+
+                            Repeater {
+                                model: devices
+
+                                delegate: RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 8
+                                    required property var modelData
+
+                                    ColumnLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 1
+
+                                        PreferenceLabel {
+                                            Layout.fillWidth: true
+                                            text: modelData.agent !== "-"
+                                                ? modelData.agent : modelData.id
+                                            elide: Text.ElideMiddle
+                                            font.pixelSize: 12
+                                        }
+                                        PreferenceLabel {
+                                            Layout.fillWidth: true
+                                            text: (modelData.addr !== "-" ? modelData.addr + " · " : "")
+                                                  + ago(modelData.last_seen)
+                                                  + " · " + modelData.requests + " requests"
+                                                  + (modelData.blocked ? " · " + qsTr("blocked") : "")
+                                            elide: Text.ElideRight
+                                            color: palette.placeholderText
+                                            font.pixelSize: 11
+                                        }
+                                    }
+
+                                    Button {
+                                        text: modelData.blocked ? qsTr("Unblock") : qsTr("Disconnect")
+                                        onClicked: {
+                                            root.app.set_device_blocked(
+                                                modelData.id, !modelData.blocked)
+                                            parent.parent.refresh()
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    PreferenceGroup {
                         title: qsTr("Encryption and codec")
                         Layout.fillWidth: true
 

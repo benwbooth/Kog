@@ -5,11 +5,11 @@
 use std::sync::Arc;
 
 use axum::Router;
-use axum::extract::{Request, State};
+use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use tokio::sync::RwLock;
 
 use kog_audio::decoder::DecoderSettings;
@@ -86,6 +86,8 @@ pub fn router(state: AppState) -> Router {
     let protected = Router::new()
         .route("/api/codecs", get(codecs))
         .route("/api/config", get(read_config))
+        .route("/api/devices", get(list_devices))
+        .route("/api/devices/block", post(set_device_blocked))
         .route("/api/stream", get(stream_audio))
         .merge(crate::api::router())
         .merge(crate::radio::router())
@@ -115,6 +117,38 @@ async fn log_request(request: Request, next: Next) -> Response {
         .and_then(|value| value.to_str().ok())
         .unwrap_or("-")
         .to_owned();
+    // The web player sends its id as a header; the audio element cannot, so
+    // its stream URL carries the same id as a query parameter.
+    let device_id = request
+        .headers()
+        .get("x-kog-device")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned)
+        .or_else(|| {
+            request.uri().query().and_then(|query| {
+                query.split('&').find_map(|pair| {
+                    pair.strip_prefix("device=").map(str::to_owned)
+                })
+            })
+        })
+        .unwrap_or_else(|| format!("agent:{agent}"));
+    let addr = request
+        .extensions()
+        .get::<ConnectInfo<std::net::SocketAddr>>()
+        .map(|info| info.0.to_string())
+        .unwrap_or_else(|| "-".to_owned());
+    crate::devices::registry().record(device_id.clone(), agent.clone(), addr);
+    // A device the user disconnected is refused at the API boundary: the web
+    // frontend itself still loads, so it can say so instead of spinning.
+    if path.starts_with("/api") && crate::devices::registry().blocked(&device_id) {
+        return (
+            StatusCode::FORBIDDEN,
+            axum::Json(serde_json::json!({
+                "error": "This device was disconnected in Kog's settings"
+            })),
+        )
+            .into_response();
+    }
     let response = next.run(request).await;
     // Streaming is chatty and long-lived; a page load is what matters here.
     if !path.starts_with("/api/stream") {
@@ -124,6 +158,28 @@ async fn log_request(request: Request, next: Next) -> Response {
         );
     }
     response
+}
+
+/// `GET /api/devices` — the clients seen at the API, most recent first.
+async fn list_devices() -> impl IntoResponse {
+    let devices = crate::devices::registry().list();
+    axum::Json(serde_json::json!({ "devices": devices })).into_response()
+}
+
+/// `POST /api/devices/block` — cut a device off, or let it back in.
+async fn set_device_blocked(
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> Response {
+    let Some(id) = body["id"].as_str() else {
+        return bad_request("a device id is required");
+    };
+    let blocked = body["blocked"].as_bool().unwrap_or(true);
+    if crate::devices::registry().set_blocked(id, blocked) {
+        axum::Json(serde_json::json!({ "ok": true, "id": id, "blocked": blocked }))
+            .into_response()
+    } else {
+        bad_request(&format!("no device {id} has been seen"))
+    }
 }
 
 async fn health() -> impl IntoResponse {
@@ -558,10 +614,13 @@ pub async fn serve_with_shutdown(
     let scheme = if config.tls.mode == crate::TlsMode::Off { "http" } else { "https" };
     eprintln!("kog-server: listening on {scheme}://{address}");
     if config.tls.mode == crate::TlsMode::Off {
-        return axum::serve(listener, app)
-            .with_graceful_shutdown(shutdown)
-            .await
-            .map_err(|error| format!("serving on {address}: {error}"));
+        return axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .with_graceful_shutdown(shutdown)
+        .await
+        .map_err(|error| format!("serving on {address}: {error}"));
     }
     serve_tls(listener, app, &config, address, shutdown).await
 }
@@ -913,6 +972,93 @@ mod tests {
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
         (status, json)
+    }
+
+    #[tokio::test]
+    async fn devices_are_tracked_and_blocking_is_enforced() {
+        let state = state(AuthMode::None, "");
+
+        // A request carrying a device id registers the client.
+        let response = router(state.clone())
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/api/health")
+                    .header("x-kog-device", "web-test-device")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let (status, body) = get_json(state.clone(), "/api/devices", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let devices = body["devices"].as_array().unwrap();
+        let entry = devices
+            .iter()
+            .find(|device| device["id"] == "web-test-device")
+            .expect("the request's device is listed");
+        assert_eq!(entry["blocked"], false);
+        assert!(entry["requests"].as_u64().unwrap() >= 1);
+
+        // Blocking refuses the device's API requests with a 403...
+        let (status, body) = request_json(
+            state.clone(),
+            "POST",
+            "/api/devices/block",
+            Some(serde_json::json!({ "id": "web-test-device", "blocked": true })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["ok"], true);
+        let blocked = router(state.clone())
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/api/health")
+                    .header("x-kog-device", "web-test-device")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(blocked.status(), StatusCode::FORBIDDEN);
+
+        // ...and unblocking lets it back in. Unknown ids are a bad request.
+        let (status, _) = request_json(
+            state.clone(),
+            "POST",
+            "/api/devices/block",
+            Some(serde_json::json!({ "id": "web-test-device", "blocked": false })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let allowed = router(state)
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/api/health")
+                    .header("x-kog-device", "web-test-device")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(allowed.status(), StatusCode::OK);
+        let (status, _) = request_json(
+            AppState::new(
+                ServerConfig {
+                    enabled: true,
+                    ..ServerConfig::default()
+                },
+                "9.9.9",
+                streams(),
+                library(),
+            ),
+            "POST",
+            "/api/devices/block",
+            Some(serde_json::json!({ "id": "never-seen", "blocked": true })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

@@ -9,6 +9,7 @@
 pub mod api;
 pub mod auth;
 pub mod config;
+pub mod devices;
 pub mod media_filter;
 pub mod radio;
 pub mod routes;

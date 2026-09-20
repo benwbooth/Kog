@@ -702,6 +702,24 @@ fn load(key: &str) -> Option<String> {
     storage()?.get_item(key).ok()?
 }
 
+/// A stable id for this browser, so the server's device registry — and the
+/// desktop's connected-devices settings — can tell clients apart. Generated
+/// once and kept in localStorage.
+fn device_id() -> String {
+    if let Some(existing) = load("kog.device")
+        && !existing.trim().is_empty()
+    {
+        return existing;
+    }
+    let generated = format!(
+        "web-{:08x}{:08x}",
+        (js_sys::Math::random() * 4_294_967_295.0) as u32,
+        (js_sys::Math::random() * 4_294_967_295.0) as u32,
+    );
+    store("kog.device", &generated);
+    generated
+}
+
 /// Everything the web player remembers across a reload, in one localStorage
 /// value. Deliberately client-side: the desktop's session.json is shared by
 /// every client, so a phone must never overwrite the desktop's pane.
@@ -994,7 +1012,10 @@ async fn post_json(
     if let Some(header) = header {
         request = request.header("Authorization", &header);
     }
-    let request = request.json(&body).map_err(|error| error.to_string())?;
+    let request = request
+        .header("X-Kog-Device", &device_id())
+        .json(&body)
+        .map_err(|error| error.to_string())?;
     let response = request.send().await.map_err(|error| error.to_string())?;
     if response.status() == 401 {
         return Err("Sign in to continue".to_owned());
@@ -1252,11 +1273,13 @@ fn App() -> impl IntoView {
     let get_json = move |route: String| {
         let url = format!("{}{route}", base());
         let header = auth().header();
+        let device = device_id();
         async move {
             let mut request = Request::get(&url);
             if let Some(header) = header {
                 request = request.header("Authorization", &header);
             }
+            request = request.header("X-Kog-Device", &device);
             let response = request.send().await.map_err(|error| error.to_string())?;
             if response.status() == 401 {
                 return Err("Sign in to continue".to_owned());
@@ -1908,7 +1931,7 @@ fn App() -> impl IntoView {
 
     let stream_url = move |entry: &Entry| {
         format!(
-            "{}/api/stream?kind={}&path={}&entry={}&codec={}{}",
+            "{}/api/stream?kind={}&path={}&entry={}&codec={}{}&device={}",
             base(),
             url_encode(&entry.kind),
             url_encode(&entry.path),
@@ -1919,7 +1942,8 @@ fn App() -> impl IntoView {
                 .as_deref()
                 .filter(|fragment| !fragment.is_empty())
                 .map(|fragment| format!("&fragment={}", url_encode(fragment)))
-                .unwrap_or_default()
+                .unwrap_or_default(),
+            url_encode(&device_id()),
         )
     };
 

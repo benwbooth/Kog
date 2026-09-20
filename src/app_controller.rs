@@ -232,6 +232,10 @@ pub mod qobject {
         #[qinvokable]
         fn server_addresses_json(self: &AppController) -> QString;
         #[qinvokable]
+        fn connected_devices_json(self: &AppController) -> QString;
+        #[qinvokable]
+        fn set_device_blocked(self: Pin<&mut AppController>, id: QString, blocked: bool);
+        #[qinvokable]
         fn build_revision(self: &AppController) -> QString;
         #[qinvokable]
         fn build_timestamp(self: &AppController) -> f64;
@@ -5462,6 +5466,20 @@ impl qobject::AppController {
             }))
         })();
         self.as_mut().server_result(outcome)
+    }
+
+    /// The clients the embedded server has seen, most recent first. The
+    /// registry is process-wide, so this reads the live server's state.
+    pub fn connected_devices_json(&self) -> QString {
+        let devices = kog_server::devices::registry().list();
+        qstring(serde_json::to_string(&devices)
+            .unwrap_or_else(|_| "[]".to_owned()))
+    }
+
+    /// Cut a device off, or let it back in. Takes effect on the device's next
+    /// request; no server restart.
+    pub fn set_device_blocked(mut self: Pin<&mut Self>, id: QString, blocked: bool) {
+        kog_server::devices::registry().set_blocked(&id.to_string(), blocked);
     }
 
     pub fn stop_api_server(mut self: Pin<&mut Self>) -> QString {
