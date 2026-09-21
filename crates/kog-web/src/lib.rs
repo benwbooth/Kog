@@ -5199,6 +5199,14 @@ fn App() -> impl IntoView {
                 <div class="transport-right">
                     <div class="volume-row">
                         <button
+                            class="flat clear-list"
+                            title="Clear Playlist"
+                            disabled=move || queue.get().is_empty()
+                            on:click=move |_| clear_pane()
+                        >
+                            <span class="glyph-icon" inner_html=icons::CLEAR_LIST></span>
+                        </button>
+                        <button
                             class="flat mute"
                             title=move || if volume.get() <= 0.0 { "Unmute" } else { "Mute" }
                             on:click=toggle_mute

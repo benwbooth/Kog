@@ -1134,7 +1134,8 @@ button:focus-visible {
   gap: 2px;
 }
 
-.volume-row .mute {
+.volume-row .mute,
+.volume-row .clear-list {
   width: 30px;
   height: 30px;
   padding: 0;
@@ -1143,13 +1144,15 @@ button:focus-visible {
 }
 
 /* The mute button's inlined desktop speaker icon, tinted like its text. */
-.volume-row .mute .glyph-icon svg {
+.volume-row .mute .glyph-icon svg,
+.volume-row .clear-list .glyph-icon svg {
   width: 17px;
   height: 17px;
   display: block;
 }
 
-.volume-row .mute .glyph-icon svg path {
+.volume-row .mute .glyph-icon svg path,
+.volume-row .clear-list .glyph-icon svg path {
   fill: currentColor;
 }
 
