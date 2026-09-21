@@ -1174,6 +1174,72 @@ fn set_track_notifications_pref(
     });
 }
 
+/// The desktop playing-row meter's band analysis, client-side: the same
+/// cascaded one-pole splits, windowed RMS in dB mapped to 0..1, and
+/// asymmetric smoothing as `AudioMeterSource` in kog-audio, fed from the
+/// audio element's Web Audio tap.
+#[derive(Default)]
+struct BandState {
+    rate: u32,
+    alphas: [f32; 4],
+    low_pass: [f32; 4],
+    energy: [f64; 5],
+    frames_in_window: u32,
+    frames_per_window: u32,
+    smoothed: [f32; 5],
+}
+
+impl BandState {
+    /// Split frequencies and window length tuned for `sample_rate`.
+    fn reset(&mut self, sample_rate: u32) {
+        const SPLITS_HZ: [f32; 4] = [180.0, 700.0, 2_500.0, 7_000.0];
+        let rate = sample_rate as f32;
+        self.rate = sample_rate;
+        self.alphas = SPLITS_HZ.map(|frequency| {
+            let frequency = frequency.min(rate * 0.45);
+            1.0 - (-2.0 * std::f32::consts::PI * frequency / rate).exp()
+        });
+        self.low_pass = [0.0; 4];
+        self.energy = [0.0; 5];
+        self.frames_in_window = 0;
+        self.frames_per_window = (sample_rate / 50).max(64);
+    }
+
+    fn observe(&mut self, sample: f32) {
+        for (low_pass, alpha) in self.low_pass.iter_mut().zip(self.alphas) {
+            *low_pass += alpha * (sample - *low_pass);
+        }
+        let bands = [
+            self.low_pass[0],
+            self.low_pass[1] - self.low_pass[0],
+            self.low_pass[2] - self.low_pass[1],
+            self.low_pass[3] - self.low_pass[2],
+            sample - self.low_pass[3],
+        ];
+        for (energy, band) in self.energy.iter_mut().zip(bands) {
+            *energy += f64::from(band) * f64::from(band);
+        }
+        self.frames_in_window += 1;
+        if self.frames_in_window < self.frames_per_window {
+            return;
+        }
+        const GAINS: [f32; 5] = [1.35, 1.2, 1.0, 1.05, 1.2];
+        let frames = f64::from(self.frames_in_window);
+        for index in 0..5 {
+            let rms = (self.energy[index] / frames).sqrt() as f32 * GAINS[index];
+            let decibels = 20.0 * rms.max(0.000_001).log10();
+            let target = ((decibels + 60.0) / 60.0).clamp(0.0, 1.0);
+            let smoothing = if target > self.smoothed[index] { 0.72 } else { 0.16 };
+            self.smoothed[index] += smoothing * (target - self.smoothed[index]);
+            if self.smoothed[index] < 0.004 {
+                self.smoothed[index] = 0.0;
+            }
+        }
+        self.energy.fill(0.0);
+        self.frames_in_window = 0;
+    }
+}
+
 /// Hand `url` to the browser as a download: a hidden same-origin anchor with
 /// the download attribute, so an empty `filename` keeps the server's
 /// attachment disposition and a non-empty one names the file directly (a
@@ -1741,6 +1807,9 @@ fn App() -> impl IntoView {
     let (list_name, set_list_name) = signal(restored.list_name.clone());
     let (current, set_current) = signal(restored.current);
     let (playing, set_playing) = signal(false);
+    // Band levels of the currently streaming track, for the playing row's
+    // meter: five 0..1 values polled from the server while it decodes.
+    let (audio_levels, set_audio_levels) = signal([0.0_f32; 5]);
     // Stopped is stricter than paused: nothing was played and nothing is held
     // mid-song. A fresh page load starts stopped, and Stop returns here, so
     // the current row shows no playing or paused glyph.
@@ -3257,6 +3326,77 @@ fn App() -> impl IntoView {
             )
             .expect("playback watchdog interval");
         watchdog.forget();
+    }
+
+    // The playing row's level meter. The desktop meters the audio it is
+    // playing locally; the web twin taps the <audio> element through the
+    // Web Audio API, so cached streams meter exactly like fresh ones. The
+    // band math is the desktop AudioMeterSource's: one-pole splits at
+    // 180 Hz / 700 Hz / 2.5 kHz / 7 kHz, per-window RMS in dB mapped to
+    // 0..1, asymmetric smoothing, refreshed on the desktop's cadence.
+    {
+        let window = web_sys::window().expect("window for the level meter");
+        let audio_ref = audio_ref.clone();
+        let playing = playing.clone();
+        // The element source can only be created once per element; the
+        // context and analyser live for the page's lifetime.
+        let graph: Rc<
+            RefCell<Option<(web_sys::AudioContext, web_sys::AnalyserNode)>>,
+        > = Rc::new(RefCell::new(None));
+        // Band analysis state, mirroring the desktop's per-stream state.
+        let analysis = Rc::new(RefCell::new(BandState::default()));
+        let levels_poll = Closure::<dyn FnMut()>::new(move || {
+            if !playing.get_untracked() {
+                set_audio_levels.set([0.0; 5]);
+                return;
+            }
+            let Some(audio) = audio_ref.get() else {
+                return;
+            };
+            if audio.paused() {
+                set_audio_levels.set([0.0; 5]);
+                return;
+            }
+            let mut graph = graph.borrow_mut();
+            if graph.is_none() {
+                // Route element -> analyser -> destination once; the same
+                // graph meters every later track.
+                let Ok(context) = web_sys::AudioContext::new() else {
+                    return;
+                };
+                let Ok(source) = context.create_media_element_source(&audio) else {
+                    return;
+                };
+                let Ok(analyser) = context.create_analyser() else {
+                    return;
+                };
+                analyser.set_fft_size(2048);
+                let _ = source.connect_with_audio_node(&analyser);
+                let _ = analyser.connect_with_audio_node(&context.destination());
+                *graph = Some((context, analyser));
+            }
+            let Some((context, analyser)) = graph.as_ref() else {
+                return;
+            };
+            let _ = context.resume();
+            let mut samples = vec![0.0_f32; analyser.fft_size() as usize];
+            analyser.get_float_time_domain_data(&mut samples);
+            let mut state = analysis.borrow_mut();
+            if state.rate == 0 {
+                state.reset(context.sample_rate() as u32);
+            }
+            for sample in samples {
+                state.observe(sample);
+            }
+            set_audio_levels.set(state.smoothed);
+        });
+        window
+            .set_interval_with_callback_and_timeout_and_arguments_0(
+                levels_poll.as_ref().unchecked_ref(),
+                70,
+            )
+            .expect("level meter interval");
+        levels_poll.forget();
     }
 
     // One batched tag lookup for everything the pane currently shows. The cache
@@ -5751,6 +5891,35 @@ fn App() -> impl IntoView {
                                                 set_playing.set(true);
                                             }
                                         >
+                                            {/* The playing row's level
+                                                meter, the desktop's
+                                                five-band waveform at the
+                                                row's right edge. */}
+                                            <Show when=move || current.get() == index fallback=|| ()>
+                                                <span class="row-meter">
+                                                    <For
+                                                        each=|| [0usize, 1, 2, 3, 4]
+                                                        key=|band| *band
+                                                        let:band
+                                                    >
+                                                        <span
+                                                            class="row-meter-bar"
+                                                            style=move || {
+                                                                let levels = audio_levels.get();
+                                                                let level = levels
+                                                                    .get(band)
+                                                                    .copied()
+                                                                    .unwrap_or(0.0)
+                                                                    .clamp(0.0, 1.0);
+                                                                format!(
+                                                                    "height: {}px",
+                                                                    2.0 + 10.0 * level
+                                                                )
+                                                            }
+                                                        ></span>
+                                                    </For>
+                                                </span>
+                                            </Show>
                                             <For
                                                 each=visible_columns
                                                 key=|column| column.id.key()

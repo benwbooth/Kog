@@ -699,6 +699,41 @@ button:focus-visible {
   cursor: default;
 }
 
+/* The playing row's five-band level meter, pinned to the row's right edge
+   like the desktop's playing waveform. */
+.row-meter {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: flex-end;
+  gap: 1px;
+  height: 12px;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.row-meter-bar {
+  width: 2px;
+  min-height: 2px;
+  border-radius: 1px;
+  transition: height 70ms cubic-bezier(0.215, 0.61, 0.355, 1);
+}
+
+/* The desktop's band gradient: blue → teal → green across the five bars. */
+.row-meter-bar:nth-child(1) { background: #438cf5; }
+.row-meter-bar:nth-child(2) { background: #32b8ed; }
+.row-meter-bar:nth-child(3) { background: #20cbd2; }
+.row-meter-bar:nth-child(4) { background: #27cf9c; }
+.row-meter-bar:nth-child(5) { background: #55d979; }
+
+.track.selected .row-meter-bar:nth-child(1) { background: #8cbcff; }
+.track.selected .row-meter-bar:nth-child(2) { background: #64d8ff; }
+.track.selected .row-meter-bar:nth-child(3) { background: #47eee7; }
+.track.selected .row-meter-bar:nth-child(4) { background: #53edb4; }
+.track.selected .row-meter-bar:nth-child(5) { background: #82ef99; }
+
 /* The insertion point while a queue row is dragged to a new position. */
 .track.reorder-above {
   box-shadow: 0 -2px 0 0 var(--highlight);

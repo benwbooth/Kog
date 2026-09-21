@@ -120,7 +120,9 @@ impl PcmReader {
         }
         for _ in 0..PULL_BATCH {
             match self.source.next() {
-                Some(sample) => self.pending.extend_from_slice(&sample.to_le_bytes()),
+                Some(sample) => {
+                    self.pending.extend_from_slice(&sample.to_le_bytes());
+                }
                 None => {
                     self.finished = true;
                     break;

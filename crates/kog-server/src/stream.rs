@@ -209,7 +209,18 @@ impl StreamCache {
                 true
             }
         });
+        // Only sweep partials that have gone stale: a concurrent encode of
+        // another track is writing one right now, and deleting it out from
+        // under that stream makes its cache commit fail.
+        const STALE_AFTER: std::time::Duration = std::time::Duration::from_secs(600);
         for partial in partials {
+            let stale = std::fs::metadata(&partial)
+                .and_then(|metadata| metadata.modified())
+                .map(|modified| modified.elapsed().unwrap_or_default() > STALE_AFTER)
+                .unwrap_or(true);
+            if !stale {
+                continue;
+            }
             if let Ok(metadata) = std::fs::metadata(&partial) {
                 total = total.saturating_sub(metadata.len());
             }
