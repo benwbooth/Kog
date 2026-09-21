@@ -1758,6 +1758,9 @@ fn App() -> impl IntoView {
     let (renaming_playlist, set_renaming_playlist) = signal(Option::<i64>::None);
     let (rename_text, set_rename_text) = signal(String::new());
     let rename_input = NodeRef::<leptos::html::Input>::new();
+    // The enlarged cover view, opened by clicking the transport art like
+    // the desktop's cover dialog.
+    let (cover_open, set_cover_open) = signal(false);
     // Modal prompts where the desktop opens dialogs: naming a new playlist
     // (the + button), naming a duplicate, and confirming a delete.
     let (playlist_dialog, set_playlist_dialog) =
@@ -3090,6 +3093,7 @@ fn App() -> impl IntoView {
             return;
         }
         if ev.key() == "Escape" {
+            set_cover_open.set(false);
             set_menu_open.set(false);
             set_column_menu.set(None);
             set_tree_menu.set(None);
@@ -6051,7 +6055,11 @@ fn App() -> impl IntoView {
 
             <footer class="transport">
                 <div class="now">
-                    <div class="art">
+                    <div
+                        class="art"
+                        title="Show album cover enlarged"
+                        on:click=move |_| set_cover_open.set(true)
+                    >
                         <img
                             src=move || art_src()
                             alt="Album cover"
@@ -6443,6 +6451,31 @@ fn App() -> impl IntoView {
                     <div class="settings-actions">
                         <button class="primary" on:click=move |_| set_about_open.set(false)>"Close"</button>
                     </div>
+                </div>
+            </Show>
+
+            <Show when=move || cover_open.get() fallback=|| ()>
+                {/* The desktop's cover dialog: the artwork enlarged, titled
+                    with the track, subtitied with artist and album; click
+                    anywhere or Escape closes. */}
+                <div class="scrim" on:click=move |_| set_cover_open.set(false)></div>
+                <div class="cover-dialog" role="dialog">
+                    <img
+                        class="cover-image"
+                        src=move || art_src()
+                        alt="Album cover enlarged"
+                        on:click=move |_| set_cover_open.set(false)
+                        on:error=move |event| {
+                            if let Some(img) = event
+                                .target()
+                                .and_then(|target| target.dyn_into::<web_sys::HtmlImageElement>().ok())
+                            {
+                                let _ = img.set_src("/icons/kog.svg");
+                            }
+                        }
+                    />
+                    <p class="cover-title">{move || now_title()}</p>
+                    <p class="cover-subtitle">{move || now_subtitle()}</p>
                 </div>
             </Show>
 
