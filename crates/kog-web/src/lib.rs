@@ -3043,6 +3043,35 @@ fn App() -> impl IntoView {
         set_playing.set(true);
     };
 
+    // Follow the playing track: Next, Previous, a track ending, or a radio
+    // shift all land the current row in view. `nearest` scrolls only as far
+    // as it must and nothing at all when the row is already on screen, so
+    // picking a song with the mouse or browsing the pane while a song plays
+    // is never yanked around. The row renders a tick after the state change
+    // (a radio shift appends it), so poll briefly, like the tree's reveal.
+    Effect::new(move |_| {
+        current.track();
+        if queue.get_untracked().is_empty() {
+            return;
+        }
+        leptos::task::spawn_local(async move {
+            for _ in 0..10 {
+                sleep_ms(50).await;
+                let scrolled = js_sys::eval(
+                    "(() => { const row = document.querySelector('.track.current');\
+                      if (!row) return 'no';\
+                      row.scrollIntoView({ block: 'nearest', inline: 'nearest' });\
+                      return 'yes'; })()",
+                );
+                if let Ok(value) = scrolled
+                    && value.as_string() == Some("yes".to_owned())
+                {
+                    break;
+                }
+            }
+        });
+    });
+
     // The desktop's shift_radio_track: move one staged radio track to the end
     // of the playlist and play it. Skips picks already queued so a window
     // refetched after a reload never duplicates restored rows.
