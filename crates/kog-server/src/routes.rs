@@ -1353,6 +1353,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn searching_finds_archive_members() {
+        // The desktop search lists archives after the filesystem pass and
+        // matches member names inside them; the web walk does the same.
+        let (library, root) = library_with(&["Other/two.wav"]);
+        kog_audio::archive::tests::write_stored_zip(
+            &root.join("Sonic pack.zip"),
+            &[("Disc/sonic theme.wav", b"0123456789"), ("other.txt", b"x")],
+        );
+        let _ = &library;
+        let state = state_with(AuthMode::None, "", library);
+        let (status, mut body) =
+            get_json(state.clone(), "/api/library/search?q=sonic", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let generation = body["generation"].as_u64().unwrap();
+        let mut results: Vec<(String, String, bool)> = body["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                (
+                    r["name"].as_str().unwrap().to_string(),
+                    r["entry"].as_str().unwrap_or_default().to_string(),
+                    r["is_dir"].as_bool().unwrap_or(false),
+                )
+            })
+            .collect();
+        while body["done"].as_bool() != Some(true) {
+            let (status, mut more) = get_json(
+                state.clone(),
+                &format!("/api/library/search/more?g={generation}"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            results.extend(
+                more["results"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|r| {
+                        (
+                            r["name"].as_str().unwrap().to_string(),
+                            r["entry"].as_str().unwrap_or_default().to_string(),
+                            r["is_dir"].as_bool().unwrap_or(false),
+                        )
+                    }),
+            );
+            body = more;
+        }
+        // The archive container matches its own name, and the member inside
+        // it matches too; the unsupported "other.txt" stays out.
+        assert!(results.iter().any(|(name, _, dir)| name == "Sonic pack.zip" && *dir));
+        assert!(results.iter().any(|(name, entry, dir)| name == "sonic theme.wav"
+            && entry == "Disc/sonic theme.wav"
+            && !dir));
+        assert!(!results.iter().any(|(name, _, _)| name == "other.txt"));
+    }
+
+    #[tokio::test]
     async fn searching_a_folder_exposes_its_contents() {
         // "Audiobooks" matches the folder's own name, so everything inside it
         // counts as a match even though the files' names share no word with

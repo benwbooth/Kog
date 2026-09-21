@@ -11,7 +11,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use axum::extract::{Path as AxumPath, Query, State};
@@ -129,7 +129,6 @@ pub struct BrowseQuery {
 #[derive(Debug, Deserialize)]
 pub struct SearchQuery {
     pub q: String,
-    pub limit: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -142,6 +141,9 @@ pub struct DownloadQuery {
 #[derive(Debug, Deserialize)]
 pub struct MoreQuery {
     pub g: Option<u64>,
+    /// Where the client wants matches from in the shared buffer: the walk
+    /// runs on its own thread, so a poll only reads what has accumulated.
+    pub offset: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -860,39 +862,45 @@ fn browse_blocking(library: &Arc<Library>, requested: Option<&str>) -> Result<se
 
 /// `GET /api/library/search` — filename search under the music directory.
 ///
-/// The desktop's tree search streams matches while its walk proceeds; a plain
-/// request/response cannot, and on a library with a million files a whole
-/// walk takes tens of seconds — long enough to look hung. So the walk runs in
-/// time-boxed slices: this handler starts a session and returns the first
-/// batch, the client pulls further batches from [`search_more`], and every
-/// new query replaces the session (there is exactly one, so a stale walk is
-/// simply dropped, like the desktop's superseded scan).
+/// The desktop's tree search runs its scanner on a background thread at full
+/// native speed, streaming matches as they are found; this endpoint does the
+/// same on the server. Starting a query spawns a worker that walks the whole
+/// music folder — files and folders first, then each archive's member list,
+/// so ordinary files never wait behind an archive — appending matches to a
+/// shared buffer. The client polls: the first response arrives after a short
+/// beat, further matches come from [`search_more`], and a newer query
+/// cancels the older walk, exactly like the desktop's superseded scan.
 pub async fn search(State(state): State<AppState>, Query(query): Query<SearchQuery>) -> Response {
     let needle = query.q.trim().to_lowercase();
     let tokens: Vec<String> = needle.split_whitespace().map(str::to_owned).collect();
     let generation = state.search.generation.fetch_add(1, Ordering::Relaxed) + 1;
-    let limit = query.limit.unwrap_or(500).min(1_000);
+    // Any previous walk is abandoned, empty query or not.
+    if let Some(old) = state.search.job.lock().unwrap().as_ref() {
+        old.shared.cancel.store(true, Ordering::Relaxed);
+    }
     if tokens.is_empty() {
-        return finish_search(state, generation, Vec::new(), true);
+        // An empty query clears the results, like the desktop's reset.
+        *state.search.job.lock().unwrap() = None;
+        return search_snapshot(&state, generation, 0);
     }
+    let shared = Arc::new(SearchShared {
+        matches: Mutex::new(Vec::new()),
+        done: AtomicBool::new(false),
+        limited: AtomicBool::new(false),
+        cancel: AtomicBool::new(false),
+    });
     let library = state.library.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        let root = library.resolve(None)?;
-        let mut session = SearchSession {
-            tokens,
-            pending: vec![(root, None, false)],
-            found: Vec::new(),
-            matched_dirs: Vec::new(),
-        };
-        run_search_slice(&mut session, limit);
-        Ok::<_, String>(session)
-    })
-    .await
-    .unwrap_or_else(|error| Err(format!("library search failed: {error}")));
-    match result {
-        Ok(session) => finish_session(state, generation, session),
-        Err(error) => bad_request(&error),
+    let worker_shared = shared.clone();
+    let worker = std::thread::Builder::new()
+        .name(format!("library-search-{generation}"))
+        .spawn(move || walk_library_for_search(library, tokens, worker_shared));
+    if let Err(error) = worker {
+        return bad_request(&format!("starting the search failed: {error}"));
     }
+    *state.search.job.lock().unwrap() = Some(SearchJob { shared });
+    // Give the walk a beat so the first response already carries matches.
+    std::thread::sleep(std::time::Duration::from_millis(120));
+    search_snapshot(&state, generation, 0)
 }
 
 /// The original bytes of one library entry, served as an attachment: the file
@@ -985,71 +993,278 @@ pub async fn media_download(
     }
 }
 
-/// `GET /api/library/search/more` — the next slice of the active walk. A
+/// `GET /api/library/search/more` — the matches gathered since the client's
+/// last poll. The walk advances on its own thread; a poll only reads. A
 /// generation older than the current one means the query was superseded and
-/// the session is gone: done, with nothing.
-pub async fn search_more(State(state): State<AppState>, Query(query): Query<MoreQuery>) -> Response {
-    let asked = query.g.unwrap_or_default();
-    let generation = state.search.generation.load(Ordering::Relaxed);
-    if asked != generation {
-        return finish_search(state, generation, Vec::new(), true);
-    }
-    let Some(mut session) = state.search.session.lock().unwrap().take() else {
-        return finish_search(state, generation, Vec::new(), true);
-    };
-    let result = tokio::task::spawn_blocking(move || {
-        run_search_slice(&mut session, 500);
-        session
-    })
-    .await
-    .map_err(|error| {
-        // The walk died; drop the session rather than wedging on it forever.
-        format!("library search failed: {error}")
-    });
-    match result {
-        Ok(session) => finish_session(state, generation, session),
-        Err(_) => finish_search(state, generation, Vec::new(), true),
-    }
-}
-
-/// Publish a slice's results: done walks release the session, unfinished ones
-/// go back so the next `more` can resume.
-fn finish_session(state: AppState, generation: u64, mut session: SearchSession) -> Response {
-    let done = session.pending.is_empty();
-    let found = std::mem::take(&mut session.found);
-    if done {
-        *state.search.session.lock().unwrap() = None;
-    } else {
-        *state.search.session.lock().unwrap() = Some(session);
-    }
-    finish_search(state, generation, found, done)
-}
-
-fn finish_search(
-    _state: AppState,
-    generation: u64,
-    found: Vec<(std::path::PathBuf, bool)>,
-    done: bool,
+/// the walk is gone: done, with nothing.
+pub async fn search_more(
+    State(state): State<AppState>,
+    Query(query): Query<MoreQuery>,
 ) -> Response {
+    let generation = query.g.unwrap_or_default();
+    let offset = query.offset.unwrap_or(0);
+    search_snapshot(&state, generation, offset)
+}
+
+/// One match as the walk found it. Archive members keep their container's
+/// path plus the member name, the same locator streaming and downloads use.
+#[derive(Clone)]
+pub(crate) struct SearchMatch {
+    name: String,
+    path: String,
+    entry: String,
+    /// `dir` for folders and archive containers, `local` for files,
+    /// `archive` for members inside an archive.
+    kind: &'static str,
+}
+
+/// The shared state of the one active search walk.
+pub struct SearchShared {
+    matches: Mutex<Vec<SearchMatch>>,
+    done: AtomicBool,
+    /// The walk stopped at the match limit: tell the visitor to narrow it.
+    limited: AtomicBool,
+    cancel: AtomicBool,
+}
+
+struct SearchJob {
+    shared: Arc<SearchShared>,
+}
+
+/// The desktop's match limit: a walk that reaches it stops and says so.
+const SEARCH_MATCH_LIMIT: usize = 2000;
+
+/// How many matches one poll carries.
+const SEARCH_BATCH: usize = 500;
+
+fn search_snapshot(state: &AppState, generation: u64, offset: usize) -> Response {
+    let current = state.search.generation.load(Ordering::Relaxed);
+    let (slice, total, done, limited) = if generation == current {
+        match state.search.job.lock().unwrap().as_ref() {
+            Some(job) => {
+                let all = job.shared.matches.lock().unwrap();
+                let total = all.len();
+                let start = offset.min(total);
+                let end = (start + SEARCH_BATCH).min(total);
+                let slice: Vec<SearchMatch> = all[start..end].to_vec();
+                let done = job.shared.done.load(Ordering::Relaxed) && end >= total;
+                let limited = job.shared.limited.load(Ordering::Relaxed);
+                (slice, total, done, limited)
+            }
+            None => (Vec::new(), 0, true, false),
+        }
+    } else {
+        (Vec::new(), 0, true, false)
+    };
     axum::Json(serde_json::json!({
-        "results": found
+        "results": slice
             .into_iter()
-            .map(|(path, is_dir)| {
-                let name = path
-                    .file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-                    .unwrap_or_default();
+            .map(|m| {
                 serde_json::json!({
-                    "name": name,
-                    "path": path.to_string_lossy(),
-                    "is_dir": is_dir,
+                    "name": m.name,
+                    "path": m.path,
+                    "entry": m.entry,
+                    "kind": m.kind,
+                    "is_dir": m.kind == "dir",
                 })
             })
             .collect::<Vec<_>>(),
+        "total": total,
         "done": done,
+        "limited": limited,
         "generation": generation,
     }))
     .into_response()
+}
+
+/// The background scanner, the web twin of the desktop's tree search: the
+/// whole music folder at native speed (no slicing — polls only read), then
+/// each archive's member list, so ordinary files never wait behind an
+/// archive. Matches stream into `shared`; a newer query sets `cancel` and
+/// this thread quits at the next directory.
+fn walk_library_for_search(
+    library: Arc<Library>,
+    tokens: Vec<String>,
+    shared: Arc<SearchShared>,
+) {
+    let finish = |matches: &mut Vec<SearchMatch>, limited: bool, shared: &SearchShared| {
+        if !matches.is_empty() {
+            shared.matches.lock().unwrap().extend(matches.drain(..));
+        }
+        shared.limited.store(limited, Ordering::Relaxed);
+        shared.done.store(true, Ordering::Relaxed);
+    };
+    let Ok(root) = library.resolve(None) else {
+        shared.done.store(true, Ordering::Relaxed);
+        return;
+    };
+    let decoders = kog_audio::decoder::DecoderRegistry::new(
+        kog_audio::settings::AppSettings::load().decoder_settings(),
+    );
+    let extensions = decoders.audio_extensions();
+    let matched = |name: &str| {
+        tokens
+            .iter()
+            .all(|token| name.to_lowercase().contains(token.as_str()))
+    };
+    let mut matches: Vec<SearchMatch> = Vec::new();
+    let mut matched_dirs: Vec<std::path::PathBuf> = Vec::new();
+    let mut archives: Vec<std::path::PathBuf> = Vec::new();
+    let mut limited = false;
+    let mut published = 0_usize;
+    let cancel = || shared.cancel.load(Ordering::Relaxed);
+    let publish =
+        |shared: &SearchShared, matches: &mut Vec<SearchMatch>, limited: &mut bool, published: &mut usize| {
+            *published += matches.len();
+            if *published >= SEARCH_MATCH_LIMIT {
+                *limited = true;
+            }
+            if !matches.is_empty() {
+                shared.matches.lock().unwrap().extend(matches.drain(..));
+            }
+        };
+
+    // Filesystem pass: every folder and supported file, a match when its own
+    // name carries every word, or when it sits under a folder that matched
+    // (the folder's whole contents are exposed, matching the desktop).
+    let mut pending = vec![(root, false)];
+    while let Some((directory, inherited)) = pending.pop() {
+        if cancel() {
+            return;
+        }
+        let under_matched = inherited
+            || matched_dirs
+                .iter()
+                .any(|matched| directory.starts_with(matched));
+        let dir_is_metadata = kog_core::media_path::is_metadata(&directory);
+        let Ok(entries) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.filter_map(Result::ok) {
+            if cancel() {
+                return;
+            }
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if dir_is_metadata || crate::media_filter::is_hidden_name(&entry.file_name()) {
+                continue;
+            }
+            let path = entry.path();
+            if file_type.is_dir() {
+                let name_match = matched(&name);
+                if name_match {
+                    matched_dirs.push(path.clone());
+                    matches.push(SearchMatch {
+                        name: name.clone(),
+                        path: path.to_string_lossy().into_owned(),
+                        entry: String::new(),
+                        kind: "dir",
+                    });
+                    publish(&shared, &mut matches, &mut limited, &mut published);
+                    if limited {
+                        break;
+                    }
+                }
+                pending.push((path, under_matched || name_match));
+                continue;
+            }
+            let Some(extension) = path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .map(|extension| extension.to_ascii_lowercase())
+            else {
+                continue;
+            };
+            if !extensions.contains(&extension) {
+                continue;
+            }
+            // An archive is a container: it browses like a folder, and its
+            // members are searched in the pass below.
+            let container = kog_audio::archive::is_path(&path);
+            if container {
+                archives.push(path.clone());
+            }
+            if under_matched || matched(&name) {
+                // A matching archive surfaces as a folder of its members.
+                matches.push(SearchMatch {
+                    name,
+                    path: path.to_string_lossy().into_owned(),
+                    entry: String::new(),
+                    kind: if container { "dir" } else { "local" },
+                });
+                publish(&shared, &mut matches, &mut limited, &mut published);
+                if limited {
+                    break;
+                }
+            }
+        }
+        if limited {
+            break;
+        }
+        if !matches.is_empty() {
+            shared.matches.lock().unwrap().extend(matches.drain(..));
+        }
+    }
+
+    // Archive pass: list each archive's members and match their names, the
+    // desktop's "Archives %2 of %3" stage.
+    for archive in &archives {
+        if cancel() || limited {
+            break;
+        }
+        let Ok(members) = kog_audio::archive::list_archive_names(archive) else {
+            continue;
+        };
+        for member in members {
+            if cancel() {
+                return;
+            }
+            if member.is_empty()
+                || kog_core::media_path::is_metadata(std::path::Path::new(
+                    member.trim_end_matches('/'),
+                ))
+            {
+                continue;
+            }
+            let base = member
+                .trim_end_matches('/')
+                .rsplit('/')
+                .next()
+                .unwrap_or(&member)
+                .to_owned();
+            let container = member.ends_with('/');
+            if !container {
+                let Some(extension) = std::path::Path::new(&member)
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .map(|extension| extension.to_ascii_lowercase())
+                else {
+                    continue;
+                };
+                if !extensions.contains(&extension) {
+                    continue;
+                }
+            }
+            if matched(&base) {
+                matches.push(SearchMatch {
+                    name: base.clone(),
+                    path: archive.to_string_lossy().into_owned(),
+                    entry: member.trim_end_matches('/').to_owned(),
+                    kind: "archive",
+                });
+                publish(&shared, &mut matches, &mut limited, &mut published);
+                if limited {
+                    break;
+                }
+            }
+        }
+        if !matches.is_empty() {
+            shared.matches.lock().unwrap().extend(matches.drain(..));
+        }
+    }
+    finish(&mut matches, limited, &shared);
 }
 
 /// The longest existing ancestor of `path` that is an archive file, with the
@@ -1134,143 +1349,10 @@ fn archive_listing(
     }))
 }
 
-/// One active search: the words to match, the directories still to visit
-/// (with the file to resume from when a slice stopped mid-directory, and
-/// whether the walk already knows the directory sits under a folder whose
-/// own name matched), the matches gathered so far, and the folders that
-/// matched by name — everything inside those is exposed as a match.
-struct SearchSession {
-    tokens: Vec<String>,
-    pending: Vec<(std::path::PathBuf, Option<String>, bool)>,
-    found: Vec<(std::path::PathBuf, bool)>,
-    matched_dirs: Vec<std::path::PathBuf>,
-}
-
-/// The server's single active search walk. The newest query owns it: starting
-/// a search bumps the generation, which makes every earlier continuation ask
-/// for a superseded generation and end quietly, exactly like the desktop's
-/// superseded scan.
 #[derive(Default)]
 pub struct SearchState {
     generation: AtomicU64,
-    session: Mutex<Option<SearchSession>>,
-}
-
-/// Walk for at most [`SEARCH_SLICE`] before yielding, collecting at most
-/// `cap` new matches. A directory interrupted by the cap or the budget is
-/// re-queued with the name to resume after; sorting entries by name makes
-/// that resume point stable, so nothing is reported twice.
-///
-/// A folder whose own name matches every word exposes all of it: the folder
-/// lands in the results and every file below it counts as a match no matter
-/// what its own name is, so "audiobooks" reaches the chapters inside.
-fn run_search_slice(session: &mut SearchSession, cap: usize) {
-    const SLICE: std::time::Duration = std::time::Duration::from_millis(400);
-    let started = std::time::Instant::now();
-    let decoders = kog_audio::decoder::DecoderRegistry::new(
-        kog_audio::settings::AppSettings::load().decoder_settings(),
-    );
-    let extensions = decoders.audio_extensions();
-    let mut limit = cap;
-    while let Some((directory, resume_after, inherited)) = session.pending.pop() {
-        if started.elapsed() >= SLICE {
-            session.pending.push((directory, resume_after, inherited));
-            return;
-        }
-        let under_matched_folder = inherited
-            || session
-                .matched_dirs
-                .iter()
-                .any(|matched| directory.starts_with(matched));
-        // Metadata ancestors are constant for the directory; per entry only
-        // the name needs a look, which keeps a million-file walk out of
-        // per-entry path allocation.
-        let dir_is_metadata = kog_core::media_path::is_metadata(&directory);
-        let Ok(entries) = std::fs::read_dir(&directory) else {
-            continue;
-        };
-        let mut rows: Vec<(String, bool)> = entries
-            .filter_map(Result::ok)
-            .filter(|entry| {
-                !dir_is_metadata && !crate::media_filter::is_hidden_name(&entry.file_name())
-            })
-            .filter_map(|entry| {
-                let file_type = entry.file_type().ok()?;
-                Some((
-                    entry.file_name().to_string_lossy().into_owned(),
-                    file_type.is_dir(),
-                ))
-            })
-            .collect();
-        rows.sort_by(|a, b| a.0.cmp(&b.0));
-        // A resumed directory replays from the top but skips everything
-        // through the entry the previous slice had last seen.
-        let mut skipping = resume_after.clone();
-        // Subdirectories queue behind a reversed push so the LIFO walk climbs
-        // them in ascending name order; they must all be flushed before this
-        // directory can be left unfinished, or some would never be scanned.
-        let mut queued_subdirs: Vec<(std::path::PathBuf, bool)> = Vec::new();
-        let flush_subdirs =
-            |session: &mut SearchSession, queued: &mut Vec<(std::path::PathBuf, bool)>| {
-                for entry in queued.drain(..).rev() {
-                    let (path, inherit) = entry;
-                    session.pending.push((path, None, inherit));
-                }
-            };
-        for (name, is_dir) in rows {
-            if let Some(after) = &skipping {
-                if *after != name {
-                    continue;
-                }
-                skipping = None; // The next entry is an unseen one.
-                continue;
-            }
-            let path = directory.join(&name);
-            let folded = name.to_lowercase();
-            let name_match = session
-                .tokens
-                .iter()
-                .all(|token| folded.contains(token.as_str()));
-            if is_dir {
-                if name_match {
-                    session.matched_dirs.push(path.clone());
-                    session.found.push((path.clone(), true));
-                    limit -= 1;
-                    if limit == 0 {
-                        flush_subdirs(session, &mut queued_subdirs);
-                        session.pending.push((directory, Some(name), inherited));
-                        return;
-                    }
-                }
-                queued_subdirs.push((path, under_matched_folder || name_match));
-                continue;
-            }
-            // Extension test, never accepts_path: the cue backend's accepts
-            // opens media files to look for embedded cuesheets, which priced
-            // a whole-library walk out of reach. This is the desktop
-            // search's supportedFile check — name only.
-            let accepted = path
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .is_some_and(|extension| extensions.contains(extension));
-            if !accepted {
-                continue;
-            }
-            // An archive is a container: when it matches, it surfaces as a
-            // folder whose members play through the archive locator.
-            let container = kog_audio::archive::is_path(&path);
-            if under_matched_folder || name_match {
-                session.found.push((path, container));
-                limit -= 1;
-                if limit == 0 {
-                    flush_subdirs(session, &mut queued_subdirs);
-                    session.pending.push((directory, Some(name), inherited));
-                    return;
-                }
-            }
-        }
-        flush_subdirs(session, &mut queued_subdirs);
-    }
+    job: Mutex<Option<SearchJob>>,
 }
 
 /// `GET /api/playlists`

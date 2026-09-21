@@ -1347,11 +1347,19 @@ fn build_search_tree(
     };
     let mut expanded = HashSet::new();
     for match_ in matches {
+        // An archive member's hierarchy lives inside its container: the
+        // member nests under the archive node and virtual subfolders spelled
+        // "archive/sub", the same paths the browse endpoint serves.
+        let hier = if match_.kind == "archive" && !match_.entry.is_empty() {
+            format!("{}/{}", match_.path.trim_end_matches('/'), match_.entry)
+        } else {
+            match_.path.clone()
+        };
         // Ancestors from the root down: expansion stops at (and below) the
         // first folder that matched by name, so a matched folder stays
         // collapsed while plain folders on the way to a match open up.
         let mut chain: Vec<String> = Vec::new();
-        let mut parent = parent_path(&match_.path);
+        let mut parent = parent_path(&hier);
         while !parent.is_empty() && parent != root {
             chain.push(parent.clone());
             parent = parent_path(&parent);
@@ -1379,7 +1387,7 @@ fn build_search_tree(
                 }
             }
         }
-        push(&mut map, key(&parent_path(&match_.path)), match_.clone());
+        push(&mut map, key(&parent_path(&hier)), match_.clone());
     }
     for bucket in map.values_mut() {
         bucket.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
@@ -1756,17 +1764,21 @@ fn App() -> impl IntoView {
                             // its members were never walked, so its bucket
                             // stays missing and expanding fetches the listing.
                             let kind = if item["is_dir"].as_bool().unwrap_or(false) {
-                                "dir"
+                                "dir".to_owned()
                             } else {
-                                "local"
+                                item["kind"]
+                                    .as_str()
+                                    .unwrap_or("local")
+                                    .to_owned()
                             };
+                            let member = item["entry"].as_str().unwrap_or_default();
                             rows.push(Entry {
                                 name,
                                 path,
-                                kind: kind.to_owned(),
-                                entry: String::new(),
+                                kind,
+                                entry: member.to_owned(),
                                 fragment: None,
-                                location: String::new(),
+                                location: member.to_owned(),
                             });
                         }
                     }
@@ -1805,6 +1817,7 @@ fn App() -> impl IntoView {
                         // the walk reports done. A newer query supersedes this
                         // one both here and on the server.
                         let generation = value["generation"].as_u64().unwrap_or_default();
+                        let mut limited = value["limited"].as_bool().unwrap_or(false);
                         let mut rows = parse(&value);
                         let mut seen: HashSet<String> =
                             rows.iter().map(|row| row.path.clone()).collect();
@@ -1815,12 +1828,13 @@ fn App() -> impl IntoView {
                         // The desktop's search stops at its own matchLimit;
                         // mirror that 2000 instead of ending after the first
                         // batch, so the same query reaches the same matches.
+                        let mut offset = rows.len();
                         while !done && rows.len() < 2000 {
                             if tree_search.get_untracked().trim() != trimmed {
                                 break;
                             }
                             match get_json(format!(
-                                "/api/library/search/more?g={generation}"
+                                "/api/library/search/more?g={generation}&offset={offset}"
                             ))
                             .await
                             {
@@ -1833,7 +1847,11 @@ fn App() -> impl IntoView {
                                             rows.push(row);
                                         }
                                     }
+                                    offset = rows.len();
                                     done = value["done"].as_bool().unwrap_or(true);
+                                    if value["limited"].as_bool().unwrap_or(false) {
+                                        limited = true;
+                                    }
                                     if tree_search.get_untracked().trim() == trimmed {
                                         publish(&rows);
                                     }
@@ -1844,7 +1862,10 @@ fn App() -> impl IntoView {
                         // Out of pull budget with the walk still going: the
                         // status line says so, like the desktop's "narrow
                         // your search" notice.
-                        let capped = !done;
+                        // The desktop's "narrow your search": the walk hit
+                        // its match limit (or the client stopped pulling at
+                        // the same limit before the walk finished).
+                        let capped = limited || !done;
                         if tree_search.get_untracked().trim() == trimmed {
                             publish(&rows);
                             set_search_capped.set(capped);
