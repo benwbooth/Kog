@@ -2911,8 +2911,29 @@ fn App() -> impl IntoView {
         }
     });
 
-    // Starting a row sets `current` and `playing` together. The reactive
-    // `prop:src` then rewrites the element's source, which aborts a `play()`
+    // The element's src is written only when it actually changes. Assigning
+    // even the same URL restarts the media load algorithm, and the URL is
+    // derived from the whole queue — so an append (dragging a song in),
+    // a reorder, or a removal would reload the element mid-song and restart
+    // it from zero. Only a change of the row at `current`, or of the token
+    // baked into the stream URL, may reload.
+    let applied_src = Rc::new(std::cell::RefCell::new(String::new()));
+    {
+        let applied_src = applied_src.clone();
+        Effect::new(move |_| {
+            let desired = audio_src();
+            if applied_src.borrow().as_str() == desired {
+                return;
+            }
+            if let Some(audio) = audio_ref.get() {
+                audio.set_src(&desired);
+                *applied_src.borrow_mut() = desired;
+            }
+        });
+    }
+
+    // Starting a row sets `current` and `playing` together. The src effect
+    // then rewrites the element's source, which aborts a `play()`
     // issued in the same tick and leaves the track paused. Re-issue play once
     // the new source is actually ready, so a row click always starts playback.
     // The transport button is unaffected: it does not change the source, so the
@@ -5306,7 +5327,6 @@ fn App() -> impl IntoView {
                     class="audio"
                     node_ref=audio_ref
                     preload="auto"
-                    prop:src=audio_src
                     on:timeupdate=move |_| {
                         if let Some(audio) = audio_ref.get() {
                             set_position.set(audio.current_time());
