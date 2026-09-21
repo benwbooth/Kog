@@ -91,6 +91,27 @@ struct TreeRow {
     fragment: Option<String>,
 }
 
+/// The web stand-in for the desktop's playlist dialogs: naming a new
+/// playlist, naming a duplicate, and confirming a delete.
+#[derive(Clone, Debug, PartialEq)]
+enum PlaylistDialogMode {
+    CreateFromPane,
+    Duplicate,
+    ConfirmDelete,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct PlaylistDialog {
+    mode: PlaylistDialogMode,
+    title: &'static str,
+    /// Prefilled name for duplicates, empty for a new playlist.
+    value: String,
+    /// The playlist a duplicate or delete acts on.
+    id: i64,
+    /// The playlist's current name, for the confirm message.
+    name: String,
+}
+
 /// One row of `POST /api/metadata`, shaped like the playlist columns.
 ///
 /// Every field is present in the API response; the ones the web pane does not
@@ -1072,13 +1093,14 @@ fn highlight_label(name: String, query: String) -> AnyView {
 }
 
 /// Hand `url` to the browser as a download: a hidden same-origin anchor with
-/// the download attribute, so the server's attachment disposition names the
-/// file and the page itself never navigates.
-fn trigger_browser_download(url: &str) {
+/// the download attribute, so an empty `filename` keeps the server's
+/// attachment disposition and a non-empty one names the file directly (a
+/// blob URL has no disposition to lean on).
+fn trigger_browser_download(url: &str, filename: &str) {
     if let Some(document) = web_sys::window().and_then(|window| window.document()) {
         if let Ok(anchor) = document.create_element("a") {
             let _ = anchor.set_attribute("href", url);
-            let _ = anchor.set_attribute("download", "");
+            let _ = anchor.set_attribute("download", filename);
             if let Some(body) = document.body() {
                 let _ = body.append_child(&anchor);
                 if let Ok(element) = anchor.dyn_into::<web_sys::HtmlElement>() {
@@ -1563,13 +1585,19 @@ fn App() -> impl IntoView {
     // Right-click on a playlist row: the Qt playlist context menu (play,
     // remove, select all, clear, reveal in the file tree).
     let (song_menu, set_song_menu) = signal(Option::<(f64, f64, usize, Entry)>::None);
-    // Right-click on a playlist row in the sidebar: rename or delete it.
-    // `renaming_playlist` swaps that row's label for an edit field.
+    // Right-click on a playlist row in the sidebar: the desktop's playlist
+    // context menu. `renaming_playlist` swaps that row's label for an edit
+    // field.
     let (playlist_menu, set_playlist_menu) =
         signal(Option::<(f64, f64, i64, String)>::None);
     let (renaming_playlist, set_renaming_playlist) = signal(Option::<i64>::None);
     let (rename_text, set_rename_text) = signal(String::new());
     let rename_input = NodeRef::<leptos::html::Input>::new();
+    // Modal prompts where the desktop opens dialogs: naming a new playlist
+    // (the + button), naming a duplicate, and confirming a delete.
+    let (playlist_dialog, set_playlist_dialog) =
+        signal(Option::<PlaylistDialog>::None);
+    let playlist_dialog_input = NodeRef::<leptos::html::Input>::new();
     // The row being dragged from the tree onto the playlist pane.
     let (dragging_tree, set_dragging_tree) = signal(Option::<TreeRow>::None);
     // A playlist row dragged toward the pane (append its tracks), and a queue
@@ -2350,20 +2378,16 @@ fn App() -> impl IntoView {
     };
 
     // The playlists header's "+", as the desktop sidebar offers.
-    let create_playlist = {
-        let load_playlists = load_playlists.clone();
-        move || {
-            let url = format!("{}/api/playlists", base());
-            let header = auth().header();
-            let load_playlists = load_playlists.clone();
-            leptos::task::spawn_local(async move {
-                let body = serde_json::json!({ "name": "New Playlist" });
-                if let Err(error) = post_json(url, header, body).await {
-                    let _ = error;
-                }
-                load_playlists();
-            });
-        }
+    // The + button opens the desktop's Save Playlist dialog: the visitor
+    // names it, and the pane (or just the selection) is saved into it.
+    let open_create_playlist_dialog = move || {
+        set_playlist_dialog.set(Some(PlaylistDialog {
+            mode: PlaylistDialogMode::CreateFromPane,
+            title: "Save Playlist",
+            value: String::new(),
+            id: 0,
+            name: String::new(),
+        }));
     };
 
     // Stars live on the server (`GET/POST /api/stars`) under the desktop's
@@ -3723,6 +3747,246 @@ fn App() -> impl IntoView {
         }
     };
 
+    // The desktop sidebar's Play: append the playlist's tracks and start
+    // playing the first of them.
+    let play_playlist = {
+        let get_json = get_json;
+        let jump = jump.clone();
+        move |id: i64| {
+            leptos::task::spawn_local(async move {
+                match get_json(format!("/api/playlists/{id}")).await {
+                    Ok(value) => {
+                        let entries: Vec<Entry> = value["entries"]
+                            .as_array()
+                            .map(|items| items.iter().map(entry_from_json).collect())
+                            .unwrap_or_default();
+                        if entries.is_empty() {
+                            set_status_note.set("Playlist is empty".to_owned());
+                            return;
+                        }
+                        let start = queue.get_untracked().len();
+                        set_queue.update(|items| items.extend(entries));
+                        jump(start);
+                    }
+                    Err(error) => set_message.set(error),
+                }
+            });
+        }
+    };
+
+    // Replace Pane, the desktop's load_playlist_into_pane: clear the pane,
+    // load the playlist, and play it from the top.
+    let replace_pane_with_playlist = {
+        let get_json = get_json;
+        let jump = jump.clone();
+        move |id: i64, name: String| {
+            leptos::task::spawn_local(async move {
+                match get_json(format!("/api/playlists/{id}")).await {
+                    Ok(value) => {
+                        let entries: Vec<Entry> = value["entries"]
+                            .as_array()
+                            .map(|items| items.iter().map(entry_from_json).collect())
+                            .unwrap_or_default();
+                        set_queue.set(entries);
+                        set_selected.set(HashSet::new());
+                        set_list_name.set(name);
+                        jump(0);
+                    }
+                    Err(error) => set_message.set(error),
+                }
+            });
+        }
+    };
+
+    // Remove Missing Files, with the desktop's status strings.
+    let prune_playlist_missing = {
+        let post_json = post_json;
+        move |id: i64| {
+            let url = format!("{}/api/playlists/{id}/prune-missing", base());
+            let header = auth().header();
+            leptos::task::spawn_local(async move {
+                match post_json(url, header, serde_json::json!({})).await {
+                    Ok(value) => {
+                        let removed = value["removed"].as_u64().unwrap_or(0);
+                        set_status_note.set(if removed == 0 {
+                            "No missing files in the playlist".to_owned()
+                        } else {
+                            format!(
+                                "Removed {removed} missing file{} from the playlist",
+                                if removed == 1 { "" } else { "s" }
+                            )
+                        });
+                    }
+                    Err(error) => set_message.set(error),
+                }
+            });
+        }
+    };
+
+    // Duplicate, through the server's create-and-copy endpoint.
+    let duplicate_playlist = {
+        let post_json = post_json;
+        let load_playlists = load_playlists.clone();
+        move |id: i64, name: String| {
+            let url = format!("{}/api/playlists/{id}/duplicate", base());
+            let header = auth().header();
+            leptos::task::spawn_local(async move {
+                match post_json(url, header, serde_json::json!({ "name": name })).await {
+                    Ok(_) => {
+                        set_status_note.set(format!("Saved {name} as a new playlist"));
+                    }
+                    Err(error) => set_message.set(error),
+                }
+                load_playlists();
+            });
+        }
+    };
+
+    // Export as m3u: build the playlist file in the page and hand it to the
+    // browser as a download, where the desktop opens a save dialog.
+    let export_playlist_m3u = {
+        let get_json = get_json;
+        move |id: i64, name: String| {
+            leptos::task::spawn_local(async move {
+                match get_json(format!("/api/playlists/{id}")).await {
+                    Ok(value) => {
+                        let entries: Vec<Entry> = value["entries"]
+                            .as_array()
+                            .map(|items| items.iter().map(entry_from_json).collect())
+                            .unwrap_or_default();
+                        if entries.is_empty() {
+                            set_status_note.set("Playlist is empty".to_owned());
+                            return;
+                        }
+                        let cache = metadata.get_untracked();
+                        let mut m3u = String::from("#EXTM3U\n");
+                        for entry in &entries {
+                            let meta = meta_for(&cache, entry);
+                            let duration = meta
+                                .as_ref()
+                                .and_then(|meta| meta.duration)
+                                .unwrap_or(0.0) as i64;
+                            let artist = meta
+                                .as_ref()
+                                .and_then(|meta| meta.artist.clone())
+                                .unwrap_or_default();
+                            let title = meta
+                                .as_ref()
+                                .and_then(|meta| meta.title.clone())
+                                .unwrap_or_else(|| entry.name.clone());
+                            m3u.push_str(&format!(
+                                "#EXTINF:{duration},{artist} - {title}\n{}\n",
+                                entry_path(entry)
+                            ));
+                        }
+                        let bytes = js_sys::Uint8Array::from(m3u.as_bytes());
+                        let parts = js_sys::Array::new();
+                        parts.push(&bytes);
+                        match web_sys::Blob::new_with_u8_slice_sequence(&parts.into()) {
+                            Ok(blob) => {
+                                let staged =
+                                    web_sys::Url::create_object_url_with_blob(&blob);
+                                match staged {
+                                    Ok(url) => {
+                                        trigger_browser_download(
+                                            &url,
+                                            &format!("{name}.m3u"),
+                                        );
+                                        set_status_note.set(format!(
+                                            "Exported {} tracks to {}.m3u",
+                                            entries.len(),
+                                            name
+                                        ));
+                                    }
+                                    Err(_) => {
+                                        set_message.set(
+                                            "could not stage the m3u file".to_owned(),
+                                        )
+                                    }
+                                }
+                            }
+                            Err(_) => {
+                                set_message.set("could not build the m3u file".to_owned())
+                            }
+                        }
+                    }
+                    Err(error) => set_message.set(error),
+                }
+            });
+        }
+    };
+
+    // The + button's flow, the desktop's Save Playlist dialog: name a new
+    // playlist and save the pane into it — or just the selected rows, when
+    // the pane has a selection.
+    let create_playlist_from_pane = {
+        let post_json = post_json;
+        let load_playlists = load_playlists.clone();
+        move |name: String| {
+            let url = format!("{}/api/playlists", base());
+            let header = auth().header();
+            let selected: HashSet<usize> = selected.get_untracked();
+            let entries: Vec<Entry> = queue
+                .get_untracked()
+                .into_iter()
+                .enumerate()
+                .filter(|(index, _)| selected.is_empty() || selected.contains(index))
+                .map(|(_, entry)| entry)
+                .collect();
+            leptos::task::spawn_local(async move {
+                match post_json(url, header.clone(), serde_json::json!({ "name": name }))
+                    .await
+                {
+                    Ok(value) => {
+                        let id = value["id"].as_i64().unwrap_or_default();
+                        if !entries.is_empty() {
+                            let payload = serde_json::json!({
+                                "entries": entries
+                                    .iter()
+                                    .map(|entry| {
+                                        serde_json::json!({
+                                            "kind": entry.kind,
+                                            "path": entry.path,
+                                            "entry": entry.entry,
+                                            "fragment": entry
+                                                .fragment
+                                                .clone()
+                                                .unwrap_or_default(),
+                                        })
+                                    })
+                                    .collect::<Vec<_>>(),
+                            });
+                            if let Err(error) = post_json(
+                                format!("{}/api/playlists/{id}/entries", base()),
+                                header,
+                                payload,
+                            )
+                            .await
+                            {
+                                set_message.set(error);
+                            }
+                        }
+                        set_status_note
+                            .set(format!("Saved {name} as a new playlist"));
+                        load_playlists();
+                    }
+                    Err(error) => set_message.set(error),
+                }
+            });
+        }
+    };
+
+    // Focus and select the dialog's name field when it opens, like the
+    // desktop's dialog grabbing its text field.
+    Effect::new(move |_| {
+        if playlist_dialog.get().is_some() {
+            if let Some(input) = playlist_dialog_input.get() {
+                let _ = input.focus();
+                let _ = input.select();
+            }
+        }
+    });
+
     Effect::new(move |_| {
         if renaming_playlist.get().is_some() {
             if let Some(input) = rename_input.get() {
@@ -4759,7 +5023,7 @@ fn App() -> impl IntoView {
                                 title="Create a playlist"
                                 on:click=move |event| {
                                     event.stop_propagation();
-                                    create_playlist();
+                                    open_create_playlist_dialog();
                                 }
                             >"+"</button>
                         </div>
@@ -5727,7 +5991,7 @@ fn App() -> impl IntoView {
                                                 url_encode(&row.path),
                                                 url_encode(&token.get()),
                                             );
-                                            trigger_browser_download(&url);
+                                            trigger_browser_download(&url, "");
                                         }
                                     }
                                 >
@@ -5849,7 +6113,7 @@ fn App() -> impl IntoView {
                                         url_encode(&entry.entry),
                                         url_encode(&token.get()),
                                     );
-                                    trigger_browser_download(&url);
+                                    trigger_browser_download(&url, "");
                                 }
                             }
                         >
@@ -5868,29 +6132,256 @@ fn App() -> impl IntoView {
                         None => String::new(),
                     }
                 >
+                    {/* The desktop's playlist context menu, in its order. */}
                     <button
                         class="menu-item"
                         on:click=move |_| {
-                            if let Some((_, _, id, name)) = playlist_menu.get_untracked() {
+                            if let Some((_, _, id, _)) = playlist_menu.get_untracked() {
                                 set_playlist_menu.set(None);
-                                set_rename_text.set(name);
-                                set_renaming_playlist.set(Some(id));
+                                append_playlist(id);
                             }
                         }
                     >
-                        "Rename"
+                        "Add to Pane"
                     </button>
                     <button
                         class="menu-item"
                         on:click=move |_| {
                             if let Some((_, _, id, _)) = playlist_menu.get_untracked() {
                                 set_playlist_menu.set(None);
-                                delete_playlist(id);
+                                play_playlist(id);
                             }
                         }
                     >
-                        "Delete"
+                        "Play"
                     </button>
+                    <button
+                        class="menu-item"
+                        on:click=move |_| {
+                            if let Some((_, _, id, name)) = playlist_menu.get_untracked() {
+                                set_playlist_menu.set(None);
+                                replace_pane_with_playlist(id, name);
+                            }
+                        }
+                    >
+                        "Replace Pane"
+                    </button>
+                    <Show
+                        when=move || {
+                            playlist_menu
+                                .get()
+                                .map(|(_, _, id, _)| id > 0)
+                                .unwrap_or(false)
+                        }
+                        fallback=|| ()
+                    >
+                        <button
+                            class="menu-item"
+                            on:click=move |_| {
+                                if let Some((_, _, id, _)) = playlist_menu.get_untracked() {
+                                    set_playlist_menu.set(None);
+                                    prune_playlist_missing(id);
+                                }
+                            }
+                        >
+                            "Remove Missing Files"
+                        </button>
+                    </Show>
+                    <div class="menu-separator"></div>
+                    <Show
+                        when=move || {
+                            playlist_menu
+                                .get()
+                                .map(|(_, _, id, _)| id > 0)
+                                .unwrap_or(false)
+                        }
+                        fallback=|| ()
+                    >
+                        <button
+                            class="menu-item"
+                            on:click=move |_| {
+                                if let Some((_, _, id, name)) = playlist_menu.get_untracked() {
+                                    set_playlist_menu.set(None);
+                                    set_rename_text.set(name);
+                                    set_renaming_playlist.set(Some(id));
+                                }
+                            }
+                        >
+                            "Rename"
+                        </button>
+                        <button
+                            class="menu-item"
+                            on:click=move |_| {
+                                if let Some((_, _, id, name)) = playlist_menu.get_untracked() {
+                                    set_playlist_menu.set(None);
+                                    set_playlist_dialog.set(Some(PlaylistDialog {
+                                        mode: PlaylistDialogMode::Duplicate,
+                                        title: "Duplicate Playlist",
+                                        value: format!("{name} copy"),
+                                        id,
+                                        name,
+                                    }));
+                                }
+                            }
+                        >
+                            "Duplicate"
+                        </button>
+                        <button
+                            class="menu-item"
+                            on:click=move |_| {
+                                if let Some((_, _, id, name)) = playlist_menu.get_untracked() {
+                                    set_playlist_menu.set(None);
+                                    export_playlist_m3u(id, name);
+                                }
+                            }
+                        >
+                            "Export as m3u…"
+                        </button>
+                        <div class="menu-separator"></div>
+                        <button
+                            class="menu-item"
+                            on:click=move |_| {
+                                if let Some((_, _, id, name)) = playlist_menu.get_untracked() {
+                                    set_playlist_menu.set(None);
+                                    set_playlist_dialog.set(Some(PlaylistDialog {
+                                        mode: PlaylistDialogMode::ConfirmDelete,
+                                        title: "Delete Playlists",
+                                        value: String::new(),
+                                        id,
+                                        name,
+                                    }));
+                                }
+                            }
+                        >
+                            "Delete…"
+                        </button>
+                    </Show>
+                </div>
+            </Show>
+
+            <Show when=move || playlist_dialog.get().is_some() fallback=|| ()>
+                <div class="scrim" on:click=move |_| set_playlist_dialog.set(None)></div>
+                <div class="settings playlist-dialog" role="dialog">
+                    <h2>{move || {
+                        playlist_dialog.get().map(|dialog| dialog.title.to_owned())
+                            .unwrap_or_default()
+                    }}</h2>
+                    <p class="hint">
+                        {move || match playlist_dialog.get() {
+                            Some(dialog) => match dialog.mode {
+                                PlaylistDialogMode::CreateFromPane => {
+                                    "Name the new playlist. The pane is saved into it.".to_owned()
+                                }
+                                PlaylistDialogMode::Duplicate => {
+                                    "Name the copy.".to_owned()
+                                }
+                                PlaylistDialogMode::ConfirmDelete => {
+                                    "Delete this playlist? Its songs stay in your library."
+                                        .to_owned()
+                                }
+                            },
+                            None => String::new(),
+                        }}
+                    </p>
+                    {move || {
+                        let entering_name = playlist_dialog
+                            .get()
+                            .map(|dialog| dialog.mode != PlaylistDialogMode::ConfirmDelete)
+                            .unwrap_or(false);
+                        if entering_name {
+                            view! {
+                                <input
+                                    class="playlist-dialog-name"
+                                    node_ref=playlist_dialog_input
+                                    prop:value=move || playlist_dialog.get().map(|d| d.value).unwrap_or_default()
+                                    on:input=move |event| {
+                                        set_playlist_dialog.update(|dialog| {
+                                            if let Some(dialog) = dialog {
+                                                dialog.value = event_target_value(&event);
+                                            }
+                                        });
+                                    }
+                                    on:keydown=move |event: web_sys::KeyboardEvent| {
+                                        if event.key() == "Enter" {
+                                            if let Some(dialog) = playlist_dialog.get_untracked() {
+                                                let name = dialog.value.trim().to_owned();
+                                                if !name.is_empty() {
+                                                    set_playlist_dialog.set(None);
+                                                    match dialog.mode {
+                                                        PlaylistDialogMode::CreateFromPane => {
+                                                            create_playlist_from_pane(name);
+                                                        }
+                                                        PlaylistDialogMode::Duplicate => {
+                                                            duplicate_playlist(dialog.id, name);
+                                                        }
+                                                        PlaylistDialogMode::ConfirmDelete => {}
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                />
+                            }
+                                .into_any()
+                        } else {
+                            view! {
+                                <p class="playlist-dialog-confirm">
+                                    {move || playlist_dialog.get().map(|d| d.name).unwrap_or_default()}
+                                </p>
+                            }
+                                .into_any()
+                        }
+                    }}
+                    <div class="settings-actions">
+                        <button on:click=move |_| set_playlist_dialog.set(None)>"Cancel"</button>
+                        <button
+                            class="primary"
+                            disabled=move || {
+                                playlist_dialog
+                                    .get()
+                                    .map(|dialog| {
+                                        dialog.mode != PlaylistDialogMode::ConfirmDelete
+                                            && dialog.value.trim().is_empty()
+                                    })
+                                    .unwrap_or(true)
+                            }
+                            on:click=move |_| {
+                                if let Some(dialog) = playlist_dialog.get_untracked() {
+                                    let name = dialog.value.trim().to_owned();
+                                    match dialog.mode {
+                                        PlaylistDialogMode::CreateFromPane => {
+                                            if !name.is_empty() {
+                                                set_playlist_dialog.set(None);
+                                                create_playlist_from_pane(name);
+                                            }
+                                        }
+                                        PlaylistDialogMode::Duplicate => {
+                                            if !name.is_empty() {
+                                                set_playlist_dialog.set(None);
+                                                duplicate_playlist(dialog.id, name);
+                                            }
+                                        }
+                                        PlaylistDialogMode::ConfirmDelete => {
+                                            set_playlist_dialog.set(None);
+                                            delete_playlist(dialog.id);
+                                        }
+                                    }
+                                }
+                            }
+                        >
+                            {move || {
+                                playlist_dialog
+                                    .get()
+                                    .map(|dialog| match dialog.mode {
+                                        PlaylistDialogMode::CreateFromPane => "Save",
+                                        PlaylistDialogMode::Duplicate => "Duplicate",
+                                        PlaylistDialogMode::ConfirmDelete => "Delete",
+                                    })
+                                    .unwrap_or("OK")
+                                    .to_owned()
+                            }}
+                        </button>
+                    </div>
                 </div>
             </Show>
 

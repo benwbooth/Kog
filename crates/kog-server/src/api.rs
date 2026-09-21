@@ -1478,6 +1478,75 @@ pub async fn move_playlist(
     }
 }
 
+/// `POST /api/playlists/{id}/duplicate` — copy a playlist and its entries
+/// under a new name, the desktop's Duplicate menu action.
+pub async fn duplicate_playlist(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<i64>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> Response {
+    if id == 0 {
+        return bad_request("Favorites cannot be duplicated");
+    }
+    let Some(name) = body["name"]
+        .as_str()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+    else {
+        return bad_request("a playlist name is required");
+    };
+    let library = state.library.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        library
+            .db()
+            .duplicate_playlist(id, &name)
+            .map(|new_id| serde_json::json!({ "id": new_id, "name": name }))
+    })
+    .await
+    .unwrap_or_else(|error| Err(format!("duplicating the playlist failed: {error}")));
+    match result {
+        Ok(value) => (StatusCode::CREATED, axum::Json(value)).into_response(),
+        Err(error) => bad_request(&error),
+    }
+}
+
+/// `POST /api/playlists/{id}/prune-missing` — drop entries whose file has
+/// vanished, the desktop's Remove Missing Files menu action.
+pub async fn prune_missing_playlist_entries(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<i64>,
+) -> Response {
+    if id == 0 {
+        return bad_request("Favorites are cleaned from their starred files instead");
+    }
+    let library = state.library.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let rows = library.db().playlist_entry_rows(id)?;
+        let doomed: Vec<i64> = rows
+            .iter()
+            .filter(|(_, entry)| {
+                matches!(entry.kind.as_str(), kog_core::db::KIND_LOCAL | kog_core::db::KIND_ARCHIVE)
+                    && !std::path::Path::new(&entry.path).exists()
+            })
+            .map(|(row_id, _)| *row_id)
+            .collect();
+        let removed = library.db().delete_entry_rows(id, &doomed)?;
+        Ok::<_, String>(serde_json::json!({
+            "ok": true,
+            "id": id,
+            "removed": removed,
+            "checked": rows.len(),
+        }))
+    })
+    .await
+    .unwrap_or_else(|error| Err(format!("pruning the playlist failed: {error}")));
+    match result {
+        Ok(value) => axum::Json(value).into_response(),
+        Err(error) => bad_request(&error),
+    }
+}
+
 /// `GET /api/stars`
 pub async fn list_stars(State(state): State<AppState>) -> Response {
     let library = state.library.clone();
@@ -1605,6 +1674,11 @@ pub fn router() -> axum::Router<AppState> {
         .route("/api/playlists/{id}/rename", post(rename_playlist))
         .route("/api/playlists/{id}/move", post(move_playlist))
         .route("/api/playlists/{id}/entries", post(append_playlist_entries))
+        .route("/api/playlists/{id}/duplicate", post(duplicate_playlist))
+        .route(
+            "/api/playlists/{id}/prune-missing",
+            post(prune_missing_playlist_entries),
+        )
         .route("/api/stars", get(list_stars).post(set_star))
         .route("/api/settings/midi", get(midi_settings).post(set_midi_setting))
         .route("/api/columns", get(get_columns).post(set_columns))
