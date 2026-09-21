@@ -2675,8 +2675,9 @@ ApplicationWindow {
                         ToolbarButton {
                             Layout.preferredWidth: 26
                             Layout.preferredHeight: 26
+                            // Stays while the spinner runs: a slow walk must
+                            // never take away the way to abandon the query.
                             visible: treeSearchField.text.length > 0
-                                && !treeSearchSpinner.visible
                             glyph: "×"
                             toolTip: qsTr("Clear folder search")
                             onClicked: treeSearchField.clear()
