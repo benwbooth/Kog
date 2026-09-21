@@ -4669,9 +4669,9 @@ fn App() -> impl IntoView {
                                                 )));
                                             }
                                             on:click=move |ev: web_sys::MouseEvent| {
-                                                // Ctrl/Cmd/Shift add to the
-                                                // selection; a plain click selects
-                                                // the row and starts it.
+                                                // A single click only selects,
+                                                // like the desktop: a song starts
+                                                // on double click.
                                                 if ev.ctrl_key()
                                                     || ev.meta_key()
                                                     || ev.shift_key()
@@ -4683,9 +4683,14 @@ fn App() -> impl IntoView {
                                                     });
                                                     return;
                                                 }
+                                                set_selected.set(HashSet::from([index]));
+                                            }
+                                            on:dblclick=move |ev: web_sys::MouseEvent| {
+                                                ev.prevent_default();
+                                                // The desktop's activate: the
+                                                // playing row toggles pause, any
+                                                // other row starts playing.
                                                 if current.get_untracked() == index {
-                                                    // Clicking the playing row pauses it; clicking a paused one
-                                                    // resumes where it stopped.
                                                     set_playing.update(|value| *value = !*value);
                                                     set_stopped.set(false);
                                                     return;

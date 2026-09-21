@@ -668,6 +668,8 @@ button:focus-visible {
   -webkit-touch-callout: none;
   -webkit-user-select: none;
   user-select: none;
+  /* Keeps double taps firing dblclick instead of zooming the page. */
+  touch-action: manipulation;
 }
 
 /* A queued track held long enough to drag glows until the finger moves. */
