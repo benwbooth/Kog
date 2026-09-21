@@ -502,6 +502,7 @@ button:focus-visible {
    the desktop shows its busy indicator in the same spot. */
 .tree-search-spinner {
   flex: none;
+  position: relative;
   width: 13px;
   height: 13px;
   border: 2px solid var(--border);
@@ -511,10 +512,51 @@ button:focus-visible {
   cursor: pointer;
 }
 
-/* A paused walk: the ring stops turning and dims until clicked again. */
+/* A paused walk: the ring becomes a static gear with a pause badge. */
 .tree-search-spinner.paused {
-  animation-play-state: paused;
-  opacity: 0.55;
+  animation: none;
+  border-color: transparent;
+  opacity: 0.85;
+}
+
+.tree-search-spinner .gear {
+  display: none;
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 12px;
+  line-height: 1;
+  color: var(--highlight);
+}
+
+.tree-search-spinner.paused .gear {
+  display: block;
+}
+
+.tree-search-spinner .pause-badge {
+  display: none;
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  padding: 1.5px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--surface);
+  align-items: center;
+  justify-content: center;
+  gap: 1.5px;
+}
+
+.tree-search-spinner.paused .pause-badge {
+  display: flex;
+}
+
+.tree-search-spinner .pause-bar {
+  width: 1.5px;
+  height: 4.5px;
+  border-radius: 1px;
+  background: var(--highlight);
 }
 
 @keyframes tree-search-spin {

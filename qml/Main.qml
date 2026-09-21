@@ -2703,16 +2703,9 @@ ApplicationWindow {
                             // A hand-rolled spinner: the desktop BusyIndicator
                             // renders nothing when stopped, and a paused
                             // search must show a frozen ring, not a gap.
+                            // Running: the turning comet ring.
                             Rectangle {
-                                anchors.fill: parent
-                                radius: width / 2
-                                color: "transparent"
-                                border.color: root.palette.mid
-                                border.width: 2
-                                opacity: 0.4
-                            }
-
-                            Rectangle {
+                                visible: !fileTreeModel.searchPaused
                                 anchors.fill: parent
                                 color: "transparent"
 
@@ -2722,7 +2715,6 @@ ApplicationWindow {
                                     duration: 900
                                     loops: Animation.Infinite
                                     running: treeSearchSpinner.visible
-                                    paused: fileTreeModel.searchPaused
                                 }
 
                                 Rectangle {
@@ -2732,6 +2724,48 @@ ApplicationWindow {
                                     color: root.palette.highlight
                                     anchors.verticalCenter: parent.verticalCenter
                                     anchors.left: parent.left
+                                }
+                            }
+
+                            // Paused: a static gear wearing a pause badge.
+                            Item {
+                                visible: fileTreeModel.searchPaused
+                                anchors.fill: parent
+
+                                Label {
+                                    anchors.centerIn: parent
+                                    text: "\u2699"
+                                    font.pixelSize: 14
+                                    color: root.palette.highlight
+                                }
+
+                                Rectangle {
+                                    width: 10
+                                    height: 10
+                                    radius: 2
+                                    color: root.palette.window
+                                    border.color: root.palette.mid
+                                    border.width: 1
+                                    anchors.right: parent.right
+                                    anchors.bottom: parent.bottom
+
+                                    Row {
+                                        spacing: 1
+                                        anchors.centerIn: parent
+
+                                        Rectangle {
+                                            width: 1.5
+                                            height: 4
+                                            radius: 0.5
+                                            color: root.palette.highlight
+                                        }
+                                        Rectangle {
+                                            width: 1.5
+                                            height: 4
+                                            radius: 0.5
+                                            color: root.palette.highlight
+                                        }
+                                    }
                                 }
                             }
 

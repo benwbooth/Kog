@@ -5113,7 +5113,13 @@ fn App() -> impl IntoView {
                                                     }
                                                 }
                                                 on:click=move |_| toggle_search_paused()
-                                            ></span>
+                                            >
+                                                <span class="gear">{"\u{2699}"}</span>
+                                                <span class="pause-badge">
+                                                    <span class="pause-bar"></span>
+                                                    <span class="pause-bar"></span>
+                                                </span>
+                                            </span>
                                         </Show>
                                     </div>
                                     {/* Progress line under the box, where the
