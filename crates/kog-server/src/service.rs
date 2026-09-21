@@ -97,7 +97,10 @@ impl StreamService {
         self.check_encoder()?;
         let decoders = kog_audio::decoder::DecoderRegistry::new(self.decoder_settings.clone());
         let source = resolve_entry(&entry, &decoders, &self.scratch)?;
-        self.start_encode(source, key)
+        // The resolved source of an archive member lives in the registry's
+        // extraction workspace, which is deleted when the registry drops:
+        // keep it alive for the whole encode.
+        self.start_encode(source, key, decoders)
     }
 
     /// Read one entry's tags without encoding it, using the same resolution
@@ -164,6 +167,7 @@ impl StreamService {
         &self,
         source: PlaybackSource,
         key: StreamKey,
+        decoders: kog_audio::decoder::DecoderRegistry,
     ) -> Result<StreamSource, String> {
         let (sender, receiver) = tokio::sync::mpsc::channel(CHANNEL_DEPTH);
         let partial = self.cache.create_partial(&key)?;
@@ -173,6 +177,9 @@ impl StreamService {
         std::thread::Builder::new()
             .name("kog-stream-encode".to_owned())
             .spawn(move || {
+                // Holding the registry here keeps any archive extraction
+                // workspace alive for as long as the source needs it.
+                let _decoders = decoders;
                 let result = service.encode_into(source, &key, partial, sender.clone());
                 if let Err(error) = &result {
                     eprintln!("kog-server: streaming {}: {error}", key.locator);

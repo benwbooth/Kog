@@ -729,10 +729,20 @@ fn is_gme_companion(
 }
 
 fn browse_blocking(library: &Arc<Library>, requested: Option<&str>) -> Result<serde_json::Value, String> {
-    let directory = library.resolve(requested)?;
-    if !directory.is_dir() {
-        return Err(format!("{} is not a directory", directory.display()));
+    // An archive file, or a path inside one, browses the archive's members;
+    // the real-filesystem checks below would reject both.
+    if let Some(requested) = requested {
+        let path = std::path::Path::new(requested);
+        if !path.is_dir() {
+            if path.is_file() && kog_audio::archive::is_path(path) {
+                return archive_listing(path, "");
+            }
+            if let Some((archive, subpath)) = archive_ancestor(path) {
+                return archive_listing(&archive, &subpath);
+            }
+        }
     }
+    let directory = library.resolve(requested)?;
     let decoders = kog_audio::decoder::DecoderRegistry::new(
         kog_audio::settings::AppSettings::load().decoder_settings(),
     );
@@ -755,7 +765,12 @@ fn browse_blocking(library: &Arc<Library>, requested: Option<&str>) -> Result<se
         if file_type.is_dir() {
             directories.push(path);
         } else if file_type.is_file() && decoders.accepts_path(&path) {
-            candidates.push(path);
+            // An archive browses as a folder of its members.
+            if kog_audio::archive::is_path(&path) {
+                directories.push(path);
+            } else {
+                candidates.push(path);
+            }
         }
     }
     directories.sort();
@@ -940,6 +955,88 @@ fn finish_search(
     .into_response()
 }
 
+/// The longest existing ancestor of `path` that is an archive file, with the
+/// remaining components as the member subpath inside it.
+fn archive_ancestor(path: &std::path::Path) -> Option<(std::path::PathBuf, String)> {
+    let mut cursor = path.to_path_buf();
+    let mut tail: Vec<String> = Vec::new();
+    loop {
+        if cursor.is_file() && kog_audio::archive::is_path(&cursor) {
+            tail.reverse();
+            return Some((cursor, tail.join("/")));
+        }
+        let name = cursor.file_name()?.to_string_lossy().into_owned();
+        tail.push(name);
+        cursor = cursor.parent()?.to_path_buf();
+    }
+}
+
+/// List an archive's members as a browse response: member paths become one
+/// level of virtual directories plus the playable files at that level, and
+/// every file keeps its archive locator so /api/stream can play it.
+fn archive_listing(
+    archive_path: &std::path::Path,
+    subpath: &str,
+) -> Result<serde_json::Value, String> {
+    let members = kog_audio::archive::list_archive_names(archive_path)?;
+    let prefix = if subpath.is_empty() {
+        String::new()
+    } else {
+        format!("{}/", subpath.trim_matches('/'))
+    };
+    let archive = archive_path.to_string_lossy().into_owned();
+    let mut directory_names: Vec<String> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut files: Vec<serde_json::Value> = Vec::new();
+    for member in members {
+        let Some(relative) = member.strip_prefix(&prefix) else {
+            continue;
+        };
+        if relative.is_empty() {
+            continue;
+        }
+        // Members below this level are virtual directories; browsing one
+        // lists its own members.
+        if let Some(split) = relative.find('/') {
+            let folder = relative[..split].to_owned();
+            if seen.insert(folder.clone()) {
+                directory_names.push(folder);
+            }
+            continue;
+        }
+        if crate::media_filter::is_hidden(std::path::Path::new(&relative)) {
+            continue;
+        }
+        files.push(serde_json::json!({
+            "name": relative,
+            "path": archive,
+            "relative": member,
+            "kind": "archive",
+            "entry": member,
+            "fragment": serde_json::Value::Null,
+        }));
+    }
+    directory_names.sort();
+    let directories: Vec<serde_json::Value> = directory_names
+        .into_iter()
+        .map(|name| {
+            serde_json::json!({
+                "name": name,
+                "path": format!("{}/{}", archive_path.display(), name),
+            })
+        })
+        .collect();
+    Ok(serde_json::json!({
+        "path": if prefix.is_empty() {
+            archive.clone()
+        } else {
+            format!("{archive}/{}", prefix.trim_end_matches('/'))
+        },
+        "directories": directories,
+        "files": files,
+    }))
+}
+
 /// One active search: the words to match, the directories still to visit
 /// (with the file to resume from when a slice stopped mid-directory, and
 /// whether the walk already knows the directory sits under a folder whose
@@ -1047,8 +1144,11 @@ fn run_search_slice(session: &mut SearchSession, cap: usize) {
             if !decoders.accepts_path(&path) {
                 continue;
             }
+            // An archive is a container: when it matches, it surfaces as a
+            // folder whose members play through the archive locator.
+            let container = kog_audio::archive::is_path(&path);
             if under_matched_folder || name_match {
-                session.found.push((path, false));
+                session.found.push((path, container));
                 limit -= 1;
                 if limit == 0 {
                     flush_subdirs(session, &mut queued_subdirs);
