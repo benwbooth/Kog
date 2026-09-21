@@ -2689,7 +2689,12 @@ ApplicationWindow {
                             toolTip: qsTr("Clear folder search")
                             onClicked: treeSearchField.clear()
                         }
-                        BusyIndicator {
+                        // A plain Item, not a BusyIndicator: BusyIndicator
+                        // always draws its own built-in spinner while
+                        // visible, which turned under the gear no matter
+                        // what the gear's own animation did — the
+                        // ghost-spin under the paused gear.
+                        Item {
                             id: treeSearchSpinner
                             objectName: "treeSearchSpinner"
                             Layout.preferredWidth: 18
