@@ -489,6 +489,15 @@ button:focus-visible {
   border-radius: 2px;
 }
 
+/* Search progress under the box, the desktop's status label. */
+.search-status {
+  flex: none;
+  margin: 0 14px 4px;
+  font-size: 0.9em;
+  opacity: 0.75;
+  user-select: none;
+}
+
 .tree-search:focus-within {
   border-color: var(--highlight);
 }

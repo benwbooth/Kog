@@ -1189,6 +1189,83 @@ fn cancel_touch_press(
     }
 }
 
+/// Shape flat search matches into browse-cache form, the way the desktop's
+/// search tree nests matches under their real folders: every match lands in
+/// its parent folder's bucket, missing ancestors become folder rows, and the
+/// ancestor chain up to the first folder that matched by name starts
+/// expanded — a matched folder itself starts collapsed, so its (already
+/// reported) contents appear when it is opened, like the desktop's browse
+/// nodes. Buckets sort case-insensitively by name, folders and files
+/// together, as the desktop's tree rows do.
+fn build_search_tree(
+    matches: &[Entry],
+    root: &str,
+) -> (HashMap<String, Vec<Entry>>, HashSet<String>) {
+    let root = root.trim_end_matches('/');
+    let key = |parent: &str| -> String {
+        if parent == root {
+            String::new()
+        } else {
+            parent.to_owned()
+        }
+    };
+    let matched: HashSet<String> = matches
+        .iter()
+        .filter(|entry| entry.is_dir())
+        .map(|entry| entry.path.clone())
+        .collect();
+    let mut map: HashMap<String, Vec<Entry>> = HashMap::new();
+    let push = |map: &mut HashMap<String, Vec<Entry>>, parent: String, entry: Entry| {
+        let bucket = map.entry(parent).or_default();
+        if !bucket
+            .iter()
+            .any(|item| item.path == entry.path && item.entry == entry.entry)
+        {
+            bucket.push(entry);
+        }
+    };
+    let mut expanded = HashSet::new();
+    for match_ in matches {
+        // Ancestors from the root down: expansion stops at (and below) the
+        // first folder that matched by name, so a matched folder stays
+        // collapsed while plain folders on the way to a match open up.
+        let mut chain: Vec<String> = Vec::new();
+        let mut parent = parent_path(&match_.path);
+        while !parent.is_empty() && parent != root {
+            chain.push(parent.clone());
+            parent = parent_path(&parent);
+        }
+        chain.reverse();
+        let mut blocked = false;
+        for ancestor in &chain {
+            push(
+                &mut map,
+                key(&parent_path(ancestor)),
+                Entry {
+                    kind: "dir".to_owned(),
+                    path: ancestor.clone(),
+                    entry: String::new(),
+                    fragment: None,
+                    name: last_segment(ancestor),
+                    location: ancestor.clone(),
+                },
+            );
+            if !blocked {
+                if matched.contains(ancestor) {
+                    blocked = true;
+                } else {
+                    expanded.insert(ancestor.clone());
+                }
+            }
+        }
+        push(&mut map, key(&parent_path(&match_.path)), match_.clone());
+    }
+    for bucket in map.values_mut() {
+        bucket.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    }
+    (map, expanded)
+}
+
 fn flatten(
     children: &HashMap<String, Vec<Entry>>,
     expanded: &HashSet<String>,
@@ -1364,9 +1441,22 @@ fn App() -> impl IntoView {
     // whether to re-root or step up.
     let (tree_selected_dir, set_tree_selected_dir) = signal(false);
     let (tree_search, set_tree_search) = signal(String::new());
-    // Server-side search results for the tree box: while set, the pane shows
-    // these instead of the loaded tree folders.
-    let (tree_results, set_tree_results) = signal(Option::<Vec<TreeRow>>::None);
+    // Server-side search results for the tree box, shaped like the browse
+    // cache so the pane renders one tree either way: matches sit under their
+    // real parent folders ("" is the tree root's own level), and a folder
+    // with no bucket yet — an archive container, whose members the walk never
+    // entered — fetches its listing when expanded, like the desktop's lazy
+    // browse nodes.
+    let (search_children, set_search_children) =
+        signal(HashMap::<String, Vec<Entry>>::new());
+    // Which search folders are expanded. Ancestors of matches start expanded,
+    // a folder that matched by name starts collapsed, exactly like the
+    // desktop's TreeSearchLayout.
+    let (search_expanded, set_search_expanded) = signal(HashSet::<String>::new());
+    // How many matches the walk has reported and whether the client stopped
+    // pulling early, for the status line under the search box.
+    let (search_count, set_search_count) = signal(0usize);
+    let (search_capped, set_search_capped) = signal(false);
     // True while a query's walk is still streaming results in.
     let (tree_search_pending, set_tree_search_pending) = signal(false);
     // Right-click menu anchor and target row.
@@ -1507,14 +1597,17 @@ fn App() -> impl IntoView {
                     return;
                 }
                 if trimmed.is_empty() {
-                    set_tree_results.set(None);
+                    set_search_children.set(HashMap::new());
+                    set_search_expanded.set(HashSet::new());
+                    set_search_count.set(0);
+                    set_search_capped.set(false);
                     set_tree_search_pending.set(false);
                     return;
                 }
                 // A huge library takes a while to cross: the pane must say it
                 // is searching rather than declare "no matches" prematurely.
                 set_tree_search_pending.set(true);
-                let parse = |value: &serde_json::Value| -> Vec<TreeRow> {
+                let parse = |value: &serde_json::Value| -> Vec<Entry> {
                     let mut rows = Vec::new();
                     if let Some(list) = value["results"].as_array() {
                         for item in list {
@@ -1526,22 +1619,48 @@ fn App() -> impl IntoView {
                                 .as_str()
                                 .map(str::to_owned)
                                 .unwrap_or_else(|| last_segment(&path));
-                            rows.push(TreeRow {
+                            // A folder whose own name matched is itself a
+                            // result; the walk already reported everything
+                            // under it, so its bucket fills from matches. An
+                            // archive container matches as a folder too, but
+                            // its members were never walked, so its bucket
+                            // stays missing and expanding fetches the listing.
+                            let kind = if item["is_dir"].as_bool().unwrap_or(false) {
+                                "dir"
+                            } else {
+                                "local"
+                            };
+                            rows.push(Entry {
                                 name,
                                 path,
-                                parent: String::new(),
-                                // A folder whose own name matched is itself a
-                                // result; its contents stream in behind it.
-                                is_dir: item["is_dir"].as_bool().unwrap_or(false),
-                                depth: 0,
-                                expanded: false,
-                                kind: "local".to_owned(),
+                                kind: kind.to_owned(),
                                 entry: String::new(),
                                 fragment: None,
+                                location: String::new(),
                             });
                         }
                     }
                     rows
+                };
+                // Rebuild the results tree from the matches gathered so far.
+                // Ran after every batch: matches nest progressively deeper as
+                // the walk streams in, and folders the visitor expanded while
+                // waiting stay expanded.
+                let publish = |rows: &[Entry]| {
+                    let root = {
+                        let rooted = tree_root.get_untracked();
+                        if rooted.is_empty() {
+                            library_root.get_untracked()
+                        } else {
+                            rooted
+                        }
+                    };
+                    let (map, auto_expanded) = build_search_tree(rows, &root);
+                    let mut expanded = search_expanded.get_untracked();
+                    expanded.extend(auto_expanded);
+                    set_search_children.set(map);
+                    set_search_expanded.set(expanded);
+                    set_search_count.set(rows.len());
                 };
                 match get_json(format!(
                     "/api/library/search?q={}",
@@ -1561,7 +1680,7 @@ fn App() -> impl IntoView {
                             rows.iter().map(|row| row.path.clone()).collect();
                         let mut done = value["done"].as_bool().unwrap_or(true);
                         if tree_search.get_untracked().trim() == trimmed {
-                            set_tree_results.set(Some(rows.clone()));
+                            publish(&rows);
                         }
                         while !done && rows.len() < 200 {
                             if tree_search.get_untracked().trim() != trimmed {
@@ -1583,11 +1702,19 @@ fn App() -> impl IntoView {
                                     }
                                     done = value["done"].as_bool().unwrap_or(true);
                                     if tree_search.get_untracked().trim() == trimmed {
-                                        set_tree_results.set(Some(rows.clone()));
+                                        publish(&rows);
                                     }
                                 }
                                 Err(_) => break,
                             }
+                        }
+                        // Out of pull budget with the walk still going: the
+                        // status line says so, like the desktop's "narrow
+                        // your search" notice.
+                        let capped = !done;
+                        if tree_search.get_untracked().trim() == trimmed {
+                            publish(&rows);
+                            set_search_capped.set(capped);
                         }
                         if done || rows.len() >= 200 {
                             set_tree_search_pending.set(false);
@@ -1727,6 +1854,39 @@ fn App() -> impl IntoView {
                 if !loaded {
                     load_dir(path, None);
                 }
+            }
+        }
+    };
+
+    // Expand or collapse a folder inside search results. Matched folders'
+    // contents are already part of the match set; an archive container's
+    // members never are, so opening one fetches its listing through the same
+    // browse endpoint the loaded tree uses — the desktop's search tree lazily
+    // browses its containers the same way.
+    let toggle_search_dir = {
+        let get_json = get_json;
+        move |path: String| {
+            let mut now_open = false;
+            set_search_expanded.update(|set| {
+                if set.remove(&path) {
+                    now_open = false;
+                } else {
+                    set.insert(path.clone());
+                    now_open = true;
+                }
+            });
+            if now_open && !search_children.get_untracked().contains_key(&path) {
+                leptos::task::spawn_local(async move {
+                    match get_json(format!("/api/library?path={}", url_encode(&path))).await {
+                        Ok(value) => {
+                            let items = library_entries(&value);
+                            set_search_children.update(|map| {
+                                map.insert(path, items);
+                            });
+                        }
+                        Err(error) => set_message.set(error),
+                    }
+                });
             }
         }
     };
@@ -3066,16 +3226,33 @@ fn App() -> impl IntoView {
     };
 
     let tree_rows = move || {
-        let children = children.get();
-        let expanded = expanded.get();
-        let root = tree_root.get();
-        let needle = tree_search.get().trim().to_lowercase();
         let mut out = Vec::new();
-        flatten(&children, &expanded, &root, 0, &mut out);
-        if !needle.is_empty() {
-            out.retain(|row| row.name.to_lowercase().contains(&needle));
+        // A query swaps the pane to the results tree: matches under their
+        // real folders, ancestors open, exactly like the desktop swapping in
+        // its search model. No query: the loaded tree as usual.
+        if tree_search.get().trim().is_empty() {
+            let children = children.get();
+            let expanded = expanded.get();
+            let root = tree_root.get();
+            flatten(&children, &expanded, &root, 0, &mut out);
+        } else {
+            let children = search_children.get();
+            let expanded = search_expanded.get();
+            flatten(&children, &expanded, "", 0, &mut out);
         }
         out
+    };
+
+    // Expand/collapse dispatch for a tree row: inside a search the results
+    // tree owns the folders, outside it the loaded tree does. Read at event
+    // time — a row rendered by one mode can survive into the other (keyed
+    // reuse), so the branch cannot be baked in at creation.
+    let tree_toggle = move |path: String| {
+        if tree_search.get_untracked().trim().is_empty() {
+            toggle_dir(path);
+        } else {
+            toggle_search_dir(path);
+        }
     };
 
     let current_root = move || {
@@ -4143,6 +4320,34 @@ fn App() -> impl IntoView {
                                             }
                                         />
                                     </div>
+                                    {/* Progress line under the box, where the
+                                        desktop shows its search status: counts
+                                        while the walk runs, the total (or a
+                                        "narrow your search" notice at the pull
+                                        cap) once it is done. */}
+                                    <Show
+                                        when=move || !tree_search.get().trim().is_empty()
+                                        fallback=|| ()
+                                    >
+                                        <p class="search-status">
+                                            {move || {
+                                                let count = search_count.get();
+                                                if tree_search_pending.get() {
+                                                    if count > 0 {
+                                                        format!("Searching… {count} matches")
+                                                    } else {
+                                                        "Searching the music folder…".to_owned()
+                                                    }
+                                                } else if count == 0 {
+                                                    "No matching files or folders".to_owned()
+                                                } else if search_capped.get() {
+                                                    format!("{count} matches — narrow your search for more")
+                                                } else {
+                                                    format!("{count} matching files or folders")
+                                                }
+                                            }}
+                                        </p>
+                                    </Show>
                                     <div class="tree-list">
                                             <Show
                                                 when=move || {
@@ -4205,7 +4410,8 @@ fn App() -> impl IntoView {
                                                 let row_dbl = row.clone();
                                                 let row_menu = row.clone();
                                                 let row_drag = row.clone();
-                                                let toggle_dir = toggle_dir.clone();
+                                                let row_name = row.name.clone();
+                                                let tree_toggle = tree_toggle.clone();
                                                 let add_row_to_playlist = add_row_to_playlist.clone();
                                                 let selected = row.path.clone();
                                                 // The arrow reads `expanded` reactively: the
@@ -4217,10 +4423,23 @@ fn App() -> impl IntoView {
                                                 let twisty = move || {
                                                     if !is_dir {
                                                         ""
-                                                    } else if expanded.get().contains(&twisty_path) {
-                                                        "▾"
                                                     } else {
-                                                        "▸"
+                                                        // Whichever mode owns the pane
+                                                        // owns the expansion state.
+                                                        let open =
+                                                            if tree_search.get_untracked()
+                                                                .trim()
+                                                                .is_empty()
+                                                            {
+                                                                expanded.get()
+                                                            } else {
+                                                                search_expanded.get()
+                                                            };
+                                                        if open.contains(&twisty_path) {
+                                                            "▾"
+                                                        } else {
+                                                            "▸"
+                                                        }
                                                     }
                                                 };
                                                 let indent = 6 + row.depth * 16;
@@ -4238,12 +4457,12 @@ fn App() -> impl IntoView {
                                                             set_tree_selected.set(row_click.path.clone());
                                                             set_tree_selected_dir.set(row_click.is_dir);
                                                             if row_click.is_dir {
-                                                                toggle_dir(row_click.path.clone());
+                                                                tree_toggle(row_click.path.clone());
                                                             }
                                                         }
                                                         on:dblclick=move |_| {
                                                             if row_dbl.is_dir {
-                                                                toggle_dir(row_dbl.path.clone());
+                                                                tree_toggle(row_dbl.path.clone());
                                                             } else {
                                                                 // Queue without starting playback:
                                                                 // adding to the pane must never
@@ -4281,62 +4500,30 @@ fn App() -> impl IntoView {
                                                         } else {
                                                             "tree-icon file"
                                                         }></span>
-                                                        <span class="label">{row.name.clone()}</span>
+                                                        <span class="label">
+                                                            {move || {
+                                                                highlight_label(
+                                                                    row_name.clone(),
+                                                                    tree_search.get(),
+                                                                )
+                                                            }}
+                                                        </span>
                                                     </button>
                                                 }
                                             }
                                         </For>
                                         <Show
                                             when=move || {
-                                                let searching = !tree_search.get().trim().is_empty();
-                                                searching
+                                                !tree_search.get().trim().is_empty()
+                                                    && tree_rows().is_empty()
                                             }
                                             fallback=|| ()
                                         >
-                                                <Show
-                                                    when=move || !tree_results.get().unwrap_or_default().is_empty()
-                                                    fallback=move || view! {
-                                                        <p class="empty">
-                                                            {move || if tree_search_pending.get() {
-                                                                "Searching the music folder…"
-                                                            } else {
-                                                                "No matches."
-                                                            }}
-                                                        </p>
-                                                    }
-                                                >
-                                                <For
-                                                    each=move || tree_results.get().unwrap_or_default()
-                                                    key=|row| format!("{}#{}", row.path, row.entry)
-                                                    let:row
-                                                >
-                                                    {
-                                                        let row_click = row.clone();
-                                                        let row_drag = row.clone();
-                                                        view! {
-                                                            <button
-                                                                class="tree-row search-result"
-                                                                title=row.path.clone()
-                                                                draggable="true"
-                                                                on:dblclick=move |_| {
-                                                                    add_row_to_playlist(row_click.clone());
-                                                                }
-                                                                on:dragstart=move |ev: web_sys::DragEvent| {
-                                                                    set_dragging_tree.set(Some(row_drag.clone()));
-                                                                    if let Some(transfer) = ev.data_transfer() {
-                                                                        let _ = transfer.set_data("text/plain", &row_drag.path);
-                                                                        transfer.set_effect_allowed("copy");
-                                                                    }
-                                                                }
-                                                                on:dragend=move |_| set_dragging_tree.set(None)
-                                                            >
-                                                                <span class={if row.is_dir { "tree-icon dir" } else { "tree-icon file" }}></span>
-                                                                <span class="label">{move || highlight_label(row.name.clone(), tree_search.get())}</span>
-                                                                <span class="search-path">{row.parent.clone()}</span>
-                                                            </button>
-                                                        }
-                                                    }
-                                                </For>
+                                            {/* While the walk runs the status line
+                                                above carries the progress; this
+                                                only speaks once it has finished. */}
+                                            <Show when=move || !tree_search_pending.get() fallback=|| ()>
+                                                <p class="empty">"No matching files or folders"</p>
                                             </Show>
                                         </Show>
                                     </div>
