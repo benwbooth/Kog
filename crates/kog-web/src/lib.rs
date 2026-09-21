@@ -4537,15 +4537,21 @@ fn App() -> impl IntoView {
                                                             }
                                                         }
                                                         on:dblclick=move |_| {
-                                                            if row_dbl.is_dir {
-                                                                tree_toggle(row_dbl.path.clone());
-                                                            } else {
-                                                                // Queue without starting playback:
-                                                                // adding to the pane must never
-                                                                // interrupt the current song, exactly
-                                                                // as in the desktop tree.
-                                                                add_row_to_playlist(row_dbl.clone());
-                                                            }
+                                                            // The desktop's
+                                                            // activate: a double
+                                                            // click queues the
+                                                            // row — a file
+                                                            // queues itself, a
+                                                            // folder queues its
+                                                            // files. Expansion
+                                                            // stays the single
+                                                            // click's job (the
+                                                            // pair of clicks in
+                                                            // a double click
+                                                            // opens and closes
+                                                            // the folder, as on
+                                                            // the desktop).
+                                                            add_row_to_playlist(row_dbl.clone());
                                                         }
                                                         on:contextmenu=move |ev: web_sys::MouseEvent| {
                                                             ev.prevent_default();
