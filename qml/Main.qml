@@ -2720,7 +2720,14 @@ ApplicationWindow {
                                     duration: 1600
                                     loops: Animation.Infinite
                                     running: treeSearchSpinner.visible
-                                        && !fileTreeModel.searchPaused
+                                    // Freeze mid-turn instead of stopping:
+                                    // a stopped property-source animation
+                                    // gets re-driven whenever the running
+                                    // binding's dependencies re-emit (the
+                                    // search signals fire constantly), which
+                                    // showed as a second gear turning under
+                                    // the paused one.
+                                    paused: fileTreeModel.searchPaused
                                 }
                             }
 
