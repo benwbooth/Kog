@@ -2728,9 +2728,35 @@ fn App() -> impl IntoView {
     }
 
 
-    // Escape dismisses any open menu or dialog from anywhere on the page, not
-    // just when a control inside it holds focus.
-    let escape_handle = window_event_listener(leptos::ev::keydown, move |ev: web_sys::KeyboardEvent| {
+    // Global keys, from anywhere on the page. Escape dismisses any open menu
+    // or dialog; Ctrl/Cmd+A selects the whole pane like the desktop's
+    // Select All — except inside a text field, where it keeps selecting text.
+    let key_handle = window_event_listener(leptos::ev::keydown, move |ev: web_sys::KeyboardEvent| {
+        if (ev.ctrl_key() || ev.meta_key())
+            && !ev.alt_key()
+            && ev.key().eq_ignore_ascii_case("a")
+        {
+            let in_text = ev
+                .target()
+                .and_then(|target| target.dyn_into::<web_sys::HtmlElement>().ok())
+                .map(|element| {
+                    let tag = element.tag_name().to_ascii_lowercase();
+                    tag == "input" || tag == "textarea" || tag == "select"
+                        || element.is_content_editable()
+                })
+                .unwrap_or(false);
+            if !in_text && !queue.get_untracked().is_empty() {
+                ev.prevent_default();
+                let total = queue.get_untracked().len();
+                set_selected.update(|set| {
+                    set.clear();
+                    for index in 0..total {
+                        set.insert(index);
+                    }
+                });
+            }
+            return;
+        }
         if ev.key() == "Escape" {
             set_menu_open.set(false);
             set_column_menu.set(None);
@@ -2743,7 +2769,7 @@ fn App() -> impl IntoView {
             set_renaming_playlist.set(None);
         }
     });
-    on_cleanup(move || escape_handle.remove());
+    on_cleanup(move || key_handle.remove());
 
     // ------------------------------------------------------------ live reload
     // Poll the running `/kog_web.js` for its content-hash ETag and reload once
