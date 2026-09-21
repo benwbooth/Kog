@@ -535,19 +535,118 @@ fn decode_columns(raw: &str) -> Vec<Column> {
     columns
 }
 
-/// A content-based width: the widest of the label and the visible values,
-/// roughly seven pixels per character plus the cell padding.
+/// A content-based width: the widest of the header label (with its sort
+/// arrow) and the visible values, measured with the real fonts through a
+/// cached canvas. A per-character guess fit proportional text badly in both
+/// directions — wide glyphs overflowed, narrow ones left dead space.
 fn content_width(id: ColumnId, texts: &[String]) -> f64 {
-    let widest = texts
-        .iter()
-        .map(|text| text.chars().count())
-        .max()
-        .unwrap_or(0) as f64;
-    // The header needs room for its label plus the sort arrow inside the
-    // sort button's padding - without this floor, narrow columns elide
-    // their own labels after an auto-fit.
-    let header_min = id.label().chars().count() as f64 * 9.0 + 48.0;
-    (widest * 7.0 + 22.0).clamp(id.min_width().max(header_min), 1024.0)
+    let Some(context) = measure_context() else {
+        // No canvas to measure with: the old per-character guess, padded.
+        let widest = texts
+            .iter()
+            .map(|text| text.chars().count())
+            .max()
+            .unwrap_or(0) as f64;
+        return (widest * 7.0 + 22.0).clamp(id.min_width(), 1024.0);
+    };
+    // Cells inherit the 13px body font; the header label sits in the sort
+    // button at its own 11px. Both get their cell padding back, plus a
+    // little slack so a measurement a hair under the rendered width does
+    // not clip into an ellipsis.
+    let cell_font = styled_font(".track .cell", "13px system-ui, sans-serif");
+    context.set_font(&cell_font);
+    // The header is laid out, not estimated: sort arrows come from a
+    // fallback symbol font that canvas measuring under-reports, so the
+    // button's own element measures the label-with-arrow exactly.
+    let head_text = format!("{} ▲", id.label());
+    let mut widest = dom_text_width(".columns .col-sort", &head_text)
+        .unwrap_or_else(|| {
+            let head_font = styled_font(".columns .col-sort", "11px system-ui, sans-serif");
+            context.set_font(&head_font);
+            measured(&context, &head_text)
+        })
+        + 16.0
+        + 3.0;
+    context.set_font(&cell_font);
+    for text in texts {
+        let width = measured(&context, text) + 16.0 + 3.0;
+        if width > widest {
+            widest = width;
+        }
+    }
+    widest.clamp(id.min_width(), 1024.0)
+}
+
+/// The canvas 2D context of a detached canvas, created once and reused: the
+/// text measurer for auto-fit widths.
+fn measure_context() -> Option<web_sys::CanvasRenderingContext2d> {
+    thread_local! {
+        static CONTEXT: RefCell<Option<web_sys::CanvasRenderingContext2d>> =
+            RefCell::new(None);
+    }
+    CONTEXT.with(|slot| {
+        let mut held = slot.borrow_mut();
+        if held.is_none() {
+            let document = web_sys::window().and_then(|window| window.document())?;
+            let canvas = document.create_element("canvas").ok()?;
+            let canvas: web_sys::HtmlCanvasElement = canvas.dyn_into().ok()?;
+            let context = canvas.get_context("2d").ok()??;
+            let context: web_sys::CanvasRenderingContext2d = context.dyn_into().ok()?;
+            *held = Some(context);
+        }
+        held.clone()
+    })
+}
+
+/// Measured text width, or zero when measurement fails (then the floor wins).
+fn measured(context: &web_sys::CanvasRenderingContext2d, text: &str) -> f64 {
+    context.measure_text(text).map(|m| m.width()).unwrap_or(0.0)
+}
+
+/// The laid-out width of `text` inside the first element matching
+/// `selector`: the text inherits that element's font by measure, so fallback
+/// glyphs (sort arrows, star glyphs) come out exactly as wide as they
+/// render. None when the element does not exist yet.
+fn dom_text_width(selector: &str, text: &str) -> Option<f64> {
+    let document = web_sys::window().and_then(|window| window.document())?;
+    let host = document.query_selector(selector).ok().flatten()?;
+    let probe = document.create_element("span").ok()?;
+    let _ = probe.set_attribute(
+        "style",
+        "position: absolute; visibility: hidden; white-space: pre; \
+         padding: 0; margin: 0; border: 0; font: inherit;",
+    );
+    probe.set_text_content(Some(text));
+    host.append_child(&probe).ok()?;
+    let html: web_sys::HtmlElement = probe.dyn_into().ok()?;
+    let width = html.offset_width() as f64;
+    let _ = host.remove_child(&html);
+    Some(width)
+}
+
+/// The computed font of the first element matching `selector`, so auto-fit
+/// measures with exactly what the cells render, staying correct if the CSS
+/// font changes. Falls back to a plain font when nothing matches yet.
+fn styled_font(selector: &str, fallback: &str) -> String {
+    let Some(window) = web_sys::window() else {
+        return fallback.to_owned();
+    };
+    let Some(document) = window.document() else {
+        return fallback.to_owned();
+    };
+    let Ok(Some(element)) = document.query_selector(selector) else {
+        return fallback.to_owned();
+    };
+    let Ok(Some(style)) = window.get_computed_style(&element) else {
+        return fallback.to_owned();
+    };
+    let family = style.get_property_value("font-family").unwrap_or_default();
+    if family.trim().is_empty() {
+        return fallback.to_owned();
+    }
+    let size = style.get_property_value("font-size").unwrap_or_default();
+    let weight = style.get_property_value("font-weight").unwrap_or_default();
+    format!("{} {} {}", weight.trim(), size.trim(), family.trim())
 }
 
 /// The text a column shows for one queue row, shared by the cell and auto-fit.
