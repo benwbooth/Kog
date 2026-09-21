@@ -91,6 +91,18 @@ struct TreeRow {
     fragment: Option<String>,
 }
 
+/// The desktop search's progress counters, straight from the walk: items
+/// scanned in the filesystem pass, then archive listings, for the status
+/// line under the search box.
+#[derive(Clone, Copy, Default)]
+struct SearchProgress {
+    scanned: u64,
+    archive_count: u64,
+    archives_scanned: u64,
+    unreadable: u64,
+    scanning_archives: bool,
+}
+
 /// The web stand-in for the desktop's playlist dialogs: naming a new
 /// playlist, naming a duplicate, and confirming a delete.
 #[derive(Clone, Debug, PartialEq)]
@@ -1586,6 +1598,9 @@ fn App() -> impl IntoView {
     // pulling early, for the status line under the search box.
     let (search_count, set_search_count) = signal(0usize);
     let (search_capped, set_search_capped) = signal(false);
+    // The desktop's progress counters: items scanned on the filesystem pass,
+    // then archive listings, exactly the numbers its status line shows.
+    let (search_progress, set_search_progress) = signal(SearchProgress::default());
     // True while a query's walk is still streaming results in.
     let (tree_search_pending, set_tree_search_pending) = signal(false);
     // Right-click menu anchor and target row.
@@ -1739,11 +1754,16 @@ fn App() -> impl IntoView {
                     set_search_expanded.set(HashSet::new());
                     set_search_count.set(0);
                     set_search_capped.set(false);
+                    set_search_progress.set(SearchProgress::default());
                     set_tree_search_pending.set(false);
                     return;
                 }
                 // A huge library takes a while to cross: the pane must say it
                 // is searching rather than declare "no matches" prematurely.
+                // Stale numbers from the previous query go first.
+                set_search_count.set(0);
+                set_search_capped.set(false);
+                set_search_progress.set(SearchProgress::default());
                 set_tree_search_pending.set(true);
                 let parse = |value: &serde_json::Value| -> Vec<Entry> {
                     let mut rows = Vec::new();
@@ -1788,7 +1808,20 @@ fn App() -> impl IntoView {
                 // Ran after every batch: matches nest progressively deeper as
                 // the walk streams in, and folders the visitor expanded while
                 // waiting stay expanded.
-                let publish = |rows: &[Entry]| {
+                let parse_progress = |value: &serde_json::Value| -> SearchProgress {
+                    SearchProgress {
+                        scanned: value["scanned"].as_u64().unwrap_or(0),
+                        archive_count: value["archive_count"].as_u64().unwrap_or(0),
+                        archives_scanned: value["archives_scanned"]
+                            .as_u64()
+                            .unwrap_or(0),
+                        unreadable: value["unreadable_archives"].as_u64().unwrap_or(0),
+                        scanning_archives: value["scanning_archives"]
+                            .as_bool()
+                            .unwrap_or(false),
+                    }
+                };
+                let publish = |rows: &[Entry], progress: SearchProgress| {
                     let root = {
                         let rooted = tree_root.get_untracked();
                         if rooted.is_empty() {
@@ -1803,6 +1836,7 @@ fn App() -> impl IntoView {
                     set_search_children.set(map);
                     set_search_expanded.set(expanded);
                     set_search_count.set(rows.len());
+                    set_search_progress.set(progress);
                 };
                 match get_json(format!(
                     "/api/library/search?q={}",
@@ -1811,19 +1845,23 @@ fn App() -> impl IntoView {
                 .await
                 {
                     Ok(value) => {
-                        // The walk runs server-side in time-boxed slices, so
-                        // matches arrive the way the desktop's scan publishes
-                        // them: first batch immediately, then more pulls until
-                        // the walk reports done. A newer query supersedes this
-                        // one both here and on the server.
+                        // The walk runs on its own thread and matches
+                        // accumulate in the shared buffer; the client pulls
+                        // slices by offset until the walk reports done. A
+                        // newer query supersedes this one both here and on
+                        // the server.
                         let generation = value["generation"].as_u64().unwrap_or_default();
                         let mut limited = value["limited"].as_bool().unwrap_or(false);
+                        let mut progress = parse_progress(&value);
                         let mut rows = parse(&value);
+                        // Members of one archive share the archive's path, so
+                        // identity includes the member name.
+                        let identity = |row: &Entry| format!("{}|{}", row.path, row.entry);
                         let mut seen: HashSet<String> =
-                            rows.iter().map(|row| row.path.clone()).collect();
+                            rows.iter().map(|row| identity(row)).collect();
                         let mut done = value["done"].as_bool().unwrap_or(true);
                         if tree_search.get_untracked().trim() == trimmed {
-                            publish(&rows);
+                            publish(&rows, progress);
                         }
                         // The desktop's search stops at its own matchLimit;
                         // mirror that 2000 instead of ending after the first
@@ -1843,32 +1881,22 @@ fn App() -> impl IntoView {
                                         break;
                                     }
                                     for row in parse(&value) {
-                                        if seen.insert(row.path.clone()) {
+                                        if seen.insert(identity(&row)) {
                                             rows.push(row);
                                         }
                                     }
+                                    progress = parse_progress(&value);
                                     offset = rows.len();
                                     done = value["done"].as_bool().unwrap_or(true);
                                     if value["limited"].as_bool().unwrap_or(false) {
                                         limited = true;
                                     }
                                     if tree_search.get_untracked().trim() == trimmed {
-                                        publish(&rows);
+                                        publish(&rows, progress);
                                     }
                                 }
                                 Err(_) => break,
                             }
-                        }
-                        // Out of pull budget with the walk still going: the
-                        // status line says so, like the desktop's "narrow
-                        // your search" notice.
-                        // The desktop's "narrow your search": the walk hit
-                        // its match limit (or the client stopped pulling at
-                        // the same limit before the walk finished).
-                        let capped = limited || !done;
-                        if tree_search.get_untracked().trim() == trimmed {
-                            publish(&rows);
-                            set_search_capped.set(capped);
                         }
                         if done || rows.len() >= 2000 {
                             set_tree_search_pending.set(false);
@@ -4920,11 +4948,19 @@ fn App() -> impl IntoView {
                                         <p class="search-status">
                                             {move || {
                                                 let count = search_count.get();
-                                                if tree_search_pending.get() {
-                                                    if count > 0 {
-                                                        format!("Searching… {count} matches")
+                                                let progress = search_progress.get();
+                                                let mut text = if tree_search_pending.get() {
+                                                    if progress.scanning_archives {
+                                                        format!(
+                                                            "{count} matches · Archives {} of {}",
+                                                            progress.archives_scanned,
+                                                            progress.archive_count
+                                                        )
                                                     } else {
-                                                        "Searching the music folder…".to_owned()
+                                                        format!(
+                                                            "{count} matches · Searching folders ({} items)",
+                                                            progress.scanned
+                                                        )
                                                     }
                                                 } else if count == 0 {
                                                     "No matching files or folders".to_owned()
@@ -4932,7 +4968,14 @@ fn App() -> impl IntoView {
                                                     format!("{count} matches — narrow your search for more")
                                                 } else {
                                                     format!("{count} matching files or folders")
+                                                };
+                                                if progress.unreadable > 0 {
+                                                    text.push_str(&format!(
+                                                        " — {} archive(s) could not be searched",
+                                                        progress.unreadable
+                                                    ));
                                                 }
+                                                text
                                             }}
                                         </p>
                                     </Show>

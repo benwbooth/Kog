@@ -888,6 +888,11 @@ pub async fn search(State(state): State<AppState>, Query(query): Query<SearchQue
         done: AtomicBool::new(false),
         limited: AtomicBool::new(false),
         cancel: AtomicBool::new(false),
+        scanned: AtomicU64::new(0),
+        archive_count: AtomicU64::new(0),
+        archives_scanned: AtomicU64::new(0),
+        unreadable_archives: AtomicU64::new(0),
+        scanning_archives: AtomicBool::new(false),
     });
     let library = state.library.clone();
     let worker_shared = shared.clone();
@@ -1018,13 +1023,23 @@ pub(crate) struct SearchMatch {
     kind: &'static str,
 }
 
-/// The shared state of the one active search walk.
+/// The shared state of the one active search walk, plus the progress
+/// counters the desktop status line reports.
 pub struct SearchShared {
     matches: Mutex<Vec<SearchMatch>>,
     done: AtomicBool,
     /// The walk stopped at the match limit: tell the visitor to narrow it.
     limited: AtomicBool,
     cancel: AtomicBool,
+    /// Items visited by the filesystem pass.
+    scanned: AtomicU64,
+    /// Archives discovered while walking, and how many were listed so far.
+    archive_count: AtomicU64,
+    archives_scanned: AtomicU64,
+    /// Listings that failed (corrupt archive, permissions, ...).
+    unreadable_archives: AtomicU64,
+    /// True once the walk leaves the filesystem pass and starts listing.
+    scanning_archives: AtomicBool,
 }
 
 struct SearchJob {
@@ -1056,6 +1071,18 @@ fn search_snapshot(state: &AppState, generation: u64, offset: usize) -> Response
     } else {
         (Vec::new(), 0, true, false)
     };
+    let progress = state.search.job.lock().unwrap().as_ref().map_or(
+        (0, 0, 0, 0, false),
+        |job| {
+            (
+                job.shared.scanned.load(Ordering::Relaxed),
+                job.shared.archive_count.load(Ordering::Relaxed),
+                job.shared.archives_scanned.load(Ordering::Relaxed),
+                job.shared.unreadable_archives.load(Ordering::Relaxed),
+                job.shared.scanning_archives.load(Ordering::Relaxed),
+            )
+        },
+    );
     axum::Json(serde_json::json!({
         "results": slice
             .into_iter()
@@ -1073,6 +1100,11 @@ fn search_snapshot(state: &AppState, generation: u64, offset: usize) -> Response
         "done": done,
         "limited": limited,
         "generation": generation,
+        "scanned": progress.0,
+        "archive_count": progress.1,
+        "archives_scanned": progress.2,
+        "unreadable_archives": progress.3,
+        "scanning_archives": progress.4,
     }))
     .into_response()
 }
@@ -1151,6 +1183,7 @@ fn walk_library_for_search(
             if dir_is_metadata || crate::media_filter::is_hidden_name(&entry.file_name()) {
                 continue;
             }
+            shared.scanned.fetch_add(1, Ordering::Relaxed);
             let path = entry.path();
             if file_type.is_dir() {
                 let name_match = matched(&name);
@@ -1210,13 +1243,20 @@ fn walk_library_for_search(
 
     // Archive pass: list each archive's members and match their names, the
     // desktop's "Archives %2 of %3" stage.
+    shared
+        .archive_count
+        .store(archives.len() as u64, Ordering::Relaxed);
+    shared.scanning_archives.store(true, Ordering::Relaxed);
     for archive in &archives {
         if cancel() || limited {
             break;
         }
         let Ok(members) = kog_audio::archive::list_archive_names(archive) else {
+            shared.archives_scanned.fetch_add(1, Ordering::Relaxed);
+            shared.unreadable_archives.fetch_add(1, Ordering::Relaxed);
             continue;
         };
+        shared.archives_scanned.fetch_add(1, Ordering::Relaxed);
         for member in members {
             if cancel() {
                 return;
