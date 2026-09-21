@@ -400,20 +400,34 @@ fn persisted_root(path: &Path) -> Option<String> {
 /// [`DecoderRegistry::expand_detailed`] handles cue sheets, subsong files and
 /// archives exactly as the desktop does; every expanded source is then probed,
 /// and unopenable ones are dropped. An empty result proves the whole pick dead.
+///
+/// One pick stages one song, and a multi-song file (an NSF with forty
+/// subsongs, a cue sheet with twenty tracks) expands to that many sources —
+/// staging them all flooded the window with one file's songs back to back.
+/// Only the first source is staged per pick, mirroring the desktop, where a
+/// pick arrives as a single locator.
 fn entries_from_pick(decoders: &DecoderRegistry, pick: &Path, root: &Path) -> Vec<RadioEntry> {
     let Ok(expansion) = decoders.expand_detailed(pick.to_path_buf()) else {
         return Vec::new();
     };
-    let mut entries = Vec::new();
-    for source in expansion.sources {
-        let Ok(properties) = decoders.probe(&source) else {
-            continue;
-        };
-        if let Some(entry) = entry_from_source(decoders, &source, &properties, root) {
-            entries.push(entry);
+    let count = expansion.sources.len();
+    if count == 0 {
+        return Vec::new();
+    }
+    // One song per pick, chosen at random among the file's own songs, so
+    // repeats of the same file vary instead of always its first song. Sources
+    // that fail to probe are walked past.
+    let start = (random_seed() % count as u64) as usize;
+    for offset in 0..count {
+        let index = (start + offset) % count;
+        let source = &expansion.sources[index];
+        if let Ok(properties) = decoders.probe(source) {
+            if let Some(entry) = entry_from_source(decoders, source, &properties, root) {
+                return vec![entry];
+            }
         }
     }
-    entries
+    Vec::new()
 }
 
 /// Map one played-back source to a streamable entry, shaped like every other
@@ -726,19 +740,24 @@ mod tests {
 
         let decoders = DecoderRegistry::new(AppSettings::load().decoder_settings());
         let entries = entries_from_pick(&decoders, &cue, &root);
-        assert_eq!(entries.len(), 2, "a cue pick becomes its tracks");
+        // One pick stages one song: the cue becomes a single randomly chosen
+        // track, not the whole album.
+        assert_eq!(entries.len(), 1, "a cue pick becomes one track");
         assert!(entries.iter().all(|entry| entry.kind == "local"));
         assert!(entries
             .iter()
             .all(|entry| entry.path == cue.display().to_string()));
         // The fragment is the declared CUE track number, which is what
         // `resolve_entry` reads back, not the internal subsong index.
-        let mut fragments: Vec<String> = entries
+        let fragments: Vec<String> = entries
             .iter()
             .filter_map(|entry| entry.fragment.clone())
             .collect();
-        fragments.sort();
-        assert_eq!(fragments, vec!["1".to_owned(), "2".to_owned()]);
+        assert_eq!(fragments.len(), 1);
+        assert!(
+            fragments[0] == "1" || fragments[0] == "2",
+            "the staged fragment must be one of the cue's tracks: {fragments:?}"
+        );
     }
 
     #[test]
