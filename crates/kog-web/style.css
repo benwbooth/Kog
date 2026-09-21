@@ -699,7 +699,11 @@ button:focus-visible {
   /* Shared horizontal scroll content: the pane scrolls rather than squeezing
    * columns below their widths when the set is wider than the pane. */
   min-width: var(--table-width);
-  cursor: grab;
+}
+
+/* Playlist rows hover with the ordinary arrow; dragging works regardless. */
+.track {
+  cursor: default;
 }
 
 /* The insertion point while a queue row is dragged to a new position. */

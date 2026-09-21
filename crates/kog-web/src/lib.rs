@@ -3327,6 +3327,23 @@ fn App() -> impl IntoView {
         set_playing.set(true);
     };
 
+    // Album art for the transport thumbnail: the current track's embedded
+    // or sibling cover through the server, falling back to the logo when a
+    // track has none (the img swaps itself back on a load error, and the
+    // src changes with the track so the fallback does not stick).
+    let art_src = move || {
+        match queue.with_untracked(|q| q.get(current.get()).cloned()) {
+            Some(entry) if !entry.is_dir() => format!(
+                "{}/api/art?kind={}&path={}&token={}",
+                base(),
+                url_encode(&entry.kind),
+                url_encode(&entry.path),
+                url_encode(&token.get()),
+            ),
+            _ => "/icons/kog.svg".to_owned(),
+        }
+    };
+
     // Now-playing notifications: when the playing track changes while the
     // preference is on, post the web twin of the desktop's popup — title,
     // artist and album, no controls. Skips page load (the restored track is
@@ -5866,7 +5883,18 @@ fn App() -> impl IntoView {
             <footer class="transport">
                 <div class="now">
                     <div class="art">
-                        <img src="/icons/kog.svg" alt="Album cover" />
+                        <img
+                            src=move || art_src()
+                            alt="Album cover"
+                            on:error=move |event| {
+                                if let Some(img) = event
+                                    .target()
+                                    .and_then(|target| target.dyn_into::<web_sys::HtmlImageElement>().ok())
+                                {
+                                    let _ = img.set_src("/icons/kog.svg");
+                                }
+                            }
+                        />
                     </div>
                     <div class="now-text">
                         <div class="title">{move || now_title()}</div>

@@ -132,6 +132,12 @@ pub struct SearchQuery {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct ArtQuery {
+    pub kind: Option<String>,
+    pub path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct DownloadQuery {
     pub kind: Option<String>,
     pub path: String,
@@ -1013,6 +1019,51 @@ pub async fn pause_search(
     axum::Json(serde_json::json!({ "ok": true, "paused": paused })).into_response()
 }
 
+/// `GET /api/art` — embedded or sibling cover art for one library file,
+/// addressed like streaming (`kind`, `path`). A track without artwork
+/// answers 404 and the player falls back to its logo.
+pub async fn art(State(state): State<AppState>, Query(query): Query<ArtQuery>) -> Response {
+    let kind = query.kind.unwrap_or_else(|| "local".to_owned());
+    let library = state.library.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        // Archives are not materialized for art lookups: their files only
+        // exist once streamed, and chiptune containers carry no artwork.
+        if kind != "local" {
+            return None;
+        }
+        let Ok(file) = library.resolve(query.path.as_deref()) else {
+            return None;
+        };
+        if !file.is_file() {
+            return None;
+        }
+        kog_audio::cover_art::embedded_cover_bytes(&file)
+            .or_else(|| kog_audio::cover_art::sibling_cover_bytes(&file))
+    })
+    .await
+    .unwrap_or_else(|error| {
+        let _ = error;
+        None
+    });
+    let Some(bytes) = result else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let content_type = match kog_audio::cover_art::sniff_image_kind(&bytes) {
+        Some(kog_audio::cover_art::ImageKind::Jpeg) => "image/jpeg",
+        Some(kog_audio::cover_art::ImageKind::Png) => "image/png",
+        _ => "application/octet-stream",
+    };
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(axum::http::header::CONTENT_TYPE, content_type)
+        .header(
+            axum::http::header::CACHE_CONTROL,
+            "private, max-age=86400",
+        )
+        .body(axum::body::Body::from(bytes))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
 /// `GET /api/library/search/more` — the matches gathered since the client's
 /// last poll. The walk advances on its own thread; a poll only reads. A
 /// generation older than the current one means the query was superseded and
@@ -1844,6 +1895,7 @@ pub fn router() -> axum::Router<AppState> {
         .route("/api/library/search/more", get(search_more))
         .route("/api/library/search/pause", post(pause_search))
         .route("/api/media/download", get(media_download))
+        .route("/api/art", get(art))
         .route("/api/metadata", get(metadata_one).post(metadata_batch))
         .route("/api/playlists", get(list_playlists).post(create_playlist))
         .route(
