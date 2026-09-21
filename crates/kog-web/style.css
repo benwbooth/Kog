@@ -514,7 +514,7 @@ button:focus-visible {
 /* A paused walk: the ring stops turning and dims until clicked again. */
 .tree-search-spinner.paused {
   animation-play-state: paused;
-  opacity: 0.45;
+  opacity: 0.55;
 }
 
 @keyframes tree-search-spin {

@@ -2695,11 +2695,45 @@ ApplicationWindow {
                             Layout.preferredWidth: 18
                             Layout.preferredHeight: 18
                             visible: fileTreeModel.searching || treeSearchLayout.busy
-                            running: visible && !fileTreeModel.searchPaused
                             opacity: fileTreeModel.searchPaused ? 0.4 : 1.0
                             Accessible.name: fileTreeModel.searchPaused
                                 ? qsTr("Search paused. Click to resume.")
                                 : qsTr("Searching files and archives. Click to pause.")
+
+                            // A hand-rolled spinner: the desktop BusyIndicator
+                            // renders nothing when stopped, and a paused
+                            // search must show a frozen ring, not a gap.
+                            Rectangle {
+                                anchors.fill: parent
+                                radius: width / 2
+                                color: "transparent"
+                                border.color: root.palette.mid
+                                border.width: 2
+                                opacity: 0.4
+                            }
+
+                            Rectangle {
+                                anchors.fill: parent
+                                color: "transparent"
+
+                                RotationAnimation on rotation {
+                                    from: 0
+                                    to: 360
+                                    duration: 900
+                                    loops: Animation.Infinite
+                                    running: treeSearchSpinner.visible
+                                    paused: fileTreeModel.searchPaused
+                                }
+
+                                Rectangle {
+                                    width: 7
+                                    height: 2
+                                    radius: 1
+                                    color: root.palette.highlight
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    anchors.left: parent.left
+                                }
+                            }
 
                             // Clicking the spinner pauses the walk where it
                             // is and a second click resumes it.

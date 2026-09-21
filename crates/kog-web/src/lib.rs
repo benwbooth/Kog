@@ -1948,7 +1948,10 @@ fn App() -> impl IntoView {
                             if tree_search.get_untracked().trim() != trimmed {
                                 break;
                             }
+                            // Poll at the desktop's cadence: the numbers are
+                            // a progress readout, not a per-request flicker.
                             // A paused walk is not advancing; poll gently.
+                            sleep_ms(250).await;
                             while search_paused.get() {
                                 sleep_ms(200).await;
                             }
