@@ -1189,6 +1189,35 @@ button:focus-visible {
   accent-color: var(--highlight);
 }
 
+/* The slider and its percent bubble. The bubble sits over the thumb's
+   position and appears while the pointer is over the slider. */
+.volume-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.volume-tip {
+  display: none;
+  position: absolute;
+  bottom: calc(100% + 7px);
+  transform: translateX(-50%);
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.35;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.volume-wrap:hover .volume-tip {
+  display: block;
+}
+
 .transport-status {
   text-align: right;
   font-size: 10px;

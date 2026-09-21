@@ -2493,6 +2493,7 @@ ApplicationWindow {
                         }
                     }
                     Slider {
+                        id: volumeSlider
                         Layout.preferredWidth: root.compactToolbar ? 80 : 140
                         Layout.alignment: Qt.AlignVCenter
                         from: 0
@@ -2500,6 +2501,12 @@ ApplicationWindow {
                         value: appController.volume
                         Accessible.name: qsTr("Volume")
                         onMoved: appController.set_volume_level(value)
+
+                        // Percent readout while hovering or dragging.
+                        HoverHandler { id: volumeHover }
+                        ToolTip.visible: volumeHover.hovered || pressed
+                        ToolTip.delay: 350
+                        ToolTip.text: Math.round(value * 100) + qsTr("%")
                     }
                 }
 

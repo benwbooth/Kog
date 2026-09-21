@@ -6038,18 +6038,31 @@ fn App() -> impl IntoView {
                                 }
                             ></span>
                         </button>
-                        <input
-                            class="volume"
-                            type="range"
-                            min="0"
-                            max="1"
-                            step="0.01"
-                            title="Volume"
-                            prop:value=move || volume.get()
-                            on:input=move |event| {
-                                set_volume.set(event_target_value(&event).parse().unwrap_or(0.9))
-                            }
-                        />
+                        <div class="volume-wrap">
+                            <span
+                                class="volume-tip"
+                                style=move || {
+                                    format!("left: {}%", (volume.get() * 100.0).round())
+                                }
+                            >
+                                {move || format!("{}%", (volume.get() * 100.0).round())}
+                            </span>
+                            <input
+                                class="volume"
+                                type="range"
+                                min="0"
+                                max="1"
+                                step="0.01"
+                                title=move || {
+                                    format!("Volume {}%", (volume.get() * 100.0).round())
+                                }
+                                prop:value=move || volume.get()
+                                on:input=move |event| {
+                                    set_volume
+                                        .set(event_target_value(&event).parse().unwrap_or(0.9))
+                                }
+                            />
+                        </div>
                     </div>
                     <div class="transport-status">
                         {move || {
