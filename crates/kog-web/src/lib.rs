@@ -3338,21 +3338,49 @@ fn App() -> impl IntoView {
 
     // The playing row's level meter. The desktop meters the audio it is
     // playing locally; the web twin taps the <audio> element through the
-    // Web Audio API, so cached streams meter exactly like fresh ones. The
-    // band math is the desktop AudioMeterSource's: one-pole splits at
-    // 180 Hz / 700 Hz / 2.5 kHz / 7 kHz, per-window RMS in dB mapped to
-    // 0..1, asymmetric smoothing, refreshed on the desktop's cadence.
+    // Web Audio API. Two guards keep audio itself safe: a cross-origin
+    // element routed through Web Audio outputs silence (and starves the
+    // analyser), and an element bound to a suspended context stays muted —
+    // in either case the element keeps its direct path and the meter idles.
+    // The context is warmed on the visitor's first click, when it legally
+    // starts Running. The band math is the desktop AudioMeterSource's.
     {
         let window = web_sys::window().expect("window for the level meter");
         let audio_ref = audio_ref.clone();
         let playing = playing.clone();
-        // The element source can only be created once per element; the
-        // context and analyser live for the page's lifetime.
         let graph: Rc<
             RefCell<Option<(web_sys::AudioContext, web_sys::AnalyserNode)>>,
         > = Rc::new(RefCell::new(None));
+        // Whether the element has been bound into the meter graph.
+        let bound = Rc::new(std::cell::Cell::new(false));
         // Band analysis state, mirroring the desktop's per-stream state.
         let analysis = Rc::new(RefCell::new(BandState::default()));
+
+        // Warm the AudioContext on the first click: created inside a real
+        // gesture it starts Running, so binding later cannot mute audio.
+        {
+            let graph = graph.clone();
+            let warm = Closure::<dyn FnMut()>::new(move || {
+                let mut graph = graph.borrow_mut();
+                if graph.is_some() {
+                    return;
+                }
+                if let Ok(context) = web_sys::AudioContext::new() {
+                    let _ = context.resume();
+                    if let Ok(analyser) = context.create_analyser() {
+                        analyser.set_fft_size(2048);
+                        *graph = Some((context, analyser));
+                    }
+                }
+            });
+            let document = web_sys::window()
+                .and_then(|window| window.document())
+                .expect("document for the meter warmer");
+            let _ = document
+                .add_event_listener_with_callback("click", warm.as_ref().unchecked_ref());
+            warm.forget();
+        }
+
         let levels_poll = Closure::<dyn FnMut()>::new(move || {
             if !playing.get_untracked() {
                 set_audio_levels.set([0.0; 5]);
@@ -3365,24 +3393,41 @@ fn App() -> impl IntoView {
                 set_audio_levels.set([0.0; 5]);
                 return;
             }
-            let mut graph = graph.borrow_mut();
-            if graph.is_none() {
-                // Route element -> analyser -> destination once; the same
-                // graph meters every later track.
-                let Ok(context) = web_sys::AudioContext::new() else {
-                    return;
+            if !bound.get() {
+                // Bind element -> analyser -> destination once. Only a
+                // same-origin element on a Running context may be bound.
+                let src = audio.current_src();
+                let src = if src.is_empty() {
+                    audio.get_attribute("src").unwrap_or_default()
+                } else {
+                    src
                 };
-                let Ok(source) = context.create_media_element_source(&audio) else {
-                    return;
-                };
-                let Ok(analyser) = context.create_analyser() else {
-                    return;
-                };
-                analyser.set_fft_size(2048);
-                let _ = source.connect_with_audio_node(&analyser);
-                let _ = analyser.connect_with_audio_node(&context.destination());
-                *graph = Some((context, analyser));
+                let same_origin = web_sys::Url::new(&src)
+                    .ok()
+                    .zip(
+                        web_sys::window()
+                            .and_then(|window| window.location().origin().ok()),
+                    )
+                    .is_some_and(|(url, origin)| url.origin() == origin);
+                let mut graph = graph.borrow_mut();
+                if let Some((context, analyser)) = graph.as_mut() {
+                    let _ = context.resume();
+                    let context_running =
+                        context.state() == web_sys::AudioContextState::Running;
+                    if same_origin && context_running {
+                        let connected = context
+                            .create_media_element_source(&audio)
+                            .is_ok_and(|source| {
+                                source.connect_with_audio_node(analyser).is_ok()
+                                    && analyser
+                                        .connect_with_audio_node(&context.destination())
+                                        .is_ok()
+                            });
+                        bound.set(connected);
+                    }
+                }
             }
+            let graph = graph.borrow();
             let Some((context, analyser)) = graph.as_ref() else {
                 return;
             };
