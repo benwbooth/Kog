@@ -2695,76 +2695,61 @@ ApplicationWindow {
                             Layout.preferredWidth: 18
                             Layout.preferredHeight: 18
                             visible: fileTreeModel.searching || treeSearchLayout.busy
-                            opacity: fileTreeModel.searchPaused ? 0.4 : 1.0
+                            opacity: fileTreeModel.searchPaused ? 0.55 : 1.0
                             Accessible.name: fileTreeModel.searchPaused
                                 ? qsTr("Search paused. Click to resume.")
                                 : qsTr("Searching files and archives. Click to pause.")
 
-                            // A hand-rolled spinner: the desktop BusyIndicator
-                            // renders nothing when stopped, and a paused
-                            // search must show a frozen ring, not a gap.
-                            // Running: the turning comet ring.
-                            Rectangle {
-                                visible: !fileTreeModel.searchPaused
+                            // The gear icon itself turns; an Image rotates
+                            // about its own center, so there is no wobble.
+                            // Paused stands it still and shows the badge.
+                            Image {
+                                id: treeSearchGear
                                 anchors.fill: parent
-                                color: "transparent"
+                                source: Qt.resolvedUrl("icons/gear"
+                                    + (root.baseLuminance < 0.5 ? "-light" : "") + ".svg")
+                                sourceSize.width: 36
+                                sourceSize.height: 36
+                                fillMode: Image.PreserveAspectFit
+                                mipmap: true
+                                asynchronous: true
 
                                 RotationAnimation on rotation {
                                     from: 0
                                     to: 360
-                                    duration: 900
+                                    duration: 1600
                                     loops: Animation.Infinite
                                     running: treeSearchSpinner.visible
-                                }
-
-                                Rectangle {
-                                    width: 7
-                                    height: 2
-                                    radius: 1
-                                    color: root.palette.highlight
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    anchors.left: parent.left
+                                        && !fileTreeModel.searchPaused
                                 }
                             }
 
-                            // Paused: a static gear wearing a pause badge.
-                            Item {
+                            Rectangle {
                                 visible: fileTreeModel.searchPaused
-                                anchors.fill: parent
+                                width: 10
+                                height: 10
+                                radius: 2
+                                color: root.palette.window
+                                border.color: root.palette.mid
+                                border.width: 1
+                                anchors.right: parent.right
+                                anchors.bottom: parent.bottom
 
-                                Label {
+                                Row {
+                                    spacing: 1
                                     anchors.centerIn: parent
-                                    text: "\u2699"
-                                    font.pixelSize: 14
-                                    color: root.palette.highlight
-                                }
 
-                                Rectangle {
-                                    width: 10
-                                    height: 10
-                                    radius: 2
-                                    color: root.palette.window
-                                    border.color: root.palette.mid
-                                    border.width: 1
-                                    anchors.right: parent.right
-                                    anchors.bottom: parent.bottom
-
-                                    Row {
-                                        spacing: 1
-                                        anchors.centerIn: parent
-
-                                        Rectangle {
-                                            width: 1.5
-                                            height: 4
-                                            radius: 0.5
-                                            color: root.palette.highlight
-                                        }
-                                        Rectangle {
-                                            width: 1.5
-                                            height: 4
-                                            radius: 0.5
-                                            color: root.palette.highlight
-                                        }
+                                    Rectangle {
+                                        width: 1.5
+                                        height: 4
+                                        radius: 0.5
+                                        color: root.palette.highlight
+                                    }
+                                    Rectangle {
+                                        width: 1.5
+                                        height: 4
+                                        radius: 0.5
+                                        color: root.palette.highlight
                                     }
                                 }
                             }

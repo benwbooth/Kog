@@ -51,6 +51,10 @@ mod icons {
     pub const VOLUME: &str = include_str!("../../../qml/icons/audio-volume-high.svg");
     pub const VOLUME_MUTED: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><path fill=\"#000\" d=\"M4.27 3 3 4.27 7.73 9H3v6h4l5 4v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4 9.91 6.09 12 8.18V4z\"/></svg>";
     pub const FIND: &str = include_str!("../../../qml/icons/edit-find.svg");
+    /// The search busy gear, currentColor so it follows the theme; its
+    /// geometry is centered by construction (teeth rotated about the
+    /// viewBox center), so it spins true on its axis.
+    pub const GEAR: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><g fill="currentColor"><path fill-rule="evenodd" d="M12 5.8a6.2 6.2 0 1 1 0 12.4 6.2 6.2 0 0 1 0-12.4zm0 2a4.2 4.2 0 1 0 0 8.4 4.2 4.2 0 0 0 0-8.4z"/><rect x="10.6" y="2" width="2.8" height="5" rx="1.4"/><rect x="10.6" y="2" width="2.8" height="5" rx="1.4" transform="rotate(45 12 12)"/><rect x="10.6" y="2" width="2.8" height="5" rx="1.4" transform="rotate(90 12 12)"/><rect x="10.6" y="2" width="2.8" height="5" rx="1.4" transform="rotate(135 12 12)"/><rect x="10.6" y="2" width="2.8" height="5" rx="1.4" transform="rotate(180 12 12)"/><rect x="10.6" y="2" width="2.8" height="5" rx="1.4" transform="rotate(225 12 12)"/><rect x="10.6" y="2" width="2.8" height="5" rx="1.4" transform="rotate(270 12 12)"/><rect x="10.6" y="2" width="2.8" height="5" rx="1.4" transform="rotate(315 12 12)"/></g></svg>"#;
     pub const GO_UP: &str = include_str!("../../../qml/icons/go-up.svg");
     pub const FOLDER_OPEN: &str = include_str!("../../../qml/icons/folder-open.svg");
     pub const VIEW_LIST_TREE: &str = include_str!("../../../qml/icons/view-list-tree.svg");
@@ -5275,7 +5279,7 @@ fn App() -> impl IntoView {
                                                 }
                                                 on:click=move |_| toggle_search_paused()
                                             >
-                                                <span class="gear">{"\u{2699}"}</span>
+                                                <span class="gear" inner_html=icons::GEAR></span>
                                                 <span class="pause-badge">
                                                     <span class="pause-bar"></span>
                                                     <span class="pause-bar"></span>

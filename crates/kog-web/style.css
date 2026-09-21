@@ -508,14 +508,21 @@ button:focus-visible {
   cursor: pointer;
 }
 
-/* The walk: a gear turning like the desktop's busy indicator. */
+/* The walk: the gear icon turning on its own axis. The svg fills the
+   square span, so its center is the span's center — no wobble. */
 .tree-search-spinner .gear {
   display: block;
-  font-size: 14px;
-  line-height: 16px;
-  text-align: center;
+  width: 16px;
+  height: 16px;
   color: var(--highlight);
-  animation: tree-search-spin 0.9s linear infinite;
+}
+
+.tree-search-spinner .gear svg {
+  display: block;
+  width: 16px;
+  height: 16px;
+  animation: tree-search-spin 1.6s linear infinite;
+  transform-origin: 50% 50%;
 }
 
 /* A paused walk: the gear stands still and a pause badge marks it. */
@@ -523,7 +530,7 @@ button:focus-visible {
   opacity: 0.85;
 }
 
-.tree-search-spinner.paused .gear {
+.tree-search-spinner.paused .gear svg {
   animation: none;
 }
 
