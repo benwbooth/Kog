@@ -10,6 +10,7 @@
 #include <QtCore/QJsonDocument>
 #include <QtCore/QJsonObject>
 #include <QtCore/QJsonArray>
+#include <QtCore/QThread>
 #include <QtCore/QTimer>
 #include <QtCore/QFileSystemWatcher>
 #include <QtCore/QElapsedTimer>
@@ -90,8 +91,13 @@ struct SearchProgress {
 SearchResult scan(const QString &root, const QString &query,
                   const std::shared_ptr<std::atomic_bool> &cancel,
                   const std::shared_ptr<SearchProgress> &progress,
-                  const QSet<QString> &extensions)
+                  const QSet<QString> &extensions,
+                  const std::shared_ptr<std::atomic_bool> &paused)
 {
+    const auto wait_while_paused = [&]() {
+        while (paused->load() && !cancel->load())
+            QThread::msleep(30);
+    };
     SearchResult result;
     QElapsedTimer throttle;
     throttle.start();
@@ -131,6 +137,7 @@ SearchResult scan(const QString &root, const QString &query,
                          QDirIterator::Subdirectories); // Never follow directory symlinks.
     QStringList archives;
     while (!cancel->load(std::memory_order_relaxed) && entries.hasNext()) {
+        wait_while_paused();
         entries.next();
         const auto info = entries.fileInfo();
         const auto relative = base.relativeFilePath(info.absoluteFilePath());
@@ -150,6 +157,7 @@ SearchResult scan(const QString &root, const QString &query,
     result.scanningArchives = true;
     publish(true);
     for (const auto &path : archives) {
+        wait_while_paused();
         if (cancel->load() || result.limited) break;
         const auto relative = base.relativeFilePath(path);
         const auto listing = kogListArchive(path, cancel);
@@ -480,6 +488,18 @@ bool KogFileTreeSearch::isDir(const QModelIndex &index) const
     return index.data(containerRole).toBool();
 }
 
+void KogFileTreeSearch::setSearchPaused(bool paused)
+{
+    if (!m_paused) {
+        m_paused = std::make_shared<std::atomic_bool>(false);
+    }
+    if (searchPaused() == paused) {
+        return;
+    }
+    m_paused->store(paused);
+    emit searchStateChanged();
+}
+
 void KogFileTreeSearch::setSearchText(const QString &query)
 {
     if (m_query == query) return;
@@ -515,6 +535,7 @@ void KogFileTreeSearch::startSearch()
     emit searchStateChanged();
     emit searchResultsChanged();
     m_cancel = std::make_shared<std::atomic_bool>(false);
+    m_paused = std::make_shared<std::atomic_bool>(false);
     const auto progress = std::make_shared<SearchProgress>();
     struct Merge {
         std::optional<SearchResult> current;
@@ -635,6 +656,7 @@ void KogFileTreeSearch::startSearch()
         if (!batches->isActive()) batches->start();
     });
     // The worker owns only value data and a cancellation flag, never the model.
-    watcher->setFuture(QtConcurrent::run(scan, m_root, m_query, m_cancel, progress, m_extensions));
+    watcher->setFuture(QtConcurrent::run(scan, m_root, m_query, m_cancel, progress,
+                                         m_extensions, m_paused));
     updates->start();
 }

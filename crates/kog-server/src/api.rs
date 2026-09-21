@@ -893,6 +893,7 @@ pub async fn search(State(state): State<AppState>, Query(query): Query<SearchQue
         archives_scanned: AtomicU64::new(0),
         unreadable_archives: AtomicU64::new(0),
         scanning_archives: AtomicBool::new(false),
+        paused: AtomicBool::new(false),
     });
     let library = state.library.clone();
     let worker_shared = shared.clone();
@@ -998,6 +999,20 @@ pub async fn media_download(
     }
 }
 
+/// `POST /api/library/search/pause` — pause or resume the active walk.
+/// Pausing idles the worker where it is; results already gathered stay
+/// readable, and a new query always starts unpaused.
+pub async fn pause_search(
+    State(state): State<AppState>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> Response {
+    let paused = body["paused"].as_bool().unwrap_or(false);
+    if let Some(job) = state.search.job.lock().unwrap().as_ref() {
+        job.shared.paused.store(paused, Ordering::Relaxed);
+    }
+    axum::Json(serde_json::json!({ "ok": true, "paused": paused })).into_response()
+}
+
 /// `GET /api/library/search/more` — the matches gathered since the client's
 /// last poll. The walk advances on its own thread; a poll only reads. A
 /// generation older than the current one means the query was superseded and
@@ -1040,6 +1055,8 @@ pub struct SearchShared {
     unreadable_archives: AtomicU64,
     /// True once the walk leaves the filesystem pass and starts listing.
     scanning_archives: AtomicBool,
+    /// Set when the visitor pauses the search from the spinner.
+    paused: AtomicBool,
 }
 
 struct SearchJob {
@@ -1164,6 +1181,9 @@ fn walk_library_for_search(
         if cancel() {
             return;
         }
+        while shared.paused.load(Ordering::Relaxed) && !cancel() {
+            std::thread::sleep(std::time::Duration::from_millis(40));
+        }
         let under_matched = inherited
             || matched_dirs
                 .iter()
@@ -1248,6 +1268,9 @@ fn walk_library_for_search(
         .store(archives.len() as u64, Ordering::Relaxed);
     shared.scanning_archives.store(true, Ordering::Relaxed);
     for archive in &archives {
+        while shared.paused.load(Ordering::Relaxed) && !cancel() {
+            std::thread::sleep(std::time::Duration::from_millis(40));
+        }
         if cancel() || limited {
             break;
         }
@@ -1819,6 +1842,7 @@ pub fn router() -> axum::Router<AppState> {
         .route("/api/library", get(browse))
         .route("/api/library/search", get(search))
         .route("/api/library/search/more", get(search_more))
+        .route("/api/library/search/pause", post(pause_search))
         .route("/api/media/download", get(media_download))
         .route("/api/metadata", get(metadata_one).post(metadata_batch))
         .route("/api/playlists", get(list_playlists).post(create_playlist))

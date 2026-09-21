@@ -1601,6 +1601,9 @@ fn App() -> impl IntoView {
     // The desktop's progress counters: items scanned on the filesystem pass,
     // then archive listings, exactly the numbers its status line shows.
     let (search_progress, set_search_progress) = signal(SearchProgress::default());
+    // Clicking the spinner pauses the walk where it is; a new query always
+    // starts unpaused.
+    let (search_paused, set_search_paused) = signal(false);
     // True while a query's walk is still streaming results in.
     let (tree_search_pending, set_tree_search_pending) = signal(false);
     // Right-click menu anchor and target row.
@@ -1764,6 +1767,7 @@ fn App() -> impl IntoView {
                 set_search_count.set(0);
                 set_search_capped.set(false);
                 set_search_progress.set(SearchProgress::default());
+                set_search_paused.set(false);
                 set_tree_search_pending.set(true);
                 let parse = |value: &serde_json::Value| -> Vec<Entry> {
                     let mut rows = Vec::new();
@@ -1870,6 +1874,10 @@ fn App() -> impl IntoView {
                         while !done && rows.len() < 2000 {
                             if tree_search.get_untracked().trim() != trimmed {
                                 break;
+                            }
+                            // A paused walk is not advancing; poll gently.
+                            while search_paused.get() {
+                                sleep_ms(200).await;
                             }
                             match get_json(format!(
                                 "/api/library/search/more?g={generation}&offset={offset}"
@@ -4097,6 +4105,21 @@ fn App() -> impl IntoView {
             .map(|(id, _, _)| *id)
     };
 
+    // Spinner click: pause or resume the walk on the server.
+    let toggle_search_paused = move || {
+        let paused = !search_paused.get_untracked();
+        set_search_paused.set(paused);
+        let url = format!("{}/api/library/search/pause", base());
+        let header = auth().header();
+        leptos::task::spawn_local(async move {
+            if let Err(error) =
+                post_json(url, header, serde_json::json!({ "paused": paused })).await
+            {
+                set_message.set(error);
+            }
+        });
+    };
+
     // The dialog's OK (and Enter) action, per mode.
     let accept_playlist_dialog = move || {
         let Some(dialog) = playlist_dialog.get_untracked() else {
@@ -4932,7 +4955,15 @@ fn App() -> impl IntoView {
                                         >
                                             <span
                                                 class="tree-search-spinner"
-                                                title="Searching files and archives…"
+                                                class:paused=search_paused
+                                                title=move || {
+                                                    if search_paused.get() {
+                                                        "Search paused. Click to resume."
+                                                    } else {
+                                                        "Searching files and archives. Click to pause."
+                                                    }
+                                                }
+                                                on:click=move |_| toggle_search_paused()
                                             ></span>
                                         </Show>
                                     </div>
@@ -4949,7 +4980,9 @@ fn App() -> impl IntoView {
                                             {move || {
                                                 let count = search_count.get();
                                                 let progress = search_progress.get();
-                                                let mut text = if tree_search_pending.get() {
+                                                let mut text = if search_paused.get() {
+                                                    format!("Paused · {count} matches")
+                                                } else if tree_search_pending.get() {
                                                     if progress.scanning_archives {
                                                         format!(
                                                             "{count} matches · Archives {} of {}",

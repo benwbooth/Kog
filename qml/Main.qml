@@ -2688,8 +2688,21 @@ ApplicationWindow {
                             Layout.preferredWidth: 18
                             Layout.preferredHeight: 18
                             visible: fileTreeModel.searching || treeSearchLayout.busy
-                            running: visible
-                            Accessible.name: qsTr("Searching files and archives")
+                            running: visible && !fileTreeModel.searchPaused
+                            opacity: fileTreeModel.searchPaused ? 0.4 : 1.0
+                            Accessible.name: fileTreeModel.searchPaused
+                                ? qsTr("Search paused. Click to resume.")
+                                : qsTr("Searching files and archives. Click to pause.")
+
+                            // Clicking the spinner pauses the walk where it
+                            // is and a second click resumes it.
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked:
+                                    fileTreeModel.searchPaused =
+                                        !fileTreeModel.searchPaused
+                            }
                         }
                     }
                 }

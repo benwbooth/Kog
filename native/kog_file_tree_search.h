@@ -15,6 +15,7 @@ class KogFileTreeSearch : public QSortFilterProxyModel {
     Q_OBJECT
     Q_PROPERTY(QString searchText READ searchText WRITE setSearchText NOTIFY searchTextChanged)
     Q_PROPERTY(bool searching READ searching NOTIFY searchStateChanged)
+    Q_PROPERTY(bool searchPaused READ searchPaused WRITE setSearchPaused NOTIFY searchStateChanged)
     Q_PROPERTY(QString searchStatus READ searchStatus NOTIFY searchStateChanged)
     Q_PROPERTY(QModelIndex viewRootIndex READ viewRootIndex NOTIFY viewRootIndexChanged)
 public:
@@ -28,6 +29,8 @@ public:
     QString searchText() const { return m_query; }
     void setSearchText(const QString &query);
     bool searching() const { return m_searching; }
+    bool searchPaused() const { return m_paused && m_paused->load(); }
+    void setSearchPaused(bool paused);
     QString searchStatus() const { return m_status; }
     QModelIndex viewRootIndex() const;
     Q_INVOKABLE bool isSearchAncestor(const QModelIndex &index) const;
@@ -51,4 +54,5 @@ private:
     bool m_searching = false;
     quint64 m_generation = 0;
     std::shared_ptr<std::atomic_bool> m_cancel;
+    std::shared_ptr<std::atomic_bool> m_paused;
 };
