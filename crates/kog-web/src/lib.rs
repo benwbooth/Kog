@@ -1598,6 +1598,9 @@ fn App() -> impl IntoView {
     let (playlist_dialog, set_playlist_dialog) =
         signal(Option::<PlaylistDialog>::None);
     let playlist_dialog_input = NodeRef::<leptos::html::Input>::new();
+    // Bumped only when a dialog opens: the focus effect must not re-run
+    // while the visitor types (re-selecting the text would overwrite it).
+    let (playlist_dialog_opened, set_playlist_dialog_opened) = signal(0u32);
     // The row being dragged from the tree onto the playlist pane.
     let (dragging_tree, set_dragging_tree) = signal(Option::<TreeRow>::None);
     // A playlist row dragged toward the pane (append its tracks), and a queue
@@ -2381,6 +2384,7 @@ fn App() -> impl IntoView {
     // The + button opens the desktop's Save Playlist dialog: the visitor
     // names it, and the pane (or just the selection) is saved into it.
     let open_create_playlist_dialog = move || {
+        set_playlist_dialog_opened.update(|epoch| *epoch += 1);
         set_playlist_dialog.set(Some(PlaylistDialog {
             mode: PlaylistDialogMode::CreateFromPane,
             title: "Save Playlist",
@@ -3976,14 +3980,51 @@ fn App() -> impl IntoView {
         }
     };
 
+    // The dialog's OK (and Enter) action, per mode.
+    let accept_playlist_dialog = move || {
+        let Some(dialog) = playlist_dialog.get_untracked() else {
+            return;
+        };
+        let name = dialog.value.trim().to_owned();
+        match dialog.mode {
+            PlaylistDialogMode::CreateFromPane => {
+                if !name.is_empty() {
+                    set_playlist_dialog.set(None);
+                    create_playlist_from_pane(name);
+                }
+            }
+            PlaylistDialogMode::Duplicate => {
+                if !name.is_empty() {
+                    set_playlist_dialog.set(None);
+                    duplicate_playlist(dialog.id, name);
+                }
+            }
+            PlaylistDialogMode::ConfirmDelete => {
+                set_playlist_dialog.set(None);
+                delete_playlist(dialog.id);
+            }
+        }
+    };
+
+    // The dialog shows the name field for create/duplicate and a confirm
+    // label for delete; both stay mounted and toggle visibility, so typing
+    // never recreates the field mid-word.
+    let confirm_delete_mode = move || {
+        playlist_dialog
+            .get()
+            .map(|dialog| dialog.mode == PlaylistDialogMode::ConfirmDelete)
+            .unwrap_or(true)
+    };
+
     // Focus and select the dialog's name field when it opens, like the
     // desktop's dialog grabbing its text field.
     Effect::new(move |_| {
-        if playlist_dialog.get().is_some() {
-            if let Some(input) = playlist_dialog_input.get() {
-                let _ = input.focus();
-                let _ = input.select();
-            }
+        if playlist_dialog_opened.get() == 0 {
+            return;
+        }
+        if let Some(input) = playlist_dialog_input.get() {
+            let _ = input.focus();
+            let _ = input.select();
         }
     });
 
@@ -6214,6 +6255,7 @@ fn App() -> impl IntoView {
                             on:click=move |_| {
                                 if let Some((_, _, id, name)) = playlist_menu.get_untracked() {
                                     set_playlist_menu.set(None);
+                                    set_playlist_dialog_opened.update(|epoch| *epoch += 1);
                                     set_playlist_dialog.set(Some(PlaylistDialog {
                                         mode: PlaylistDialogMode::Duplicate,
                                         title: "Duplicate Playlist",
@@ -6243,6 +6285,7 @@ fn App() -> impl IntoView {
                             on:click=move |_| {
                                 if let Some((_, _, id, name)) = playlist_menu.get_untracked() {
                                     set_playlist_menu.set(None);
+                                    set_playlist_dialog_opened.update(|epoch| *epoch += 1);
                                     set_playlist_dialog.set(Some(PlaylistDialog {
                                         mode: PlaylistDialogMode::ConfirmDelete,
                                         title: "Delete Playlists",
@@ -6283,55 +6326,37 @@ fn App() -> impl IntoView {
                             None => String::new(),
                         }}
                     </p>
-                    {move || {
-                        let entering_name = playlist_dialog
-                            .get()
-                            .map(|dialog| dialog.mode != PlaylistDialogMode::ConfirmDelete)
-                            .unwrap_or(false);
-                        if entering_name {
-                            view! {
-                                <input
-                                    class="playlist-dialog-name"
-                                    node_ref=playlist_dialog_input
-                                    prop:value=move || playlist_dialog.get().map(|d| d.value).unwrap_or_default()
-                                    on:input=move |event| {
-                                        set_playlist_dialog.update(|dialog| {
-                                            if let Some(dialog) = dialog {
-                                                dialog.value = event_target_value(&event);
-                                            }
-                                        });
-                                    }
-                                    on:keydown=move |event: web_sys::KeyboardEvent| {
-                                        if event.key() == "Enter" {
-                                            if let Some(dialog) = playlist_dialog.get_untracked() {
-                                                let name = dialog.value.trim().to_owned();
-                                                if !name.is_empty() {
-                                                    set_playlist_dialog.set(None);
-                                                    match dialog.mode {
-                                                        PlaylistDialogMode::CreateFromPane => {
-                                                            create_playlist_from_pane(name);
-                                                        }
-                                                        PlaylistDialogMode::Duplicate => {
-                                                            duplicate_playlist(dialog.id, name);
-                                                        }
-                                                        PlaylistDialogMode::ConfirmDelete => {}
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                />
-                            }
-                                .into_any()
-                        } else {
-                            view! {
-                                <p class="playlist-dialog-confirm">
-                                    {move || playlist_dialog.get().map(|d| d.name).unwrap_or_default()}
-                                </p>
-                            }
-                                .into_any()
+                    {/* Name field and confirm label stay mounted: recreating
+                        the input per keystroke re-fired focus and re-selected
+                        the text, so typing overwrote itself. */}
+                    <input
+                        class="playlist-dialog-name"
+                        class:hidden=confirm_delete_mode
+                        node_ref=playlist_dialog_input
+                        prop:value=move || {
+                            playlist_dialog.get().map(|d| d.value).unwrap_or_default()
                         }
-                    }}
+                        on:input=move |event| {
+                            set_playlist_dialog.update(|dialog| {
+                                if let Some(dialog) = dialog {
+                                    dialog.value = event_target_value(&event);
+                                }
+                            });
+                        }
+                        on:keydown=move |event: web_sys::KeyboardEvent| {
+                            if event.key() == "Enter" {
+                                accept_playlist_dialog();
+                            }
+                        }
+                    />
+                    <p
+                        class="playlist-dialog-confirm"
+                        class:hidden=move || !confirm_delete_mode()
+                    >
+                        {move || {
+                            playlist_dialog.get().map(|d| d.name).unwrap_or_default()
+                        }}
+                    </p>
                     <div class="settings-actions">
                         <button on:click=move |_| set_playlist_dialog.set(None)>"Cancel"</button>
                         <button
@@ -6345,29 +6370,7 @@ fn App() -> impl IntoView {
                                     })
                                     .unwrap_or(true)
                             }
-                            on:click=move |_| {
-                                if let Some(dialog) = playlist_dialog.get_untracked() {
-                                    let name = dialog.value.trim().to_owned();
-                                    match dialog.mode {
-                                        PlaylistDialogMode::CreateFromPane => {
-                                            if !name.is_empty() {
-                                                set_playlist_dialog.set(None);
-                                                create_playlist_from_pane(name);
-                                            }
-                                        }
-                                        PlaylistDialogMode::Duplicate => {
-                                            if !name.is_empty() {
-                                                set_playlist_dialog.set(None);
-                                                duplicate_playlist(dialog.id, name);
-                                            }
-                                        }
-                                        PlaylistDialogMode::ConfirmDelete => {
-                                            set_playlist_dialog.set(None);
-                                            delete_playlist(dialog.id);
-                                        }
-                                    }
-                                }
-                            }
+                            on:click=move |_| accept_playlist_dialog()
                         >
                             {move || {
                                 playlist_dialog
