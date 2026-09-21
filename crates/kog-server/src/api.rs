@@ -871,7 +871,7 @@ pub async fn search(State(state): State<AppState>, Query(query): Query<SearchQue
     let needle = query.q.trim().to_lowercase();
     let tokens: Vec<String> = needle.split_whitespace().map(str::to_owned).collect();
     let generation = state.search.generation.fetch_add(1, Ordering::Relaxed) + 1;
-    let limit = query.limit.unwrap_or(200).min(1_000);
+    let limit = query.limit.unwrap_or(500).min(1_000);
     if tokens.is_empty() {
         return finish_search(state, generation, Vec::new(), true);
     }
@@ -998,7 +998,7 @@ pub async fn search_more(State(state): State<AppState>, Query(query): Query<More
         return finish_search(state, generation, Vec::new(), true);
     };
     let result = tokio::task::spawn_blocking(move || {
-        run_search_slice(&mut session, 200);
+        run_search_slice(&mut session, 500);
         session
     })
     .await
@@ -1170,6 +1170,7 @@ fn run_search_slice(session: &mut SearchSession, cap: usize) {
     let decoders = kog_audio::decoder::DecoderRegistry::new(
         kog_audio::settings::AppSettings::load().decoder_settings(),
     );
+    let extensions = decoders.audio_extensions();
     let mut limit = cap;
     while let Some((directory, resume_after, inherited)) = session.pending.pop() {
         if started.elapsed() >= SLICE {
@@ -1181,12 +1182,18 @@ fn run_search_slice(session: &mut SearchSession, cap: usize) {
                 .matched_dirs
                 .iter()
                 .any(|matched| directory.starts_with(matched));
+        // Metadata ancestors are constant for the directory; per entry only
+        // the name needs a look, which keeps a million-file walk out of
+        // per-entry path allocation.
+        let dir_is_metadata = kog_core::media_path::is_metadata(&directory);
         let Ok(entries) = std::fs::read_dir(&directory) else {
             continue;
         };
         let mut rows: Vec<(String, bool)> = entries
             .filter_map(Result::ok)
-            .filter(|entry| !crate::media_filter::is_hidden(&entry.path()))
+            .filter(|entry| {
+                !dir_is_metadata && !crate::media_filter::is_hidden_name(&entry.file_name())
+            })
             .filter_map(|entry| {
                 let file_type = entry.file_type().ok()?;
                 Some((
@@ -1238,7 +1245,15 @@ fn run_search_slice(session: &mut SearchSession, cap: usize) {
                 queued_subdirs.push((path, under_matched_folder || name_match));
                 continue;
             }
-            if !decoders.accepts_path(&path) {
+            // Extension test, never accepts_path: the cue backend's accepts
+            // opens media files to look for embedded cuesheets, which priced
+            // a whole-library walk out of reach. This is the desktop
+            // search's supportedFile check — name only.
+            let accepted = path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extensions.contains(extension));
+            if !accepted {
                 continue;
             }
             // An archive is a container: when it matches, it surfaces as a

@@ -134,11 +134,21 @@ impl Vgmstream {
         })
     }
 
+    /// Asking the native library per file made every walk, browse and radio
+    /// listing pay `libvgmstream_is_valid`'s setup each time; the extension
+    /// set is fixed for the build, so take it once and match locally.
     pub fn supports_extension(extension: &str) -> bool {
-        let Ok(extension) = CString::new(extension.to_ascii_lowercase()) else {
-            return false;
-        };
-        unsafe { kog_vgmstream_supports_extension(extension.as_ptr()) != 0 }
+        static SUPPORTED: std::sync::OnceLock<std::collections::HashSet<String>> =
+            std::sync::OnceLock::new();
+        let lowered = extension.to_ascii_lowercase();
+        SUPPORTED
+            .get_or_init(|| {
+                Vgmstream::supported_extensions()
+                    .into_iter()
+                    .map(|extension| extension.to_ascii_lowercase())
+                    .collect()
+            })
+            .contains(&lowered)
     }
 
     pub fn duration(&self) -> Duration {

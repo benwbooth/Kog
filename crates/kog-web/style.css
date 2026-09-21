@@ -498,6 +498,24 @@ button:focus-visible {
   user-select: none;
 }
 
+/* The busy spinner at the right of the search pill while the walk runs —
+   the desktop shows its busy indicator in the same spot. */
+.tree-search-spinner {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  border: 2px solid var(--border);
+  border-top-color: var(--highlight);
+  border-radius: 50%;
+  animation: tree-search-spin 0.8s linear infinite;
+}
+
+@keyframes tree-search-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .tree-search:focus-within {
   border-color: var(--highlight);
 }

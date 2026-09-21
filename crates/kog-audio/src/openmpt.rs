@@ -27,7 +27,6 @@ type OpenMptErrorFunc = Option<unsafe extern "C" fn(c_int, *mut c_void) -> c_int
 
 unsafe extern "C" {
     fn openmpt_free_string(value: *const c_char);
-    #[cfg(any(test, feature = "test-util"))]
     fn openmpt_get_supported_extensions() -> *const c_char;
     fn openmpt_is_extension_supported(extension: *const c_char) -> c_int;
     fn openmpt_log_func_silent(message: *const c_char, user: *mut c_void);
@@ -198,7 +197,6 @@ impl OpenMpt {
         Ok(module)
     }
 
-    #[cfg(any(test, feature = "test-util"))]
     pub fn supported_extensions() -> Vec<String> {
         take_native_string(unsafe { openmpt_get_supported_extensions() })
             .unwrap_or_default()
@@ -208,11 +206,20 @@ impl OpenMpt {
             .collect()
     }
 
+    /// Cached like vgmstream's: the native query runs per file in walks and
+    /// browse listings otherwise.
     pub fn supports_extension(extension: &str) -> bool {
-        let Ok(extension) = CString::new(extension.to_ascii_lowercase()) else {
-            return false;
-        };
-        unsafe { openmpt_is_extension_supported(extension.as_ptr()) != 0 }
+        static SUPPORTED: std::sync::OnceLock<std::collections::HashSet<String>> =
+            std::sync::OnceLock::new();
+        let lowered = extension.to_ascii_lowercase();
+        SUPPORTED
+            .get_or_init(|| {
+                OpenMpt::supported_extensions()
+                    .into_iter()
+                    .map(|extension| extension.to_ascii_lowercase())
+                    .collect()
+            })
+            .contains(&lowered)
     }
 
     pub fn duration(&self) -> Duration {

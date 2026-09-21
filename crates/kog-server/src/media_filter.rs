@@ -22,6 +22,18 @@ pub fn is_hidden(path: &Path) -> bool {
     name.starts_with('.') || name == "__MACOSX"
 }
 
+/// The entry-level half of [`is_hidden`] for walkers that hoist the ancestor
+/// check out of a per-entry loop: only the file's own name is examined.
+pub fn is_hidden_name(name: &std::ffi::OsStr) -> bool {
+    if kog_core::media_path::is_metadata_name(name) {
+        return true;
+    }
+    let Some(name) = name.to_str() else {
+        return true;
+    };
+    name.starts_with('.') || name == "__MACOSX"
+}
+
 /// The identity a track is stored under: `path` for local files and URLs,
 /// `outer::member` for archive entries, with `#fragment` for subsongs.
 pub fn locator_for(entry: &StoredEntry) -> Result<String, String> {

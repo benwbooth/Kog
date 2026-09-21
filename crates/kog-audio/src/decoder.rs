@@ -657,6 +657,16 @@ impl DecoderRegistry {
         extensions
     }
 
+    /// The desktop search's `supportedFile` check: a pure extension test with
+    /// no file access. Backends may open files in their [`accepts`] (the cue
+    /// backend reads embedded cuesheets out of mp3s and flacs), which is fine
+    /// for one folder click but prices a whole-library walk out of reach.
+    pub fn has_audio_extension(&self, path: &Path) -> bool {
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| self.audio_extensions().contains(extension))
+    }
+
     pub fn supported_formats_json(&self) -> String {
         let mut groups = Vec::new();
         let mut unique_extensions = std::collections::BTreeSet::new();

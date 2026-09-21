@@ -1781,7 +1781,10 @@ fn App() -> impl IntoView {
                         if tree_search.get_untracked().trim() == trimmed {
                             publish(&rows);
                         }
-                        while !done && rows.len() < 200 {
+                        // The desktop's search stops at its own matchLimit;
+                        // mirror that 2000 instead of ending after the first
+                        // batch, so the same query reaches the same matches.
+                        while !done && rows.len() < 2000 {
                             if tree_search.get_untracked().trim() != trimmed {
                                 break;
                             }
@@ -1815,7 +1818,7 @@ fn App() -> impl IntoView {
                             publish(&rows);
                             set_search_capped.set(capped);
                         }
-                        if done || rows.len() >= 200 {
+                        if done || rows.len() >= 2000 {
                             set_tree_search_pending.set(false);
                         }
                     }
@@ -4494,6 +4497,18 @@ fn App() -> impl IntoView {
                                                 run_tree_search(query);
                                             }
                                         />
+                                        {/* The desktop's busy indicator: the
+                                            walk runs server-side in slices and
+                                            the pane says so until it is done. */}
+                                        <Show
+                                            when=move || tree_search_pending.get()
+                                            fallback=|| ()
+                                        >
+                                            <span
+                                                class="tree-search-spinner"
+                                                title="Searching files and archives…"
+                                            ></span>
+                                        </Show>
                                     </div>
                                     {/* Progress line under the box, where the
                                         desktop shows its search status: counts
