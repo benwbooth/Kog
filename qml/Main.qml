@@ -2996,9 +2996,14 @@ ApplicationWindow {
                                     directoryTree.toggleExpanded(treeDelegate.row)
                             }
                             onDoubleClicked: mouse => {
+                                // A folder double click only queues it —
+                                // activating (clearing the pane and playing)
+                                // is for a double clicked file.
+                                const folder = fileTreeModel.is_directory(
+                                    directoryTree.index(treeDelegate.row, 0))
                                 if (mouse.button === Qt.LeftButton)
                                     root.addTreeSelection(
-                                        treeDelegate.dragPath, true)
+                                        treeDelegate.dragPath, !folder)
                             }
                             onReleased: mouse => {
                                 if (manualDragging) {
