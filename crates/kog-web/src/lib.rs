@@ -24,6 +24,7 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use gloo_net::http::Request;
 use leptos::prelude::*;
@@ -1104,6 +1105,75 @@ fn highlight_label(name: String, query: String) -> AnyView {
         .into_any()
 }
 
+/// Post a "Kog — Now Playing" notification: the web twin of the desktop's
+/// popup, without its transport controls. Silent, one at a time (a newer
+/// track replaces the older notification), auto-dismissed like the desktop's
+/// eight second popup, and clicking it brings the player forward.
+fn show_now_playing(title: &str, body: &str) {
+    let mut options = web_sys::NotificationOptions::new();
+    options.body(body);
+    options.icon("/icons/kog.svg");
+    options.silent(Some(true));
+    options.tag("kog-now-playing");
+    let Ok(notification) = web_sys::Notification::new_with_options(title, &options) else {
+        return;
+    };
+    // Clicking the notification focuses the player, like the desktop
+    // popup's openPlayer.
+    let notification_for_click = notification.clone();
+    let onclick = Closure::<dyn FnMut()>::new(move || {
+        notification_for_click.close();
+        if let Some(window) = web_sys::window() {
+            let _ = window.focus();
+        }
+    });
+    notification.set_onclick(Some(onclick.as_ref().unchecked_ref()));
+    onclick.forget();
+    let window = web_sys::window();
+    if let Some(window) = window {
+        let notification_for_close = notification.clone();
+        let close = Closure::<dyn FnMut()>::new(move || notification_for_close.close());
+        let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+            close.as_ref().unchecked_ref(),
+            8000,
+        );
+        close.forget();
+    }
+}
+
+/// Apply the now-playing-notification preference. Enabling asks the browser
+/// for permission (a click is the only moment it will); denial keeps the box
+/// off. Signals are `Copy`, so handlers calling this stay `Fn`.
+fn set_track_notifications_pref(
+    enabled: bool,
+    set_enabled: leptos::prelude::WriteSignal<bool>,
+    set_message: leptos::prelude::WriteSignal<String>,
+) {
+    if !enabled {
+        store("kog.track_notifications", "0");
+        set_enabled.set(false);
+        return;
+    }
+    leptos::task::spawn_local(async move {
+        // Requesting when already granted resolves immediately.
+        let granted = match web_sys::Notification::request_permission() {
+            Ok(promise) => wasm_bindgen_futures::JsFuture::from(promise)
+                .await
+                .ok()
+                .and_then(|value| value.as_string())
+                .map(|value| value == "granted")
+                .unwrap_or(false),
+            Err(_) => false,
+        };
+        if granted {
+            store("kog.track_notifications", "1");
+            set_enabled.set(true);
+        } else {
+            set_message.set("Notifications were blocked by the browser".to_owned());
+        }
+    });
+}
+
 /// Hand `url` to the browser as a download: a hidden same-origin anchor with
 /// the download attribute, so an empty `filename` keeps the server's
 /// attachment disposition and a non-empty one names the file directly (a
@@ -1601,9 +1671,12 @@ fn App() -> impl IntoView {
     // The desktop's progress counters: items scanned on the filesystem pass,
     // then archive listings, exactly the numbers its status line shows.
     let (search_progress, set_search_progress) = signal(SearchProgress::default());
-    // Clicking the spinner pauses the walk where it is; a new query always
-    // starts unpaused.
     let (search_paused, set_search_paused) = signal(false);
+    // Now-playing notifications, the web twin of the desktop's Track
+    // Notifications preference. Off until enabled from settings, which is
+    // also where the browser's permission question is asked.
+    let (track_notifications, set_track_notifications) =
+        signal(load("kog.track_notifications").as_deref() == Some("1"));
     // True while a query's walk is still streaming results in.
     let (tree_search_pending, set_tree_search_pending) = signal(false);
     // Right-click menu anchor and target row.
@@ -3251,6 +3324,48 @@ fn App() -> impl IntoView {
         set_playing.set(true);
     };
 
+    // Now-playing notifications: when the playing track changes while the
+    // preference is on, post the web twin of the desktop's popup — title,
+    // artist and album, no controls. Skips page load (the restored track is
+    // not news) and any change while paused or stopped.
+    let notify_last_index = Rc::new(std::cell::Cell::new(None::<usize>));
+    Effect::new(move |_| {
+        let index = current.get();
+        let playing = playing.get();
+        if !track_notifications.get() {
+            notify_last_index.set(Some(index));
+            return;
+        }
+        if notify_last_index.get() == Some(index) {
+            return;
+        }
+        let Some(entry) = queue.with_untracked(|q| q.get(index).cloned()) else {
+            return;
+        };
+        notify_last_index.set(Some(index));
+        if !playing {
+            return;
+        }
+        let cache = metadata.get_untracked();
+        let meta = meta_for(&cache, &entry);
+        let title = meta
+            .as_ref()
+            .and_then(|meta| meta.title.clone())
+            .unwrap_or_else(|| entry.name.clone());
+        let detail = [meta.as_ref().and_then(|meta| meta.artist.clone()),
+            meta.as_ref().and_then(|meta| meta.album.clone())]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join("  ·  ");
+        let body = if detail.is_empty() {
+            "Local music · Kog".to_owned()
+        } else {
+            detail
+        };
+        show_now_playing(&title, &body);
+    });
+
     // Follow the playing track: Next, Previous, a track ending, or a radio
     // shift all land the current row in view. `nearest` scrolls only as far
     // as it must and nothing at all when the row is already on screen, so
@@ -4087,6 +4202,37 @@ fn App() -> impl IntoView {
                 }
             });
         }
+    };
+
+    // A trimmed name that matches a saved playlist (Favorites excluded):
+    // saving onto it overwrites instead of creating.
+    let playlist_name_exists = move |name: String| -> bool {
+        playlists
+            .get()
+            .iter()
+            .any(|(id, existing, _)| *id != 0 && *existing == name)
+    };
+    let existing_playlist_id = move |name: &str| -> Option<i64> {
+        playlists
+            .get_untracked()
+            .iter()
+            .find(|(id, existing, _)| *id != 0 && existing == name)
+            .map(|(id, _, _)| *id)
+    };
+
+    // Spinner click: pause or resume the walk on the server.
+    let toggle_search_paused = move || {
+        let paused = !search_paused.get_untracked();
+        set_search_paused.set(paused);
+        let url = format!("{}/api/library/search/pause", base());
+        let header = auth().header();
+        leptos::task::spawn_local(async move {
+            if let Err(error) =
+                post_json(url, header, serde_json::json!({ "paused": paused })).await
+            {
+                set_message.set(error);
+            }
+        });
     };
 
     // A trimmed name that matches a saved playlist (Favorites excluded):
@@ -6029,6 +6175,25 @@ fn App() -> impl IntoView {
                         </label>
                         <p class="hint">"Used the next time a MIDI file streams. The SF2 and ROM engines need the assets the desktop's Preferences sets."</p>
                     </Show>
+                    <label class="check">
+                        <input
+                            type="checkbox"
+                            prop:checked=move || track_notifications.get()
+                            on:change=move |event| {
+                                let checked = event
+                                    .target()
+                                    .and_then(|target| target.dyn_into::<web_sys::HtmlInputElement>().ok())
+                                    .map(|input| input.checked())
+                                    .unwrap_or(false);
+                                set_track_notifications_pref(
+                                    checked,
+                                    set_track_notifications,
+                                    set_message,
+                                );
+                            }
+                        />
+                        "Show a notification when the next song plays"
+                    </label>
                     <p class="hint">
                         "The address and token are shown in Kog's Preferences → Server on the machine serving the library."
                     </p>
