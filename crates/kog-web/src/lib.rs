@@ -2869,14 +2869,58 @@ fn App() -> impl IntoView {
     // Radio advances one track at a time: shift from the staged pool, and
     // only when it runs dry ask the server for the next window. A barren
     // round reshuffles so radio never stalls silently.
-    let advance_radio = {
-        let shift_radio = shift_radio.clone();
+
+    // Pull a fresh window in the background: building one takes the server a
+    // while on a huge library, and pressing next must never wait on that.
+    // Runs only when radio is on and the staged pool is running low.
+    let refill_radio_pool = {
+        let radio_busy = radio_busy.clone();
+        let set_radio_pool = set_radio_pool.clone();
+        let set_radio_busy = set_radio_busy.clone();
         let reshuffle_radio = reshuffle_radio.clone();
         move || {
             if radio_busy.get_untracked() {
                 return;
             }
+            set_radio_busy.set(true);
+            let url = format!("{}/api/radio/advance", base());
+            let header = auth().header();
+            let set_radio_pool = set_radio_pool.clone();
+            let set_radio_busy = set_radio_busy.clone();
+            let reshuffle_radio = reshuffle_radio.clone();
+            leptos::task::spawn_local(async move {
+                let result = post_json(url, header, serde_json::json!({})).await;
+                set_radio_busy.set(false);
+                match result {
+                    Ok(value) => {
+                        let entries = radio_entries(&value);
+                        if !entries.is_empty() {
+                            set_radio_pool.set(entries);
+                        } else if value["exhausted"].as_bool().unwrap_or(true) {
+                            reshuffle_radio();
+                        }
+                    }
+                    Err(_) => {}
+                }
+            });
+        }
+    };
+
+    let advance_radio = {
+        let shift_radio = shift_radio.clone();
+        let reshuffle_radio = reshuffle_radio.clone();
+        let refill_radio_pool = refill_radio_pool.clone();
+        let radio_pool = radio_pool.clone();
+        move || {
+            // The staged pool serves the press at once; a fresh window is
+            // fetched in the background once it starts running low.
             if shift_radio() {
+                if radio_on.get() && radio_pool.get_untracked().len() < 30 {
+                    refill_radio_pool();
+                }
+                return;
+            }
+            if radio_busy.get_untracked() {
                 return;
             }
             set_radio_busy.set(true);
@@ -2884,6 +2928,10 @@ fn App() -> impl IntoView {
             let header = auth().header();
             let shift_radio = shift_radio.clone();
             let reshuffle_radio = reshuffle_radio.clone();
+            let set_radio_busy = set_radio_busy.clone();
+            let set_radio_pool = set_radio_pool.clone();
+            let refill_radio_pool = refill_radio_pool.clone();
+            let radio_on = radio_on.clone();
             leptos::task::spawn_local(async move {
                 let result = post_json(url, header, serde_json::json!({})).await;
                 set_radio_busy.set(false);
@@ -2900,6 +2948,11 @@ fn App() -> impl IntoView {
                         if !shift_radio() {
                             set_radio_pool.set(Vec::new());
                             reshuffle_radio();
+                        }
+                        if radio_on.get()
+                            && radio_pool.get_untracked().len() < 30
+                        {
+                            refill_radio_pool();
                         }
                     }
                     Err(error) => set_message.set(error),
