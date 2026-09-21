@@ -1050,10 +1050,10 @@ button:focus-visible {
 }
 
 .art {
-  width: 52px;
-  height: 52px;
+  width: 72px;
+  height: 72px;
   flex: none;
-  border-radius: 8px;
+  border-radius: 10px;
   background: var(--alternate);
   border: 1px solid var(--border);
   display: grid;
@@ -1062,8 +1062,8 @@ button:focus-visible {
 }
 
 .art img {
-  width: 36px;
-  height: 36px;
+  width: 60px;
+  height: 60px;
 }
 
 .now-text {

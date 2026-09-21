@@ -2264,23 +2264,23 @@ ApplicationWindow {
                 spacing: 10
 
                 Rectangle {
-                    Layout.preferredWidth: 52
-                    Layout.preferredHeight: 52
+                    Layout.preferredWidth: 72
+                    Layout.preferredHeight: 72
                     Layout.alignment: Qt.AlignVCenter
-                    radius: 8
+                    radius: 10
                     color: root.palette.alternateBase
                     border.width: 1
                     border.color: root.palette.mid
 
                     Image {
                         anchors.centerIn: parent
-                        width: 36
-                        height: 36
+                        width: 60
+                        height: 60
                         source: appController.current_artwork_path.length > 0
                             ? "file://" + appController.current_artwork_path
                             : Qt.resolvedUrl("icons/kog.svg")
-                        sourceSize.width: 72
-                        sourceSize.height: 72
+                        sourceSize.width: 120
+                        sourceSize.height: 120
                         fillMode: Image.PreserveAspectFit
                         mipmap: true
                         asynchronous: true
