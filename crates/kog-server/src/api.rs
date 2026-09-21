@@ -1461,6 +1461,39 @@ pub async fn append_playlist_entries(
     }
 }
 
+/// `PUT /api/playlists/{id}/entries` — replace a playlist's entries, the
+/// "overwrite" path when a save reuses an existing name. Favorites (0) are
+/// refused like everywhere else.
+pub async fn replace_playlist_entries(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<i64>,
+    axum::Json(request): axum::Json<AppendEntriesRequest>,
+) -> Response {
+    if id == 0 {
+        return bad_request("Favorites are managed through /api/stars");
+    }
+    if request.entries.is_empty() {
+        return bad_request("no entries were supplied");
+    }
+    let library = state.library.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let entries: Vec<StoredEntry> = request
+            .entries
+            .into_iter()
+            .map(EntryRequest::into_stored)
+            .collect();
+        let count = entries.len();
+        library.db().replace_entries(id, &entries)?;
+        Ok::<_, String>(serde_json::json!({ "ok": true, "id": id, "count": count }))
+    })
+    .await
+    .unwrap_or_else(|error| Err(format!("replacing the playlist failed: {error}")));
+    match result {
+        Ok(value) => axum::Json(value).into_response(),
+        Err(error) => bad_request(&error),
+    }
+}
+
 /// `DELETE /api/playlists/{id}`
 pub async fn delete_playlist(
     State(state): State<AppState>,
@@ -1755,7 +1788,10 @@ pub fn router() -> axum::Router<AppState> {
         )
         .route("/api/playlists/{id}/rename", post(rename_playlist))
         .route("/api/playlists/{id}/move", post(move_playlist))
-        .route("/api/playlists/{id}/entries", post(append_playlist_entries))
+        .route(
+            "/api/playlists/{id}/entries",
+            post(append_playlist_entries).put(replace_playlist_entries),
+        )
         .route("/api/playlists/{id}/duplicate", post(duplicate_playlist))
         .route(
             "/api/playlists/{id}/prune-missing",

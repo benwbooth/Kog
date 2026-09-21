@@ -4001,6 +4001,74 @@ fn App() -> impl IntoView {
         }
     };
 
+    // Saving onto an existing playlist: replace its tracks with the pane
+    // (or the selection) through the overwrite endpoint.
+    let overwrite_playlist_with_pane = {
+        let load_playlists = load_playlists.clone();
+        move |id: i64, name: String| {
+            let url = format!("{}/api/playlists/{id}/entries", base());
+            let header = auth().header();
+            let selected: HashSet<usize> = selected.get_untracked();
+            let entries: Vec<Entry> = queue
+                .get_untracked()
+                .into_iter()
+                .enumerate()
+                .filter(|(index, _)| selected.is_empty() || selected.contains(index))
+                .map(|(_, entry)| entry)
+                .collect();
+            let count = entries.len();
+            let payload = serde_json::json!({
+                "entries": entries
+                    .iter()
+                    .map(|entry| {
+                        serde_json::json!({
+                            "kind": entry.kind,
+                            "path": entry.path,
+                            "entry": entry.entry,
+                            "fragment": entry.fragment.clone().unwrap_or_default(),
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+            });
+            leptos::task::spawn_local(async move {
+                let mut request = Request::put(&url);
+                if let Some(header) = header {
+                    request = request.header("Authorization", &header);
+                }
+                request = request.header("X-Kog-Device", &device_id());
+                let sent = match request.json(&payload) {
+                    Ok(request) => request.send().await,
+                    Err(error) => Err(error),
+                };
+                match sent {
+                    Ok(response) if response.ok() => {
+                        set_status_note
+                            .set(format!("Overwrote {name} with {count} tracks"));
+                        load_playlists();
+                    }
+                    Ok(response) => set_message.set(error_text(response).await),
+                    Err(error) => set_message.set(error.to_string()),
+                }
+            });
+        }
+    };
+
+    // A trimmed name that matches a saved playlist (Favorites excluded):
+    // saving onto it overwrites instead of creating.
+    let playlist_name_exists = move |name: String| -> bool {
+        playlists
+            .get()
+            .iter()
+            .any(|(id, existing, _)| *id != 0 && *existing == name)
+    };
+    let existing_playlist_id = move |name: &str| -> Option<i64> {
+        playlists
+            .get_untracked()
+            .iter()
+            .find(|(id, existing, _)| *id != 0 && existing == name)
+            .map(|(id, _, _)| *id)
+    };
+
     // The dialog's OK (and Enter) action, per mode.
     let accept_playlist_dialog = move || {
         let Some(dialog) = playlist_dialog.get_untracked() else {
@@ -4011,7 +4079,11 @@ fn App() -> impl IntoView {
             PlaylistDialogMode::CreateFromPane => {
                 if !name.is_empty() {
                     set_playlist_dialog.set(None);
-                    create_playlist_from_pane(name);
+                    if let Some(id) = existing_playlist_id(&name) {
+                        overwrite_playlist_with_pane(id, name);
+                    } else {
+                        create_playlist_from_pane(name);
+                    }
                 }
             }
             PlaylistDialogMode::Duplicate => {
@@ -6334,7 +6406,17 @@ fn App() -> impl IntoView {
                         {move || match playlist_dialog.get() {
                             Some(dialog) => match dialog.mode {
                                 PlaylistDialogMode::CreateFromPane => {
-                                    "Name the new playlist. The pane is saved into it.".to_owned()
+                                    let name = dialog.value.trim();
+                                    if !name.is_empty()
+                                        && playlist_name_exists(name.to_owned())
+                                    {
+                                        format!(
+                                            "A playlist named \u{201c}{name}\u{201d} already exists. Saving will replace its tracks."
+                                        )
+                                    } else {
+                                        "Name the new playlist. The pane is saved into it."
+                                            .to_owned()
+                                    }
                                 }
                                 PlaylistDialogMode::Duplicate => {
                                     "Name the copy.".to_owned()
@@ -6397,7 +6479,16 @@ fn App() -> impl IntoView {
                                 playlist_dialog
                                     .get()
                                     .map(|dialog| match dialog.mode {
-                                        PlaylistDialogMode::CreateFromPane => "Save",
+                                        PlaylistDialogMode::CreateFromPane => {
+                                            let name = dialog.value.trim();
+                                            if !name.is_empty()
+                                                && playlist_name_exists(name.to_owned())
+                                            {
+                                                "Overwrite"
+                                            } else {
+                                                "Save"
+                                            }
+                                        }
                                         PlaylistDialogMode::Duplicate => "Duplicate",
                                         PlaylistDialogMode::ConfirmDelete => "Delete",
                                     })

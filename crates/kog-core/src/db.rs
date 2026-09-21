@@ -316,6 +316,15 @@ impl LibraryDb {
         Ok(new_id)
     }
 
+    /// Drop every entry of a playlist and store `entries` in their place:
+    /// the "overwrite" path when a save reuses an existing name.
+    pub fn replace_entries(&self, playlist_id: i64, entries: &[StoredEntry]) -> Result<(), String> {
+        let rows = self.playlist_entry_rows(playlist_id)?;
+        let ids: Vec<i64> = rows.iter().map(|(row_id, _)| *row_id).collect();
+        self.delete_entry_rows(playlist_id, &ids)?;
+        self.append_entries(playlist_id, entries)
+    }
+
     pub fn delete_playlist(&self, id: i64) -> Result<(), String> {
         let changed = self
             .conn
