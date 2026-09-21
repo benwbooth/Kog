@@ -972,6 +972,25 @@ fn highlight_label(name: String, query: String) -> AnyView {
         .into_any()
 }
 
+/// Hand `url` to the browser as a download: a hidden same-origin anchor with
+/// the download attribute, so the server's attachment disposition names the
+/// file and the page itself never navigates.
+fn trigger_browser_download(url: &str) {
+    if let Some(document) = web_sys::window().and_then(|window| window.document()) {
+        if let Ok(anchor) = document.create_element("a") {
+            let _ = anchor.set_attribute("href", url);
+            let _ = anchor.set_attribute("download", "");
+            if let Some(body) = document.body() {
+                let _ = body.append_child(&anchor);
+                if let Ok(element) = anchor.dyn_into::<web_sys::HtmlElement>() {
+                    element.click();
+                    let _ = body.remove_child(&element);
+                }
+            }
+        }
+    }
+}
+
 fn entry_from_json(value: &serde_json::Value) -> Entry {
     let path = value["path"].as_str().unwrap_or_default().to_owned();
     let entry = value["entry"].as_str().unwrap_or_default().to_owned();
@@ -5296,6 +5315,35 @@ fn App() -> impl IntoView {
                             >
                                 "Add to Playlist"
                             </button>
+                            <Show
+                                when=move || {
+                                    tree_menu.get()
+                                        .map(|(_, _, row)| {
+                                            !row.is_dir && row.kind != "remote"
+                                        })
+                                        .unwrap_or(false)
+                                }
+                                fallback=|| ()
+                            >
+                                <button
+                                    class="menu-item"
+                                    on:click=move |_| {
+                                        if let Some((_, _, row)) = tree_menu.get() {
+                                            set_tree_menu.set(None);
+                                            let url = format!(
+                                                "{}/api/media/download?kind={}&path={}&token={}",
+                                                base(),
+                                                url_encode(&row.kind),
+                                                url_encode(&row.path),
+                                                url_encode(&token.get()),
+                                            );
+                                            trigger_browser_download(&url);
+                                        }
+                                    }
+                                >
+                                    "Download"
+                                </button>
+                            </Show>
                         </div>
                     }
                 }
@@ -5384,6 +5432,40 @@ fn App() -> impl IntoView {
                     >
                         "Show in File Tree"
                     </button>
+                    <Show
+                        when=move || {
+                            song_menu
+                                .get_untracked()
+                                .map(|(_, _, _, entry)| entry.kind != "remote")
+                                .unwrap_or(false)
+                        }
+                        fallback=|| ()
+                    >
+                        <button
+                            class="menu-item"
+                            on:click=move |_| {
+                                if let Some((_, _, _, entry)) = song_menu.get_untracked() {
+                                    set_song_menu.set(None);
+                                    let member = if entry.kind == "archive" {
+                                        last_segment(&entry.entry)
+                                    } else {
+                                        last_segment(&entry.path)
+                                    };
+                                    let url = format!(
+                                        "{}/api/media/download?kind={}&path={}&entry={}&token={}",
+                                        base(),
+                                        url_encode(&entry.kind),
+                                        url_encode(&entry.path),
+                                        url_encode(&entry.entry),
+                                        url_encode(&token.get()),
+                                    );
+                                    trigger_browser_download(&url);
+                                }
+                            }
+                        >
+                            "Download"
+                        </button>
+                    </Show>
                 </div>
             </Show>
 

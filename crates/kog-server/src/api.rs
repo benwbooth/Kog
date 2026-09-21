@@ -133,6 +133,13 @@ pub struct SearchQuery {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct DownloadQuery {
+    pub kind: Option<String>,
+    pub path: String,
+    pub entry: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct MoreQuery {
     pub g: Option<u64>,
 }
@@ -888,6 +895,96 @@ pub async fn search(State(state): State<AppState>, Query(query): Query<SearchQue
     }
 }
 
+/// The original bytes of one library entry, served as an attachment: the file
+/// itself for `kind=local` paths, the extracted member for `kind=archive`
+/// entries. Remote URLs are not downloadable.
+pub async fn media_download(
+    State(state): State<AppState>,
+    Query(query): Query<DownloadQuery>,
+) -> Response {
+    let kind = query.kind.clone().unwrap_or_else(|| "local".to_owned());
+    let library = state.library.clone();
+    let cache_dir = kog_audio::archive::nested_cache_dir();
+    let job = tokio::task::spawn_blocking(move || -> Result<(std::path::PathBuf, String), String> {
+        match kind.as_str() {
+            "archive" => {
+                let entry = query.entry.clone().unwrap_or_default();
+                if entry.trim().is_empty() {
+                    return Err("an archive member name is required".to_owned());
+                }
+                let archive = library.resolve(Some(&query.path))?;
+                let member = kog_audio::archive::materialize_archive_member(
+                    &archive,
+                    &entry,
+                    &cache_dir,
+                )?;
+                let name = std::path::Path::new(&entry)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| entry.clone());
+                Ok((member, name))
+            }
+            "local" => {
+                let file = library.resolve(Some(&query.path))?;
+                if !file.is_file() {
+                    return Err(format!("{} is not a file", file.display()));
+                }
+                let name = file
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "media".to_owned());
+                Ok((file, name))
+            }
+            other => Err(format!("unknown track kind: {other}")),
+        }
+    })
+    .await
+    .unwrap_or_else(|error| Err(error.to_string()));
+
+    match job {
+        Ok((file, name)) => match tokio::fs::read(&file).await {
+            Ok(bytes) => {
+                let mut response = Response::new(axum::body::Body::from(bytes));
+                *response.status_mut() = StatusCode::OK;
+                let ascii: String = name
+                    .chars()
+                    .map(|c| {
+                        if c.is_ascii_graphic() && c != '"' && c != '\\' {
+                            c
+                        } else {
+                            '_'
+                        }
+                    })
+                    .collect();
+                let encoded: String = name
+                    .as_bytes()
+                    .iter()
+                    .map(|byte| match byte {
+                        b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                            (*byte as char).to_string()
+                        }
+                        other => format!("%{other:02X}"),
+                    })
+                    .collect();
+                response.headers_mut().insert(
+                    axum::http::header::CONTENT_DISPOSITION,
+                    axum::http::HeaderValue::from_str(&format!(
+                        "attachment; filename=\"{ascii}\"; filename*=UTF-8''{encoded}"
+                    ))
+                    .expect("a content disposition is a header value"),
+                );
+                response.headers_mut().insert(
+                    axum::http::header::CONTENT_TYPE,
+                    axum::http::HeaderValue::from_static("application/octet-stream"),
+                );
+                response
+            }
+            Err(error) => bad_request(&format!("reading {}: {error}", file.display())),
+        },
+        Err(error) => bad_request(&error),
+    }
+}
+
 /// `GET /api/library/search/more` — the next slice of the active walk. A
 /// generation older than the current one means the query was superseded and
 /// the session is gone: done, with nothing.
@@ -1483,6 +1580,7 @@ pub fn router() -> axum::Router<AppState> {
         .route("/api/library", get(browse))
         .route("/api/library/search", get(search))
         .route("/api/library/search/more", get(search_more))
+        .route("/api/media/download", get(media_download))
         .route("/api/metadata", get(metadata_one).post(metadata_batch))
         .route("/api/playlists", get(list_playlists).post(create_playlist))
         .route(
