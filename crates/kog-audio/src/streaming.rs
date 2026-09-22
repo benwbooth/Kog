@@ -24,10 +24,18 @@ pub const STREAM_CHANNELS: u16 = 2;
 /// Samples pulled per refill. Bounds the work done inside a single `read`.
 const PULL_BATCH: usize = 2_048;
 
-/// Upper bound on one streamed track, used when the decoder reports no
-/// duration. Six hours of 48 kHz stereo is far beyond any real track and keeps
-/// a mislabelled file from streaming silence forever.
-const MAX_STREAM_FRAMES: u64 = 6 * 60 * 60 * STREAM_SAMPLE_RATE as u64;
+/// An unknown length needs a conservative end marker because the mixer can
+/// otherwise feed silence forever. Known lengths also have a generous safety
+/// ceiling for corrupt duration tags; audiobooks can exceed six hours.
+const UNKNOWN_DURATION_STREAM_FRAMES: u64 = 6 * 60 * 60 * STREAM_SAMPLE_RATE as u64;
+const MAX_STREAM_FRAMES: u64 = 72 * 60 * 60 * STREAM_SAMPLE_RATE as u64;
+
+fn stream_frame_limit(duration: Option<std::time::Duration>) -> u64 {
+    duration
+        .map(|duration| (duration.as_secs_f64() * f64::from(STREAM_SAMPLE_RATE)).ceil() as u64)
+        .unwrap_or(UNKNOWN_DURATION_STREAM_FRAMES)
+        .min(MAX_STREAM_FRAMES)
+}
 
 /// Read-adapter over one decoded track, yielding interleaved little-endian
 /// f32 samples at [`STREAM_SAMPLE_RATE`] / [`STREAM_CHANNELS`].
@@ -57,17 +65,12 @@ impl PcmReader {
         // The track's declared length is the only reliable end marker here.
         // A source that reports no duration falls back to the cap, so a
         // mislabelled file can never stream forever.
-        let remaining_frames = Some(
+        let remaining_frames = Some(stream_frame_limit(
             registry
                 .probe(&source)
                 .ok()
-                .and_then(|properties| properties.duration)
-                .map(|duration| {
-                    (duration.as_secs_f64() * f64::from(STREAM_SAMPLE_RATE)).ceil() as u64
-                })
-                .unwrap_or(MAX_STREAM_FRAMES)
-                .min(MAX_STREAM_FRAMES),
-        );
+                .and_then(|properties| properties.duration),
+        ));
         let (mixer_input, mixer_output) = stream_mixer();
         let player = Player::connect_new(&mixer_input);
         registry.append(&source, &player)?;
@@ -201,6 +204,16 @@ pub fn resolve_entry(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn known_audiobook_duration_is_not_cut_off_at_six_hours() {
+        let eight_hours = std::time::Duration::from_secs(8 * 60 * 60);
+        assert_eq!(
+            stream_frame_limit(Some(eight_hours)),
+            8 * 60 * 60 * u64::from(STREAM_SAMPLE_RATE)
+        );
+        assert_eq!(stream_frame_limit(None), UNKNOWN_DURATION_STREAM_FRAMES);
+    }
 
     /// A source that yields a known ramp, so the byte conversion and the
     /// mixer's uniformization can be checked exactly.

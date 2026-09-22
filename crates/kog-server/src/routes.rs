@@ -287,8 +287,9 @@ impl StreamQuery {
     }
 }
 
-/// Serve one track: the cached encode when we have it (with `Range`, so
-/// clients can seek), otherwise encode on the fly while teeing into the cache.
+/// Serve one track. Local MP3 files can go straight to the browser with byte
+/// ranges; transcoding an hours-long MP3 would leave it unseekable until the
+/// entire encode finished. Other sources use the cached or progressive encode.
 async fn stream_audio(
     State(state): State<AppState>,
     axum::extract::Query(query): axum::extract::Query<StreamQuery>,
@@ -307,6 +308,16 @@ async fn stream_audio(
         location,
         fragment: (!query.fragment.trim().is_empty()).then(|| query.fragment.trim().to_owned()),
     };
+    if query.kind == "local"
+        && query.entry.is_empty()
+        && entry.fragment.is_none()
+        && std::path::Path::new(&query.path)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("mp3"))
+    {
+        return serve_file(std::path::Path::new(&query.path), "audio/mpeg", &headers).await;
+    }
     let bitrate = query.bitrate.unwrap_or(crate::stream::DEFAULT_BITRATE_KBPS);
     let key = StreamKey::new(query.locator(), codec, bitrate);
 
@@ -320,7 +331,7 @@ async fn stream_audio(
 
     match opened {
         Ok(crate::service::StreamSource::Cached(path)) => {
-            serve_cached(&path, codec, &headers).await
+            serve_file(&path, codec.content_type(), &headers).await
         }
         Ok(crate::service::StreamSource::Encoding { receiver }) => {
             // Progressive: no Range support until the cache entry exists, but
@@ -344,21 +355,25 @@ async fn stream_audio(
     }
 }
 
-/// Serve a finished encode, honouring a single `Range` request so browsers can
-/// seek within a cached track.
-async fn serve_cached(
+/// Serve a local source or finished encode with byte ranges so browser seeking
+/// works regardless of the file's duration.
+async fn serve_file(
     path: &std::path::Path,
-    codec: StreamCodec,
+    content_type: &'static str,
     headers: &axum::http::HeaderMap,
 ) -> Response {
     use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
     let Ok(mut file) = tokio::fs::File::open(path).await else {
-        return bad_request("the cached stream is unavailable");
+        return bad_request("the stream file is unavailable");
     };
-    let Ok(total) = file.metadata().await.map(|metadata| metadata.len()) else {
-        return bad_request("the cached stream is unavailable");
+    let Ok(metadata) = file.metadata().await else {
+        return bad_request("the stream file is unavailable");
     };
+    if !metadata.is_file() {
+        return bad_request("the stream file is unavailable");
+    }
+    let total = metadata.len();
     let range = headers
         .get(header::RANGE)
         .and_then(|value| value.to_str().ok())
@@ -373,7 +388,7 @@ async fn serve_cached(
             let mut response = Response::new(body);
             response
                 .headers_mut()
-                .insert(header::CONTENT_TYPE, HeaderValue::from_static(codec.content_type()));
+                .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
             response
                 .headers_mut()
                 .insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
@@ -387,7 +402,7 @@ async fn serve_cached(
 
     let length = end - start + 1;
     if file.seek(std::io::SeekFrom::Start(start)).await.is_err() {
-        return bad_request("the cached stream could not be read");
+        return bad_request("the stream file could not be read");
     }
     let body = axum::body::Body::from_stream(
         tokio_util::io::ReaderStream::new(file.take(length)),
@@ -395,7 +410,7 @@ async fn serve_cached(
     let mut response = Response::new(body);
     response
         .headers_mut()
-        .insert(header::CONTENT_TYPE, HeaderValue::from_static(codec.content_type()));
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
     response
         .headers_mut()
         .insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
@@ -985,6 +1000,60 @@ mod tests {
         assert_eq!(content_range, "bytes 2-5/10");
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(bytes.as_ref(), b"2345");
+    }
+
+    #[tokio::test]
+    async fn a_long_local_mp3_is_seekable_before_any_encode() {
+        use std::io::{Seek, Write};
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("long audiobook.MP3");
+        let mut file = std::fs::File::create(&path).unwrap();
+        let size = 220_284_964_u64;
+        file.set_len(size).unwrap();
+        file.seek(std::io::SeekFrom::Start(size - 4)).unwrap();
+        file.write_all(b"TAIL").unwrap();
+        drop(file);
+
+        let uri = format!(
+            "/api/stream?kind=local&path={}&codec=opus",
+            path.to_string_lossy().replace(' ', "%20")
+        );
+        let app = router(state(AuthMode::Token, "t"));
+        let unauthenticated = app
+            .clone()
+            .oneshot(
+                HttpRequest::builder()
+                    .uri(uri.clone())
+                    .header(header::RANGE, format!("bytes={}-", size - 4))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+
+        let response = app
+            .oneshot(
+                HttpRequest::builder()
+                    .uri(uri)
+                    .header(header::AUTHORIZATION, "Bearer t")
+                    .header(header::RANGE, format!("bytes={}-", size - 4))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "audio/mpeg");
+        assert_eq!(response.headers()[header::ACCEPT_RANGES], "bytes");
+        assert_eq!(response.headers()[header::CONTENT_LENGTH], "4");
+        assert_eq!(
+            response.headers()[header::CONTENT_RANGE],
+            format!("bytes {}-{}/{size}", size - 4, size - 1)
+        );
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(bytes.as_ref(), b"TAIL");
     }
 
     #[tokio::test]
