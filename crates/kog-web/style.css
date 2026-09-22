@@ -795,17 +795,13 @@ button:focus-visible {
 }
 
 /* The desktop's band gradient: blue → teal → green across the five bars. */
-.row-meter-bar:nth-child(1) { background: #438cf5; }
-.row-meter-bar:nth-child(2) { background: #32b8ed; }
-.row-meter-bar:nth-child(3) { background: #20cbd2; }
-.row-meter-bar:nth-child(4) { background: #27cf9c; }
-.row-meter-bar:nth-child(5) { background: #55d979; }
-
-.track.selected .row-meter-bar:nth-child(1) { background: #8cbcff; }
-.track.selected .row-meter-bar:nth-child(2) { background: #64d8ff; }
-.track.selected .row-meter-bar:nth-child(3) { background: #47eee7; }
-.track.selected .row-meter-bar:nth-child(4) { background: #53edb4; }
-.track.selected .row-meter-bar:nth-child(5) { background: #82ef99; }
+/* The current row is highlight blue, so the meter always wears the
+ * desktop's selected-row set: lighter bars on the dark plate. */
+.row-meter-bar:nth-child(1) { background: #8cbcff; }
+.row-meter-bar:nth-child(2) { background: #64d8ff; }
+.row-meter-bar:nth-child(3) { background: #47eee7; }
+.row-meter-bar:nth-child(4) { background: #53edb4; }
+.row-meter-bar:nth-child(5) { background: #82ef99; }
 
 /* The insertion point while a queue row is dragged to a new position. */
 .track.reorder-above {

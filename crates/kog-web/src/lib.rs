@@ -6165,7 +6165,16 @@ fn App() -> impl IntoView {
                                                 }
                                                 fallback=|| ()
                                             >
-                                                <span class="row-meter">
+                                                // The placement and paint
+                                                // styles are inline so a stale
+                                                // cached stylesheet cannot
+                                                // leave the meter in-flow
+                                                // (growing the row) or the
+                                                // bars unstyled (invisible).
+                                                <span
+                                                    class="row-meter"
+                                                    style="grid-row: 1; grid-column: 1 / -1; position: sticky; right: 4px; justify-self: end; align-self: center; display: flex; align-items: flex-end; gap: 1px; width: 16px; height: 14px; padding: 1px; box-sizing: border-box; border-radius: 4px; pointer-events: none; z-index: 1; background: rgba(5, 20, 28, 0.78); border: 1px solid rgba(255, 255, 255, 0.18);"
+                                                >
                                                     <For
                                                         each=|| [0usize, 1, 2, 3, 4]
                                                         key=|band| *band
@@ -6180,8 +6189,23 @@ fn App() -> impl IntoView {
                                                                     .copied()
                                                                     .unwrap_or(0.0)
                                                                     .clamp(0.0, 1.0);
+                                                                // The desktop's
+                                                                // selected-row set:
+                                                                // the current row
+                                                                // is highlight
+                                                                // blue, and the
+                                                                // normal colors
+                                                                // vanish on it.
+                                                                const COLORS: [&str; 5] = [
+                                                                    "#8cbcff",
+                                                                    "#64d8ff",
+                                                                    "#47eee7",
+                                                                    "#53edb4",
+                                                                    "#82ef99",
+                                                                ];
                                                                 format!(
-                                                                    "height: {}px",
+                                                                    "width: 2px; flex: none; min-height: 2px; border-radius: 1px; background: {}; height: {}px;",
+                                                                    COLORS[band],
                                                                     2.0 + 10.0 * level
                                                                 )
                                                             }
