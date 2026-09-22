@@ -1163,9 +1163,9 @@ button:focus-visible {
 .now-text .title {
   font-size: 13px;
   font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  /* The whole song name, always: it wraps instead of ellipsizing. */
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .now-text .subtitle {
