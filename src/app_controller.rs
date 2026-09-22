@@ -944,6 +944,7 @@ fn resolve_cover_art(request: &CoverArtRequest, cancel: &AtomicBool) -> Option<P
     let cancelled = || cancel.load(AtomicOrdering::Relaxed);
     let key = kog_audio::cover_art::cache_key(&request.artist, &request.album);
     let store = |bytes: Vec<u8>| kog_audio::cover_art::store_cache(&request.cache_dir, &key, &bytes);
+    let lookup_album = kog_audio::cover_art::album_lookup_name(&request.album);
 
     if !cancelled() {
         let url = kog_audio::cover_art::deezer_search_url(&request.artist, &request.album);
@@ -974,18 +975,77 @@ fn resolve_cover_art(request: &CoverArtRequest, cancel: &AtomicBool) -> Option<P
     if !cancelled() {
         musicbrainz_rate_limit();
         if !cancelled() {
-            let url = kog_audio::cover_art::mb_release_group_url(&request.artist, &request.album);
+            let url = kog_audio::cover_art::mb_release_group_url(&request.artist, lookup_album);
             if let Ok(json) = fetch_cover(&url, kog_audio::cover_art::MAX_SEARCH_BYTES)
                 && let Ok(text) = String::from_utf8(json)
-                && let Some((title, artist, mbid)) =
-                    kog_audio::cover_art::parse_mb_release_group(&text)
-                && !mbid.is_empty()
-                && kog_audio::cover_art::titles_match(&request.artist, &request.album, &title, &artist)
-                && let Some(bytes) =
-                    fetch_validated_cover(&kog_audio::cover_art::caa_front_url(&mbid))
-                && let Some(path) = store(bytes)
             {
-                return Some(path);
+                for (title, artist, mbid) in kog_audio::cover_art::parse_mb_release_groups(&text) {
+                    if cancelled() {
+                        return None;
+                    }
+                    if !mbid.is_empty()
+                        && kog_audio::cover_art::titles_match(&request.artist, lookup_album, &title, &artist)
+                        && let Some(bytes) =
+                            fetch_validated_cover(&kog_audio::cover_art::caa_front_url(&mbid))
+                        && let Some(path) = store(bytes)
+                    {
+                        return Some(path);
+                    }
+                }
+            }
+        }
+    }
+    // A release can have a specific edition cover even when its release group
+    // has none. Try the track artist first, then an exact album-title match:
+    // soundtrack tracks often name their composer rather than the album artist.
+    let artist_queries = if request.artist.trim().is_empty() {
+        vec![""]
+    } else {
+        vec![request.artist.as_str(), ""]
+    };
+    for artist_query in artist_queries {
+        if cancelled() {
+            return None;
+        }
+        musicbrainz_rate_limit();
+        if cancelled() {
+            return None;
+        }
+        let url = kog_audio::cover_art::mb_release_url(artist_query, lookup_album);
+        if let Ok(json) = fetch_cover(&url, kog_audio::cover_art::MAX_SEARCH_BYTES)
+            && let Ok(text) = String::from_utf8(json)
+        {
+            let releases = kog_audio::cover_art::parse_mb_releases(&text);
+            // With no album artist, a short generic title may name several
+            // unrelated releases. Only trust an unambiguous exact title.
+            if artist_query.is_empty()
+                && releases
+                    .iter()
+                    .filter(|(title, _, _)| {
+                        kog_audio::cover_art::album_title_exact(lookup_album, title)
+                    })
+                    .count()
+                    != 1
+            {
+                continue;
+            }
+            for (title, artist, mbid) in releases {
+                if cancelled() {
+                    return None;
+                }
+                let matches = if artist_query.is_empty() {
+                    kog_audio::cover_art::album_title_exact(lookup_album, &title)
+                } else {
+                    kog_audio::cover_art::titles_match(artist_query, lookup_album, &title, &artist)
+                };
+                if matches
+                    && !mbid.is_empty()
+                    && let Some(bytes) =
+                        fetch_validated_cover(&kog_audio::cover_art::caa_release_front_url(&mbid))
+                    && let Some(path) = store(bytes)
+                {
+                    return Some(path);
+                }
             }
         }
     }

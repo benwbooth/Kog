@@ -294,8 +294,24 @@ pub fn mb_release_group_url(artist: &str, album: &str) -> String {
     )
 }
 
+pub fn mb_release_url(artist: &str, album: &str) -> String {
+    let mut terms = Vec::new();
+    if !artist.trim().is_empty() {
+        terms.push(format!("artist:\"{}\"", artist.trim()));
+    }
+    terms.push(format!("release:\"{}\"", album.trim()));
+    format!(
+        "https://musicbrainz.org/ws/2/release/?query={}&fmt=json&limit=5",
+        encode(&terms.join(" AND "))
+    )
+}
+
 pub fn caa_front_url(mbid: &str) -> String {
     format!("https://coverartarchive.org/release-group/{mbid}/front-500")
+}
+
+pub fn caa_release_front_url(mbid: &str) -> String {
+    format!("https://coverartarchive.org/release/{mbid}/front-500")
 }
 
 pub fn ddg_page_url(query: &str) -> String {
@@ -364,17 +380,34 @@ pub fn parse_itunes_cover(json: &str) -> Option<(String, String, String)> {
     ))
 }
 
-/// (title, artist, MBID) of the first MusicBrainz release-group hit.
-pub fn parse_mb_release_group(json: &str) -> Option<(String, String, String)> {
-    let root: serde_json::Value = serde_json::from_str(json).ok()?;
-    let first = root.get("release-groups")?.as_array()?.first()?;
-    let artist = first
-        .get("artist-credit")
+/// MusicBrainz candidates in search order. Search rank is useful, but the
+/// first hit may be a different album or a release without a front cover.
+fn parse_mb_candidates(json: &str, key: &str) -> Vec<(String, String, String)> {
+    let Ok(root) = serde_json::from_str::<serde_json::Value>(json) else {
+        return Vec::new();
+    };
+    root.get(key)
         .and_then(serde_json::Value::as_array)
-        .and_then(|credit| credit.first())
-        .map(|entry| json_string(entry, "name"))
-        .unwrap_or_default();
-    Some((json_string(first, "title"), artist, json_string(first, "id")))
+        .into_iter()
+        .flatten()
+        .map(|entry| {
+            let artist = entry
+                .get("artist-credit")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|credit| credit.first())
+                .map(|credit| json_string(credit, "name"))
+                .unwrap_or_default();
+            (json_string(entry, "title"), artist, json_string(entry, "id"))
+        })
+        .collect()
+}
+
+pub fn parse_mb_release_groups(json: &str) -> Vec<(String, String, String)> {
+    parse_mb_candidates(json, "release-groups")
+}
+
+pub fn parse_mb_releases(json: &str) -> Vec<(String, String, String)> {
+    parse_mb_candidates(json, "releases")
 }
 
 /// (title, proxied thumbnail) of the first DuckDuckGo image hit. Only the
@@ -423,6 +456,13 @@ pub fn titles_match(
     query.contains(&candidate) || candidate.contains(&query)
 }
 
+/// When a soundtrack tags each track with its composer instead of the album
+/// artist, an exact album title is still safe to use for a release lookup.
+pub fn album_title_exact(query_album: &str, candidate_title: &str) -> bool {
+    let album = normalize(query_album);
+    album.len() >= 8 && album == normalize(candidate_title)
+}
+
 /// First embedded picture of a tagged file, if it decodes as JPEG/PNG.
 /// Module music and untagged files yield nothing; the download chain covers
 /// those.
@@ -456,6 +496,27 @@ pub fn fallback_album(file_path: &Path, album: &str) -> String {
         .unwrap_or_default()
         .trim()
         .to_owned()
+}
+
+/// Multi-disc rips often append a disc number to an otherwise searchable
+/// release title. Keep the original tag for the cache key and display name.
+pub fn album_lookup_name(album: &str) -> &str {
+    let album = album.trim();
+    for (opening, closing) in [(" (", ')'), (" [", ']')] {
+        if let Some((title, suffix)) = album.rsplit_once(opening)
+            && let Some(label) = suffix.strip_suffix(closing)
+        {
+            let label = label.trim().to_ascii_lowercase();
+            if ["disc", "cd"].iter().any(|prefix| {
+                label.strip_prefix(prefix).is_some_and(|number| {
+                    number.trim().starts_with(|character: char| character.is_ascii_digit())
+                })
+            }) {
+                return title.trim_end();
+            }
+        }
+    }
+    album
 }
 
 #[cfg(any(test, feature = "test-util"))]
@@ -513,9 +574,16 @@ mod tests {
         let mb = mb_release_group_url("Kasatani", "Alisia Dragoon");
         assert!(mb.contains("musicbrainz.org/ws/2/release-group/"));
         assert!(mb.contains("fmt=json"));
+        let release = mb_release_url("", "Super Mario Galaxy Original Soundtrack");
+        assert!(release.contains("musicbrainz.org/ws/2/release/"));
+        assert!(release.contains("release%3A%22Super%20Mario%20Galaxy"));
         assert_eq!(
             caa_front_url("abc-123"),
             "https://coverartarchive.org/release-group/abc-123/front-500"
+        );
+        assert_eq!(
+            caa_release_front_url("abc-123"),
+            "https://coverartarchive.org/release/abc-123/front-500"
         );
         let ddg = ddg_image_url("Alisia Dragoon box art", "tok");
         assert!(ddg.starts_with("https://duckduckgo.com/i.js?"));
@@ -544,13 +612,17 @@ mod tests {
     }
 
     #[test]
-    fn mb_parse_reads_first_release_group() {
-        let parsed = parse_mb_release_group(
+    fn mb_parse_reads_release_candidates() {
+        let parsed = parse_mb_release_groups(
             r#"{"release-groups":[{"id":"abc-123","title":"Alisia Dragoon","artist-credit":[{"name":"Kasatani"}]}]}"#,
-        )
-        .expect("parse mb");
-        assert_eq!(parsed, ("Alisia Dragoon".to_owned(), "Kasatani".to_owned(), "abc-123".to_owned()));
-        assert_eq!(parse_mb_release_group(r#"{"release-groups":[]}"#), None);
+        );
+        assert_eq!(parsed, vec![("Alisia Dragoon".to_owned(), "Kasatani".to_owned(), "abc-123".to_owned())]);
+        let releases = parse_mb_releases(
+            r#"{"releases":[{"id":"wrong","title":"Other","artist-credit":[{"name":"Other"}]},{"id":"platinum","title":"Super Mario Galaxy Original Soundtrack: Platinum Version","artist-credit":[{"name":"Mario Galaxy Orchestra"}]}]}"#,
+        );
+        assert_eq!(releases.len(), 2);
+        assert_eq!(releases[1].2, "platinum");
+        assert!(parse_mb_release_groups(r#"{"release-groups":[]}"#).is_empty());
     }
 
     #[test]
@@ -585,6 +657,11 @@ mod tests {
         assert!(!titles_match("", "", "Anything", ""));
         assert!(!titles_match("", "AB", "AB", ""));
         assert!(!titles_match("", "Alisia Dragoon", "", ""));
+        assert!(album_title_exact(
+            "Super Mario Galaxy Original Soundtrack Platinum Version",
+            "Super Mario Galaxy Original Soundtrack: Platinum Version"
+        ));
+        assert!(!album_title_exact("Super Mario Galaxy", "Super Mario Galaxy 2"));
     }
 
     #[test]
@@ -598,6 +675,16 @@ mod tests {
             "Alisia Dragoon"
         );
         assert_eq!(fallback_album(Path::new("/song.flac"), ""), "");
+    }
+
+    #[test]
+    fn lookup_name_omits_only_a_disc_suffix() {
+        assert_eq!(
+            album_lookup_name("Super Mario Galaxy Original Soundtrack Platinum Version (Disc 2)"),
+            "Super Mario Galaxy Original Soundtrack Platinum Version"
+        );
+        assert_eq!(album_lookup_name("Album [CD 1]"), "Album");
+        assert_eq!(album_lookup_name("Album (Deluxe Edition)"), "Album (Deluxe Edition)");
     }
 
     fn write_jpeg(path: &Path) {
