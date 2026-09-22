@@ -2825,22 +2825,36 @@ ApplicationWindow {
                 // hover keeps flowing and the tip stays while it is hovered.
                 Rectangle {
                     id: treePathTip
-                    visible: root.treeHoverPath.length > 0
+                    // On the window's overlay layer: a ColumnLayout child
+                    // would be managed as a row (the whole tree shifted down
+                    // whenever the tip showed), and the overlay layer is a
+                    // plain item with no layout and no pointer grab.
+                    parent: Overlay.overlay
+                    visible: root.treeHoverPath.length > 0 && treeHoverItem !== null
                     width: Math.min(tipLabel.implicitWidth + 18,
                         Math.max(120, treeSection.width - 16))
                     height: tipLabel.implicitHeight + 12
-                    x: 4
+                    x: {
+                        if (!treeHoverItem)
+                            return 4
+                        const row = treeHoverItem.mapToItem(
+                            treePathTip.parent, 0, 0)
+                        return Math.round(Math.max(4, row.x))
+                    }
                     y: {
+                        if (!treeHoverItem)
+                            return 4
                         // Keep the tip off the hovered row's text: prefer
-                        // above the row, then below it, clamped inside the
-                        // pane.
-                        const rowHeight = treeHoverItem ? treeHoverItem.height : 26
-                        const rowBottom = root.treeHoverY + rowHeight + 6
-                        const above = root.treeHoverY - height - 6
+                        // above the row, then below it, clamped to the
+                        // window.
+                        const row = treeHoverItem.mapToItem(
+                            treePathTip.parent, 0, 0)
+                        const rowBottom = row.y + treeHoverItem.height + 6
+                        const above = row.y - height - 6
                         if (above >= 4)
                             return Math.round(above)
                         return Math.round(Math.max(4, Math.min(rowBottom,
-                            treeSection.height - height - 4)))
+                            treePathTip.parent.height - height - 4)))
                     }
                     z: 3
                     radius: 5
