@@ -124,14 +124,20 @@ Item {
         // The title column carries the track's format icon, the same art
         // the file tree shows, resolved through the tree model so archive
         // members and subsongs agree with it.
-        readonly property string trackPath:
-            cell.column.id === "title"
+        readonly property string trackPath: {
+            root.revision
+            return cell.column.id === "title"
                 ? String(root.app.track_value_at(root.rowIndex, "path"))
                 : ""
-        readonly property string formatIcon:
-            cell.column.id === "title" && trackPath.length > 0
-                ? String(root.searchModel.icon_name(trackPath))
-                : ""
+        }
+        readonly property string formatIcon: {
+            if (cell.column.id !== "title")
+                return ""
+            if (trackPath.length === 0)
+                return "kog-format-audio"
+            const name = String(root.searchModel.icon_name(trackPath))
+            return name.startsWith("kog-format-") ? name : "kog-format-audio"
+        }
         readonly property bool customIcon:
             formatIcon.startsWith("kog-format-")
         readonly property bool useLightIcon: root.selected
@@ -144,7 +150,7 @@ Item {
             const dot = trackPath.lastIndexOf(".")
             if (dot < 0)
                 return ""
-            return trackPath.slice(dot + 1).toUpperCase().slice(0, 4)
+            return trackPath.slice(dot + 1).toUpperCase().slice(0, 3)
         }
 
         Item {
@@ -175,7 +181,7 @@ Item {
                 font.pixelSize: 7
                 font.bold: true
                 horizontalAlignment: Text.AlignHCenter
-                color: cell.useLightIcon ? "#000000" : "#ffffff"
+                color: cell.useLightIcon ? "#ffffff" : "#111111"
             }
         }
 

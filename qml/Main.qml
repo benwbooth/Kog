@@ -3031,7 +3031,7 @@ ApplicationWindow {
                             const dot = filePath.lastIndexOf(".")
                             if (dot < 0)
                                 return ""
-                            return filePath.slice(dot + 1).toUpperCase().slice(0, 4)
+                            return filePath.slice(dot + 1).toUpperCase().slice(0, 3)
                         }
                         icon.name: customIcon ? "" : fileIcon
                         icon.source: customIcon
@@ -3077,7 +3077,7 @@ ApplicationWindow {
                                     font.bold: true
                                     horizontalAlignment: Text.AlignHCenter
                                     color: treeDelegate.useLightIcon
-                                        ? "#000000" : "#ffffff"
+                                        ? "#ffffff" : "#111111"
                                 }
                             }
                             SearchHighlightLabel {

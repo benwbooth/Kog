@@ -198,8 +198,8 @@ fn file_icon(path: &str, entry: &str) -> FileIcon {
     }
     match format_key(&suffix) {
         Some(key) => FileIcon::Svg(format_svg(key)),
-        // Badged like the desktop's paper fallback, capitals, four glyphs.
-        None => FileIcon::Badge(suffix.to_ascii_uppercase().chars().take(4).collect()),
+        // Badged like the desktop's paper fallback, capitals, three glyphs.
+        None => FileIcon::Badge(suffix.to_ascii_uppercase().chars().take(3).collect()),
     }
 }
 
@@ -6403,7 +6403,9 @@ fn App() -> impl IntoView {
                                                                         icons::FMT_PAPER
                                                                     ))
                                                                 }
-                                                                FileIcon::None => None,
+                                                                FileIcon::None => {
+                                                                    Some(icons::FMT_AUDIO.to_owned())
+                                                                }
                                                             }
                                                         } else {
                                                             None
