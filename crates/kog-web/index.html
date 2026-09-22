@@ -14,7 +14,9 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Kog" />
     <link rel="manifest" href="/manifest.webmanifest" />
-    <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png" />
+    <!-- The ?v busts Safari's touch-icon cache: iOS pins the icon at
+         add-to-home-screen time and never refreshes an existing one. -->
+    <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png?v=2" />
     <title>Kog</title>
     <link rel="stylesheet" href="/style.css" />
     <link rel="icon" href="/icons/kog.svg" />
