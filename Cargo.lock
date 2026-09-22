@@ -1537,7 +1537,7 @@ dependencies = [
 
 [[package]]
 name = "kog"
-version = "0.9.39"
+version = "0.9.40"
 dependencies = [
  "async-channel",
  "base64",
@@ -1575,7 +1575,7 @@ dependencies = [
 
 [[package]]
 name = "kog-audio"
-version = "0.9.39"
+version = "0.9.40"
 dependencies = [
  "async-channel",
  "cc",
@@ -1600,7 +1600,7 @@ dependencies = [
 
 [[package]]
 name = "kog-core"
-version = "0.9.39"
+version = "0.9.40"
 dependencies = [
  "async-channel",
  "chardetng",
@@ -1616,7 +1616,7 @@ dependencies = [
 
 [[package]]
 name = "kog-server"
-version = "0.9.39"
+version = "0.9.40"
 dependencies = [
  "axum",
  "base64",
