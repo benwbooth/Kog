@@ -113,8 +113,7 @@ impl DecoderBackend for CueSheetBackend {
     }
 }
 
-fn load_sheet(path: &Path) -> Result<CueSheet, String> {
-    if has_extension(path, "cue") {
+fn load_sheet(path: &Path) -> Result<CueSheet, String> {    if has_extension(path, "cue") {
         return CueSheet::open(path);
     }
     let decoder = Ffmpeg::open(path)?;
@@ -124,6 +123,14 @@ fn load_sheet(path: &Path) -> Result<CueSheet, String> {
         .as_deref()
         .ok_or_else(|| format!("{} has no embedded CUESHEET metadata field", path.display()))?;
     CueSheet::embedded(path, cuesheet)
+}
+
+/// The declared track number for a cue sheet's zero-based track index, so API
+/// fragments address tracks the way streaming resolves them (by number, not
+/// position). Pure sheet parsing: no audio is opened.
+pub fn cue_track_number(path: &Path, index: u32) -> Option<u32> {
+    let sheet = load_sheet(path).ok()?;
+    sheet.track(index).ok().map(|track| track.number)
 }
 
 fn open_source(source: &PlaybackSource) -> Result<FfmpegSource, String> {

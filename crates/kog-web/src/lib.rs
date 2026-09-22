@@ -1602,40 +1602,42 @@ fn library_entries(value: &serde_json::Value) -> Vec<Entry> {
         }
     }
     if let Some(files) = value["files"].as_array() {
-        items.extend(files.iter().map(|file| {
-            let path = file["path"].as_str().unwrap_or_default().to_owned();
-            let name = file["name"]
-                .as_str()
-                .map(str::to_owned)
-                .unwrap_or_else(|| last_segment(&path));
-            let where_ = file["relative"]
-                .as_str()
-                .map(str::to_owned)
-                .unwrap_or_else(|| name.clone());
-            // The server expands folder playlists into `kind`/`entry`/
-            // `fragment` locators; older responses (and plain files) fall back
-            // to a bare local entry.
-            let kind = file["kind"]
-                .as_str()
-                .filter(|kind| !kind.is_empty())
-                .unwrap_or("local")
-                .to_owned();
-            let entry = file["entry"].as_str().unwrap_or_default().to_owned();
-            let fragment = file["fragment"]
-                .as_str()
-                .filter(|fragment| !fragment.is_empty())
-                .map(str::to_owned);
-            Entry {
-                kind,
-                path,
-                entry,
-                fragment,
-                name,
-                location: where_,
-            }
-        }));
+        items.extend(files.iter().map(browse_file_entry));
     }
     items
+}
+
+/// One file line (a library file or an expanded track) as a pane entry: the
+/// server expands folder playlists into `kind`/`entry`/`fragment` locators;
+/// older responses (and plain files) fall back to a bare local entry.
+fn browse_file_entry(file: &serde_json::Value) -> Entry {
+    let path = file["path"].as_str().unwrap_or_default().to_owned();
+    let name = file["name"]
+        .as_str()
+        .map(str::to_owned)
+        .unwrap_or_else(|| last_segment(&path));
+    let where_ = file["relative"]
+        .as_str()
+        .map(str::to_owned)
+        .unwrap_or_else(|| name.clone());
+    let kind = file["kind"]
+        .as_str()
+        .filter(|kind| !kind.is_empty())
+        .unwrap_or("local")
+        .to_owned();
+    let entry = file["entry"].as_str().unwrap_or_default().to_owned();
+    let fragment = file["fragment"]
+        .as_str()
+        .filter(|fragment| !fragment.is_empty())
+        .map(str::to_owned);
+    Entry {
+        kind,
+        path,
+        entry,
+        fragment,
+        name,
+        location: where_,
+    }
 }
 
 /// The playable files in a library response.
@@ -4841,6 +4843,53 @@ fn App() -> impl IntoView {
                 }
             }
         };
+        // Expand through the server before appending, like the desktop's add
+        // path: a multi-song file contributes one row per song instead of
+        // only its first track. Chunked to the endpoint's batch cap.
+        let expand_and_append = {
+            let append_entries = append_entries;
+            let report_add = report_add.clone();
+            move |entries: Vec<Entry>| {
+                if entries.is_empty() {
+                    report_add(0);
+                    return;
+                }
+                let url = format!("{}/api/expand", base());
+                let header = auth().header();
+                leptos::task::spawn_local(async move {
+                    let mut expanded: Vec<Entry> = Vec::new();
+                    for chunk in entries.chunks(200) {
+                        let body: Vec<serde_json::Value> = chunk
+                            .iter()
+                            .map(|entry| {
+                                serde_json::json!({
+                                    "kind": entry.kind,
+                                    "path": entry.path,
+                                    "entry": entry.entry,
+                                    "fragment": entry.fragment,
+                                    "name": entry.name,
+                                })
+                            })
+                            .collect();
+                        let url = url.clone();
+                        let header = header.clone();
+                        let Ok(value) = post_json(url, header, serde_json::json!(body)).await
+                        else {
+                            continue;
+                        };
+                        let Some(lists) = value["tracks"].as_array() else {
+                            continue;
+                        };
+                        for list in lists {
+                            if let Some(tracks) = list.as_array() {
+                                expanded.extend(tracks.iter().map(browse_file_entry));
+                            }
+                        }
+                    }
+                    report_add(append_entries(expanded));
+                });
+            }
+        };
         move |row: TreeRow| {
             if !row.is_dir {
                 // Match the whole locator, not just the path: a subsong
@@ -4861,15 +4910,14 @@ fn App() -> impl IntoView {
                     name: row.name.clone(),
                     location: row.path.clone(),
                 });
-                report_add(append_entries(vec![entry]));
+                expand_and_append(vec![entry]);
                 return;
             }
             let route = format!("/api/library?path={}", url_encode(&row.path));
-            let append_entries = append_entries;
-            let report_add = report_add.clone();
+            let expand_and_append = expand_and_append.clone();
             leptos::task::spawn_local(async move {
                 if let Ok(value) = get_json(route).await {
-                    report_add(append_entries(library_files(&value)));
+                    expand_and_append(library_files(&value));
                 }
             });
         }

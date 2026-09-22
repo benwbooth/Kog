@@ -443,6 +443,159 @@ pub async fn metadata_one(
     }
 }
 
+/// How many locators one `/api/expand` call expands. Expansion is structural
+/// (header parses and archive listings, never probes), but each entry still
+/// costs filesystem I/O, so large folder adds chunk client-side.
+const EXPAND_BATCH_LIMIT: usize = 200;
+
+/// One locator to expand, shaped like every other API entry. `name` is only
+/// used when the locator already addresses a single track.
+#[derive(Debug, Deserialize)]
+struct ExpandEntry {
+    kind: String,
+    path: String,
+    #[serde(default)]
+    entry: Option<String>,
+    #[serde(default)]
+    fragment: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+}
+
+/// `POST /api/expand` — expand locators into their playable tracks, the way
+/// the desktop's add path expands every added path. A multi-song file (NSF,
+/// cue sheet) yields one track per song, each carrying its fragment; an
+/// already-specific locator passes through as one track. Same order as the
+/// request; one list per entry, empty when nothing resolves. Structural
+/// expansion only — nothing is probed, so this cannot hang on a wedged
+/// decoder the way proving can.
+pub async fn expand_entries(
+    State(state): State<AppState>,
+    axum::Json(request): axum::Json<Vec<ExpandEntry>>,
+) -> Response {
+    if request.len() > EXPAND_BATCH_LIMIT {
+        return bad_request(&format!(
+            "an expand batch is limited to {EXPAND_BATCH_LIMIT} entries"
+        ));
+    }
+    let root = state.library.root();
+    let result = tokio::task::spawn_blocking(move || {
+        let decoders = kog_audio::decoder::DecoderRegistry::new(
+            kog_audio::settings::AppSettings::load().decoder_settings(),
+        );
+        request
+            .iter()
+            .map(|entry| expand_locator(&decoders, root.as_deref(), entry))
+            .collect::<Vec<_>>()
+    })
+    .await;
+    match result {
+        Ok(tracks) => axum::Json(serde_json::json!({ "tracks": tracks })).into_response(),
+        Err(error) => bad_request(&format!("expanding entries failed: {error}")),
+    }
+}
+
+/// Expand one locator into playable browse rows. A locator that already
+/// carries a fragment addresses a single track and passes through untouched.
+fn expand_locator(
+    decoders: &kog_audio::decoder::DecoderRegistry,
+    root: Option<&std::path::Path>,
+    request: &ExpandEntry,
+) -> Vec<BrowseFile> {
+    let entry = request.entry.clone().unwrap_or_default();
+    let fragment = request.fragment.clone().unwrap_or_default();
+    if !fragment.trim().is_empty() {
+        let name = request
+            .name
+            .clone()
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| expand_single_name(&request.kind, &request.path, &entry));
+        return vec![BrowseFile {
+            name,
+            path: request.path.clone(),
+            relative: expand_single_name(&request.kind, &request.path, &entry),
+            kind: request.kind.clone(),
+            entry,
+            fragment: Some(fragment.trim().to_owned()),
+        }];
+    }
+    let expanded = match request.kind.as_str() {
+        "local" => {
+            if request.path.trim().is_empty() {
+                return Vec::new();
+            }
+            let path = std::path::PathBuf::from(&request.path);
+            if path.is_dir() {
+                return Vec::new();
+            }
+            decoders.expand_detailed(path)
+        }
+        "archive" => {
+            if request.path.trim().is_empty() || entry.trim().is_empty() {
+                return Vec::new();
+            }
+            let url = kog_audio::archive::member_url(
+                std::path::Path::new(&request.path),
+                &entry,
+                false,
+            );
+            decoders.expand_detailed(url)
+        }
+        "remote" => {
+            if request.path.trim().is_empty() {
+                return Vec::new();
+            }
+            decoders.expand_remote_url(&request.path)
+        }
+        _ => return Vec::new(),
+    };
+    match expanded {
+        Ok(expansion) => expansion
+            .sources
+            .iter()
+            .map(|source| expand_source_browse_file(decoders, source, root))
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Display name for a locator that already addresses one track: the file (or
+/// member) name the pane would show.
+fn expand_single_name(kind: &str, path: &str, entry: &str) -> String {
+    if kind == "archive" && !entry.is_empty() {
+        return std::path::Path::new(entry)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| entry.to_owned());
+    }
+    if kind == "remote" {
+        return path.rsplit('/').next().unwrap_or(path).to_owned();
+    }
+    browse_file_name(std::path::Path::new(path))
+}
+
+/// One expanded source as a browse row: the shared locator mapping, plus the
+/// desktop's ` [N]` disambiguation for subsong tracks. Cue sheets address by
+/// declared track number (not position), mapped through the sheet itself.
+fn expand_source_browse_file(
+    decoders: &kog_audio::decoder::DecoderRegistry,
+    source: &PlaybackSource,
+    root: Option<&std::path::Path>,
+) -> BrowseFile {
+    let mut file = playback_source_browse_file(source, root);
+    let Some(subsong) = source.subsong else {
+        return file;
+    };
+    if decoders.selected_backend_id(source) == Some("cuesheet") {
+        if let Some(number) = kog_audio::cuesheet_decoder::cue_track_number(&source.path, subsong)
+        {
+            file.fragment = Some(number.to_string());
+        }
+    }
+    file.name.push_str(&format!(" [{}]", subsong + 1));
+    file
+}
+
 /// `GET /api/library` — one directory level.
 pub async fn browse(State(state): State<AppState>, Query(query): Query<BrowseQuery>) -> Response {
     let library = state.library.clone();
@@ -1897,6 +2050,7 @@ pub fn router() -> axum::Router<AppState> {
         .route("/api/media/download", get(media_download))
         .route("/api/art", get(art))
         .route("/api/metadata", get(metadata_one).post(metadata_batch))
+        .route("/api/expand", post(expand_entries))
         .route("/api/playlists", get(list_playlists).post(create_playlist))
         .route(
             "/api/playlists/{id}",
@@ -1921,6 +2075,7 @@ pub fn router() -> axum::Router<AppState> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     fn row(title: &str) -> MetadataRow {
         MetadataRow {
@@ -1963,5 +2118,181 @@ mod tests {
         assert_eq!(cache.rows.len(), METADATA_CACHE_CAPACITY);
         assert_eq!(cache.get("key-0"), None, "oldest evicted");
         assert!(cache.get(&format!("key-{METADATA_CACHE_CAPACITY}")).is_some());
+    }
+
+    #[test]
+    fn expand_single_file_passes_through_bare() {
+        let directory = tempfile::tempdir().unwrap();
+        let wav = directory.path().join("song.wav");
+        write_test_wav(&wav);
+        let decoders = kog_audio::decoder::DecoderRegistry::new(
+            kog_audio::settings::AppSettings::load().decoder_settings(),
+        );
+        let tracks = expand_locator(
+            &decoders,
+            None,
+            &ExpandEntry {
+                kind: "local".to_owned(),
+                path: wav.to_string_lossy().into_owned(),
+                entry: None,
+                fragment: None,
+                name: None,
+            },
+        );
+        assert_eq!(tracks.len(), 1, "a plain file is one track");
+        assert_eq!(tracks[0].fragment, None);
+        assert_eq!(tracks[0].name, "song.wav");
+    }
+
+    #[test]
+    fn expand_playlist_file_yields_its_tracks() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("a.wav");
+        let second = directory.path().join("b.wav");
+        write_test_wav(&first);
+        write_test_wav(&second);
+        let list = directory.path().join("list.m3u");
+        std::fs::write(&list, "a.wav\nb.wav\n").unwrap();
+        let decoders = kog_audio::decoder::DecoderRegistry::new(
+            kog_audio::settings::AppSettings::load().decoder_settings(),
+        );
+        let tracks = expand_locator(
+            &decoders,
+            None,
+            &ExpandEntry {
+                kind: "local".to_owned(),
+                path: list.to_string_lossy().into_owned(),
+                entry: None,
+                fragment: None,
+                name: None,
+            },
+        );
+        assert_eq!(tracks.len(), 2, "a playlist expands to its tracks");
+    }
+
+    #[test]
+    fn expand_multi_song_file_yields_one_track_per_subsong() {
+        let directory = tempfile::tempdir().unwrap();
+        let nsf = directory.path().join("game.nsf");
+        write_test_nsf(&nsf, 3);
+        let decoders = kog_audio::decoder::DecoderRegistry::new(
+            kog_audio::settings::AppSettings::load().decoder_settings(),
+        );
+        let tracks = expand_locator(
+            &decoders,
+            None,
+            &ExpandEntry {
+                kind: "local".to_owned(),
+                path: nsf.to_string_lossy().into_owned(),
+                entry: None,
+                fragment: None,
+                name: None,
+            },
+        );
+        assert_eq!(tracks.len(), 3, "each subsong is its own track");
+        let fragments: Vec<_> = tracks
+            .iter()
+            .map(|track| track.fragment.clone().unwrap_or_default())
+            .collect();
+        assert_eq!(fragments, vec!["0", "1", "2"]);
+        assert!(
+            tracks.iter().all(|track| track.name.ends_with(']')),
+            "subsongs are disambiguated like the desktop: {tracks:?}"
+        );
+    }
+
+    #[test]
+    fn expand_specific_locator_passes_through_untouched() {
+        let decoders = kog_audio::decoder::DecoderRegistry::new(
+            kog_audio::settings::AppSettings::load().decoder_settings(),
+        );
+        let tracks = expand_locator(
+            &decoders,
+            None,
+            &ExpandEntry {
+                kind: "local".to_owned(),
+                path: "/music/game.nsf".to_owned(),
+                entry: None,
+                fragment: Some("2".to_owned()),
+                name: Some("Game [3]".to_owned()),
+            },
+        );
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].fragment.as_deref(), Some("2"));
+        assert_eq!(tracks[0].name, "Game [3]");
+    }
+
+    #[test]
+    fn expand_rejects_garbage_quietly() {
+        let decoders = kog_audio::decoder::DecoderRegistry::new(
+            kog_audio::settings::AppSettings::load().decoder_settings(),
+        );
+        for request in [
+            ExpandEntry {
+                kind: "bogus".to_owned(),
+                path: "/music/x".to_owned(),
+                entry: None,
+                fragment: None,
+                name: None,
+            },
+            ExpandEntry {
+                kind: "local".to_owned(),
+                path: "/music/does-not-exist.nsf".to_owned(),
+                entry: None,
+                fragment: None,
+                name: None,
+            },
+            ExpandEntry {
+                kind: "local".to_owned(),
+                path: String::new(),
+                entry: None,
+                fragment: None,
+                name: None,
+            },
+        ] {
+            assert!(
+                expand_locator(&decoders, None, &request).is_empty(),
+                "unresolvable locators expand to nothing: {request:?}"
+            );
+        }
+    }
+
+    /// A few silent frames in a WAV container: enough for structural
+    /// expansion, which never decodes.
+    fn write_test_wav(path: &Path) {
+        let data = vec![0u8; 800];
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + data.len() as u32).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16_u32.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&8_000_u32.to_le_bytes());
+        wav.extend_from_slice(&8_000_u32.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&8_u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        wav.extend_from_slice(&data);
+        std::fs::write(path, wav).unwrap();
+    }
+
+    /// A minimal NSF: a valid 128-byte header advertising `songs` tracks and
+    /// two RTS opcodes as its code. Expansion only reads the header, so this
+    /// never executes.
+    fn write_test_nsf(path: &Path, songs: u8) {
+        let mut header = vec![0u8; 128];
+        header[0..5].copy_from_slice(b"NESM\x1a");
+        header[5] = 1;
+        header[6] = songs;
+        header[7] = 1;
+        header[8..10].copy_from_slice(&0x8000_u16.to_le_bytes());
+        header[10..12].copy_from_slice(&0x8000_u16.to_le_bytes());
+        header[12..14].copy_from_slice(&0x8001_u16.to_le_bytes());
+        header[14..18].copy_from_slice(b"game");
+        let mut bytes = header;
+        bytes.extend_from_slice(&[0x60, 0x60]);
+        std::fs::write(path, bytes).unwrap();
     }
 }

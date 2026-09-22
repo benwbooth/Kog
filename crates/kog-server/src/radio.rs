@@ -22,7 +22,8 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use axum::extract::{Query, State};
 use axum::response::{IntoResponse, Response};
@@ -49,6 +50,14 @@ const WINDOW: usize = 60;
 /// the desktop staging thread's cap: a library of nothing but junk must not
 /// spin forever re-proving itself.
 const MAX_SKIPS: usize = 16_384;
+
+/// How long one pick may take to expand and prove before it is declared
+/// unplayable. Normal picks finish in milliseconds and archive extractions
+/// take seconds. A probe that never returns (a wedged native emulator has
+/// been observed hanging forever on one miniusf) must not wedge the round
+/// and every radio call behind its mutex: silence joins the dead set,
+/// exactly like a probe error.
+const PROVE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// One playable pick, shaped like every other API entry so the web pane can
 /// render it with the existing row code.
@@ -298,7 +307,7 @@ impl Radio {
             return;
         };
         let settings = AppSettings::load();
-        let decoders = DecoderRegistry::new(settings.decoder_settings());
+        let decoders = Arc::new(DecoderRegistry::new(settings.decoder_settings()));
         let audio_exts = decoders.audio_extensions();
         let nested_cache = kog_audio::archive::nested_cache_dir();
         let ctx = RadioCtx {
@@ -328,7 +337,8 @@ impl Radio {
                         }
                         continue;
                     }
-                    let entries = entries_from_pick(&decoders, &pick, &root);
+                    let entries =
+                        prove_pick(&decoders, &pick, &root, PROVE_TIMEOUT);
                     if entries.is_empty() {
                         // The pick cannot produce a single playable track;
                         // prove it dead for both clients, as the desktop does
@@ -431,6 +441,44 @@ fn persisted_root(path: &Path) -> Option<String> {
 /// staging them all flooded the window with one file's songs back to back.
 /// Only the first source is staged per pick, mirroring the desktop, where a
 /// pick arrives as a single locator.
+/// Expand and prove one pick with a deadline. The proving thread owns its
+/// inputs, so when the deadline passes the caller moves on while the stuck
+/// thread is abandoned: its result is dropped and the pick is treated as
+/// unplayable, which lands it in the dead set (persisted, so it is never
+/// proved twice). The abandoned thread keeps whatever it holds until the
+/// process ends; that is the price of containing a wedged native probe.
+fn prove_pick(
+    decoders: &Arc<DecoderRegistry>,
+    pick: &Path,
+    root: &Path,
+    timeout: Duration,
+) -> Vec<RadioEntry> {
+    let decoders = Arc::clone(decoders);
+    let pick = pick.to_path_buf();
+    let root = root.to_path_buf();
+    let label = pick.display().to_string();
+    let (send, recv) = std::sync::mpsc::channel();
+    if std::thread::Builder::new()
+        .name("kog-radio-prove".to_owned())
+        .spawn(move || {
+            let entries = entries_from_pick(&decoders, &pick, &root);
+            let _ = send.send(entries);
+        })
+        .is_err()
+    {
+        return Vec::new();
+    }
+    match recv.recv_timeout(timeout) {
+        Ok(entries) => entries,
+        Err(_) => {
+            eprintln!(
+                "kog-server: radio pick timed out after {timeout:?}, marking dead: {label}"
+            );
+            Vec::new()
+        }
+    }
+}
+
 fn entries_from_pick(decoders: &DecoderRegistry, pick: &Path, root: &Path) -> Vec<RadioEntry> {
     let Ok(expansion) = decoders.expand_detailed(pick.to_path_buf()) else {
         return Vec::new();
@@ -626,6 +674,31 @@ mod tests {
     use super::*;
     use axum::http::StatusCode;
     use std::sync::Arc;
+
+    /// A pick whose probe never returns is declared unplayable by deadline,
+    /// not by eternity: one miniusf in the wild hangs the native probe
+    /// forever, which used to wedge the round (and every radio call behind
+    /// its mutex) until the process was restarted. Skipped when the file is
+    /// absent, so this never fails on machines without that library.
+    #[test]
+    fn hanging_probe_times_out_instead_of_wedging() {
+        let pick = PathBuf::from("/mnt/stuff/Music/Chiptune/VGM-Cartridge/N64/Turok - Dinosaur Hunter [Jikku Senshi Turok] (1997-02-28)(Iguana)(Acclaim)[N64]/09 Catacombs.miniusf");
+        if !pick.is_file() {
+            eprintln!("skipped: hanging-probe fixture not present");
+            return;
+        }
+        let settings = AppSettings::load();
+        let decoders = Arc::new(DecoderRegistry::new(settings.decoder_settings()));
+        let root = PathBuf::from("/mnt/stuff/Music/Chiptune/VGM-Cartridge");
+        let started = std::time::Instant::now();
+        let entries = prove_pick(&decoders, &pick, &root, Duration::from_secs(5));
+        let elapsed = started.elapsed();
+        assert!(entries.is_empty(), "a hanging pick proves nothing");
+        assert!(
+            elapsed < Duration::from_secs(30),
+            "a hanging pick must give up, took {elapsed:?}"
+        );
+    }
 
     /// A short but genuinely decodable 8-bit mono WAV, so probing succeeds the
     /// way it does for a real library file.
