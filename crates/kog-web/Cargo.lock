@@ -714,7 +714,7 @@ dependencies = [
 
 [[package]]
 name = "kog-web"
-version = "0.9.39"
+version = "0.9.40"
 dependencies = [
  "console_error_panic_hook",
  "gloo-net 0.7.0",

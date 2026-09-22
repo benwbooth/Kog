@@ -6,14 +6,16 @@
     </linearGradient>
   </defs>
   <g fill="url(#gear)">
+    <!-- One tooth, rotated in exact 45-degree steps about the gear's
+         center: every spoke is identical in length, width, and gap. -->
     <rect x="27" y="1" width="10" height="15" rx="3"/>
-    <rect x="27" y="48" width="10" height="15" rx="3"/>
-    <rect x="48" y="27" width="15" height="10" rx="3"/>
-    <rect x="1" y="27" width="15" height="10" rx="3"/>
-    <rect x="44.5" y="5.8" width="10" height="15" rx="3" transform="rotate(45 49.5 13.3)"/>
-    <rect x="9.5" y="40.8" width="10" height="15" rx="3" transform="rotate(45 14.5 48.3)"/>
-    <rect x="43.8" y="41.5" width="15" height="10" rx="3" transform="rotate(45 51.3 46.5)"/>
-    <rect x="5.2" y="12.5" width="15" height="10" rx="3" transform="rotate(45 12.7 17.5)"/>
+    <rect x="27" y="1" width="10" height="15" rx="3" transform="rotate(45 32 32)"/>
+    <rect x="27" y="1" width="10" height="15" rx="3" transform="rotate(90 32 32)"/>
+    <rect x="27" y="1" width="10" height="15" rx="3" transform="rotate(135 32 32)"/>
+    <rect x="27" y="1" width="10" height="15" rx="3" transform="rotate(180 32 32)"/>
+    <rect x="27" y="1" width="10" height="15" rx="3" transform="rotate(225 32 32)"/>
+    <rect x="27" y="1" width="10" height="15" rx="3" transform="rotate(270 32 32)"/>
+    <rect x="27" y="1" width="10" height="15" rx="3" transform="rotate(315 32 32)"/>
     <circle cx="32" cy="32" r="23"/>
   </g>
   <circle cx="32" cy="32" r="14.5" fill="#172033"/>
