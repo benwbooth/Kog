@@ -761,15 +761,24 @@ button:focus-visible {
    like the desktop's playing waveform. */
 .row-meter {
   position: absolute;
-  right: 6px;
+  right: 1px;
   top: 50%;
   transform: translateY(-50%);
   display: flex;
   align-items: flex-end;
   gap: 1px;
-  height: 12px;
+  width: 16px;
+  height: 14px;
+  padding: 1px;
+  border-radius: 4px;
   pointer-events: none;
   z-index: 1;
+}
+
+/* The desktop's selected-row backing plate behind the waveform. */
+.track.selected .row-meter {
+  background: rgba(5, 20, 28, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.18);
 }
 
 .row-meter-bar {
