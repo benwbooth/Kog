@@ -38,6 +38,11 @@ Rectangle {
         id: columnFontMetrics
         font.pixelSize: 11
     }
+    FontMetrics {
+        id: headerFontMetrics
+        font.pixelSize: 11
+        font.bold: true
+    }
 
     function makeColumn(identifier, label, menuLabel, width, minimumWidth,
             maximumWidth, visible, alignment, flexible) {
@@ -64,30 +69,30 @@ Rectangle {
                 Text.AlignHCenter, false),
             makeColumn("rating", qsTr("Rating"), qsTr("Rating"), 78, 48, 128, true,
                 Text.AlignLeft, false),
-            makeColumn("title", qsTr("Title"), qsTr("Title"), 220, 96, 1024, true,
+            makeColumn("title", qsTr("Title"), qsTr("Title"), 220, 96, 32768, true,
                 Text.AlignLeft, true),
             makeColumn("albumartist", qsTr("Album Artist"), qsTr("Album Artist"),
-                150, 96, 1024, false, Text.AlignLeft, true),
-            makeColumn("artist", qsTr("Artist"), qsTr("Artist"), 190, 96, 1024, true,
+                150, 96, 32768, false, Text.AlignLeft, true),
+            makeColumn("artist", qsTr("Artist"), qsTr("Artist"), 190, 96, 32768, true,
                 Text.AlignLeft, true),
             makeColumn("composer", qsTr("Composer"), qsTr("Composer"), 151, 96,
-                1024, false, Text.AlignLeft, true),
-            makeColumn("album", qsTr("Album"), qsTr("Album"), 220, 96, 1024, true,
+                32768, false, Text.AlignLeft, true),
+            makeColumn("album", qsTr("Album"), qsTr("Album"), 220, 96, 32768, true,
                 Text.AlignLeft, true),
             makeColumn("length", qsTr("Length"), qsTr("Length"), 70, 44, 160, true,
                 Text.AlignRight, false),
             makeColumn("date", qsTr("Year"), qsTr("Year"), 58, 42, 160, true,
                 Text.AlignRight, false),
-            makeColumn("genre", qsTr("Genre"), qsTr("Genre"), 120, 48, 512, true,
+            makeColumn("genre", qsTr("Genre"), qsTr("Genre"), 120, 48, 32768, true,
                 Text.AlignLeft, true),
             makeColumn("track", "№", qsTr("Track"), 54, 32, 96, true,
                 Text.AlignRight, false),
             makeColumn("playcount", qsTr("Plays"), qsTr("Play Count"), 71, 42, 120,
                 false, Text.AlignRight, false),
-            makeColumn("path", qsTr("Path"), qsTr("Path"), 180, 64, 2048, false,
+            makeColumn("path", qsTr("Path"), qsTr("Path"), 180, 64, 32768, false,
                 Text.AlignLeft, true),
             makeColumn("filename", qsTr("Filename"), qsTr("Filename"), 180, 64,
-                1024, false, Text.AlignLeft, true),
+                32768, false, Text.AlignLeft, true),
             makeColumn("codec", qsTr("Codec"), qsTr("Codec"), 80, 48, 1024, false,
                 Text.AlignLeft, false),
             makeColumn("samplerate", qsTr("Sample Rate"), qsTr("Sample Rate"), 92,
@@ -282,13 +287,18 @@ Rectangle {
     }
 
     function fittedColumnWidth(column) {
-        let contentWidth = columnFontMetrics.advanceWidth(
+        // PlaylistRow reserves 26 px before title text for the format icon,
+        // 6 px after it, and 6 px on each side of other text cells.
+        const inset = column.id === "title" ? 36 : 18
+        let contentWidth = headerFontMetrics.advanceWidth(
             column.label.length > 0 ? column.label + "  ▼" : "▶")
         for (let row = 0; row < root.app.playlist_count; ++row) {
             contentWidth = Math.max(contentWidth, columnFontMetrics.advanceWidth(
                 root.app.track_value_at(row, column.id)))
+            if (contentWidth + inset >= column.maximumWidth)
+                break
         }
-        return contentWidth + 18
+        return Math.ceil(contentWidth + inset)
     }
 
     function autoFitColumn(identifier) {
@@ -300,8 +310,15 @@ Rectangle {
     }
 
     function autoFitAllColumns() {
-        for (const column of root.visibleColumns)
-            setColumnWidth(column.id, fittedColumnWidth(column))
+        // Publish the widths together. Every columns assignment recreates the
+        // header and visible row cell delegates, which is costly for playlists.
+        const updated = columns.map(copyColumn)
+        for (const column of updated) {
+            if (column.visible)
+                column.width = Math.max(column.minimumWidth,
+                    Math.min(column.maximumWidth, fittedColumnWidth(column)))
+        }
+        columns = updated
         persistLayout()
     }
 
