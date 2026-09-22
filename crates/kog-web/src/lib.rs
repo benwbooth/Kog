@@ -3336,113 +3336,110 @@ fn App() -> impl IntoView {
         watchdog.forget();
     }
 
-    // The playing row's level meter, tapping the audio element through the
-    // Web Audio API (the desktop meters its local playback the same way).
-    // The graph is built exactly once, synchronously inside the visitor's
-    // first pointer gesture — the one moment a context legally starts
-    // Running — and only when the stream shares the page's origin: a
-    // cross-origin element routed through Web Audio outputs silence, and a
-    // routed element can never be un-routed. Every connect is verified; if
-    // one fails after routing, the source is wired straight to the
-    // destination so audio keeps flowing while the meter idles.
+    // The playing row's level meter, tapping the audio element's captured
+    // stream through Web Audio (the desktop meters its local playback the
+    // same way). The element itself is never routed — captureStream taps it
+    // in parallel — so playback always sounds directly and the meter can
+    // never mute it, whatever a browser does to Web Audio. The context is
+    // warmed in the visitor's first pointer gesture (the one moment it
+    // legally starts Running); the tap is built once playback is actually
+    // running, because Chromium does not flow tracks created before media
+    // starts, and rebuilt if it goes quiet mid-playback.
     {
         let audio_ref = audio_ref.clone();
         let playing = playing.clone();
-        let base = base.clone();
-        let graph: Rc<
-            RefCell<Option<(web_sys::AudioContext, web_sys::AnalyserNode)>>,
-        > = Rc::new(RefCell::new(None));
+        let graph: Rc<RefCell<Option<(web_sys::AudioContext, web_sys::AnalyserNode)>>> =
+            Rc::new(RefCell::new(None));
+        // Warmed context, ready before the tap exists.
+        let context_slot: Rc<RefCell<Option<web_sys::AudioContext>>> =
+            Rc::new(RefCell::new(None));
         // Band analysis state, mirroring the desktop's per-stream state.
         let analysis = Rc::new(RefCell::new(BandState::default()));
+        // Consecutive silent reads while audibly playing: a stale tap.
+        let dry_reads = Rc::new(std::cell::Cell::new(0u32));
 
-        // The graph builder. Runs in-gesture; `Ok(())` once the element is
-        // safely routed (metered or bypassed), `Err(reason)` only when the
-        // element was never routed (direct playback continues).
-        let build_graph = {
-            let audio_ref = audio_ref.clone();
-            let base = base.clone();
-            let graph = graph.clone();
-            Rc::new(move || -> Result<(), String> {
-                // Only tap streams that share the page's origin; base()
-                // builds every stream URL, so it is the origin to check.
-                let page_origin = web_sys::window()
-                    .and_then(|window| window.location().origin().ok())
-                    .unwrap_or_default();
-                let server_origin = web_sys::Url::new(&format!(
-                    "{}/",
-                    base().trim_end_matches('/')
-                ))
-                .ok()
-                .map(|url| url.origin())
-                .unwrap_or_default();
-                if page_origin.is_empty() || server_origin != page_origin {
-                    return Err("stream origin differs from the page".to_owned());
-                }
-                let Some(audio) = audio_ref.get() else {
-                    return Err("no audio element".to_owned());
-                };
-                let context = web_sys::AudioContext::new()
-                    .map_err(|error| format!("AudioContext: {error:?}"))?;
-                let _ = context.resume();
-                if context.state() != web_sys::AudioContextState::Running {
-                    return Err("context did not start running".to_owned());
-                }
-                let analyser = context
-                    .create_analyser()
-                    .map_err(|error| format!("analyser: {error:?}"))?;
-                analyser.set_fft_size(2048);
-                // From here the element is routed: audio must flow through
-                // the graph whatever happens next.
-                let source = context.create_media_element_source(&audio).map_err(
-                    |error| format!("media source: {error:?}"),
-                )?;
-                if source.connect_with_audio_node(&analyser).is_err()
-                    || analyser
-                        .connect_with_audio_node(&context.destination())
-                        .is_err()
-                {
-                    // Meter path failed: bypass so playback survives.
-                    let _ = source.connect_with_audio_node(&context.destination());
-                }
-                *graph.borrow_mut() = Some((context, analyser));
-                Ok(())
-            })
-        };
-
-        // Build on the first pointer press — before any click-driven
-        // playback — and only once. Failures are retried on later presses
-        // (the element is only routed on success or after a bypass).
+        // Warm the AudioContext on the first pointer press, when it legally
+        // starts Running. Never touches the element.
         {
-            let build_graph = build_graph.clone();
-            let built = Rc::new(std::cell::Cell::new(false));
-            let press = Closure::<dyn FnMut()>::new(move || {
-                if built.get() {
+            let context_slot = context_slot.clone();
+            let warm = Closure::<dyn FnMut()>::new(move || {
+                let mut slot = context_slot.borrow_mut();
+                if slot.is_some() {
                     return;
                 }
-                if build_graph().is_ok() {
-                    built.set(true);
+                if let Ok(context) = web_sys::AudioContext::new() {
+                    let _ = context.resume();
+                    if context.state() == web_sys::AudioContextState::Running {
+                        *slot = Some(context);
+                    }
                 }
             });
             let document = web_sys::window()
                 .and_then(|window| window.document())
-                .expect("document for the meter gesture");
-            let _ = document.add_event_listener_with_callback_and_bool(
+                .expect("document for the meter warmer");
+            let _ = document.add_event_listener_with_callback(
                 "pointerdown",
-                press.as_ref().unchecked_ref(),
-                true,
+                warm.as_ref().unchecked_ref(),
             );
-            press.forget();
+            warm.forget();
         }
+
+        // Build (or rebuild) the capture tap on the warmed context. Every
+        // failure path leaves the element untouched.
+        let build_tap = {
+            let audio_ref = audio_ref.clone();
+            let graph = graph.clone();
+            let context_slot = context_slot.clone();
+            Rc::new(move || {
+                let Some(context) = context_slot.borrow().clone() else {
+                    return;
+                };
+                let _ = context.resume();
+                if context.state() != web_sys::AudioContextState::Running {
+                    return;
+                }
+                if audio_ref.get().is_none() {
+                    return;
+                }
+                let Ok(analyser) = context.create_analyser() else {
+                    return;
+                };
+                analyser.set_fft_size(2048);
+                // Tap the element's output without diverting it. web-sys
+                // has no captureStream binding, so call it on the element
+                // itself (the page's only audio element, class-marked).
+                let Ok(stream_value) = js_sys::eval(
+                    "document.querySelector('audio.audio').captureStream()",
+                ) else {
+                    return;
+                };
+                let Ok(stream) = stream_value.dyn_into::<web_sys::MediaStream>() else {
+                    return;
+                };
+                let Ok(source) = context.create_media_stream_source(&stream) else {
+                    return;
+                };
+                // A zero-gain tail keeps the analyser pulled by the graph
+                // without adding any sound of its own.
+                let Ok(sink) = context.create_gain() else {
+                    return;
+                };
+                sink.gain().set_value(0.0);
+                if source.connect_with_audio_node(&analyser).is_err()
+                    || analyser.connect_with_audio_node(&sink).is_err()
+                    || sink.connect_with_audio_node(&context.destination()).is_err()
+                {
+                    return;
+                }
+                *graph.borrow_mut() = Some((context, analyser));
+            })
+        };
 
         let levels_poll = Closure::<dyn FnMut()>::new(move || {
             if !playing.get_untracked() {
                 set_audio_levels.set([0.0; 5]);
                 return;
             }
-            let graph = graph.borrow();
-            let Some((context, analyser)) = graph.as_ref() else {
-                return;
-            };
             let Some(audio) = audio_ref.get() else {
                 return;
             };
@@ -3450,9 +3447,30 @@ fn App() -> impl IntoView {
                 set_audio_levels.set([0.0; 5]);
                 return;
             }
+            if graph.borrow().is_none() {
+                build_tap();
+            }
+            // Cloned handles: no borrow is held across the stale-tap drop.
+            let Some((context, analyser)) = graph.borrow().clone() else {
+                return;
+            };
             let _ = context.resume();
             let mut samples = vec![0.0_f32; analyser.fft_size() as usize];
             analyser.get_float_time_domain_data(&mut samples);
+            let live = samples.iter().any(|sample| sample.abs() > 0.00001);
+            if !live {
+                // Audibly playing but silent reads: the tap went stale
+                // (a track change can drop its tracks). Drop it; the next
+                // tick rebuilds on the still-warm context.
+                let dry = dry_reads.get() + 1;
+                dry_reads.set(dry);
+                if dry > 14 {
+                    *graph.borrow_mut() = None;
+                    dry_reads.set(0);
+                }
+                return;
+            }
+            dry_reads.set(0);
             let mut state = analysis.borrow_mut();
             if state.rate == 0 {
                 state.reset(context.sample_rate() as u32);
