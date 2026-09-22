@@ -14,8 +14,8 @@ out_dir="${KOG_WEB_OUT_DIR:-$here/../kog-server/web}"
 cd "$here"
 
 # The dev shell exports RUSTFLAGS with -fuse-ld=mold for native links; wasm-ld
-# rejects that flag, so clear it for the wasm build. The linker is pinned in
-# .cargo/config.toml.
+# rejects that flag, so clear it for the wasm build. rustc's bundled rust-lld
+# links the wasm target by default, on every host.
 RUSTFLAGS="" cargo build --release --target wasm32-unknown-unknown --target-dir "$target_dir"
 
 wasm="$(find "$target_dir/wasm32-unknown-unknown/release" -maxdepth 1 -name 'kog_web.wasm' -print -quit)"

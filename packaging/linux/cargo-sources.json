@@ -1809,6 +1809,32 @@
     {
         "type": "archive",
         "archive-type": "tar-gzip",
+        "url": "https://static.crates.io/crates/include_dir/include_dir-0.7.4.crate",
+        "sha256": "923d117408f1e49d914f1a379a309cffe4f18c05cf4e3d12e613a15fc81bd0dd",
+        "dest": "cargo/vendor/include_dir-0.7.4"
+    },
+    {
+        "type": "inline",
+        "contents": "{\"package\": \"923d117408f1e49d914f1a379a309cffe4f18c05cf4e3d12e613a15fc81bd0dd\", \"files\": {}}",
+        "dest": "cargo/vendor/include_dir-0.7.4",
+        "dest-filename": ".cargo-checksum.json"
+    },
+    {
+        "type": "archive",
+        "archive-type": "tar-gzip",
+        "url": "https://static.crates.io/crates/include_dir_macros/include_dir_macros-0.7.4.crate",
+        "sha256": "7cab85a7ed0bd5f0e76d93846e0147172bed2e2d3f859bcc33a8d9699cad1a75",
+        "dest": "cargo/vendor/include_dir_macros-0.7.4"
+    },
+    {
+        "type": "inline",
+        "contents": "{\"package\": \"7cab85a7ed0bd5f0e76d93846e0147172bed2e2d3f859bcc33a8d9699cad1a75\", \"files\": {}}",
+        "dest": "cargo/vendor/include_dir_macros-0.7.4",
+        "dest-filename": ".cargo-checksum.json"
+    },
+    {
+        "type": "archive",
+        "archive-type": "tar-gzip",
         "url": "https://static.crates.io/crates/indexmap/indexmap-2.14.1.crate",
         "sha256": "07aa2048142242915a31d35844fb311e0e53fcca590c3a0a40dcf1b841fa09eb",
         "dest": "cargo/vendor/indexmap-2.14.1"
@@ -3806,6 +3832,19 @@
         "type": "inline",
         "contents": "{\"package\": \"b0c85f2c3ef0b1cd58b36682f4b17aaa995f0e5db534d85692b4903abce21f67\", \"files\": {}}",
         "dest": "cargo/vendor/tokio-rustls-0.26.5",
+        "dest-filename": ".cargo-checksum.json"
+    },
+    {
+        "type": "archive",
+        "archive-type": "tar-gzip",
+        "url": "https://static.crates.io/crates/tokio-stream/tokio-stream-0.1.19.crate",
+        "sha256": "a3d06f0b082ba57c26b79407372e57cf2a1e28124f78e9479fe80322cf53420b",
+        "dest": "cargo/vendor/tokio-stream-0.1.19"
+    },
+    {
+        "type": "inline",
+        "contents": "{\"package\": \"a3d06f0b082ba57c26b79407372e57cf2a1e28124f78e9479fe80322cf53420b\", \"files\": {}}",
+        "dest": "cargo/vendor/tokio-stream-0.1.19",
         "dest-filename": ".cargo-checksum.json"
     },
     {
