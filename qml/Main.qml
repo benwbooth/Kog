@@ -83,6 +83,9 @@ ApplicationWindow {
     // The delegate the pointer is on: its live position keeps the popup glued
     // to the right row while the tree scrolls.
     property Item treeHoverItem: null
+    // The tip is shown only after the hover delay and hidden by the poll;
+    // enter/exit events around it are unreliable on Wayland.
+    property bool treeTipShown: false
     readonly property bool compactToolbar: width < 980
     // Which build is running: the stamped revision plus, when it is known,
     // when the binary was linked. Shown small in the toolbar and in About.
@@ -400,6 +403,17 @@ ApplicationWindow {
         if (row < 0 || row >= directoryTree.rows)
             return ""
         return fileTreeModel.path_for_index(directoryTree.index(row, 0))
+    }
+
+    // Is the OS cursor inside the hovered row right now? Enter/exit events
+    // around the tip are unreliable on Wayland; the OS position is not.
+    function tipPollInside() {
+        const parts = appController.cursor_pos().split(",")
+        if (parts.length !== 2 || !treeHoverItem)
+            return false
+        const local = treeHoverItem.mapFromGlobal(Qt.point(+parts[0], +parts[1]))
+        return local.x >= 0 && local.y >= 0
+            && local.x <= treeHoverItem.width && local.y <= treeHoverItem.height
     }
 
     // Track the popup to the hovered row through the tree's scroll offset.
@@ -2783,23 +2797,38 @@ ApplicationWindow {
                     interval: 250
                     onTriggered: fileTreeModel.searchText = treeSearchField.text
                 }
+                // The hover delay: the tip shows a second after the
+                // pointer settles on a row.
+                Timer {
+                    id: treeTipShowTimer
+                    interval: 1000
+                    onTriggered: {
+                        if (tipPollInside()) {
+                            root.treeTipShown = true
+                            treeHoverClearTimer.restart()
+                        } else {
+                            root.treeTipShown = false
+                            root.treeHoverPath = ""
+                            root.treeHoverItem = null
+                        }
+                    }
+                }
+
+                // While the tip shows, the poll hides it the moment the
+                // cursor leaves the row. Polling the OS cursor position is
+                // the point: enter/exit events around the tip are unreliable
+                // on Wayland.
                 Timer {
                     id: treeHoverClearTimer
-                    interval: 300
+                    interval: 150
+                    repeat: true
                     onTriggered: {
-                        // Opening the tip makes Wayland deliver a spurious
-                        // pointer-leave to the row; the re-enter lands after
-                        // this timer fires, so clearing here would flash the
-                        // tip off and back forever. While the pointer is on
-                        // the row, keep watching: a missed exit event (the
-                        // cursor left for another pane) still clears on the
-                        // next tick.
-                        if (treePointer.containsMouse) {
-                            restart()
+                        if (tipPollInside())
                             return
-                        }
+                        root.treeTipShown = false
                         root.treeHoverPath = ""
                         root.treeHoverItem = null
+                        stop()
                     }
                 }
                 Connections {
@@ -2841,7 +2870,7 @@ ApplicationWindow {
                     // whenever the tip showed), and the overlay layer is a
                     // plain item with no layout and no pointer grab.
                     parent: Overlay.overlay
-                    visible: root.treeHoverPath.length > 0 && treeHoverItem !== null
+                    visible: root.treeTipShown
                     width: Math.min(tipLabel.implicitWidth + 18,
                         Math.max(120, treeSection.width - 16))
                     height: tipLabel.implicitHeight + 12
@@ -3029,6 +3058,11 @@ ApplicationWindow {
                             acceptedButtons: Qt.LeftButton | Qt.RightButton
                             hoverEnabled: true
                             onEntered: {
+                                // Same row, tip already up: the spurious
+                                // re-enter after the show must not re-delay.
+                                if (root.treeHoverItem === treeDelegate
+                                    && root.treeTipShown)
+                                    return
                                 treeHoverClearTimer.stop()
                                 root.treeHoverItem = treeDelegate
                                 root.treeHoverPath = treeDelegate.filePath.length > 0
@@ -3036,11 +3070,20 @@ ApplicationWindow {
                                     : root.treePathAtRow(treeDelegate.row)
                                 root.treeHoverY = treeDelegate.mapToItem(
                                     treeSection, 0, 0).y
+                                root.treeTipShown = false
+                                treeTipShowTimer.restart()
                             }
                             // Delay the clear: moving to a neighbouring row
                             // delivers this exit after that row's enter, and
                             // an immediate clear ate the fresh tooltip.
-                            onExited: treeHoverClearTimer.restart()
+                            onExited: {
+                                // Never hide here: the exit can be the
+                                // spurious one the tip itself caused. The
+                                // poll hides within 150ms when the cursor
+                                // truly left.
+                                treeTipShowTimer.stop()
+                                treeHoverClearTimer.restart()
+                            }
                             preventStealing: true
                             scrollGestureEnabled: false
 
