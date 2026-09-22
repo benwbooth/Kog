@@ -3073,6 +3073,16 @@ fn App() -> impl IntoView {
                     .target()
                     .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
                     .and_then(|target| {
+                        // The explicit add and reorder controls own their
+                        // gestures. A hold there must not open the row menu.
+                        if target
+                            .closest(".tree-add, .drag-grip")
+                            .ok()
+                            .flatten()
+                            .is_some()
+                        {
+                            return None;
+                        }
                         target.closest(".tree-row, .track, .col-head").ok().flatten()
                     });
                 let Some(row) = row else {
@@ -5806,6 +5816,7 @@ fn App() -> impl IntoView {
                                                                 // queues it, like the
                                                                 // desktop's double click.
                                                                 add_row_to_playlist(row_click.clone());
+                                                                set_sidebar_open.set(false);
                                                             }
                                                         }
                                                         on:dblclick=move |_| {
@@ -5891,6 +5902,7 @@ fn App() -> impl IntoView {
                                                                     add_row_to_playlist(
                                                                         row_add.clone(),
                                                                     );
+                                                                    set_sidebar_open.set(false);
                                                                 }
                                                             }
                                                         >"+"
@@ -5998,7 +6010,7 @@ fn App() -> impl IntoView {
                                         view! {
                                         <button
                                             class="tree-row favorite-row"
-                                            title="Double-click to add to the playlist, or drag it there"
+                                            title=if touch_mode { "Tap to open Favorites; use + to add it" } else { "Double-click to add to the playlist, or drag it there" }
                                             draggable="true"
                                             on:click=move |_| {
                                                 // Touch: a tap opens the list in
@@ -6008,6 +6020,7 @@ fn App() -> impl IntoView {
                                                         0,
                                                         "Favorites".to_owned(),
                                                     );
+                                                    set_sidebar_open.set(false);
                                                 }
                                             }
                                             on:dragstart=move |ev: web_sys::DragEvent| {
@@ -6035,6 +6048,7 @@ fn App() -> impl IntoView {
                                                     move |ev: web_sys::MouseEvent| {
                                                         ev.stop_propagation();
                                                         append_playlist(0);
+                                                        set_sidebar_open.set(false);
                                                     }
                                                 }
                                             >"+"
@@ -6056,7 +6070,7 @@ fn App() -> impl IntoView {
                                             view! {
                                                 <button
                                                     class="tree-row playlist-row"
-                                                    title="Double-click to add to the playlist, or drag it there"
+                                                    title=if touch_mode { "Tap to open playlist; use + to add it" } else { "Double-click to add to the playlist, or drag it there" }
                                                     draggable="true"
                                                     on:click=move |_| {
                                                         // Touch: a tap opens the
@@ -6067,6 +6081,7 @@ fn App() -> impl IntoView {
                                                                 drag_id,
                                                                 open_label.clone(),
                                                             );
+                                                            set_sidebar_open.set(false);
                                                         }
                                                     }
                                                     on:dragstart=move |ev: web_sys::DragEvent| {
@@ -6125,6 +6140,7 @@ fn App() -> impl IntoView {
                                                             move |ev: web_sys::MouseEvent| {
                                                                 ev.stop_propagation();
                                                                 append_playlist(drag_id);
+                                                                set_sidebar_open.set(false);
                                                             }
                                                         }
                                                     >"+"
@@ -7682,6 +7698,17 @@ fn App() -> impl IntoView {
                     </button>
                     <div class="menu-separator"></div>
                     <div class="menu-group">"Playback"</div>
+                    <button
+                        class="menu-item"
+                        disabled=move || !connected.get()
+                        on:click=move |_| {
+                            set_radio(!radio_on.get_untracked());
+                            set_menu_open.set(false);
+                        }
+                    >
+                        <span class="menu-check">{move || if radio_on.get() { "✓" } else { "" }}</span>
+                        "Random Radio"
+                    </button>
                     <button
                         class="menu-item"
                         disabled=move || queue.get().is_empty()
