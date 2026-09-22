@@ -2119,12 +2119,25 @@ fn App() -> impl IntoView {
         set_radio_pool.set(entries);
     };
 
+    // The radio plays the browsed subtree, like the desktop's radio playing
+    // the folder the tree is rooted at: every radio call carries the current
+    // tree root, and the server scopes (and re-roots) the round to it.
+    let radio_root = move || {
+        let root = tree_root.get();
+        if root.is_empty() {
+            String::new()
+        } else {
+            format!("?root={}", url_encode(&root))
+        }
+    };
+
     let load_radio = {
         let get_json = get_json;
         let apply_radio = apply_radio.clone();
+        let radio_root = radio_root.clone();
         move || {
             leptos::task::spawn_local(async move {
-                if let Ok(value) = get_json("/api/radio".to_owned()).await {
+                if let Ok(value) = get_json(format!("/api/radio{}", radio_root())).await {
                     apply_radio(&value);
                 }
             });
@@ -2134,12 +2147,13 @@ fn App() -> impl IntoView {
     let set_radio = {
         let apply_radio = apply_radio.clone();
         let radio_on = radio_on.clone();
+        let radio_root = radio_root.clone();
         move |enabled: bool| {
             // Flip at once: building the first round can keep the server busy
             // for a long while on a huge library, and a toggle that waits for
             // that reads as broken. The response still lands here and wins.
             set_radio_on.set(enabled);
-            let url = format!("{}/api/radio/enabled", base());
+            let url = format!("{}/api/radio/enabled{}", base(), radio_root());
             let header = auth().header();
             let apply_radio = apply_radio.clone();
             leptos::task::spawn_local(async move {
@@ -2154,8 +2168,9 @@ fn App() -> impl IntoView {
 
     let reshuffle_radio = {
         let apply_radio = apply_radio.clone();
+        let radio_root = radio_root.clone();
         move || {
-            let url = format!("{}/api/radio/reshuffle", base());
+            let url = format!("{}/api/radio/reshuffle{}", base(), radio_root());
             let header = auth().header();
             let apply_radio = apply_radio.clone();
             leptos::task::spawn_local(async move {
@@ -3729,12 +3744,13 @@ fn App() -> impl IntoView {
         let set_radio_pool = set_radio_pool.clone();
         let set_radio_busy = set_radio_busy.clone();
         let reshuffle_radio = reshuffle_radio.clone();
+        let radio_root = radio_root.clone();
         move || {
             if radio_busy.get_untracked() {
                 return;
             }
             set_radio_busy.set(true);
-            let url = format!("{}/api/radio/advance", base());
+            let url = format!("{}/api/radio/advance{}", base(), radio_root());
             let header = auth().header();
             let set_radio_pool = set_radio_pool.clone();
             let set_radio_busy = set_radio_busy.clone();
@@ -3762,6 +3778,7 @@ fn App() -> impl IntoView {
         let reshuffle_radio = reshuffle_radio.clone();
         let refill_radio_pool = refill_radio_pool.clone();
         let radio_pool = radio_pool.clone();
+        let radio_root = radio_root.clone();
         move || {
             // The staged pool serves the press at once; a fresh window is
             // fetched in the background once it starts running low.
@@ -3775,7 +3792,7 @@ fn App() -> impl IntoView {
                 return;
             }
             set_radio_busy.set(true);
-            let url = format!("{}/api/radio/advance", base());
+            let url = format!("{}/api/radio/advance{}", base(), radio_root());
             let header = auth().header();
             let shift_radio = shift_radio.clone();
             let reshuffle_radio = reshuffle_radio.clone();

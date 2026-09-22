@@ -24,7 +24,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 
@@ -156,9 +156,10 @@ impl Radio {
     }
 
     /// Current state, materializing the first round window when radio is on.
-    pub fn snapshot(&self, library_root: Option<&Path>) -> RadioStatus {
+    pub fn snapshot(&self, library_root: Option<&Path>, scope: Option<&Path>) -> RadioStatus {
         let mut inner = lock(&self.inner);
         Self::ensure_loaded(&mut inner, library_root);
+        Self::reroot(&mut inner, scope);
         if inner.enabled && inner.round.is_none() {
             Self::open_round(&mut inner);
             Self::generate(&mut inner, WINDOW);
@@ -168,9 +169,15 @@ impl Radio {
 
     /// Turn radio on or off. Turning it off keeps the playlist the client
     /// already has; turning it back on resumes the persisted round.
-    pub fn set_enabled(&self, enabled: bool, library_root: Option<&Path>) -> RadioStatus {
+    pub fn set_enabled(
+        &self,
+        enabled: bool,
+        library_root: Option<&Path>,
+        scope: Option<&Path>,
+    ) -> RadioStatus {
         let mut inner = lock(&self.inner);
         Self::ensure_loaded(&mut inner, library_root);
+        Self::reroot(&mut inner, scope);
         if enabled {
             if !inner.enabled || inner.round.is_none() {
                 inner.enabled = true;
@@ -192,9 +199,10 @@ impl Radio {
 
     /// Start a fresh shuffle with a new seed, keeping unplayability knowledge,
     /// exactly like the desktop's reshuffle. Turns radio on if it was off.
-    pub fn reshuffle(&self, library_root: Option<&Path>) -> RadioStatus {
+    pub fn reshuffle(&self, library_root: Option<&Path>, scope: Option<&Path>) -> RadioStatus {
         let mut inner = lock(&self.inner);
         Self::ensure_loaded(&mut inner, library_root);
+        Self::reroot(&mut inner, scope);
         if inner.root.is_none() {
             inner.root = library_root.map(Path::to_path_buf);
         }
@@ -209,9 +217,10 @@ impl Radio {
     }
 
     /// Append the next window of the running round.
-    pub fn advance(&self, library_root: Option<&Path>) -> RadioAdvance {
+    pub fn advance(&self, library_root: Option<&Path>, scope: Option<&Path>) -> RadioAdvance {
         let mut inner = lock(&self.inner);
         Self::ensure_loaded(&mut inner, library_root);
+        Self::reroot(&mut inner, scope);
         if !inner.enabled {
             return RadioAdvance {
                 entries: Vec::new(),
@@ -238,6 +247,22 @@ impl Radio {
         inner.enabled = settings.radio_enabled;
         inner.save_path = kog_audio::settings::setting_path(ROUND_FILE);
         inner.root = resolve_root(inner.save_path.as_deref(), library_root);
+    }
+
+    /// Adopt a changed scope: when the client explicitly requested a tree
+    /// root and it differs from the running round's, the round restarts
+    /// under it (a fresh shuffle, or a resumed round if one was persisted
+    /// for exactly that folder), like the desktop's radio restarting when
+    /// its tree root changes. No scope — the desktop's round keeps ruling.
+    fn reroot(inner: &mut Inner, scope: Option<&Path>) {
+        let Some(root) = scope else {
+            return;
+        };
+        if inner.root.as_deref() != Some(root) {
+            inner.root = Some(root.to_path_buf());
+            inner.round = None;
+            inner.entries.clear();
+        }
     }
 
     /// Load the persisted round for our root, or begin a fresh one. The
@@ -515,36 +540,60 @@ pub struct EnabledRequest {
     pub enabled: bool,
 }
 
+#[derive(Debug, Deserialize, Default)]
+pub struct RootQuery {
+    /// Optional scope: the client's current tree root. Radio plays that
+    /// subtree, like the desktop's radio restarting under a changed tree
+    /// root. Anything that is not a directory inside the configured library
+    /// root is ignored, so the parameter cannot widen what the server serves.
+    pub root: Option<String>,
+}
+
+/// The requested scope as a real path, when it is safely inside the
+/// configured library root.
+fn scoped_root(state: &AppState, requested: Option<&str>) -> Option<PathBuf> {
+    let requested = requested.map(str::trim).filter(|root| !root.is_empty())?;
+    let library = state.library.root()?;
+    let requested = Path::new(requested).canonicalize().ok()?;
+    let library = library.canonicalize().ok()?;
+    requested.starts_with(&library).then_some(requested)
+}
+
 /// `GET /api/radio` — current state and the visible round window.
-pub async fn status(State(state): State<AppState>) -> Response {
+pub async fn status(State(state): State<AppState>, query: Query<RootQuery>) -> Response {
     let radio = state.radio.clone();
-    let root = state.library.root();
-    blocking(move || radio.snapshot(root.as_deref())).await
+    let scope = scoped_root(&state, query.root.as_deref());
+    let root = scope.clone().or_else(|| state.library.root());
+    blocking(move || radio.snapshot(root.as_deref(), scope.as_deref())).await
 }
 
 /// `POST /api/radio/enabled` — turn random radio on or off.
 pub async fn set_enabled(
     State(state): State<AppState>,
+    query: Query<RootQuery>,
     axum::Json(request): axum::Json<EnabledRequest>,
 ) -> Response {
     let radio = state.radio.clone();
-    let root = state.library.root();
+    let scope = scoped_root(&state, query.root.as_deref());
+    let root = scope.clone().or_else(|| state.library.root());
     let enabled = request.enabled;
-    blocking(move || radio.set_enabled(enabled, root.as_deref())).await
+    blocking(move || radio.set_enabled(enabled, root.as_deref(), scope.as_deref())).await
 }
 
-/// `POST /api/radio/reshuffle` — fresh shuffle, same root.
-pub async fn reshuffle(State(state): State<AppState>) -> Response {
+/// `POST /api/radio/reshuffle` — fresh shuffle under the requested scope.
+pub async fn reshuffle(State(state): State<AppState>, query: Query<RootQuery>) -> Response {
     let radio = state.radio.clone();
-    let root = state.library.root();
-    blocking(move || radio.reshuffle(root.as_deref())).await
+    let scope = scoped_root(&state, query.root.as_deref());
+    let root = scope.clone().or_else(|| state.library.root());
+    blocking(move || radio.reshuffle(root.as_deref(), scope.as_deref())).await
 }
 
 /// `POST /api/radio/advance` — the next window of the running round.
-pub async fn advance(State(state): State<AppState>) -> Response {
+pub async fn advance(State(state): State<AppState>, query: Query<RootQuery>) -> Response {
     let radio = state.radio.clone();
-    let root = state.library.root();
-    blocking(move || radio.advance(root.as_deref())).await
+    let scope = scoped_root(&state, query.root.as_deref());
+    let root = scope.clone().or_else(|| state.library.root());
+    blocking(move || radio.advance(root.as_deref(), scope.as_deref())).await
 }
 
 async fn blocking<T, F>(work: F) -> Response
@@ -655,18 +704,49 @@ mod tests {
         let (library, root, save) = fixture(90);
         let radio = Radio::new(Some(root.clone()), Some(save), false);
         let _ = library;
-        let on = radio.set_enabled(true, Some(&root));
+        let on = radio.set_enabled(true, Some(&root), None);
         assert!(on.enabled, "toggling on enables radio");
         assert_eq!(on.entries.len(), WINDOW, "a full window is staged");
         assert!(on.entries.iter().all(|entry| entry.kind == "local"));
         // Idempotent: asking again does not burn another window.
-        let again = radio.set_enabled(true, Some(&root));
+        let again = radio.set_enabled(true, Some(&root), None);
         assert_eq!(paths(&on), paths(&again));
 
-        let fresh = radio.reshuffle(Some(&root));
+        let fresh = radio.reshuffle(Some(&root), None);
         assert!(fresh.enabled);
         assert_ne!(on.seed, fresh.seed, "a reshuffle uses a new seed");
         assert_ne!(paths(&on), paths(&fresh), "a reshuffle changes the order");
+    }
+
+    #[test]
+    fn an_explicit_scope_re_roots_the_round_to_the_subtree() {
+        // The fixture spreads its wavs over `One/` and `Two/`; scoping to
+        // `One` must restart the round there and never hand out `Two` again.
+        let (library, root, save) = fixture(90);
+        let radio = Radio::new(Some(root.clone()), Some(save.clone()), false);
+        let _ = library;
+        let unscoped = radio.set_enabled(true, Some(&root), None);
+        assert!(
+            unscoped.entries.iter().any(|entry| entry.path.contains("/Two/")),
+            "the unscoped round draws from the whole library"
+        );
+
+        let one = root.join("One");
+        let one_str = one.to_str().unwrap();
+        let scoped = radio.reshuffle(Some(&root), Some(&one));
+        assert_eq!(scoped.root.as_deref(), Some(one_str), "the round re-roots");
+        assert!(
+            scoped.entries.iter().all(|entry| entry.path.starts_with(one_str)),
+            "every pick comes from the scoped subtree: {:?}",
+            paths(&scoped)
+        );
+        // And the scoped round persists, so a client rooted at `One`
+        // resumes the very same shuffle.
+        assert_eq!(
+            persisted_root(&save).as_deref(),
+            Some(one.to_str().unwrap()),
+            "the round file carries the scoped root"
+        );
     }
 
     /// The dead set persisted for a round file rooted at `root`.
@@ -688,7 +768,7 @@ mod tests {
         let save = root.join("radio-round.json");
         let radio = Radio::new(Some(root.clone()), Some(save.clone()), true);
 
-        let status = radio.snapshot(Some(&root));
+        let status = radio.snapshot(Some(&root), None);
         assert!(status.entries.is_empty(), "the only pick is unplayable");
         assert_eq!(
             persisted_dead(&save, &root),
@@ -708,7 +788,7 @@ mod tests {
         let save = root.join("radio-round.json");
         let radio = Radio::new(Some(root.clone()), Some(save), true);
 
-        let status = radio.snapshot(Some(&root));
+        let status = radio.snapshot(Some(&root), None);
         assert!(!status.entries.is_empty(), "the playable pick is staged");
         assert!(
             status
@@ -765,13 +845,13 @@ mod tests {
         let (library, root, save) = fixture(200);
         let _ = library;
         let first = Radio::new(Some(root.clone()), Some(save.clone()), true);
-        let head = first.snapshot(Some(&root));
+        let head = first.snapshot(Some(&root), None);
         assert_eq!(head.entries.len(), WINDOW);
 
         // A second session reads the same file and continues the same round:
         // same seed, different (later) picks.
         let second = Radio::new(Some(root.clone()), Some(save), true);
-        let tail = second.snapshot(Some(&root));
+        let tail = second.snapshot(Some(&root), None);
         assert_eq!(head.seed, tail.seed, "the seed survives a restart");
         assert_ne!(paths(&head), paths(&tail), "the round continues, not restarts");
         assert!(tail.entries.len() == WINDOW);
@@ -801,7 +881,7 @@ mod tests {
         round.save(&save, &sub, &HashSet::new());
 
         let radio = Radio::new(Some(root.clone()), Some(save.clone()), true);
-        let status = radio.snapshot(Some(&root));
+        let status = radio.snapshot(Some(&root), None);
         assert_eq!(
             status.root.as_deref(),
             Some(sub.to_string_lossy().as_ref()),
