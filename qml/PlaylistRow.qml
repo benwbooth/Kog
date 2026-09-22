@@ -47,9 +47,10 @@ Item {
         const cols = columns.visibleColumns
         for (let i = 0; i < cols.length; i++) {
             const column = cols[i]
-            if (x >= offset && x < offset + column.width)
+            const width = columns.effectiveColumnWidth(column)
+            if (x >= offset && x < offset + width)
                 return column
-            offset += column.width
+            offset += width
         }
         return null
     }
@@ -117,8 +118,9 @@ Item {
 
         required property var column
         property string text: ""
+        objectName: "playlistCell_" + column.id
 
-        width: column.width
+        width: root.columns.effectiveColumnWidth(column)
         height: root.height
 
         // The title column carries the track's format icon, the same art

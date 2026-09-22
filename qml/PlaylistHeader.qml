@@ -16,12 +16,14 @@ Rectangle {
     property bool layoutReady: false
     property bool adjustingColumns: false
     property string menuColumn: "index"
+    property string resizingColumn: ""
+    property real resizingWidth: 0
 
     readonly property var visibleColumns: columns.filter(column => column.visible)
     readonly property real totalWidth: {
         let total = 0
         for (const column of visibleColumns)
-            total += column.width
+            total += effectiveColumnWidth(column)
         return total
     }
 
@@ -121,6 +123,10 @@ Rectangle {
     function columnVisible(identifier) {
         const index = columnIndex(identifier)
         return index >= 0 && columns[index].visible
+    }
+
+    function effectiveColumnWidth(column) {
+        return column.id === resizingColumn ? resizingWidth : column.width
     }
 
     function setColumnWidth(identifier, width) {
@@ -344,7 +350,7 @@ Rectangle {
 
         required property var column
 
-        width: column.width
+        width: root.effectiveColumnWidth(column)
         height: root.height
         color: headerHover.hovered ? root.theme.button : "transparent"
         Accessible.role: Accessible.Button
@@ -404,10 +410,9 @@ Rectangle {
         }
     }
 
-    // Resizing reassigns the columns model, which destroys and recreates every
-    // HeaderCell delegate; a separator MouseArea living in a delegate would
-    // lose the mouse grab mid-drag after a single width update. This overlay
-    // is a direct child of the header, so it keeps the grab for the whole drag.
+    // Keep the mouse grab and the column model stable throughout a drag.
+    // Committing the model only on release avoids recreating every visible
+    // playlist cell on each pointer movement.
     MouseArea {
         id: separatorDrag
 
@@ -417,7 +422,7 @@ Rectangle {
         function boundaryIndexAt(x) {
             let edge = 0
             for (let index = 0; index < root.visibleColumns.length; ++index) {
-                edge += root.visibleColumns[index].width
+                edge += root.effectiveColumnWidth(root.visibleColumns[index])
                 if (x <= edge + 5)
                     return x >= edge - 5 ? index : -1
             }
@@ -438,6 +443,8 @@ Rectangle {
                 return
             }
             dragColumn = root.visibleColumns[index].id
+            root.resizingWidth = root.visibleColumns[index].width
+            root.resizingColumn = dragColumn
             previousX = mouse.x
             mouse.accepted = true
         }
@@ -445,18 +452,34 @@ Rectangle {
             if (dragColumn.length === 0)
                 return
             const index = root.columnIndex(dragColumn)
-            if (index >= 0)
-                root.setColumnWidth(dragColumn,
-                    root.columns[index].width + mouse.x - previousX)
+            if (index >= 0) {
+                const column = root.columns[index]
+                root.resizingWidth = Math.max(column.minimumWidth,
+                    Math.min(column.maximumWidth,
+                        root.resizingWidth + mouse.x - previousX))
+            }
             previousX = mouse.x
         }
         onReleased: {
-            if (dragColumn.length > 0)
-                root.persistLayout()
+            if (dragColumn.length > 0) {
+                const index = root.columnIndex(dragColumn)
+                const changed = index >= 0
+                    && root.columns[index].width !== root.resizingWidth
+                if (changed)
+                    root.setColumnWidth(dragColumn, root.resizingWidth)
+                root.resizingColumn = ""
+                if (changed)
+                    root.persistLayout()
+            }
             dragColumn = ""
         }
-        onCanceled: dragColumn = ""
+        onCanceled: {
+            root.resizingColumn = ""
+            dragColumn = ""
+        }
         onDoubleClicked: mouse => {
+            root.resizingColumn = ""
+            dragColumn = ""
             if (boundaryIndexAt(mouse.x) >= 0)
                 root.autoFitAllColumns()
             mouse.accepted = true
