@@ -3259,23 +3259,56 @@ fn App() -> impl IntoView {
     }
 
 
+    // Remove the selected rows from the pane. The pane is client-owned, so
+    // neither the menu nor the Delete key needs a server request.
+    let remove_selected = move || {
+        let mut indices: Vec<usize> = selected.get_untracked().into_iter().collect();
+        if indices.is_empty() {
+            return;
+        }
+        indices.sort_unstable();
+        let current_index = current.get_untracked();
+        let removed_before_current = indices.iter().filter(|index| **index < current_index).count();
+        set_queue.update(|items| {
+            for index in indices.iter().rev() {
+                if *index < items.len() {
+                    items.remove(*index);
+                }
+            }
+        });
+        let len = queue.get_untracked().len();
+        let next = if len == 0 {
+            0
+        } else {
+            current_index.saturating_sub(removed_before_current).min(len - 1)
+        };
+        if next != current_index {
+            set_current.set(next);
+            set_position.set(0.0);
+            set_media_duration.set(None);
+        }
+        set_selected.set(HashSet::new());
+        set_menu_open.set(false);
+        set_song_menu.set(None);
+    };
+
     // Global keys, from anywhere on the page. Escape dismisses any open menu
     // or dialog; Ctrl/Cmd+A selects the whole pane like the desktop's
     // Select All — except inside a text field, where it keeps selecting text.
     let key_handle = window_event_listener(leptos::ev::keydown, move |ev: web_sys::KeyboardEvent| {
+        let in_text = ev
+            .target()
+            .and_then(|target| target.dyn_into::<web_sys::HtmlElement>().ok())
+            .map(|element| {
+                let tag = element.tag_name().to_ascii_lowercase();
+                tag == "input" || tag == "textarea" || tag == "select"
+                    || element.is_content_editable()
+            })
+            .unwrap_or(false);
         if (ev.ctrl_key() || ev.meta_key())
             && !ev.alt_key()
             && ev.key().eq_ignore_ascii_case("a")
         {
-            let in_text = ev
-                .target()
-                .and_then(|target| target.dyn_into::<web_sys::HtmlElement>().ok())
-                .map(|element| {
-                    let tag = element.tag_name().to_ascii_lowercase();
-                    tag == "input" || tag == "textarea" || tag == "select"
-                        || element.is_content_editable()
-                })
-                .unwrap_or(false);
             if !in_text && !queue.get_untracked().is_empty() {
                 ev.prevent_default();
                 let total = queue.get_untracked().len();
@@ -3286,6 +3319,20 @@ fn App() -> impl IntoView {
                     }
                 });
             }
+            return;
+        }
+        if ev.key() == "Delete"
+            && !in_text
+            && !ev.ctrl_key()
+            && !ev.meta_key()
+            && !ev.alt_key()
+            && !settings_open.get_untracked()
+            && !picker_open.get_untracked()
+            && playlist_dialog.get_untracked().is_none()
+            && !selected.get_untracked().is_empty()
+        {
+            ev.prevent_default();
+            remove_selected();
             return;
         }
         if ev.key() == "Escape" {
@@ -4879,38 +4926,6 @@ fn App() -> impl IntoView {
         }
     };
 
-    // Remove the selected rows from the pane. A row is selected by clicking it;
-    // there is no server call, the pane is client-owned like the desktop queue.
-    let remove_selected = move || {
-        let mut indices: Vec<usize> = selected.get_untracked().into_iter().collect();
-        if indices.is_empty() {
-            return;
-        }
-        indices.sort_unstable();
-        let current_index = current.get_untracked();
-        let removed_before_current = indices.iter().filter(|index| **index < current_index).count();
-        set_queue.update(|items| {
-            for index in indices.iter().rev() {
-                if *index < items.len() {
-                    items.remove(*index);
-                }
-            }
-        });
-        let len = queue.get_untracked().len();
-        let next = if len == 0 {
-            0
-        } else {
-            current_index.saturating_sub(removed_before_current).min(len - 1)
-        };
-        if next != current_index {
-            set_current.set(next);
-            set_position.set(0.0);
-            set_media_duration.set(None);
-        }
-        set_selected.set(HashSet::new());
-        set_menu_open.set(false);
-    };
-
     // Clear Playlist / Clear Queue: the web pane is the queue, so both empty it.
     let clear_pane = move || {
         set_queue.set(Vec::new());
@@ -6322,8 +6337,10 @@ fn App() -> impl IntoView {
                                             on:contextmenu=move |ev: web_sys::MouseEvent| {
                                                 ev.prevent_default();
                                                 set_selected.update(|set| {
-                                                    set.clear();
-                                                    set.insert(index);
+                                                    if !set.contains(&index) {
+                                                        set.clear();
+                                                        set.insert(index);
+                                                    }
                                                 });
                                                 set_song_menu.set(Some((
                                                     ev.client_x() as f64,
