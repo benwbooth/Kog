@@ -1821,6 +1821,29 @@ fn App() -> impl IntoView {
     // mid-song. A fresh page load starts stopped, and Stop returns here, so
     // the current row shows no playing or paused glyph.
     let (stopped, set_stopped) = signal(true);
+    // Touch mode: coarse-pointer devices (phones, tablets) get single-tap
+    // activation — taps play and enqueue, so nothing requires a double
+    // click, a hold, or a drag. Holds still open the context menus.
+    // ?touch=1 / ?touch=0 force the mode (trying it on a desktop, or a
+    // fine-pointer device that still wants taps).
+    let touch_mode = {
+        let coarse = web_sys::window()
+            .and_then(|window| window.match_media("(pointer: coarse)").ok().flatten())
+            .map(|media| media.matches())
+            .unwrap_or(false);
+        match web_sys::window().and_then(|window| window.location().search().ok()) {
+            Some(search) if search.contains("touch=0") => false,
+            Some(search) if search.contains("touch=1") => true,
+            _ => coarse,
+        }
+    };
+    // The stylesheet keys the touch affordances (+ buttons) off this class,
+    // so the forced mode and the detected mode look the same.
+    if touch_mode {
+        if let Some(body) = web_sys::window().and_then(|window| window.document()).map(|document| document.body()).flatten() {
+            let _ = body.class_list().add_1("touch");
+        }
+    }
     // One-line outcomes for actions the pane itself shows nothing about,
     // e.g. "Added to playlist"; shown where the track count normally lives.
     let (status_note, set_status_note) = signal(String::new());
@@ -5497,6 +5520,7 @@ fn App() -> impl IntoView {
                                                 let row_dbl = row.clone();
                                                 let row_menu = row.clone();
                                                 let row_drag = row.clone();
+                                                let row_add = row.clone();
                                                 let row_name = row.name.clone();
                                                 let tree_toggle = tree_toggle.clone();
                                                 let add_row_to_playlist = add_row_to_playlist.clone();
@@ -5545,9 +5569,21 @@ fn App() -> impl IntoView {
                                                             set_tree_selected_dir.set(row_click.is_dir);
                                                             if row_click.is_dir {
                                                                 tree_toggle(row_click.path.clone());
+                                                            } else if touch_mode {
+                                                                // Touch: tapping a file
+                                                                // queues it, like the
+                                                                // desktop's double click.
+                                                                add_row_to_playlist(row_click.clone());
                                                             }
                                                         }
                                                         on:dblclick=move |_| {
+                                                            // Touch handled the queue on
+                                                            // the tap; the second tap of
+                                                            // a double must not queue a
+                                                            // second copy.
+                                                            if touch_mode {
+                                                                return;
+                                                            }
                                                             // The desktop's
                                                             // activate: a double
                                                             // click queues the
@@ -5600,6 +5636,27 @@ fn App() -> impl IntoView {
                                                                     tree_search.get(),
                                                                 )
                                                             }}
+                                                        </span>
+                                                        // Touch's visible add: enqueues
+                                                        // the folder or file without a
+                                                        // double click, drag, or hold.
+                                                        // Hidden on fine pointers by the
+                                                        // stylesheet, like the drag grip.
+                                                        <span
+                                                            class="tree-add"
+                                                            title="Add to playlist"
+                                                            on:click={
+                                                                let add_row_to_playlist =
+                                                                    add_row_to_playlist.clone();
+                                                                let row_add = row_add.clone();
+                                                                move |ev: web_sys::MouseEvent| {
+                                                                    ev.stop_propagation();
+                                                                    add_row_to_playlist(
+                                                                        row_add.clone(),
+                                                                    );
+                                                                }
+                                                            }
+                                                        >"+"
                                                         </span>
                                                     </button>
                                                 }
@@ -5706,6 +5763,16 @@ fn App() -> impl IntoView {
                                             class="tree-row favorite-row"
                                             title="Double-click to add to the playlist, or drag it there"
                                             draggable="true"
+                                            on:click=move |_| {
+                                                // Touch: a tap opens the list in
+                                                // the pane; the + button appends.
+                                                if touch_mode {
+                                                    replace_pane_with_playlist(
+                                                        0,
+                                                        "Favorites".to_owned(),
+                                                    );
+                                                }
+                                            }
                                             on:dragstart=move |ev: web_sys::DragEvent| {
                                                 set_dragging_playlist.set(Some(0));
                                                 if let Some(transfer) = ev.data_transfer() {
@@ -5714,11 +5781,27 @@ fn App() -> impl IntoView {
                                                 }
                                             }
                                             on:dragend=move |_| set_dragging_playlist.set(None)
-                                            on:dblclick=move |_| append_playlist(0)
+                                            on:dblclick=move |_| {
+                                                if !touch_mode {
+                                                    append_playlist(0);
+                                                }
+                                            }
                                         >
                                             <span class="twisty"></span>
                                             <span class="favorite-star">"★"</span>
                                             <span class="label">"Favorites"</span>
+                                            <span
+                                                class="tree-add"
+                                                title="Add to playlist"
+                                                on:click={
+                                                    let append_playlist = append_playlist.clone();
+                                                    move |ev: web_sys::MouseEvent| {
+                                                        ev.stop_propagation();
+                                                        append_playlist(0);
+                                                    }
+                                                }
+                                            >"+"
+                                            </span>
                                         </button>
                                         }
                                     }
@@ -5732,11 +5815,23 @@ fn App() -> impl IntoView {
                                             let drag_id = id;
                                             let drag_label = label.clone();
                                             let menu_label = label.clone();
+                                            let open_label = label.clone();
                                             view! {
                                                 <button
                                                     class="tree-row playlist-row"
                                                     title="Double-click to add to the playlist, or drag it there"
                                                     draggable="true"
+                                                    on:click=move |_| {
+                                                        // Touch: a tap opens the
+                                                        // playlist in the pane; the
+                                                        // + button appends.
+                                                        if touch_mode {
+                                                            replace_pane_with_playlist(
+                                                                drag_id,
+                                                                open_label.clone(),
+                                                            );
+                                                        }
+                                                    }
                                                     on:dragstart=move |ev: web_sys::DragEvent| {
                                                         set_dragging_playlist.set(Some(drag_id));
                                                         if let Some(transfer) = ev.data_transfer() {
@@ -5745,7 +5840,11 @@ fn App() -> impl IntoView {
                                                         }
                                                     }
                                                     on:dragend=move |_| set_dragging_playlist.set(None)
-                                                    on:dblclick=move |_| append_playlist(drag_id)
+                                                    on:dblclick=move |_| {
+                                                        if !touch_mode {
+                                                            append_playlist(drag_id);
+                                                        }
+                                                    }
                                                     on:contextmenu=move |ev: web_sys::MouseEvent| {
                                                         ev.prevent_default();
                                                         ev.stop_propagation();
@@ -5780,6 +5879,19 @@ fn App() -> impl IntoView {
                                                         />
                                                     </Show>
                                                     <span class="count">{count}</span>
+                                                    <span
+                                                        class="tree-add"
+                                                        title="Add to playlist"
+                                                        on:click={
+                                                            let append_playlist =
+                                                                append_playlist.clone();
+                                                            move |ev: web_sys::MouseEvent| {
+                                                                ev.stop_propagation();
+                                                                append_playlist(drag_id);
+                                                            }
+                                                        }
+                                                    >"+"
+                                                    </span>
                                                 </button>
                                             }
                                         }
@@ -5968,6 +6080,23 @@ fn App() -> impl IntoView {
                                                 )));
                                             }
                                             on:click=move |ev: web_sys::MouseEvent| {
+                                                // Touch: a tap is the activate.
+                                                // The tapped row plays; a tap on
+                                                // the current row does nothing
+                                                // (pause lives on the transport
+                                                // button), so a double tap can
+                                                // never end up paused.
+                                                if touch_mode {
+                                                    if current.get_untracked() != index {
+                                                        set_selected.set(HashSet::from([index]));
+                                                        set_current.set(index);
+                                                        set_position.set(0.0);
+                                                        set_media_duration.set(None);
+                                                        set_stopped.set(false);
+                                                        set_playing.set(true);
+                                                    }
+                                                    return;
+                                                }
                                                 // A single click only selects,
                                                 // like the desktop: a song starts
                                                 // on double click.
@@ -5986,6 +6115,12 @@ fn App() -> impl IntoView {
                                             }
                                             on:dblclick=move |ev: web_sys::MouseEvent| {
                                                 ev.prevent_default();
+                                                // Touch handled the activation on
+                                                // the tap; the second tap of a
+                                                // double must not toggle again.
+                                                if touch_mode {
+                                                    return;
+                                                }
                                                 // The desktop's activate: the
                                                 // playing row toggles pause, any
                                                 // other row starts playing.

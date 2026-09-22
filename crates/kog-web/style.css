@@ -823,6 +823,38 @@ button:focus-visible {
   text-align: center;
 }
 
+/* The touch-mode add button on tree, folder, and playlist rows: a visible
+ * tap target that enqueues, replacing the desktop's double click, drag,
+ * and long-press paths. */
+.tree-add {
+  display: none;
+  flex: none;
+  margin-left: auto;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 21px;
+  text-align: center;
+  /* Taps on the button must not select the row or open its menu. */
+  touch-action: manipulation;
+}
+
+.tree-add:active {
+  color: var(--highlight-text);
+  background: var(--highlight);
+  border-color: var(--highlight);
+}
+
+/* Keyed off the body class the app sets for detected (pointer: coarse) or
+ * forced (?touch=1) touch mode, never off the media query directly: the
+ * mode and its affordances must always agree. */
+body.touch .tree-add {
+  display: block;
+}
+
 @media (pointer: coarse) {
   .drag-grip {
     display: block;
