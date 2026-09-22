@@ -2817,11 +2817,13 @@ ApplicationWindow {
                 // The full path of a row cannot be read when it is elided, and a
                 // ToolTip attached to the row is positioned in the row's own
                 // scrolled content coordinates, which lands it outside the pane.
-                // Show it in a popup parented to the pane instead: parenting it
-                // to the tree itself put the popup in the tree's scrolled
-                // coordinate space, where it wandered under the cursor and
-                // fought the row hover (flicker: visible, empty, gone).
-                Popup {
+                // This is a plain overlay Item rather than a Popup on purpose:
+                // an opened Popup maps a surface that grabs the pointer, and on
+                // Wayland the grab delivers a pointer-leave to the window the
+                // moment it appears — the row's hover exits and the tip ate
+                // itself ~150ms later. A plain item grabs nothing, so the row's
+                // hover keeps flowing and the tip stays while it is hovered.
+                Rectangle {
                     id: treePathTip
                     visible: root.treeHoverPath.length > 0
                     width: Math.min(tipLabel.implicitWidth + 18,
@@ -2829,11 +2831,9 @@ ApplicationWindow {
                     height: tipLabel.implicitHeight + 12
                     x: 4
                     y: {
-                        // Never overlap the pointer: covering the hovered row
-                        // fires its exited, and the clear timer eats the tip
-                        // (a wrapped path is tall enough to reach the cursor
-                        // when clamped). Prefer above the row, then below it,
-                        // clamped inside the pane.
+                        // Keep the tip off the hovered row's text: prefer
+                        // above the row, then below it, clamped inside the
+                        // pane.
                         const rowHeight = treeHoverItem ? treeHoverItem.height : 26
                         const rowBottom = root.treeHoverY + rowHeight + 6
                         const above = root.treeHoverY - height - 6
@@ -2842,24 +2842,20 @@ ApplicationWindow {
                         return Math.round(Math.max(4, Math.min(rowBottom,
                             treeSection.height - height - 4)))
                     }
-                    modal: false
-                    focus: false
-                    closePolicy: Popup.NoAutoClose
-                    padding: 0
+                    z: 3
+                    radius: 5
                     opacity: 0.96
+                    color: root.palette.window
+                    border.width: 1
+                    border.color: root.palette.mid
 
-                    background: Rectangle {
-                        radius: 5
-                        color: root.palette.window
-                        border.width: 1
-                        border.color: root.palette.mid
-                    }
-                    contentItem: Label {
+                    Label {
                         id: tipLabel
-                        leftPadding: 9
-                        rightPadding: 9
-                        topPadding: 6
-                        bottomPadding: 6
+                        anchors.fill: parent
+                        anchors.leftMargin: 9
+                        anchors.rightMargin: 9
+                        anchors.topMargin: 6
+                        anchors.bottomMargin: 6
                         text: root.treeHoverPath
                         color: root.palette.text
                         font.pixelSize: 12
