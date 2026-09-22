@@ -2828,8 +2828,20 @@ ApplicationWindow {
                         Math.max(120, treeSection.width - 16))
                     height: tipLabel.implicitHeight + 12
                     x: 4
-                    y: Math.max(4, Math.min(treeSection.height - height - 4,
-                        root.treeHoverY + 28))
+                    y: {
+                        // Never overlap the pointer: covering the hovered row
+                        // fires its exited, and the clear timer eats the tip
+                        // (a wrapped path is tall enough to reach the cursor
+                        // when clamped). Prefer above the row, then below it,
+                        // clamped inside the pane.
+                        const rowHeight = treeHoverItem ? treeHoverItem.height : 26
+                        const rowBottom = root.treeHoverY + rowHeight + 6
+                        const above = root.treeHoverY - height - 6
+                        if (above >= 4)
+                            return Math.round(above)
+                        return Math.round(Math.max(4, Math.min(rowBottom,
+                            treeSection.height - height - 4)))
+                    }
                     modal: false
                     focus: false
                     closePolicy: Popup.NoAutoClose
