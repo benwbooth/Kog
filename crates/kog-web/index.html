@@ -8,7 +8,10 @@
     <meta name="description" content="Kog web player" />
     <!-- Home screen installs: the PNG is what iOS pins (it cannot use the SVG
          favicon), the manifest drives Android and the standalone launch. -->
-    <meta name="theme-color" content="#1b1e20" />
+    <!-- The status-bar strip matches the toolbar's surface per scheme: a
+         fixed dark value read as a faded band over the light theme. -->
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#202427" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#e7e9ec" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
