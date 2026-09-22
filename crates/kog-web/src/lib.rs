@@ -3368,10 +3368,11 @@ fn App() -> impl IntoView {
                     return;
                 }
                 if let Ok(context) = web_sys::AudioContext::new() {
+                    // resume() is a promise: the state flips a tick later,
+                    // so store the context now and let the poller re-check
+                    // (and keep re-asking) once it has settled.
                     let _ = context.resume();
-                    if context.state() == web_sys::AudioContextState::Running {
-                        *slot = Some(context);
-                    }
+                    *slot = Some(context);
                 }
             });
             let document = web_sys::window()
@@ -3391,8 +3392,24 @@ fn App() -> impl IntoView {
             let graph = graph.clone();
             let context_slot = context_slot.clone();
             Rc::new(move || {
-                let Some(context) = context_slot.borrow().clone() else {
-                    return;
+                // Get or create the context right here: the first playing
+                // tick follows the click that started playback, which is
+                // itself the gesture a context legally needs — no reliance
+                // on a separate warmer having run. A not-yet-running
+                // context just retries on the next tick.
+                // Bind the snapshot first: a match scrutinee's temporary
+                // lives through the whole match, so borrowing the slot
+                // mutably inside an arm would double-borrow and panic.
+                let existing = context_slot.borrow().clone();
+                let context = match existing {
+                    Some(context) => context,
+                    None => match web_sys::AudioContext::new() {
+                        Ok(context) => {
+                            *context_slot.borrow_mut() = Some(context.clone());
+                            context
+                        }
+                        Err(_) => return,
+                    },
                 };
                 let _ = context.resume();
                 if context.state() != web_sys::AudioContextState::Running {
@@ -3435,8 +3452,63 @@ fn App() -> impl IntoView {
             })
         };
 
+        let meter_ticks = Rc::new(std::cell::Cell::new(0u32));
+        let meter_debug = web_sys::window().map(|window| {
+            let object = js_sys::Object::new();
+            let handle = wasm_bindgen::JsValue::from(object.clone());
+            let _ = js_sys::Reflect::set(
+                &wasm_bindgen::JsValue::from(window),
+                &js_sys::JsString::from("__kogMeter"),
+                &handle,
+            );
+            object
+        });
         let levels_poll = Closure::<dyn FnMut()>::new(move || {
+            meter_ticks.set(meter_ticks.get() + 1);
+            let meter_ticks = meter_ticks.clone();
+            let report = |context: Option<&web_sys::AudioContext>, tap: bool, live: Option<bool>| {
+                let Some(target) = meter_debug.as_ref() else {
+                    return;
+                };
+                let state = match context {
+                    Some(context) => match context.state() {
+                        web_sys::AudioContextState::Running => "running",
+                        web_sys::AudioContextState::Suspended => "suspended",
+                        _ => "closed",
+                    },
+                    None => "not created",
+                };
+                let _ = js_sys::Reflect::set(
+                    target,
+                    &js_sys::JsString::from("context"),
+                    &js_sys::JsString::from(state).into(),
+                );
+                let _ = js_sys::Reflect::set(
+                    target,
+                    &js_sys::JsString::from("tap"),
+                    &wasm_bindgen::JsValue::from_bool(tap),
+                );
+                if let Some(live) = live {
+                    let _ = js_sys::Reflect::set(
+                        target,
+                        &js_sys::JsString::from("signal"),
+                        &wasm_bindgen::JsValue::from_bool(live),
+                    );
+                }
+                let _ = js_sys::Reflect::set(
+                    target,
+                    &js_sys::JsString::from("ticks"),
+                    &wasm_bindgen::JsValue::from_f64(f64::from(meter_ticks.get())),
+                );
+                let _ = js_sys::Reflect::set(
+                    target,
+                    &js_sys::JsString::from("playing"),
+                    &wasm_bindgen::JsValue::from_bool(playing.get_untracked()),
+                );
+            };
             if !playing.get_untracked() {
+                let warmed = context_slot.borrow().clone();
+                report(warmed.as_ref(), graph.borrow().is_some(), None);
                 set_audio_levels.set([0.0; 5]);
                 return;
             }
@@ -3444,11 +3516,18 @@ fn App() -> impl IntoView {
                 return;
             };
             if audio.paused() || audio.muted() || audio.volume() <= 0.0 {
+                let warmed = context_slot.borrow().clone();
+                report(warmed.as_ref(), graph.borrow().is_some(), None);
                 set_audio_levels.set([0.0; 5]);
                 return;
             }
             if graph.borrow().is_none() {
                 build_tap();
+                if graph.borrow().is_none() {
+                    let warmed = context_slot.borrow().clone();
+                    report(warmed.as_ref(), false, None);
+                    return;
+                }
             }
             // Cloned handles: no borrow is held across the stale-tap drop.
             let Some((context, analyser)) = graph.borrow().clone() else {
@@ -3458,6 +3537,7 @@ fn App() -> impl IntoView {
             let mut samples = vec![0.0_f32; analyser.fft_size() as usize];
             analyser.get_float_time_domain_data(&mut samples);
             let live = samples.iter().any(|sample| sample.abs() > 0.00001);
+            report(Some(&context), true, Some(live));
             if !live {
                 // Audibly playing but silent reads: the tap went stale
                 // (a track change can drop its tracks). Drop it; the next
