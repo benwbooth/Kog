@@ -2785,8 +2785,15 @@ ApplicationWindow {
                 }
                 Timer {
                     id: treeHoverClearTimer
-                    interval: 150
+                    interval: 300
                     onTriggered: {
+                        // Opening the tip makes Wayland deliver a spurious
+                        // pointer-leave to the row; the re-enter lands after
+                        // this timer fires, so clearing here would flash the
+                        // tip off and back forever. While the pointer is
+                        // still on the row, the tip stays.
+                        if (treePointer.containsMouse)
+                            return
                         root.treeHoverPath = ""
                         root.treeHoverItem = null
                     }
