@@ -3452,63 +3452,8 @@ fn App() -> impl IntoView {
             })
         };
 
-        let meter_ticks = Rc::new(std::cell::Cell::new(0u32));
-        let meter_debug = web_sys::window().map(|window| {
-            let object = js_sys::Object::new();
-            let handle = wasm_bindgen::JsValue::from(object.clone());
-            let _ = js_sys::Reflect::set(
-                &wasm_bindgen::JsValue::from(window),
-                &js_sys::JsString::from("__kogMeter"),
-                &handle,
-            );
-            object
-        });
         let levels_poll = Closure::<dyn FnMut()>::new(move || {
-            meter_ticks.set(meter_ticks.get() + 1);
-            let meter_ticks = meter_ticks.clone();
-            let report = |context: Option<&web_sys::AudioContext>, tap: bool, live: Option<bool>| {
-                let Some(target) = meter_debug.as_ref() else {
-                    return;
-                };
-                let state = match context {
-                    Some(context) => match context.state() {
-                        web_sys::AudioContextState::Running => "running",
-                        web_sys::AudioContextState::Suspended => "suspended",
-                        _ => "closed",
-                    },
-                    None => "not created",
-                };
-                let _ = js_sys::Reflect::set(
-                    target,
-                    &js_sys::JsString::from("context"),
-                    &js_sys::JsString::from(state).into(),
-                );
-                let _ = js_sys::Reflect::set(
-                    target,
-                    &js_sys::JsString::from("tap"),
-                    &wasm_bindgen::JsValue::from_bool(tap),
-                );
-                if let Some(live) = live {
-                    let _ = js_sys::Reflect::set(
-                        target,
-                        &js_sys::JsString::from("signal"),
-                        &wasm_bindgen::JsValue::from_bool(live),
-                    );
-                }
-                let _ = js_sys::Reflect::set(
-                    target,
-                    &js_sys::JsString::from("ticks"),
-                    &wasm_bindgen::JsValue::from_f64(f64::from(meter_ticks.get())),
-                );
-                let _ = js_sys::Reflect::set(
-                    target,
-                    &js_sys::JsString::from("playing"),
-                    &wasm_bindgen::JsValue::from_bool(playing.get_untracked()),
-                );
-            };
             if !playing.get_untracked() {
-                let warmed = context_slot.borrow().clone();
-                report(warmed.as_ref(), graph.borrow().is_some(), None);
                 set_audio_levels.set([0.0; 5]);
                 return;
             }
@@ -3516,16 +3461,12 @@ fn App() -> impl IntoView {
                 return;
             };
             if audio.paused() || audio.muted() || audio.volume() <= 0.0 {
-                let warmed = context_slot.borrow().clone();
-                report(warmed.as_ref(), graph.borrow().is_some(), None);
                 set_audio_levels.set([0.0; 5]);
                 return;
             }
             if graph.borrow().is_none() {
                 build_tap();
                 if graph.borrow().is_none() {
-                    let warmed = context_slot.borrow().clone();
-                    report(warmed.as_ref(), false, None);
                     return;
                 }
             }
@@ -3537,7 +3478,6 @@ fn App() -> impl IntoView {
             let mut samples = vec![0.0_f32; analyser.fft_size() as usize];
             analyser.get_float_time_domain_data(&mut samples);
             let live = samples.iter().any(|sample| sample.abs() > 0.00001);
-            report(Some(&context), true, Some(live));
             if !live {
                 // Audibly playing but silent reads: the tap went stale
                 // (a track change can drop its tracks). Drop it; the next
@@ -6142,77 +6082,68 @@ fn App() -> impl IntoView {
                                                             }
                                                         >
                                                             {text}
+                                                            <Show
+                                                                when=move || {
+                                                                    id == ColumnId::Status
+                                                                        && current.get() == index
+                                                                        && playing.get()
+                                                                }
+                                                                fallback=|| ()
+                                                            >
+                                                                // The desktop's status cell:
+                                                                // the play/pause glyph with
+                                                                // the five-band waveform
+                                                                // beside it, centered in the
+                                                                // cell. Paint styles are
+                                                                // inline so a stale cached
+                                                                // stylesheet cannot leave the
+                                                                // bars unstyled (invisible).
+                                                                <span
+                                                                    class="row-meter"
+                                                                    style="display: inline-flex; align-items: flex-end; gap: 1px; width: 16px; height: 14px; padding: 1px; box-sizing: border-box; border-radius: 4px; vertical-align: middle; margin-left: 3px; pointer-events: none; background: rgba(5, 20, 28, 0.78); border: 1px solid rgba(255, 255, 255, 0.18);"
+                                                                >
+                                                                    <For
+                                                                        each=|| [0usize, 1, 2, 3, 4]
+                                                                        key=|band| *band
+                                                                        let:band
+                                                                    >
+                                                                        <span
+                                                                            class="row-meter-bar"
+                                                                            style=move || {
+                                                                                let levels = audio_levels.get();
+                                                                                let level = levels
+                                                                                    .get(band)
+                                                                                    .copied()
+                                                                                    .unwrap_or(0.0)
+                                                                                    .clamp(0.0, 1.0);
+                                                                                // The desktop's
+                                                                                // selected-row set:
+                                                                                // the current row
+                                                                                // is highlight
+                                                                                // blue, and the
+                                                                                // normal colors
+                                                                                // vanish on it.
+                                                                                const COLORS: [&str; 5] = [
+                                                                                    "#8cbcff",
+                                                                                    "#64d8ff",
+                                                                                    "#47eee7",
+                                                                                    "#53edb4",
+                                                                                    "#82ef99",
+                                                                                ];
+                                                                                format!(
+                                                                                    "width: 2px; flex: none; min-height: 2px; border-radius: 1px; background: {}; height: {}px;",
+                                                                                    COLORS[band],
+                                                                                    2.0 + 10.0 * level
+                                                                                )
+                                                                            }
+                                                                        ></span>
+                                                                    </For>
+                                                                </span>
+                                                            </Show>
                                                         </span>
                                                     }
                                                 }
                                             </For>
-                                            {/* The playing row's level
-                                                meter, the desktop's
-                                                five-band waveform. A sticky
-                                                grid overlay: the pane
-                                                scrolls as one wide table,
-                                                so a plain right-edge pin
-                                                would sit off-screen beside
-                                                the wide columns — sticky
-                                                keeps it at the visible
-                                                right edge, like the
-                                                desktop's viewport-width
-                                                rows. Shown while playing,
-                                                like the desktop. */}
-                                            <Show
-                                                when=move || {
-                                                    current.get() == index && playing.get()
-                                                }
-                                                fallback=|| ()
-                                            >
-                                                // The placement and paint
-                                                // styles are inline so a stale
-                                                // cached stylesheet cannot
-                                                // leave the meter in-flow
-                                                // (growing the row) or the
-                                                // bars unstyled (invisible).
-                                                <span
-                                                    class="row-meter"
-                                                    style="grid-row: 1; grid-column: 1 / -1; position: sticky; right: 4px; justify-self: end; align-self: center; display: flex; align-items: flex-end; gap: 1px; width: 16px; height: 14px; padding: 1px; box-sizing: border-box; border-radius: 4px; pointer-events: none; z-index: 1; background: rgba(5, 20, 28, 0.78); border: 1px solid rgba(255, 255, 255, 0.18);"
-                                                >
-                                                    <For
-                                                        each=|| [0usize, 1, 2, 3, 4]
-                                                        key=|band| *band
-                                                        let:band
-                                                    >
-                                                        <span
-                                                            class="row-meter-bar"
-                                                            style=move || {
-                                                                let levels = audio_levels.get();
-                                                                let level = levels
-                                                                    .get(band)
-                                                                    .copied()
-                                                                    .unwrap_or(0.0)
-                                                                    .clamp(0.0, 1.0);
-                                                                // The desktop's
-                                                                // selected-row set:
-                                                                // the current row
-                                                                // is highlight
-                                                                // blue, and the
-                                                                // normal colors
-                                                                // vanish on it.
-                                                                const COLORS: [&str; 5] = [
-                                                                    "#8cbcff",
-                                                                    "#64d8ff",
-                                                                    "#47eee7",
-                                                                    "#53edb4",
-                                                                    "#82ef99",
-                                                                ];
-                                                                format!(
-                                                                    "width: 2px; flex: none; min-height: 2px; border-radius: 1px; background: {}; height: {}px;",
-                                                                    COLORS[band],
-                                                                    2.0 + 10.0 * level
-                                                                )
-                                                            }
-                                                        ></span>
-                                                    </For>
-                                                </span>
-                                            </Show>
                                         <span
                                             class="drag-grip"
                                             title="Drag to reorder"

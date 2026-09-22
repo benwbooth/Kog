@@ -757,19 +757,15 @@ button:focus-visible {
   cursor: pointer;
 }
 
-/* The playing row's five-band level meter, pinned to the row's right edge
-   like the desktop's playing waveform. */
+/* The playing row's five-band level meter, sitting beside the play glyph
+   in the status cell, exactly like the desktop's PlaylistRow. */
 .row-meter {
-  /* Overlays row 1 across every column (placed after the cells so their
-   * auto-placement is undisturbed) and sticks to the scrollport's right
-   * edge, so the waveform stays visible however wide the table is. */
-  grid-row: 1;
-  grid-column: 1 / -1;
-  position: sticky;
-  right: 4px;
-  justify-self: end;
-  align-self: center;
-  display: flex;
+  /* In flow inside the status cell: an in-flow inline chip can never join
+   * the row's grid placement (a definite grid placement made the
+   * auto-placed cells spill into a second grid row, growing the row), and
+   * the 14px chip fits the 26px row with room to spare. Paint styles are
+   * duplicated inline in the markup against stale cached stylesheets. */
+  display: inline-flex;
   align-items: flex-end;
   gap: 1px;
   width: 16px;
@@ -777,8 +773,9 @@ button:focus-visible {
   padding: 1px;
   box-sizing: border-box;
   border-radius: 4px;
+  vertical-align: middle;
+  margin-left: 3px;
   pointer-events: none;
-  z-index: 1;
 }
 
 /* The desktop's selected-row backing plate behind the waveform. */
@@ -975,6 +972,14 @@ button:focus-visible {
 .track .star-cell,
 .track .status-cell {
   text-align: center;
+}
+
+/* The desktop's status column delegates paint across the full 38px cell
+   (no padding), which is exactly what the glyph-plus-waveform pair needs
+   to fit without clipping. */
+.columns .status-cell,
+.track .status-cell {
+  padding: 0;
 }
 
 .track .star-cell {
