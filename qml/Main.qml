@@ -2790,10 +2790,14 @@ ApplicationWindow {
                         // Opening the tip makes Wayland deliver a spurious
                         // pointer-leave to the row; the re-enter lands after
                         // this timer fires, so clearing here would flash the
-                        // tip off and back forever. While the pointer is
-                        // still on the row, the tip stays.
-                        if (treePointer.containsMouse)
+                        // tip off and back forever. While the pointer is on
+                        // the row, keep watching: a missed exit event (the
+                        // cursor left for another pane) still clears on the
+                        // next tick.
+                        if (treePointer.containsMouse) {
+                            restart()
                             return
+                        }
                         root.treeHoverPath = ""
                         root.treeHoverItem = null
                     }
