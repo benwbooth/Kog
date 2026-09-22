@@ -121,10 +121,68 @@ Item {
         width: column.width
         height: root.height
 
+        // The title column carries the track's format icon, the same art
+        // the file tree shows, resolved through the tree model so archive
+        // members and subsongs agree with it.
+        readonly property string trackPath:
+            cell.column.id === "title"
+                ? String(root.app.track_value_at(root.rowIndex, "path"))
+                : ""
+        readonly property string formatIcon:
+            cell.column.id === "title" && trackPath.length > 0
+                ? String(root.searchModel.icon_name(trackPath))
+                : ""
+        readonly property bool customIcon:
+            formatIcon.startsWith("kog-format-")
+        readonly property bool useLightIcon: root.selected
+            || (0.2126 * root.theme.base.r
+                + 0.7152 * root.theme.base.g
+                + 0.0722 * root.theme.base.b) < 0.5
+        readonly property string iconExt: {
+            if (formatIcon !== "kog-format-paper")
+                return ""
+            const dot = trackPath.lastIndexOf(".")
+            if (dot < 0)
+                return ""
+            return trackPath.slice(dot + 1).toUpperCase().slice(0, 4)
+        }
+
+        Item {
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            width: 18
+            height: 18
+            visible: cell.customIcon
+            clip: true
+
+            Image {
+                anchors.fill: parent
+                source: cell.customIcon
+                    ? Qt.resolvedUrl("icons/" + cell.formatIcon
+                        + (cell.useLightIcon ? "-light" : "") + ".svg")
+                    : ""
+                sourceSize.width: 18
+                sourceSize.height: 18
+                fillMode: Image.PreserveAspectFit
+                mipmap: true
+            }
+            Label {
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                visible: cell.iconExt.length > 0
+                text: cell.iconExt
+                font.pixelSize: 7
+                font.bold: true
+                horizontalAlignment: Text.AlignHCenter
+                color: cell.useLightIcon ? "#000000" : "#ffffff"
+            }
+        }
+
         SearchHighlightLabel {
             id: cellLabel
             anchors.fill: parent
-            leftPadding: 6
+            leftPadding: cell.column.id === "title" ? 26 : 6
             rightPadding: 6
             sourceText: cell.text
             query: root.searchQuery

@@ -1,6 +1,7 @@
 #include "kog_file_tree_search.h"
 #include "kog_tree_archive.h"
 #include "kog_media_path.h"
+#include "kog_desktop_integration.h"
 
 #include <QtConcurrent/QtConcurrentRun>
 #include <QtCore/QDirIterator>
@@ -56,6 +57,9 @@ struct TreeEntry {
     {
         // All entries are constructed by workers. Never stat a music file or
         // load the MIME database from a QML delegate on the input thread.
+        // Kog's own art wins; anything playable without dedicated art gets
+        // the paper badge (its extension is badged by the row); only a
+        // suffix-less name falls back to the system theme.
         if (directory) { icon = QStringLiteral("folder"); return; }
         const auto member = kogArchiveLocation(path);
         const auto name = member.archive.isEmpty() ? path : member.entry;
@@ -64,8 +68,12 @@ struct TreeEntry {
         const auto suffix = QFileInfo(name).suffix().toLower();
         auto found = icons.constFind(suffix);
         if (found == icons.cend()) {
-            auto mime = database.mimeTypeForFile(name, QMimeDatabase::MatchExtension);
-            auto value = mime.iconName();
+            auto value = kogFormatIconName(suffix);
+            if (value.isEmpty()) {
+                value = suffix.isEmpty()
+                    ? database.mimeTypeForFile(name, QMimeDatabase::MatchExtension).iconName()
+                    : QStringLiteral("kog-format-paper");
+            }
             if (value.isEmpty()) value = QStringLiteral("audio-x-generic");
             found = icons.insert(suffix, value);
         }

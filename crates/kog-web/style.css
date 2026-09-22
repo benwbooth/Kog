@@ -1798,6 +1798,57 @@ body.touch .tree-add {
   fill: currentColor;
 }
 
+/* Per-format marks, the same art as the desktop tree (qml/icons/kog-format-*).
+ * Inlined SVGs carry fill="#000" presentation attributes, which beat
+ * inheritance, so the tint goes on the paths like the transport icons. The
+ * paper badge overlays its extension in the pane background color, which
+ * contrasts the tinted paper in both themes; selected rows use the
+ * highlight instead. */
+.tree-icon.fmt,
+.cell-icon {
+  position: relative;
+  background-image: none;
+}
+
+.tree-icon.fmt > svg,
+.cell-icon > svg {
+  width: 15px;
+  height: 15px;
+  display: block;
+}
+
+.tree-icon.fmt > svg path,
+.cell-icon > svg path {
+  fill: currentColor;
+}
+
+.tree-icon.fmt .ext,
+.cell-icon .ext {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  font-size: 7px;
+  font-weight: 700;
+  line-height: 1;
+  text-align: center;
+  color: var(--base);
+  pointer-events: none;
+}
+
+.tree-row.selected .ext,
+.track.selected .ext,
+.track.current .ext {
+  color: var(--highlight);
+}
+
+.cell-icon {
+  display: inline-flex;
+  flex: none;
+  margin-right: 5px;
+  vertical-align: -3px;
+}
+
 .update-reload {
   padding: 2px 10px;
   font-size: 11px;

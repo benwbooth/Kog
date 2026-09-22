@@ -3019,7 +3019,25 @@ ApplicationWindow {
                         width: Math.max(0,
                             directoryTree.width - directoryTree.scrollGutter)
                         implicitHeight: 26
-                        icon.name: fileIcon
+                        // Kog's own format art (qml/icons/kog-format-*) wins;
+                        // anything else keeps resolving through the theme.
+                        readonly property bool customIcon:
+                            fileIcon.startsWith("kog-format-")
+                        readonly property bool useLightIcon:
+                            treeDelegate.selected || root.baseLuminance < 0.5
+                        readonly property string iconExt: {
+                            if (fileIcon !== "kog-format-paper")
+                                return ""
+                            const dot = filePath.lastIndexOf(".")
+                            if (dot < 0)
+                                return ""
+                            return filePath.slice(dot + 1).toUpperCase().slice(0, 4)
+                        }
+                        icon.name: customIcon ? "" : fileIcon
+                        icon.source: customIcon
+                            ? Qt.resolvedUrl("icons/" + fileIcon
+                                + (useLightIcon ? "-light" : "") + ".svg")
+                            : ""
                         icon.width: 18
                         icon.height: 18
                         contentItem: RowLayout {
@@ -3028,10 +3046,39 @@ ApplicationWindow {
                             ControlsImpl.IconImage {
                                 Layout.preferredWidth: 18
                                 Layout.preferredHeight: 18
-                                name: treeDelegate.icon.name
+                                visible: !treeDelegate.customIcon
+                                name: fileIcon
                                 sourceSize.width: 18
                                 sourceSize.height: 18
                                 fillMode: Image.PreserveAspectFit
+                            }
+                            Item {
+                                Layout.preferredWidth: 18
+                                Layout.preferredHeight: 18
+                                visible: treeDelegate.customIcon
+                                clip: true
+
+                                Image {
+                                    anchors.fill: parent
+                                    source: treeDelegate.icon.source
+                                    sourceSize.width: 18
+                                    sourceSize.height: 18
+                                    fillMode: Image.PreserveAspectFit
+                                    mipmap: true
+                                }
+                                // The paper fallback badges its extension.
+                                Label {
+                                    anchors.left: parent.left
+                                    anchors.right: parent.right
+                                    anchors.bottom: parent.bottom
+                                    visible: treeDelegate.iconExt.length > 0
+                                    text: treeDelegate.iconExt
+                                    font.pixelSize: 7
+                                    font.bold: true
+                                    horizontalAlignment: Text.AlignHCenter
+                                    color: treeDelegate.useLightIcon
+                                        ? "#000000" : "#ffffff"
+                                }
                             }
                             SearchHighlightLabel {
                                 Layout.fillWidth: true

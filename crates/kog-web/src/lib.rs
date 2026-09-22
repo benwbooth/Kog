@@ -59,6 +59,148 @@ mod icons {
     pub const FOLDER_OPEN: &str = include_str!("../../../qml/icons/folder-open.svg");
     pub const VIEW_LIST_TREE: &str = include_str!("../../../qml/icons/view-list-tree.svg");
     pub const CLEAR_LIST: &str = include_str!("../../../qml/icons/edit-clear-list.svg");
+    /// Per-format tree art, the same files the Qt tree shows
+    /// (qml/icons/kog-format-*.svg), inlined so the stylesheet can tint them
+    /// with the row text color. Only the dark-theme variant is inlined: the
+    /// CSS recolors every path with currentColor, so one copy serves both.
+    pub const FMT_GAMEBOY: &str = include_str!("../../../qml/icons/kog-format-gameboy.svg");
+    pub const FMT_NES: &str = include_str!("../../../qml/icons/kog-format-nes.svg");
+    pub const FMT_SNES: &str = include_str!("../../../qml/icons/kog-format-snes.svg");
+    pub const FMT_GBA: &str = include_str!("../../../qml/icons/kog-format-gba.svg");
+    pub const FMT_DS: &str = include_str!("../../../qml/icons/kog-format-ds.svg");
+    pub const FMT_PSX: &str = include_str!("../../../qml/icons/kog-format-psx.svg");
+    pub const FMT_PS2: &str = include_str!("../../../qml/icons/kog-format-ps2.svg");
+    pub const FMT_SATURN: &str = include_str!("../../../qml/icons/kog-format-saturn.svg");
+    pub const FMT_N64: &str = include_str!("../../../qml/icons/kog-format-n64.svg");
+    pub const FMT_ARCADE: &str = include_str!("../../../qml/icons/kog-format-arcade.svg");
+    pub const FMT_MSX: &str = include_str!("../../../qml/icons/kog-format-msx.svg");
+    pub const FMT_PCENGINE: &str = include_str!("../../../qml/icons/kog-format-pcengine.svg");
+    pub const FMT_SPECTRUM: &str = include_str!("../../../qml/icons/kog-format-spectrum.svg");
+    pub const FMT_ATARI: &str = include_str!("../../../qml/icons/kog-format-atari.svg");
+    pub const FMT_C64: &str = include_str!("../../../qml/icons/kog-format-c64.svg");
+    pub const FMT_AMIGA: &str = include_str!("../../../qml/icons/kog-format-amiga.svg");
+    pub const FMT_CHIP: &str = include_str!("../../../qml/icons/kog-format-chip.svg");
+    pub const FMT_TRACKER: &str = include_str!("../../../qml/icons/kog-format-tracker.svg");
+    pub const FMT_MIDI: &str = include_str!("../../../qml/icons/kog-format-midi.svg");
+    pub const FMT_AUDIO: &str = include_str!("../../../qml/icons/kog-format-audio.svg");
+    pub const FMT_ARCHIVE: &str = include_str!("../../../qml/icons/kog-format-archive.svg");
+    pub const FMT_PLAYLIST: &str = include_str!("../../../qml/icons/kog-format-playlist.svg");
+    pub const FMT_CUE: &str = include_str!("../../../qml/icons/kog-format-cue.svg");
+    pub const FMT_PAPER: &str = include_str!("../../../qml/icons/kog-format-paper.svg");
+}
+
+/// A file's mark in the tree and the playlist title column: dedicated art,
+/// the paper badge carrying the extension, or nothing (folders and the `..`
+/// row keep their own marks).
+enum FileIcon {
+    Svg(&'static str),
+    Badge(String),
+    None,
+}
+
+/// Lowercased suffix without the dot, or "" when there is none. Mirrors the
+/// suffix extraction in kogFormatIconName
+/// (native/kog_desktop_integration.cpp); the extension table below must stay
+/// in agreement with it.
+fn suffix_of(name: &str) -> String {
+    let base = name.rsplit('/').next().unwrap_or(name);
+    match base.rsplit_once('.') {
+        Some((_, ext)) if !ext.is_empty() => ext.to_ascii_lowercase(),
+        _ => String::new(),
+    }
+}
+
+/// Dedicated-art key for a suffix, or None for the paper badge. Extension
+/// families mirror the decoder backends' static allow-lists; tracker/MIDI
+/// membership follows backend priority (mus/xmf are MIDI, dsf is Saturn).
+fn format_key(suffix: &str) -> Option<&'static str> {
+    Some(match suffix {
+        "gbs" => "gameboy",
+        "nsf" | "nsfe" => "nes",
+        "spc" | "snsf" | "minisnsf" => "snes",
+        "gsf" | "minigsf" => "gba",
+        "2sf" | "mini2sf" | "ncsf" | "minincsf" => "ds",
+        "psf" | "minipsf" => "psx",
+        "psf2" | "minipsf2" => "ps2",
+        "ssf" | "minissf" | "dsf" | "minidsf" => "saturn",
+        "usf" | "miniusf" => "n64",
+        "qsf" | "miniqsf" => "arcade",
+        "kss" => "msx",
+        "hes" => "pcengine",
+        "ay" => "spectrum",
+        "sap" => "atari",
+        "sid" => "c64",
+        "hvl" | "ahx" => "amiga",
+        "vgm" | "vgz" | "gym" | "s98" | "dro" | "sfm" => "chip",
+        "mptm" | "mod" | "s3m" | "xm" | "it" | "667" | "669" | "amf" | "ams"
+        | "c67" | "cba" | "dbm" | "digi" | "dmf" | "dsm" | "dsym" | "dtm"
+        | "etx" | "far" | "fc" | "fc13" | "fc14" | "fmt" | "fst" | "ftm"
+        | "imf" | "ims" | "ice" | "j2b" | "m15" | "mdl" | "med" | "mms"
+        | "mt2" | "mtm" | "nst" | "okt" | "plm" | "psm" | "pt36" | "ptm"
+        | "puma" | "rtm" | "sfx" | "sfx2" | "smod" | "st26" | "stk" | "stm"
+        | "stx" | "stp" | "symmod" | "tcb" | "gmc" | "gtk" | "gt2" | "ult"
+        | "unic" | "wow" | "gdm" | "mo3" | "oxm" | "umx" | "xpk" | "ppm"
+        | "mmcmp" | "org" | "jxs" => "tracker",
+        "kar" | "mid" | "midi" | "rmi" | "mids" | "mds" | "lds" | "xmf"
+        | "mxmf" | "hmi" | "hmp" | "hmq" | "mus" | "xmi" => "midi",
+        "aac" | "adts" | "aif" | "aifc" | "aiff" | "alac" | "caf" | "flac"
+        | "m4a" | "m4b" | "mka" | "mkv" | "mp1" | "mp2" | "mp3" | "mp4"
+        | "oga" | "ogg" | "ogv" | "opus" | "wav" | "wave" | "webm" | "wma"
+        | "asf" | "tak" | "m4r" | "m2a" | "mpa" | "ape" | "ac3" | "dts"
+        | "dtshd" | "tta" | "vqf" | "vqe" | "vql" | "ra" | "rm" | "rmj"
+        | "weba" | "dsdiff" | "dff" | "wsd" | "wv" | "wvp" | "mpc" | "shn"
+        | "iff" | "apl" => "audio",
+        "zip" | "rar" | "7z" | "rsn" | "vgm7z" | "gz" | "mdz" | "mdr"
+        | "s3z" | "xmz" | "itz" | "mptmz" => "archive",
+        "m3u" | "m3u8" | "pls" => "playlist",
+        "cue" => "cue",
+        _ => return None,
+    })
+}
+
+/// Inline SVG for a dedicated-art key.
+fn format_svg(key: &str) -> &'static str {
+    match key {
+        "gameboy" => icons::FMT_GAMEBOY,
+        "nes" => icons::FMT_NES,
+        "snes" => icons::FMT_SNES,
+        "gba" => icons::FMT_GBA,
+        "ds" => icons::FMT_DS,
+        "psx" => icons::FMT_PSX,
+        "ps2" => icons::FMT_PS2,
+        "saturn" => icons::FMT_SATURN,
+        "n64" => icons::FMT_N64,
+        "arcade" => icons::FMT_ARCADE,
+        "msx" => icons::FMT_MSX,
+        "pcengine" => icons::FMT_PCENGINE,
+        "spectrum" => icons::FMT_SPECTRUM,
+        "atari" => icons::FMT_ATARI,
+        "c64" => icons::FMT_C64,
+        "amiga" => icons::FMT_AMIGA,
+        "chip" => icons::FMT_CHIP,
+        "tracker" => icons::FMT_TRACKER,
+        "midi" => icons::FMT_MIDI,
+        "audio" => icons::FMT_AUDIO,
+        "archive" => icons::FMT_ARCHIVE,
+        "playlist" => icons::FMT_PLAYLIST,
+        "cue" => icons::FMT_CUE,
+        _ => icons::FMT_PAPER,
+    }
+}
+
+/// The mark for a tree row or playlist entry. Archive members resolve by
+/// their member name; anything without a suffix keeps the caller's default.
+fn file_icon(path: &str, entry: &str) -> FileIcon {
+    let name = if entry.is_empty() { path } else { entry };
+    let suffix = suffix_of(name);
+    if suffix.is_empty() {
+        return FileIcon::None;
+    }
+    match format_key(&suffix) {
+        Some(key) => FileIcon::Svg(format_svg(key)),
+        // Badged like the desktop's paper fallback, capitals, four glyphs.
+        None => FileIcon::Badge(suffix.to_ascii_uppercase().chars().take(4).collect()),
+    }
 }
 
 /// One playable entry, addressed the way the whole API addresses tracks.
@@ -5619,6 +5761,31 @@ fn App() -> impl IntoView {
                                                     }
                                                 };
                                                 let indent = 6 + row.depth * 16;
+                                                // Per-format mark, the same
+                                                // art the desktop tree shows.
+                                                let (icon_svg, icon_badge): (
+                                                    Option<&'static str>,
+                                                    Option<String>,
+                                                ) = if row.is_dir {
+                                                    (None, None)
+                                                } else {
+                                                    match file_icon(&row.path, &row.entry) {
+                                                        FileIcon::Svg(svg) => (Some(svg), None),
+                                                        FileIcon::Badge(ext) => (None, Some(ext)),
+                                                        FileIcon::None => (None, None),
+                                                    }
+                                                };
+                                                let icon_html: Option<String> = match (
+                                                    icon_svg, &icon_badge,
+                                                ) {
+                                                    (Some(svg), _) => Some(svg.to_owned()),
+                                                    (None, Some(ext)) => Some(format!(
+                                                        "{}<span class=\"ext\">{ext}</span>",
+                                                        icons::FMT_PAPER
+                                                    )),
+                                                    (None, None) => None,
+                                                };
+                                                let has_icon = icon_html.is_some();
                                                 view! {
                                                     <button
                                                         class="tree-row"
@@ -5689,11 +5856,16 @@ fn App() -> impl IntoView {
                                                         on:dragend=move |_| set_dragging_tree.set(None)
                                                     >
                                                         <span class="twisty">{move || twisty()}</span>
-                                                        <span class=if row.is_dir {
-                                                            "tree-icon dir"
-                                                        } else {
-                                                            "tree-icon file"
-                                                        }></span>
+                                                        <span
+                                                            class=if row.is_dir {
+                                                                "tree-icon dir"
+                                                            } else if has_icon {
+                                                                "tree-icon fmt"
+                                                            } else {
+                                                                "tree-icon file"
+                                                            }
+                                                            inner_html=icon_html
+                                                        ></span>
                                                         <span class="label">
                                                             {move || {
                                                                 highlight_label(
@@ -6212,6 +6384,36 @@ fn App() -> impl IntoView {
                                                     let entry = entry.clone();
                                                     let star_entry = entry.clone();
                                                     let toggle_star = toggle_star.clone();
+                                                    // The title column carries
+                                                    // the track's format icon,
+                                                    // the same art the file
+                                                    // tree shows.
+                                                    let title_icon: Option<String> =
+                                                        if id == ColumnId::Title {
+                                                            match file_icon(
+                                                                &entry.path,
+                                                                &entry.entry,
+                                                            ) {
+                                                                FileIcon::Svg(svg) => {
+                                                                    Some(svg.to_owned())
+                                                                }
+                                                                FileIcon::Badge(ext) => {
+                                                                    Some(format!(
+                                                                        "{}<span class=\"ext\">{ext}</span>",
+                                                                        icons::FMT_PAPER
+                                                                    ))
+                                                                }
+                                                                FileIcon::None => None,
+                                                            }
+                                                        } else {
+                                                            None
+                                                        };
+                                                    // Split for the view: the
+                                                    // visibility test borrows
+                                                    // for the row's lifetime
+                                                    // while the markup moves.
+                                                    let title_icon_show =
+                                                        title_icon.is_some();
                                                     let text = move || {
                                                         let meta = meta_for(&metadata.get(), &entry);
                                                         let live = if current.get() == index
@@ -6281,6 +6483,15 @@ fn App() -> impl IntoView {
                                                                 }
                                                             }
                                                         >
+                                                            <Show
+                                                                when=move || title_icon_show
+                                                                fallback=|| ()
+                                                            >
+                                                                <span
+                                                                    class="cell-icon"
+                                                                    inner_html=title_icon.clone().unwrap_or_default()
+                                                                ></span>
+                                                            </Show>
                                                             {text}
                                                             <Show
                                                                 when=move || {
