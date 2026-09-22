@@ -2851,7 +2851,9 @@ ApplicationWindow {
                         text: root.treeHoverPath
                         color: root.palette.text
                         font.pixelSize: 12
-                        elide: Text.ElideMiddle
+                        // A tooltip's whole job is the full text: wrap past
+                        // the pane width, never elide.
+                        wrapMode: Text.Wrap
                         verticalAlignment: Text.AlignVCenter
                     }
                 }
