@@ -966,20 +966,22 @@ button:focus-visible {
   text-align: right;
 }
 
-/* Star and status glyphs are centered like the desktop's icon columns. */
+/* Star glyphs are centered like the desktop's icon columns. */
 .columns .star-cell,
-.columns .status-cell,
-.track .star-cell,
-.track .status-cell {
+.track .star-cell {
   text-align: center;
 }
 
-/* The desktop's status column delegates paint across the full 38px cell
-   (no padding), which is exactly what the glyph-plus-waveform pair needs
-   to fit without clipping. */
+/* The status column holds the play/pause glyph with the playing waveform
+   beside it. Left-justified with a fixed inset, so the glyph sits in the
+   same spot whether the waveform is showing or not (the desktop's centered
+   group would shift it as the waveform comes and goes). The desktop's
+   delegate paints across the full 38px cell (no padding), which is what
+   lets the pair fit without clipping. */
 .columns .status-cell,
 .track .status-cell {
-  padding: 0;
+  padding: 0 0 0 3px;
+  text-align: left;
 }
 
 .track .star-cell {
