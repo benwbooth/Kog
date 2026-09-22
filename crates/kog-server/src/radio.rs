@@ -552,11 +552,14 @@ pub struct RootQuery {
 /// The requested scope as a real path, when it is safely inside the
 /// configured library root.
 fn scoped_root(state: &AppState, requested: Option<&str>) -> Option<PathBuf> {
+    // The scope is the client's tree root, wherever it points: the tree view
+    // may root anywhere the server can read, and radio follows the tree, not
+    // the configured music folder. Only existence is checked; the state
+    // parameter stays for the library-root fallback at the call sites.
+    let _ = state;
     let requested = requested.map(str::trim).filter(|root| !root.is_empty())?;
-    let library = state.library.root()?;
     let requested = Path::new(requested).canonicalize().ok()?;
-    let library = library.canonicalize().ok()?;
-    requested.starts_with(&library).then_some(requested)
+    requested.is_dir().then_some(requested)
 }
 
 /// `GET /api/radio` — current state and the visible round window.

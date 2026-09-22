@@ -423,14 +423,17 @@ Window {
                             spacing: 10
                             PreferenceLabel {
                                 Layout.fillWidth: true
-                                text: root.app.directory_path
+                                // The Server settings' music folder —
+                                // separate from the tree pane's root, which
+                                // lives in the tree header.
+                                text: root.app.music_directory_path
                                 elide: Text.ElideMiddle
                             }
                             RowLayout {
                                 Button {
                                     text: qsTr("Choose…")
                                     icon.name: "folder-open"
-                                    onClicked: root.app.choose_music_folder()
+                                    onClicked: root.app.choose_server_music_folder()
                                 }
                                 Item { Layout.fillWidth: true }
                             }
@@ -1016,16 +1019,10 @@ Window {
                                 Button {
                                     text: qsTr("Choose…")
                                     onClicked: {
-                                        root.app.choose_music_folder()
+                                        // Moves the server's music folder; the
+                                        // running server adopts it live.
+                                        root.app.choose_server_music_folder()
                                         serverState.load()
-                                        // The web tree roots at the music
-                                        // folder: a restart lets the running
-                                        // server see a new folder.
-                                        const running = !!(serverState.status && serverState.status.running)
-                                        if (running) {
-                                            root.app.stop_api_server()
-                                            serverState.start()
-                                        }
                                     }
                                 }
                             }

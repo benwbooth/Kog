@@ -60,6 +60,7 @@ pub mod qobject {
         #[qproperty(i32, queue_count)]
         #[qproperty(QString, total_duration)]
         #[qproperty(QString, directory_path)]
+        #[qproperty(QString, music_directory_path)]
         #[qproperty(QString, soundfont_path)]
         #[qproperty(QString, sc55_rom_path)]
         #[qproperty(QString, mt32_rom_path)]
@@ -132,6 +133,8 @@ pub mod qobject {
         fn open_audio_files(self: Pin<&mut AppController>);
         #[qinvokable]
         fn choose_music_folder(self: Pin<&mut AppController>);
+        #[qinvokable]
+        fn choose_server_music_folder(self: Pin<&mut AppController>);
         #[qinvokable]
         fn save_playlist(self: Pin<&mut AppController>);
         #[qinvokable]
@@ -1997,6 +2000,9 @@ struct ApiServerHandle {
     scheme: &'static str,
     /// Certificate clients should trust, when TLS is on.
     certificate_path: Option<std::path::PathBuf>,
+    /// The served library, kept reachable so the Server settings can move
+    /// its music folder while the server runs.
+    library: Option<std::sync::Arc<kog_server::api::Library>>,
 }
 
 pub struct AppControllerRust {
@@ -2043,6 +2049,7 @@ pub struct AppControllerRust {
     queue_count: i32,
     total_duration: QString,
     directory_path: QString,
+    music_directory_path: QString,
     soundfont_path: QString,
     sc55_rom_path: QString,
     mt32_rom_path: QString,
@@ -2241,6 +2248,16 @@ impl Default for AppControllerRust {
             queue_count: 0,
             total_duration: qstring("Total duration: 0 seconds"),
             directory_path: qstring(directory.to_string_lossy()),
+            // The server's music folder starts from the settings value; it is
+            // a separate concept from the tree root above and only moves when
+            // the Server settings choose a new one.
+            music_directory_path: qstring(
+                app_settings
+                    .music_directory
+                    .as_ref()
+                    .unwrap_or(&directory)
+                    .to_string_lossy(),
+            ),
             soundfont_path,
             sc55_rom_path,
             mt32_rom_path,
@@ -2896,6 +2913,49 @@ impl qobject::AppController {
             return;
         };
         self.as_mut().set_directory(path);
+    }
+
+    /// The Server settings' music folder: what the embedded server browses
+    /// and streams. Separate from the tree pane's root, which is local
+    /// browsing state and moves independently.
+    pub fn choose_server_music_folder(mut self: Pin<&mut Self>) {
+        let directory = self
+            .as_ref()
+            .rust()
+            .music_directory_path
+            .to_string();
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Choose Server Music Folder")
+            .set_directory(std::path::PathBuf::from(&directory))
+            .pick_folder()
+        else {
+            return;
+        };
+        let Ok(path) = canonical_path(&path) else {
+            self.as_mut().set_status(qstring("Directory is unavailable"));
+            return;
+        };
+        if !path.is_dir() {
+            return;
+        }
+        if let Err(error) = AppSettings::save_music_directory(&path) {
+            self.as_mut().set_status(qstring(error));
+            return;
+        }
+        self.as_mut().set_music_directory_path(qstring(
+            path.to_string_lossy(),
+        ));
+        // The running server picks the new root up live; clients browse the
+        // new folder on their next request without a restart.
+        if let Some(library) = self
+            .as_ref()
+            .rust()
+            .api_server
+            .as_ref()
+            .and_then(|server| server.library.as_ref())
+        {
+            library.set_root(Some(path));
+        }
     }
 
     pub fn save_playlist(mut self: Pin<&mut Self>) {
@@ -5411,6 +5471,9 @@ impl qobject::AppController {
                 kog_server::api::Library::open(),
                 kog_server::radio::Radio::from_settings(),
             );
+            // Kept reachable so the Server settings can move the library's
+            // music folder while the server runs.
+            let library = state.library.clone();
             let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
             let address = config.socket_address();
             let scheme = if config.tls.mode == kog_server::TlsMode::Off {
@@ -5460,6 +5523,7 @@ impl qobject::AppController {
                 address,
                 scheme,
                 certificate_path,
+                library: Some(library),
             });
             Ok(serde_json::json!({
                 "ok": true,
@@ -7569,10 +7633,9 @@ impl qobject::AppController {
         if !path.is_dir() {
             return;
         }
-        if let Err(error) = AppSettings::save_music_directory(&path) {
-            self.as_mut().set_status(qstring(error));
-            return;
-        }
+        // The tree root is per-app browsing state, remembered by the session
+        // file — it is not the server's music folder, and changing it must
+        // not touch what the server serves.
         self.as_mut().rust_mut().directory = path.clone();
         self.as_mut()
             .set_directory_path(qstring(path.to_string_lossy()));
