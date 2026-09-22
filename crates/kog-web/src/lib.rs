@@ -6062,35 +6062,6 @@ fn App() -> impl IntoView {
                                                 set_playing.set(true);
                                             }
                                         >
-                                            {/* The playing row's level
-                                                meter, the desktop's
-                                                five-band waveform at the
-                                                row's right edge. */}
-                                            <Show when=move || current.get() == index fallback=|| ()>
-                                                <span class="row-meter">
-                                                    <For
-                                                        each=|| [0usize, 1, 2, 3, 4]
-                                                        key=|band| *band
-                                                        let:band
-                                                    >
-                                                        <span
-                                                            class="row-meter-bar"
-                                                            style=move || {
-                                                                let levels = audio_levels.get();
-                                                                let level = levels
-                                                                    .get(band)
-                                                                    .copied()
-                                                                    .unwrap_or(0.0)
-                                                                    .clamp(0.0, 1.0);
-                                                                format!(
-                                                                    "height: {}px",
-                                                                    2.0 + 10.0 * level
-                                                                )
-                                                            }
-                                                        ></span>
-                                                    </For>
-                                                </span>
-                                            </Show>
                                             <For
                                                 each=visible_columns
                                                 key=|column| column.id.key()
@@ -6175,6 +6146,49 @@ fn App() -> impl IntoView {
                                                     }
                                                 }
                                             </For>
+                                            {/* The playing row's level
+                                                meter, the desktop's
+                                                five-band waveform. A sticky
+                                                grid overlay: the pane
+                                                scrolls as one wide table,
+                                                so a plain right-edge pin
+                                                would sit off-screen beside
+                                                the wide columns — sticky
+                                                keeps it at the visible
+                                                right edge, like the
+                                                desktop's viewport-width
+                                                rows. Shown while playing,
+                                                like the desktop. */}
+                                            <Show
+                                                when=move || {
+                                                    current.get() == index && playing.get()
+                                                }
+                                                fallback=|| ()
+                                            >
+                                                <span class="row-meter">
+                                                    <For
+                                                        each=|| [0usize, 1, 2, 3, 4]
+                                                        key=|band| *band
+                                                        let:band
+                                                    >
+                                                        <span
+                                                            class="row-meter-bar"
+                                                            style=move || {
+                                                                let levels = audio_levels.get();
+                                                                let level = levels
+                                                                    .get(band)
+                                                                    .copied()
+                                                                    .unwrap_or(0.0)
+                                                                    .clamp(0.0, 1.0);
+                                                                format!(
+                                                                    "height: {}px",
+                                                                    2.0 + 10.0 * level
+                                                                )
+                                                            }
+                                                        ></span>
+                                                    </For>
+                                                </span>
+                                            </Show>
                                         <span
                                             class="drag-grip"
                                             title="Drag to reorder"

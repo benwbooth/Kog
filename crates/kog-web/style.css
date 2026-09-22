@@ -760,16 +760,22 @@ button:focus-visible {
 /* The playing row's five-band level meter, pinned to the row's right edge
    like the desktop's playing waveform. */
 .row-meter {
-  position: absolute;
-  right: 1px;
-  top: 50%;
-  transform: translateY(-50%);
+  /* Overlays row 1 across every column (placed after the cells so their
+   * auto-placement is undisturbed) and sticks to the scrollport's right
+   * edge, so the waveform stays visible however wide the table is. */
+  grid-row: 1;
+  grid-column: 1 / -1;
+  position: sticky;
+  right: 4px;
+  justify-self: end;
+  align-self: center;
   display: flex;
   align-items: flex-end;
   gap: 1px;
   width: 16px;
   height: 14px;
   padding: 1px;
+  box-sizing: border-box;
   border-radius: 4px;
   pointer-events: none;
   z-index: 1;
