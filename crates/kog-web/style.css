@@ -71,9 +71,10 @@ body {
 }
 
 /* Fixed-height shell: toolbar / workspace / transport. The second template
- * adds the iOS standalone safe areas — with viewport-fit=cover the page draws
- * under the status bar and home indicator, whose system blur smeared the top
- * of the page. Browsers without env() keep the first declaration. */
+ * respects safe-area insets when the viewport extends beneath system UI.
+ * iOS's default standalone status bar places the app below the camera area;
+ * the bottom inset still keeps transport controls above the home indicator.
+ * Browsers without env() keep the first declaration. */
 .app {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
