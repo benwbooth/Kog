@@ -5,6 +5,10 @@ root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 output_dir="${1:-$root_dir/dist/macos}"
 version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$root_dir/Cargo.toml" | head -n1)"
 architecture="$(uname -m)"
+if [[ "$architecture" != arm64 ]]; then
+  echo "macOS packaging supports Apple Silicon only (got $architecture)" >&2
+  exit 1
+fi
 app="$output_dir/Kog.app"
 contents="$app/Contents"
 

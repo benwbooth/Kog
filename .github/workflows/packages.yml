@@ -286,17 +286,9 @@ jobs:
             dist/windows/Kog-*.msi
 
   macos:
-    name: macOS DMG (${{ matrix.arch }})
-    runs-on: ${{ matrix.runner }}
+    name: macOS DMG (arm64)
+    runs-on: macos-15
     timeout-minutes: 240
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: macos-15
-            arch: arm64
-          - runner: macos-15-intel
-            arch: x86_64
     steps:
       - uses: actions/checkout@v6
         with:
@@ -318,7 +310,11 @@ jobs:
 
       - name: Install Rust
         run: |
-          rustup toolchain install stable --profile minimal
+          for attempt in 1 2 3; do
+            rustup toolchain install stable --profile minimal && break
+            if [ "$attempt" -eq 3 ]; then exit 1; fi
+            sleep 20
+          done
           rustup default stable
 
       - uses: actions/cache@v5
@@ -326,7 +322,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: cargo-macos-${{ matrix.arch }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-macos-arm64-${{ hashFiles('Cargo.lock') }}
 
       - name: Build web frontend
         run: |
@@ -346,7 +342,7 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: kog-macos-${{ matrix.arch }}
+          name: kog-macos-arm64
           if-no-files-found: error
           path: dist/macos/Kog-*.dmg
 
@@ -371,10 +367,9 @@ jobs:
           version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)"
           test "$GITHUB_REF_NAME" = "v$version"
           arm_dmg="$(find dist/release -name 'Kog-*-macos-arm64.dmg' -print -quit)"
-          intel_dmg="$(find dist/release -name 'Kog-*-macos-x86_64.dmg' -print -quit)"
-          test -n "$arm_dmg" && test -n "$intel_dmg"
+          test -n "$arm_dmg"
           packaging/macos/render-cask.sh "$GITHUB_REF_NAME" \
-            "$arm_dmg" "$intel_dmg" dist/release/kog.rb
+            "$arm_dmg" dist/release/kog.rb
 
       - name: Create GitHub release and upload packages
         env:

@@ -18,9 +18,9 @@ Kog's release workflow produces native packages from the same source revision:
 
 - Windows: a portable ZIP containing `Kog.exe`, its bundled helper programs,
   Qt, codec DLLs, and an MSI installer for the same directory tree.
-- macOS: separate Apple Silicon and Intel DMGs containing a self-contained
-  `Kog.app`. Tagged builds also generate a Homebrew cask whose URLs and SHA-256
-  values point at those exact release assets.
+- macOS: an Apple Silicon DMG containing a self-contained
+  `Kog.app`. Tagged builds also generate a Homebrew cask whose URL and SHA-256
+  value point at that release asset.
 - Linux: an x86_64 AppImage, a portable AppDir tarball, a Flatpak bundle, and an
   OSTree Flatpak repository archive.
 

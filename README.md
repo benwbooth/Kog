@@ -31,7 +31,7 @@ Download the latest packages from [GitHub Releases](https://github.com/benwbooth
 | Platform | Packages |
 | --- | --- |
 | Windows | MSI installer or portable ZIP |
-| macOS | DMG for Apple Silicon or Intel |
+| macOS | DMG for Apple Silicon |
 | Linux | AppImage, portable AppDir archive, Flatpak bundle, or Flatpak repository archive |
 
 Release packages include the decoder components they need. You do not need to
