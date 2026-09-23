@@ -78,13 +78,18 @@ Pane {
             model: root.libraryModel
             rootIndex: root.libraryModel ? root.libraryModel.viewRootIndex : undefined
             reuseItems: true
+            rowHeightProvider: function(row) { return 20 }
+            contentHeight: rows * 20
             opacity: searchLayout.ready ? 1 : 0
             enabled: opacity === 1
             columnWidthProvider: function(column) { return Math.max(0, width - 14) }
             selectionModel: ItemSelectionModel { model: root.libraryModel }
             selectionBehavior: TableView.SelectRows
             selectionMode: TableView.SingleSelection
+            pointerNavigationEnabled: false
             delegate: TreeViewDelegate {
+                id: treeDelegate
+                indicator: TreeExpandIndicator { control: treeDelegate }
                 required property string fileName
                 required property string filePath
                 required property string fileIcon
@@ -94,10 +99,12 @@ Pane {
                 icon.name: fileIcon
                 palette.text: root.selectedPath === filePath ? root.skinStyle.selectionText : root.skinStyle.text
                 background: Rectangle { color: root.selectedPath === filePath ? root.skinStyle.selection : root.skinStyle.background }
-                onClicked: root.selectedPath = filePath
-                onDoubleClicked: {
+                onClicked: {
+                    root.selectedPath = filePath
                     if (hasChildren) tree.toggleExpanded(row)
-                    else root.app.activate_local_path(filePath)
+                }
+                onDoubleClicked: {
+                    if (!hasChildren) root.app.activate_local_path(filePath)
                 }
             }
             ScrollBar.vertical: ScrollBar {}

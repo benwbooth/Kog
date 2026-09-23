@@ -25,6 +25,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI32, Ordering};
 
 use gloo_net::http::Request;
 use leptos::prelude::*;
@@ -1996,6 +1997,12 @@ fn App() -> impl IntoView {
     // mid-song. A fresh page load starts stopped, and Stop returns here, so
     // the current row shows no playing or paused glyph.
     let (stopped, set_stopped) = signal(true);
+    // Browsing down on a phone leaves a small now-playing strip; scrolling
+    // back up or tapping its expand button restores seeking and volume.
+    let (transport_compact, set_transport_compact) = signal(false);
+    let tree_scroll_anchor = Arc::new(AtomicI32::new(0));
+    let playlists_scroll_anchor = Arc::new(AtomicI32::new(0));
+    let tracks_scroll_anchor = Arc::new(AtomicI32::new(0));
     // Touch mode: coarse-pointer devices (phones, tablets) get single-tap
     // activation — taps play and enqueue, so nothing requires a double
     // click, a hold, or a drag. Holds still open the context menus.
@@ -5512,6 +5519,7 @@ fn App() -> impl IntoView {
     view! {
         <div
             class="app"
+            class:transport-compact=move || transport_compact.get()
             on:pointermove=move |ev: web_sys::PointerEvent| {
                 if let Some((id, start_x, start_width)) = resizing.get_untracked() {
                     apply_width(id, start_width + (ev.client_x() as f64 - start_x));
@@ -5635,7 +5643,25 @@ fn App() -> impl IntoView {
                             <span class="section-title">"Files"</span>
                         </div>
                         <Show when=move || files_expanded.get() fallback=|| ()>
-                            <div class="section-body">
+                            <div
+                                class="section-body"
+                                on:scroll={
+                                    let anchor = Arc::clone(&tree_scroll_anchor);
+                                    move |event: web_sys::Event| {
+                                        if !touch_mode { return; }
+                                        let element = event.current_target().unwrap().unchecked_into::<web_sys::Element>();
+                                        let top = element.scroll_top();
+                                        let delta = top - anchor.load(Ordering::Relaxed);
+                                        if top <= 2 {
+                                            set_transport_compact.set(false);
+                                            anchor.store(top, Ordering::Relaxed);
+                                        } else if delta.abs() >= 14 {
+                                            set_transport_compact.set(delta > 0);
+                                            anchor.store(top, Ordering::Relaxed);
+                                        }
+                                    }
+                                }
+                            >
                                 <Show
                                     when=move || connected.get()
                                     fallback=|| view! {
@@ -6044,6 +6070,22 @@ fn App() -> impl IntoView {
                         <Show when=move || playlists_expanded.get() fallback=|| ()>
                             <div
                                 class="section-body"
+                                on:scroll={
+                                    let anchor = Arc::clone(&playlists_scroll_anchor);
+                                    move |event: web_sys::Event| {
+                                        if !touch_mode { return; }
+                                        let element = event.current_target().unwrap().unchecked_into::<web_sys::Element>();
+                                        let top = element.scroll_top();
+                                        let delta = top - anchor.load(Ordering::Relaxed);
+                                        if top <= 2 {
+                                            set_transport_compact.set(false);
+                                            anchor.store(top, Ordering::Relaxed);
+                                        } else if delta.abs() >= 14 {
+                                            set_transport_compact.set(delta > 0);
+                                            anchor.store(top, Ordering::Relaxed);
+                                        }
+                                    }
+                                }
                                 on:dragover=move |ev: web_sys::DragEvent| {
                                     ev.prevent_default();
                                     if dragging_playlist.get_untracked().is_none() {
@@ -6238,6 +6280,22 @@ fn App() -> impl IntoView {
                         class="rows"
                         id="playlist-rows"
                         class:drop-active=move || playlist_drop_active.get()
+                        on:scroll={
+                            let anchor = Arc::clone(&tracks_scroll_anchor);
+                            move |event: web_sys::Event| {
+                                if !touch_mode { return; }
+                                let element = event.current_target().unwrap().unchecked_into::<web_sys::Element>();
+                                let top = element.scroll_top();
+                                let delta = top - anchor.load(Ordering::Relaxed);
+                                if top <= 2 {
+                                    set_transport_compact.set(false);
+                                    anchor.store(top, Ordering::Relaxed);
+                                } else if delta.abs() >= 14 {
+                                    set_transport_compact.set(delta > 0);
+                                    anchor.store(top, Ordering::Relaxed);
+                                }
+                            }
+                        }
                         on:wheel=move |event: web_sys::WheelEvent| {
                             // The wide column set must be reachable with the
                             // plain wheel: when the rows cannot scroll
@@ -6939,6 +6997,13 @@ fn App() -> impl IntoView {
                         }}
                     </div>
                 </div>
+
+                <button
+                    class="transport-expand"
+                    title="Show playback controls"
+                    aria-label="Show playback controls"
+                    on:click=move |_| set_transport_compact.set(false)
+                >"⌃"</button>
 
                 <audio
                     class="audio"

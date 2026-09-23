@@ -1429,6 +1429,10 @@ body.touch .track .index-cell {
   white-space: nowrap;
 }
 
+.transport-expand {
+  display: none;
+}
+
 .audio {
   display: none;
 }
@@ -1841,6 +1845,54 @@ body.touch .track .index-cell {
   .transport-status {
     display: none;
   }
+
+  .app.transport-compact {
+    --transport-height: 56px;
+  }
+
+  .transport-compact .transport {
+    grid-template-columns: minmax(0, 1fr) 48px 44px;
+    grid-template-rows: 48px;
+    gap: 4px;
+  }
+
+  .transport-compact .now {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .transport-compact .now-text .title {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .transport-compact .controls {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .transport-compact .controls button:not(.play),
+  .transport-compact .seek-row,
+  .transport-compact .transport-right {
+    display: none;
+  }
+
+  .transport-compact .transport-expand {
+    display: grid;
+    grid-column: 3;
+    grid-row: 1;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    color: var(--text);
+    font-size: 24px;
+    line-height: 1;
+    border: 0;
+    border-radius: 6px;
+    background: var(--alternate);
+  }
 }
 
 /* Compact the toolbar further on very narrow screens. */
@@ -1869,6 +1921,20 @@ body.touch .track .index-cell {
 
   .controls {
     justify-content: space-between;
+  }
+
+  .transport-compact .transport {
+    grid-template-columns: minmax(0, 1fr) 48px 44px;
+    grid-template-rows: 48px;
+  }
+
+  .transport-compact .now,
+  .transport-compact .controls {
+    grid-row: 1;
+  }
+
+  .transport-compact .controls {
+    grid-column: 2;
   }
 
   .toolbar .logo {

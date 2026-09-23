@@ -47,6 +47,7 @@ fn main() {
         "qml/PlaylistRow.qml",
         "qml/Preferences.qml",
         "qml/TagEditor.qml",
+        "qml/TreeExpandIndicator.qml",
         "qml/TreeSearchLayout.qml",
         "qml/SearchHighlightLabel.qml",
         "qml/PlaybackTitle.qml",

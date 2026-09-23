@@ -244,6 +244,7 @@ int main(int argc, char **argv)
             id: testWindow
             width: 360; height: 500; visible: true
             property int reusedRows: 0
+            function wheelTowardBottom() { return wheel.start(-1) }
             function visibleRowsMatchModel() {
                 let checked = 0
                 for (let row = 0; row < tree.rows; ++row) {
@@ -259,6 +260,21 @@ int main(int argc, char **argv)
                 }
                 return checked > 0
             }
+            function visibleExpandersAligned() {
+                let checked = 0
+                for (let row = 0; row < tree.rows; ++row) {
+                    const item = tree.itemAtCell(Qt.point(0, row))
+                    if (!item || !item.hasChildren)
+                        continue
+                    const mark = item.indicator
+                    if (!mark || mark.width !== 16 || mark.height !== 16
+                            || Math.abs(mark.y + mark.height / 2 - item.height / 2) > 0.5
+                            || Math.abs(mark.x - item.leftMargin - item.depth * item.indentation) > 0.5)
+                        return false
+                    ++checked
+                }
+                return checked > 0
+            }
             TreeView {
                 id: tree
                 objectName: "tree"
@@ -267,9 +283,12 @@ int main(int argc, char **argv)
                 rootIndex: testModel.viewRootIndex
                 opacity: searchLayout.ready ? 1 : 0
                 reuseItems: true
+                rowHeightProvider: function(row) { return 26 }
+                contentHeight: rows * 26
                 delegate: TreeViewDelegate {
                     id: entry
                     TableView.onReused: ++testWindow.reusedRows
+                    indicator: TreeExpandIndicator { control: entry }
                     required property string fileName
                     required property string filePath
                     required property string fileIcon
@@ -283,6 +302,7 @@ int main(int argc, char **argv)
                         color: entry.selected ? entry.palette.highlightedText : entry.palette.text
                     }
                 }
+                KineticWheelHandler { id: wheel; view: tree }
             }
             TreeSearchLayout {
                 id: searchLayout
@@ -690,6 +710,8 @@ int main(int argc, char **argv)
             "Batched nested result layout completes");
     check(tree->property("rows").toInt() == 240,
           "Every ancestor expands even when its children arrive in a later batch");
+    check(qAbs(tree->property("contentHeight").toDouble() - 240 * 26) < 0.5,
+          "Fixed-height tree keeps an exact scroll extent");
     auto visibleRowsMatchModel = [&] {
         QVariant valid;
         check(QMetaObject::invokeMethod(view.get(), "visibleRowsMatchModel", Q_RETURN_ARG(QVariant, valid)),
@@ -697,12 +719,28 @@ int main(int argc, char **argv)
         return valid.toBool();
     };
     check(visibleRowsMatchModel(), "Initial visible row roles match their model indexes");
+    QVariant aligned;
+    check(QMetaObject::invokeMethod(view.get(), "visibleExpandersAligned", Q_RETURN_ARG(QVariant, aligned))
+              && aligned.toBool(), "Tree expanders stay small and vertically centered");
     tree->setProperty("contentY", tree->property("contentHeight").toDouble() * 0.8);
     QCoreApplication::processEvents();
     check(visibleRowsMatchModel(), "Reused rows keep the right names and paths after scrolling");
     tree->setProperty("contentY", 0);
     QCoreApplication::processEvents();
     check(visibleRowsMatchModel(), "Reused rows keep the right names and paths when scrolling back");
+    const double bottom = tree->property("contentHeight").toDouble()
+        - tree->property("height").toDouble();
+    tree->setProperty("contentY", bottom);
+    QCoreApplication::processEvents();
+    check(qAbs(tree->property("contentY").toDouble() - bottom) < 1,
+          "Exact tree extent can reach the bottom without stopping early");
+    check(visibleRowsMatchModel(), "Bottom rows keep their correct model identities");
+    tree->setProperty("contentY", bottom - 50);
+    QVariant started;
+    check(QMetaObject::invokeMethod(view.get(), "wheelTowardBottom", Q_RETURN_ARG(QVariant, started))
+              && started.toBool(), "Kinetic wheel starts near the tree's lower boundary");
+    waitFor([&] { return tree->property("contentY").toDouble() >= bottom - 1; },
+            "Kinetic wheel reaches the final row instead of stopping early");
     check(view->property("reusedRows").toInt() > 0, "Tree scrolling actually reuses delegates");
     model.setSearchText("limit"); // Destruction during a scan is safe.
     std::puts("File tree search tests passed");

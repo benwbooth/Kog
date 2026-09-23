@@ -2967,6 +2967,8 @@ ApplicationWindow {
                     // delegate's required file roles are updated by TreeView
                     // when a pooled row is assigned a new model index.
                     reuseItems: true
+                    rowHeightProvider: function(row) { return 26 }
+                    contentHeight: rows * 26
                     boundsBehavior: Flickable.StopAtBounds
                     maximumFlickVelocity: 12000
                     flickDeceleration: 2200
@@ -2982,6 +2984,7 @@ ApplicationWindow {
 
                     delegate: TreeViewDelegate {
                         id: treeDelegate
+                        indicator: TreeExpandIndicator { control: treeDelegate }
                         // Bind the QFileSystemModel role as a required delegate
                         // property. Accessing it through the transient `model`
                         // object leaves recycled TreeView delegates displaying
