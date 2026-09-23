@@ -41,6 +41,11 @@ ApplicationWindow {
     readonly property bool hasLoadedTrack: appController.playback_state !== "stopped"
     readonly property bool transportReady:
         appController.playlist_count > 0 || appController.radio_active || hasLoadedTrack
+    readonly property int activeSourceIndex: appController.current_index
+    onActiveSourceIndexChanged: {
+        if (appController.radio_active)
+            Qt.callLater(root.revealPlayingRadioTrack)
+    }
     property int selectedRow: -1
     property int selectionAnchor: -1
     property var selectedRows: []
@@ -846,6 +851,23 @@ ApplicationWindow {
             appController.playlist_count - 1))
         selectPlaylistRow(target, modifiers)
         playlistView.positionViewAtIndex(target, ListView.Contain)
+    }
+
+    function revealPlayingRadioTrack() {
+        if (!appController.radio_active || appController.playback_state !== "playing"
+                || activeSourceIndex < 0)
+            return
+        // Radio appends a source track before changing current_index. The
+        // numeric ListView model can jump to its start as its count changes;
+        // locate the new track in visible order (which may be sorted) once
+        // those changes have settled.
+        for (let row = appController.playlist_count - 1; row >= 0; --row) {
+            if (Number(appController.track_number_at(row))
+                    === activeSourceIndex + 1) {
+                playlistView.positionViewAtIndex(row, ListView.Contain)
+                return
+            }
+        }
     }
 
     function playlistDropIndex(y) {        const contentPosition = y + playlistView.contentY
