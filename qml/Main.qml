@@ -74,18 +74,6 @@ ApplicationWindow {
             ? appController.stop_after_selection_state(selectedRows.join(","))
             : "none"
     }
-    // Full path of the row under the pointer in the file tree, and where that
-    // row sits in the pane. Shown as a popup parented to the view: a ToolTip
-    // attached to the row is positioned in the row's own (scrolled) content
-    // coordinates, which lands it outside the pane.
-    property string treeHoverPath: ""
-    property real treeHoverY: 0
-    // The delegate the pointer is on: its live position keeps the popup glued
-    // to the right row while the tree scrolls.
-    property Item treeHoverItem: null
-    // The tip is shown only after the hover delay and hidden by the poll;
-    // enter/exit events around it are unreliable on Wayland.
-    property bool treeTipShown: false
     readonly property bool compactToolbar: width < 980
     // Which build is running: the stamped revision plus, when it is known,
     // when the binary was linked. Shown small in the toolbar and in About.
@@ -405,47 +393,31 @@ ApplicationWindow {
         return fileTreeModel.path_for_index(directoryTree.index(row, 0))
     }
 
-    // Is the OS cursor inside the hovered row right now? Enter/exit events
-    // around the tip are unreliable on Wayland; the OS position is not.
-    function tipPollInside() {
-        const parts = appController.cursor_pos().split(",")
-        if (parts.length !== 2 || !treeHoverItem)
-            return false
-        const local = treeHoverItem.mapFromGlobal(Qt.point(+parts[0], +parts[1]))
-        return local.x >= 0 && local.y >= 0
-            && local.x <= treeHoverItem.width && local.y <= treeHoverItem.height
-    }
+    // Folder expansion is tracked at the action that changes it. Session
+    // flushing runs every 1.5 seconds, so it must never walk all tree rows
+    // on the UI thread while the user is scrolling.
+    property var treeExpandedPaths: []
 
-    // Track the popup to the hovered row through the tree's scroll offset.
-    // A destroyed delegate is only ever the sign of a stale hover, so the
-    // tooltip goes with it.
-    function refreshTreeHoverY() {
-        if (treeHoverPath.length === 0 || !treeHoverItem)
-            return
-        try {
-            treeHoverY = treeHoverItem.mapToItem(treeSection, 0, 0).y
-        } catch (e) {
-            treeHoverPath = ""
-            treeHoverItem = null
-        }
-    }
-
-    // JSON array of the visible tree rows that are currently expanded.
-    // Collection must never break the UI: any failure reports an empty list.
     function collectTreeExpanded() {
-        try {
-            const expanded = []
-            for (let row = 0; row < directoryTree.rows; ++row) {
-                if (!directoryTree.isExpanded(row))
-                    continue
-                const path = treePathAtRow(row)
-                if (path.length > 0 && expanded.indexOf(path) === -1)
-                    expanded.push(path)
-            }
-            return JSON.stringify(expanded)
-        } catch (error) {
-            return "[]"
-        }
+        return JSON.stringify(treeExpandedPaths)
+    }
+
+    function noteTreeExpanded(row) {
+        if (fileTreeModel.searchText.trim().length > 0)
+            return
+        const path = treePathAtRow(row)
+        if (path.length > 0 && treeExpandedPaths.indexOf(path) === -1)
+            treeExpandedPaths.push(path)
+    }
+
+    function noteTreeCollapsed(row, recursively) {
+        if (fileTreeModel.searchText.trim().length > 0)
+            return
+        const path = treePathAtRow(row)
+        if (path.length > 0)
+            treeExpandedPaths = treeExpandedPaths.filter(
+                saved => saved !== path
+                    && (!recursively || !saved.startsWith(path + "/")))
     }
 
     // Re-expand the folders remembered by a previous run. The tree loads
@@ -464,6 +436,7 @@ ApplicationWindow {
                 const rightDepth = right.split("/").length
                 return leftDepth - rightDepth || left.length - right.length
             })
+            root.treeExpandedPaths = paths.slice()
             root.pendingTreeExpanded = paths
             root.treeExpandRestoreAttempts = 0
             if (paths.length > 0)
@@ -474,6 +447,7 @@ ApplicationWindow {
     }
 
     function clearTreeExpandRestore() {
+        root.treeExpandedPaths = []
         root.pendingTreeExpanded = []
         root.treeExpandRestoreAttempts = 0
         treeExpandRestoreTimer.stop()
@@ -552,29 +526,27 @@ ApplicationWindow {
             treeExpandRestoreTimer.stop()
             return
         }
-        const remaining = []
-        for (const path of root.pendingTreeExpanded) {
-            let row = -1
-            try {
-                for (let candidate = 0; candidate < directoryTree.rows; ++candidate) {
-                    if (treePathAtRow(candidate) === path) {
-                        row = candidate
-                        break
-                    }
-                }
-            } catch (error) {
-                row = -1
+        // One model walk per retry, regardless of how many saved folders
+        // there are. A path-by-path walk used to block scrolling on large
+        // trees while the session was still being restored.
+        const wanted = new Set(root.pendingTreeExpanded)
+        const completed = new Set()
+        try {
+            for (let row = 0; row < directoryTree.rows; ++row) {
+                const path = treePathAtRow(row)
+                if (!wanted.has(path))
+                    continue
+                if (!directoryTree.isExpanded(row))
+                    directoryTree.expand(row)
+                if (directoryTree.isExpanded(row))
+                    completed.add(path)
             }
-            if (row === -1) {
-                remaining.push(path)
-                continue
-            }
-            if (!directoryTree.isExpanded(row))
-                directoryTree.toggleExpanded(row)
-        }
-        root.pendingTreeExpanded = remaining
+        } catch (error) { /* the model may still be settling */ }
+        root.pendingTreeExpanded = root.pendingTreeExpanded.filter(
+            path => !completed.has(path))
         root.treeExpandRestoreAttempts += 1
-        if (remaining.length === 0 || root.treeExpandRestoreAttempts >= 40)
+        if (root.pendingTreeExpanded.length === 0
+                || root.treeExpandRestoreAttempts >= 40)
             treeExpandRestoreTimer.stop()
     }
 
@@ -2797,40 +2769,6 @@ ApplicationWindow {
                     interval: 250
                     onTriggered: fileTreeModel.searchText = treeSearchField.text
                 }
-                // The hover delay: the tip shows a second after the
-                // pointer settles on a row.
-                Timer {
-                    id: treeTipShowTimer
-                    interval: 1000
-                    onTriggered: {
-                        if (tipPollInside()) {
-                            root.treeTipShown = true
-                            treeHoverClearTimer.restart()
-                        } else {
-                            root.treeTipShown = false
-                            root.treeHoverPath = ""
-                            root.treeHoverItem = null
-                        }
-                    }
-                }
-
-                // While the tip shows, the poll hides it the moment the
-                // cursor leaves the row. Polling the OS cursor position is
-                // the point: enter/exit events around the tip are unreliable
-                // on Wayland.
-                Timer {
-                    id: treeHoverClearTimer
-                    interval: 150
-                    repeat: true
-                    onTriggered: {
-                        if (tipPollInside())
-                            return
-                        root.treeTipShown = false
-                        root.treeHoverPath = ""
-                        root.treeHoverItem = null
-                        stop()
-                    }
-                }
                 Connections {
                     target: fileTreeModel
                     function onSearchResultsChanged() {
@@ -2852,72 +2790,6 @@ ApplicationWindow {
                     font.pointSize: root.font.pointSize * 0.9
                     wrapMode: Text.Wrap
                     opacity: 0.75
-                }
-
-                // The full path of a row cannot be read when it is elided, and a
-                // ToolTip attached to the row is positioned in the row's own
-                // scrolled content coordinates, which lands it outside the pane.
-                // This is a plain overlay Item rather than a Popup on purpose:
-                // an opened Popup maps a surface that grabs the pointer, and on
-                // Wayland the grab delivers a pointer-leave to the window the
-                // moment it appears — the row's hover exits and the tip ate
-                // itself ~150ms later. A plain item grabs nothing, so the row's
-                // hover keeps flowing and the tip stays while it is hovered.
-                Rectangle {
-                    id: treePathTip
-                    // On the window's overlay layer: a ColumnLayout child
-                    // would be managed as a row (the whole tree shifted down
-                    // whenever the tip showed), and the overlay layer is a
-                    // plain item with no layout and no pointer grab.
-                    parent: Overlay.overlay
-                    visible: root.treeTipShown
-                    width: Math.min(tipLabel.implicitWidth + 18,
-                        Math.max(120, treeSection.width - 16))
-                    height: tipLabel.implicitHeight + 12
-                    x: {
-                        if (!treeHoverItem)
-                            return 4
-                        const row = treeHoverItem.mapToItem(
-                            treePathTip.parent, 0, 0)
-                        return Math.round(Math.max(4, row.x))
-                    }
-                    y: {
-                        if (!treeHoverItem)
-                            return 4
-                        // Keep the tip off the hovered row's text: prefer
-                        // above the row, then below it, clamped to the
-                        // window.
-                        const row = treeHoverItem.mapToItem(
-                            treePathTip.parent, 0, 0)
-                        const rowBottom = row.y + treeHoverItem.height + 6
-                        const above = row.y - height - 6
-                        if (above >= 4)
-                            return Math.round(above)
-                        return Math.round(Math.max(4, Math.min(rowBottom,
-                            treePathTip.parent.height - height - 4)))
-                    }
-                    z: 3
-                    radius: 5
-                    opacity: 0.96
-                    color: root.palette.window
-                    border.width: 1
-                    border.color: root.palette.mid
-
-                    Label {
-                        id: tipLabel
-                        anchors.fill: parent
-                        anchors.leftMargin: 9
-                        anchors.rightMargin: 9
-                        anchors.topMargin: 6
-                        anchors.bottomMargin: 6
-                        text: root.treeHoverPath
-                        color: root.palette.text
-                        font.pixelSize: 12
-                        // A tooltip's whole job is the full text: wrap past
-                        // the pane width, never elide.
-                        wrapMode: Text.Wrap
-                        verticalAlignment: Text.AlignVCenter
-                    }
                 }
 
                 ItemDelegate {
@@ -2946,6 +2818,9 @@ ApplicationWindow {
 
                 TreeView {
                     id: directoryTree
+                    onExpanded: row => root.noteTreeExpanded(row)
+                    onCollapsed: (row, recursively) =>
+                        root.noteTreeCollapsed(row, recursively)
                     opacity: treeSearchLayout.ready ? 1 : 0
                     enabled: opacity === 1
                     Layout.fillWidth: true
@@ -2972,9 +2847,6 @@ ApplicationWindow {
                     boundsBehavior: Flickable.StopAtBounds
                     maximumFlickVelocity: 12000
                     flickDeceleration: 2200
-                    onDraggingChanged: if (dragging)
-                        directoryKineticWheel.stop()
-                    onContentYChanged: root.refreshTreeHoverY()
                     readonly property real scrollGutter:
                         directoryScrollBar.visible
                             ? directoryScrollBar.implicitWidth + 4 : 0
@@ -2984,7 +2856,6 @@ ApplicationWindow {
 
                     delegate: TreeViewDelegate {
                         id: treeDelegate
-                        indicator: TreeExpandIndicator { control: treeDelegate }
                         // Bind the QFileSystemModel role as a required delegate
                         // property. Accessing it through the transient `model`
                         // object leaves recycled TreeView delegates displaying
@@ -2993,23 +2864,8 @@ ApplicationWindow {
                         required property string filePath
                         required property string fileIcon
                         readonly property string dragPath: filePath
-                        TableView.onPooled: {
-                            treePointer.resetGesture()
-                            if (root.treeHoverItem === treeDelegate) {
-                                treeTipShowTimer.stop()
-                                root.treeHoverPath = ""
-                                root.treeHoverItem = null
-                            }
-                        }
+                        TableView.onPooled: treePointer.resetGesture()
                         TableView.onReused: treePointer.resetGesture()
-                        // A destroyed delegate must not leave the shared
-                        // tooltip showing its (now stale) path.
-                        Component.onDestruction: {
-                            if (root.treeHoverItem === treeDelegate) {
-                                root.treeHoverPath = ""
-                                root.treeHoverItem = null
-                            }
-                        }
                         // Show in File Tree: when this row is the reveal
                         // target, center it. Creation and selection both land
                         // here, so the row scrolls no matter which fires.
@@ -3100,9 +2956,11 @@ ApplicationWindow {
                                     : treeDelegate.palette.text
                             }
                         }
-                        // An explicit ToolTip item rather than the attached
-                        // property: the attached form did not show inside this
-                        // tree delegate at all.
+                        // A regular attached ToolTip driven by the row's own
+                        // MouseArea: it covers the delegate, so the
+                        // delegate's hovered never fires. A single global
+                        // ToolTip follows the shared delay and shows the
+                        // full path, wrapped rather than elided.
                         MouseArea {
                             id: treePointer
                             property real pressX: 0
@@ -3120,33 +2978,14 @@ ApplicationWindow {
                             z: 2
                             acceptedButtons: Qt.LeftButton | Qt.RightButton
                             hoverEnabled: true
-                            onEntered: {
-                                // Same row, tip already up: the spurious
-                                // re-enter after the show must not re-delay.
-                                if (root.treeHoverItem === treeDelegate
-                                    && root.treeTipShown)
-                                    return
-                                treeHoverClearTimer.stop()
-                                root.treeHoverItem = treeDelegate
-                                root.treeHoverPath = treeDelegate.filePath.length > 0
+                            ToolTip.visible: containsMouse && !directoryTree.moving
+                                && rowPath.length > 0
+                            ToolTip.delay: 700
+                            ToolTip.text: rowPath
+                            readonly property string rowPath:
+                                treeDelegate.filePath.length > 0
                                     ? treeDelegate.filePath
                                     : root.treePathAtRow(treeDelegate.row)
-                                root.treeHoverY = treeDelegate.mapToItem(
-                                    treeSection, 0, 0).y
-                                root.treeTipShown = false
-                                treeTipShowTimer.restart()
-                            }
-                            // Delay the clear: moving to a neighbouring row
-                            // delivers this exit after that row's enter, and
-                            // an immediate clear ate the fresh tooltip.
-                            onExited: {
-                                // Never hide here: the exit can be the
-                                // spurious one the tip itself caused. The
-                                // poll hides within 150ms when the cursor
-                                // truly left.
-                                treeTipShowTimer.stop()
-                                treeHoverClearTimer.restart()
-                            }
                             preventStealing: true
                             scrollGestureEnabled: false
 
@@ -3169,10 +3008,6 @@ ApplicationWindow {
                                     mouse.modifiers)
                             }
                             onPositionChanged: mouse => {
-                                // Keep the popup pinned to the row while the
-                                // pointer moves within it.
-                                root.treeHoverY = treeDelegate.mapToItem(
-                                    treeSection, 0, 0).y
                                 if ((mouse.buttons & Qt.LeftButton) === 0)
                                     return
                                 if (!manualDragging
@@ -3245,13 +3080,6 @@ ApplicationWindow {
                     ScrollBar.vertical: ScrollBar {
                         id: directoryScrollBar
                         policy: ScrollBar.AsNeeded
-                        onPressedChanged: if (pressed)
-                            directoryKineticWheel.stop()
-                    }
-
-                    KineticWheelHandler {
-                        id: directoryKineticWheel
-                        view: directoryTree
                     }
                 }
                 }

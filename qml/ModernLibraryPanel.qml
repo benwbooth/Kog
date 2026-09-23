@@ -89,7 +89,6 @@ Pane {
             pointerNavigationEnabled: false
             delegate: TreeViewDelegate {
                 id: treeDelegate
-                indicator: TreeExpandIndicator { control: treeDelegate }
                 required property string fileName
                 required property string filePath
                 required property string fileIcon
