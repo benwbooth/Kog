@@ -241,7 +241,24 @@ int main(int argc, char **argv)
         import QtQuick
         import QtQuick.Controls
         Window {
+            id: testWindow
             width: 360; height: 500; visible: true
+            property int reusedRows: 0
+            function visibleRowsMatchModel() {
+                let checked = 0
+                for (let row = 0; row < tree.rows; ++row) {
+                    const item = tree.itemAtCell(Qt.point(0, row))
+                    if (!item)
+                        continue
+                    const index = tree.index(row, 0)
+                    const path = testModel.filePath(index)
+                    if (item.filePath !== path
+                            || item.fileName !== path.slice(path.lastIndexOf("/") + 1))
+                        return false
+                    ++checked
+                }
+                return checked > 0
+            }
             TreeView {
                 id: tree
                 objectName: "tree"
@@ -249,9 +266,10 @@ int main(int argc, char **argv)
                 model: testModel
                 rootIndex: testModel.viewRootIndex
                 opacity: searchLayout.ready ? 1 : 0
-                reuseItems: false
+                reuseItems: true
                 delegate: TreeViewDelegate {
                     id: entry
+                    TableView.onReused: ++testWindow.reusedRows
                     required property string fileName
                     required property string filePath
                     required property string fileIcon
@@ -672,6 +690,20 @@ int main(int argc, char **argv)
             "Batched nested result layout completes");
     check(tree->property("rows").toInt() == 240,
           "Every ancestor expands even when its children arrive in a later batch");
+    auto visibleRowsMatchModel = [&] {
+        QVariant valid;
+        check(QMetaObject::invokeMethod(view.get(), "visibleRowsMatchModel", Q_RETURN_ARG(QVariant, valid)),
+              "Call QML visible row identity check");
+        return valid.toBool();
+    };
+    check(visibleRowsMatchModel(), "Initial visible row roles match their model indexes");
+    tree->setProperty("contentY", tree->property("contentHeight").toDouble() * 0.8);
+    QCoreApplication::processEvents();
+    check(visibleRowsMatchModel(), "Reused rows keep the right names and paths after scrolling");
+    tree->setProperty("contentY", 0);
+    QCoreApplication::processEvents();
+    check(visibleRowsMatchModel(), "Reused rows keep the right names and paths when scrolling back");
+    check(view->property("reusedRows").toInt() > 0, "Tree scrolling actually reuses delegates");
     model.setSearchText("limit"); // Destruction during a scan is safe.
     std::puts("File tree search tests passed");
 }

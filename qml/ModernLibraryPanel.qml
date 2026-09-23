@@ -77,7 +77,7 @@ Pane {
             clip: true
             model: root.libraryModel
             rootIndex: root.libraryModel ? root.libraryModel.viewRootIndex : undefined
-            reuseItems: false
+            reuseItems: true
             opacity: searchLayout.ready ? 1 : 0
             enabled: opacity === 1
             columnWidthProvider: function(column) { return Math.max(0, width - 14) }

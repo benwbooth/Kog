@@ -2963,12 +2963,10 @@ ApplicationWindow {
                     selectionModel: ItemSelectionModel {
                         model: fileTreeModel
                     }
-                    // Qt 6.10's TreeViewDelegate can retain the previous
-                    // QFileSystemModel row when expansion shifts the flattened
-                    // rows. Only visible delegates exist here, so disabling
-                    // reuse is cheap and keeps labels, paths, and activation in
-                    // lockstep.
-                    reuseItems: false
+                    // Reuse the fairly heavy rows while scrolling. The
+                    // delegate's required file roles are updated by TreeView
+                    // when a pooled row is assigned a new model index.
+                    reuseItems: true
                     boundsBehavior: Flickable.StopAtBounds
                     maximumFlickVelocity: 12000
                     flickDeceleration: 2200
@@ -2992,6 +2990,15 @@ ApplicationWindow {
                         required property string filePath
                         required property string fileIcon
                         readonly property string dragPath: filePath
+                        TableView.onPooled: {
+                            treePointer.resetGesture()
+                            if (root.treeHoverItem === treeDelegate) {
+                                treeTipShowTimer.stop()
+                                root.treeHoverPath = ""
+                                root.treeHoverItem = null
+                            }
+                        }
+                        TableView.onReused: treePointer.resetGesture()
                         // A destroyed delegate must not leave the shared
                         // tooltip showing its (now stale) path.
                         Component.onDestruction: {
@@ -3099,6 +3106,12 @@ ApplicationWindow {
                             property real pressY: 0
                             property bool manualDragging: false
                             property bool collapseSelectionOnClick: false
+
+                            function resetGesture() {
+                                manualDragging = false
+                                collapseSelectionOnClick = false
+                                root.playlistDropTarget = -1
+                            }
 
                             anchors.fill: parent
                             z: 2
