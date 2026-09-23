@@ -70,11 +70,9 @@ body {
   height: 100%;
 }
 
-/* Fixed-height shell: toolbar / workspace / transport. The second template
- * respects safe-area insets when the viewport extends beneath system UI.
- * iOS's default standalone status bar places the app below the camera area;
- * the bottom inset still keeps transport controls above the home indicator.
- * Browsers without env() keep the first declaration. */
+/* Fixed-height shell: toolbar / workspace / transport. WebKit normally keeps
+ * the viewport inside the safe area; where insets are exposed, account for
+ * them in the shell. Browsers without env() keep the first declaration. */
 .app {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -1698,8 +1696,8 @@ body.touch .track .index-cell {
   /* The sidebar slides over the playlist instead of squeezing it. */
   .sidebar {
     position: fixed;
-    top: var(--toolbar-height);
-    bottom: var(--transport-height);
+    top: calc(var(--toolbar-height) + env(safe-area-inset-top, 0px));
+    bottom: calc(var(--transport-height) + env(safe-area-inset-bottom, 0px));
     left: 0;
     width: min(84vw, 320px);
     z-index: 20;
@@ -1715,7 +1713,8 @@ body.touch .track .index-cell {
   .drawer-scrim {
     display: block;
     position: fixed;
-    inset: var(--toolbar-height) 0 var(--transport-height) 0;
+    inset: calc(var(--toolbar-height) + env(safe-area-inset-top, 0px)) 0
+      calc(var(--transport-height) + env(safe-area-inset-bottom, 0px)) 0;
     background: rgba(0, 0, 0, 0.45);
     opacity: 0;
     pointer-events: none;
