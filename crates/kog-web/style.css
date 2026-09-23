@@ -707,8 +707,8 @@ button:focus-visible {
 
 /* Column header and rows share the `--cols` template the app writes from the
  * persisted layout, so they line up at every width. The defaults follow
- * qml/PlaylistHeader.qml: index 54, title 220, artist 190, album 220,
- * length 70, track 54 (plus hidden Genre/Year). */
+ * qml/PlaylistHeader.qml, with wider number/star columns so their headers and
+ * contents stay visible (plus hidden Genre/Year). */
 .columns,
 .track {
   display: grid;
@@ -971,6 +971,13 @@ body.touch .track .index-cell {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* The sort button already has 8px padding. A second inset on these compact
+ * headers steals the space reserved for #, the star, and their sort arrow. */
+.columns .index-cell,
+.columns .star-cell {
+  padding: 0;
 }
 
 .columns .index-cell,

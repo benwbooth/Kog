@@ -542,8 +542,8 @@ impl ColumnId {
 
     fn default_width(self) -> f64 {
         match self {
-            Self::Index => 54.0,
-            Self::Star => 40.0,
+            Self::Index => 68.0,
+            Self::Star => 52.0,
             Self::Status => 38.0,
             Self::Rating => 78.0,
             Self::Title => 220.0,
@@ -567,8 +567,8 @@ impl ColumnId {
 
     fn min_width(self) -> f64 {
         match self {
-            Self::Index => 28.0,
-            Self::Star => 28.0,
+            Self::Index => 68.0,
+            Self::Star => 52.0,
             Self::Status => 38.0,
             Self::Rating => 48.0,
             Self::Title => 96.0,
