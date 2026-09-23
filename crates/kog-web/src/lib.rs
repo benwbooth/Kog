@@ -1481,6 +1481,37 @@ fn meta_for(cache: &HashMap<String, Option<MetaRow>>, entry: &Entry) -> Option<M
     cache.get(&meta_key(entry)).and_then(|row| row.clone())
 }
 
+fn metadata_ready(
+    cache: &HashMap<String, Option<MetaRow>>,
+    failed: &HashSet<String>,
+    entry: &Entry,
+) -> bool {
+    let key = meta_key(entry);
+    cache.contains_key(&key) || failed.contains(&key)
+}
+
+/// No title is visible until the metadata lookup completes. A completed
+/// lookup with no title (or a failed request) uses the filename fallback.
+fn display_title(
+    cache: &HashMap<String, Option<MetaRow>>,
+    failed: &HashSet<String>,
+    entry: &Entry,
+) -> Option<String> {
+    let key = meta_key(entry);
+    match cache.get(&key) {
+        None if !failed.contains(&key) => None,
+        None => Some(entry.name.clone()),
+        Some(Some(meta)) => Some(
+            meta.title
+                .as_ref()
+                .filter(|title| !title.trim().is_empty())
+                .cloned()
+                .unwrap_or_else(|| entry.name.clone()),
+        ),
+        Some(None) => Some(entry.name.clone()),
+    }
+}
+
 /// The parent of an absolute path, or the empty string at the filesystem root.
 /// Whether `child` equals or lives below `root` ("" is never a root).
 fn is_under(child: &str, root: &str) -> bool {
@@ -2015,6 +2046,10 @@ fn App() -> impl IntoView {
     // the map, on every cell render.
     let (metadata, set_metadata) =
         signal_local(Rc::new(HashMap::<String, Option<MetaRow>>::new()));
+    // A failed request uses the filename until another queue change retries
+    // the lookup. Keep failures separate from cached "no tags" results.
+    let (metadata_failed, set_metadata_failed) =
+        signal_local(Rc::new(HashSet::<String>::new()));
     // Starred locators from `GET /api/stars`, in the same scheme the server
     // stores them under. An `Rc` for the same reason as `metadata`.
     let (stars, set_stars) = signal_local(Rc::new(HashSet::<String>::new()));
@@ -3749,7 +3784,7 @@ fn App() -> impl IntoView {
         levels_poll.forget();
     }
 
-    // One batched tag lookup for everything the pane currently shows. The cache
+    // One batched tag lookup for everything in the queue. The cache
     // is read untracked so a successful fetch does not immediately schedule the
     // same request again; a re-render of the rows is the only effect.
     Effect::new(move |_| {
@@ -3788,10 +3823,14 @@ fn App() -> impl IntoView {
             let url = url.clone();
             let header = header.clone();
             leptos::task::spawn_local(async move {
-                let Ok(value) = post_json(url, header, body).await else {
-                    return;
-                };
-                let Ok(rows) = serde_json::from_value::<Vec<Option<MetaRow>>>(value) else {
+                let rows = post_json(url, header, body)
+                    .await
+                    .ok()
+                    .and_then(|value| serde_json::from_value::<Vec<Option<MetaRow>>>(value).ok());
+                let Some(rows) = rows else {
+                    set_metadata_failed.update(|failed| {
+                        Rc::make_mut(failed).extend(keys);
+                    });
                     return;
                 };
                 let updates: Vec<(String, Option<MetaRow>)> = keys
@@ -3801,8 +3840,14 @@ fn App() -> impl IntoView {
                     .collect();
                 set_metadata.update(|map| {
                     let map = Rc::make_mut(map);
-                    for (key, row) in updates {
-                        map.insert(key, row);
+                    for (key, row) in &updates {
+                        map.insert(key.clone(), row.clone());
+                    }
+                });
+                set_metadata_failed.update(|failed| {
+                    let failed = Rc::make_mut(failed);
+                    for (key, _) in updates {
+                        failed.remove(&key);
                     }
                 });
             });
@@ -4166,12 +4211,16 @@ fn App() -> impl IntoView {
             .map(|word| word.to_lowercase())
             .collect();
         let cache = metadata.get();
+        let failed = metadata_failed.get();
         let key = sort_key.get();
         let mut rows: Vec<(usize, Entry)> = queue
             .get()
             .into_iter()
             .enumerate()
             .filter(|(_, entry)| {
+                if !metadata_ready(&cache, &failed, entry) {
+                    return false;
+                }
                 if tokens.is_empty() {
                     return true;
                 }
@@ -4257,7 +4306,13 @@ fn App() -> impl IntoView {
     // tracks the pane shows (all of the queue, or the filter's matches) and
     // their total probed duration, in the desktop's footer spirit.
     let status_line = move || -> String {
-        let total = queue.get().len();
+        let cache = metadata.get();
+        let failed = metadata_failed.get();
+        let total = queue
+            .get()
+            .iter()
+            .filter(|entry| metadata_ready(&cache, &failed, entry))
+            .count();
         let rows = view_rows();
         let shown = rows.len();
         let mut text = if shown == total {
@@ -4269,7 +4324,6 @@ fn App() -> impl IntoView {
         } else {
             format!("{shown} of {total}")
         };
-        let cache = metadata.get();
         let seconds: f64 = rows
             .iter()
             .filter_map(|(_, entry)| meta_for(&cache, entry))
@@ -5407,18 +5461,24 @@ fn App() -> impl IntoView {
         set_columns.set(next);
     };
 
-    // The transport shows the current row's tags, with the file name as the
-    // title fallback and artist • album as the subtitle, like the desktop bar.
+    // Leave the transport title empty until its metadata lookup completes.
+    // A finished lookup without a title falls back to the filename.
     let now_title = move || {
-        let entry = current_entry();
-        let meta = entry.as_ref().and_then(|entry| meta_for(&metadata.get(), entry));
-        meta.and_then(|meta| meta.title)
-            .or_else(|| entry.as_ref().map(|entry| entry.name.clone()))
-            .unwrap_or_else(|| "Kog".to_owned())
+        match current_entry() {
+            Some(entry) => display_title(&metadata.get(), &metadata_failed.get(), &entry)
+                .unwrap_or_default(),
+            None => "Kog".to_owned(),
+        }
     };
     let now_subtitle = move || {
         let entry = current_entry();
-        let meta = entry.as_ref().and_then(|entry| meta_for(&metadata.get(), entry));
+        let cache = metadata.get();
+        if entry.as_ref().is_some_and(|entry| {
+            !metadata_ready(&cache, &metadata_failed.get(), entry)
+        }) {
+            return String::new();
+        }
+        let meta = entry.as_ref().and_then(|entry| meta_for(&cache, entry));
         let artist = meta.as_ref().and_then(|meta| meta.artist.clone()).unwrap_or_default();
         let album = meta.as_ref().and_then(|meta| meta.album.clone()).unwrap_or_default();
         match (artist.is_empty(), album.is_empty()) {
@@ -6309,13 +6369,15 @@ fn App() -> impl IntoView {
                         <Show
                             when=move || !view_rows().is_empty()
                             fallback=move || view! {
-                                <p class="empty">
-                                    {move || if connected.get() {
-                                        "Pick a folder in the file tree, or a playlist."
-                                    } else {
-                                        "Open the server settings to connect."
-                                    }}
-                                </p>
+                                <Show when=move || !connected.get() || queue.get().is_empty()>
+                                    <p class="empty">
+                                        {move || if connected.get() {
+                                            "Pick a folder in the file tree, or a playlist."
+                                        } else {
+                                            "Open the server settings to connect."
+                                        }}
+                                    </p>
+                                </Show>
                             }
                         >
                             <For
@@ -6450,7 +6512,8 @@ fn App() -> impl IntoView {
                                                     let title_icon_show =
                                                         title_icon.is_some();
                                                     let text = move || {
-                                                        let meta = meta_for(&metadata.get(), &entry);
+                                                        let cache = metadata.get();
+                                                        let meta = meta_for(&cache, &entry);
                                                         let live = if current.get() == index
                                                             && duration.get() > 0.0
                                                         {
@@ -6472,15 +6535,20 @@ fn App() -> impl IntoView {
                                                         } else {
                                                             ""
                                                         };
-                                                        column_text(
-                                                            id,
-                                                            index,
-                                                            &entry,
-                                                            meta.as_ref(),
-                                                            live,
-                                                            starred,
-                                                            status,
-                                                        )
+                                                        if id == ColumnId::Title {
+                                                            display_title(&cache, &metadata_failed.get(), &entry)
+                                                                .unwrap_or_default()
+                                                        } else {
+                                                            column_text(
+                                                                id,
+                                                                index,
+                                                                &entry,
+                                                                meta.as_ref(),
+                                                                live,
+                                                                starred,
+                                                                status,
+                                                            )
+                                                        }
                                                     };
                                                     // The searchable text columns paint
                                                     // matched tokens while the playlist
