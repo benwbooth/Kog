@@ -3083,7 +3083,7 @@ ApplicationWindow {
 
                     KineticWheelHandler {
                         view: directoryTree
-                        impulsePerStep: 1450
+                        impulsePerStep: 1600
                     }
 
                     ScrollBar.vertical: ScrollBar {

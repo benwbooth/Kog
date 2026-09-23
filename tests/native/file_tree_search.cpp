@@ -386,7 +386,7 @@ int main(int argc, char **argv)
                     id: wheel
                     objectName: "wheel"
                     view: tree
-                    impulsePerStep: 1450
+                    impulsePerStep: 1600
                 }
                 Connections {
                     target: wheel.momentumAnimation
