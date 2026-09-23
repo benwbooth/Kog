@@ -5276,8 +5276,9 @@ fn App() -> impl IntoView {
         }
     };
 
-    // Add one tree row: a file is appended directly, a folder contributes its
-    // immediate files (fetched if that level was never expanded).
+    // Add one tree row: a file expands to its playable tracks, and a folder
+    // contributes playable files throughout its subtree, including folders
+    // inside archives.
     let add_row_to_playlist = {
         let get_json = get_json;
         let queue_files = queue_files.clone();
@@ -5319,6 +5320,7 @@ fn App() -> impl IntoView {
                 let header = auth().header();
                 leptos::task::spawn_local(async move {
                     let mut expanded: Vec<Entry> = Vec::new();
+                    let mut first_error = None;
                     for chunk in entries.chunks(200) {
                         let body: Vec<serde_json::Value> = chunk
                             .iter()
@@ -5334,9 +5336,12 @@ fn App() -> impl IntoView {
                             .collect();
                         let url = url.clone();
                         let header = header.clone();
-                        let Ok(value) = post_json(url, header, serde_json::json!(body)).await
-                        else {
-                            continue;
+                        let value = match post_json(url, header, serde_json::json!(body)).await {
+                            Ok(value) => value,
+                            Err(error) => {
+                                first_error.get_or_insert(error);
+                                continue;
+                            }
                         };
                         let Some(lists) = value["tracks"].as_array() else {
                             continue;
@@ -5346,6 +5351,9 @@ fn App() -> impl IntoView {
                                 expanded.extend(tracks.iter().map(browse_file_entry));
                             }
                         }
+                    }
+                    if let Some(error) = first_error {
+                        set_message.set(error);
                     }
                     report_add(append_entries(expanded));
                 });
@@ -5374,12 +5382,33 @@ fn App() -> impl IntoView {
                 expand_and_append(vec![entry]);
                 return;
             }
-            let route = format!("/api/library?path={}", url_encode(&row.path));
             let expand_and_append = expand_and_append.clone();
             leptos::task::spawn_local(async move {
-                if let Ok(value) = get_json(route).await {
-                    expand_and_append(library_files(&value));
+                let mut pending = vec![row.path];
+                let mut visited = HashSet::new();
+                let mut files = Vec::new();
+                while let Some(path) = pending.pop() {
+                    if !visited.insert(path.clone()) {
+                        continue;
+                    }
+                    let route = format!("/api/library?path={}", url_encode(&path));
+                    let value = match get_json(route).await {
+                        Ok(value) => value,
+                        Err(error) => {
+                            set_message.set(error);
+                            return;
+                        }
+                    };
+                    files.extend(library_files(&value));
+                    if let Some(dirs) = value["directories"].as_array() {
+                        for dir in dirs.iter().rev() {
+                            if let Some(child) = dir["path"].as_str() {
+                                pending.push(child.to_owned());
+                            }
+                        }
+                    }
                 }
+                expand_and_append(files);
             });
         }
     };
@@ -6068,7 +6097,6 @@ fn App() -> impl IntoView {
                                         >
                                             {
                                                 let row_click = row.clone();
-                                                let row_dbl = row.clone();
                                                 let row_menu = row.clone();
                                                 let row_drag = row.clone();
                                                 let row_add = row.clone();
@@ -6142,10 +6170,12 @@ fn App() -> impl IntoView {
                                                         style=format!("padding-left: {indent}px")
                                                         title=row_tooltip
                                                         draggable="true"
-                                                        on:click=move |_| {
+                                                        on:click=move |ev: web_sys::MouseEvent| {
                                                             set_tree_selected.set(row_click.path.clone());
                                                             set_tree_selected_dir.set(row_click.is_dir);
-                                                            if row_click.is_dir {
+                                                            if !touch_mode && ev.detail() >= 2 {
+                                                                add_row_to_playlist(row_click.clone());
+                                                            } else if row_click.is_dir {
                                                                 tree_toggle(row_click.path.clone());
                                                             } else if touch_mode {
                                                                 // Touch: tapping a file
@@ -6154,30 +6184,6 @@ fn App() -> impl IntoView {
                                                                 add_row_to_playlist(row_click.clone());
                                                                 set_sidebar_open.set(false);
                                                             }
-                                                        }
-                                                        on:dblclick=move |_| {
-                                                            // Touch handled the queue on
-                                                            // the tap; the second tap of
-                                                            // a double must not queue a
-                                                            // second copy.
-                                                            if touch_mode {
-                                                                return;
-                                                            }
-                                                            // The desktop's
-                                                            // activate: a double
-                                                            // click queues the
-                                                            // row — a file
-                                                            // queues itself, a
-                                                            // folder queues its
-                                                            // files. Expansion
-                                                            // stays the single
-                                                            // click's job (the
-                                                            // pair of clicks in
-                                                            // a double click
-                                                            // opens and closes
-                                                            // the folder, as on
-                                                            // the desktop).
-                                                            add_row_to_playlist(row_dbl.clone());
                                                         }
                                                         on:contextmenu=move |ev: web_sys::MouseEvent| {
                                                             ev.prevent_default();
