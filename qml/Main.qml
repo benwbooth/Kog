@@ -2885,10 +2885,13 @@ ApplicationWindow {
                         width: Math.max(0,
                             directoryTree.width - directoryTree.scrollGutter)
                         implicitHeight: 26
-                        // Kog's own format art (qml/icons/kog-format-*) wins;
-                        // anything else keeps resolving through the theme.
+                        // Use Kog's bundled SVG for folders and formats.
+                        // Resolving a theme folder icon on each reused row
+                        // stalls upward scrolling through nested folders.
                         readonly property bool customIcon:
                             fileIcon.startsWith("kog-format-")
+                        readonly property bool svgIcon:
+                            customIcon || fileIcon === "folder"
                         readonly property bool useLightIcon:
                             treeDelegate.selected || root.baseLuminance < 0.5
                         readonly property string iconExt: {
@@ -2909,8 +2912,8 @@ ApplicationWindow {
                             ControlsImpl.IconImage {
                                 Layout.preferredWidth: 18
                                 Layout.preferredHeight: 18
-                                visible: !treeDelegate.customIcon
-                                name: treeDelegate.customIcon ? "" : fileIcon
+                                visible: !treeDelegate.svgIcon
+                                name: treeDelegate.svgIcon ? "" : fileIcon
                                 sourceSize.width: 18
                                 sourceSize.height: 18
                                 fillMode: Image.PreserveAspectFit
@@ -2918,12 +2921,12 @@ ApplicationWindow {
                             Item {
                                 Layout.preferredWidth: 18
                                 Layout.preferredHeight: 18
-                                visible: treeDelegate.customIcon
+                                visible: treeDelegate.svgIcon
                                 clip: true
 
                                 Image {
                                     anchors.fill: parent
-                                    source: treeDelegate.customIcon
+                                    source: treeDelegate.svgIcon
                                         ? Qt.resolvedUrl("icons/" + treeDelegate.fileIcon
                                             + (treeDelegate.useLightIcon ? "-light" : "") + ".svg")
                                         : ""

@@ -34,6 +34,9 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::JsCast;
 
+mod selection;
+use selection::click_selection;
+
 /// The desktop transport's SVG icons (`qml/icons/`), inlined verbatim. CSS
 /// tints them with the button's text color where the desktop picks the
 /// `-light` variant from the toolbar luminance.
@@ -1951,9 +1954,10 @@ fn App() -> impl IntoView {
     let (midi_engine, set_midi_engine) = signal(String::new());
     let (midi_options, set_midi_options) = signal(Vec::<(String, String)>::new());
     let (version, set_version) = signal(String::new());
-    // Rows the pane actions act on. A plain click selects a row (and plays it),
-    // Ctrl/Cmd-click adds to the selection, matching the desktop's multi-select.
+    // Queue indices the pane actions act on. The anchor is a queue index too;
+    // Shift-click resolves its range through the current visible row order.
     let (selected, set_selected) = signal(HashSet::<usize>::new());
+    let (selection_anchor, set_selection_anchor) = signal(Option::<usize>::None);
     // Live-reload: the content hash of the running `/kog_web.js`, and whether a
     // newer build has appeared. A change reloads on the next pause or idle.
     let (asset_etag, set_asset_etag) = signal(Option::<String>::None);
@@ -3421,6 +3425,7 @@ fn App() -> impl IntoView {
             set_media_duration.set(None);
         }
         set_selected.set(HashSet::new());
+        set_selection_anchor.set(None);
         set_menu_open.set(false);
         set_song_menu.set(None);
     };
@@ -3451,6 +3456,7 @@ fn App() -> impl IntoView {
                         set.insert(index);
                     }
                 });
+                set_selection_anchor.set(Some(current.get_untracked().min(total - 1)));
             }
             return;
         }
@@ -4735,6 +4741,7 @@ fn App() -> impl IntoView {
                             .unwrap_or_default();
                         set_queue.set(entries);
                         set_selected.set(HashSet::new());
+                        set_selection_anchor.set(None);
                         set_list_name.set(name);
                         jump(0);
                     }
@@ -5193,6 +5200,7 @@ fn App() -> impl IntoView {
         set_stopped.set(true);
         set_playing.set(false);
         set_selected.set(HashSet::new());
+        set_selection_anchor.set(None);
         set_list_name.set(String::new());
         set_menu_open.set(false);
     };
@@ -6653,12 +6661,10 @@ fn App() -> impl IntoView {
                                             class:selected=move || selected.get().contains(&index)
                                             on:contextmenu=move |ev: web_sys::MouseEvent| {
                                                 ev.prevent_default();
-                                                set_selected.update(|set| {
-                                                    if !set.contains(&index) {
-                                                        set.clear();
-                                                        set.insert(index);
-                                                    }
-                                                });
+                                                if !selected.get_untracked().contains(&index) {
+                                                    set_selected.set(HashSet::from([index]));
+                                                    set_selection_anchor.set(Some(index));
+                                                }
                                                 set_song_menu.set(Some((
                                                     ev.client_x() as f64,
                                                     ev.client_y() as f64,
@@ -6673,9 +6679,14 @@ fn App() -> impl IntoView {
                                                 // (pause lives on the transport
                                                 // button), so a double tap can
                                                 // never end up paused.
-                                                if touch_mode {
+                                                if touch_mode
+                                                    && !ev.shift_key()
+                                                    && !ev.ctrl_key()
+                                                    && !ev.meta_key()
+                                                {
                                                     if current.get_untracked() != index {
                                                         set_selected.set(HashSet::from([index]));
+                                                        set_selection_anchor.set(Some(index));
                                                         set_current.set(index);
                                                         set_position.set(0.0);
                                                         set_media_duration.set(None);
@@ -6687,18 +6698,20 @@ fn App() -> impl IntoView {
                                                 // A single click only selects,
                                                 // like the desktop: a song starts
                                                 // on double click.
-                                                if ev.ctrl_key()
-                                                    || ev.meta_key()
-                                                    || ev.shift_key()
-                                                {
-                                                    set_selected.update(|set| {
-                                                        if !set.remove(&index) {
-                                                            set.insert(index);
-                                                        }
-                                                    });
-                                                    return;
-                                                }
-                                                set_selected.set(HashSet::from([index]));
+                                                let visible: Vec<usize> = view_rows()
+                                                    .into_iter()
+                                                    .map(|(row, _)| row)
+                                                    .collect();
+                                                let (next, anchor) = click_selection(
+                                                    &selected.get_untracked(),
+                                                    selection_anchor.get_untracked(),
+                                                    &visible,
+                                                    index,
+                                                    ev.shift_key(),
+                                                    ev.ctrl_key() || ev.meta_key(),
+                                                );
+                                                set_selected.set(next);
+                                                set_selection_anchor.set(anchor);
                                             }
                                             on:dblclick=move |ev: web_sys::MouseEvent| {
                                                 ev.prevent_default();
@@ -6717,6 +6730,7 @@ fn App() -> impl IntoView {
                                                     return;
                                                 }
                                                 set_selected.set(HashSet::from([index]));
+                                                set_selection_anchor.set(Some(index));
                                                 set_current.set(index);
                                                 set_position.set(0.0);
                                                 set_media_duration.set(None);
@@ -7597,6 +7611,9 @@ fn App() -> impl IntoView {
                                     set.insert(index);
                                 }
                             });
+                            if total > 0 {
+                                set_selection_anchor.set(Some(current.get_untracked().min(total - 1)));
+                            }
                         }
                     >
                         "Select All"

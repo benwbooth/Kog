@@ -248,13 +248,23 @@ int main(int argc, char **argv)
             id: testWindow
             width: 360; height: 500; visible: true
             property int reusedRows: 0
+            property int momentumFrames: 0
+            property real longestMomentumFrame: 0
+            property int missedMomentumFrames: 0
             property string benchmarkPath: ""
             function wheelTowardBottom() { return wheel.start(-1) }
             function expandPath(path) {
+                tree.forceLayout()
                 for (let row = 0; row < tree.rows; ++row) {
                     if (testModel.filePath(tree.index(row, 0)) !== path)
                         continue
+                    tree.positionViewAtRow(row, TableView.Contain)
+                    tree.forceLayout()
                     tree.expand(row)
+                    tree.forceLayout()
+                    const modelIndex = tree.index(row, 0)
+                    if (testModel.canFetchMore(modelIndex))
+                        testModel.fetchMore(modelIndex)
                     return tree.isExpanded(row)
                 }
                 return false
@@ -312,6 +322,7 @@ int main(int argc, char **argv)
                     required property string filePath
                     required property string fileIcon
                     readonly property bool customIcon: fileIcon.startsWith("kog-format-")
+                    readonly property bool svgIcon: customIcon || fileIcon === "folder"
                     readonly property bool useLightIcon: selected
                     readonly property string iconExt: {
                         if (fileIcon !== "kog-format-paper") return ""
@@ -324,17 +335,17 @@ int main(int argc, char **argv)
                         spacing: 5
                         ControlsImpl.IconImage {
                             Layout.preferredWidth: 18; Layout.preferredHeight: 18
-                            visible: !entry.customIcon
-                            name: entry.customIcon ? "" : entry.fileIcon
+                            visible: !entry.svgIcon
+                            name: entry.svgIcon ? "" : entry.fileIcon
                             sourceSize.width: 18; sourceSize.height: 18
                         }
                         Item {
                             Layout.preferredWidth: 18; Layout.preferredHeight: 18
-                            visible: entry.customIcon
+                            visible: entry.svgIcon
                             clip: true
                             Image {
                                 anchors.fill: parent
-                                source: entry.customIcon
+                                source: entry.svgIcon
                                     ? Qt.resolvedUrl("icons/" + entry.fileIcon
                                         + (entry.useLightIcon ? "-light" : "") + ".svg") : ""
                                 sourceSize.width: 18; sourceSize.height: 18
@@ -372,6 +383,18 @@ int main(int argc, char **argv)
                     }
                 }
                 KineticWheelHandler { id: wheel; objectName: "wheel"; view: tree }
+                Connections {
+                    target: wheel.momentumAnimation
+                    function onTriggered() {
+                        ++testWindow.momentumFrames
+                        testWindow.longestMomentumFrame = Math.max(
+                            testWindow.longestMomentumFrame,
+                            wheel.momentumAnimation.frameTime)
+                        if (wheel.momentumAnimation.frameTime > 0.010) {
+                            ++testWindow.missedMomentumFrames
+                        }
+                    }
+                }
             }
             TreeSearchLayout {
                 id: searchLayout
@@ -466,14 +489,33 @@ int main(int argc, char **argv)
                     view->property("reusedRows").toInt());
         return 0;
     }
-    if (argc >= 3 && QString::fromUtf8(argv[1]) == "--wheel-benchmark") {
-        const QString root = QString::fromUtf8(argv[2]);
+    const bool syntheticWheel = argc == 2 && QString::fromUtf8(argv[1]) == "--wheel-synthetic";
+    if (syntheticWheel || (argc >= 3 && QString::fromUtf8(argv[1]) == "--wheel-benchmark")) {
+        QTemporaryDir wheelFiles;
+        const QString root = syntheticWheel ? wheelFiles.path() : QString::fromUtf8(argv[2]);
+        if (syntheticWheel) {
+            check(wheelFiles.isValid(), "Create wheel fixture folder");
+            QDir folder(wheelFiles.path());
+            for (int dir = 0; dir < 20; ++dir) {
+                const auto name = QStringLiteral("Folder %1").arg(dir, 2, 10, QLatin1Char('0'));
+                check(folder.mkdir(name), "Create nested wheel fixture folder");
+                for (int i = 0; i < 10; ++i) {
+                    QFile file(wheelFiles.filePath(name + QStringLiteral("/Audiobook %1 - A long title with chapters and names that should be elided.mp3")
+                        .arg(i, 2, 10, QLatin1Char('0'))));
+                    check(file.open(QIODevice::WriteOnly), "Create nested wheel fixture file");
+                }
+            }
+        }
         model.setRootPath(root);
         auto *tree = view->findChild<QObject *>("tree");
-        waitFor([&] { return tree->property("rows").toInt() > 0; },
+        waitFor([&] { return tree->property("rows").toInt() >= (syntheticWheel ? 20 : 1); },
                 "Load wheel benchmark root");
-        for (int i = 3; i < argc; ++i) {
-            const QString path = QDir(root).filePath(QString::fromUtf8(argv[i]));
+        const int expansions = syntheticWheel ? 1 : argc - 3;
+        for (int i = 0; i < expansions; ++i) {
+            const QString relative = syntheticWheel
+                ? QStringLiteral("Folder %1").arg(i, 2, 10, QLatin1Char('0'))
+                : QString::fromUtf8(argv[i + 3]);
+            const QString path = QDir(root).filePath(relative);
             const auto before = tree->property("rows").toInt();
             view->setProperty("benchmarkPath", path);
             QQmlExpression expand(QQmlEngine::contextForObject(view.get()), view.get(),
@@ -498,10 +540,14 @@ int main(int argc, char **argv)
         auto *window = qobject_cast<QQuickWindow *>(view.get());
         check(window && !window->grabWindow().isNull(), "Warm wheel benchmark renderer");
         auto *handler = view->findChild<QObject *>("wheel");
-        for (int pass = 0; pass < 2; ++pass) {
-            tree->setProperty("contentY", 0.0);
+        tree->setProperty("contentY", 0.0);
+        for (int pass = 0; pass < 6; ++pass) {
+            const double startY = tree->property("contentY").toDouble();
+            view->setProperty("momentumFrames", 0);
+            view->setProperty("longestMomentumFrame", 0.0);
+            view->setProperty("missedMomentumFrames", 0);
             QCoreApplication::processEvents();
-            QWheelEvent wheel(QPointF(100, 100), QPointF(100, 100), {}, QPoint(0, -120),
+            QWheelEvent wheel(QPointF(100, 100), QPointF(100, 100), {}, QPoint(0, pass % 2 == 0 ? -120 : 120),
                               Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
             QCoreApplication::sendEvent(window, &wheel);
             std::printf("Wheel pass %d: velocity=%.0f rows=%d\n", pass,
@@ -513,7 +559,7 @@ int main(int argc, char **argv)
             while (duration.elapsed() < 800) {
                 step.start();
                 QCoreApplication::processEvents();
-                check(!window->grabWindow().isNull(), "Render wheel benchmark frame");
+                // Let the compositor pace frames; a forced grab changes the render loop.
                 const auto frameMs = step.elapsed();
                 longest = qMax(longest, frameMs);
                 if (frameMs > 20)
@@ -525,7 +571,13 @@ int main(int argc, char **argv)
             std::printf("Wheel scroll pass %d: rows=%d frames=%d longest=%lld ms finalY=%.1f\n",
                         pass, tree->property("rows").toInt(), frames,
                         static_cast<long long>(longest), tree->property("contentY").toDouble());
-            check(tree->property("contentY").toDouble() > 0,
+            std::printf("Momentum frames=%d missed=%d longest frameTime=%.3f s reused=%d\n",
+                        view->property("momentumFrames").toInt(),
+                        view->property("missedMomentumFrames").toInt(),
+                        view->property("longestMomentumFrame").toDouble(),
+                        view->property("reusedRows").toInt());
+            check(pass % 2 == 0 ? tree->property("contentY").toDouble() > startY
+                                : tree->property("contentY").toDouble() < startY,
                   "Wheel input reaches the tree and moves it with momentum");
         }
         return 0;

@@ -93,6 +93,7 @@ Pane {
                 required property string filePath
                 required property string fileIcon
                 readonly property bool customIcon: fileIcon.startsWith("kog-format-")
+                readonly property bool svgIcon: customIcon || fileIcon === "folder"
                 readonly property color iconTextColor: root.selectedPath === filePath
                     ? root.skinStyle.selectionText : root.skinStyle.text
                 readonly property bool useLightIcon:
@@ -101,8 +102,8 @@ Pane {
                 implicitWidth: tree.width
                 implicitHeight: 20
                 text: fileName
-                icon.name: customIcon ? "" : fileIcon
-                icon.source: customIcon
+                icon.name: svgIcon ? "" : fileIcon
+                icon.source: svgIcon
                     ? Qt.resolvedUrl("icons/" + fileIcon
                         + (useLightIcon ? "-light" : "") + ".svg") : ""
                 palette.text: root.selectedPath === filePath ? root.skinStyle.selectionText : root.skinStyle.text
