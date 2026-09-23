@@ -3636,14 +3636,19 @@ fn App() -> impl IntoView {
     // it from zero. Only a change of the row at `current`, or of the token
     // baked into the stream URL, may reload.
     let applied_src = Rc::new(std::cell::RefCell::new(String::new()));
+    // Loading another track can pause the element before its replacement is
+    // ready. That pause is not a remote transport command.
+    let source_changing = Rc::new(std::cell::Cell::new(false));
     {
         let applied_src = applied_src.clone();
+        let source_changing = source_changing.clone();
         Effect::new(move |_| {
             let desired = audio_src();
             if applied_src.borrow().as_str() == desired {
                 return;
             }
             if let Some(audio) = audio_ref.get() {
+                source_changing.set(true);
                 audio.set_src(&desired);
                 *applied_src.borrow_mut() = desired;
             }
@@ -3658,6 +3663,7 @@ fn App() -> impl IntoView {
     // effect above is the only thing that runs.
     let resume_when_ready = {
         let refresh_media_duration = refresh_media_duration.clone();
+        let source_changing = source_changing.clone();
         move |event: web_sys::Event| {
             refresh_media_duration(event);
             if playing.get_untracked() {
@@ -3665,6 +3671,7 @@ fn App() -> impl IntoView {
                     let _ = audio.play();
                 }
             }
+            source_changing.set(false);
         }
     };
 
@@ -3686,6 +3693,7 @@ fn App() -> impl IntoView {
         let audio_ref = audio_ref.clone();
         let current = current.clone();
         let queue = queue.clone();
+        let source_changing = source_changing.clone();
         let watchdog = Closure::<dyn FnMut()>::new(move || {
             let Some(audio) = audio_ref.get() else {
                 return;
@@ -3698,6 +3706,7 @@ fn App() -> impl IntoView {
                 // Re-assigning the source restarts the load; the ready
                 // handlers take over and resume playback from zero.
                 let src = audio.src();
+                source_changing.set(true);
                 let _ = audio.set_src(&src);
                 return;
             }
@@ -4318,16 +4327,25 @@ fn App() -> impl IntoView {
             if !queue.get_untracked().is_empty() {
                 set_stopped.set(false);
                 set_playing.set(true);
+                // Keep play() inside the media-key callback. On mobile the
+                // browser can require that activation for remote playback.
+                if let Some(audio) = audio_ref.get() {
+                    let _ = audio.play();
+                }
             }
         });
         media_session_action(&session, "pause", move |_| {
             set_playing.set(false);
+            if let Some(audio) = audio_ref.get() {
+                let _ = audio.pause();
+            }
         });
         media_session_action(&session, "stop", move |_| {
             set_playing.set(false);
             set_stopped.set(true);
             set_position.set(0.0);
             if let Some(audio) = audio_ref.get() {
+                let _ = audio.pause();
                 audio.set_current_time(0.0);
             }
         });
@@ -7220,12 +7238,38 @@ fn App() -> impl IntoView {
                     class="audio"
                     node_ref=audio_ref
                     preload="auto"
+                    on:pause={
+                        let source_changing = source_changing.clone();
+                        move |_| {
+                            // Some browsers apply hardware controls to the
+                            // element without calling Media Session handlers.
+                            // Reflect that pause so the watchdog stays quiet.
+                            if !source_changing.get() && playing.get_untracked() {
+                                if let Some(audio) = audio_ref.get() {
+                                    if audio.paused() && !audio.ended() {
+                                        set_playing.set(false);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    on:playing=move |_| {
+                        // Likewise, native resume can bypass the action
+                        // handler. A stopped queue needs an explicit Play.
+                        if !stopped.get_untracked() && !playing.get_untracked() {
+                            if let Some(audio) = audio_ref.get() {
+                                if !audio.paused() {
+                                    set_playing.set(true);
+                                }
+                            }
+                        }
+                    }
                     on:timeupdate=move |_| {
                         if let Some(audio) = audio_ref.get() {
                             set_position.set(audio.current_time());
                         }
                     }
-                    on:loadedmetadata=resume_when_ready
+                    on:loadedmetadata=resume_when_ready.clone()
                     on:durationchange=refresh_media_duration
                     on:canplay=resume_when_ready
                     on:ended=move |_| {
