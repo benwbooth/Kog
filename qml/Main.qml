@@ -857,10 +857,8 @@ ApplicationWindow {
         if (!appController.radio_active || appController.playback_state !== "playing"
                 || activeSourceIndex < 0)
             return
-        // Radio appends a source track before changing current_index. The
-        // numeric ListView model can jump to its start as its count changes;
-        // locate the new track in visible order (which may be sorted) once
-        // those changes have settled.
+        // Radio appends a source track before changing current_index. Locate
+        // the new track in visible order, which may be sorted.
         for (let row = appController.playlist_count - 1; row >= 0; --row) {
             if (Number(appController.track_number_at(row))
                     === activeSourceIndex + 1) {
@@ -3416,12 +3414,12 @@ ApplicationWindow {
                     }
                 }
 
-                ListView {
+                CountPreservingListView {
                     id: playlistView
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     clip: true
-                    model: appController.playlist_count
+                    rowCount: appController.playlist_count
                     reuseItems: true
                     cacheBuffer: Math.min(height * 1.5, 1200)
                     boundsBehavior: Flickable.StopAtBounds

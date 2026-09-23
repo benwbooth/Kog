@@ -37,6 +37,7 @@ fn main() {
         "qml/InfoInspector.qml",
         "qml/AboutKog.qml",
         "qml/PaneSplitView.qml",
+        "qml/CountPreservingListView.qml",
         "qml/KineticWheelHandler.qml",
         "qml/Lyrics.qml",
         "qml/Main.qml",
