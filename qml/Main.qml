@@ -2899,13 +2899,10 @@ ApplicationWindow {
                                 return ""
                             return filePath.slice(dot + 1).toUpperCase().slice(0, 3)
                         }
-                        icon.name: customIcon ? "" : fileIcon
-                        icon.source: customIcon
-                            ? Qt.resolvedUrl("icons/" + fileIcon
-                                + (useLightIcon ? "-light" : "") + ".svg")
-                            : ""
-                        icon.width: 18
-                        icon.height: 18
+                        // The contentItem renders exactly one icon. Feeding
+                        // the same name to TreeViewDelegate's unused icon
+                        // also makes Qt resolve it for every recycled row.
+                        icon.name: ""
                         contentItem: RowLayout {
                             spacing: 5
 
@@ -2913,7 +2910,7 @@ ApplicationWindow {
                                 Layout.preferredWidth: 18
                                 Layout.preferredHeight: 18
                                 visible: !treeDelegate.customIcon
-                                name: fileIcon
+                                name: treeDelegate.customIcon ? "" : fileIcon
                                 sourceSize.width: 18
                                 sourceSize.height: 18
                                 fillMode: Image.PreserveAspectFit
@@ -2926,10 +2923,14 @@ ApplicationWindow {
 
                                 Image {
                                     anchors.fill: parent
-                                    source: treeDelegate.icon.source
+                                    source: treeDelegate.customIcon
+                                        ? Qt.resolvedUrl("icons/" + treeDelegate.fileIcon
+                                            + (treeDelegate.useLightIcon ? "-light" : "") + ".svg")
+                                        : ""
                                     sourceSize.width: 18
                                     sourceSize.height: 18
                                     fillMode: Image.PreserveAspectFit
+                                    asynchronous: true
                                     mipmap: true
                                 }
                                 // The paper fallback badges its extension.

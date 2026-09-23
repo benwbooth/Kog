@@ -18,4 +18,4 @@ c++ -std=c++17 -fPIC -pthread -ffunction-sections -fdata-sections -DKOG_TREE_TES
   "$test_dir/moc_search.cpp" \
   $(pkg-config --libs Qt6Widgets Qt6Quick Qt6Concurrent libarchive) \
   -Wl,--gc-sections -o "$test_dir/file-tree-search"
-XDG_CACHE_HOME="$test_dir/cache" QT_QPA_PLATFORM=offscreen "$test_dir/file-tree-search" "$@"
+XDG_CACHE_HOME="$test_dir/cache" QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-offscreen}" "$test_dir/file-tree-search" "$@"

@@ -23,6 +23,7 @@ c++ -std=c++17 -fPIC -pthread -I"$repo_dir/native" -I"$test_dir" \
   $(pkg-config --cflags Qt6Widgets Qt6Quick Qt6Qml Qt6Concurrent Qt6Test Qt6WebChannel Qt6WebChannelQuick Qt6WebEngineQuick Qt6WebEngineCore libarchive) \
   "$repo_dir/tests/native/modern_skin_smoke.cpp" "$repo_dir/native/kog_modern_skin.cpp" \
   "$repo_dir/native/kog_file_tree_search.cpp" "$repo_dir/native/kog_tree_archive.cpp" \
+  "$repo_dir/native/kog_desktop_integration.cpp" \
   "$test_dir/moc_kog_modern_skin.cpp" "$test_dir/moc_kog_file_tree_search.cpp" "$test_dir/qrc_modern_runtime.cpp" \
   $(pkg-config --libs Qt6Widgets Qt6Quick Qt6Qml Qt6Concurrent Qt6Test Qt6WebChannel Qt6WebChannelQuick Qt6WebEngineQuick Qt6WebEngineCore libarchive) \
   "${webengine_rpath_link[@]}" \

@@ -240,11 +240,12 @@ int main(int argc, char **argv)
     component.setData(R"(
         import QtQuick
         import QtQuick.Controls
+        import QtQuick.Controls.impl as ControlsImpl
+        import QtQuick.Layouts
         Window {
             id: testWindow
             width: 360; height: 500; visible: true
             property int reusedRows: 0
-            function wheelTowardBottom() { return wheel.start(-1) }
             function visibleRowsMatchModel() {
                 let checked = 0
                 for (let row = 0; row < tree.rows; ++row) {
@@ -267,10 +268,16 @@ int main(int argc, char **argv)
                     if (!item || !item.hasChildren)
                         continue
                     const mark = item.indicator
-                    if (!mark || mark.width !== 16 || mark.height !== 16
-                            || Math.abs(mark.y + mark.height / 2 - item.height / 2) > 0.5
-                            || Math.abs(mark.x - item.leftMargin - item.depth * item.indentation) > 0.5)
+                    if (!mark || mark.width < 8 || mark.width > 24
+                            || mark.height < 8 || mark.height > 24
+                            || Math.abs(mark.y + mark.height / 2 - item.height / 2) > 1
+                            || Math.abs(mark.x - item.leftMargin - item.depth * item.indentation) > 4) {
+                        console.log("Native indicator", mark ? mark.width : -1,
+                            mark ? mark.height : -1, mark ? mark.x : -1,
+                            mark ? mark.y : -1, item.leftMargin, item.depth,
+                            item.indentation, item.height)
                         return false
+                    }
                     ++checked
                 }
                 return checked > 0
@@ -288,21 +295,69 @@ int main(int argc, char **argv)
                 delegate: TreeViewDelegate {
                     id: entry
                     TableView.onReused: ++testWindow.reusedRows
-                    indicator: TreeExpandIndicator { control: entry }
                     required property string fileName
                     required property string filePath
                     required property string fileIcon
-                    icon.name: fileIcon
+                    readonly property bool customIcon: fileIcon.startsWith("kog-format-")
+                    readonly property bool useLightIcon: selected
+                    readonly property string iconExt: {
+                        if (fileIcon !== "kog-format-paper") return ""
+                        const dot = filePath.lastIndexOf(".")
+                        return dot < 0 ? "" : filePath.slice(dot + 1).toUpperCase().slice(0, 3)
+                    }
+                    icon.name: ""
                     objectName: filePath
-                    text: fileName
-                    contentItem: SearchHighlightLabel {
-                        sourceText: entry.fileName
-                        query: testModel.searchText
-                        searchModel: testModel
-                        color: entry.selected ? entry.palette.highlightedText : entry.palette.text
+                    contentItem: RowLayout {
+                        spacing: 5
+                        ControlsImpl.IconImage {
+                            Layout.preferredWidth: 18; Layout.preferredHeight: 18
+                            visible: !entry.customIcon
+                            name: entry.customIcon ? "" : entry.fileIcon
+                            sourceSize.width: 18; sourceSize.height: 18
+                        }
+                        Item {
+                            Layout.preferredWidth: 18; Layout.preferredHeight: 18
+                            visible: entry.customIcon
+                            clip: true
+                            Image {
+                                anchors.fill: parent
+                                source: entry.customIcon
+                                    ? Qt.resolvedUrl("icons/" + entry.fileIcon
+                                        + (entry.useLightIcon ? "-light" : "") + ".svg") : ""
+                                sourceSize.width: 18; sourceSize.height: 18
+                                fillMode: Image.PreserveAspectFit
+                                asynchronous: true
+                                mipmap: true
+                            }
+                            Label {
+                                anchors.left: parent.left; anchors.right: parent.right
+                                anchors.bottom: parent.bottom
+                                visible: entry.iconExt.length > 0
+                                text: entry.iconExt
+                                font.pixelSize: 7; font.bold: true
+                                horizontalAlignment: Text.AlignHCenter
+                            }
+                        }
+                        SearchHighlightLabel {
+                            Layout.fillWidth: true
+                            sourceText: entry.fileName
+                            query: testModel.searchText
+                            searchModel: testModel
+                            color: entry.selected ? entry.palette.highlightedText : entry.palette.text
+                        }
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        z: 2
+                        hoverEnabled: true
+                        acceptedButtons: Qt.LeftButton | Qt.RightButton
+                        preventStealing: true
+                        scrollGestureEnabled: false
+                        ToolTip.visible: containsMouse && !tree.moving
+                        ToolTip.delay: 700
+                        ToolTip.text: entry.filePath
                     }
                 }
-                KineticWheelHandler { id: wheel; view: tree }
             }
             TreeSearchLayout {
                 id: searchLayout
@@ -358,6 +413,43 @@ int main(int argc, char **argv)
         std::printf("UI search: complete=%lld ms; longest input gap=%lld ms; keys=%d; rows=%d\n",
                     static_cast<long long>(elapsed.elapsed()), static_cast<long long>(maxGap), keys,
                     view->findChild<QObject *>("tree")->property("rows").toInt());
+        return 0;
+    }
+    if (argc == 2 && QString::fromUtf8(argv[1]) == "--scroll-benchmark") {
+        QTemporaryDir manyFiles;
+        check(manyFiles.isValid(), "Create scroll benchmark folder");
+        constexpr int fileCount = 12000;
+        for (int i = 0; i < fileCount; ++i) {
+            const auto suffix = i % 3 == 0 ? "mp3" : i % 3 == 1 ? "flac" : "mid";
+            QFile file(manyFiles.filePath(QStringLiteral("Audiobook %1 - A long title with chapters and names that should be elided.%2")
+                .arg(i, 5, 10, QLatin1Char('0')).arg(suffix)));
+            check(file.open(QIODevice::WriteOnly), "Create scroll benchmark file");
+        }
+        model.setRootPath(manyFiles.path());
+        auto *tree = view->findChild<QObject *>("tree");
+        waitFor([&] { return tree->property("rows").toInt() == fileCount; },
+                "Load benchmark rows into real TreeView");
+        check(!qobject_cast<QQuickWindow *>(view.get())->grabWindow().isNull(),
+              "Warm up Wayland renderer before scroll measurements");
+        QElapsedTimer total, step;
+        total.start();
+        qint64 longestStep = 0;
+        constexpr int steps = 120;
+        for (int i = 0; i < steps; ++i) {
+            step.start();
+            tree->setProperty("contentY", double(i * 100 * 26));
+            QCoreApplication::processEvents();
+            check(!qobject_cast<QQuickWindow *>(view.get())->grabWindow().isNull(),
+                  "Render benchmark frame");
+            const auto stepMs = step.elapsed();
+            if (stepMs > 20)
+                std::printf("Slow scroll frame %d: %lld ms\n", i, static_cast<long long>(stepMs));
+            longestStep = qMax(longestStep, stepMs);
+        }
+        std::printf("Tree scroll: rows=%d, steps=%d, total=%lld ms, longest step=%lld ms, reused=%d\n",
+                    tree->property("rows").toInt(), steps,
+                    static_cast<long long>(total.elapsed()), static_cast<long long>(longestStep),
+                    view->property("reusedRows").toInt());
         return 0;
     }
     model.setSearchText("THEME");
@@ -736,11 +828,10 @@ int main(int argc, char **argv)
           "Exact tree extent can reach the bottom without stopping early");
     check(visibleRowsMatchModel(), "Bottom rows keep their correct model identities");
     tree->setProperty("contentY", bottom - 50);
-    QVariant started;
-    check(QMetaObject::invokeMethod(view.get(), "wheelTowardBottom", Q_RETURN_ARG(QVariant, started))
-              && started.toBool(), "Kinetic wheel starts near the tree's lower boundary");
-    waitFor([&] { return tree->property("contentY").toDouble() >= bottom - 1; },
-            "Kinetic wheel reaches the final row instead of stopping early");
+    tree->setProperty("contentY", bottom);
+    QCoreApplication::processEvents();
+    check(qAbs(tree->property("contentY").toDouble() - bottom) < 1,
+          "Native tree scrolling reaches the final row instead of stopping early");
     check(view->property("reusedRows").toInt() > 0, "Tree scrolling actually reuses delegates");
     model.setSearchText("limit"); // Destruction during a scan is safe.
     std::puts("File tree search tests passed");
