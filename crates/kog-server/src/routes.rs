@@ -1252,6 +1252,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn browsing_reaches_midi_inside_nested_zip_folders() {
+        let (library, root) = library_with(&[]);
+        let archive = root.join("Sonic.zip");
+        kog_audio::archive::tests::write_stored_zip(
+            &archive,
+            &[("Sonic The Hedgehog/Genesis/Green Hill Zone.mid", b"MThd")],
+        );
+        let state = state_with(AuthMode::None, "", library);
+        let mut path = archive.to_string_lossy().into_owned();
+
+        for folder in ["Sonic The Hedgehog", "Genesis"] {
+            let (status, body) = get_json(
+                state.clone(),
+                &format!("/api/library?path={}", path.replace(' ', "%20")),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            let directories = body["directories"].as_array().unwrap();
+            assert_eq!(directories.len(), 1);
+            assert_eq!(directories[0]["name"], folder);
+            path = format!("{path}/{folder}");
+            assert_eq!(directories[0]["path"], path);
+        }
+
+        let (status, body) = get_json(
+            state,
+            &format!("/api/library?path={}", path.replace(' ', "%20")),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let files = body["files"].as_array().unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0]["name"], "Green Hill Zone.mid");
+        assert_eq!(files[0]["kind"], "archive");
+        assert_eq!(files[0]["path"], archive.to_string_lossy().as_ref());
+        assert_eq!(
+            files[0]["entry"],
+            "Sonic The Hedgehog/Genesis/Green Hill Zone.mid"
+        );
+    }
+
+    #[tokio::test]
     async fn browsing_expands_folder_playlists_and_drops_gme_companions() {
         let (library, root) = library_with(&["Album/one.wav"]);
         let album = root.join("Album");

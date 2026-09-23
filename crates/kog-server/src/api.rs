@@ -1564,6 +1564,11 @@ fn archive_listing(
         format!("{}/", subpath.trim_matches('/'))
     };
     let archive = archive_path.to_string_lossy().into_owned();
+    let current_path = if prefix.is_empty() {
+        archive.clone()
+    } else {
+        format!("{archive}/{}", prefix.trim_end_matches('/'))
+    };
     let mut directory_names: Vec<String> = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let mut files: Vec<serde_json::Value> = Vec::new();
@@ -1601,16 +1606,12 @@ fn archive_listing(
         .map(|name| {
             serde_json::json!({
                 "name": name,
-                "path": format!("{}/{}", archive_path.display(), name),
+                "path": format!("{current_path}/{name}"),
             })
         })
         .collect();
     Ok(serde_json::json!({
-        "path": if prefix.is_empty() {
-            archive.clone()
-        } else {
-            format!("{archive}/{}", prefix.trim_end_matches('/'))
-        },
+        "path": current_path,
         "directories": directories,
         "files": files,
     }))
