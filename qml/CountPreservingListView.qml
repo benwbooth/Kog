@@ -23,6 +23,18 @@ ListView {
         contentX = previousX
     }
 
+    function revealRowFully(index) {
+        if (index < 0 || index >= count)
+            return
+        forceLayout()
+        const item = itemAtIndex(index)
+        const bottomInset = footerItem ? footerItem.height : 0
+        if (item && item.y >= contentY
+                && item.y + item.height <= contentY + height - bottomInset)
+            return
+        positionViewAtIndex(index, ListView.Center)
+    }
+
     onRowCountChanged: syncRowCount()
     Component.onCompleted: syncRowCount()
 }

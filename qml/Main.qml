@@ -46,6 +46,11 @@ ApplicationWindow {
         if (appController.radio_active)
             Qt.callLater(root.revealPlayingRadioTrack)
     }
+    readonly property int playlistRowCount: appController.playlist_count
+    onPlaylistRowCountChanged: {
+        if (appController.radio_active)
+            Qt.callLater(root.revealPlayingRadioTrack)
+    }
     property int selectedRow: -1
     property int selectionAnchor: -1
     property var selectedRows: []
@@ -854,15 +859,14 @@ ApplicationWindow {
     }
 
     function revealPlayingRadioTrack() {
-        if (!appController.radio_active || appController.playback_state !== "playing"
-                || activeSourceIndex < 0)
+        if (!appController.radio_active || activeSourceIndex < 0)
             return
         // Radio appends a source track before changing current_index. Locate
         // the new track in visible order, which may be sorted.
         for (let row = appController.playlist_count - 1; row >= 0; --row) {
             if (Number(appController.track_number_at(row))
                     === activeSourceIndex + 1) {
-                playlistView.positionViewAtIndex(row, ListView.Contain)
+                playlistView.revealRowFully(row)
                 return
             }
         }
