@@ -78,6 +78,9 @@ pub mod qobject {
         fn path_for_index(self: &FileTreeModel, index: &QModelIndex) -> QString;
 
         #[qinvokable]
+        fn display_path(self: &FileTreeModel, path: QString) -> QString;
+
+        #[qinvokable]
         fn icon_name(self: &FileTreeModel, path: QString) -> QString;
     }
 }
@@ -135,6 +138,10 @@ impl qobject::FileTreeModel {
         self.file_path_super(index)
     }
 
+    pub fn display_path(&self, path: QString) -> QString {
+        QString::from(display_tree_path(&path.to_string()))
+    }
+
     pub fn icon_name(&self, path: QString) -> QString {
         if let Ok(Some(location)) = kog_audio::archive::tree_location(Path::new(&path.to_string())) {
             if location.directory {
@@ -168,5 +175,36 @@ impl qobject::FileTreeModel {
         self.as_mut().set_can_go_up(can_go_up);
         self.as_mut().set_root_path(path);
         self.as_mut().set_root_index(index);
+    }
+}
+
+fn display_tree_path(path: &str) -> String {
+    match kog_audio::archive::tree_location(Path::new(path)) {
+        Ok(Some(location)) => location
+            .archive
+            .join(location.entry)
+            .to_string_lossy()
+            .into_owned(),
+        _ => path.to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn archive_tooltip_uses_archive_and_member_path() {
+        let archive = Path::new("/music/Sonic + Classics.zip");
+        let member = "Sonic The Hedgehog/Genesis/Green Hill Zone.mid";
+        let tree_url = kog_audio::archive::member_url(archive, member, false);
+        assert_eq!(
+            display_tree_path(tree_url.to_str().unwrap()),
+            archive.join(member).to_string_lossy()
+        );
+        assert_eq!(
+            display_tree_path("/music/Sonic + Classics.zip"),
+            "/music/Sonic + Classics.zip"
+        );
     }
 }

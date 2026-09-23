@@ -902,6 +902,16 @@ fn entry_path(entry: &Entry) -> String {
     }
 }
 
+/// Hover text in the file tree treats an archive as a directory while the
+/// underlying locator keeps its separate archive and member fields.
+fn tree_tooltip_path(kind: &str, path: &str, entry: &str) -> String {
+    if kind == "archive" && !entry.is_empty() {
+        format!("{}/{}", path.trim_end_matches('/'), entry)
+    } else {
+        path.to_owned()
+    }
+}
+
 /// The file name for the Filename column, mirroring `track_filename`: an
 /// archive shows the member name, everything else its own last path segment.
 fn entry_filename(entry: &Entry) -> String {
@@ -6063,6 +6073,8 @@ fn App() -> impl IntoView {
                                                 let row_drag = row.clone();
                                                 let row_add = row.clone();
                                                 let row_name = row.name.clone();
+                                                let row_tooltip = tree_tooltip_path(
+                                                    &row.kind, &row.path, &row.entry);
                                                 let tree_toggle = tree_toggle.clone();
                                                 let add_row_to_playlist = add_row_to_playlist.clone();
                                                 let selected = row.path.clone();
@@ -6128,7 +6140,7 @@ fn App() -> impl IntoView {
                                                             tree_selected.get() == selected
                                                         }
                                                         style=format!("padding-left: {indent}px")
-                                                        title=row.path.clone()
+                                                        title=row_tooltip
                                                         draggable="true"
                                                         on:click=move |_| {
                                                             set_tree_selected.set(row_click.path.clone());

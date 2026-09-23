@@ -3009,7 +3009,8 @@ ApplicationWindow {
                             ToolTip.visible: containsMouse && !directoryTree.moving
                                 && rowPath.length > 0
                             ToolTip.delay: 700
-                            ToolTip.text: rowPath
+                            ToolTip.text: containsMouse
+                                ? fileTreeModel.display_path(rowPath) : ""
                             readonly property string rowPath:
                                 treeDelegate.filePath.length > 0
                                     ? treeDelegate.filePath
