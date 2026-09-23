@@ -21,7 +21,6 @@ WheelHandler {
     property real maximumVelocity: 9000
     property real impulsePerStep: 1250
     property real deceleration: 2500
-    property double lastFrameTime: 0
     property double lastPixelEventTime: 0
     property real pixelVelocity: 0
 
@@ -46,9 +45,8 @@ WheelHandler {
 
     function stop() {
         velocity = 0;
-        momentumTimer.stop();
+        momentumAnimation.stop();
         pixelGestureEndTimer.stop();
-        lastFrameTime = 0;
         lastPixelEventTime = 0;
         pixelVelocity = 0;
         // A Shift+wheel run borrows the horizontal axis; ending the run hands
@@ -70,8 +68,7 @@ WheelHandler {
         if (velocity * impulse < 0)
             velocity *= 0.2;
         velocity = Math.max(-maximumVelocity, Math.min(maximumVelocity, velocity + impulse));
-        lastFrameTime = Date.now();
-        momentumTimer.start();
+        momentumAnimation.start();
         return true;
     }
 
@@ -92,7 +89,7 @@ WheelHandler {
         const now = Date.now();
         const contentDelta = -pixelDelta;
         const elapsed = lastPixelEventTime > 0 ? (now - lastPixelEventTime) / 1000 : 0;
-        momentumTimer.stop();
+        momentumAnimation.stop();
         velocity = 0;
         moveTo(currentContent() + contentDelta);
 
@@ -115,14 +112,11 @@ WheelHandler {
             stop();
             return;
         }
-        lastFrameTime = Date.now();
-        momentumTimer.start();
+        momentumAnimation.start();
     }
 
-    function advance() {
-        const now = Date.now();
-        const elapsed = lastFrameTime > 0 ? Math.min(0.05, (now - lastFrameTime) / 1000) : 0;
-        lastFrameTime = now;
+    function advance(frameTime) {
+        const elapsed = Math.min(0.05, frameTime);
         if (elapsed <= 0)
             return;
         const minimum = minimumContent();
@@ -195,10 +189,8 @@ WheelHandler {
         event.accepted = true;
     }
 
-    property Timer momentumTimer: Timer {
-        interval: 16
-        repeat: true
-        onTriggered: kineticWheel.advance()
+    property FrameAnimation momentumAnimation: FrameAnimation {
+        onTriggered: kineticWheel.advance(frameTime)
     }
 
     property Timer pixelGestureEndTimer: Timer {

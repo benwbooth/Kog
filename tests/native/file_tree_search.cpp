@@ -10,6 +10,7 @@
 #include <QtCore/QThread>
 #include <QtCore/QTimer>
 #include <QtGui/QKeyEvent>
+#include <QtGui/QWheelEvent>
 #include <QtGui/QTextDocument>
 #include <QtGui/QTextCursor>
 #include <QtQuick/QQuickWindow>
@@ -17,6 +18,7 @@
 #include <QtQml/QQmlComponent>
 #include <QtQml/QQmlContext>
 #include <QtQml/QQmlEngine>
+#include <QtQml/QQmlExpression>
 #include <QtWidgets/QApplication>
 #include <cstdio>
 #include <cstdlib>
@@ -246,6 +248,17 @@ int main(int argc, char **argv)
             id: testWindow
             width: 360; height: 500; visible: true
             property int reusedRows: 0
+            property string benchmarkPath: ""
+            function wheelTowardBottom() { return wheel.start(-1) }
+            function expandPath(path) {
+                for (let row = 0; row < tree.rows; ++row) {
+                    if (testModel.filePath(tree.index(row, 0)) !== path)
+                        continue
+                    tree.expand(row)
+                    return tree.isExpanded(row)
+                }
+                return false
+            }
             function visibleRowsMatchModel() {
                 let checked = 0
                 for (let row = 0; row < tree.rows; ++row) {
@@ -358,6 +371,7 @@ int main(int argc, char **argv)
                         ToolTip.text: entry.filePath
                     }
                 }
+                KineticWheelHandler { id: wheel; objectName: "wheel"; view: tree }
             }
             TreeSearchLayout {
                 id: searchLayout
@@ -450,6 +464,70 @@ int main(int argc, char **argv)
                     tree->property("rows").toInt(), steps,
                     static_cast<long long>(total.elapsed()), static_cast<long long>(longestStep),
                     view->property("reusedRows").toInt());
+        return 0;
+    }
+    if (argc >= 3 && QString::fromUtf8(argv[1]) == "--wheel-benchmark") {
+        const QString root = QString::fromUtf8(argv[2]);
+        model.setRootPath(root);
+        auto *tree = view->findChild<QObject *>("tree");
+        waitFor([&] { return tree->property("rows").toInt() > 0; },
+                "Load wheel benchmark root");
+        for (int i = 3; i < argc; ++i) {
+            const QString path = QDir(root).filePath(QString::fromUtf8(argv[i]));
+            const auto before = tree->property("rows").toInt();
+            view->setProperty("benchmarkPath", path);
+            QQmlExpression expand(QQmlEngine::contextForObject(view.get()), view.get(),
+                                  QStringLiteral("expandPath(benchmarkPath)"));
+            waitFor([&] { return expand.evaluate().toBool(); },
+                    "Expand a requested wheel benchmark folder");
+            waitFor([&] { return tree->property("rows").toInt() > before; },
+                    "Load expanded wheel benchmark folder");
+        }
+        QElapsedTimer stable, loaded;
+        stable.start(); loaded.start();
+        int previousRows = tree->property("rows").toInt();
+        while (stable.elapsed() < 500 && loaded.elapsed() < 10000) {
+            QCoreApplication::processEvents();
+            const int rows = tree->property("rows").toInt();
+            if (rows != previousRows) {
+                previousRows = rows;
+                stable.restart();
+            }
+            QThread::msleep(10);
+        }
+        auto *window = qobject_cast<QQuickWindow *>(view.get());
+        check(window && !window->grabWindow().isNull(), "Warm wheel benchmark renderer");
+        auto *handler = view->findChild<QObject *>("wheel");
+        for (int pass = 0; pass < 2; ++pass) {
+            tree->setProperty("contentY", 0.0);
+            QCoreApplication::processEvents();
+            QWheelEvent wheel(QPointF(100, 100), QPointF(100, 100), {}, QPoint(0, -120),
+                              Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+            QCoreApplication::sendEvent(window, &wheel);
+            std::printf("Wheel pass %d: velocity=%.0f rows=%d\n", pass,
+                        handler->property("velocity").toDouble(), tree->property("rows").toInt());
+            QElapsedTimer duration, step;
+            duration.start();
+            qint64 longest = 0;
+            int frames = 0;
+            while (duration.elapsed() < 800) {
+                step.start();
+                QCoreApplication::processEvents();
+                check(!window->grabWindow().isNull(), "Render wheel benchmark frame");
+                const auto frameMs = step.elapsed();
+                longest = qMax(longest, frameMs);
+                if (frameMs > 20)
+                    std::printf("Slow wheel pass %d frame %d: %lld ms\n",
+                                pass, frames, static_cast<long long>(frameMs));
+                ++frames;
+                QThread::msleep(8);
+            }
+            std::printf("Wheel scroll pass %d: rows=%d frames=%d longest=%lld ms finalY=%.1f\n",
+                        pass, tree->property("rows").toInt(), frames,
+                        static_cast<long long>(longest), tree->property("contentY").toDouble());
+            check(tree->property("contentY").toDouble() > 0,
+                  "Wheel input reaches the tree and moves it with momentum");
+        }
         return 0;
     }
     model.setSearchText("THEME");
@@ -828,10 +906,11 @@ int main(int argc, char **argv)
           "Exact tree extent can reach the bottom without stopping early");
     check(visibleRowsMatchModel(), "Bottom rows keep their correct model identities");
     tree->setProperty("contentY", bottom - 50);
-    tree->setProperty("contentY", bottom);
-    QCoreApplication::processEvents();
-    check(qAbs(tree->property("contentY").toDouble() - bottom) < 1,
-          "Native tree scrolling reaches the final row instead of stopping early");
+    QVariant started;
+    check(QMetaObject::invokeMethod(view.get(), "wheelTowardBottom", Q_RETURN_ARG(QVariant, started))
+              && started.toBool(), "Kinetic wheel starts near the tree's lower boundary");
+    waitFor([&] { return tree->property("contentY").toDouble() >= bottom - 1; },
+            "Kinetic wheel reaches the final row instead of stopping early");
     check(view->property("reusedRows").toInt() > 0, "Tree scrolling actually reuses delegates");
     model.setSearchText("limit"); // Destruction during a scan is safe.
     std::puts("File tree search tests passed");

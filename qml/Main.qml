@@ -3078,6 +3078,10 @@ ApplicationWindow {
                         }
                     }
 
+                    KineticWheelHandler {
+                        view: directoryTree
+                    }
+
                     ScrollBar.vertical: ScrollBar {
                         id: directoryScrollBar
                         policy: ScrollBar.AsNeeded

@@ -115,6 +115,7 @@ Pane {
                     if (!hasChildren) root.app.activate_local_path(filePath)
                 }
             }
+            KineticWheelHandler { view: tree }
             ScrollBar.vertical: ScrollBar {}
         }
         Label {
