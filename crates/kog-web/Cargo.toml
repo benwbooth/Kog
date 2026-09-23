@@ -1,6 +1,6 @@
 [package]
 name = "kog-web"
-version = "0.9.40"
+version = "0.9.41"
 edition = "2024"
 license = "GPL-3.0-or-later"
 description = "Kog's web frontend"
