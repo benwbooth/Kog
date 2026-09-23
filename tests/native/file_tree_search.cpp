@@ -382,7 +382,12 @@ int main(int argc, char **argv)
                         ToolTip.text: entry.filePath
                     }
                 }
-                KineticWheelHandler { id: wheel; objectName: "wheel"; view: tree }
+                KineticWheelHandler {
+                    id: wheel
+                    objectName: "wheel"
+                    view: tree
+                    impulsePerStep: 1450
+                }
                 Connections {
                     target: wheel.momentumAnimation
                     function onTriggered() {
@@ -496,7 +501,7 @@ int main(int argc, char **argv)
         if (syntheticWheel) {
             check(wheelFiles.isValid(), "Create wheel fixture folder");
             QDir folder(wheelFiles.path());
-            for (int dir = 0; dir < 20; ++dir) {
+            for (int dir = 0; dir < 80; ++dir) {
                 const auto name = QStringLiteral("Folder %1").arg(dir, 2, 10, QLatin1Char('0'));
                 check(folder.mkdir(name), "Create nested wheel fixture folder");
                 for (int i = 0; i < 10; ++i) {
@@ -508,7 +513,7 @@ int main(int argc, char **argv)
         }
         model.setRootPath(root);
         auto *tree = view->findChild<QObject *>("tree");
-        waitFor([&] { return tree->property("rows").toInt() >= (syntheticWheel ? 20 : 1); },
+        waitFor([&] { return tree->property("rows").toInt() >= (syntheticWheel ? 80 : 1); },
                 "Load wheel benchmark root");
         const int expansions = syntheticWheel ? 1 : argc - 3;
         for (int i = 0; i < expansions; ++i) {
