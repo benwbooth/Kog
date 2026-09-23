@@ -74,6 +74,8 @@ fn main() {
         "qml/icons/folder-open-light.svg",
         "qml/icons/folder.svg",
         "qml/icons/folder-light.svg",
+        "qml/icons/gear.svg",
+        "qml/icons/gear-light.svg",
         "qml/icons/go-up.svg",
         "qml/icons/go-up-light.svg",
         "qml/icons/kog.svg",
