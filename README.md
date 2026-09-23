@@ -34,13 +34,38 @@ Download the latest packages from [GitHub Releases](https://github.com/benwbooth
 | macOS | DMG for Apple Silicon |
 | Linux | AppImage, portable AppDir archive, Flatpak bundle, or Flatpak repository archive |
 
-Release packages include the decoder components they need. You do not need to
+Linux and Apple Silicon release builds also offer a CLI archive with separate
+`kog-tui` and `kog-server` executables. These use system audio and codec
+libraries; the desktop packages bundle more of their runtime dependencies.
+
+Desktop release packages include the decoder components they need. You do not need to
 install separate player programs or command-line decoders.
 
 The current packages are unsigned development releases. Windows may show a
 SmartScreen warning, and macOS packages are ad-hoc signed rather than notarized.
 
 ## Getting started
+
+When launched from an interactive terminal, `kog` opens its terminal UI by
+default. Use `kog --gui` to force the Qt app, `kog --tui` to force the terminal
+player, or `kog --server` to serve the web app without any local UI. A desktop
+launcher still opens Qt. `--tui` requires a terminal on both stdin and stdout.
+The server uses the saved address, port, TLS, authentication and codec settings,
+and starts even when the desktop server toggle is off. The default address is
+loopback; configure credentials before changing it to a network address.
+
+The terminal UI shares Kog's file and archive browser, playlist database and
+audio decoders. Tab changes panes; arrows or `j`/`k` move, Enter opens a
+folder or plays a track, `/` searches the library, `a` adds a track, `f` toggles a favorite, Delete
+removes a playlist row, Space pauses, `<`/`>` skip tracks, `h`/`l` seek, and
+`R` changes repeat mode. `o` selects a music folder, `n` creates a playlist,
+`r` renames one, and `q` quits. The action bar also exposes common commands by
+mouse. Mouse clicks, double clicks and wheel
+scrolling work in terminals that support SGR mouse reporting; the layout
+reflows when the terminal changes size.
+
+The terminal UI is in active development. It does not yet include the desktop's
+multi-row selection, radio, full settings, or visualizer controls.
 
 Use the hamburger menu to add individual files, a music folder, a playlist, an
 archive, or an HTTP(S) URL. The file browser can be re-rooted to any folder;

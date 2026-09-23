@@ -1,0 +1,25 @@
+[package]
+name = "kog-terminal"
+version = "0.9.41"
+edition = "2024"
+license = "GPL-3.0-or-later"
+description = "Kog's native terminal and headless server frontends"
+
+[dependencies]
+kog-core = { path = "../kog-core" }
+kog-audio = { path = "../kog-audio" }
+kog-server = { path = "../kog-server" }
+tokio = { version = "1", features = ["rt-multi-thread", "signal"] }
+unicode-width = "0.2.2"
+serde_json = "1.0.149"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[[bin]]
+name = "kog-tui"
+path = "src/bin/kog-tui.rs"
+
+[[bin]]
+name = "kog-server"
+path = "src/bin/kog-server.rs"

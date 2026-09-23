@@ -896,6 +896,15 @@ fn is_gme_companion(
     })
 }
 
+/// Browse synchronously for native frontends. This is the same listing used
+/// by the HTTP endpoint, including archives, cue sheets and playlist files.
+pub fn browse_local(
+    library: &Arc<Library>,
+    requested: Option<&str>,
+) -> Result<serde_json::Value, String> {
+    browse_blocking(library, requested)
+}
+
 fn browse_blocking(library: &Arc<Library>, requested: Option<&str>) -> Result<serde_json::Value, String> {
     // An archive file, or a path inside one, browses the archive's members;
     // the real-filesystem checks below would reject both.
@@ -1042,18 +1051,7 @@ pub async fn search(State(state): State<AppState>, Query(query): Query<SearchQue
         *state.search.job.lock().unwrap() = None;
         return search_snapshot(&state, generation, 0);
     }
-    let shared = Arc::new(SearchShared {
-        matches: Mutex::new(Vec::new()),
-        done: AtomicBool::new(false),
-        limited: AtomicBool::new(false),
-        cancel: AtomicBool::new(false),
-        scanned: AtomicU64::new(0),
-        archive_count: AtomicU64::new(0),
-        archives_scanned: AtomicU64::new(0),
-        unreadable_archives: AtomicU64::new(0),
-        scanning_archives: AtomicBool::new(false),
-        paused: AtomicBool::new(false),
-    });
+    let shared = Arc::new(SearchShared::default());
     let library = state.library.clone();
     let worker_shared = shared.clone();
     let worker = std::thread::Builder::new()
@@ -1244,6 +1242,7 @@ pub(crate) struct SearchMatch {
 
 /// The shared state of the one active search walk, plus the progress
 /// counters the desktop status line reports.
+#[derive(Default)]
 pub struct SearchShared {
     matches: Mutex<Vec<SearchMatch>>,
     done: AtomicBool,
@@ -1265,6 +1264,63 @@ pub struct SearchShared {
 
 struct SearchJob {
     shared: Arc<SearchShared>,
+}
+
+/// Native frontend handle for the same background search used by the web UI.
+/// Dropping the handle cancels the walk before it opens another directory.
+pub struct LocalSearch {
+    shared: Arc<SearchShared>,
+}
+
+pub struct LocalSearchHit {
+    pub name: String,
+    pub path: String,
+    pub entry: String,
+    pub kind: &'static str,
+}
+
+impl LocalSearch {
+    pub fn start(library: Arc<Library>, query: &str) -> Result<Self, String> {
+        let tokens: Vec<String> = query
+            .trim()
+            .to_lowercase()
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect();
+        if tokens.is_empty() {
+            return Err("a search term is required".to_owned());
+        }
+        let shared = Arc::new(SearchShared::default());
+        let worker_shared = shared.clone();
+        std::thread::Builder::new()
+            .name("kog-terminal-search".to_owned())
+            .spawn(move || walk_library_for_search(library, tokens, worker_shared))
+            .map_err(|error| format!("starting search: {error}"))?;
+        Ok(Self { shared })
+    }
+
+    /// Results since `offset`, plus whether the scan is complete.
+    pub fn results_since(&self, offset: usize) -> (Vec<LocalSearchHit>, bool) {
+        let matches = self.shared.matches.lock().unwrap();
+        let results = matches
+            .iter()
+            .skip(offset)
+            .map(|hit| LocalSearchHit {
+                name: hit.name.clone(),
+                path: hit.path.clone(),
+                entry: hit.entry.clone(),
+                kind: hit.kind,
+            })
+            .collect();
+        let done = self.shared.done.load(Ordering::Relaxed);
+        (results, done)
+    }
+}
+
+impl Drop for LocalSearch {
+    fn drop(&mut self) {
+        self.shared.cancel.store(true, Ordering::Relaxed);
+    }
 }
 
 /// The desktop's match limit: a walk that reaches it stops and says so.

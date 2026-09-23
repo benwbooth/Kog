@@ -1555,6 +1555,7 @@ dependencies = [
  "kog-audio",
  "kog-core",
  "kog-server",
+ "kog-terminal",
  "lofty",
  "midly",
  "mpris-server",
@@ -1641,6 +1642,19 @@ dependencies = [
  "tokio-util",
  "tower",
  "tower-http",
+]
+
+[[package]]
+name = "kog-terminal"
+version = "0.9.41"
+dependencies = [
+ "kog-audio",
+ "kog-core",
+ "kog-server",
+ "libc",
+ "serde_json",
+ "tokio",
+ "unicode-width 0.2.2",
 ]
 
 [[package]]

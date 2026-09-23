@@ -80,6 +80,7 @@ pub struct StoredPlaylist {
     pub entry_count: i64,
 }
 
+#[derive(Clone, Debug)]
 pub struct StoredEntry {
     pub kind: String,
     pub path: String,

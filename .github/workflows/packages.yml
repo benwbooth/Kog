@@ -6,6 +6,11 @@ on:
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      build_cli:
+        description: Build standalone terminal and headless server binaries
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -66,6 +71,21 @@ jobs:
           QMAKE: /usr/bin/qmake6
           RUSTFLAGS: -C link-arg=-fuse-ld=mold
         run: cargo build --release --locked
+
+      - name: Build standalone terminal and server binaries
+        if: github.event_name != 'workflow_dispatch' || inputs.build_cli
+        env:
+          RUSTFLAGS: -C link-arg=-fuse-ld=mold
+        run: |
+          cargo build --release --locked -p kog-terminal --bins
+          packaging/cli/package.sh linux x86_64
+
+      - uses: actions/upload-artifact@v7
+        if: github.event_name != 'workflow_dispatch' || inputs.build_cli
+        with:
+          name: kog-linux-cli
+          if-no-files-found: error
+          path: dist/cli/Kog-*-linux-x86_64-cli.tar.gz
 
       - name: Build AppImage and portable AppDir
         env:
@@ -334,6 +354,21 @@ jobs:
         env:
           RUSTFLAGS: -C link-arg=-Wl,-headerpad_max_install_names
         run: cargo build --release --locked
+
+      - name: Build standalone terminal and server binaries
+        if: github.event_name != 'workflow_dispatch' || inputs.build_cli
+        env:
+          RUSTFLAGS: -C link-arg=-Wl,-headerpad_max_install_names
+        run: |
+          cargo build --release --locked -p kog-terminal --bins
+          packaging/cli/package.sh macos arm64
+
+      - uses: actions/upload-artifact@v7
+        if: github.event_name != 'workflow_dispatch' || inputs.build_cli
+        with:
+          name: kog-macos-arm64-cli
+          if-no-files-found: error
+          path: dist/cli/Kog-*-macos-arm64-cli.tar.gz
 
       - name: Build application DMG
         run: |
