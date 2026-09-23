@@ -1166,6 +1166,97 @@ fn finite_duration(value: f64) -> Option<f64> {
     }
 }
 
+/// The browser forwards Media Session data to the phone's Now Playing UI and,
+/// when supported by the OS, to Bluetooth receivers. Keep this optional: the
+/// web player still works in browsers without the API.
+fn media_session() -> Option<wasm_bindgen::JsValue> {
+    let navigator = js_sys::Reflect::get(&js_sys::global(), &"navigator".into()).ok()?;
+    let session = js_sys::Reflect::get(&navigator, &"mediaSession".into()).ok()?;
+    (!session.is_null() && !session.is_undefined()).then_some(session)
+}
+
+fn media_session_metadata(
+    session: &wasm_bindgen::JsValue,
+    title: &str,
+    artist: &str,
+    album: &str,
+    artwork: &str,
+) {
+    let init = js_sys::Object::new();
+    for (key, value) in [("title", title), ("artist", artist), ("album", album)] {
+        let _ = js_sys::Reflect::set(&init, &key.into(), &value.into());
+    }
+    let image = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(&image, &"src".into(), &artwork.into());
+    let images = js_sys::Array::new();
+    images.push(&image);
+    let _ = js_sys::Reflect::set(&init, &"artwork".into(), &images);
+    let Some(constructor) = js_sys::Reflect::get(&js_sys::global(), &"MediaMetadata".into())
+        .ok()
+        .and_then(|value| value.dyn_into::<js_sys::Function>().ok())
+    else {
+        return;
+    };
+    let args = js_sys::Array::new();
+    args.push(&init);
+    if let Ok(metadata) = js_sys::Reflect::construct(&constructor, &args) {
+        let _ = js_sys::Reflect::set(session, &"metadata".into(), &metadata);
+    }
+}
+
+fn media_session_album<'a>(meta: Option<&'a MetaRow>, entry: &'a Entry) -> &'a str {
+    meta.and_then(|meta| meta.album.as_deref())
+        .filter(|album| !album.trim().is_empty())
+        .or_else(|| {
+            (entry.kind == "local")
+                .then(|| std::path::Path::new(&entry.path).parent()?.file_name()?.to_str())
+                .flatten()
+        })
+        .unwrap_or_default()
+}
+
+fn media_session_property(session: &wasm_bindgen::JsValue, key: &str, value: &str) {
+    let _ = js_sys::Reflect::set(session, &key.into(), &value.into());
+}
+
+fn media_session_position(session: &wasm_bindgen::JsValue, duration: f64, position: f64) {
+    let Some(duration) = finite_duration(duration) else {
+        return;
+    };
+    let Ok(method) = js_sys::Reflect::get(session, &"setPositionState".into()) else {
+        return;
+    };
+    let Some(method) = method.dyn_ref::<js_sys::Function>() else {
+        return;
+    };
+    let state = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(&state, &"duration".into(), &duration.into());
+    let _ = js_sys::Reflect::set(
+        &state,
+        &"position".into(),
+        &position.max(0.0).min(duration).into(),
+    );
+    let _ = method.call1(session, &state);
+}
+
+fn media_session_action(
+    session: &wasm_bindgen::JsValue,
+    name: &str,
+    handler: impl FnMut(wasm_bindgen::JsValue) + 'static,
+) {
+    let Ok(method) = js_sys::Reflect::get(session, &"setActionHandler".into()) else {
+        return;
+    };
+    let Some(method) = method.dyn_ref::<js_sys::Function>() else {
+        return;
+    };
+    let callback = Closure::<dyn FnMut(wasm_bindgen::JsValue)>::new(handler);
+    // Some browsers expose Media Session but reject individual actions.
+    if method.call2(session, &name.into(), callback.as_ref()).is_ok() {
+        callback.forget();
+    }
+}
+
 /// `m:ss`, or `h:mm:ss` past an hour, matching the desktop's `timeLabel`.
 fn clock(seconds: f64) -> String {
     if !seconds.is_finite() || seconds < 0.0 {
@@ -4156,6 +4247,112 @@ fn App() -> impl IntoView {
             }
         }
     };
+
+    // Publish the same resolved tags as the visible transport. A track change
+    // clears the previous song immediately, then publishes the new song only
+    // after its metadata request has completed (no transient filename title).
+    Effect::new(move |_| {
+        let Some(session) = media_session() else {
+            return;
+        };
+        let entry = queue.get().get(current.get()).cloned();
+        let stopped = stopped.get();
+        let cache = metadata.get();
+        let failed = metadata_failed.get();
+        let Some(entry) = entry.filter(|_| !stopped) else {
+            let _ = js_sys::Reflect::set(&session, &"metadata".into(), &wasm_bindgen::JsValue::NULL);
+            return;
+        };
+        let Some(title) = display_title(&cache, &failed, &entry) else {
+            let _ = js_sys::Reflect::set(&session, &"metadata".into(), &wasm_bindgen::JsValue::NULL);
+            return;
+        };
+        let meta = meta_for(&cache, &entry);
+        let artist = meta
+            .as_ref()
+            .and_then(|meta| meta.artist.as_ref().or(meta.album_artist.as_ref()))
+            .map(String::as_str)
+            .unwrap_or_default();
+        let album = media_session_album(meta.as_ref(), &entry);
+        let artwork = format!(
+            "{}/api/art?kind={}&path={}&token={}",
+            base(),
+            url_encode(&entry.kind),
+            url_encode(&entry.path),
+            url_encode(&token.get()),
+        );
+        media_session_metadata(&session, &title, artist, album, &artwork);
+    });
+
+    Effect::new(move |_| {
+        let Some(session) = media_session() else {
+            return;
+        };
+        let state = if stopped.get() || queue.get().is_empty() {
+            "none"
+        } else if playing.get() {
+            "playing"
+        } else {
+            "paused"
+        };
+        media_session_property(&session, "playbackState", state);
+    });
+
+    Effect::new(move |_| {
+        if stopped.get() {
+            return;
+        }
+        if let Some(session) = media_session() {
+            media_session_position(&session, duration.get(), position.get());
+        }
+    });
+
+    if let Some(session) = media_session() {
+        media_session_action(&session, "play", move |_| {
+            if !queue.get_untracked().is_empty() {
+                set_stopped.set(false);
+                set_playing.set(true);
+            }
+        });
+        media_session_action(&session, "pause", move |_| {
+            set_playing.set(false);
+        });
+        media_session_action(&session, "stop", move |_| {
+            set_playing.set(false);
+            set_stopped.set(true);
+            set_position.set(0.0);
+            if let Some(audio) = audio_ref.get() {
+                audio.set_current_time(0.0);
+            }
+        });
+        media_session_action(&session, "previoustrack", move |_| step(-1));
+        media_session_action(&session, "nexttrack", move |_| step(1));
+        media_session_action(&session, "seekto", move |details| {
+            let Some(requested) = js_sys::Reflect::get(&details, &"seekTime".into())
+                .ok()
+                .and_then(|value| value.as_f64())
+            else {
+                return;
+            };
+            if let Some(audio) = audio_ref.get() {
+                let end = finite_duration(audio.duration())
+                    .or_else(|| {
+                        let seekable = audio.seekable();
+                        (seekable.length() > 0)
+                            .then(|| seekable.end(0).ok().and_then(finite_duration))
+                            .flatten()
+                    })
+                    .unwrap_or_else(|| duration.get_untracked());
+                let target = if end.is_finite() && end > 0.0 {
+                    requested.clamp(0.0, end)
+                } else {
+                    requested.max(0.0)
+                };
+                audio.set_current_time(target);
+                set_position.set(target);
+            }
+        });
+    }
 
     let toggle_mute = move |_| {
         if volume.get() > 0.0 {
