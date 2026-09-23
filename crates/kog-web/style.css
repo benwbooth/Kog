@@ -26,7 +26,24 @@
   --sidebar-width: 260px;
   --transport-height: 92px;
   --toolbar-height: 48px;
+  --standalone-top-clearance: 0px;
+  --toolbar-bottom: calc(var(--toolbar-height) + env(safe-area-inset-top, 0px) + var(--standalone-top-clearance));
   color-scheme: dark;
+}
+
+/* iOS 27 adds a blurred scroll-edge strip to Home Screen web apps. Keep
+ * controls below it; Safari tabs and older iOS versions retain their layout.
+ * Scroll anchoring is available starting with Safari 27. */
+@media (display-mode: standalone) and (pointer: coarse) and (orientation: portrait) {
+  @supports (overflow-anchor: auto) and (-webkit-touch-callout: none) {
+    :root {
+      --standalone-top-clearance: 16px;
+    }
+
+    html body {
+      background: var(--surface);
+    }
+  }
 }
 
 @media (prefers-color-scheme: light) {
@@ -75,6 +92,7 @@ body {
  * them in the shell. Browsers without env() keep the first declaration. */
 .app {
   display: grid;
+  padding-top: var(--standalone-top-clearance);
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: var(--toolbar-height) minmax(0, 1fr) var(--transport-height);
   grid-template-rows: calc(var(--toolbar-height) + env(safe-area-inset-top, 0px)) minmax(0, 1fr)
@@ -1136,9 +1154,9 @@ body.touch .track .index-cell {
  * never taller than the fixed shell so it cannot scroll the page. */
 .context-menu.app-menu {
   left: 6px;
-  top: calc(var(--toolbar-height) + 2px);
+  top: calc(var(--toolbar-bottom) + 2px);
   min-width: 220px;
-  max-height: calc(100vh - var(--toolbar-height) - var(--transport-height) - 12px);
+  max-height: calc(100vh - var(--toolbar-bottom) - var(--transport-height) - 12px);
 }
 
 .context-menu .menu-group {
@@ -1158,7 +1176,7 @@ body.touch .track .index-cell {
   gap: 10px;
   position: fixed;
   z-index: 25;
-  top: calc(var(--toolbar-height) + 8px);
+  top: calc(var(--toolbar-bottom) + 8px);
   right: 10px;
   max-width: min(80vw, 360px);
   padding: 6px 10px;
@@ -1696,7 +1714,7 @@ body.touch .track .index-cell {
   /* The sidebar slides over the playlist instead of squeezing it. */
   .sidebar {
     position: fixed;
-    top: calc(var(--toolbar-height) + env(safe-area-inset-top, 0px));
+    top: var(--toolbar-bottom);
     bottom: calc(var(--transport-height) + env(safe-area-inset-bottom, 0px));
     left: 0;
     width: min(84vw, 320px);
@@ -1713,7 +1731,7 @@ body.touch .track .index-cell {
   .drawer-scrim {
     display: block;
     position: fixed;
-    inset: calc(var(--toolbar-height) + env(safe-area-inset-top, 0px)) 0
+    inset: var(--toolbar-bottom) 0
       calc(var(--transport-height) + env(safe-area-inset-bottom, 0px)) 0;
     background: rgba(0, 0, 0, 0.45);
     opacity: 0;
