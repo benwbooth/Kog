@@ -5398,7 +5398,7 @@ impl Ui {
                 "G: seek to a time; +/-: volume; R/S: repeat/shuffle; C: compact view",
                 "In compact view, C returns to the playlist; playback keys still work",
                 "Prompt editing: Ctrl+A select all; Ctrl+W delete word; Ctrl+U clear",
-                "Esc closes dialogs or clears search; q quits.",
+                "Esc closes dialogs; Esc or q quits from the main view.",
             ]
             .join("\n"),
         );
@@ -5826,7 +5826,8 @@ impl Ui {
         }
         if let Some(column) = self.keyboard_column {
             match key {
-                Key::Esc | Key::Char('H') => self.keyboard_column = None,
+                Key::Esc => return false,
+                Key::Char('H') => self.keyboard_column = None,
                 Key::Left | Key::Right => {
                     self.move_keyboard_column(if key == Key::Left { -1 } else { 1 }, size)
                 }
@@ -5902,7 +5903,7 @@ impl Ui {
         }
         .max(1);
         match key {
-            Key::Char('q') | Key::CtrlC => return false,
+            Key::Esc | Key::Char('q') | Key::CtrlC => return false,
             Key::Alt(character) => {
                 if menu_shortcut_index(MenuPage::Main, character).is_some() {
                     self.open_submenu(MenuPage::Main);
@@ -5955,14 +5956,6 @@ impl Ui {
             Key::Char('x') | Key::CtrlSpace => self.toggle_cursor_selection(),
             Key::AltUp | Key::Char('K') => self.move_cursor_only(-1, page),
             Key::AltDown | Key::Char('J') => self.move_cursor_only(1, page),
-            Key::Esc if self.range_click_pending.take().is_some() => {
-                self.status = "Range selection cancelled".to_owned();
-            }
-            Key::Esc if self.search.is_some() => self.browse(None),
-            Key::Esc if self.remote_active && !self.search_query.is_empty() => {
-                self.connect_remote(Some(self.remote_path.clone()));
-            }
-            Key::Esc if !self.playlist_query.is_empty() => self.playlist_query.clear(),
             Key::Char('/') => self.begin_prompt(PromptKind::Search, self.search_query.clone()),
             Key::Char('F') => {
                 self.begin_prompt(PromptKind::PlaylistSearch, self.playlist_query.clone())
@@ -7964,7 +7957,7 @@ impl Ui {
             .filter(|_| self.prompt.is_none() && !self.menu_open)
         {
             format!(
-                "{} column · ←/→ choose · Enter sort · +/- width · Ctrl+←/→ reorder · M actions · Esc exit",
+                "{} column · ←/→ choose · Enter sort · +/- width · Ctrl+←/→ reorder · M actions · Esc quit",
                 self.columns.entries[column].label
             )
         } else {
@@ -10059,7 +10052,9 @@ pub fn run() -> Result<(), String> {
         if input.as_slice() == [0x1b] {
             if escape_pending.is_some_and(|since| since.elapsed() >= Duration::from_millis(150)) {
                 input.clear();
-                ui.key(Key::Esc, size);
+                if !ui.key(Key::Esc, size) {
+                    return ui.finish_session();
+                }
                 escape_pending = None;
             } else if escape_pending.is_none() {
                 escape_pending = Some(Instant::now());
