@@ -48,6 +48,7 @@ The provider smoke test is opt-in because it contacts public services: `nix deve
 
 - [x] Play, pause, stop, and seek respond to mouse input and update the transport in a PTY with a ten-second WAV.
 - [x] Previous, next, and automatic track completion respond correctly in PTY playback.
+- [x] Automatic advance skips a missing or undecodable entry, tries the next track at most once, and stops if none can play. A PTY fixture removes the middle WAV during playback and checks that the third WAV starts.
 - [x] Repeat and shuffle use Qt's shared playback-order engine. Its focused unit tests cover repeat one, album, all, and album shuffle; the PTY test checks mode cycling, unique all-track shuffle, and previous.
 - [x] Volume is a visible draggable slider with click, drag, mute, keyboard, and percentage feedback.
 - [x] Random Radio can start from an empty queue, stage a round off the input thread, and play one track.
@@ -87,7 +88,7 @@ The Qt hamburger, playlist and file context menus, playlist header, and the web 
 | --- | --- |
 | File tree | Remote multi-song files expand through `/api/expand`; the real server fixture checks a three-song NSF and remote nested archive playback. |
 | Saved playlists | Remote track save, reload, and M3U export are checked against the real server. |
-| Playback | Terminal timing fixture for late album tags, playback error recovery, and output device test on real hardware. |
+| Playback | Terminal timing fixture for late album tags and output device test on real hardware. Missing-track recovery is checked in the PTY. |
 | Library settings | Read CUE and M3U/PLS menu controls and folder behavior are checked. |
 | Synthesis | SC-55 and MT-32 archive controls reject incomplete fixtures; validating a complete proprietary ROM set needs user supplied files. |
 | Server settings | Shared configuration, embedded start/stop, device blocking, token/basic authentication, self-signed HTTPS, and PEM import are checked through real requests. |

@@ -2831,9 +2831,13 @@ impl Ui {
     }
 
     fn play_selected(&mut self) {
+        self.try_play_selected();
+    }
+
+    fn try_play_selected(&mut self) -> bool {
         let index = self.selected[2];
         let Some(track) = self.tracks.get(index) else {
-            return;
+            return false;
         };
         let entry = playlist_entry(&track.entry);
         // The decoder registry holds any extracted archive files alive while
@@ -2861,8 +2865,12 @@ impl Ui {
                     );
                 }
                 self.status = format!("Playing {}", track.name);
+                true
             }
-            Err(error) => self.status = error,
+            Err(error) => {
+                self.status = error;
+                false
+            }
         }
     }
 
@@ -2890,15 +2898,9 @@ impl Ui {
         if honor_repeat_one && self.repeat_mode == RepeatMode::One {
             if let Some(index) = self.playing {
                 self.selected[2] = index;
-                self.play_selected();
-                return;
-            }
-        }
-        while let Some(index) = self.queue.pop_front() {
-            if index < self.tracks.len() {
-                self.selected[2] = index;
-                self.play_selected();
-                return;
+                if self.try_play_selected() {
+                    return;
+                }
             }
         }
         if self.radio_enabled && self.playing.is_some_and(|i| i + 1 >= self.tracks.len()) {
@@ -2906,16 +2908,29 @@ impl Ui {
             return;
         }
         let tracks = self.order_tracks();
-        let next = match self.order.next(&tracks, self.playing, honor_repeat_one) {
-            Some(index) => index,
-            None => {
-                self.player.stop();
-                self.playing = None;
+        let mut cursor = self.playing;
+        let mut attempted = HashSet::new();
+        for _ in 0..self.tracks.len().saturating_add(self.queue.len()) {
+            let queued = loop {
+                match self.queue.pop_front() {
+                    Some(index) if index < self.tracks.len() => break Some(index),
+                    Some(_) => continue,
+                    None => break None,
+                }
+            };
+            let next = queued.or_else(|| self.order.next(&tracks, cursor, false));
+            let Some(next) = next else { break };
+            if !attempted.insert(next) {
+                continue;
+            }
+            self.selected[2] = next;
+            if self.try_play_selected() {
                 return;
             }
-        };
-        self.selected[2] = next;
-        self.play_selected();
+            cursor = Some(next);
+        }
+        self.player.stop();
+        self.playing = None;
     }
 
     fn play_pause(&mut self) {

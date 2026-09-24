@@ -704,7 +704,20 @@ try:
         send(fake_rom_archive+'\r',.3)
         wait_for('Incomplete ROM set',10)
     assert not list(Path(base).rglob('control.rom'))
-    print('search, local/remote tree/archive navigation/trash/blacklist/group selection, divider/column drag/visibility/reorder, volume, radio/blacklist/queue/stop-after, playback/seek/completion/order, saved-list CRUD/export/prune/multi-selection, tag fields/artwork/playback resume, selection/reorder/sort, menus/dialogs, equalizer/visualizer, narrow wheel/keyboard navigation, resize: PASS')
+    click(5,0);click(10,9)
+    recover_paths=[os.path.join(base,f'recover{number}.wav') for number in (1,2,3)]
+    for number,path in enumerate(recover_paths,1):
+        with wave.open(path,'wb') as w:
+            w.setnchannels(1);w.setsampwidth(2);w.setframerate(8000)
+            w.writeframes(b'\0\0'*8000*(3 if number==1 else 5))
+        click(5,0);click(10,2);send(path+'\r',.3)
+        wait_for(f'Added recover{number}.wav')
+    click(60,2);click(60,2)
+    wait_for('Playing recover1.wav')
+    os.unlink(recover_paths[1])
+    wait_for('Playing recover3.wav',10)
+    assert '▶' in screen.display[4][50:],screen.display[4]
+    print('search, local/remote tree/archive navigation/trash/blacklist/group selection, divider/column drag/visibility/reorder, volume, radio/blacklist/queue/stop-after, playback/seek/completion/order/error recovery, saved-list CRUD/export/prune/multi-selection, tag fields/artwork/playback resume, selection/reorder/sort, menus/dialogs, equalizer/visualizer, narrow wheel/keyboard navigation, resize: PASS')
     send(b'\x1b',.3);send('q')
     p.wait(timeout=5)
 finally:
