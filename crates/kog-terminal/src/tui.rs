@@ -1,6 +1,6 @@
 //! A small terminal frontend. The terminal protocol, layout and hit testing
 //! live here; browsing, persistence and playback use Kog's existing crates.
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -8,12 +8,15 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use kog_audio::decoder::DecoderRegistry;
-use kog_audio::playback::{PlaybackEngine, PlaybackState};
-use kog_audio::playlist::{PlaylistEntry, PlaylistLocation};
-use kog_audio::settings::{AppSettings, RepeatMode};
+use kog_audio::playback::{PlaybackEngine, PlaybackState, available_output_devices};
+use kog_audio::playlist::{Playlist, PlaylistEntry, PlaylistLocation};
+use kog_audio::settings::{AppSettings, OutputDevicePreference, RepeatMode, ShuffleMode};
 use kog_audio::track::Track as AudioTrack;
 use kog_core::db::StoredEntry;
+use kog_core::equalizer::{EqualizerSettings, presets};
 use kog_server::api::{Library, LocalSearch, browse_local};
+use kog_server::radio::{Radio, RadioAdvance, RadioEntry, RadioStatus};
+use rand::Rng;
 use unicode_width::UnicodeWidthChar;
 
 #[derive(Clone)]
@@ -27,6 +30,9 @@ struct TrackMetadata {
     artist: String,
     album: String,
     duration: Option<Duration>,
+    lyrics: String,
+    codec: String,
+    genre: String,
 }
 
 #[derive(Clone)]
@@ -48,6 +54,46 @@ enum Focus {
     Tracks,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MenuPage {
+    Main,
+    View,
+    Playback,
+    Preferences,
+    Tree,
+    Tracks,
+    Saved,
+    Columns,
+}
+
+impl MenuPage {
+    fn title(self) -> &'static str {
+        match self {
+            Self::Main => "Kog",
+            Self::View => "View",
+            Self::Playback => "Playback",
+            Self::Preferences => "Preferences",
+            Self::Tree => "File",
+            Self::Tracks => "Playlist Row",
+            Self::Saved => "Saved Playlist",
+            Self::Columns => "Columns",
+        }
+    }
+    fn labels(self) -> &'static [&'static str] {
+        match self {
+            Self::Main => &MAIN_MENU,
+            Self::View => &VIEW_MENU,
+            Self::Playback => &PLAYBACK_MENU,
+            Self::Preferences => &PREFERENCES_MENU,
+            Self::Tree => &TREE_MENU,
+            Self::Tracks => &TRACKS_MENU,
+            Self::Saved => &SAVED_MENU,
+            Self::Columns => &COLUMNS_MENU,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum PromptKind {
     MusicFolder,
     NewPlaylist,
@@ -55,6 +101,29 @@ enum PromptKind {
     DeletePlaylist,
     Search,
     PlaylistSearch,
+    AddFile,
+    AddUrl,
+    SavePlaylist,
+    SaveSelection,
+    DuplicatePlaylist,
+    ExportPlaylist,
+    Volume,
+    AddToPlaylist,
+    EqualizerPreset,
+    EqualizerBandNumber,
+    EqualizerBandGain(usize),
+    Preamp,
+    OutputDevice,
+}
+
+enum RadioCommand {
+    Enable(bool),
+    Reshuffle,
+    Advance,
+}
+enum RadioResponse {
+    Status(RadioStatus),
+    Advance(RadioAdvance),
 }
 
 struct Ui {
@@ -67,18 +136,33 @@ struct Ui {
     expanded: HashSet<PathBuf>,
     children: HashMap<PathBuf, Vec<Item>>,
     lists: Vec<(i64, String)>,
-    active_list: i64, // -1 is the ephemeral queue; 0 is Favorites.
     tracks: Vec<Track>,
-    queue: Vec<Track>,
+    queue: VecDeque<usize>,
+    stop_after_rows: HashSet<usize>,
+    selected_tracks: HashSet<usize>,
+    selection_anchor: Option<usize>,
     selected: [usize; 3],
     offsets: [usize; 3],
     focus: Focus,
     playing: Option<usize>,
     status: String,
     volume: f32,
+    volume_before_mute: f32,
+    volume_drag: bool,
     repeat_mode: RepeatMode,
+    shuffle_mode: ShuffleMode,
+    stop_after_current: bool,
+    radio_enabled: bool,
+    radio_pool: VecDeque<Track>,
+    radio_pending_next: bool,
+    radio_generation: u64,
+    radio_requests: Sender<(u64, RadioCommand, Option<PathBuf>)>,
+    radio_results: Receiver<(u64, RadioResponse)>,
+    equalizer: EqualizerSettings,
     last_click: Option<(Instant, usize, usize)>,
     prompt: Option<(PromptKind, String)>,
+    input_cursor: usize,
+    search_due: Option<Instant>,
     search: Option<LocalSearch>,
     search_query: String,
     playlist_query: String,
@@ -86,11 +170,33 @@ struct Ui {
     metadata_pending: HashSet<String>,
     metadata_requests: Sender<(String, StoredEntry)>,
     metadata_results: Receiver<(String, Option<TrackMetadata>)>,
+    folder_requests: Sender<PathBuf>,
+    folder_results: Receiver<Result<Vec<Track>, String>>,
+    folder_jobs: usize,
     search_done: bool,
     exit_requested: bool,
     menu_open: bool,
     menu_selected: usize,
+    menu_page: MenuPage,
+    menu_offset: usize,
+    menu_x: usize,
+    menu_y: usize,
+    modal: Option<String>,
+    visualizer_open: bool,
+    modal_scroll: usize,
     sidebar_visible: bool,
+    files_expanded: bool,
+    playlists_expanded: bool,
+    sidebar_width: Option<usize>,
+    split_drag: bool,
+    column_drag: Option<usize>,
+    track_drag: Option<usize>,
+    show_artist: bool,
+    show_album: bool,
+    title_width_hint: Option<usize>,
+    artist_width_hint: Option<usize>,
+    sort_column: Option<usize>,
+    sort_ascending: bool,
 }
 
 impl Ui {
@@ -127,6 +233,9 @@ impl Ui {
                         artist: track.artist,
                         album: track.album,
                         duration: track.duration,
+                        lyrics: track.lyrics,
+                        codec: track.codec,
+                        genre: track.genre,
                     }
                 });
                 if worker_results.send((key, metadata)).is_err() {
@@ -135,8 +244,54 @@ impl Ui {
             }
         });
         let library = Arc::new(Library::open());
+        let (folder_requests, pending_folders) = mpsc::channel::<PathBuf>();
+        let (completed_folders, folder_results) = mpsc::channel();
+        let folder_library = library.clone();
+        std::thread::spawn(move || {
+            while let Ok(path) = pending_folders.recv() {
+                if completed_folders
+                    .send(collect_folder(&folder_library, path))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
         let decoders = DecoderRegistry::new(settings.decoder_settings());
-        let mut player = PlaybackEngine::new(DecoderRegistry::new(settings.decoder_settings()));
+        let (radio_requests, radio_commands) =
+            mpsc::channel::<(u64, RadioCommand, Option<PathBuf>)>();
+        let (radio_responses, radio_results) = mpsc::channel();
+        let radio_library = library.clone();
+        std::thread::spawn(move || {
+            let radio = Radio::from_settings();
+            while let Ok((generation, command, scope)) = radio_commands.recv() {
+                let root = radio_library.root();
+                let response = match command {
+                    RadioCommand::Enable(enabled) => RadioResponse::Status(radio.set_enabled(
+                        enabled,
+                        root.as_deref(),
+                        scope.as_deref(),
+                    )),
+                    RadioCommand::Reshuffle => {
+                        RadioResponse::Status(radio.reshuffle(root.as_deref(), scope.as_deref()))
+                    }
+                    RadioCommand::Advance => {
+                        RadioResponse::Advance(radio.advance(root.as_deref(), scope.as_deref()))
+                    }
+                };
+                if radio_responses.send((generation, response)).is_err() {
+                    break;
+                }
+            }
+        });
+        let mut player = PlaybackEngine::with_equalizer_and_output(
+            DecoderRegistry::new(settings.decoder_settings()),
+            settings.equalizer.clone(),
+            settings
+                .output_device
+                .as_ref()
+                .map(|device| device.id.clone()),
+        );
         let volume = settings.output_volume as f32;
         player.set_volume(volume);
         let mut ui = Self {
@@ -149,18 +304,33 @@ impl Ui {
             expanded: HashSet::new(),
             children: HashMap::new(),
             lists: Vec::new(),
-            active_list: -1,
             tracks: Vec::new(),
-            queue: Vec::new(),
+            queue: VecDeque::new(),
+            stop_after_rows: HashSet::new(),
+            selected_tracks: HashSet::new(),
+            selection_anchor: None,
             selected: [0; 3],
             offsets: [0; 3],
             focus: Focus::Library,
             playing: None,
             status: String::new(),
             volume,
+            volume_before_mute: if volume > 0.0 { volume } else { 0.75 },
+            volume_drag: false,
             repeat_mode: settings.repeat_mode,
+            shuffle_mode: settings.shuffle_mode,
+            stop_after_current: false,
+            radio_enabled: settings.radio_enabled,
+            radio_pool: VecDeque::new(),
+            radio_pending_next: false,
+            radio_generation: 0,
+            radio_requests,
+            radio_results,
+            equalizer: settings.equalizer,
             last_click: None,
             prompt: None,
+            input_cursor: 0,
+            search_due: None,
             search: None,
             search_query: String::new(),
             playlist_query: String::new(),
@@ -168,14 +338,43 @@ impl Ui {
             metadata_pending: HashSet::new(),
             metadata_requests,
             metadata_results,
+            folder_requests,
+            folder_results,
+            folder_jobs: 0,
             search_done: false,
             exit_requested: false,
             menu_open: false,
             menu_selected: 0,
+            menu_page: MenuPage::Main,
+            menu_offset: 0,
+            menu_x: 4,
+            menu_y: 1,
+            modal: None,
+            visualizer_open: false,
+            modal_scroll: 0,
             sidebar_visible: true,
+            files_expanded: true,
+            playlists_expanded: true,
+            sidebar_width: None,
+            split_drag: false,
+            column_drag: None,
+            track_drag: None,
+            show_artist: true,
+            show_album: true,
+            title_width_hint: None,
+            artist_width_hint: None,
+            sort_column: None,
+            sort_ascending: true,
         };
         ui.reload_lists();
         ui.browse(None);
+        if ui.radio_enabled {
+            let _ = ui.radio_requests.send((
+                ui.radio_generation,
+                RadioCommand::Enable(true),
+                ui.browse_path.clone(),
+            ));
+        }
         ui
     }
 
@@ -192,6 +391,103 @@ impl Ui {
             self.metadata_pending.remove(&key);
             self.metadata.insert(key, metadata);
         }
+    }
+
+    fn poll_radio(&mut self) {
+        while let Ok((generation, response)) = self.radio_results.try_recv() {
+            if generation != self.radio_generation {
+                continue;
+            }
+            match response {
+                RadioResponse::Status(status) => {
+                    self.radio_enabled = status.enabled;
+                    self.radio_pool = status.entries.into_iter().map(radio_track).collect();
+                    if !status.enabled {
+                        self.radio_pending_next = false;
+                    }
+                }
+                RadioResponse::Advance(advance) => {
+                    self.radio_pool
+                        .extend(advance.entries.into_iter().map(radio_track));
+                    if advance.exhausted && self.radio_pool.is_empty() {
+                        self.radio_pending_next = false;
+                        self.status = "Radio found no playable tracks".to_owned();
+                    }
+                }
+            }
+            if self.radio_pending_next && !self.radio_pool.is_empty() {
+                self.append_next_radio();
+            }
+        }
+    }
+
+    fn toggle_radio(&mut self) {
+        self.radio_generation = self.radio_generation.wrapping_add(1);
+        self.radio_enabled = !self.radio_enabled;
+        self.radio_pending_next = false;
+        if self.radio_enabled {
+            self.repeat_mode = RepeatMode::Off;
+            self.shuffle_mode = ShuffleMode::Off;
+            let _ = AppSettings::save_repeat_mode(self.repeat_mode);
+            let _ = AppSettings::save_shuffle_mode(self.shuffle_mode);
+        } else {
+            self.radio_pool.clear();
+        }
+        self.status = format!(
+            "Random Radio: {}",
+            if self.radio_enabled { "on" } else { "off" }
+        );
+        let _ = self.radio_requests.send((
+            self.radio_generation,
+            RadioCommand::Enable(self.radio_enabled),
+            self.browse_path.clone(),
+        ));
+    }
+
+    fn reshuffle_radio(&mut self) {
+        self.radio_generation = self.radio_generation.wrapping_add(1);
+        self.radio_enabled = true;
+        self.radio_pool.clear();
+        self.radio_pending_next = false;
+        self.repeat_mode = RepeatMode::Off;
+        self.shuffle_mode = ShuffleMode::Off;
+        let _ = AppSettings::save_repeat_mode(self.repeat_mode);
+        let _ = AppSettings::save_shuffle_mode(self.shuffle_mode);
+        self.status = "Reshuffling Random Radio…".to_owned();
+        let _ = self.radio_requests.send((
+            self.radio_generation,
+            RadioCommand::Reshuffle,
+            self.browse_path.clone(),
+        ));
+    }
+
+    fn append_next_radio(&mut self) {
+        if self.radio_pending_next && self.radio_pool.is_empty() {
+            return;
+        }
+        self.radio_pending_next = false;
+        while let Some(track) = self.radio_pool.pop_front() {
+            let locator = metadata_key(&track.entry);
+            if self
+                .tracks
+                .iter()
+                .any(|queued| metadata_key(&queued.entry) == locator)
+            {
+                continue;
+            }
+            self.tracks.push(track);
+            self.selected[2] = self.tracks.len() - 1;
+            self.select_track(self.selected[2], false, false);
+            self.play_selected();
+            return;
+        }
+        self.radio_pending_next = true;
+        let _ = self.radio_requests.send((
+            self.radio_generation,
+            RadioCommand::Advance,
+            self.browse_path.clone(),
+        ));
+        self.status = "Finding the next radio track…".to_owned();
     }
 
     fn request_metadata(&mut self, entry: &StoredEntry) {
@@ -216,42 +512,594 @@ impl Ui {
     }
 
     fn show_queue(&mut self) {
-        self.player.stop();
-        self.playing = None;
-        self.active_list = -1;
-        self.tracks = self.queue.clone();
         self.focus = Focus::Tracks;
-        self.selected[2] = 0;
-        self.offsets[2] = 0;
+    }
+
+    fn selected_track_indices(&self) -> Vec<usize> {
+        let mut indices: Vec<_> = self
+            .selected_tracks
+            .iter()
+            .copied()
+            .filter(|&index| index < self.tracks.len())
+            .collect();
+        if indices.is_empty() && self.selected[2] < self.tracks.len() {
+            indices.push(self.selected[2]);
+        }
+        indices.sort_unstable();
+        indices
+    }
+
+    fn toggle_selected_queue(&mut self) {
+        for index in self.selected_track_indices() {
+            if let Some(position) = self.queue.iter().position(|&queued| queued == index) {
+                self.queue.remove(position);
+            } else {
+                self.queue.push_back(index);
+            }
+        }
+        self.status = format!("{} track(s) queued", self.queue.len());
+    }
+
+    fn toggle_selected_stop_after(&mut self) {
+        for index in self.selected_track_indices() {
+            if !self.stop_after_rows.remove(&index) {
+                self.stop_after_rows.insert(index);
+            }
+        }
+        self.status = format!("{} stop-after marker(s)", self.stop_after_rows.len());
+    }
+
+    fn clear_queue(&mut self) {
+        self.queue.clear();
+        self.status = "Queue cleared".to_owned();
+    }
+
+    fn prune_missing_selected_list(&mut self) {
+        let id = self.lists.get(self.selected[0]).map_or(0, |(id, _)| *id);
+        if id <= 0 {
+            self.status = "Favorites are cleaned from their starred files".to_owned();
+            return;
+        }
+        let rows = self.library.db().playlist_entry_rows(id);
+        let result = rows.and_then(|rows| {
+            let doomed: Vec<_> = rows
+                .iter()
+                .filter(|(_, entry)| {
+                    matches!(entry.kind.as_str(), "local" | "archive")
+                        && !Path::new(&entry.path).exists()
+                })
+                .map(|(row_id, _)| *row_id)
+                .collect();
+            self.library.db().delete_entry_rows(id, &doomed)
+        });
+        self.status = match result {
+            Ok(0) => "No missing files in the playlist".to_owned(),
+            Ok(count) => format!(
+                "Removed {count} missing file{} from the playlist",
+                if count == 1 { "" } else { "s" }
+            ),
+            Err(error) => error,
+        };
+    }
+
+    fn show_track_in_tree(&mut self) {
+        let Some(track) = self.tracks.get(self.selected[2]).cloned() else {
+            return;
+        };
+        if track.entry.kind == "remote" {
+            self.status = "Remote tracks have no local file tree location".to_owned();
+            return;
+        }
+        let path = PathBuf::from(&track.entry.path);
+        let Some(parent) = path.parent() else {
+            return;
+        };
+        self.browse(Some(parent.to_path_buf()));
+        if let Some(index) = self.items.iter().position(|row| match &row.item {
+            Item::Track(item) => item.entry.path == track.entry.path,
+            Item::Directory(_, location) => location == &path,
+        }) {
+            self.selected[1] = index;
+            self.focus = Focus::Library;
+            self.status = format!("Located {}", track.name);
+        }
+    }
+
+    fn toggle_mute(&mut self) {
+        if self.volume <= 0.0 {
+            self.volume = self.volume_before_mute.max(0.05);
+        } else {
+            self.volume_before_mute = self.volume;
+            self.volume = 0.0;
+        }
+        self.player.set_volume(self.volume);
+    }
+
+    fn set_volume_from_bar(&mut self, x: usize, size: (usize, usize)) {
+        let (_, _, bar_x, bar_width) = volume_geometry(size.0, size.1.saturating_sub(4));
+        self.volume = ((x.saturating_sub(bar_x)) as f32 / (bar_width - 1) as f32).clamp(0.0, 1.0);
+        if self.volume > 0.0 {
+            self.volume_before_mute = self.volume;
+        }
+        self.player.set_volume(self.volume);
     }
 
     fn layout(&self, size: (usize, usize)) -> Layout {
-        let mut layout = Layout::new(size.0, size.1, self.lists.len());
+        let mut layout = Layout::new(
+            size.0,
+            size.1,
+            self.lists.len(),
+            self.files_expanded,
+            self.playlists_expanded,
+        );
         if !self.sidebar_visible {
             layout.show_sidebar = false;
             layout.first = 0;
+        } else if layout.show_sidebar {
+            if let Some(width) = self.sidebar_width {
+                layout.first = width.clamp(18, size.0.saturating_sub(30).max(18));
+            }
         }
         layout
     }
 
+    fn column_widths(&self, right_width: usize) -> (usize, usize, usize, usize) {
+        let number = 5.min(right_width / 5);
+        let min_artist = if self.show_artist { 8 } else { 0 };
+        let min_album = if self.show_album { 8 } else { 0 };
+        let available = right_width.saturating_sub(number);
+        let default_title = if self.show_artist || self.show_album {
+            right_width * 45 / 100
+        } else {
+            available
+        };
+        let title = self
+            .title_width_hint
+            .unwrap_or(default_title)
+            .max(8.min(available))
+            .min(
+                available
+                    .saturating_sub(min_artist + min_album)
+                    .max(8.min(available)),
+            );
+        let remaining = available.saturating_sub(title);
+        let artist = if self.show_artist {
+            if self.show_album {
+                self.artist_width_hint
+                    .unwrap_or(remaining / 2)
+                    .max(8.min(remaining))
+                    .min(remaining.saturating_sub(min_album).max(8.min(remaining)))
+            } else {
+                remaining
+            }
+        } else {
+            0
+        };
+        (number, title, artist, remaining.saturating_sub(artist))
+    }
+
+    fn auto_fit_columns(&mut self) {
+        let title = self
+            .tracks
+            .iter()
+            .map(|track| cell_width(&self.title_for(track)))
+            .max()
+            .unwrap_or(8)
+            .max(8)
+            .min(80);
+        let artist = self
+            .tracks
+            .iter()
+            .filter_map(|track| self.metadata_for(track))
+            .map(|meta| cell_width(&meta.artist))
+            .max()
+            .unwrap_or(8)
+            .max(8)
+            .min(40);
+        self.title_width_hint = Some(title + 2);
+        self.artist_width_hint = Some(artist + 2);
+        self.status = "Columns fitted to loaded metadata".to_owned();
+    }
+
     fn activate_menu(&mut self, index: usize) {
+        if self.menu_page.labels().get(index) == Some(&"") {
+            return;
+        }
+        let page = self.menu_page;
         self.menu_open = false;
-        match index {
-            0 => self.prompt = Some((PromptKind::Search, self.search_query.clone())),
-            1 => {
-                self.prompt = Some((
-                    PromptKind::MusicFolder,
+        match (page, index) {
+            (MenuPage::Main, 0) => self.begin_prompt(PromptKind::AddFile, String::new()),
+            (MenuPage::Main, 1) => self.begin_prompt(PromptKind::AddUrl, String::new()),
+            (MenuPage::Main, 2) | (MenuPage::Preferences, 0) => self.begin_prompt(
+                PromptKind::MusicFolder,
+                self.library
+                    .root()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+            ),
+            (MenuPage::Main, 4) => self.begin_prompt(PromptKind::SavePlaylist, String::new()),
+            (MenuPage::Main, 5) => self.begin_prompt(PromptKind::SaveSelection, String::new()),
+            (MenuPage::Main, 6) => self.remove_selected(),
+            (MenuPage::Main, 7) => self.clear_playlist(),
+            (MenuPage::Main, 9) => self.open_submenu(MenuPage::View),
+            (MenuPage::Main, 10) => self.open_submenu(MenuPage::Playback),
+            (MenuPage::Main, 11) => self.open_submenu(MenuPage::Preferences),
+            (MenuPage::Main, 13) => {
+                self.modal = Some(format!(
+                    "Kog v{}\nTerminal player\nMusic folder: {}",
+                    env!("CARGO_PKG_VERSION"),
                     self.library
                         .root()
-                        .map(|p| p.to_string_lossy().into_owned())
-                        .unwrap_or_default(),
+                        .map_or_else(|| "None".to_owned(), |p| p.display().to_string())
                 ))
             }
-            2 => self.prompt = Some((PromptKind::NewPlaylist, String::new())),
-            3 => self.show_queue(),
-            4 => self.cycle_repeat(),
-            5 => self.exit_requested = true,
+            (MenuPage::Main, 14) => self.exit_requested = true,
+            (MenuPage::View, 0) => {
+                self.sidebar_visible = !self.sidebar_visible;
+                if !self.sidebar_visible {
+                    self.focus = Focus::Tracks;
+                }
+            }
+            (MenuPage::View, 1) => self.show_info(),
+            (MenuPage::View, 2) => self.show_lyrics(),
+            (MenuPage::View, 3) => self.show_equalizer(),
+            (MenuPage::View, 4) => self.show_visualizer(),
+            (MenuPage::Playback, 0) => self.play_pause(),
+            (MenuPage::Playback, 1) => {
+                self.player.stop();
+                self.playing = None;
+            }
+            (MenuPage::Playback, 2) => self.previous(),
+            (MenuPage::Playback, 3) => self.next(false),
+            (MenuPage::Playback, 4) => self.cycle_shuffle(),
+            (MenuPage::Playback, 5) => self.cycle_repeat(),
+            (MenuPage::Playback, 6) => {
+                self.stop_after_current = !self.stop_after_current;
+                self.status = format!(
+                    "Stop after current: {}",
+                    if self.stop_after_current { "on" } else { "off" }
+                );
+            }
+            (MenuPage::Playback, 7) => self.toggle_mute(),
+            (MenuPage::Playback, 8) => self.toggle_radio(),
+            (MenuPage::Playback, 9) => self.reshuffle_radio(),
+            (MenuPage::Playback, 10) => self.toggle_selected_queue(),
+            (MenuPage::Playback, 11) => self.toggle_selected_stop_after(),
+            (MenuPage::Playback, 12) => self.clear_queue(),
+            (MenuPage::Preferences, 1) => self.begin_prompt(
+                PromptKind::Volume,
+                format!("{}", (self.volume * 100.0).round() as u8),
+            ),
+            (MenuPage::Preferences, 2) => self.cycle_repeat(),
+            (MenuPage::Preferences, 3) => self.begin_prompt(
+                PromptKind::EqualizerPreset,
+                self.equalizer.preset_name.clone(),
+            ),
+            (MenuPage::Preferences, 4) => {
+                self.equalizer.enabled = !self.equalizer.enabled;
+                self.apply_equalizer();
+            }
+            (MenuPage::Preferences, 5) => {
+                self.begin_prompt(PromptKind::Preamp, format!("{}", self.equalizer.preamp_db))
+            }
+            (MenuPage::Preferences, 6) => {
+                let current = AppSettings::load()
+                    .output_device
+                    .map(|device| device.name)
+                    .unwrap_or_else(|| "default".to_owned());
+                self.begin_prompt(PromptKind::OutputDevice, current)
+            }
+            (MenuPage::Preferences, 7) => self.show_output_devices(),
+            (MenuPage::Preferences, 8) => {
+                self.begin_prompt(PromptKind::EqualizerBandNumber, String::new())
+            }
+            (MenuPage::Tree, 0) => self.add_selected(false),
+            (MenuPage::Tree, 1) => self.add_selected(true),
+            (MenuPage::Tree, 2) => self.open_selected(),
+            (MenuPage::Tree, 3) => self.toggle_star(),
+            (MenuPage::Tree, 4) => self.begin_prompt(PromptKind::AddToPlaylist, String::new()),
+            (MenuPage::Tracks, 0) => self.play_selected(),
+            (MenuPage::Tracks, 1) => self.remove_selected(),
+            (MenuPage::Tracks, 2) => self.begin_prompt(PromptKind::AddToPlaylist, String::new()),
+            (MenuPage::Tracks, 3) => self.toggle_star(),
+            (MenuPage::Tracks, 4) => self.show_info(),
+            (MenuPage::Tracks, 5) => self.clear_playlist(),
+            (MenuPage::Tracks, 6) => self.show_track_in_tree(),
+            (MenuPage::Tracks, 7) => self.begin_prompt(PromptKind::SaveSelection, String::new()),
+            (MenuPage::Tracks, 8) => {
+                self.selected_tracks = self.visible_tracks().into_iter().collect();
+                self.status = format!("Selected {} tracks", self.selected_tracks.len());
+            }
+            (MenuPage::Tracks, 9) => self.toggle_selected_queue(),
+            (MenuPage::Tracks, 10) => self.toggle_selected_stop_after(),
+            (MenuPage::Saved, 0) => self.enqueue_list(self.selected[0]),
+            (MenuPage::Saved, 1) => {
+                let first = self.tracks.len();
+                self.enqueue_list(self.selected[0]);
+                if self.tracks.len() > first {
+                    self.select_track(first, false, false);
+                    self.play_selected();
+                }
+            }
+            (MenuPage::Saved, 2) => {
+                let index = self.selected[0];
+                self.clear_playlist();
+                self.enqueue_list(index);
+                if !self.tracks.is_empty() {
+                    self.select_track(0, false, false);
+                    self.play_selected();
+                }
+            }
+            (MenuPage::Saved, 3) => {
+                if let Some((id, name)) = self.lists.get(self.selected[0]) {
+                    if *id > 0 {
+                        self.begin_prompt(PromptKind::RenamePlaylist, name.clone());
+                    }
+                }
+            }
+            (MenuPage::Saved, 4) => {
+                if let Some((id, name)) = self.lists.get(self.selected[0]) {
+                    if *id > 0 {
+                        self.begin_prompt(PromptKind::DuplicatePlaylist, format!("{name} copy"));
+                    }
+                }
+            }
+            (MenuPage::Saved, 5) => {
+                if self
+                    .lists
+                    .get(self.selected[0])
+                    .is_some_and(|(id, _)| *id > 0)
+                {
+                    self.begin_prompt(PromptKind::DeletePlaylist, String::new());
+                }
+            }
+            (MenuPage::Saved, 6) => {
+                if let Some((_, name)) = self.lists.get(self.selected[0]) {
+                    let path = self
+                        .library
+                        .root()
+                        .unwrap_or_else(|| PathBuf::from("."))
+                        .join(format!("{name}.m3u"));
+                    self.begin_prompt(PromptKind::ExportPlaylist, path.display().to_string());
+                }
+            }
+            (MenuPage::Saved, 7) => self.prune_missing_selected_list(),
+            (MenuPage::Columns, 0..=2) => self.sort_tracks(index),
+            (MenuPage::Columns, 3) => self.show_artist = !self.show_artist,
+            (MenuPage::Columns, 4) => self.show_album = !self.show_album,
+            (MenuPage::Columns, 5) => self.auto_fit_columns(),
             _ => {}
+        }
+    }
+
+    fn open_submenu(&mut self, page: MenuPage) {
+        self.menu_page = page;
+        self.menu_open = true;
+        self.menu_selected = 0;
+        self.menu_offset = 0;
+        self.menu_x = 4;
+        self.menu_y = 1;
+    }
+
+    fn open_context(&mut self, page: MenuPage, x: usize, y: usize, size: (usize, usize)) {
+        self.open_submenu(page);
+        self.menu_x = x.min(size.0.saturating_sub(34)).max(1);
+        self.menu_y = y.min(
+            size.1
+                .saturating_sub(page.labels().len().min(size.1.saturating_sub(4)) + 3),
+        );
+    }
+
+    fn sort_tracks(&mut self, column: usize) {
+        self.sort_ascending = if self.sort_column == Some(column) {
+            !self.sort_ascending
+        } else {
+            true
+        };
+        self.sort_column = Some(column);
+        let mut order: Vec<_> = (0..self.tracks.len()).collect();
+        order.sort_by_key(|&index| match column {
+            1 => self
+                .metadata_for(&self.tracks[index])
+                .map_or(String::new(), |m| m.artist.to_lowercase()),
+            2 => self
+                .metadata_for(&self.tracks[index])
+                .map_or(String::new(), |m| m.album.to_lowercase()),
+            _ => self.title_for(&self.tracks[index]).to_lowercase(),
+        });
+        if !self.sort_ascending {
+            order.reverse();
+        }
+        let mut mapping = vec![0; order.len()];
+        for (new, &old) in order.iter().enumerate() {
+            mapping[old] = new;
+        }
+        let mut tracks: Vec<_> = std::mem::take(&mut self.tracks)
+            .into_iter()
+            .map(Some)
+            .collect();
+        self.tracks = order
+            .into_iter()
+            .map(|old| tracks[old].take().unwrap())
+            .collect();
+        self.playing = self.playing.and_then(|old| mapping.get(old).copied());
+        self.queue = self
+            .queue
+            .iter()
+            .filter_map(|old| mapping.get(*old).copied())
+            .collect();
+        self.stop_after_rows = self
+            .stop_after_rows
+            .iter()
+            .filter_map(|old| mapping.get(*old).copied())
+            .collect();
+        self.selected_tracks = self
+            .selected_tracks
+            .iter()
+            .filter_map(|old| mapping.get(*old).copied())
+            .collect();
+        self.selected[2] = mapping.get(self.selected[2]).copied().unwrap_or(0);
+        self.selection_anchor = self
+            .selection_anchor
+            .and_then(|old| mapping.get(old).copied());
+    }
+
+    fn move_menu_selection(&mut self, delta: isize, height: usize) {
+        let labels = self.menu_page.labels();
+        let mut next = self.menu_selected as isize;
+        loop {
+            next += delta;
+            if next < 0 || next >= labels.len() as isize {
+                break;
+            }
+            if !labels[next as usize].is_empty() {
+                self.menu_selected = next as usize;
+                break;
+            }
+        }
+        let page = labels.len().min(height.saturating_sub(4)).max(1);
+        if self.menu_selected < self.menu_offset {
+            self.menu_offset = self.menu_selected;
+        }
+        if self.menu_selected >= self.menu_offset + page {
+            self.menu_offset = self.menu_selected + 1 - page;
+        }
+    }
+
+    fn clear_playlist(&mut self) {
+        self.player.stop();
+        self.playing = None;
+        self.tracks.clear();
+        self.queue.clear();
+        self.stop_after_rows.clear();
+        self.selected_tracks.clear();
+        self.selection_anchor = None;
+        self.selected[2] = 0;
+        self.offsets[2] = 0;
+        self.status = "Playlist cleared".to_owned();
+    }
+
+    fn show_info(&mut self) {
+        let track = self
+            .playing
+            .and_then(|index| self.tracks.get(index))
+            .or_else(|| self.tracks.get(self.selected[2]));
+        let content = if let Some(track) = track {
+            let metadata = self.metadata_for(track);
+            format!(
+                "{}\nArtist: {}\nAlbum: {}\nGenre: {}\nCodec: {}\nPath: {}",
+                self.title_for(track),
+                metadata.map_or("", |m| &m.artist),
+                metadata.map_or("", |m| &m.album),
+                metadata.map_or("", |m| &m.genre),
+                metadata.map_or("", |m| &m.codec),
+                track.entry.path
+            )
+        } else {
+            "No track selected".to_owned()
+        };
+        self.show_modal(content);
+    }
+
+    fn show_modal(&mut self, content: String) {
+        self.modal = Some(content);
+        self.visualizer_open = false;
+        self.modal_scroll = 0;
+    }
+
+    fn show_visualizer(&mut self) {
+        self.visualizer_open = true;
+        self.modal_scroll = 0;
+    }
+
+    fn visualizer_text(&self) -> String {
+        let frame: serde_json::Value = serde_json::from_str(&self.player.visualizer_frame())
+            .unwrap_or(serde_json::Value::Null);
+        let bands: Vec<_> = frame["spectrum"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .take(40)
+            .map(|value| value.as_f64().unwrap_or(0.0).clamp(0.0, 1.0))
+            .collect();
+        let mut rows = vec!["Visualizer · Spectrum".to_owned()];
+        for height in (1..=8).rev() {
+            rows.push(
+                bands
+                    .iter()
+                    .map(|level| {
+                        if level * 8.0 >= f64::from(height) {
+                            '█'
+                        } else {
+                            ' '
+                        }
+                    })
+                    .collect(),
+            );
+        }
+        rows.push("▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁".to_owned());
+        rows.push("Esc closes".to_owned());
+        rows.join("\n")
+    }
+
+    fn show_lyrics(&mut self) {
+        let content = self
+            .playing
+            .and_then(|index| self.tracks.get(index))
+            .or_else(|| self.tracks.get(self.selected[2]))
+            .and_then(|track| self.metadata_for(track))
+            .map(|metadata| {
+                if metadata.lyrics.is_empty() {
+                    "No embedded lyrics".to_owned()
+                } else {
+                    metadata.lyrics.clone()
+                }
+            })
+            .unwrap_or_else(|| "No lyrics for the selected track".to_owned());
+        self.show_modal(content);
+    }
+
+    fn show_equalizer(&mut self) {
+        let mut lines = vec![format!(
+            "Equalizer: {} · {} · preamp {:+.1} dB",
+            if self.equalizer.enabled { "On" } else { "Off" },
+            self.equalizer.preset_name,
+            self.equalizer.preamp_db
+        )];
+        for (frequency, gain) in kog_core::equalizer::EQUALIZER_FREQUENCIES
+            .iter()
+            .zip(self.equalizer.gains_db)
+        {
+            lines.push(format!("{:>7.0} Hz  {gain:+.1} dB", frequency));
+        }
+        self.show_modal(lines.join("\n"));
+    }
+
+    fn apply_equalizer(&mut self) {
+        match AppSettings::save_equalizer(&self.equalizer) {
+            Ok(()) => {
+                self.player.set_equalizer(self.equalizer.clone());
+                self.status = format!(
+                    "Equalizer: {} · {}",
+                    if self.equalizer.enabled { "On" } else { "Off" },
+                    self.equalizer.preset_name
+                );
+            }
+            Err(error) => self.status = error,
+        }
+    }
+
+    fn show_output_devices(&mut self) {
+        match available_output_devices() {
+            Ok(devices) => {
+                let mut lines = vec![
+                    "Available output devices (enter name in Preferences):".to_owned(),
+                    "default".to_owned(),
+                ];
+                lines.extend(devices.into_iter().map(|device| device.name));
+                self.show_modal(lines.join("\n"));
+            }
+            Err(error) => self.show_modal(error),
         }
     }
 
@@ -379,37 +1227,52 @@ impl Ui {
     }
 
     fn select_list(&mut self, index: usize) {
-        if index >= self.lists.len() {
-            return;
+        if index < self.lists.len() {
+            self.selected[0] = index;
         }
-        if self.active_list == self.lists[index].0 {
+    }
+
+    fn enqueue_list(&mut self, index: usize) {
+        let Some((id, _)) = self.lists.get(index) else {
             return;
-        }
-        self.player.stop();
-        self.playing = None;
-        self.selected[0] = index;
-        self.active_list = self.lists[index].0;
-        let rows = if self.active_list == -1 {
-            self.queue.clone()
-        } else {
-            let db = self.library.db();
-            let result = if self.active_list == 0 {
-                db.starred_entries()
-            } else {
-                db.playlist_entries(self.active_list)
-            };
-            match result {
-                Ok(entries) => entries.into_iter().map(track_from_entry).collect(),
-                Err(error) => {
-                    self.status = error;
-                    Vec::new()
-                }
-            }
         };
-        self.tracks = rows;
-        self.selected[2] = 0;
-        self.offsets[2] = 0;
-        self.playing = None;
+        let result = if *id == 0 {
+            self.library.db().starred_entries()
+        } else {
+            self.library.db().playlist_entries(*id)
+        };
+        match result {
+            Ok(entries) => {
+                let count = entries.len();
+                self.tracks
+                    .extend(entries.into_iter().map(track_from_entry));
+                self.status = format!("Added {count} tracks to the playlist");
+            }
+            Err(error) => self.status = error,
+        }
+    }
+
+    fn enqueue_folder(&mut self, path: PathBuf) {
+        if self.folder_requests.send(path.clone()).is_ok() {
+            self.folder_jobs += 1;
+            self.status = format!("Adding tracks from {}…", path.display());
+        } else {
+            self.status = "Folder scanner is unavailable".to_owned();
+        }
+    }
+
+    fn poll_folders(&mut self) {
+        while let Ok(result) = self.folder_results.try_recv() {
+            self.folder_jobs = self.folder_jobs.saturating_sub(1);
+            match result {
+                Ok(tracks) => {
+                    let count = tracks.len();
+                    self.tracks.extend(tracks);
+                    self.status = format!("Added {count} tracks from folder");
+                }
+                Err(error) => self.status = error,
+            }
+        }
     }
 
     fn add_selected(&mut self, play: bool) {
@@ -418,27 +1281,26 @@ impl Ui {
             ..
         }) = self.items.get(self.selected[1]).cloned()
         else {
-            self.open_selected();
+            if let Some(TreeRow {
+                item: Item::Directory(_, path),
+                ..
+            }) = self.items.get(self.selected[1])
+            {
+                self.enqueue_folder(path.clone());
+            }
             return;
         };
-        if self.active_list == 0 {
-            self.status = "Choose Queue or a playlist before adding".to_owned();
-            return;
+        if play {
+            self.player.stop();
+            self.playing = None;
+            self.tracks.clear();
+            self.queue.clear();
+            self.stop_after_rows.clear();
+            self.selected_tracks.clear();
         }
-        if self.active_list == -1 {
-            self.queue.push(track.clone());
-            self.tracks = self.queue.clone();
-        } else if let Err(error) = self
-            .library
-            .db()
-            .append_entries(self.active_list, &[track.entry.clone()])
-        {
-            self.status = error;
-            return;
-        } else {
-            self.tracks.push(track.clone());
-        }
+        self.tracks.push(track.clone());
         self.selected[2] = self.tracks.len() - 1;
+        self.select_track(self.selected[2], false, false);
         self.status = format!("Added {}", track.name);
         if play {
             self.play_selected();
@@ -475,6 +1337,11 @@ impl Ui {
         .and_then(|source| self.player.play_source(&source).map(|_| ()))
         {
             Ok(()) => {
+                if let Some(previous) = self.playing
+                    && previous != index
+                {
+                    self.stop_after_rows.remove(&previous);
+                }
                 self.playing = Some(index);
                 self.status = format!("Playing {}", track.name);
             }
@@ -484,6 +1351,99 @@ impl Ui {
 
     fn next(&mut self, honor_repeat_one: bool) {
         if self.tracks.is_empty() {
+            if self.radio_enabled {
+                self.append_next_radio();
+            }
+            return;
+        }
+        if honor_repeat_one
+            && (self.stop_after_current
+                || self
+                    .playing
+                    .is_some_and(|index| self.stop_after_rows.contains(&index)))
+        {
+            self.stop_after_current = false;
+            if let Some(index) = self.playing {
+                self.stop_after_rows.remove(&index);
+            }
+            self.player.stop();
+            self.playing = None;
+            return;
+        }
+        if honor_repeat_one && self.repeat_mode == RepeatMode::One {
+            if let Some(index) = self.playing {
+                self.selected[2] = index;
+                self.play_selected();
+                return;
+            }
+        }
+        while let Some(index) = self.queue.pop_front() {
+            if index < self.tracks.len() {
+                self.selected[2] = index;
+                self.play_selected();
+                return;
+            }
+        }
+        if self.radio_enabled && self.playing.is_some_and(|i| i + 1 >= self.tracks.len()) {
+            self.append_next_radio();
+            return;
+        }
+        if honor_repeat_one && self.repeat_mode == RepeatMode::Album {
+            if let Some(current) = self.playing {
+                if let Some(album) = self
+                    .metadata_for(&self.tracks[current])
+                    .map(|meta| meta.album.clone())
+                    .filter(|album| !album.is_empty())
+                {
+                    let next =
+                        ((current + 1)..self.tracks.len())
+                            .chain(0..=current)
+                            .find(|&index| {
+                                self.metadata_for(&self.tracks[index])
+                                    .is_some_and(|meta| meta.album == album)
+                            });
+                    if let Some(next) = next {
+                        self.selected[2] = next;
+                        self.play_selected();
+                        return;
+                    }
+                }
+            }
+        }
+        if self.shuffle_mode != ShuffleMode::Off && self.tracks.len() > 1 {
+            let current = self.playing.unwrap_or(0);
+            let candidates: Vec<_> = if self.shuffle_mode == ShuffleMode::Albums {
+                let album = self
+                    .metadata_for(&self.tracks[current])
+                    .map(|meta| meta.album.as_str())
+                    .unwrap_or("");
+                self.tracks
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, track)| {
+                        let other = self
+                            .metadata_for(track)
+                            .map(|meta| meta.album.as_str())
+                            .unwrap_or("");
+                        (index != current
+                            && !album.is_empty()
+                            && !other.is_empty()
+                            && other != album)
+                            .then_some(index)
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let candidates = if candidates.is_empty() {
+                (0..self.tracks.len())
+                    .filter(|&index| index != current)
+                    .collect::<Vec<_>>()
+            } else {
+                candidates
+            };
+            self.selected[2] = candidates[rand::rng().random_range(0..candidates.len())];
+            self.play_selected();
             return;
         }
         let next = match self.playing {
@@ -503,7 +1463,11 @@ impl Ui {
 
     fn play_pause(&mut self) {
         if self.player.state() == PlaybackState::Stopped {
-            self.play_selected();
+            if self.tracks.is_empty() && self.radio_enabled {
+                self.append_next_radio();
+            } else {
+                self.play_selected();
+            }
         } else {
             self.player.play_pause();
         }
@@ -526,43 +1490,121 @@ impl Ui {
     }
 
     fn cycle_repeat(&mut self) {
+        if self.radio_enabled {
+            self.toggle_radio();
+        }
         self.repeat_mode = self.repeat_mode.next();
         let _ = AppSettings::save_repeat_mode(self.repeat_mode);
         self.status = format!("Repeat: {}", self.repeat_mode.setting_value());
     }
 
+    fn cycle_shuffle(&mut self) {
+        if self.radio_enabled {
+            self.toggle_radio();
+        }
+        self.shuffle_mode = self.shuffle_mode.next();
+        let _ = AppSettings::save_shuffle_mode(self.shuffle_mode);
+        self.status = format!("Shuffle: {}", self.shuffle_mode.setting_value());
+    }
+
     fn remove_selected(&mut self) {
-        let index = self.selected[2];
-        if index >= self.tracks.len() || self.active_list == 0 {
+        if self.tracks.is_empty() {
             return;
         }
-        if self.active_list == -1 {
-            self.queue.remove(index);
-            self.tracks = self.queue.clone();
-        } else {
-            let db = self.library.db();
-            let result = db
-                .playlist_entry_rows(self.active_list)
-                .and_then(|rows| {
-                    rows.get(index)
-                        .map(|(id, _)| *id)
-                        .ok_or_else(|| "row changed".to_owned())
-                })
-                .and_then(|id| db.delete_entry_rows(self.active_list, &[id]).map(|_| ()));
-            if let Err(error) = result {
-                self.status = error;
-                return;
-            }
-            self.tracks.remove(index);
+        let mut indices: Vec<_> = self
+            .selected_tracks
+            .iter()
+            .copied()
+            .filter(|&index| index < self.tracks.len())
+            .collect();
+        if indices.is_empty() {
+            indices.push(self.selected[2].min(self.tracks.len() - 1));
         }
-        self.selected[2] = index.min(self.tracks.len().saturating_sub(1));
-        if self.playing == Some(index) {
+        indices.sort_unstable();
+        let first = indices[0];
+        let remap = |old: usize| {
+            if indices.binary_search(&old).is_ok() {
+                None
+            } else {
+                Some(old - indices.iter().filter(|&&index| index < old).count())
+            }
+        };
+        self.queue = self.queue.iter().filter_map(|&old| remap(old)).collect();
+        self.stop_after_rows = self
+            .stop_after_rows
+            .iter()
+            .filter_map(|&old| remap(old))
+            .collect();
+        let was_playing = self
+            .playing
+            .is_some_and(|index| indices.binary_search(&index).is_ok());
+        if was_playing {
             self.player.stop();
             self.playing = None;
-        } else if self.playing.is_some_and(|i| i > index) {
-            self.playing = self.playing.map(|i| i - 1);
+        } else if let Some(playing) = self.playing {
+            self.playing = Some(playing - indices.iter().filter(|&&index| index < playing).count());
         }
-        self.status = "Removed selected track".to_owned();
+        for index in indices.iter().rev() {
+            self.tracks.remove(*index);
+        }
+        self.selected[2] = first.min(self.tracks.len().saturating_sub(1));
+        self.selected_tracks.clear();
+        self.selection_anchor = None;
+        if !self.tracks.is_empty() {
+            self.select_track(self.selected[2], false, false);
+        }
+        self.status = format!("Removed {} track(s)", indices.len());
+    }
+
+    fn select_track(&mut self, index: usize, shift: bool, ctrl: bool) {
+        if index >= self.tracks.len() {
+            return;
+        }
+        if shift {
+            let anchor = self.selection_anchor.unwrap_or(self.selected[2]);
+            if !ctrl {
+                self.selected_tracks.clear();
+            }
+            for row in anchor.min(index)..=anchor.max(index) {
+                self.selected_tracks.insert(row);
+            }
+        } else if ctrl {
+            if !self.selected_tracks.insert(index) {
+                self.selected_tracks.remove(&index);
+            }
+            self.selection_anchor = Some(index);
+        } else {
+            self.selected_tracks.clear();
+            self.selected_tracks.insert(index);
+            self.selection_anchor = Some(index);
+        }
+        self.selected[2] = index;
+    }
+
+    fn move_track(&mut self, from: usize, to: usize) {
+        if from == to || from >= self.tracks.len() || to >= self.tracks.len() {
+            return;
+        }
+        let remap = |index: usize| -> usize {
+            if index == from {
+                to
+            } else if from < to && index > from && index <= to {
+                index - 1
+            } else if to < from && index >= to && index < from {
+                index + 1
+            } else {
+                index
+            }
+        };
+        let track = self.tracks.remove(from);
+        self.tracks.insert(to, track);
+        self.playing = self.playing.map(remap);
+        self.queue = self.queue.iter().copied().map(remap).collect();
+        self.stop_after_rows = self.stop_after_rows.iter().copied().map(remap).collect();
+        self.selected_tracks = self.selected_tracks.iter().copied().map(remap).collect();
+        self.selected[2] = remap(self.selected[2]);
+        self.selection_anchor = self.selection_anchor.map(remap);
+        self.status = format!("Moved track {} to {}", from + 1, to + 1);
     }
 
     fn toggle_star(&mut self) {
@@ -605,18 +1647,76 @@ impl Ui {
                 } else {
                     format!("Unstarred {}", track.name)
                 };
-                if self.active_list == 0 {
-                    self.active_list = i64::MIN;
-                    self.select_list(self.selected[0]);
-                }
             }
             Err(error) => self.status = error,
         }
     }
 
+    fn begin_prompt(&mut self, kind: PromptKind, value: String) {
+        if kind == PromptKind::Search {
+            self.files_expanded = true;
+        }
+        self.input_cursor = value.chars().count();
+        self.prompt = Some((kind, value));
+    }
+
+    fn update_search_draft(&mut self, kind: PromptKind, value: &str) {
+        match kind {
+            PromptKind::Search => {
+                if value.trim().is_empty() {
+                    self.search_due = None;
+                    self.browse(None);
+                } else {
+                    self.search_due = Some(Instant::now() + Duration::from_millis(250));
+                }
+            }
+            PromptKind::PlaylistSearch => {
+                self.playlist_query = value.to_lowercase();
+                self.offsets[2] = 0;
+                if let Some(first) = self.visible_tracks().first() {
+                    self.selected[2] = *first;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn run_file_search(&mut self, value: &str) {
+        if value.trim().is_empty() {
+            self.browse(None);
+            return;
+        }
+        if self.search_query == value && self.search.is_some() {
+            return;
+        }
+        match LocalSearch::start(self.library.clone(), value) {
+            Ok(search) => {
+                self.search = Some(search);
+                self.search_query = value.to_owned();
+                self.search_done = false;
+                self.items.clear();
+                self.selected[1] = 0;
+                self.offsets[1] = 0;
+                self.focus = Focus::Library;
+                self.status = format!("Searching for {value}…");
+            }
+            Err(error) => self.status = error,
+        }
+    }
+
+    fn poll_search_due(&mut self) {
+        if self.search_due.is_some_and(|at| Instant::now() >= at) {
+            self.search_due = None;
+            if let Some((PromptKind::Search, value)) = &self.prompt {
+                let value = value.clone();
+                self.run_file_search(&value);
+            }
+        }
+    }
+
     fn finish_prompt(&mut self, kind: PromptKind, value: String) {
         let value = value.trim();
-        if value.is_empty() && !matches!(kind, PromptKind::PlaylistSearch) {
+        if value.is_empty() && !matches!(kind, PromptKind::PlaylistSearch | PromptKind::Search) {
             self.status = "A value is required".to_owned();
             return;
         }
@@ -646,6 +1746,7 @@ impl Ui {
                             self.lists.iter().position(|(list_id, _)| *list_id == id)
                         {
                             self.select_list(index);
+                            self.offsets[0] = index.saturating_sub(5);
                         }
                         self.status = format!("Created {value}");
                     }
@@ -653,10 +1754,11 @@ impl Ui {
                 }
             }
             PromptKind::RenamePlaylist => {
-                if self.active_list <= 0 {
+                let id = self.lists.get(self.selected[0]).map_or(0, |(id, _)| *id);
+                if id <= 0 {
                     return;
                 }
-                let result = self.library.db().rename_playlist(self.active_list, value);
+                let result = self.library.db().rename_playlist(id, value);
                 match result {
                     Ok(()) => {
                         self.reload_lists();
@@ -666,14 +1768,15 @@ impl Ui {
                 }
             }
             PromptKind::DeletePlaylist => {
-                if self.active_list <= 0 {
+                let id = self.lists.get(self.selected[0]).map_or(0, |(id, _)| *id);
+                if id <= 0 {
                     return;
                 }
                 if value != "yes" {
                     self.status = "Playlist deletion cancelled".to_owned();
                     return;
                 }
-                let result = self.library.db().delete_playlist(self.active_list);
+                let result = self.library.db().delete_playlist(id);
                 match result {
                     Ok(()) => {
                         self.reload_lists();
@@ -683,24 +1786,262 @@ impl Ui {
                     Err(error) => self.status = error,
                 }
             }
-            PromptKind::Search => match LocalSearch::start(self.library.clone(), value) {
-                Ok(search) => {
-                    self.search = Some(search);
-                    self.search_query = value.to_owned();
-                    self.search_done = false;
-                    self.items.clear();
-                    self.selected[1] = 0;
-                    self.offsets[1] = 0;
-                    self.focus = Focus::Library;
-                    self.status = format!("Searching for {value}…");
-                }
-                Err(error) => self.status = error,
-            },
+            PromptKind::Search => {
+                self.search_due = None;
+                self.run_file_search(value);
+            }
             PromptKind::PlaylistSearch => {
                 self.playlist_query = value.to_lowercase();
                 self.offsets[2] = 0;
                 if let Some(first) = self.visible_tracks().first() {
                     self.selected[2] = *first;
+                }
+            }
+            PromptKind::AddFile => {
+                let path = PathBuf::from(value);
+                if path.is_dir() || (path.is_file() && kog_audio::archive::is_path(&path)) {
+                    self.enqueue_folder(path);
+                } else if path.is_file() && self.decoders.accepts_path(&path) {
+                    let track = track_from_entry(StoredEntry {
+                        kind: "local".to_owned(),
+                        path: path.to_string_lossy().into_owned(),
+                        entry: String::new(),
+                        fragment: None,
+                    });
+                    self.status = format!("Added {}", track.name);
+                    self.tracks.push(track);
+                } else {
+                    self.status = format!("Cannot add {}", path.display());
+                }
+            }
+            PromptKind::AddUrl => {
+                if !value.starts_with("http://") && !value.starts_with("https://") {
+                    self.status = "Enter an http or https URL".to_owned();
+                } else {
+                    let track = track_from_entry(StoredEntry {
+                        kind: "remote".to_owned(),
+                        path: value.to_owned(),
+                        entry: String::new(),
+                        fragment: None,
+                    });
+                    self.status = format!("Added {}", track.name);
+                    self.tracks.push(track);
+                }
+            }
+            PromptKind::SavePlaylist | PromptKind::SaveSelection => {
+                let entries: Vec<_> = if kind == PromptKind::SaveSelection {
+                    self.tracks
+                        .iter()
+                        .enumerate()
+                        .filter(|(index, _)| self.selected_tracks.contains(index))
+                        .map(|(_, track)| track.entry.clone())
+                        .collect()
+                } else {
+                    self.tracks
+                        .iter()
+                        .map(|track| track.entry.clone())
+                        .collect()
+                };
+                if entries.is_empty() {
+                    self.status = "Select tracks to save".to_owned();
+                    return;
+                }
+                let created = self.library.db().create_playlist(value);
+                match created {
+                    Ok(id) => {
+                        let appended = self.library.db().append_entries(id, &entries);
+                        match appended {
+                            Ok(()) => {
+                                self.reload_lists();
+                                if let Some(index) =
+                                    self.lists.iter().position(|(list_id, _)| *list_id == id)
+                                {
+                                    self.select_list(index);
+                                    self.offsets[0] = index.saturating_sub(5);
+                                }
+                                self.status = format!("Saved {} tracks to {value}", entries.len());
+                            }
+                            Err(error) => self.status = error,
+                        }
+                    }
+                    Err(error) => self.status = error,
+                }
+            }
+            PromptKind::DuplicatePlaylist => {
+                let id = self.lists.get(self.selected[0]).map_or(0, |(id, _)| *id);
+                if id <= 0 {
+                    return;
+                }
+                let result = self.library.db().duplicate_playlist(id, value);
+                match result {
+                    Ok(new_id) => {
+                        self.reload_lists();
+                        if let Some(index) = self.lists.iter().position(|(id, _)| *id == new_id) {
+                            self.select_list(index);
+                            self.offsets[0] = index.saturating_sub(5);
+                        }
+                        self.status = format!("Duplicated playlist as {value}");
+                    }
+                    Err(error) => self.status = error,
+                }
+            }
+            PromptKind::ExportPlaylist => {
+                let id = self.lists.get(self.selected[0]).map_or(0, |(id, _)| *id);
+                let entries = if id == 0 {
+                    self.library.db().starred_entries()
+                } else {
+                    self.library.db().playlist_entries(id)
+                };
+                match entries {
+                    Ok(entries) if entries.is_empty() => {
+                        self.status = "Playlist is empty".to_owned()
+                    }
+                    Ok(entries) => {
+                        let mut path = PathBuf::from(value);
+                        if !matches!(
+                            path.extension().and_then(|ext| ext.to_str()),
+                            Some("m3u" | "m3u8")
+                        ) {
+                            path.set_extension("m3u");
+                        }
+                        let count = entries.len();
+                        let entries: Vec<_> = entries.iter().map(playlist_entry).collect();
+                        match Playlist::save_portable(&path, &entries) {
+                            Ok(()) => {
+                                self.status =
+                                    format!("Exported {count} tracks to {}", path.display())
+                            }
+                            Err(error) => self.status = error,
+                        }
+                    }
+                    Err(error) => self.status = error,
+                }
+            }
+            PromptKind::Volume => match value.parse::<u8>() {
+                Ok(percent) if percent <= 100 => {
+                    self.volume = f32::from(percent) / 100.0;
+                    self.player.set_volume(self.volume);
+                }
+                _ => self.status = "Volume must be between 0 and 100".to_owned(),
+            },
+            PromptKind::AddToPlaylist => {
+                let Some((id, _)) = self
+                    .lists
+                    .iter()
+                    .find(|(id, name)| *id > 0 && name.eq_ignore_ascii_case(value))
+                else {
+                    self.status = format!("No saved playlist named {value}");
+                    return;
+                };
+                let entries: Vec<_> = if self.focus == Focus::Library {
+                    match self.items.get(self.selected[1]) {
+                        Some(TreeRow {
+                            item: Item::Track(track),
+                            ..
+                        }) => vec![track.entry.clone()],
+                        _ => Vec::new(),
+                    }
+                } else {
+                    self.selected_tracks
+                        .iter()
+                        .copied()
+                        .filter_map(|index| self.tracks.get(index).map(|track| track.entry.clone()))
+                        .collect()
+                };
+                let entries = if entries.is_empty() && self.focus != Focus::Library {
+                    self.tracks
+                        .get(self.selected[2])
+                        .map(|track| vec![track.entry.clone()])
+                        .unwrap_or_default()
+                } else {
+                    entries
+                };
+                if entries.is_empty() {
+                    self.status = "Select a track to add".to_owned();
+                    return;
+                }
+                match self.library.db().append_entries(*id, &entries) {
+                    Ok(()) => self.status = format!("Added {} track(s) to {value}", entries.len()),
+                    Err(error) => self.status = error,
+                }
+            }
+            PromptKind::EqualizerPreset => {
+                if let Some(preset) = presets()
+                    .iter()
+                    .find(|preset| preset.name.eq_ignore_ascii_case(value))
+                {
+                    self.equalizer.preset_name = preset.name.clone();
+                    self.equalizer.preamp_db = preset.preamp_db;
+                    self.equalizer.gains_db = preset.gains_db;
+                    self.equalizer.enabled = true;
+                    self.apply_equalizer();
+                } else {
+                    self.status = format!("Unknown equalizer preset: {value}");
+                }
+            }
+            PromptKind::EqualizerBandNumber => match value.parse::<usize>() {
+                Ok(number) if (1..=self.equalizer.gains_db.len()).contains(&number) => {
+                    let index = number - 1;
+                    self.begin_prompt(
+                        PromptKind::EqualizerBandGain(index),
+                        format!("{}", self.equalizer.gains_db[index]),
+                    );
+                }
+                _ => self.status = "Equalizer band must be from 1 to 10".to_owned(),
+            },
+            PromptKind::EqualizerBandGain(index) => match value.parse::<f32>() {
+                Ok(gain) if (-20.0..=20.0).contains(&gain) => {
+                    self.equalizer.gains_db[index] = gain;
+                    self.equalizer.preset_name = "Custom".to_owned();
+                    self.equalizer.enabled = true;
+                    self.apply_equalizer();
+                }
+                _ => self.status = "Equalizer gain must be between -20 and 20 dB".to_owned(),
+            },
+            PromptKind::Preamp => match value.parse::<f32>() {
+                Ok(gain) if (-20.0..=20.0).contains(&gain) => {
+                    self.equalizer.preamp_db = gain;
+                    self.apply_equalizer();
+                }
+                _ => self.status = "Preamp must be between -20 and 20 dB".to_owned(),
+            },
+            PromptKind::OutputDevice => {
+                if value.eq_ignore_ascii_case("default") {
+                    match self.player.switch_output_device(None) {
+                        Ok(()) => match AppSettings::save_output_device(None) {
+                            Ok(()) => self.status = "Using default output".to_owned(),
+                            Err(error) => self.status = error,
+                        },
+                        Err(error) => self.status = error,
+                    }
+                } else {
+                    match available_output_devices() {
+                        Ok(devices) => {
+                            if let Some(device) = devices.into_iter().find(|device| {
+                                device.name.eq_ignore_ascii_case(value) || device.id == value
+                            }) {
+                                match self.player.switch_output_device(Some(device.id.clone())) {
+                                    Ok(()) => {
+                                        let preference = OutputDevicePreference {
+                                            id: device.id,
+                                            name: device.name.clone(),
+                                        };
+                                        match AppSettings::save_output_device(Some(&preference)) {
+                                            Ok(()) => {
+                                                self.status =
+                                                    format!("Using output {}", device.name)
+                                            }
+                                            Err(error) => self.status = error,
+                                        }
+                                    }
+                                    Err(error) => self.status = error,
+                                }
+                            } else {
+                                self.status = format!("No output device named {value}");
+                            }
+                        }
+                        Err(error) => self.status = error,
+                    }
                 }
             }
         }
@@ -760,6 +2101,7 @@ impl Ui {
                 .unwrap_or(0);
             let next = current.saturating_add_signed(delta).min(visible.len() - 1);
             self.selected[2] = visible[next];
+            self.select_track(visible[next], false, false);
             if next < self.offsets[2] {
                 self.offsets[2] = next;
             }
@@ -778,6 +2120,9 @@ impl Ui {
         }
         let current = self.selected[pane];
         self.selected[pane] = current.saturating_add_signed(delta).min(len - 1);
+        if pane == 2 {
+            self.select_track(self.selected[2], false, false);
+        }
         if self.selected[pane] < self.offsets[pane] {
             self.offsets[pane] = self.selected[pane];
         }
@@ -794,10 +2139,16 @@ impl Ui {
             .iter()
             .enumerate()
             .filter_map(|(index, track)| {
-                self.title_for(track)
-                    .to_lowercase()
-                    .contains(&self.playlist_query)
-                    .then_some(index)
+                let metadata = self.metadata_for(track);
+                let matches = [
+                    self.title_for(track),
+                    metadata.map_or(String::new(), |meta| meta.artist.clone()),
+                    metadata.map_or(String::new(), |meta| meta.album.clone()),
+                    track.name.clone(),
+                ]
+                .iter()
+                .any(|value| value.to_lowercase().contains(&self.playlist_query));
+                matches.then_some(index)
             })
             .collect()
     }
@@ -811,30 +2162,104 @@ impl Ui {
     }
 
     fn key(&mut self, key: Key, size: (usize, usize)) -> bool {
-        if let Some((kind, mut value)) = self.prompt.take() {
+        if self.modal.is_some() {
+            let max = self
+                .modal
+                .as_ref()
+                .map(|text| {
+                    modal_lines(text, size.0.saturating_sub(12))
+                        .len()
+                        .saturating_sub(size.1.saturating_sub(8))
+                })
+                .unwrap_or(0);
             match key {
-                Key::Esc => self.status.clear(),
-                Key::Enter => self.finish_prompt(kind, value),
+                Key::Esc | Key::Enter | Key::Char(' ') => {
+                    self.modal = None;
+                    self.visualizer_open = false;
+                }
+                Key::Up | Key::Char('k') => self.modal_scroll = self.modal_scroll.saturating_sub(1),
+                Key::Down | Key::Char('j') => self.modal_scroll = (self.modal_scroll + 1).min(max),
+                Key::PageUp => {
+                    self.modal_scroll = self.modal_scroll.saturating_sub(size.1.saturating_sub(8))
+                }
+                Key::PageDown => {
+                    self.modal_scroll = (self.modal_scroll + size.1.saturating_sub(8)).min(max)
+                }
+                Key::Home => self.modal_scroll = 0,
+                Key::End => self.modal_scroll = max,
+                _ => {}
+            }
+            return true;
+        }
+        if let Some((kind, mut value)) = self.prompt.take() {
+            let mut edited = false;
+            self.input_cursor = self.input_cursor.min(value.chars().count());
+            match key {
+                Key::Esc => {
+                    if kind == PromptKind::Search {
+                        self.search_due = None;
+                        self.browse(None);
+                    } else if kind == PromptKind::PlaylistSearch {
+                        self.playlist_query.clear();
+                    }
+                    self.status.clear();
+                    return true;
+                }
+                Key::Enter => {
+                    self.finish_prompt(kind, value);
+                    return true;
+                }
+                Key::CtrlC => return false,
+                Key::Left => self.input_cursor = self.input_cursor.saturating_sub(1),
+                Key::Right => {
+                    self.input_cursor = (self.input_cursor + 1).min(value.chars().count())
+                }
+                Key::Home => self.input_cursor = 0,
+                Key::End => self.input_cursor = value.chars().count(),
                 Key::Backspace => {
-                    value.pop();
-                    self.prompt = Some((kind, value));
+                    if self.input_cursor > 0 {
+                        self.input_cursor -= 1;
+                        value.remove(byte_offset(&value, self.input_cursor));
+                        edited = true;
+                    }
+                }
+                Key::Delete => {
+                    if self.input_cursor < value.chars().count() {
+                        value.remove(byte_offset(&value, self.input_cursor));
+                        edited = true;
+                    }
                 }
                 Key::Char(c) if !c.is_control() && value.len() < 1024 => {
-                    value.push(c);
-                    self.prompt = Some((kind, value));
+                    value.insert(byte_offset(&value, self.input_cursor), c);
+                    self.input_cursor += 1;
+                    edited = true;
                 }
-                _ => self.prompt = Some((kind, value)),
+                _ => {}
             }
+            if edited {
+                self.update_search_draft(kind, &value);
+            }
+            self.prompt = Some((kind, value));
             return true;
         }
         if self.menu_open {
             match key {
-                Key::Esc | Key::Char('m') => self.menu_open = false,
-                Key::Up | Key::Char('k') => {
-                    self.menu_selected = self.menu_selected.saturating_sub(1)
+                Key::Esc | Key::Left => {
+                    if self.menu_page == MenuPage::Main
+                        || matches!(
+                            self.menu_page,
+                            MenuPage::Tree | MenuPage::Tracks | MenuPage::Saved | MenuPage::Columns
+                        )
+                    {
+                        self.menu_open = false;
+                    } else {
+                        self.open_submenu(MenuPage::Main);
+                    }
                 }
-                Key::Down | Key::Char('j') => self.menu_selected = (self.menu_selected + 1).min(5),
-                Key::Enter => self.activate_menu(self.menu_selected),
+                Key::Char('m') => self.menu_open = false,
+                Key::Up | Key::Char('k') => self.move_menu_selection(-1, size.1),
+                Key::Down | Key::Char('j') => self.move_menu_selection(1, size.1),
+                Key::Enter | Key::Right => self.activate_menu(self.menu_selected),
                 _ => {}
             }
             return true;
@@ -850,12 +2275,12 @@ impl Ui {
             Key::Char('q') | Key::CtrlC => return false,
             Key::Esc if self.search.is_some() => self.browse(None),
             Key::Esc if !self.playlist_query.is_empty() => self.playlist_query.clear(),
-            Key::Char('/') => self.prompt = Some((PromptKind::Search, self.search_query.clone())),
+            Key::Char('/') => self.begin_prompt(PromptKind::Search, self.search_query.clone()),
             Key::Char('F') => {
-                self.prompt = Some((PromptKind::PlaylistSearch, self.playlist_query.clone()))
+                self.begin_prompt(PromptKind::PlaylistSearch, self.playlist_query.clone())
             }
             Key::Char('c') => self.show_queue(),
-            Key::Char('m') => self.menu_open = true,
+            Key::Char('m') => self.open_submenu(MenuPage::Main),
             Key::Char('t') => {
                 self.sidebar_visible = !self.sidebar_visible;
                 if !self.sidebar_visible {
@@ -878,38 +2303,65 @@ impl Ui {
             }
             Key::Up | Key::Char('k') => self.move_selection(-1, page),
             Key::Down | Key::Char('j') => self.move_selection(1, page),
+            Key::ShiftUp | Key::ShiftDown if self.focus == Focus::Tracks => {
+                let anchor = self.selection_anchor.unwrap_or(self.selected[2]);
+                self.move_selection(if key == Key::ShiftUp { -1 } else { 1 }, page);
+                self.selection_anchor = Some(anchor);
+                self.select_track(self.selected[2], true, false);
+            }
+            Key::CtrlUp | Key::CtrlDown if self.focus == Focus::Tracks => {
+                let from = self.selected[2];
+                let to = from
+                    .saturating_add_signed(if key == Key::CtrlUp { -1 } else { 1 })
+                    .min(self.tracks.len().saturating_sub(1));
+                self.move_track(from, to);
+            }
+            Key::CtrlA if self.focus == Focus::Tracks => {
+                self.selected_tracks = self.visible_tracks().into_iter().collect();
+                self.status = format!("Selected {} tracks", self.selected_tracks.len());
+            }
             Key::PageUp => self.move_selection(-(page as isize), page),
             Key::PageDown => self.move_selection(page as isize, page),
             Key::Home => self.move_selection(-(isize::MAX / 2), page),
             Key::End => self.move_selection(isize::MAX / 2, page),
             Key::Left | Key::Backspace if self.focus == Focus::Library => self.up_directory(),
             Key::Right | Key::Enter if self.focus == Focus::Library => self.open_selected(),
-            Key::Enter if self.focus == Focus::Playlists => self.select_list(self.selected[0]),
+            Key::Enter if self.focus == Focus::Playlists => self.enqueue_list(self.selected[0]),
             Key::Enter if self.focus == Focus::Tracks => self.play_selected(),
             Key::Char('a') if self.focus == Focus::Library => self.add_selected(false),
             Key::Char('n') if self.focus == Focus::Playlists => {
-                self.prompt = Some((PromptKind::NewPlaylist, String::new()))
+                self.begin_prompt(PromptKind::NewPlaylist, String::new())
             }
-            Key::Char('r') if self.focus == Focus::Playlists && self.active_list > 0 => {
+            Key::Char('r')
+                if self.focus == Focus::Playlists
+                    && self
+                        .lists
+                        .get(self.selected[0])
+                        .is_some_and(|(id, _)| *id > 0) =>
+            {
                 let name = self
                     .lists
                     .get(self.selected[0])
                     .map(|(_, name)| name.clone())
                     .unwrap_or_default();
-                self.prompt = Some((PromptKind::RenamePlaylist, name));
+                self.begin_prompt(PromptKind::RenamePlaylist, name);
             }
-            Key::Delete if self.focus == Focus::Playlists && self.active_list > 0 => {
-                self.prompt = Some((PromptKind::DeletePlaylist, String::new()));
+            Key::Delete
+                if self.focus == Focus::Playlists
+                    && self
+                        .lists
+                        .get(self.selected[0])
+                        .is_some_and(|(id, _)| *id > 0) =>
+            {
+                self.begin_prompt(PromptKind::DeletePlaylist, String::new());
             }
-            Key::Char('o') => {
-                self.prompt = Some((
-                    PromptKind::MusicFolder,
-                    self.library
-                        .root()
-                        .map(|p| p.to_string_lossy().into_owned())
-                        .unwrap_or_default(),
-                ))
-            }
+            Key::Char('o') => self.begin_prompt(
+                PromptKind::MusicFolder,
+                self.library
+                    .root()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+            ),
             Key::Delete if self.focus == Focus::Tracks => self.remove_selected(),
             Key::Char('f') => self.toggle_star(),
             Key::Char(' ') => self.play_pause(),
@@ -920,6 +2372,9 @@ impl Ui {
             Key::Char('>') => self.next(false),
             Key::Char('<') => self.previous(),
             Key::Char('R') => self.cycle_repeat(),
+            Key::Char('S') => self.cycle_shuffle(),
+            Key::Char('Q') if self.focus == Focus::Tracks => self.toggle_selected_queue(),
+            Key::Char('X') if self.focus == Focus::Tracks => self.toggle_selected_stop_after(),
             Key::Char('+') | Key::Char('=') => {
                 self.volume = (self.volume + 0.05).min(1.0);
                 self.player.set_volume(self.volume);
@@ -947,11 +2402,71 @@ impl Ui {
 
     fn mouse(&mut self, button: u16, x: usize, y: usize, release: bool, size: (usize, usize)) {
         if release {
+            self.split_drag = false;
+            self.column_drag = None;
+            self.volume_drag = false;
+            self.track_drag = None;
             return;
         }
         let layout = self.layout(size);
+        if self.modal.is_some() {
+            if (button & 0b1100_0000) == 64 {
+                let max = self
+                    .modal
+                    .as_ref()
+                    .map(|text| {
+                        modal_lines(text, size.0.saturating_sub(12))
+                            .len()
+                            .saturating_sub(size.1.saturating_sub(8))
+                    })
+                    .unwrap_or(0);
+                self.modal_scroll = self
+                    .modal_scroll
+                    .saturating_add_signed(if button & 1 == 0 { -3 } else { 3 })
+                    .min(max);
+            } else if button & 32 == 0 {
+                self.modal = None;
+                self.visualizer_open = false;
+            }
+            return;
+        }
+        if self.split_drag && button & 32 != 0 {
+            self.sidebar_width = Some(x.clamp(18, size.0.saturating_sub(30).max(18)));
+            return;
+        }
+        if let Some(column) = self.column_drag
+            && button & 32 != 0
+        {
+            let right_width = size.0.saturating_sub(layout.first + 1);
+            let (number, title, _, _) = self.column_widths(right_width);
+            let relative = x.saturating_sub(layout.first + 1);
+            if column == 1 {
+                self.title_width_hint = Some(relative.saturating_sub(number));
+            } else {
+                self.artist_width_hint = Some(relative.saturating_sub(number + title));
+            }
+            return;
+        }
+        if self.volume_drag && button & 32 != 0 {
+            self.set_volume_from_bar(x, size);
+            return;
+        }
+        if let Some(from) = self.track_drag
+            && button & 32 != 0
+        {
+            if x >= layout.first && y >= 2 && y < layout.footer_top {
+                let visible = self.visible_tracks();
+                if let Some(&to) = visible.get(self.offsets[2] + y - 2) {
+                    self.move_track(from, to);
+                    self.track_drag = Some(to);
+                }
+            }
+            return;
+        }
         if (button & 0b1100_0000) == 64 {
-            self.focus = if layout.show_sidebar && x < layout.first {
+            self.focus = if !layout.show_sidebar {
+                self.focus
+            } else if x < layout.first {
                 if y >= layout.lists_header {
                     Focus::Playlists
                 } else {
@@ -971,13 +2486,99 @@ impl Ui {
         if button & 32 != 0 {
             return;
         }
+        if let Some((kind, value)) = self.prompt.as_ref() {
+            if matches!(kind, PromptKind::Search | PromptKind::PlaylistSearch) {
+                let search_x = (size.0 / 2).saturating_sub(17).max(14);
+                let search_width = size.0.saturating_sub(search_x + 7).min(36);
+                let (row, col, width) = if *kind == PromptKind::Search && layout.show_sidebar {
+                    (3, 0, layout.first)
+                } else {
+                    (0, search_x - 1, search_width)
+                };
+                if y == row && (col..col + width).contains(&x) {
+                    self.input_cursor = (x.saturating_sub(col + 4)).min(value.chars().count());
+                    return;
+                }
+                let (kind, value) = self.prompt.take().unwrap();
+                self.finish_prompt(kind, value);
+            }
+        }
+        if button & 3 == 2 {
+            if layout.show_sidebar
+                && x < layout.first
+                && y >= layout.tree_top
+                && y <= layout.tree_bottom
+            {
+                self.focus = Focus::Library;
+                let index = self.offsets[1] + y - layout.tree_top;
+                if index < self.items.len() {
+                    self.selected[1] = index;
+                    self.open_context(MenuPage::Tree, x, y, size);
+                }
+            } else if layout.show_sidebar
+                && x < layout.first
+                && y >= layout.list_top
+                && y < layout.footer_top
+            {
+                self.focus = Focus::Playlists;
+                let index = self.offsets[0] + y - layout.list_top;
+                if index < self.lists.len() {
+                    self.select_list(index);
+                    self.open_context(MenuPage::Saved, x, y, size);
+                }
+            } else if !layout.show_sidebar
+                && self.focus == Focus::Library
+                && y >= 2
+                && y < layout.footer_top
+            {
+                let index = self.offsets[1] + y - 2;
+                if index < self.items.len() {
+                    self.selected[1] = index;
+                    self.open_context(MenuPage::Tree, x, y, size);
+                }
+            } else if !layout.show_sidebar
+                && self.focus == Focus::Playlists
+                && y >= 2
+                && y < layout.footer_top
+            {
+                let index = self.offsets[0] + y - 2;
+                if index < self.lists.len() {
+                    self.select_list(index);
+                    self.open_context(MenuPage::Saved, x, y, size);
+                }
+            } else if x >= layout.first && y == 1 {
+                self.open_context(MenuPage::Columns, x, y, size);
+            } else if x >= layout.first && y >= 2 && y < layout.footer_top {
+                self.focus = Focus::Tracks;
+                if let Some(&index) = self.visible_tracks().get(self.offsets[2] + y - 2) {
+                    if !self.selected_tracks.contains(&index) {
+                        self.select_track(index, false, false);
+                    }
+                    self.open_context(MenuPage::Tracks, x, y, size);
+                }
+            }
+            return;
+        }
         if button & 3 != 0 {
             return;
         }
+        if layout.show_sidebar && x == layout.first && y > 0 && y < layout.footer_top {
+            self.split_drag = true;
+            return;
+        }
         if self.menu_open && y > 0 {
-            if (4..28).contains(&x) && (1..=MENU_ITEMS.len()).contains(&y) {
-                self.menu_selected = y - 1;
-                self.activate_menu(self.menu_selected);
+            let menu_width = size.0.saturating_sub(self.menu_x).min(33);
+            if (self.menu_x..self.menu_x + menu_width).contains(&x)
+                && y >= self.menu_y + 1
+                && y < self.menu_y + 1 + self.menu_page.labels().len().min(size.1.saturating_sub(4))
+            {
+                let index = self.menu_offset + y - self.menu_y - 1;
+                if index < self.menu_page.labels().len()
+                    && !self.menu_page.labels()[index].is_empty()
+                {
+                    self.menu_selected = index;
+                    self.activate_menu(index);
+                }
             } else {
                 self.menu_open = false;
             }
@@ -985,15 +2586,19 @@ impl Ui {
         }
         if y == 0 {
             if x < 4 {
-                self.prompt = Some((
+                self.begin_prompt(
                     PromptKind::MusicFolder,
                     self.library
                         .root()
                         .map(|p| p.to_string_lossy().into_owned())
                         .unwrap_or_default(),
-                ));
+                );
             } else if x < 8 {
-                self.menu_open = !self.menu_open;
+                if self.menu_open {
+                    self.menu_open = false;
+                } else {
+                    self.open_submenu(MenuPage::Main);
+                }
             } else if x < 12 {
                 self.sidebar_visible = !self.sidebar_visible;
                 if !self.sidebar_visible {
@@ -1002,16 +2607,29 @@ impl Ui {
             } else if x >= size.0.saturating_sub(4) {
                 self.exit_requested = true;
             } else {
-                self.prompt = Some((PromptKind::PlaylistSearch, self.playlist_query.clone()));
+                if !layout.show_sidebar && self.focus == Focus::Library {
+                    self.begin_prompt(PromptKind::Search, self.search_query.clone());
+                } else {
+                    self.begin_prompt(PromptKind::PlaylistSearch, self.playlist_query.clone());
+                }
             }
             return;
         }
         if y >= layout.footer_top {
+            let (volume_row, icon_x, bar_x, bar_width) = volume_geometry(size.0, layout.footer_top);
+            if y == volume_row && x >= icon_x {
+                if x < bar_x {
+                    self.toggle_mute();
+                } else if x < bar_x + bar_width {
+                    self.set_volume_from_bar(x, size);
+                    self.volume_drag = true;
+                }
+                return;
+            }
             let start = size.0.saturating_div(2).saturating_sub(11);
             if y == layout.footer_top {
-                if x >= size.0.saturating_sub(11) {
-                    self.volume = ((x - size.0.saturating_sub(11)) as f32 / 10.0).clamp(0.0, 1.0);
-                    self.player.set_volume(self.volume);
+                if (start.saturating_sub(5)..start).contains(&x) {
+                    self.cycle_shuffle();
                     return;
                 }
                 match x.saturating_sub(start) / 5 {
@@ -1023,6 +2641,7 @@ impl Ui {
                     }
                     3 if x >= start => self.next(false),
                     4 if x >= start => self.cycle_repeat(),
+                    5 if x >= start => self.toggle_radio(),
                     _ => {}
                 }
             } else if y == layout.footer_top + 1 {
@@ -1043,29 +2662,36 @@ impl Ui {
             return;
         }
         if layout.show_sidebar && x < layout.first {
-            if y == 2 {
+            if y == 1 {
+                self.files_expanded = !self.files_expanded;
+                return;
+            }
+            if y == 2 && self.files_expanded {
                 if x < 4 {
-                    self.prompt = Some((
+                    self.begin_prompt(
                         PromptKind::MusicFolder,
                         self.library
                             .root()
                             .map(|p| p.to_string_lossy().into_owned())
                             .unwrap_or_default(),
-                    ));
+                    );
                 } else if x < 8 {
                     self.browse(None);
                 }
                 return;
             }
-            if y == 3 {
-                self.prompt = Some((PromptKind::Search, self.search_query.clone()));
+            if y == 3 && self.files_expanded {
+                self.begin_prompt(PromptKind::Search, self.search_query.clone());
                 return;
             }
             if y == layout.lists_header {
                 if x >= layout.first.saturating_sub(4) {
-                    self.prompt = Some((PromptKind::NewPlaylist, String::new()));
+                    self.begin_prompt(PromptKind::NewPlaylist, String::new());
                 } else {
-                    self.focus = Focus::Playlists;
+                    self.playlists_expanded = !self.playlists_expanded;
+                    if self.playlists_expanded {
+                        self.focus = Focus::Playlists;
+                    }
                 }
                 return;
             }
@@ -1073,8 +2699,18 @@ impl Ui {
                 self.focus = Focus::Playlists;
                 let index = self.offsets[0] + y - layout.list_top;
                 if index < self.lists.len() {
+                    let now = Instant::now();
+                    let double = self.last_click.is_some_and(|(when, pane, row)| {
+                        pane == 0
+                            && row == index
+                            && now.duration_since(when) < Duration::from_millis(450)
+                    });
                     self.selected[0] = index;
                     self.select_list(index);
+                    self.last_click = if double { None } else { Some((now, 0, index)) };
+                    if double {
+                        self.enqueue_list(index);
+                    }
                 }
                 return;
             }
@@ -1104,29 +2740,117 @@ impl Ui {
                 });
                 self.last_click = Some((now, 1, index));
                 if double {
-                    self.open_selected();
+                    match self.items.get(index).map(|row| row.item.clone()) {
+                        Some(Item::Directory(_, path)) => self.enqueue_folder(path),
+                        Some(Item::Track(_)) => self.add_selected(true),
+                        None => {}
+                    }
                     self.last_click = None;
+                } else if let Some(TreeRow {
+                    item: Item::Directory(_, path),
+                    ..
+                }) = self.items.get(index)
+                {
+                    self.toggle_directory(path.clone());
                 }
                 return;
             }
         }
         if !layout.show_sidebar && self.focus == Focus::Library {
-            let index = self.offsets[1] + y.saturating_sub(2);
-            if index < self.items.len() {
-                self.selected[1] = index;
-                self.open_selected();
+            if y >= 2 {
+                let index = self.offsets[1] + y - 2;
+                if index < self.items.len() {
+                    self.selected[1] = index;
+                    if x < 4 {
+                        if let Some(TreeRow {
+                            item: Item::Directory(_, path),
+                            ..
+                        }) = self.items.get(index)
+                        {
+                            self.toggle_directory(path.clone());
+                            self.last_click = None;
+                            return;
+                        }
+                    }
+                    let now = Instant::now();
+                    let double = self.last_click.is_some_and(|(when, pane, row)| {
+                        pane == 1
+                            && row == index
+                            && now.duration_since(when) < Duration::from_millis(450)
+                    });
+                    self.last_click = if double { None } else { Some((now, 1, index)) };
+                    if double {
+                        match self.items.get(index).map(|row| row.item.clone()) {
+                            Some(Item::Directory(_, path)) => self.enqueue_folder(path),
+                            Some(Item::Track(_)) => self.add_selected(true),
+                            None => {}
+                        }
+                    } else if let Some(TreeRow {
+                        item: Item::Directory(_, path),
+                        ..
+                    }) = self.items.get(index)
+                    {
+                        self.toggle_directory(path.clone());
+                    }
+                }
             }
             return;
         }
         if !layout.show_sidebar && self.focus == Focus::Playlists {
             if y == 1 {
-                self.prompt = Some((PromptKind::NewPlaylist, String::new()));
+                self.begin_prompt(PromptKind::NewPlaylist, String::new());
             } else if y >= 2 {
                 let index = self.offsets[0] + y - 2;
                 if index < self.lists.len() {
+                    let now = Instant::now();
+                    let double = self.last_click.is_some_and(|(when, pane, row)| {
+                        pane == 0
+                            && row == index
+                            && now.duration_since(when) < Duration::from_millis(450)
+                    });
                     self.selected[0] = index;
                     self.select_list(index);
+                    self.last_click = if double { None } else { Some((now, 0, index)) };
+                    if double {
+                        self.enqueue_list(index);
+                    }
                 }
+            }
+            return;
+        }
+        if y == 1 && x >= layout.first {
+            let right_width = size.0.saturating_sub(layout.first + 1);
+            let (number_width, title_width, artist_width, _) = self.column_widths(right_width);
+            let relative = x.saturating_sub(layout.first + 1);
+            let boundary = number_width + title_width;
+            let artist_boundary = boundary + artist_width;
+            let dragging_title = (boundary.saturating_sub(1)..=boundary).contains(&relative)
+                && (self.show_artist || self.show_album);
+            let dragging_artist = self.show_artist
+                && self.show_album
+                && (artist_boundary.saturating_sub(1)..=artist_boundary).contains(&relative);
+            if dragging_title || dragging_artist {
+                let column = if dragging_artist { 2 } else { 1 };
+                let now = Instant::now();
+                let double = self.last_click.is_some_and(|(when, pane, previous)| {
+                    pane == 3
+                        && previous == column
+                        && now.duration_since(when) < Duration::from_millis(450)
+                });
+                self.last_click = if double { None } else { Some((now, 3, column)) };
+                if double {
+                    self.auto_fit_columns();
+                } else {
+                    self.column_drag = Some(column);
+                }
+                return;
+            }
+            if relative >= number_width && relative < number_width + title_width {
+                self.sort_tracks(0);
+            } else if artist_width > 0 && relative < number_width + title_width + artist_width {
+                self.sort_tracks(1);
+            } else if self.show_album {
+                self.sort_tracks(2);
             }
             return;
         }
@@ -1136,7 +2860,8 @@ impl Ui {
             let Some(&index) = visible.get(self.offsets[2] + y - 2) else {
                 return;
             };
-            self.selected[2] = index;
+            self.select_track(index, button & 4 != 0, button & 16 != 0);
+            self.track_drag = (button & 20 == 0).then_some(index);
             let now = Instant::now();
             let double = self.last_click.is_some_and(|(when, pane, row)| {
                 pane == 2 && row == index && now.duration_since(when) < Duration::from_millis(450)
@@ -1217,7 +2942,38 @@ impl Ui {
         paint(&mut screen, 1, 10, "▤", 2, Surface::Toolbar, false);
         let search_x = (width / 2).saturating_sub(17).max(14);
         let search_width = width.saturating_sub(search_x + 7).min(36);
-        let playlist_search = if self.playlist_query.is_empty() {
+        let playlist_draft = self
+            .prompt
+            .as_ref()
+            .filter(|(kind, _)| *kind == PromptKind::PlaylistSearch)
+            .map(|(_, value)| value.as_str());
+        let file_draft = self
+            .prompt
+            .as_ref()
+            .filter(|(kind, _)| *kind == PromptKind::Search)
+            .map(|(_, value)| value.as_str());
+        let playlist_search = if let Some(draft) = playlist_draft {
+            format!(
+                " ⌕  {}",
+                input_window(draft, self.input_cursor, search_width.saturating_sub(5)).0
+            )
+        } else if !layout.show_sidebar && file_draft.is_some() {
+            format!(
+                " ⌕  {}",
+                input_window(
+                    file_draft.unwrap_or_default(),
+                    self.input_cursor,
+                    search_width.saturating_sub(5)
+                )
+                .0
+            )
+        } else if !layout.show_sidebar && self.focus == Focus::Library {
+            if self.search_query.is_empty() {
+                " ⌕  Search files".to_owned()
+            } else {
+                format!(" ⌕  {}", self.search_query)
+            }
+        } else if self.playlist_query.is_empty() {
             " ⌕  Search playlist".to_owned()
         } else {
             format!(" ⌕  {}", self.playlist_query)
@@ -1228,7 +2984,11 @@ impl Ui {
             search_x,
             &playlist_search,
             search_width,
-            Surface::Main,
+            if playlist_draft.is_some() || (!layout.show_sidebar && file_draft.is_some()) {
+                Surface::Input
+            } else {
+                Surface::Main
+            },
             false,
         );
         paint(
@@ -1250,7 +3010,11 @@ impl Ui {
                 &mut screen,
                 2,
                 1,
-                " ▾ Files",
+                if self.files_expanded {
+                    " ▾ Files"
+                } else {
+                    " ▸ Files"
+                },
                 sidebar,
                 Surface::Toolbar,
                 true,
@@ -1260,29 +3024,42 @@ impl Ui {
                 .as_ref()
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "Choose a music folder".to_owned());
-            paint(
-                &mut screen,
-                3,
-                1,
-                &format!(" ▱  ↻  {location}"),
-                sidebar,
-                Surface::SidebarAlt,
-                true,
-            );
-            let tree_search = if self.search.is_some() {
+            if self.files_expanded {
+                paint(
+                    &mut screen,
+                    3,
+                    1,
+                    &format!(" ▱  ↻  {location}"),
+                    sidebar,
+                    Surface::SidebarAlt,
+                    true,
+                );
+            }
+            let tree_search = if let Some(draft) = file_draft {
+                format!(
+                    " ⌕  {}",
+                    input_window(draft, self.input_cursor, sidebar.saturating_sub(5)).0
+                )
+            } else if self.search.is_some() {
                 format!(" ⌕  {}", self.search_query)
             } else {
                 " ⌕  Search files and folders…".to_owned()
             };
-            paint(
-                &mut screen,
-                4,
-                1,
-                &tree_search,
-                sidebar,
-                Surface::Main,
-                false,
-            );
+            if self.files_expanded {
+                paint(
+                    &mut screen,
+                    4,
+                    1,
+                    &tree_search,
+                    sidebar,
+                    if file_draft.is_some() {
+                        Surface::Input
+                    } else {
+                        Surface::Main
+                    },
+                    false,
+                );
+            }
             for y in layout.tree_top..=layout.tree_bottom {
                 let index = self.offsets[1] + y - layout.tree_top;
                 let surface = if index == self.selected[1] && self.focus == Focus::Library {
@@ -1318,7 +3095,11 @@ impl Ui {
                 &mut screen,
                 layout.lists_header + 1,
                 1,
-                " ▾ Playlists",
+                if self.playlists_expanded {
+                    " ▾ Playlists"
+                } else {
+                    " ▸ Playlists"
+                },
                 sidebar,
                 Surface::Toolbar,
                 true,
@@ -1366,6 +3147,12 @@ impl Ui {
         let right_width = width.saturating_sub(layout.first + 1);
         let show_tree = !layout.show_sidebar && self.focus == Focus::Library;
         let show_lists = !layout.show_sidebar && self.focus == Focus::Playlists;
+        let queue_positions: HashMap<usize, usize> = self
+            .queue
+            .iter()
+            .enumerate()
+            .map(|(position, &index)| (index, position + 1))
+            .collect();
         if show_lists {
             paint(
                 &mut screen,
@@ -1422,12 +3209,8 @@ impl Ui {
                 paint(&mut screen, y + 1, 1, &label, width, surface, false);
             }
         } else {
-            let number_width = 5.min(right_width / 5);
-            let title_width = (right_width * 45 / 100)
-                .max(8)
-                .min(right_width.saturating_sub(number_width));
-            let artist_width = (right_width.saturating_sub(number_width + title_width)) / 2;
-            let album_width = right_width.saturating_sub(number_width + title_width + artist_width);
+            let (number_width, title_width, artist_width, album_width) =
+                self.column_widths(right_width);
             paint(
                 &mut screen,
                 2,
@@ -1479,7 +3262,9 @@ impl Ui {
             }
             for y in 2..layout.footer_top {
                 let index = visible_tracks.get(self.offsets[2] + y - 2).copied();
-                let surface = if index == Some(self.selected[2]) && self.focus == Focus::Tracks {
+                let surface = if index.is_some_and(|index| self.selected_tracks.contains(&index))
+                    || index == Some(self.selected[2]) && self.focus == Focus::Tracks
+                {
                     Surface::Selected
                 } else if y % 2 == 1 {
                     Surface::MainAlt
@@ -1491,8 +3276,17 @@ impl Ui {
                     index.and_then(|index| self.tracks.get(index).map(|track| (index, track)))
                 {
                     let number = format!(" {:>3}", index + 1);
+                    let queue_badge = queue_positions
+                        .get(&index)
+                        .map(|position| format!("⏭{position} "))
+                        .unwrap_or_default();
+                    let stop_badge = if self.stop_after_rows.contains(&index) {
+                        "■ "
+                    } else {
+                        ""
+                    };
                     let title = format!(
-                        "{} {}",
+                        "{} {queue_badge}{stop_badge}{}",
                         if self.playing == Some(index) {
                             "▶"
                         } else {
@@ -1585,7 +3379,11 @@ impl Ui {
                     .join(" • ")
             })
             .filter(|text| !text.is_empty())
-            .unwrap_or_else(|| "Ready to play".to_owned());
+            .unwrap_or_else(|| match self.player.state() {
+                PlaybackState::Playing => "Playing".to_owned(),
+                PlaybackState::Paused => "Paused".to_owned(),
+                PlaybackState::Stopped => "Ready to play".to_owned(),
+            });
         paint(
             &mut screen,
             layout.footer_top + 2,
@@ -1596,6 +3394,23 @@ impl Ui {
             false,
         );
         let control_start = width.saturating_div(2).saturating_sub(11);
+        paint(
+            &mut screen,
+            layout.footer_top + 1,
+            control_start.saturating_sub(5),
+            match self.shuffle_mode {
+                ShuffleMode::Off => "⇄",
+                ShuffleMode::Albums => "⇄A",
+                ShuffleMode::All => "⇄•",
+            },
+            3,
+            if self.shuffle_mode == ShuffleMode::Off {
+                Surface::Muted
+            } else {
+                Surface::Accent
+            },
+            true,
+        );
         let play = if self.player.state() == PlaybackState::Playing {
             "Ⅱ"
         } else {
@@ -1612,6 +3427,19 @@ impl Ui {
                 true,
             );
         }
+        paint(
+            &mut screen,
+            layout.footer_top + 1,
+            control_start + 25,
+            "⚄",
+            2,
+            if self.radio_enabled {
+                Surface::Accent
+            } else {
+                Surface::Muted
+            },
+            true,
+        );
         let progress = self.player.position();
         let clock = format!(
             "{:01}:{:02}",
@@ -1644,24 +3472,61 @@ impl Ui {
             Surface::Toolbar,
             false,
         );
+        let (volume_row, icon_x, bar_x, volume_width) = volume_geometry(width, layout.footer_top);
         paint(
             &mut screen,
-            layout.footer_top + 1,
-            width.saturating_sub(10),
-            &format!("♪ {:>3}%", (self.volume * 100.0) as u8),
-            10,
+            volume_row + 1,
+            icon_x + 1,
+            if self.volume <= 0.0 { "×" } else { "♪" },
+            2,
+            Surface::Toolbar,
+            false,
+        );
+        paint(
+            &mut screen,
+            volume_row + 1,
+            bar_x + 1,
+            &"─".repeat(volume_width),
+            volume_width,
+            Surface::Muted,
+            false,
+        );
+        let thumb = (self.volume * (volume_width - 1) as f32).round() as usize;
+        if thumb > 0 {
+            paint(
+                &mut screen,
+                volume_row + 1,
+                bar_x + 1,
+                &"━".repeat(thumb),
+                thumb,
+                Surface::Accent,
+                false,
+            );
+        }
+        paint(
+            &mut screen,
+            volume_row + 1,
+            bar_x + thumb + 1,
+            "●",
+            1,
+            Surface::Accent,
+            false,
+        );
+        paint(
+            &mut screen,
+            volume_row + 1,
+            bar_x + volume_width + 2,
+            &format!("{:>3}%", (self.volume * 100.0).round() as u8),
+            4,
             Surface::Toolbar,
             false,
         );
         let message = self.prompt.as_ref().map(|(kind, value)| {
-            format!("{}: {value}▏  Enter save · Esc cancel", match kind {
-                PromptKind::MusicFolder => "Music folder",
-                PromptKind::NewPlaylist => "New playlist",
-                PromptKind::RenamePlaylist => "Rename playlist",
-                PromptKind::DeletePlaylist => "Type yes to delete playlist",
-                PromptKind::Search => "Search files",
-                PromptKind::PlaylistSearch => "Search playlist",
-            })
+            if matches!(kind, PromptKind::Search | PromptKind::PlaylistSearch) {
+                return "Search updates as you type · Enter finish · Esc clear".to_owned();
+            }
+            let _ = value;
+            "Enter confirm · Esc cancel · ←/→ move caret".to_owned()
         }).unwrap_or_else(|| {
             if self.status.is_empty() {
                 "Tab pane · Enter open/play · Space pause · m menu · t tree · / files · F playlist · Del remove".to_owned()
@@ -1677,13 +3542,40 @@ impl Ui {
             false,
         );
         if self.menu_open {
-            for (index, label) in MENU_ITEMS.iter().enumerate() {
+            let labels = self.menu_page.labels();
+            let page = labels.len().min(height.saturating_sub(4));
+            let menu_width = width.saturating_sub(self.menu_x).min(33);
+            paint(
+                &mut screen,
+                self.menu_y + 1,
+                self.menu_x + 1,
+                &format!("╭─ {} ", self.menu_page.title()),
+                menu_width,
+                Surface::Header,
+                true,
+            );
+            paint(
+                &mut screen,
+                self.menu_y + 1,
+                self.menu_x + menu_width,
+                "╮",
+                1,
+                Surface::Header,
+                false,
+            );
+            for (row, index) in (self.menu_offset..labels.len()).take(page).enumerate() {
+                let label = labels[index];
+                let shown = if label.is_empty() {
+                    "│ ─────────────────────────────".to_owned()
+                } else {
+                    format!("│ {label}")
+                };
                 paint(
                     &mut screen,
-                    index + 2,
-                    5,
-                    label,
-                    24,
+                    self.menu_y + row + 2,
+                    self.menu_x + 1,
+                    &shown,
+                    menu_width,
                     if index == self.menu_selected {
                         Surface::Selected
                     } else {
@@ -1691,6 +3583,192 @@ impl Ui {
                     },
                     index == self.menu_selected,
                 );
+                paint(
+                    &mut screen,
+                    self.menu_y + row + 2,
+                    self.menu_x + menu_width,
+                    "│",
+                    1,
+                    if index == self.menu_selected {
+                        Surface::Selected
+                    } else {
+                        Surface::Toolbar
+                    },
+                    false,
+                );
+            }
+            paint(
+                &mut screen,
+                self.menu_y + page + 2,
+                self.menu_x + 1,
+                &format!("╰{}╯", "─".repeat(menu_width.saturating_sub(2))),
+                menu_width,
+                Surface::Toolbar,
+                false,
+            );
+            if self.menu_offset > 0 {
+                paint(
+                    &mut screen,
+                    self.menu_y + 1,
+                    self.menu_x + menu_width.saturating_sub(3),
+                    "↑",
+                    1,
+                    Surface::Header,
+                    false,
+                );
+            }
+            if self.menu_offset + page < labels.len() {
+                paint(
+                    &mut screen,
+                    self.menu_y + page + 1,
+                    self.menu_x + menu_width.saturating_sub(3),
+                    "↓",
+                    1,
+                    Surface::Toolbar,
+                    false,
+                );
+            }
+        }
+        if self.visualizer_open {
+            self.modal = Some(self.visualizer_text());
+        }
+        if let Some(modal) = &self.modal {
+            let lines = modal_lines(modal, width.saturating_sub(12));
+            let page = lines.len().min(height.saturating_sub(8)).max(1);
+            self.modal_scroll = self.modal_scroll.min(lines.len().saturating_sub(page));
+            let shown = &lines[self.modal_scroll..(self.modal_scroll + page).min(lines.len())];
+            let box_width = shown
+                .iter()
+                .map(|line| line.chars().count())
+                .max()
+                .unwrap_or(0)
+                .min(width.saturating_sub(8))
+                + 4;
+            let x = width.saturating_sub(box_width) / 2 + 1;
+            let y = height.saturating_sub(shown.len() + 2) / 2 + 1;
+            paint(
+                &mut screen,
+                y,
+                x,
+                &format!("╭{}╮", "─".repeat(box_width.saturating_sub(2))),
+                box_width,
+                Surface::Header,
+                true,
+            );
+            for (index, line) in shown.iter().enumerate() {
+                paint(
+                    &mut screen,
+                    y + index + 1,
+                    x,
+                    &format!("│ {line}"),
+                    box_width,
+                    Surface::Toolbar,
+                    false,
+                );
+                paint(
+                    &mut screen,
+                    y + index + 1,
+                    x + box_width - 1,
+                    "│",
+                    1,
+                    Surface::Toolbar,
+                    false,
+                );
+            }
+            paint(
+                &mut screen,
+                y + shown.len() + 1,
+                x,
+                &format!("╰{}╯", "─".repeat(box_width.saturating_sub(2))),
+                box_width,
+                Surface::Toolbar,
+                false,
+            );
+            if lines.len() > page {
+                paint(
+                    &mut screen,
+                    y + shown.len() + 1,
+                    x + 2,
+                    &format!(" {}/{} ↑↓ ", self.modal_scroll + 1, lines.len() - page + 1),
+                    box_width.saturating_sub(4),
+                    Surface::Toolbar,
+                    false,
+                );
+            }
+        }
+        if let Some((kind, value)) = &self.prompt {
+            if matches!(kind, PromptKind::Search | PromptKind::PlaylistSearch) {
+                let (row, col, field_width) = if *kind == PromptKind::Search && layout.show_sidebar
+                {
+                    (4, 1, layout.first)
+                } else {
+                    (1, search_x, search_width)
+                };
+                let cursor =
+                    input_window(value, self.input_cursor, field_width.saturating_sub(5)).1;
+                let column = (col + 5 + cursor).min(col + field_width.saturating_sub(1));
+                screen.push_str(&format!("\x1b[{row};{column}H\x1b[?25h"));
+            } else {
+                let box_width = width.saturating_sub(8).min(72).max(12);
+                let x = width.saturating_sub(box_width) / 2 + 1;
+                let y = height / 2;
+                let (shown, cursor) =
+                    input_window(value, self.input_cursor, box_width.saturating_sub(4));
+                paint(
+                    &mut screen,
+                    y.saturating_sub(1),
+                    x,
+                    &format!("╭{}╮", "─".repeat(box_width.saturating_sub(2))),
+                    box_width,
+                    Surface::Header,
+                    false,
+                );
+                paint(
+                    &mut screen,
+                    y,
+                    x,
+                    &format!("│ {}", prompt_label(*kind)),
+                    box_width,
+                    Surface::Toolbar,
+                    true,
+                );
+                paint(
+                    &mut screen,
+                    y,
+                    x + box_width - 1,
+                    "│",
+                    1,
+                    Surface::Toolbar,
+                    false,
+                );
+                paint(
+                    &mut screen,
+                    y + 1,
+                    x,
+                    &format!("│ {shown}"),
+                    box_width,
+                    Surface::Input,
+                    false,
+                );
+                paint(
+                    &mut screen,
+                    y + 1,
+                    x + box_width - 1,
+                    "│",
+                    1,
+                    Surface::Input,
+                    false,
+                );
+                paint(
+                    &mut screen,
+                    y + 2,
+                    x,
+                    &format!("╰{}╯", "─".repeat(box_width.saturating_sub(2))),
+                    box_width,
+                    Surface::Toolbar,
+                    false,
+                );
+                screen.push_str(&format!("\x1b[{};{}H\x1b[?25h", y + 1, x + 2 + cursor));
             }
         }
         screen
@@ -1720,6 +3798,43 @@ fn track_from_entry(entry: StoredEntry) -> Track {
     Track { name, entry }
 }
 
+fn radio_track(entry: RadioEntry) -> Track {
+    track_from_entry(StoredEntry {
+        kind: entry.kind,
+        path: entry.path,
+        entry: entry.entry,
+        fragment: entry.fragment,
+    })
+}
+
+fn collect_folder(library: &Arc<Library>, path: PathBuf) -> Result<Vec<Track>, String> {
+    let mut pending = vec![path];
+    let mut tracks = Vec::new();
+    while let Some(directory) = pending.pop() {
+        let listing = browse_local(library, directory.to_str())?;
+        if let Some(dirs) = listing["directories"].as_array() {
+            for dir in dirs.iter().rev() {
+                if let Some(path) = dir["path"].as_str() {
+                    pending.push(PathBuf::from(path));
+                }
+            }
+        }
+        if let Some(files) = listing["files"].as_array() {
+            for file in files {
+                if let (Some(kind), Some(path)) = (file["kind"].as_str(), file["path"].as_str()) {
+                    tracks.push(track_from_entry(StoredEntry {
+                        kind: kind.to_owned(),
+                        path: path.to_owned(),
+                        entry: file["entry"].as_str().unwrap_or_default().to_owned(),
+                        fragment: file["fragment"].as_str().map(str::to_owned),
+                    }));
+                }
+            }
+        }
+    }
+    Ok(tracks)
+}
+
 fn display_title(track: &Track) -> String {
     Path::new(&track.name)
         .file_stem()
@@ -1736,6 +3851,87 @@ fn metadata_key(entry: &StoredEntry) -> String {
         entry.entry,
         entry.fragment.as_deref().unwrap_or_default()
     )
+}
+
+fn byte_offset(text: &str, character: usize) -> usize {
+    text.char_indices()
+        .nth(character)
+        .map_or(text.len(), |(offset, _)| offset)
+}
+
+fn cell_width(text: &str) -> usize {
+    text.chars()
+        .map(|character| character.width().unwrap_or(0))
+        .sum()
+}
+
+fn modal_lines(content: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut result = Vec::new();
+    for line in content.lines() {
+        let chars: Vec<_> = line.chars().collect();
+        if chars.is_empty() {
+            result.push(String::new());
+        } else {
+            result.extend(chars.chunks(width).map(|part| part.iter().collect()));
+        }
+    }
+    if result.is_empty() {
+        result.push(String::new());
+    }
+    result
+}
+
+fn prompt_label(kind: PromptKind) -> &'static str {
+    match kind {
+        PromptKind::MusicFolder => "Music folder",
+        PromptKind::NewPlaylist => "New playlist",
+        PromptKind::RenamePlaylist => "Rename playlist",
+        PromptKind::DeletePlaylist => "Type yes to delete playlist",
+        PromptKind::Search => "Search files",
+        PromptKind::PlaylistSearch => "Search playlist",
+        PromptKind::AddFile => "Add file or folder",
+        PromptKind::AddUrl => "Add URL",
+        PromptKind::SavePlaylist => "Save playlist as",
+        PromptKind::SaveSelection => "Save selection as",
+        PromptKind::DuplicatePlaylist => "Duplicate playlist as",
+        PromptKind::ExportPlaylist => "Export playlist to",
+        PromptKind::Volume => "Volume 0-100",
+        PromptKind::AddToPlaylist => "Add to saved playlist named",
+        PromptKind::EqualizerPreset => "Equalizer preset",
+        PromptKind::EqualizerBandNumber => "Equalizer band 1-10",
+        PromptKind::EqualizerBandGain(_) => "Equalizer gain -20 to 20 dB",
+        PromptKind::Preamp => "Preamp dB",
+        PromptKind::OutputDevice => "Output device name or default",
+    }
+}
+
+fn input_window(text: &str, cursor: usize, width: usize) -> (String, usize) {
+    if width == 0 {
+        return (String::new(), 0);
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let cursor = cursor.min(chars.len());
+    let mut start = 0;
+    let mut before = chars[..cursor]
+        .iter()
+        .map(|c| c.width().unwrap_or(0))
+        .sum::<usize>();
+    while before >= width && start < cursor {
+        before = before.saturating_sub(chars[start].width().unwrap_or(0));
+        start += 1;
+    }
+    let mut shown = String::new();
+    let mut used = 0;
+    for &character in &chars[start..] {
+        let cells = character.width().unwrap_or(0);
+        if used + cells > width {
+            break;
+        }
+        shown.push(character);
+        used += cells;
+    }
+    (shown, before.min(width.saturating_sub(1)))
 }
 
 fn playlist_entry(entry: &StoredEntry) -> PlaylistEntry {
@@ -1776,13 +3972,93 @@ fn glyph(entry: &StoredEntry) -> &'static str {
     }
 }
 
-const MENU_ITEMS: [&str; 6] = [
-    " ⌕  Search files",
-    " ▱  Music folder",
-    " +  New playlist",
-    " ▤  Current playlist",
-    " ↻  Repeat",
-    " ×  Quit",
+const MAIN_MENU: [&str; 15] = [
+    "Add Files or Folder…",
+    "Add URL…",
+    "Choose Music Folder…",
+    "",
+    "Save Current Playlist…",
+    "Save Selection As…",
+    "Remove Selected",
+    "Clear Playlist",
+    "",
+    "View                     ›",
+    "Playback                 ›",
+    "Preferences              ›",
+    "",
+    "About Kog",
+    "Quit",
+];
+const VIEW_MENU: [&str; 5] = [
+    "Show/Hide Files and Playlists",
+    "Track Info…",
+    "Lyrics…",
+    "Equalizer…",
+    "Visualizer…",
+];
+const PLAYBACK_MENU: [&str; 13] = [
+    "Play/Pause",
+    "Stop",
+    "Previous",
+    "Next",
+    "Cycle Shuffle",
+    "Cycle Repeat",
+    "Stop After Current",
+    "Mute/Unmute",
+    "Random Radio On/Off",
+    "Reshuffle Radio",
+    "Toggle Queue Selected",
+    "Toggle Stop After Selected",
+    "Clear Queue",
+];
+const PREFERENCES_MENU: [&str; 9] = [
+    "Music Folder…",
+    "Volume…",
+    "Cycle Repeat",
+    "Equalizer Preset…",
+    "Equalizer On/Off",
+    "Preamp…",
+    "Output Device…",
+    "List Output Devices…",
+    "Edit Equalizer Band…",
+];
+const TREE_MENU: [&str; 5] = [
+    "Add to Current Playlist",
+    "Play Now",
+    "Expand/Collapse",
+    "Star/Unstar",
+    "Add to Saved Playlist…",
+];
+const TRACKS_MENU: [&str; 11] = [
+    "Play",
+    "Remove Selected",
+    "Add to Saved Playlist…",
+    "Star/Unstar",
+    "Track Info…",
+    "Clear Playlist",
+    "Show in File Tree",
+    "Save Selection As…",
+    "Select All",
+    "Toggle Queue",
+    "Toggle Stop After",
+];
+const SAVED_MENU: [&str; 8] = [
+    "Add to Current Playlist",
+    "Play",
+    "Replace Playlist Pane",
+    "Rename…",
+    "Duplicate…",
+    "Delete…",
+    "Export as M3U…",
+    "Remove Missing Files",
+];
+const COLUMNS_MENU: [&str; 6] = [
+    "Sort by Title",
+    "Sort by Artist",
+    "Sort by Album",
+    "Show/Hide Artist",
+    "Show/Hide Album",
+    "Auto Fit Columns",
 ];
 
 struct Layout {
@@ -1797,7 +4073,13 @@ struct Layout {
     track_page: usize,
 }
 impl Layout {
-    fn new(width: usize, height: usize, lists: usize) -> Self {
+    fn new(
+        width: usize,
+        height: usize,
+        lists: usize,
+        files_expanded: bool,
+        playlists_expanded: bool,
+    ) -> Self {
         let show_sidebar = width >= 60;
         let first = if show_sidebar {
             (width / 3).clamp(23, 46)
@@ -1805,11 +4087,27 @@ impl Layout {
             0
         };
         let footer_top = height.saturating_sub(4);
-        let list_page = lists.min(6).min(height.saturating_sub(13)).max(1);
-        let lists_header = footer_top.saturating_sub(list_page + 1);
-        let list_top = lists_header + 1;
+        let list_page = if playlists_expanded {
+            lists.min(6).min(height.saturating_sub(13)).max(1)
+        } else {
+            0
+        };
+        let lists_header = if files_expanded {
+            footer_top.saturating_sub(list_page + 1)
+        } else {
+            4
+        };
+        let list_top = if playlists_expanded {
+            lists_header + 1
+        } else {
+            footer_top
+        };
         let tree_top = 5;
-        let tree_bottom = lists_header.saturating_sub(1);
+        let tree_bottom = if files_expanded {
+            lists_header.saturating_sub(1)
+        } else {
+            4
+        };
         Self {
             first,
             show_sidebar,
@@ -1822,6 +4120,17 @@ impl Layout {
             track_page: footer_top.saturating_sub(2).max(1),
         }
     }
+}
+
+fn volume_geometry(width: usize, footer_top: usize) -> (usize, usize, usize, usize) {
+    let bar_width = if width >= 70 { 12 } else { 8 };
+    let row = if width >= 70 {
+        footer_top
+    } else {
+        footer_top + 2
+    };
+    let icon_x = width.saturating_sub(bar_width + 8);
+    (row, icon_x, icon_x + 3, bar_width)
 }
 
 fn truncate(text: &str, width: usize) -> String {
@@ -1863,6 +4172,7 @@ enum Surface {
     Sidebar,
     SidebarAlt,
     Main,
+    Input,
     MainAlt,
     Header,
     Accent,
@@ -1887,6 +4197,7 @@ fn paint(
         Surface::Sidebar => ("222;226;230", "34;37;39"),
         Surface::SidebarAlt => ("222;226;230", "30;33;35"),
         Surface::Main => ("220;224;228", "25;27;29"),
+        Surface::Input => ("240;244;248", "39;44;48"),
         Surface::MainAlt => ("220;224;228", "32;35;37"),
         Surface::Header => ("225;230;235", "29;32;34"),
         Surface::Accent => ("103;179;233", "29;32;34"),
@@ -1900,9 +4211,10 @@ fn paint(
     ));
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Key {
     Char(char),
+    CtrlA,
     CtrlC,
     Esc,
     Tab,
@@ -1912,6 +4224,10 @@ enum Key {
     Delete,
     Up,
     Down,
+    ShiftUp,
+    ShiftDown,
+    CtrlUp,
+    CtrlDown,
     Left,
     Right,
     PageUp,
@@ -1994,6 +4310,10 @@ fn parse_event(bytes: &mut Vec<u8>) -> Option<Event> {
         let key = match seq.as_slice() {
             b"A" => Key::Up,
             b"B" => Key::Down,
+            b"1;2A" => Key::ShiftUp,
+            b"1;2B" => Key::ShiftDown,
+            b"1;5A" => Key::CtrlUp,
+            b"1;5B" => Key::CtrlDown,
             b"C" => Key::Right,
             b"D" => Key::Left,
             b"Z" => Key::BackTab,
@@ -2008,6 +4328,7 @@ fn parse_event(bytes: &mut Vec<u8>) -> Option<Event> {
     }
     let byte = bytes.remove(0);
     let key = match byte {
+        1 => Key::CtrlA,
         3 => Key::CtrlC,
         9 => Key::Tab,
         10 | 13 => Key::Enter,
@@ -2102,8 +4423,11 @@ pub fn run() -> Result<(), String> {
     let mut last_frame = String::new();
     let mut escape_pending = None::<Instant>;
     loop {
+        ui.poll_search_due();
         ui.poll_search();
+        ui.poll_folders();
         ui.poll_metadata();
+        ui.poll_radio();
         let size = terminal.size();
         if size != last_size || last_draw.elapsed() >= Duration::from_millis(150) {
             let frame = ui.draw(size);
@@ -2207,8 +4531,8 @@ mod tests {
     }
     #[test]
     fn layout_reflows_at_terminal_widths() {
-        let wide = Layout::new(120, 40, 5);
-        let narrow = Layout::new(48, 18, 5);
+        let wide = Layout::new(120, 40, 5, true, true);
+        let narrow = Layout::new(48, 18, 5, true, true);
         assert!(wide.show_sidebar);
         assert!(!narrow.show_sidebar);
         assert_eq!(wide.first, 40);

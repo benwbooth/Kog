@@ -1652,6 +1652,7 @@ dependencies = [
  "kog-core",
  "kog-server",
  "libc",
+ "rand",
  "serde_json",
  "tokio",
  "unicode-width 0.2.2",
