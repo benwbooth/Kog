@@ -46,10 +46,12 @@ SmartScreen warning, and macOS packages are ad-hoc signed rather than notarized.
 
 ## Getting started
 
-When launched from an interactive terminal, `kog` opens its terminal UI by
-default. Use `kog --gui` to force the Qt app, `kog --tui` to force the terminal
-player, or `kog --server` to serve the web app without any local UI. A desktop
-launcher still opens Qt. `--tui` requires a terminal on both stdin and stdout.
+On Unix, launching `kog` from an interactive terminal opens its terminal UI by
+default. Windows launches the Qt app even from a console because the terminal
+UI is currently Unix-only. Use `kog --gui` to force Qt, `kog --tui` to force
+the terminal player on Unix, or `kog --server` to serve the web app without any
+local UI. A desktop launcher opens Qt. `--tui` requires a terminal on both
+stdin and stdout.
 The server uses the saved address, port, TLS, authentication and codec settings,
 and starts even when the desktop server toggle is off. The default address is
 loopback; configure credentials before changing it to a network address.
