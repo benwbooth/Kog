@@ -84,7 +84,10 @@ if (( step )); then
   case "$mode" in
     check) command=(cargo check "${profile_args[@]}" --workspace) ;;
     test) command=(cargo test "${profile_args[@]}" --workspace) ;;
-    run) command=(cargo build "${profile_args[@]}") ;;
+    # Keep the standalone terminal/server executables current alongside kog.
+    # Otherwise an older kog-tui can keep writing decoder diagnostics over
+    # the screen even though the shared TUI code has already been fixed.
+    run) command=(cargo build "${profile_args[@]}" --workspace --bins) ;;
   esac
 
   if ! "${command[@]}"; then

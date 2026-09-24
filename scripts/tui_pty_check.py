@@ -85,7 +85,9 @@ def resize(cols,rows):
     fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack('HHHH',rows,cols,0,0))
 import termios
 resize(120,40)
-p=subprocess.Popen([str(Path(__file__).resolve().parents[1] / 'target/debug/kog'),'--tui'],stdin=slave,stdout=slave,stderr=slave,env=env,close_fds=True)
+binary=Path(os.environ.get('KOG_TUI_TEST_BINARY', str(Path(__file__).resolve().parents[1] / 'target/debug/kog')))
+args=[str(binary)] if binary.name == 'kog-tui' else [str(binary),'--tui']
+p=subprocess.Popen(args,stdin=slave,stdout=slave,stderr=slave,env=env,close_fds=True)
 os.close(slave)
 screen=pyte.Screen(120,40); stream=pyte.Stream(screen)
 def drain(seconds=.3):
@@ -171,7 +173,7 @@ try:
     send(b'\x1b',.3)
     click(10,3);send('b.wav',.7)
     assert 'b.wav' in '\n'.join(screen.display)
-    assert 'matches for b.wav' in screen.display[-1],screen.display[-1]
+    wait_for('matches for b.wav')
     send(b'\x1b',.3)
     send('\x1b[<0;41;9M');send('\x1b[<32;51;9M');send('\x1b[<0;51;9m')
     assert screen.display[8][50]=='│', screen.display[8][45:55]
