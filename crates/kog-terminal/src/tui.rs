@@ -5910,8 +5910,8 @@ impl Ui {
                 } else if y == card_y + 7 && x >= card_x + 17 {
                     match x - card_x - 17 {
                         0..=13 => self.previous(),
-                        14..=30 => self.play_pause(),
-                        31..=40 => {
+                        14..=28 => self.play_pause(),
+                        29..=37 => {
                             self.player.stop();
                             self.playing = None;
                         }
@@ -5924,9 +5924,9 @@ impl Ui {
                 }
             } else if y == card_y + 3 && x >= card_x {
                 match x - card_x {
-                    0..=14 => self.previous(),
-                    15..=31 => self.play_pause(),
-                    32..=44 => {
+                    0..=15 => self.previous(),
+                    16..=32 => self.play_pause(),
+                    33..=43 => {
                         self.player.stop();
                         self.playing = None;
                     }
@@ -6981,7 +6981,7 @@ impl Ui {
                     &mut screen,
                     card_y + 8,
                     card_x + 18,
-                    "◀ Previous   ▶ Play/Pause   ■ Stop   ▶ Next",
+                    "│◀ Previous   ▶ Play/Pause   ■ Stop   ▶│ Next",
                     card_width - 21,
                     Surface::Sidebar,
                     false,
@@ -7046,7 +7046,7 @@ impl Ui {
                     &mut screen,
                     card_y + 4,
                     card_x,
-                    "◀ Previous     ▶ Play/Pause     ■ Stop     ▶ Next",
+                    "│◀ Previous     ▶ Play/Pause     ■ Stop     ▶│ Next",
                     card_width,
                     Surface::Muted,
                     false,
@@ -7076,7 +7076,7 @@ impl Ui {
         } else {
             "▶"
         };
-        for (index, icon) in ["◀", play, "■", "▶", "↻"].into_iter().enumerate() {
+        for (index, icon) in ["│◀", play, "■", "▶│", "↻"].into_iter().enumerate() {
             paint(
                 &mut screen,
                 layout.footer_top + 1,
