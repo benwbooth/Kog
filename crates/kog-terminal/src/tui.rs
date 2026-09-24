@@ -98,6 +98,7 @@ enum MenuPage {
     Tree,
     Tracks,
     Saved,
+    Playlist,
     Columns,
     ColumnVisibility,
     TagEditor,
@@ -116,6 +117,7 @@ impl MenuPage {
             Self::Tree => "File",
             Self::Tracks => "Playlist Row",
             Self::Saved => "Saved Playlist",
+            Self::Playlist => "Playlist",
             Self::Columns => "Columns",
             Self::ColumnVisibility => "Visible Columns",
             Self::TagEditor => "Edit Tags",
@@ -133,6 +135,7 @@ impl MenuPage {
             Self::Tree => &TREE_MENU,
             Self::Tracks => &TRACKS_MENU,
             Self::Saved => &SAVED_MENU,
+            Self::Playlist => &PLAYLIST_MENU,
             Self::Columns => &COLUMNS_MENU,
             Self::ColumnVisibility => &COLUMN_VISIBILITY_MENU,
             Self::TagEditor => &TAG_EDITOR_MENU,
@@ -352,6 +355,7 @@ struct Ui {
     sidebar_width: Option<usize>,
     split_drag: bool,
     column_drag: Option<usize>,
+    column_scroll_drag: Option<usize>,
     track_drag: Option<usize>,
     sort_column: Option<usize>,
     sort_ascending: bool,
@@ -723,6 +727,7 @@ impl Ui {
             sidebar_width: None,
             split_drag: false,
             column_drag: None,
+            column_scroll_drag: None,
             track_drag: None,
             sort_column: None,
             sort_ascending: true,
@@ -1214,7 +1219,34 @@ impl Ui {
                 layout.first = width.clamp(18, size.0.saturating_sub(30).max(18));
             }
         }
+        if self.columns.total_width() > size.0.saturating_sub(layout.first + 1)
+            && size.0.saturating_sub(layout.first + 1) >= 5
+        {
+            layout.track_page = layout.track_page.saturating_sub(1).max(1);
+        }
         layout
+    }
+
+    fn scrollbar(&self, layout: &Layout, size: (usize, usize)) -> Option<HorizontalScrollbar> {
+        (!self.compact_mode && (layout.show_sidebar || self.focus == Focus::Tracks))
+            .then(|| {
+                HorizontalScrollbar::new(
+                    layout.first + 1,
+                    size.0.saturating_sub(layout.first + 1),
+                    self.columns.total_width(),
+                    self.columns.scroll,
+                )
+            })
+            .flatten()
+    }
+
+    fn scroll_columns_to_mouse(&mut self, bar: HorizontalScrollbar, x: usize, grip: usize) {
+        let position = x.saturating_sub(bar.x + 1).min(bar.track_width - 1);
+        self.columns.scroll = position
+            .saturating_sub(grip)
+            .min(bar.travel)
+            .saturating_mul(bar.max_scroll)
+            / bar.travel.max(1);
     }
 
     fn auto_fit_columns(&mut self) {
@@ -1569,6 +1601,15 @@ impl Ui {
                 }
             }
             (MenuPage::Saved, 7) => self.prune_missing_selected_list(),
+            (MenuPage::Playlist, 0) => self.begin_prompt(PromptKind::AddFile, String::new()),
+            (MenuPage::Playlist, 1) => self.begin_prompt(PromptKind::AddUrl, String::new()),
+            (MenuPage::Playlist, 2) => self.begin_prompt(PromptKind::SavePlaylist, String::new()),
+            (MenuPage::Playlist, 3) => {
+                self.selected_tracks = self.visible_tracks().into_iter().collect();
+                self.status = format!("Selected {} tracks", self.selected_tracks.len());
+            }
+            (MenuPage::Playlist, 4) => self.clear_playlist(),
+            (MenuPage::Playlist, 5) => self.open_submenu(MenuPage::Columns),
             (MenuPage::Columns, 0..=2) => self.sort_tracks(index),
             (MenuPage::Columns, 3 | 4) => {
                 let id = if index == 3 { "artist" } else { "album" };
@@ -4511,6 +4552,7 @@ impl Ui {
                             MenuPage::Tree
                                 | MenuPage::Tracks
                                 | MenuPage::Saved
+                                | MenuPage::Playlist
                                 | MenuPage::Columns
                                 | MenuPage::ColumnVisibility
                         )
@@ -4719,6 +4761,7 @@ impl Ui {
             }
             self.split_drag = false;
             self.column_drag = None;
+            self.column_scroll_drag = None;
             self.volume_drag = false;
             self.track_drag = None;
             return;
@@ -4749,6 +4792,14 @@ impl Ui {
         }
         if self.split_drag && button & 32 != 0 {
             self.sidebar_width = Some(x.clamp(18, size.0.saturating_sub(30).max(18)));
+            return;
+        }
+        if let Some(grip) = self.column_scroll_drag
+            && button & 32 != 0
+        {
+            if let Some(bar) = self.scrollbar(&layout, size) {
+                self.scroll_columns_to_mouse(bar, x, grip);
+            }
             return;
         }
         if let Some(column) = self.column_drag
@@ -4782,9 +4833,13 @@ impl Ui {
             return;
         }
         if (button & 0b1100_0000) == 64 {
-            if button & 4 != 0 && x >= layout.first {
+            let wheel = button & 3;
+            if x > layout.first
+                && self.scrollbar(&layout, size).is_some()
+                && (wheel >= 2 || button & (4 | 16) != 0)
+            {
                 self.columns.scroll_by(
-                    if button & 1 == 0 { -8 } else { 8 },
+                    if wheel == 0 || wheel == 2 { -8 } else { 8 },
                     size.0.saturating_sub(layout.first + 1),
                 );
                 return;
@@ -4810,6 +4865,30 @@ impl Ui {
         }
         if button & 32 != 0 {
             return;
+        }
+        if self.menu_open && y > 0 {
+            let menu_width = size.0.saturating_sub(self.menu_x).min(33);
+            let inside = (self.menu_x..self.menu_x + menu_width).contains(&x)
+                && y >= self.menu_y + 1
+                && y < self.menu_y
+                    + 1
+                    + self.menu_page.labels().len().min(size.1.saturating_sub(4));
+            if inside {
+                if button & 3 == 0 {
+                    let index = self.menu_offset + y - self.menu_y - 1;
+                    if index < self.menu_page.labels().len()
+                        && !self.menu_page.labels()[index].is_empty()
+                    {
+                        self.menu_selected = index;
+                        self.activate_menu(index);
+                    }
+                }
+                return;
+            }
+            self.menu_open = false;
+            if button & 3 != 2 {
+                return;
+            }
         }
         if let Some((kind, value)) = self.prompt.as_ref() {
             if matches!(kind, PromptKind::Search | PromptKind::PlaylistSearch) {
@@ -4892,7 +4971,10 @@ impl Ui {
                     self.selected[0] = index;
                     self.open_context(MenuPage::Saved, x, y, size);
                 }
-            } else if x >= layout.first && y == 1 {
+            } else if (layout.show_sidebar || self.focus == Focus::Tracks)
+                && x > layout.first
+                && y == 1
+            {
                 let relative = x.saturating_sub(layout.first + 1) + self.columns.scroll;
                 self.context_column = self
                     .columns
@@ -4900,13 +4982,23 @@ impl Ui {
                     .find(|(_, start, width)| (*start..start + width).contains(&relative))
                     .map(|(index, _, _)| index);
                 self.open_context(MenuPage::Columns, x, y, size);
-            } else if x >= layout.first && y >= 2 && y < layout.footer_top {
+            } else if (layout.show_sidebar || self.focus == Focus::Tracks)
+                && x > layout.first
+                && y >= 2
+                && y < layout.footer_top
+            {
                 self.focus = Focus::Tracks;
+                if self.scrollbar(&layout, size).is_some() && y == layout.footer_top - 1 {
+                    self.open_context(MenuPage::Playlist, x, y, size);
+                    return;
+                }
                 if let Some(&index) = self.visible_tracks().get(self.offsets[2] + y - 2) {
                     if !self.selected_tracks.contains(&index) {
                         self.select_track(index, false, false);
                     }
                     self.open_context(MenuPage::Tracks, x, y, size);
+                } else {
+                    self.open_context(MenuPage::Playlist, x, y, size);
                 }
             }
             return;
@@ -4918,21 +5010,24 @@ impl Ui {
             self.split_drag = true;
             return;
         }
-        if self.menu_open && y > 0 {
-            let menu_width = size.0.saturating_sub(self.menu_x).min(33);
-            if (self.menu_x..self.menu_x + menu_width).contains(&x)
-                && y >= self.menu_y + 1
-                && y < self.menu_y + 1 + self.menu_page.labels().len().min(size.1.saturating_sub(4))
-            {
-                let index = self.menu_offset + y - self.menu_y - 1;
-                if index < self.menu_page.labels().len()
-                    && !self.menu_page.labels()[index].is_empty()
-                {
-                    self.menu_selected = index;
-                    self.activate_menu(index);
-                }
+        if let Some(bar) = self.scrollbar(&layout, size)
+            && y == layout.footer_top - 1
+            && (bar.x..bar.x + bar.width).contains(&x)
+        {
+            if x == bar.x {
+                self.columns.scroll_by(-12, bar.width);
+            } else if x == bar.x + bar.width - 1 {
+                self.columns.scroll_by(12, bar.width);
             } else {
-                self.menu_open = false;
+                let position = x - bar.x - 1;
+                let grip =
+                    if (bar.thumb_start..bar.thumb_start + bar.thumb_width).contains(&position) {
+                        position - bar.thumb_start
+                    } else {
+                        bar.thumb_width / 2
+                    };
+                self.column_scroll_drag = Some(grip);
+                self.scroll_columns_to_mouse(bar, x, grip);
             }
             return;
         }
@@ -5621,6 +5716,7 @@ impl Ui {
         let right_width = width.saturating_sub(layout.first + 1);
         self.column_viewport_width = right_width;
         self.columns.scroll_by(0, right_width);
+        let scrollbar = self.scrollbar(&layout, size);
         let show_tree = !layout.show_sidebar && self.focus == Focus::Library;
         let show_lists = !layout.show_sidebar && self.focus == Focus::Playlists;
         if show_lists {
@@ -5712,7 +5808,10 @@ impl Ui {
                     true,
                 );
             }
-            for y in 2..layout.footer_top {
+            for y in 2..layout
+                .footer_top
+                .saturating_sub(usize::from(scrollbar.is_some()))
+            {
                 let index = visible_tracks.get(self.offsets[2] + y - 2).copied();
                 let surface = if index.is_some_and(|index| self.selected_tracks.contains(&index))
                     || index == Some(self.selected[2]) && self.focus == Focus::Tracks
@@ -5744,6 +5843,37 @@ impl Ui {
                         );
                     }
                 }
+            }
+            if let Some(bar) = scrollbar {
+                let row = layout.footer_top;
+                paint(&mut screen, row, bar.x + 1, "‹", 1, Surface::Header, true);
+                paint(
+                    &mut screen,
+                    row,
+                    bar.x + 2,
+                    &"─".repeat(bar.track_width),
+                    bar.track_width,
+                    Surface::Header,
+                    false,
+                );
+                paint(
+                    &mut screen,
+                    row,
+                    bar.x + 2 + bar.thumb_start,
+                    &"━".repeat(bar.thumb_width),
+                    bar.thumb_width,
+                    Surface::Accent,
+                    true,
+                );
+                paint(
+                    &mut screen,
+                    row,
+                    bar.x + bar.width,
+                    "›",
+                    1,
+                    Surface::Header,
+                    true,
+                );
             }
         }
 
@@ -7109,6 +7239,14 @@ const SAVED_MENU: [&str; 8] = [
     "Export as M3U…",
     "Remove Missing Files",
 ];
+const PLAYLIST_MENU: [&str; 6] = [
+    "Add File…",
+    "Add URL…",
+    "Save Current Playlist…",
+    "Select All",
+    "Clear Playlist",
+    "Columns ▶",
+];
 const COLUMNS_MENU: [&str; 12] = [
     "Sort by Title",
     "Sort by Artist",
@@ -7145,6 +7283,39 @@ const COLUMN_VISIBILITY_MENU: [&str; 20] = [
     "Toggle Bits",
     "Toggle Bitrate",
 ];
+
+#[derive(Clone, Copy)]
+struct HorizontalScrollbar {
+    x: usize,
+    width: usize,
+    track_width: usize,
+    thumb_start: usize,
+    thumb_width: usize,
+    travel: usize,
+    max_scroll: usize,
+}
+
+impl HorizontalScrollbar {
+    fn new(x: usize, width: usize, total: usize, scroll: usize) -> Option<Self> {
+        if width < 5 || total <= width {
+            return None;
+        }
+        let track_width = width - 2;
+        let thumb_width = (track_width.saturating_mul(width) / total).clamp(1, track_width - 1);
+        let travel = track_width - thumb_width;
+        let max_scroll = total - width;
+        let thumb_start = scroll.min(max_scroll).saturating_mul(travel) / max_scroll;
+        Some(Self {
+            x,
+            width,
+            track_width,
+            thumb_start,
+            thumb_width,
+            travel,
+            max_scroll,
+        })
+    }
+}
 
 struct Layout {
     first: usize,
@@ -7513,11 +7684,14 @@ fn parse_event(bytes: &mut Vec<u8>) -> Option<Event> {
 #[cfg(unix)]
 struct Terminal {
     original: libc::termios,
-    stderr_backup: Option<libc::c_int>,
+    output: std::fs::File,
+    stderr_backup: std::fs::File,
 }
 #[cfg(unix)]
 impl Terminal {
     fn open() -> Result<Self, String> {
+        use std::os::fd::AsRawFd;
+
         let mut original = std::mem::MaybeUninit::uninit();
         // SAFETY: stdin is a terminal and these pointers address initialized
         // termios storage owned by this call.
@@ -7528,52 +7702,84 @@ impl Terminal {
             ));
         }
         let original = unsafe { original.assume_init() };
+        let (output, stderr_backup) = Self::redirect_diagnostics()?;
         let mut raw = original;
         unsafe { libc::cfmakeraw(&mut raw) };
         raw.c_cc[libc::VMIN] = 0;
         raw.c_cc[libc::VTIME] = 0;
         if unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &raw) } != 0 {
-            return Err(format!(
-                "setting terminal mode: {}",
-                io::Error::last_os_error()
-            ));
+            let error = io::Error::last_os_error();
+            unsafe {
+                libc::dup2(output.as_raw_fd(), libc::STDOUT_FILENO);
+                libc::dup2(stderr_backup.as_raw_fd(), libc::STDERR_FILENO);
+            }
+            return Err(format!("setting terminal mode: {error}"));
         }
-        let stderr_backup = Self::redirect_diagnostics();
-        let terminal = Self {
+        let mut terminal = Self {
             original,
+            output,
             stderr_backup,
         };
-        print!("\x1b[?1049h\x1b[2J\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?25l");
-        io::stdout().flush().map_err(|e| e.to_string())?;
+        terminal.write("\x1b[?1049h\x1b[2J\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?25l")?;
         Ok(terminal)
     }
 
-    fn redirect_diagnostics() -> Option<libc::c_int> {
-        use std::os::fd::AsRawFd;
+    fn redirect_diagnostics() -> Result<(std::fs::File, std::fs::File), String> {
+        use std::os::fd::{AsRawFd, FromRawFd};
         use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
-        let path = kog_audio::settings::setting_path("tui-diagnostics.log")?;
-        std::fs::create_dir_all(path.parent()?).ok()?;
+        let path = kog_audio::settings::setting_path("tui-diagnostics.log")
+            .ok_or("No settings directory for TUI diagnostics")?;
+        std::fs::create_dir_all(path.parent().ok_or("Invalid TUI diagnostics path")?)
+            .map_err(|error| format!("creating TUI diagnostics directory: {error}"))?;
         if path.exists() {
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).ok()?;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+                .map_err(|error| format!("securing TUI diagnostics: {error}"))?;
         }
         let file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .mode(0o600)
             .open(path)
-            .ok()?;
-        // SAFETY: dup/dup2 operate on live process descriptors. The original
-        // stderr is restored when the terminal session closes.
-        let saved = unsafe { libc::dup(libc::STDERR_FILENO) };
-        if saved < 0 {
-            return None;
+            .map_err(|error| format!("opening TUI diagnostics: {error}"))?;
+        // Keep a private terminal descriptor for frames. Native decoders and
+        // child processes may write to either standard stream at any time.
+        let output_fd = unsafe { libc::dup(libc::STDOUT_FILENO) };
+        if output_fd < 0 {
+            return Err(format!(
+                "duplicating terminal output: {}",
+                io::Error::last_os_error()
+            ));
+        }
+        let output = unsafe { std::fs::File::from_raw_fd(output_fd) };
+        let stderr_fd = unsafe { libc::dup(libc::STDERR_FILENO) };
+        if stderr_fd < 0 {
+            return Err(format!(
+                "duplicating terminal errors: {}",
+                io::Error::last_os_error()
+            ));
+        }
+        let stderr_backup = unsafe { std::fs::File::from_raw_fd(stderr_fd) };
+        unsafe { libc::fflush(std::ptr::null_mut()) };
+        if unsafe { libc::dup2(file.as_raw_fd(), libc::STDOUT_FILENO) } < 0 {
+            return Err(format!(
+                "redirecting TUI diagnostics: {}",
+                io::Error::last_os_error()
+            ));
         }
         if unsafe { libc::dup2(file.as_raw_fd(), libc::STDERR_FILENO) } < 0 {
-            unsafe { libc::close(saved) };
-            return None;
+            let error = io::Error::last_os_error();
+            unsafe { libc::dup2(output.as_raw_fd(), libc::STDOUT_FILENO) };
+            return Err(format!("redirecting TUI diagnostics: {error}"));
         }
-        Some(saved)
+        Ok((output, stderr_backup))
+    }
+
+    fn write(&mut self, frame: &str) -> Result<(), String> {
+        self.output
+            .write_all(frame.as_bytes())
+            .map_err(|error| error.to_string())?;
+        self.output.flush().map_err(|error| error.to_string())
     }
 
     fn size(&self) -> (usize, usize) {
@@ -7583,7 +7789,8 @@ impl Terminal {
             ws_xpixel: 0,
             ws_ypixel: 0,
         };
-        if unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut size) } == 0 {
+        use std::os::fd::AsRawFd;
+        if unsafe { libc::ioctl(self.output.as_raw_fd(), libc::TIOCGWINSZ, &mut size) } == 0 {
             (
                 usize::from(size.ws_col).max(1),
                 usize::from(size.ws_row).max(1),
@@ -7612,21 +7819,20 @@ impl Terminal {
 #[cfg(unix)]
 impl Drop for Terminal {
     fn drop(&mut self) {
-        print!("\x1b[?25h\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?1049l");
-        let _ = io::stdout().flush();
+        use std::os::fd::AsRawFd;
+        let _ = self.write("\x1b[?25h\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?1049l");
         unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &self.original) };
-        if let Some(saved) = self.stderr_backup.take() {
-            unsafe {
-                libc::dup2(saved, libc::STDERR_FILENO);
-                libc::close(saved);
-            }
+        unsafe {
+            libc::fflush(std::ptr::null_mut());
+            libc::dup2(self.output.as_raw_fd(), libc::STDOUT_FILENO);
+            libc::dup2(self.stderr_backup.as_raw_fd(), libc::STDERR_FILENO);
         }
     }
 }
 
 #[cfg(unix)]
 pub fn run() -> Result<(), String> {
-    let terminal = Terminal::open()?;
+    let mut terminal = Terminal::open()?;
     let mut ui = Ui::new();
     let mut input = Vec::new();
     let mut last_size = (0, 0);
@@ -7649,8 +7855,7 @@ pub fn run() -> Result<(), String> {
         if size != last_size || last_draw.elapsed() >= Duration::from_millis(150) {
             let frame = ui.draw(size);
             if frame != last_frame {
-                print!("{frame}");
-                io::stdout().flush().map_err(|e| e.to_string())?;
+                terminal.write(&frame)?;
                 last_frame = frame;
             }
             last_size = size;
@@ -7690,8 +7895,7 @@ pub fn run() -> Result<(), String> {
             }
             let frame = ui.draw(size);
             if frame != last_frame {
-                print!("{frame}");
-                io::stdout().flush().map_err(|e| e.to_string())?;
+                terminal.write(&frame)?;
                 last_frame = frame;
             }
             last_draw = Instant::now();
@@ -7736,6 +7940,25 @@ mod tests {
             parse_event(&mut wheel),
             Some(Event::Mouse { release: true, .. })
         ));
+        let mut right_and_horizontal = b"\x1b[<2;60;5M\x1b[<67;61;6M".to_vec();
+        assert!(matches!(
+            parse_event(&mut right_and_horizontal),
+            Some(Event::Mouse {
+                button: 2,
+                x: 59,
+                y: 4,
+                release: false
+            })
+        ));
+        assert!(matches!(
+            parse_event(&mut right_and_horizontal),
+            Some(Event::Mouse {
+                button: 67,
+                x: 60,
+                y: 5,
+                release: false
+            })
+        ));
         let mut unicode = "é".as_bytes().to_vec();
         assert!(matches!(
             parse_event(&mut unicode),
@@ -7757,6 +7980,16 @@ mod tests {
         assert!(wide.tree_bottom < wide.lists_header);
         assert_eq!(wide.list_top + wide.list_page, wide.footer_top);
         assert_eq!(narrow.footer_top, 14);
+    }
+
+    #[test]
+    fn horizontal_scrollbar_reaches_both_ends() {
+        let left = HorizontalScrollbar::new(41, 79, 160, 0).unwrap();
+        let right = HorizontalScrollbar::new(41, 79, 160, 81).unwrap();
+        assert_eq!(left.thumb_start, 0);
+        assert_eq!(right.thumb_start, right.travel);
+        assert!(right.thumb_width < right.track_width);
+        assert!(HorizontalScrollbar::new(41, 79, 79, 0).is_none());
     }
 
     #[test]

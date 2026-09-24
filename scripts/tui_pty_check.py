@@ -143,6 +143,28 @@ try:
     assert 'deep.wav' in '\n'.join(screen.display)
     click(10,y);click(10,y);drain(.5)
     assert 'Added 4 tracks' in screen.display[-1], screen.display[-1]
+    assert '━' in screen.display[35],screen.display[35]
+    initial_header=screen.display[1]
+    send('\x1b[<67;81;10M')  # native horizontal wheel right
+    assert screen.display[1]!=initial_header,screen.display[1]
+    shifted_header=screen.display[1]
+    send('\x1b[<69;81;10M')  # Shift + vertical wheel down
+    assert screen.display[1]!=shifted_header,screen.display[1]
+    click(110,35)
+    assert 'Album' in screen.display[1],screen.display[1]
+    click(42,35)
+    assert screen.display[1]==initial_header,screen.display[1]
+    send('\x1b[<0;44;36M\x1b[<32;111;36M\x1b[<0;111;36m')
+    assert screen.display[1]!=initial_header,screen.display[1]
+    click(42,35)
+    assert screen.display[1]==initial_header,screen.display[1]
+    click(60,20,2)
+    assert '╭─ Playlist' in '\n'.join(screen.display),screen.display[19:23]
+    click(62,22,2)
+    assert '╭─ Playlist' in '\n'.join(screen.display),screen.display[19:23]
+    click(62,21)
+    assert 'Add file or folder' in '\n'.join(screen.display),screen.display[17:23]
+    send(b'\x1b',.3)
     click(50,0);send('a.wv');send(b'\x1b[D');send('a')
     assert 'a.wav' in screen.display[0] and 'a.wav' not in screen.display[-1]
     assert 'a' in screen.display[2][41:] and not screen.display[3][41:].strip(), screen.display[:10]
@@ -171,6 +193,8 @@ try:
     with sqlite3.connect(db_files[0]) as db:
         assert db.execute("SELECT count(*) FROM playlist_entries").fetchone()[0]==4
     click(60,2,2)
+    assert 'Add to Saved Playlist' in '\n'.join(screen.display)
+    click(62,5,2)
     assert 'Add to Saved Playlist' in '\n'.join(screen.display)
     click(62,5);send('PTY Saved\r',.3)
     with sqlite3.connect(db_files[0]) as db:
@@ -642,6 +666,9 @@ try:
     assert 'Ⅱ' in screen.display[36] and 'art' in '\n'.join(line[52:] for line in screen.display[2:20]),screen.display[36]
     diagnostics=list(Path(base).rglob('tui-diagnostics.log'))
     assert len(diagnostics)==1 and os.stat(diagnostics[0]).st_mode & 0o777==0o600
+    if os.path.isdir(f'/proc/{p.pid}/fd'):
+        assert os.path.samefile(f'/proc/{p.pid}/fd/1',diagnostics[0])
+        assert os.path.samefile(f'/proc/{p.pid}/fd/2',diagnostics[0])
     click(5,0);click(10,13);click(10,14)
     assert '╭─ MIDI Synthesis' in '\n'.join(screen.display),screen.display[:12]
     click(10,2)

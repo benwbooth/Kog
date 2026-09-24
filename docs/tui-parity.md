@@ -33,7 +33,8 @@ The provider smoke test is opt-in because it contacts public services: `nix deve
 - [x] Queue remove, clear, reorder, sort, star, and search work with the visible selection.
 - [x] Playlist rows show decoded title, artist, and album without probing on the input thread.
 - [x] Default #, Title, Artist, and Album columns have header sorting, mouse resizing, visibility toggles, and auto fit from loaded metadata.
-- [x] All 20 Qt columns can be shown, hidden, sorted, resized, reordered, and scrolled horizontally. The terminal saves its character-width layout and can import an existing Qt column order.
+- [x] All 20 Qt columns can be shown, hidden, sorted, resized, reordered, and scrolled horizontally with a visible draggable scrollbar, native horizontal wheel, Shift/Ctrl+wheel, or keyboard shortcuts. The terminal saves its character-width layout and can import an existing Qt column order.
+- [x] Right click opens row, file, saved playlist, column, and empty playlist menus. An open menu consumes right clicks inside it instead of passing them through to the underlying pane.
 - [x] Add File, Add URL, Save Current Playlist, and Add to Saved Playlist write the expected queue and database entries.
 - [x] Save Selection As and saved playlist Duplicate write the expected database entries.
 - [x] Saved playlist Add, Play, and Replace are available from its context menu.
@@ -73,7 +74,7 @@ The provider smoke test is opt-in because it contacts public services: `nix deve
 ## Verification
 
 - [x] Tests exercise text entry, clicks, drags, double clicks, menus, resize, and the playlist database on a PTY.
-- [x] Decoder diagnostics are written to an owner-only log instead of drawing over the TUI; the PTY fixture checks the log permissions.
+- [x] Both stdout and stderr diagnostics are redirected to an owner-only log while a separate terminal descriptor paints the TUI; the PTY fixture checks the live descriptors and log permissions.
 - [x] A populated 120×40 terminal frame was reviewed against the running Qt and web layouts for toolbar, sidebar, striped playlist, search fields, and transport placement.
 - [x] The footer shows a true-color Unicode cover preview from cached, embedded, nearby, or downloaded art; the track info view shows the artwork path. The PTY fixture checks a cover added through the tag editor, and an opt-in live provider test resolves Super Mario Galaxy.
 - [x] Clicking the footer cover or using View → Show Album Cover opens a larger, closable artwork dialog. A PTY fixture checks the enlarged pixels and mouse close action.
