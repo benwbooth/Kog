@@ -2,6 +2,7 @@ mod columns;
 mod remote;
 #[path = "../../../src/rom_import.rs"]
 mod rom_import;
+mod server_control;
 #[path = "../../../src/tag_editor.rs"]
 mod tag_editor;
 mod tui;

@@ -2,7 +2,7 @@
 
 This is the feature inventory for the terminal frontend, checked against `qml/Main.qml` and `crates/kog-web/src/lib.rs`. A checked item has been exercised in the isolated PTY test at the terminal sizes where the control is visible. Unchecked items still need implementation, verification, or both; the TUI should not be described as fully equivalent while they remain.
 
-Run `nix develop --command cargo build -p kog --bin kog`, then `uv run --with pyte --with mutagen scripts/tui_pty_check.py` and `nix develop --command uv run --with pyte scripts/tui_server_interop_check.py`. The tests create their own music trees, archives, settings directories, and SQLite databases. They do not write to the user's library or playlists.
+Run `nix develop --command cargo build -p kog --bin kog`, then `uv run --with pyte --with mutagen scripts/tui_pty_check.py`, `nix develop --command uv run --with pyte scripts/tui_server_interop_check.py`, and `uv run --with pyte scripts/tui_server_controls_check.py`. The tests create their own music trees, archives, settings directories, and SQLite databases. They do not write to the user's library or playlists.
 
 ## Window and input
 
@@ -61,6 +61,7 @@ Run `nix develop --command cargo build -p kog --bin kog`, then `uv run --with py
 - [x] Read CUE and M3U/PLS folder preferences are saved and applied by folder scans; a focused unit test checks the resulting entries.
 - [x] MIDI backend, SoundFont, ROM directory, and MT-32 mapping controls update the live shared decoder settings; the PTY fixture checks menu access, validation, clearing, and persistence.
 - [x] SC-55 and MT-32 compressed ROM import uses the shared Qt importer and validator on a worker; shared unit tests check extraction and the PTY fixture rejects incomplete sets without retaining files.
+- [x] The API Server menu edits the shared bind address, port, authentication, credentials, HTTPS mode/certificate, codec, and cache settings; it starts and stops the embedded server and manages connected devices. A focused PTY test checks real HTTP and HTTPS requests with token and basic authentication, self-signed and imported PEM certificates, device blocking, and private settings storage.
 - [ ] Remaining Qt/Web playback preferences are reachable.
 - [x] Track info, lyrics, and equalizer have terminal modal views. The info view includes Qt's technical fields and source path.
 - [x] Supported Formats opens the shared decoder catalog in a scrollable terminal view; PTY checks its first format group.
@@ -84,6 +85,6 @@ The Qt hamburger, playlist and file context menus, playlist header, and the web 
 | Playback | Terminal timing fixture for late album tags, playback error recovery, and output device test on real hardware. |
 | Library settings | Read CUE and M3U/PLS menu controls and folder behavior are checked. |
 | Synthesis | SC-55 and MT-32 archive controls reject incomplete fixtures; validating a complete proprietary ROM set needs user supplied files. |
-| Server settings | Address, port, authentication, TLS, codec/cache, device management, and start/stop controls are not in the TUI; `--server` runs the persisted Qt configuration. |
+| Server settings | Shared configuration, embedded start/stop, device blocking, token/basic authentication, self-signed HTTPS, and PEM import are checked through real requests. |
 | Media | Automatic cover downloading and cover art display need terminal representations and tests. |
 | Views | Compact mini player, Winamp skin presentation, and live inspector refresh need terminal equivalents. |

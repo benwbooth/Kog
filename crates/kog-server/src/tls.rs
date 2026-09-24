@@ -45,6 +45,10 @@ fn self_signed_names(bind: SocketAddr) -> Vec<String> {
 
 /// Build the TLS configuration for the given settings.
 pub fn server_config(settings: &TlsSettings, bind: SocketAddr) -> Result<rustls::ServerConfig, String> {
+    // Both crypto backends can be enabled by dependency feature unification.
+    // Rustls cannot choose automatically in that case, so select one before
+    // constructing a TLS listener in either the desktop or terminal server.
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     let material = load_material(settings, bind)?;
     rustls::ServerConfig::builder()
         .with_no_client_auth()

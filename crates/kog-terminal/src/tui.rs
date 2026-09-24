@@ -2,6 +2,7 @@
 //! live here; browsing, persistence and playback use Kog's existing crates.
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{self, Write};
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -20,12 +21,14 @@ use kog_core::db::{BLACKLIST_FOLDER, BLACKLIST_SONG, BlacklistEntry, StoredEntry
 use kog_core::equalizer::{EqualizerSettings, presets};
 use kog_server::api::{Library, LocalSearch, browse_local, expand_stored_entry};
 use kog_server::radio::{Radio, RadioAdvance, RadioEntry, RadioStatus};
+use kog_server::{AuthMode, StreamCodec, TlsMode};
 use rand::Rng;
 use unicode_width::UnicodeWidthChar;
 
 use crate::columns::Columns;
 use crate::remote::{RemoteFile, RemoteListing, RemoteSettings};
 use crate::rom_import::{RomKind, import_rom_archive};
+use crate::server_control::RunningServer;
 use crate::tag_editor::{parse_edits, snapshot_json, write_tags};
 
 #[derive(Clone)]
@@ -99,6 +102,7 @@ enum MenuPage {
     TagEditor,
     Remote,
     Synthesis,
+    Server,
 }
 
 impl MenuPage {
@@ -116,6 +120,7 @@ impl MenuPage {
             Self::TagEditor => "Edit Tags",
             Self::Remote => "Remote Server",
             Self::Synthesis => "MIDI Synthesis",
+            Self::Server => "API Server",
         }
     }
     fn labels(self) -> &'static [&'static str] {
@@ -132,6 +137,7 @@ impl MenuPage {
             Self::TagEditor => &TAG_EDITOR_MENU,
             Self::Remote => &REMOTE_MENU,
             Self::Synthesis => &SYNTHESIS_MENU,
+            Self::Server => &SERVER_MENU,
         }
     }
 }
@@ -170,6 +176,15 @@ enum PromptKind {
     Mt32Roms,
     Sc55Archive,
     Mt32Archive,
+    ServerAddress,
+    ServerPort,
+    ServerToken,
+    ServerUsername,
+    ServerPassword,
+    ServerCertificate,
+    ServerPrivateKey,
+    ServerCache,
+    ServerDevice,
 }
 
 enum RadioCommand {
@@ -298,6 +313,8 @@ struct Ui {
     tag_resume: Option<(usize, Duration, PlaybackState)>,
     rom_import_requests: Sender<(RomKind, PathBuf)>,
     rom_import_results: Receiver<RomImportResult>,
+    api_server: Option<RunningServer>,
+    pending_server_certificate: Option<PathBuf>,
     remote_settings: RemoteSettings,
     remote_connection: Option<RemoteSettings>,
     remote_active: bool,
@@ -635,6 +652,8 @@ impl Ui {
             tag_resume: None,
             rom_import_requests,
             rom_import_results,
+            api_server: None,
+            pending_server_certificate: None,
             remote_settings: RemoteSettings::load(),
             remote_connection: None,
             remote_active: false,
@@ -671,6 +690,9 @@ impl Ui {
         };
         ui.reload_lists();
         ui.browse(None);
+        if kog_server::config::load_config().enabled {
+            ui.start_api_server();
+        }
         if ui.radio_enabled {
             let _ = ui.radio_requests.send((
                 ui.radio_generation,
@@ -1276,6 +1298,7 @@ impl Ui {
                     Err(error) => self.status = error,
                 }
             }
+            (MenuPage::Preferences, 15) => self.open_submenu(MenuPage::Server),
             (MenuPage::Synthesis, 0) => {
                 let next = match self.decoder_settings.midi_engine() {
                     MidiEngine::RustySynth => MidiEngine::Opl3Windows,
@@ -1538,6 +1561,84 @@ impl Ui {
                 self.browse(None);
                 self.status = "Showing local library".to_owned();
             }
+            (MenuPage::Server, 0) => self.start_api_server(),
+            (MenuPage::Server, 1) => self.stop_api_server(),
+            (MenuPage::Server, 2) => self.show_api_server_status(),
+            (MenuPage::Server, 3) => self.begin_prompt(
+                PromptKind::ServerAddress,
+                kog_server::config::load_config().address.to_string(),
+            ),
+            (MenuPage::Server, 4) => self.begin_prompt(
+                PromptKind::ServerPort,
+                kog_server::config::load_config().port.to_string(),
+            ),
+            (MenuPage::Server, 5) => self.update_server_config(|config| {
+                config.auth = match config.auth {
+                    AuthMode::None => AuthMode::Token,
+                    AuthMode::Token => AuthMode::Basic,
+                    AuthMode::Basic => AuthMode::None,
+                };
+                config.ensure_credentials();
+                Ok(())
+            }),
+            (MenuPage::Server, 6) => self.begin_prompt(PromptKind::ServerToken, String::new()),
+            (MenuPage::Server, 7) => self.update_server_config(|config| {
+                config.token = kog_server::auth::generate_token()?;
+                Ok(())
+            }),
+            (MenuPage::Server, 8) => self.begin_prompt(
+                PromptKind::ServerUsername,
+                kog_server::config::load_config().credentials.username,
+            ),
+            (MenuPage::Server, 9) => self.begin_prompt(PromptKind::ServerPassword, String::new()),
+            (MenuPage::Server, 10) => self.update_server_config(|config| {
+                config.tls.mode = match config.tls.mode {
+                    TlsMode::Off => TlsMode::SelfSigned,
+                    TlsMode::SelfSigned => TlsMode::Pem,
+                    TlsMode::Pem => TlsMode::Off,
+                };
+                Ok(())
+            }),
+            (MenuPage::Server, 11) => {
+                self.begin_prompt(PromptKind::ServerCertificate, String::new())
+            }
+            (MenuPage::Server, 12) => self.update_server_config(|config| {
+                config.default_codec = match config.default_codec {
+                    StreamCodec::Aac => StreamCodec::Opus,
+                    StreamCodec::Opus => StreamCodec::Flac,
+                    StreamCodec::Flac => StreamCodec::Aac,
+                };
+                Ok(())
+            }),
+            (MenuPage::Server, 13) => self.begin_prompt(
+                PromptKind::ServerCache,
+                (kog_server::config::load_config().cache_bytes / (1024 * 1024)).to_string(),
+            ),
+            (MenuPage::Server, 14) => {
+                let devices = kog_server::devices::registry().list();
+                let mut lines = vec![format!("Connected devices: {}", devices.len())];
+                for device in devices {
+                    lines.push(format!(
+                        "{} · {} · {} · {} request(s){}",
+                        device.id,
+                        device.agent,
+                        device.addr,
+                        device.requests,
+                        if device.blocked { " · blocked" } else { "" }
+                    ));
+                }
+                self.show_modal(lines.join("\n"));
+            }
+            (MenuPage::Server, 15) => self.begin_prompt(PromptKind::ServerDevice, String::new()),
+            (MenuPage::Server, 16) => {
+                let config = kog_server::config::load_config();
+                let problems = config.problems();
+                self.show_modal(if problems.is_empty() {
+                    "Server configuration is valid".to_owned()
+                } else {
+                    problems.join("\n")
+                });
+            }
             _ => {}
         }
     }
@@ -1549,6 +1650,88 @@ impl Ui {
             }
             Ok(()) => self.status = "Remote settings saved".to_owned(),
             Err(error) => self.status = error,
+        }
+    }
+
+    fn update_server_config(
+        &mut self,
+        change: impl FnOnce(&mut kog_server::config::ServerConfig) -> Result<(), String>,
+    ) {
+        let mut config = kog_server::config::load_config();
+        if let Err(error) = change(&mut config) {
+            self.status = error;
+            return;
+        }
+        match kog_server::config::save_config(&config) {
+            Ok(()) => {
+                self.status = if self.api_server.is_some() {
+                    "Server settings saved; restart to apply".to_owned()
+                } else {
+                    "Server settings saved".to_owned()
+                }
+            }
+            Err(error) => self.status = error,
+        }
+    }
+
+    fn start_api_server(&mut self) {
+        if let Some(server) = &self.api_server {
+            self.status = format!("Server already running at {}", server.url);
+            return;
+        }
+        let mut config = kog_server::config::load_config();
+        config.enabled = true;
+        config.ensure_credentials();
+        if let Err(error) = config.validate() {
+            self.status = error;
+            return;
+        }
+        match RunningServer::start(config.clone()) {
+            Ok(server) => {
+                let url = server.url.clone();
+                self.api_server = Some(server);
+                match kog_server::config::save_config(&config) {
+                    Ok(()) => self.status = format!("Server running at {url}"),
+                    Err(error) => self.status = format!("Server running at {url}; {error}"),
+                }
+            }
+            Err(error) => self.status = error,
+        }
+    }
+
+    fn stop_api_server(&mut self) {
+        self.api_server = None;
+        self.update_server_config(|config| {
+            config.enabled = false;
+            Ok(())
+        });
+        if self.status == "Server settings saved" {
+            self.status = "Server stopped".to_owned();
+        }
+    }
+
+    fn show_api_server_status(&mut self) {
+        let config = kog_server::config::load_config();
+        self.show_modal(format!(
+            "API server: {}\nAddress: {}:{}\nAuthentication: {:?}\nHTTPS: {:?}\nCodec: {}\nCache: {} MB\nMusic folder: {}",
+            self.api_server.as_ref().map_or("stopped".to_owned(), |server| format!("running at {}", server.url)),
+            config.address,
+            config.port,
+            config.auth,
+            config.tls.mode,
+            config.default_codec.setting_value(),
+            config.cache_bytes / (1024 * 1024),
+            self.library.root().map_or_else(|| "None".to_owned(), |path| path.display().to_string()),
+        ));
+    }
+
+    fn poll_api_server(&mut self) {
+        if let Some(result) = self.api_server.as_ref().and_then(RunningServer::finished) {
+            self.api_server = None;
+            self.status = match result {
+                Ok(()) => "API server stopped".to_owned(),
+                Err(error) => format!("API server stopped: {error}"),
+            };
         }
     }
 
@@ -3285,6 +3468,8 @@ impl Ui {
                     | PromptKind::SoundFont
                     | PromptKind::Sc55Roms
                     | PromptKind::Mt32Roms
+                    | PromptKind::ServerToken
+                    | PromptKind::ServerUsername
             )
         {
             self.status = "A value is required".to_owned();
@@ -3301,7 +3486,10 @@ impl Ui {
                 }
                 match AppSettings::save_music_directory(&path) {
                     Ok(()) => {
-                        self.library.set_root(Some(path));
+                        self.library.set_root(Some(path.clone()));
+                        if let Some(server) = &self.api_server {
+                            server.library.set_root(Some(path));
+                        }
                         self.browse(None);
                     }
                     Err(error) => self.status = error,
@@ -3791,6 +3979,72 @@ impl Ui {
                     self.status = "ROM import worker is unavailable".to_owned();
                 } else {
                     self.status = "Importing ROM archive…".to_owned();
+                }
+            }
+            PromptKind::ServerAddress => match value.parse::<IpAddr>() {
+                Ok(address) => self.update_server_config(|config| {
+                    config.address = address;
+                    Ok(())
+                }),
+                Err(_) => self.status = "Enter a valid IPv4 or IPv6 bind address".to_owned(),
+            },
+            PromptKind::ServerPort => match value.parse::<u16>() {
+                Ok(port) if port > 0 => self.update_server_config(|config| {
+                    config.port = port;
+                    Ok(())
+                }),
+                _ => self.status = "Choose a port between 1 and 65535".to_owned(),
+            },
+            PromptKind::ServerToken => self.update_server_config(|config| {
+                config.token = value.to_owned();
+                Ok(())
+            }),
+            PromptKind::ServerUsername => self.update_server_config(|config| {
+                config.credentials.username = value.to_owned();
+                Ok(())
+            }),
+            PromptKind::ServerPassword => {
+                self.update_server_config(|config| config.credentials.set_password(value))
+            }
+            PromptKind::ServerCertificate => {
+                let path = PathBuf::from(value);
+                if !path.is_file() {
+                    self.status = "Choose a certificate file".to_owned();
+                } else {
+                    self.pending_server_certificate = Some(path);
+                    self.begin_prompt(PromptKind::ServerPrivateKey, String::new());
+                }
+            }
+            PromptKind::ServerPrivateKey => {
+                if let Some(certificate) = self.pending_server_certificate.take() {
+                    match kog_server::import_pem_pair(&certificate, Path::new(value)) {
+                        Ok(tls) => self.update_server_config(|config| {
+                            config.tls = tls;
+                            Ok(())
+                        }),
+                        Err(error) => self.status = error,
+                    }
+                }
+            }
+            PromptKind::ServerCache => match value.parse::<u64>() {
+                Ok(megabytes) if megabytes <= 102_400 => self.update_server_config(|config| {
+                    config.cache_bytes = megabytes * 1024 * 1024;
+                    Ok(())
+                }),
+                _ => self.status = "Choose a cache size from 0 to 102400 MB".to_owned(),
+            },
+            PromptKind::ServerDevice => {
+                let mut devices = kog_server::devices::registry();
+                if let Some(device) = devices.list().into_iter().find(|device| device.id == value) {
+                    let blocked = !device.blocked;
+                    devices.set_blocked(value, blocked);
+                    self.status = format!(
+                        "Device {} {}",
+                        value,
+                        if blocked { "blocked" } else { "allowed" }
+                    );
+                } else {
+                    self.status = "No device with that ID".to_owned();
                 }
             }
         }
@@ -6023,6 +6277,15 @@ fn prompt_label(kind: PromptKind) -> &'static str {
         PromptKind::Mt32Roms => "MT-32 ROM directory (empty to clear)",
         PromptKind::Sc55Archive => "SC-55 ROM archive path",
         PromptKind::Mt32Archive => "MT-32 ROM archive path",
+        PromptKind::ServerAddress => "Server bind IP address",
+        PromptKind::ServerPort => "Server port 1-65535",
+        PromptKind::ServerToken => "API token (empty to clear)",
+        PromptKind::ServerUsername => "Server username",
+        PromptKind::ServerPassword => "Server password",
+        PromptKind::ServerCertificate => "PEM certificate file path",
+        PromptKind::ServerPrivateKey => "PEM private key file path",
+        PromptKind::ServerCache => "Stream cache size in MB",
+        PromptKind::ServerDevice => "Device ID to block or allow",
     }
 }
 
@@ -6144,7 +6407,7 @@ const PLAYBACK_MENU: [&str; 13] = [
     "Toggle Stop After Selected",
     "Clear Queue",
 ];
-const PREFERENCES_MENU: [&str; 15] = [
+const PREFERENCES_MENU: [&str; 16] = [
     "Music Folder…",
     "Volume…",
     "Cycle Repeat",
@@ -6160,6 +6423,26 @@ const PREFERENCES_MENU: [&str; 15] = [
     "MIDI Synthesis          ›",
     "Read CUE Sheets On/Off",
     "Read M3U/PLS On/Off",
+    "API Server               ›",
+];
+const SERVER_MENU: [&str; 17] = [
+    "Start Server",
+    "Stop Server",
+    "Server Status…",
+    "Bind Address…",
+    "Port…",
+    "Cycle Authentication",
+    "API Token…",
+    "Generate API Token",
+    "Username…",
+    "Password…",
+    "Cycle HTTPS",
+    "Import PEM Certificate…",
+    "Cycle Stream Codec",
+    "Stream Cache MB…",
+    "Connected Devices…",
+    "Block/Unblock Device ID…",
+    "Server Problems…",
 ];
 const SYNTHESIS_MENU: [&str; 8] = [
     "Cycle MIDI Backend",
@@ -6743,6 +7026,7 @@ pub fn run() -> Result<(), String> {
         ui.poll_deletes();
         ui.poll_tags();
         ui.poll_rom_imports();
+        ui.poll_api_server();
         ui.poll_metadata();
         ui.poll_radio();
         let size = terminal.size();
