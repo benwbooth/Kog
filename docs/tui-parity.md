@@ -15,7 +15,7 @@ Press `?` inside the TUI for the scrollable shortcut guide. Every TUI action exp
 | Action | Keyboard route |
 | --- | --- |
 | Change pane and navigate | `Tab` / `Shift+Tab`; arrows, Page Up/Down, Home/End |
-| Open menus and item actions | `m` or F10 for the application menu; `M`, Shift+F10, or Menu key for the focused item |
+| Open menus and item actions | `m` or F10 for the application menu; `M`, Shift+F10, or Menu key for the focused item; every menu item shows an `Alt+letter` shortcut, usable while that menu is open. Main menu shortcuts also work directly from the TUI. |
 | Select several rows | Shift+Up/Down, or `v` then Up/Down, selects a range; `J`/`K` moves the cursor without changing selection, then `x` toggles its row; Ctrl+A selects all |
 | Show or hide the sidebar and its sections | `t` for sidebar; `z` for the focused Files or Playlists section; Ctrl+Left/Right or `{`/`}` for sidebar width |
 | Search and refresh | `/` searches files; `F` searches the playlist; Ctrl+R or `u` refreshes the focused Files or Playlists pane |
@@ -36,6 +36,7 @@ The printable alternatives for range selection, context actions, resizing, reord
 - [x] Hamburger opens a structured, keyboard and mouse operable menu with working commands.
 - [x] Right click opens context menus for tree items, playlist rows, saved playlists, and columns.
 - [x] The same context actions open from the keyboard, including at narrow terminal sizes; `?` shows the shortcut guide.
+- [x] Every main, submenu, and context-menu action has a unique displayed Alt shortcut within its menu; PTY and unit tests check dispatch and the shortcut labels.
 - [x] Mouse wheel and Home/End navigation keep long tree and playlist selections visible, including at 48 columns.
 - [x] Multi selection supports Ctrl+click toggling, Alt+click ranges, `v` then click ranges, Shift+arrow ranges, and deletion of all selected rows. Shift+click also works when the terminal forwards it.
 - [x] Keyboard-only noncontiguous selection, section collapse, sidebar resize, column sorting/resizing/reordering, and exact seek are exercised in an isolated PTY without mouse events.

@@ -162,7 +162,7 @@ try:
     send(b'\x01'+os.fsencode(base)+b'/discard-me',.6)
     wait_for('Select Music Folder')
     send(b'\x17',.3)
-    assert base+'/' in '\n'.join(screen.display)
+    wait_for(base+'/',5)
     send(b'\r',.3)
     assert '▱ Music' in '\n'.join(screen.display),screen.display
     send('.',.3)
@@ -247,7 +247,7 @@ try:
     click(45,36)
     assert 'Shuffle: albums' in screen.display[-1],screen.display[-1]
     click(5,0)
-    assert 'Save Current Playlist' in '\n'.join(screen.display)
+    assert 'Save Current Playlist' in '\n'.join(screen.display) and 'Alt+S' in '\n'.join(screen.display)
     click(10,6);send('PTY Saved\r',.3)
     wait_for('Saved 4 tracks')
     click(60,2);click(60,4,8)
@@ -338,7 +338,7 @@ try:
     send('m');send(b'\x1b[B'*7);send(b'\r')
     assert '╭─ Kog' in '\n'.join(screen.display)
     assert '╭─ View' in '\n'.join(screen.display)
-    assert screen.display[row('View                     ›')].find('╭─ View') > screen.display[row('View                     ›')].find('View                     ›')
+    assert screen.display[row('Alt+V')].find('╭─ View') > screen.display[row('Alt+V')].find('Alt+V')
     if menu_snapshot:=os.environ.get('KOG_TUI_MENU_SNAPSHOT_PATH'):
         save_snapshot(menu_snapshot)
     menu_item('Kog',10)
@@ -516,7 +516,7 @@ try:
     click(38,18)
     assert '%' in screen.display[18]
     click(5,0)
-    assert 'Save Current Playlist' in '\n'.join(screen.display)
+    assert 'Save Current' in '\n'.join(screen.display) and 'Alt+S' in '\n'.join(screen.display)
     menu_item('Kog',9)
     assert '╭─ Kog' in '\n'.join(screen.display) and '╭─ View' in '\n'.join(screen.display)
     resize(72,24);screen.resize(lines=24,columns=72);os.kill(p.pid,signal.SIGWINCH);drain(.5)

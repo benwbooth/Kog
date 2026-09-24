@@ -263,6 +263,66 @@ impl MenuPage {
     }
 }
 
+const MAIN_MENU_SHORTCUTS: [Option<char>; 16] = [
+    Some('A'),
+    Some('U'),
+    Some('M'),
+    None,
+    Some('S'),
+    Some('E'),
+    Some('R'),
+    Some('C'),
+    None,
+    Some('V'),
+    Some('B'),
+    Some('P'),
+    None,
+    Some('T'),
+    Some('K'),
+    Some('Q'),
+];
+
+fn menu_shortcuts(page: MenuPage) -> Vec<Option<char>> {
+    if page == MenuPage::Main {
+        return MAIN_MENU_SHORTCUTS.to_vec();
+    }
+    let mut used = HashSet::new();
+    page.labels()
+        .iter()
+        .map(|label| {
+            if label.is_empty() {
+                return None;
+            }
+            let mut candidates = Vec::new();
+            let mut word_start = true;
+            for character in label.chars() {
+                if character.is_ascii_alphabetic() {
+                    if word_start {
+                        candidates.push(character.to_ascii_uppercase());
+                    }
+                    word_start = false;
+                } else {
+                    word_start = true;
+                }
+            }
+            candidates.extend(
+                label
+                    .chars()
+                    .filter(|character| character.is_ascii_alphabetic())
+                    .map(|character| character.to_ascii_uppercase()),
+            );
+            candidates.extend('A'..='Z');
+            candidates.into_iter().find(|key| used.insert(*key))
+        })
+        .collect()
+}
+
+fn menu_shortcut_index(page: MenuPage, key: char) -> Option<usize> {
+    menu_shortcuts(page)
+        .iter()
+        .position(|shortcut| shortcut.is_some_and(|shortcut| shortcut == key.to_ascii_uppercase()))
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PromptKind {
     MusicFolder,
@@ -2593,6 +2653,26 @@ impl Ui {
         if self.menu_selected >= self.menu_offset + page {
             self.menu_offset = self.menu_selected + 1 - page;
         }
+    }
+
+    fn activate_menu_shortcut(&mut self, key: char, size: (usize, usize)) -> bool {
+        let Some(index) = menu_shortcut_index(self.menu_page, key) else {
+            return false;
+        };
+        self.menu_selected = index;
+        let page = self
+            .menu_page
+            .labels()
+            .len()
+            .min(size.1.saturating_sub(4))
+            .max(1);
+        if index < self.menu_offset {
+            self.menu_offset = index;
+        } else if index >= self.menu_offset + page {
+            self.menu_offset = index + 1 - page;
+        }
+        self.activate_menu(index, size);
+        true
     }
 
     fn clear_playlist(&mut self) {
@@ -5133,6 +5213,7 @@ impl Ui {
                 "Tab / Shift+Tab: change pane; arrows, Page Up/Down, Home/End: move",
                 "Enter: open folder, add saved list, or play track",
                 "m: application menu; M or Shift+F10: selected item actions",
+                "Alt+letter: choose the labeled item in an open menu; main menu works directly",
                 "Menus: arrows, Enter, Left/Esc; Page Up/Down and Home/End also work",
                 "Shift+Up/Down or v then arrows: select a range; J/K: move cursor only",
                 "x or Ctrl+Space: toggle the cursor row; Ctrl+A: select all",
@@ -5517,6 +5598,9 @@ impl Ui {
         }
         if self.menu_open {
             match key {
+                Key::Alt(character) => {
+                    self.activate_menu_shortcut(character, size);
+                }
                 Key::Esc | Key::Left => {
                     if let Some(parent) = self.menu_parents.pop() {
                         self.restore_menu_layer(parent);
@@ -5648,6 +5732,12 @@ impl Ui {
         .max(1);
         match key {
             Key::Char('q') | Key::CtrlC => return false,
+            Key::Alt(character) => {
+                if menu_shortcut_index(MenuPage::Main, character).is_some() {
+                    self.open_submenu(MenuPage::Main);
+                    self.activate_menu_shortcut(character, size);
+                }
+            }
             Key::Char('?') => self.show_keyboard_help(),
             Key::Char('M') | Key::ContextMenu => self.open_keyboard_context(size),
             Key::F10 | Key::Char('m') => self.open_submenu(MenuPage::Main),
@@ -7661,6 +7751,7 @@ impl Ui {
             layers.push(self.active_menu_layer());
             for layer in layers {
                 let labels = layer.page.labels();
+                let shortcuts = menu_shortcuts(layer.page);
                 let page = labels.len().min(height.saturating_sub(4));
                 let menu_width = width.saturating_sub(layer.x).min(menu_width(width));
                 paint(
@@ -7683,11 +7774,7 @@ impl Ui {
                 );
                 for (row, index) in (layer.offset..labels.len()).take(page).enumerate() {
                     let label = labels[index];
-                    let shown = if label.is_empty() {
-                        "│ ─────────────────────────────".to_owned()
-                    } else {
-                        format!("│ {label}")
-                    };
+                    let shown = menu_row(label, shortcuts[index], menu_width);
                     paint(
                         &mut screen,
                         layer.y + row + 2,
@@ -8806,6 +8893,26 @@ fn menu_width(terminal_width: usize) -> usize {
     }
 }
 
+fn menu_row(label: &str, shortcut: Option<char>, width: usize) -> String {
+    if label.is_empty() {
+        return format!("│ {}", "─".repeat(width.saturating_sub(3)));
+    }
+    let hint = shortcut.map_or_else(String::new, |key| format!("Alt+{key}"));
+    let normalized = label.split_whitespace().collect::<Vec<_>>().join(" ");
+    let (name, arrow) = if let Some(name) = normalized
+        .strip_suffix('›')
+        .or_else(|| normalized.strip_suffix('▶'))
+    {
+        (name.trim_end(), " ›")
+    } else {
+        (normalized.as_str(), "")
+    };
+    let label_width = width
+        .saturating_sub(3)
+        .saturating_sub(hint.len() + 1 + cell_width(arrow));
+    format!("│ {}{arrow} {hint}", truncate(name, label_width))
+}
+
 fn truncate(text: &str, width: usize) -> String {
     let clipped = text
         .chars()
@@ -9192,6 +9299,7 @@ fn paint_cover_at_size(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Key {
     Char(char),
+    Alt(char),
     CtrlA,
     CtrlC,
     CtrlL,
@@ -9268,6 +9376,11 @@ fn parse_event(bytes: &mut Vec<u8>) -> Option<Event> {
             return Some(Event::Key(Key::CtrlBackspace));
         }
         if bytes[1] != b'[' {
+            if bytes[1].is_ascii_graphic() || bytes[1] == b' ' {
+                let key = bytes[1] as char;
+                bytes.drain(..2);
+                return Some(Event::Key(Key::Alt(key)));
+            }
             bytes.drain(..1);
             return Some(Event::Key(Key::Esc));
         }
@@ -9743,6 +9856,54 @@ mod tests {
                 matches!(parse_event(&mut keyboard_keys), Some(Event::Key(key)) if key == expected)
             );
         }
+        let mut alt_keys = b"\x1bv\x1bP".to_vec();
+        assert!(matches!(
+            parse_event(&mut alt_keys),
+            Some(Event::Key(Key::Alt('v')))
+        ));
+        assert!(matches!(
+            parse_event(&mut alt_keys),
+            Some(Event::Key(Key::Alt('P')))
+        ));
+    }
+    #[test]
+    fn every_menu_item_has_a_unique_visible_alt_shortcut() {
+        for page in [
+            MenuPage::Main,
+            MenuPage::View,
+            MenuPage::Playback,
+            MenuPage::Preferences,
+            MenuPage::Tree,
+            MenuPage::Tracks,
+            MenuPage::Saved,
+            MenuPage::Playlist,
+            MenuPage::Columns,
+            MenuPage::ColumnVisibility,
+            MenuPage::TagEditor,
+            MenuPage::Remote,
+            MenuPage::Synthesis,
+            MenuPage::Server,
+        ] {
+            let shortcuts = menu_shortcuts(page);
+            assert_eq!(shortcuts.len(), page.labels().len());
+            let mut seen = HashSet::new();
+            for (index, (&label, shortcut)) in page.labels().iter().zip(shortcuts).enumerate() {
+                if label.is_empty() {
+                    assert_eq!(shortcut, None);
+                    continue;
+                }
+                let shortcut = shortcut.expect("menu item must have an Alt shortcut");
+                assert!(seen.insert(shortcut));
+                assert_eq!(menu_shortcut_index(page, shortcut), Some(index));
+                for width in [18, 33] {
+                    let row = menu_row(label, Some(shortcut), width);
+                    assert!(row.contains(&format!("Alt+{shortcut}")));
+                    assert!(cell_width(&row) <= width - 1);
+                }
+            }
+        }
+        assert_eq!(menu_shortcut_index(MenuPage::Main, 'v'), Some(9));
+        assert_eq!(menu_shortcut_index(MenuPage::Main, 'p'), Some(11));
     }
     #[test]
     fn seek_time_accepts_long_tracks_and_rejects_invalid_fields() {

@@ -85,6 +85,17 @@ with tempfile.TemporaryDirectory(prefix="kog-tui-keyboard-") as base:
         send("?")
         wait_for("Keyboard controls")
         send(b"\x1b", 0.4)
+        send(b"\x1bv")  # Alt+V opens View directly from the main menu.
+        wait_for("╭─ View")
+        wait_for("Alt+F")
+        send(b"\x1bf")  # Alt+F activates Supported Formats within View.
+        wait_for(".m3u")
+        send(b"\x1b", 0.4)
+        send(b"\x1bp")  # Alt+P opens Preferences directly.
+        wait_for("╭─ Preferences")
+        send(b"\x1bv")  # Alt+V activates Volume within Preferences.
+        wait_for("Volume 0-100")
+        send(b"\x1b", 0.4)
 
         send("o")
         wait_for("Select Music Folder")
@@ -117,7 +128,7 @@ with tempfile.TemporaryDirectory(prefix="kog-tui-keyboard-") as base:
         send("v")
         send(b"\x1b[21;2~")  # Shift+F10 opens the selected file's context menu.
         wait_for("File")
-        send(b"\r", 0.5)  # Add selected a.wav and b.wav.
+        send(b"\x1ba", 0.5)  # Alt+A adds selected a.wav and b.wav.
         wait_for("Added 2 track(s)")
 
         send(b"\t")  # Playlist pane.
@@ -187,7 +198,11 @@ with tempfile.TemporaryDirectory(prefix="kog-tui-keyboard-") as base:
         wait_for("Title column")
         send("M")
         wait_for("Columns")
-        send(b"\x1b", 0.4)
+        assert "Alt+" in "\n".join(screen.display)
+        send(b"\x1bc")  # Open the column visibility submenu by its accelerator.
+        wait_for("Visible Columns")
+        send(b"\x1bj")  # Toggle Bitrate, below the visible page of the narrow menu.
+        assert any(entry.startswith("bitrate,") and entry.endswith(",1") for entry in layouts[0].read_text().split(";"))
         send("H")
         send("?")
         wait_for("Keyboard controls")
