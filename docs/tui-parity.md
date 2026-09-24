@@ -6,6 +6,8 @@ Run `nix develop --command cargo build -p kog --bin kog`, then `uv run --python 
 
 The provider smoke test is opt-in because it contacts public services: `nix develop --command cargo test -p kog-terminal --lib live_super_mario_galaxy_cover -- --ignored`.
 
+For range selection in any pane, click the first row, press `v`, then click the last row. Esc cancels the pending range. Alt+click also extends a range when the terminal forwards that modifier; Ctrl+click toggles individual rows.
+
 ## Window and input
 
 - [x] Terminal resize redraws without losing the active pane.
@@ -16,7 +18,7 @@ The provider smoke test is opt-in because it contacts public services: `nix deve
 - [x] Hamburger opens a structured, keyboard and mouse operable menu with working commands.
 - [x] Right click opens context menus for tree items, playlist rows, saved playlists, and columns.
 - [x] Mouse wheel and Home/End navigation keep long tree and playlist selections visible, including at 48 columns.
-- [x] Multi selection supports Ctrl, Shift, and deletion of all selected rows.
+- [x] Multi selection supports Ctrl+click toggling, Alt+click ranges, `v` then click ranges, Shift+arrow ranges, and deletion of all selected rows. Shift+click also works when the terminal forwards it.
 - [x] Path, URL, name, and preference prompts edit in a centered dialog with a visible caret and Ctrl+A replacement.
 
 ## Library and playlists
@@ -25,7 +27,7 @@ The provider smoke test is opt-in because it contacts public services: `nix deve
 - [x] A token-protected remote Kog library can be browsed, searched, queued by folder, and streamed; URL, auth mode, and codec controls are in the Remote Server menu. PTY fixtures check the mock API and a real headless Kog server, including nested archive playback.
 - [x] A folder click expands or collapses it; a folder double click queues its contents without starting playback.
 - [x] A file double click adds and plays; single click selects.
-- [x] Ctrl and Shift mouse selection, Shift arrow range selection, and Ctrl+A work in the tree; Add applies to selected files and folders. Play Now on a folder starts its first loaded track.
+- [x] Ctrl mouse selection, `v` then click or Alt mouse range selection, Shift arrow range selection, and Ctrl+A work in the tree; Add applies to selected files and folders. Play Now on a folder starts its first loaded track.
 - [x] Tree context actions can change and reset the visible root, blacklist selected songs, and move several local files to trash after one confirmation. Delete opens the same confirmation.
 - [x] Nested archive folders can be explored and added. Direct adds and folder scans expand multi-song files; a three-song NSF is checked in unit and PTY fixtures.
 - [x] Saved playlist single click selects the source; double click adds its tracks to the playing pane.
@@ -43,7 +45,7 @@ The provider smoke test is opt-in because it contacts public services: `nix deve
 - [x] Saved playlist Add, Play, and Replace are available from its context menu.
 - [x] Playlist row Show in File Tree focuses the matching local file.
 - [x] Saved playlist export writes a portable M3U; prune missing deletes only absent local/archive entries.
-- [x] Ctrl and Shift select saved playlists; Add and Play use the selected set, and confirmed Delete removes the selected saved lists.
+- [x] Ctrl toggle and `v` then click, Alt+click, or Shift arrow ranges select saved playlists; Add and Play use the selected set, and confirmed Delete removes the selected saved lists.
 - [x] Tree and playlist song/folder blacklist actions persist to the shared database; the menu can view and remove entries.
 - [x] Confirmed Move to Trash runs off the input thread, removes local tree items and their current playlist rows, and is exercised with disposable files.
 - [x] Track tag editing stages the Qt fields and artwork actions, saves through the shared writer off the input thread, and updates multiple local files. The PTY test checks album and artwork tags and continued playback after saving.

@@ -389,6 +389,7 @@ struct Ui {
     stop_after_rows: HashSet<usize>,
     selected_tracks: HashSet<usize>,
     selection_anchor: Option<usize>,
+    range_click_pending: Option<Focus>,
     session_dirty: bool,
     selected: [usize; 3],
     offsets: [usize; 3],
@@ -761,6 +762,7 @@ impl Ui {
             stop_after_rows: HashSet::new(),
             selected_tracks: HashSet::new(),
             selection_anchor: None,
+            range_click_pending: None,
             session_dirty: false,
             selected: [0; 3],
             offsets: [0; 3],
@@ -2088,6 +2090,7 @@ impl Ui {
     }
 
     fn open_submenu(&mut self, page: MenuPage) {
+        self.range_click_pending = None;
         self.menu_parents.clear();
         self.menu_page = page;
         self.menu_open = true;
@@ -2925,7 +2928,9 @@ impl Ui {
             self.selected_lists.insert(self.lists[index].0);
         }
         self.selected[0] = index;
-        self.list_anchor = Some(index);
+        if !shift || self.list_anchor.is_none() {
+            self.list_anchor = Some(index);
+        }
     }
 
     fn selected_list_indices(&self) -> Vec<usize> {
@@ -3366,8 +3371,17 @@ impl Ui {
             if !ctrl {
                 self.selected_tracks.clear();
             }
-            for row in anchor.min(index)..=anchor.max(index) {
-                self.selected_tracks.insert(row);
+            let visible = self.visible_tracks();
+            if let (Some(start), Some(end)) = (
+                visible.iter().position(|&row| row == anchor),
+                visible.iter().position(|&row| row == index),
+            ) {
+                for &row in &visible[start.min(end)..=start.max(end)] {
+                    self.selected_tracks.insert(row);
+                }
+            } else {
+                self.selected_tracks.insert(index);
+                self.selection_anchor = Some(index);
             }
         } else if ctrl {
             if !self.selected_tracks.insert(index) {
@@ -3380,6 +3394,34 @@ impl Ui {
             self.selection_anchor = Some(index);
         }
         self.selected[2] = index;
+    }
+
+    fn toggle_range_click(&mut self) {
+        if self.range_click_pending == Some(self.focus) {
+            self.range_click_pending = None;
+            self.status = "Range selection cancelled".to_owned();
+            return;
+        }
+        let available = match self.focus {
+            Focus::Playlists if !self.lists.is_empty() => {
+                self.select_list(self.selected[0]);
+                true
+            }
+            Focus::Library if !self.items.is_empty() => {
+                self.select_tree_with_modifiers(self.selected[1], false, false);
+                true
+            }
+            Focus::Tracks if !self.tracks.is_empty() => {
+                self.select_track(self.selected[2], false, false);
+                true
+            }
+            _ => false,
+        };
+        if available {
+            self.range_click_pending = Some(self.focus);
+            self.last_click = None;
+            self.status = "Range selection: click the last row · Esc cancels".to_owned();
+        }
     }
 
     fn move_track(&mut self, from: usize, to: usize) {
@@ -4864,6 +4906,9 @@ impl Ui {
         .max(1);
         match key {
             Key::Char('q') | Key::CtrlC => return false,
+            Key::Esc if self.range_click_pending.take().is_some() => {
+                self.status = "Range selection cancelled".to_owned();
+            }
             Key::Esc if self.search.is_some() => self.browse(None),
             Key::Esc if self.remote_active && !self.search_query.is_empty() => {
                 self.connect_remote(Some(self.remote_path.clone()));
@@ -4875,6 +4920,7 @@ impl Ui {
             }
             Key::Char('c') => self.show_queue(),
             Key::Char('m') => self.open_submenu(MenuPage::Main),
+            Key::Char('v') => self.toggle_range_click(),
             Key::Char('t') => {
                 self.sidebar_visible = !self.sidebar_visible;
                 if !self.sidebar_visible {
@@ -4882,6 +4928,7 @@ impl Ui {
                 }
             }
             Key::Tab => {
+                self.range_click_pending = None;
                 self.focus = match self.focus {
                     Focus::Playlists => Focus::Library,
                     Focus::Library => Focus::Tracks,
@@ -4889,6 +4936,7 @@ impl Ui {
                 }
             }
             Key::BackTab => {
+                self.range_click_pending = None;
                 self.focus = match self.focus {
                     Focus::Playlists => Focus::Tracks,
                     Focus::Library => Focus::Playlists,
@@ -5156,6 +5204,14 @@ impl Ui {
         }
         if button & 32 != 0 {
             return;
+        }
+        let range_pending = if button & 3 == 0 {
+            self.range_click_pending.take()
+        } else {
+            None
+        };
+        if range_pending.is_some() {
+            self.status = "Range selection cancelled".to_owned();
         }
         if self.menu_open && y > 0 {
             let mut layers = self.menu_parents.clone();
@@ -5531,15 +5587,25 @@ impl Ui {
                 self.focus = Focus::Playlists;
                 let index = self.offsets[0] + y - layout.list_top;
                 if index < self.lists.len() {
+                    let ranged = button & (4 | 8) != 0 || range_pending == Some(Focus::Playlists);
+                    let modified = ranged || button & 16 != 0;
                     let now = Instant::now();
-                    let double = self.last_click.is_some_and(|(when, pane, row)| {
-                        pane == 0
-                            && row == index
-                            && now.duration_since(when) < Duration::from_millis(450)
-                    });
-                    self.select_list_with_modifiers(index, button & 4 != 0, button & 16 != 0);
-                    self.last_click = if double { None } else { Some((now, 0, index)) };
-                    if double && button & 20 == 0 {
+                    let double = !modified
+                        && self.last_click.is_some_and(|(when, pane, row)| {
+                            pane == 0
+                                && row == index
+                                && now.duration_since(when) < Duration::from_millis(450)
+                        });
+                    self.select_list_with_modifiers(index, ranged, button & 16 != 0);
+                    if ranged {
+                        self.status = format!("Selected {} playlists", self.selected_lists.len());
+                    }
+                    self.last_click = if double || modified {
+                        None
+                    } else {
+                        Some((now, 0, index))
+                    };
+                    if double {
                         self.enqueue_list(index);
                     }
                 }
@@ -5551,8 +5617,12 @@ impl Ui {
                 if index >= self.items.len() {
                     return;
                 }
-                let modified = button & 20 != 0;
-                self.select_tree_with_modifiers(index, button & 4 != 0, button & 16 != 0);
+                let ranged = button & (4 | 8) != 0 || range_pending == Some(Focus::Library);
+                let modified = ranged || button & 16 != 0;
+                self.select_tree_with_modifiers(index, ranged, button & 16 != 0);
+                if ranged {
+                    self.status = format!("Selected {} tree items", self.selected_tree.len());
+                }
                 if let Some(TreeRow {
                     item: Item::Directory(_, path),
                     depth,
@@ -5598,8 +5668,12 @@ impl Ui {
             if y >= 2 {
                 let index = self.offsets[1] + y - 2;
                 if index < self.items.len() {
-                    let modified = button & 20 != 0;
-                    self.select_tree_with_modifiers(index, button & 4 != 0, button & 16 != 0);
+                    let ranged = button & (4 | 8) != 0 || range_pending == Some(Focus::Library);
+                    let modified = ranged || button & 16 != 0;
+                    self.select_tree_with_modifiers(index, ranged, button & 16 != 0);
+                    if ranged {
+                        self.status = format!("Selected {} tree items", self.selected_tree.len());
+                    }
                     if !modified && x < 4 {
                         if let Some(TreeRow {
                             item: Item::Directory(_, path),
@@ -5647,15 +5721,25 @@ impl Ui {
             } else if y >= 2 {
                 let index = self.offsets[0] + y - 2;
                 if index < self.lists.len() {
+                    let ranged = button & (4 | 8) != 0 || range_pending == Some(Focus::Playlists);
+                    let modified = ranged || button & 16 != 0;
                     let now = Instant::now();
-                    let double = self.last_click.is_some_and(|(when, pane, row)| {
-                        pane == 0
-                            && row == index
-                            && now.duration_since(when) < Duration::from_millis(450)
-                    });
-                    self.select_list_with_modifiers(index, button & 4 != 0, button & 16 != 0);
-                    self.last_click = if double { None } else { Some((now, 0, index)) };
-                    if double && button & 20 == 0 {
+                    let double = !modified
+                        && self.last_click.is_some_and(|(when, pane, row)| {
+                            pane == 0
+                                && row == index
+                                && now.duration_since(when) < Duration::from_millis(450)
+                        });
+                    self.select_list_with_modifiers(index, ranged, button & 16 != 0);
+                    if ranged {
+                        self.status = format!("Selected {} playlists", self.selected_lists.len());
+                    }
+                    self.last_click = if double || modified {
+                        None
+                    } else {
+                        Some((now, 0, index))
+                    };
+                    if double {
                         self.enqueue_list(index);
                     }
                 }
@@ -5702,23 +5786,35 @@ impl Ui {
             let Some(&index) = visible.get(self.offsets[2] + y - 2) else {
                 return;
             };
-            self.select_track(index, button & 4 != 0, button & 16 != 0);
+            let ranged = button & (4 | 8) != 0 || range_pending == Some(Focus::Tracks);
+            let modified = ranged || button & 16 != 0;
+            self.select_track(index, ranged, button & 16 != 0);
+            if ranged {
+                self.status = format!("Selected {} tracks", self.selected_tracks.len());
+            }
             let relative = x.saturating_sub(layout.first + 1) + self.columns.scroll;
             let starred_cell = self
                 .columns
                 .positions()
                 .find(|(_, start, width)| (*start..start + width).contains(&relative))
                 .is_some_and(|(column, _, _)| self.columns.entries[column].id == "star");
-            if starred_cell {
+            if starred_cell && !modified {
                 self.toggle_star();
                 return;
             }
-            self.track_drag = (button & 20 == 0).then_some(index);
+            self.track_drag = (!modified).then_some(index);
             let now = Instant::now();
-            let double = self.last_click.is_some_and(|(when, pane, row)| {
-                pane == 2 && row == index && now.duration_since(when) < Duration::from_millis(450)
-            });
-            self.last_click = Some((now, 2, index));
+            let double = !modified
+                && self.last_click.is_some_and(|(when, pane, row)| {
+                    pane == 2
+                        && row == index
+                        && now.duration_since(when) < Duration::from_millis(450)
+                });
+            self.last_click = if double || modified {
+                None
+            } else {
+                Some((now, 2, index))
+            };
             if double {
                 self.play_selected();
                 self.last_click = None;
@@ -6612,7 +6708,7 @@ impl Ui {
             "Enter confirm · Esc cancel · ←/→ move caret".to_owned()
         }).unwrap_or_else(|| {
             if self.status.is_empty() {
-                "Tab pane · Enter open/play · Space pause · m menu · t tree · / files · F playlist · Del remove".to_owned()
+                "Tab pane · v then click range · Enter open/play · Space pause · m menu · t tree · / files · F playlist · Del remove".to_owned()
             } else { self.status.clone() }
         });
         paint(

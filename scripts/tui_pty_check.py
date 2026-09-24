@@ -150,6 +150,8 @@ try:
     wait_for('album')
     y=row('album');click(10,y)
     assert 'a.wav' in '\n'.join(screen.display)
+    click(10,row('a.wav'));send('v');click(10,row('b.wav'))
+    assert 'Selected 2 tree items' in screen.display[-1],screen.display[-1]
     zrow=row('pack.zip');click(10,zrow)
     assert 'inner' in '\n'.join(screen.display)
     click(10,row('inner'))
@@ -214,6 +216,12 @@ try:
     assert 'Save Current Playlist' in '\n'.join(screen.display)
     click(10,6);send('PTY Saved\r',.3)
     wait_for('Saved 4 tracks')
+    click(60,2);click(60,4,8)
+    assert 'Selected 3 tracks' in screen.display[-1],screen.display[-1]
+    send('v');click(60,5)
+    assert 'Selected 2 tracks' in screen.display[-1],screen.display[-1]
+    send('v');assert 'click the last row' in screen.display[-1]
+    send(b'\x1b',.4);assert 'Range selection cancelled' in screen.display[-1]
     assert_saved_count('PTY Saved',4)
     db_files=list(Path(base).rglob('kog.db'))
     assert len(db_files)==1,db_files
@@ -229,6 +237,9 @@ try:
         assert db.execute("SELECT count(*) FROM playlist_entries").fetchone()[0]==5
     click(60,2);click(5,0);click(10,7);send('PTY Selection\r',.3)
     wait_for('Saved 1 tracks')
+    click(10,row('PTY Saved'));click(10,row('PTY Selection'),8)
+    assert 'Selected 2 playlists' in screen.display[-1],screen.display[-1]
+    click(10,row('PTY Saved'))
     assert_saved_count('PTY Selection',1)
     with sqlite3.connect(db_files[0]) as db:
         assert db.execute("SELECT count(*) FROM playlist_entries").fetchone()[0]==6
