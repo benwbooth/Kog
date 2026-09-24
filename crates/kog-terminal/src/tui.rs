@@ -278,6 +278,7 @@ enum PromptKind {
     DuplicatePlaylist,
     ExportPlaylist,
     Volume,
+    SeekPosition,
     AddToPlaylist,
     EqualizerPreset,
     EqualizerBandNumber,
@@ -772,6 +773,7 @@ struct Ui {
     sort_ascending: bool,
     columns: Columns,
     context_column: Option<usize>,
+    keyboard_column: Option<usize>,
     column_viewport_width: usize,
     starred_keys: HashSet<String>,
 }
@@ -1150,6 +1152,7 @@ impl Ui {
             sort_ascending: true,
             columns,
             context_column: None,
+            keyboard_column: None,
             column_viewport_width: 40,
             starred_keys,
         };
@@ -1808,7 +1811,7 @@ impl Ui {
             (MenuPage::View, 6) => {
                 self.compact_mode = !self.compact_mode;
                 self.status = if self.compact_mode {
-                    "Compact player · click the top bar to return".to_owned()
+                    "Compact player · press C to return".to_owned()
                 } else {
                     "Playlist view".to_owned()
                 };
@@ -1836,6 +1839,7 @@ impl Ui {
             (MenuPage::Playback, 10) => self.toggle_selected_queue(),
             (MenuPage::Playback, 11) => self.toggle_selected_stop_after(),
             (MenuPage::Playback, 12) => self.clear_queue(),
+            (MenuPage::Playback, 13) => self.begin_seek_prompt(),
             (MenuPage::Preferences, 1) => self.begin_prompt(
                 PromptKind::Volume,
                 format!("{}", (self.volume * 100.0).round() as u8),
@@ -3689,7 +3693,7 @@ impl Ui {
     fn toggle_range_click(&mut self) {
         if self.range_click_pending == Some(self.focus) {
             self.range_click_pending = None;
-            self.status = "Range selection cancelled".to_owned();
+            self.status = "Range selection finished".to_owned();
             return;
         }
         let available = match self.focus {
@@ -3710,7 +3714,32 @@ impl Ui {
         if available {
             self.range_click_pending = Some(self.focus);
             self.last_click = None;
-            self.status = "Range selection: click the last row · Esc cancels".to_owned();
+            self.status = "Range selection: arrows or click the last row · v finishes".to_owned();
+        }
+    }
+
+    fn extend_keyboard_range(&mut self, delta: isize, page: usize) {
+        match self.focus {
+            Focus::Playlists => {
+                let anchor = self.list_anchor.unwrap_or(self.selected[0]);
+                self.move_selection(delta, page);
+                self.list_anchor = Some(anchor);
+                self.select_list_with_modifiers(self.selected[0], true, false);
+                self.list_anchor = Some(anchor);
+            }
+            Focus::Library => {
+                let anchor = self.tree_anchor.unwrap_or(self.selected[1]);
+                self.move_selection(delta, page);
+                self.tree_anchor = Some(anchor);
+                self.select_tree_with_modifiers(self.selected[1], true, false);
+                self.tree_anchor = Some(anchor);
+            }
+            Focus::Tracks => {
+                let anchor = self.selection_anchor.unwrap_or(self.selected[2]);
+                self.move_selection(delta, page);
+                self.selection_anchor = Some(anchor);
+                self.select_track(self.selected[2], true, false);
+            }
         }
     }
 
@@ -4199,6 +4228,15 @@ impl Ui {
         self.prompt = Some((kind, value));
     }
 
+    fn begin_seek_prompt(&mut self) {
+        let position = self.player.position().as_secs();
+        self.begin_prompt(
+            PromptKind::SeekPosition,
+            format!("{}:{:02}", position / 60, position % 60),
+        );
+        self.input_select_all = true;
+    }
+
     fn apply_music_folder(&mut self, path: &Path) -> Result<(), String> {
         let directory = path
             .canonicalize()
@@ -4560,6 +4598,15 @@ impl Ui {
                     self.player.set_volume(self.volume);
                 }
                 _ => self.status = "Volume must be between 0 and 100".to_owned(),
+            },
+            PromptKind::SeekPosition => match parse_seek_position(value) {
+                Some(seconds) => match self.player.seek(Duration::from_secs(seconds)) {
+                    Ok(()) => {
+                        self.status = format!("Seeked to {}:{:02}", seconds / 60, seconds % 60)
+                    }
+                    Err(error) => self.status = format!("Seeking: {error}"),
+                },
+                None => self.status = "Enter seconds, mm:ss, or hh:mm:ss".to_owned(),
             },
             PromptKind::AddToPlaylist => {
                 let Some((id, _)) = self
@@ -5078,6 +5125,185 @@ impl Ui {
         }
     }
 
+    fn show_keyboard_help(&mut self) {
+        self.show_modal(
+            [
+                "Keyboard controls",
+                "",
+                "Tab / Shift+Tab: change pane; arrows, Page Up/Down, Home/End: move",
+                "Enter: open folder, add saved list, or play track",
+                "m: application menu; M or Shift+F10: selected item actions",
+                "Menus: arrows, Enter, Left/Esc; Page Up/Down and Home/End also work",
+                "Shift+Up/Down or v then arrows: select a range; J/K: move cursor only",
+                "x or Ctrl+Space: toggle the cursor row; Ctrl+A: select all",
+                "z: collapse the focused Files or Playlists section",
+                "Ctrl+Left/Right or { / }: resize sidebar; Ctrl+R or u: refresh",
+                "H: focus columns; Left/Right choose; Enter sort; +/- resize",
+                "In column mode: Ctrl+Left/Right or [ / ] reorder; a fit; v hide; M actions",
+                "/: search files; F: search playlist; o: choose music folder",
+                "a: add selected files; Delete: remove or move to trash; f: star",
+                "Space: play/pause; s: stop; </>: previous/next; h/l: seek 10 seconds",
+                "G: seek to a time; +/-: volume; R/S: repeat/shuffle; C: compact view",
+                "In compact view, C returns to the playlist; playback keys still work",
+                "Prompt editing: Ctrl+A select all; Ctrl+W delete word; Ctrl+U clear",
+                "Esc closes dialogs or clears search; q quits.",
+            ]
+            .join("\n"),
+        );
+    }
+
+    fn open_keyboard_context(&mut self, size: (usize, usize)) {
+        let layout = self.layout(size);
+        if let Some(column) = self.keyboard_column {
+            self.context_column = Some(column);
+            self.open_context(MenuPage::Columns, layout.first + 2, 1, size);
+            return;
+        }
+        match self.focus {
+            Focus::Library => {
+                if let Some(row) = self.items.get(self.selected[1])
+                    && !self.selected_tree.contains(&tree_item_key(&row.item))
+                {
+                    self.select_tree_with_modifiers(self.selected[1], false, false);
+                }
+            }
+            Focus::Playlists => {
+                if let Some((id, _)) = self.lists.get(self.selected[0])
+                    && !self.selected_lists.contains(id)
+                {
+                    self.select_list(self.selected[0]);
+                }
+            }
+            Focus::Tracks => {
+                if !self.selected_tracks.contains(&self.selected[2]) {
+                    self.select_track(self.selected[2], false, false);
+                }
+            }
+        }
+        let (page, x, y) = match self.focus {
+            Focus::Library => (
+                MenuPage::Tree,
+                1,
+                layout.tree_top + self.selected[1].saturating_sub(self.offsets[1]),
+            ),
+            Focus::Playlists => (
+                MenuPage::Saved,
+                1,
+                layout.list_top + self.selected[0].saturating_sub(self.offsets[0]),
+            ),
+            Focus::Tracks if !self.tracks.is_empty() => (
+                MenuPage::Tracks,
+                layout.first + 2,
+                2 + self.selected[2].saturating_sub(self.offsets[2]),
+            ),
+            Focus::Tracks => (MenuPage::Playlist, layout.first + 2, 2),
+        };
+        self.open_context(page, x, y, size);
+    }
+
+    fn move_cursor_only(&mut self, delta: isize, page: usize) {
+        let pane = self.pane_index();
+        if pane == 2 && !self.playlist_query.is_empty() {
+            let visible = self.visible_tracks();
+            if visible.is_empty() {
+                return;
+            }
+            let current = visible
+                .iter()
+                .position(|&row| row == self.selected[2])
+                .unwrap_or(0);
+            let next = current.saturating_add_signed(delta).min(visible.len() - 1);
+            self.selected[2] = visible[next];
+            self.offsets[2] = self.offsets[2].min(next);
+            if next >= self.offsets[2] + page {
+                self.offsets[2] = next + 1 - page;
+            }
+            return;
+        }
+        let len = match pane {
+            0 => self.lists.len(),
+            1 => self.items.len(),
+            _ => self.tracks.len(),
+        };
+        if len == 0 {
+            return;
+        }
+        self.selected[pane] = self.selected[pane]
+            .saturating_add_signed(delta)
+            .min(len - 1);
+        if self.selected[pane] < self.offsets[pane] {
+            self.offsets[pane] = self.selected[pane];
+        }
+        if self.selected[pane] >= self.offsets[pane] + page {
+            self.offsets[pane] = self.selected[pane] + 1 - page;
+        }
+    }
+
+    fn toggle_cursor_selection(&mut self) {
+        match self.focus {
+            Focus::Library => {
+                self.select_tree_with_modifiers(self.selected[1], false, true);
+                self.status = format!("Selected {} tree items", self.selected_tree.len());
+            }
+            Focus::Playlists => {
+                self.select_list_with_modifiers(self.selected[0], false, true);
+                self.status = format!("Selected {} playlists", self.selected_lists.len());
+            }
+            Focus::Tracks => {
+                self.select_track(self.selected[2], false, true);
+                self.status = format!("Selected {} tracks", self.selected_tracks.len());
+            }
+        }
+    }
+
+    fn focus_keyboard_column(&mut self, size: (usize, usize)) {
+        self.compact_mode = false;
+        self.focus = Focus::Tracks;
+        self.keyboard_column = self
+            .columns
+            .index("title")
+            .filter(|&index| self.columns.entries[index].visible)
+            .or_else(|| self.columns.positions().next().map(|(index, _, _)| index));
+        self.ensure_keyboard_column_visible(size);
+    }
+
+    fn ensure_keyboard_column_visible(&mut self, size: (usize, usize)) {
+        let Some(index) = self.keyboard_column else {
+            return;
+        };
+        let viewport = size.0.saturating_sub(self.layout(size).first + 1).max(1);
+        let Some((_, start, width)) = self
+            .columns
+            .positions()
+            .find(|(current, _, _)| *current == index)
+        else {
+            return;
+        };
+        if start < self.columns.scroll || width >= viewport {
+            self.columns.scroll = start;
+        } else if start + width > self.columns.scroll + viewport {
+            self.columns.scroll = start + width - viewport;
+        }
+        self.columns.scroll_by(0, viewport);
+    }
+
+    fn move_keyboard_column(&mut self, delta: isize, size: (usize, usize)) {
+        let visible: Vec<_> = self
+            .columns
+            .positions()
+            .map(|(index, _, _)| index)
+            .collect();
+        let Some(current) = self
+            .keyboard_column
+            .and_then(|index| visible.iter().position(|&other| other == index))
+        else {
+            return;
+        };
+        let next = current.saturating_add_signed(delta).min(visible.len() - 1);
+        self.keyboard_column = Some(visible[next]);
+        self.ensure_keyboard_column_visible(size);
+    }
+
     fn key(&mut self, key: Key, size: (usize, usize)) -> bool {
         if self.modal.is_some() {
             let max = self
@@ -5202,6 +5428,34 @@ impl Ui {
                 }
                 Key::CtrlC => return false,
                 Key::CtrlA => self.input_select_all = true,
+                Key::CtrlU => {
+                    value.clear();
+                    self.input_cursor = 0;
+                    self.input_select_all = false;
+                    edited = true;
+                }
+                Key::CtrlW | Key::CtrlBackspace => {
+                    if self.input_select_all {
+                        value.clear();
+                        self.input_cursor = 0;
+                    } else {
+                        let start = previous_path_word_boundary(&value, self.input_cursor);
+                        value.drain(
+                            byte_offset(&value, start)..byte_offset(&value, self.input_cursor),
+                        );
+                        self.input_cursor = start;
+                    }
+                    self.input_select_all = false;
+                    edited = true;
+                }
+                Key::CtrlLeft => {
+                    self.input_select_all = false;
+                    self.input_cursor = previous_path_word_boundary(&value, self.input_cursor);
+                }
+                Key::CtrlRight => {
+                    self.input_select_all = false;
+                    self.input_cursor = next_path_word_boundary(&value, self.input_cursor);
+                }
                 Key::Left => {
                     self.input_select_all = false;
                     self.input_cursor = self.input_cursor.saturating_sub(1);
@@ -5280,8 +5534,108 @@ impl Ui {
                 }
                 Key::Up | Key::Char('k') => self.move_menu_selection(-1, size.1),
                 Key::Down | Key::Char('j') => self.move_menu_selection(1, size.1),
+                Key::PageUp | Key::PageDown => {
+                    let page = self
+                        .menu_page
+                        .labels()
+                        .len()
+                        .min(size.1.saturating_sub(4))
+                        .max(1);
+                    let delta = if key == Key::PageUp { -1 } else { 1 };
+                    for _ in 0..page {
+                        self.move_menu_selection(delta, size.1);
+                    }
+                }
+                Key::Home => {
+                    self.menu_selected = self
+                        .menu_page
+                        .labels()
+                        .iter()
+                        .position(|label| !label.is_empty())
+                        .unwrap_or(0);
+                    self.menu_offset = 0;
+                }
+                Key::End => {
+                    self.menu_selected = self
+                        .menu_page
+                        .labels()
+                        .iter()
+                        .rposition(|label| !label.is_empty())
+                        .unwrap_or(0);
+                    self.menu_offset = self.menu_selected.saturating_sub(size.1.saturating_sub(5));
+                }
                 Key::Enter | Key::Right => self.activate_menu(self.menu_selected, size),
                 _ => {}
+            }
+            return true;
+        }
+        if let Some(column) = self.keyboard_column {
+            match key {
+                Key::Esc | Key::Char('H') => self.keyboard_column = None,
+                Key::Left | Key::Right => {
+                    self.move_keyboard_column(if key == Key::Left { -1 } else { 1 }, size)
+                }
+                Key::Home | Key::End => {
+                    let visible: Vec<_> = self
+                        .columns
+                        .positions()
+                        .map(|(index, _, _)| index)
+                        .collect();
+                    self.keyboard_column = if key == Key::Home {
+                        visible.first()
+                    } else {
+                        visible.last()
+                    }
+                    .copied();
+                    self.ensure_keyboard_column_visible(size);
+                }
+                Key::CtrlLeft | Key::CtrlRight | Key::Char('[') | Key::Char(']') => {
+                    let delta = if matches!(key, Key::CtrlLeft | Key::Char('[')) {
+                        -1
+                    } else {
+                        1
+                    };
+                    if let Some(target) = self.columns.move_by(column, delta) {
+                        self.keyboard_column = Some(target);
+                        self.context_column = Some(target);
+                        self.persist_columns();
+                        self.ensure_keyboard_column_visible(size);
+                        self.status =
+                            format!("Moved {} column", self.columns.entries[target].label);
+                    }
+                }
+                Key::Char('+') | Key::Char('=') | Key::Char('-') => {
+                    let width = &mut self.columns.entries[column].width;
+                    *width = width
+                        .saturating_add_signed(if key == Key::Char('-') { -1 } else { 1 })
+                        .clamp(3, 160);
+                    self.persist_columns();
+                    self.ensure_keyboard_column_visible(size);
+                    self.status = format!(
+                        "{} column: {} cells",
+                        self.columns.entries[column].label, self.columns.entries[column].width
+                    );
+                }
+                Key::Enter => self.sort_tracks_by_column(column),
+                Key::Char('a') => self.auto_fit_columns(),
+                Key::Char('v') => {
+                    if self.columns.toggle(column) {
+                        self.persist_columns();
+                        self.keyboard_column =
+                            self.columns.positions().next().map(|(index, _, _)| index);
+                        self.ensure_keyboard_column_visible(size);
+                    }
+                }
+                Key::Char('M') | Key::ContextMenu => self.open_keyboard_context(size),
+                Key::Char('?') => self.show_keyboard_help(),
+                Key::Tab | Key::BackTab => {
+                    self.keyboard_column = None;
+                    return self.key(key, size);
+                }
+                _ => {
+                    self.keyboard_column = None;
+                    return self.key(key, size);
+                }
             }
             return true;
         }
@@ -5294,6 +5648,52 @@ impl Ui {
         .max(1);
         match key {
             Key::Char('q') | Key::CtrlC => return false,
+            Key::Char('?') => self.show_keyboard_help(),
+            Key::Char('M') | Key::ContextMenu => self.open_keyboard_context(size),
+            Key::F10 | Key::Char('m') => self.open_submenu(MenuPage::Main),
+            Key::Char('H') => self.focus_keyboard_column(size),
+            Key::Char('C') => {
+                self.compact_mode = !self.compact_mode;
+                self.status = if self.compact_mode {
+                    "Compact player · C returns to playlist"
+                } else {
+                    "Playlist view"
+                }
+                .to_owned();
+            }
+            Key::Char('G') => self.begin_seek_prompt(),
+            Key::CtrlR | Key::Char('u') if self.focus == Focus::Library => {
+                if self.remote_active {
+                    self.connect_remote(Some(self.remote_path.clone()));
+                } else {
+                    self.browse(None);
+                }
+            }
+            Key::CtrlR | Key::Char('u') if self.focus == Focus::Playlists => self.reload_lists(),
+            Key::CtrlLeft | Key::CtrlRight | Key::Char('{') | Key::Char('}')
+                if layout.show_sidebar && !self.compact_mode =>
+            {
+                let current = self.sidebar_width.unwrap_or(layout.first);
+                let next = current.saturating_add_signed(
+                    if matches!(key, Key::CtrlLeft | Key::Char('{')) {
+                        -1
+                    } else {
+                        1
+                    },
+                );
+                let width = next.clamp(18, size.0.saturating_sub(30).max(18));
+                self.sidebar_width = Some(width);
+                self.status = format!("Sidebar width: {width} cells");
+            }
+            Key::Char('z') if self.focus == Focus::Library => {
+                self.files_expanded = !self.files_expanded
+            }
+            Key::Char('z') if self.focus == Focus::Playlists => {
+                self.playlists_expanded = !self.playlists_expanded
+            }
+            Key::Char('x') | Key::CtrlSpace => self.toggle_cursor_selection(),
+            Key::AltUp | Key::Char('K') => self.move_cursor_only(-1, page),
+            Key::AltDown | Key::Char('J') => self.move_cursor_only(1, page),
             Key::Esc if self.range_click_pending.take().is_some() => {
                 self.status = "Range selection cancelled".to_owned();
             }
@@ -5307,7 +5707,6 @@ impl Ui {
                 self.begin_prompt(PromptKind::PlaylistSearch, self.playlist_query.clone())
             }
             Key::Char('c') => self.show_queue(),
-            Key::Char('m') => self.open_submenu(MenuPage::Main),
             Key::Char('v') => self.toggle_range_click(),
             Key::Char('t') => {
                 self.sidebar_visible = !self.sidebar_visible;
@@ -5331,6 +5730,23 @@ impl Ui {
                     Focus::Tracks => Focus::Library,
                 }
             }
+            Key::Up | Key::Down | Key::Char('k') | Key::Char('j')
+                if self.range_click_pending == Some(self.focus) =>
+            {
+                self.extend_keyboard_range(
+                    if matches!(key, Key::Up | Key::Char('k')) {
+                        -1
+                    } else {
+                        1
+                    },
+                    page,
+                );
+                self.status = match self.focus {
+                    Focus::Library => format!("Selected {} tree items", self.selected_tree.len()),
+                    Focus::Playlists => format!("Selected {} playlists", self.selected_lists.len()),
+                    Focus::Tracks => format!("Selected {} tracks", self.selected_tracks.len()),
+                };
+            }
             Key::Up | Key::Char('k') if self.focus == Focus::Playlists => {
                 self.move_selection(-1, page);
                 self.select_list(self.selected[0]);
@@ -5341,25 +5757,8 @@ impl Ui {
             }
             Key::Up | Key::Char('k') => self.move_selection(-1, page),
             Key::Down | Key::Char('j') => self.move_selection(1, page),
-            Key::ShiftUp | Key::ShiftDown if self.focus == Focus::Playlists => {
-                let anchor = self.list_anchor.unwrap_or(self.selected[0]);
-                self.move_selection(if key == Key::ShiftUp { -1 } else { 1 }, page);
-                self.list_anchor = Some(anchor);
-                self.select_list_with_modifiers(self.selected[0], true, false);
-                self.list_anchor = Some(anchor);
-            }
-            Key::ShiftUp | Key::ShiftDown if self.focus == Focus::Library => {
-                let anchor = self.tree_anchor.unwrap_or(self.selected[1]);
-                self.move_selection(if key == Key::ShiftUp { -1 } else { 1 }, page);
-                self.tree_anchor = Some(anchor);
-                self.select_tree_with_modifiers(self.selected[1], true, false);
-                self.tree_anchor = Some(anchor);
-            }
-            Key::ShiftUp | Key::ShiftDown if self.focus == Focus::Tracks => {
-                let anchor = self.selection_anchor.unwrap_or(self.selected[2]);
-                self.move_selection(if key == Key::ShiftUp { -1 } else { 1 }, page);
-                self.selection_anchor = Some(anchor);
-                self.select_track(self.selected[2], true, false);
+            Key::ShiftUp | Key::ShiftDown => {
+                self.extend_keyboard_range(if key == Key::ShiftUp { -1 } else { 1 }, page);
             }
             Key::CtrlUp | Key::CtrlDown if self.focus == Focus::Tracks => {
                 let from = self.selected[2];
@@ -5464,14 +5863,14 @@ impl Ui {
                 self.volume = (self.volume - 0.05).max(0.0);
                 self.player.set_volume(self.volume);
             }
-            Key::Char('h') if self.focus == Focus::Tracks => {
+            Key::Char('h') if self.focus == Focus::Tracks || self.compact_mode => {
                 let _ = self.player.seek(
                     self.player
                         .position()
                         .saturating_sub(Duration::from_secs(10)),
                 );
             }
-            Key::Char('l') if self.focus == Focus::Tracks => {
+            Key::Char('l') if self.focus == Focus::Tracks || self.compact_mode => {
                 let _ = self
                     .player
                     .seek(self.player.position() + Duration::from_secs(10));
@@ -5808,6 +6207,8 @@ impl Ui {
                 if !self.sidebar_visible {
                     self.focus = Focus::Tracks;
                 }
+            } else if x >= size.0.saturating_sub(8) && x < size.0.saturating_sub(4) {
+                self.show_keyboard_help();
             } else if x >= size.0.saturating_sub(4) {
                 self.exit_requested = true;
             } else if self.compact_mode {
@@ -6059,7 +6460,9 @@ impl Ui {
             }
         }
         if !layout.show_sidebar && self.focus == Focus::Library {
-            if y >= 2 {
+            if y == 1 {
+                self.files_expanded = !self.files_expanded;
+            } else if y >= 2 && self.files_expanded {
                 let index = self.offsets[1] + y - 2;
                 if index < self.items.len() {
                     let ranged = button & (4 | 8) != 0 || range_pending == Some(Focus::Library);
@@ -6111,8 +6514,12 @@ impl Ui {
         }
         if !layout.show_sidebar && self.focus == Focus::Playlists {
             if y == 1 {
-                self.begin_prompt(PromptKind::NewPlaylist, String::new());
-            } else if y >= 2 {
+                if x >= size.0.saturating_sub(4) {
+                    self.begin_prompt(PromptKind::NewPlaylist, String::new());
+                } else {
+                    self.playlists_expanded = !self.playlists_expanded;
+                }
+            } else if y >= 2 && self.playlists_expanded {
                 let index = self.offsets[0] + y - 2;
                 if index < self.lists.len() {
                     let ranged = button & (4 | 8) != 0 || range_pending == Some(Focus::Playlists);
@@ -6377,6 +6784,15 @@ impl Ui {
         paint(&mut screen, 1, 2, "⚙", 2, Surface::Accent, true);
         paint(&mut screen, 1, 6, "≡", 2, Surface::Toolbar, false);
         paint(&mut screen, 1, 10, "▤", 2, Surface::Toolbar, false);
+        paint(
+            &mut screen,
+            1,
+            width.saturating_sub(5),
+            "?",
+            1,
+            Surface::Toolbar,
+            true,
+        );
         let search_x = (width / 2).saturating_sub(17).max(14);
         let search_width = width.saturating_sub(search_x + 7).min(36);
         let playlist_draft = self
@@ -6512,15 +6928,14 @@ impl Ui {
                     .items
                     .get(index)
                     .is_some_and(|row| self.selected_tree.contains(&tree_item_key(&row.item)));
-                let surface = if self.focus == Focus::Library
-                    && (selected || (self.selected_tree.is_empty() && index == self.selected[1]))
-                {
-                    Surface::Selected
-                } else if index % 2 == 1 {
-                    Surface::SidebarAlt
-                } else {
-                    Surface::Sidebar
-                };
+                let surface =
+                    if self.focus == Focus::Library && (selected || index == self.selected[1]) {
+                        Surface::Selected
+                    } else if index % 2 == 1 {
+                        Surface::SidebarAlt
+                    } else {
+                        Surface::Sidebar
+                    };
                 let label = self
                     .items
                     .get(index)
@@ -6605,12 +7020,19 @@ impl Ui {
                 &mut screen,
                 2,
                 1,
-                " ▾ Playlists                                 +",
+                if self.playlists_expanded {
+                    " ▾ Playlists                                 +"
+                } else {
+                    " ▸ Playlists                                 +"
+                },
                 width,
                 Surface::Header,
                 true,
             );
             for y in 2..layout.footer_top {
+                if !self.playlists_expanded {
+                    break;
+                }
                 let index = self.offsets[0] + y - 2;
                 let label = self.saved_list_label(index, width);
                 let surface = if self
@@ -6628,8 +7050,23 @@ impl Ui {
                 paint(&mut screen, y + 1, 1, &label, width, surface, false);
             }
         } else if show_tree {
-            paint(&mut screen, 2, 1, " Files", width, Surface::Header, true);
+            paint(
+                &mut screen,
+                2,
+                1,
+                if self.files_expanded {
+                    " ▾ Files"
+                } else {
+                    " ▸ Files"
+                },
+                width,
+                Surface::Header,
+                true,
+            );
             for y in 2..layout.footer_top {
+                if !self.files_expanded {
+                    break;
+                }
                 let index = self.offsets[1] + y - 2;
                 let label = self
                     .items
@@ -6651,14 +7088,13 @@ impl Ui {
                     .items
                     .get(index)
                     .is_some_and(|row| self.selected_tree.contains(&tree_item_key(&row.item)));
-                let surface =
-                    if selected || (self.selected_tree.is_empty() && index == self.selected[1]) {
-                        Surface::Selected
-                    } else if index % 2 == 1 {
-                        Surface::MainAlt
-                    } else {
-                        Surface::Main
-                    };
+                let surface = if selected || index == self.selected[1] {
+                    Surface::Selected
+                } else if index % 2 == 1 {
+                    Surface::MainAlt
+                } else {
+                    Surface::Main
+                };
                 paint(&mut screen, y + 1, 1, &label, width, surface, false);
             }
         } else {
@@ -6672,6 +7108,7 @@ impl Ui {
                 true,
             );
             for (column_index, start, column_width) in self.columns.positions() {
+                let selected = self.keyboard_column == Some(column_index);
                 paint_playlist_cell(
                     &mut screen,
                     2,
@@ -6681,7 +7118,11 @@ impl Ui {
                     column_width,
                     self.columns.scroll,
                     self.columns.entries[column_index].label,
-                    Surface::Header,
+                    if selected {
+                        Surface::Selected
+                    } else {
+                        Surface::Header
+                    },
                     true,
                 );
             }
@@ -6832,7 +7273,7 @@ impl Ui {
                 &mut screen,
                 1,
                 13,
-                "▣  Compact Player · click here for playlist",
+                "▣  Compact Player · C returns to playlist",
                 width.saturating_sub(16),
                 Surface::Toolbar,
                 true,
@@ -7192,9 +7633,20 @@ impl Ui {
             "Enter confirm · Esc cancel · ←/→ move caret".to_owned()
         }).unwrap_or_else(|| {
             if self.status.is_empty() {
-                "Tab pane · v then click range · Enter open/play · Space pause · m menu · t tree · / files · F playlist · Del remove".to_owned()
+                "Tab pane · M actions · H columns · x mark · ? keys · Enter open/play · Space pause".to_owned()
             } else { self.status.clone() }
         });
+        let message = if let Some(column) = self
+            .keyboard_column
+            .filter(|_| self.prompt.is_none() && !self.menu_open)
+        {
+            format!(
+                "{} column · ←/→ choose · Enter sort · +/- width · Ctrl+←/→ reorder · M actions · Esc exit",
+                self.columns.entries[column].label
+            )
+        } else {
+            message
+        };
         paint(
             &mut screen,
             height,
@@ -7817,6 +8269,26 @@ fn byte_offset(text: &str, character: usize) -> usize {
         .map_or(text.len(), |(offset, _)| offset)
 }
 
+fn parse_seek_position(text: &str) -> Option<u64> {
+    let parts: Vec<_> = text.split(':').collect();
+    if parts.is_empty() || parts.len() > 3 || parts.iter().any(|part| part.is_empty()) {
+        return None;
+    }
+    let numbers: Vec<u64> = parts
+        .iter()
+        .map(|part| part.parse().ok())
+        .collect::<Option<_>>()?;
+    match numbers.as_slice() {
+        [seconds] => Some(*seconds),
+        [minutes, seconds] if *seconds < 60 => minutes.checked_mul(60)?.checked_add(*seconds),
+        [hours, minutes, seconds] if *minutes < 60 && *seconds < 60 => hours
+            .checked_mul(3600)?
+            .checked_add(minutes.checked_mul(60)?)?
+            .checked_add(*seconds),
+        _ => None,
+    }
+}
+
 fn previous_path_boundary(text: &str, cursor: usize) -> usize {
     let chars: Vec<char> = text.chars().collect();
     let mut position = cursor.min(chars.len());
@@ -7837,6 +8309,18 @@ fn previous_path_word_boundary(text: &str, cursor: usize) -> usize {
     }
     while position > 0 && chars[position - 1] != '/' && !chars[position - 1].is_whitespace() {
         position -= 1;
+    }
+    position
+}
+
+fn next_path_word_boundary(text: &str, cursor: usize) -> usize {
+    let chars: Vec<char> = text.chars().collect();
+    let mut position = cursor.min(chars.len());
+    while position < chars.len() && chars[position] != '/' && !chars[position].is_whitespace() {
+        position += 1;
+    }
+    while position < chars.len() && (chars[position] == '/' || chars[position].is_whitespace()) {
+        position += 1;
     }
     position
 }
@@ -7891,6 +8375,7 @@ fn prompt_label(kind: PromptKind) -> &'static str {
         PromptKind::DuplicatePlaylist => "Duplicate playlist as",
         PromptKind::ExportPlaylist => "Export playlist to",
         PromptKind::Volume => "Volume 0-100",
+        PromptKind::SeekPosition => "Seek to seconds, mm:ss, or hh:mm:ss",
         PromptKind::AddToPlaylist => "Add to saved playlist named",
         PromptKind::EqualizerPreset => "Equalizer preset",
         PromptKind::EqualizerBandNumber => "Equalizer band 1-10",
@@ -8027,7 +8512,7 @@ const VIEW_MENU: [&str; 8] = [
     "Compact Player On/Off",
     "Show Album Cover…",
 ];
-const PLAYBACK_MENU: [&str; 13] = [
+const PLAYBACK_MENU: [&str; 14] = [
     "Play/Pause",
     "Stop",
     "Previous",
@@ -8041,6 +8526,7 @@ const PLAYBACK_MENU: [&str; 13] = [
     "Toggle Queue Selected",
     "Toggle Stop After Selected",
     "Clear Queue",
+    "Seek to Time…",
 ];
 const PREFERENCES_MENU: [&str; 17] = [
     "Music Folder…",
@@ -8710,12 +9196,17 @@ enum Key {
     CtrlC,
     CtrlL,
     CtrlO,
+    CtrlR,
+    CtrlSpace,
     CtrlU,
     CtrlW,
     CtrlBackspace,
     CtrlLeft,
     CtrlRight,
     AltUp,
+    AltDown,
+    ContextMenu,
+    F10,
     Esc,
     Tab,
     BackTab,
@@ -8819,9 +9310,13 @@ fn parse_event(bytes: &mut Vec<u8>) -> Option<Event> {
             b"1;5A" => Key::CtrlUp,
             b"1;5B" => Key::CtrlDown,
             b"1;3A" => Key::AltUp,
+            b"1;3B" => Key::AltDown,
             b"1;5D" => Key::CtrlLeft,
             b"1;5C" => Key::CtrlRight,
             b"127;5u" | b"8;5u" => Key::CtrlBackspace,
+            b"32;5u" => Key::CtrlSpace,
+            b"21;2~" | b"29~" => Key::ContextMenu,
+            b"21~" => Key::F10,
             b"C" => Key::Right,
             b"D" => Key::Left,
             b"Z" => Key::BackTab,
@@ -8840,6 +9335,8 @@ fn parse_event(bytes: &mut Vec<u8>) -> Option<Event> {
         3 => Key::CtrlC,
         12 => Key::CtrlL,
         15 => Key::CtrlO,
+        18 => Key::CtrlR,
+        0 => Key::CtrlSpace,
         21 => Key::CtrlU,
         23 => Key::CtrlW,
         9 => Key::Tab,
@@ -9234,6 +9731,33 @@ mod tests {
                 matches!(parse_event(&mut folder_keys), Some(Event::Key(key)) if key == expected)
             );
         }
+        let mut keyboard_keys = b"\x00\x12\x1b[21;2~\x1b[21~\x1b[1;3B".to_vec();
+        for expected in [
+            Key::CtrlSpace,
+            Key::CtrlR,
+            Key::ContextMenu,
+            Key::F10,
+            Key::AltDown,
+        ] {
+            assert!(
+                matches!(parse_event(&mut keyboard_keys), Some(Event::Key(key)) if key == expected)
+            );
+        }
+    }
+    #[test]
+    fn seek_time_accepts_long_tracks_and_rejects_invalid_fields() {
+        assert_eq!(parse_seek_position("8:01:03"), Some(28_863));
+        assert_eq!(parse_seek_position("83:59"), Some(5_039));
+        assert_eq!(parse_seek_position("125"), Some(125));
+        assert_eq!(parse_seek_position("1:60"), None);
+        assert_eq!(parse_seek_position("1:01:60"), None);
+        assert_eq!(parse_seek_position("1::03"), None);
+    }
+    #[test]
+    fn prompt_word_navigation_handles_names_and_paths() {
+        assert_eq!(next_path_word_boundary("Some album/file.wav", 0), 5);
+        assert_eq!(next_path_word_boundary("Some album/file.wav", 5), 11);
+        assert_eq!(previous_path_word_boundary("Some album/file.wav", 11), 5);
     }
     #[test]
     fn truncate_handles_wide_unicode() {

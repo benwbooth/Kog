@@ -553,6 +553,7 @@ try:
     assert 'Playlist cleared' in screen.display[-1],screen.display[-1]
     for path in (long_path,second_path,third_path):
         click(5,0);click(10,2);send(path+'\r',.3)
+        wait_for(f'Added {Path(path).name}',10)
     send('SS')
     assert 'Shuffle: all' in screen.display[-1],screen.display[-1]
     click(60,2);click(60,2)

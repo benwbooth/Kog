@@ -2,11 +2,29 @@
 
 This is the feature inventory for the terminal frontend, checked against `qml/Main.qml` and `crates/kog-web/src/lib.rs`. A checked item has been exercised in the isolated PTY test at the terminal sizes where the control is visible. Unchecked items still need implementation, verification, or both; the TUI should not be described as fully equivalent while they remain.
 
-Run `nix develop --command cargo build -p kog --bin kog`, then `uv run --python 3.13 --with pyte --with mutagen scripts/tui_pty_check.py`, `nix develop --command uv run --with pyte scripts/tui_server_interop_check.py`, and `uv run --with pyte scripts/tui_server_controls_check.py`. Set `KOG_TUI_TEST_BINARY` to an absolute `kog-tui` path to test the standalone executable instead. The tests create their own music trees, archives, settings directories, and SQLite databases. They do not write to the user's library or playlists.
+Run `nix develop --command cargo build -p kog --bin kog`, then `uv run --python 3.13 --with pyte --with mutagen scripts/tui_pty_check.py`, `uv run --python 3.13 --with pyte scripts/tui_keyboard_check.py`, `nix develop --command uv run --with pyte scripts/tui_server_interop_check.py`, and `uv run --with pyte scripts/tui_server_controls_check.py`. Set `KOG_TUI_TEST_BINARY` to an absolute `kog-tui` path to test the standalone executable instead. The tests create their own music trees, archives, settings directories, and SQLite databases. They do not write to the user's library or playlists.
 
 The provider smoke test is opt-in because it contacts public services: `nix develop --command cargo test -p kog-terminal --lib live_super_mario_galaxy_cover -- --ignored`.
 
 For range selection in any pane, click the first row, press `v`, then click the last row. Esc cancels the pending range. Alt+click also extends a range when the terminal forwards that modifier; Ctrl+click toggles individual rows.
+
+## Keyboard-only controls
+
+Press `?` inside the TUI for the scrollable shortcut guide. Every TUI action exposed by a mouse control is also available through a key or menu:
+
+| Action | Keyboard route |
+| --- | --- |
+| Change pane and navigate | `Tab` / `Shift+Tab`; arrows, Page Up/Down, Home/End |
+| Open menus and item actions | `m` or F10 for the application menu; `M`, Shift+F10, or Menu key for the focused item |
+| Select several rows | Shift+Up/Down, or `v` then Up/Down, selects a range; `J`/`K` moves the cursor without changing selection, then `x` toggles its row; Ctrl+A selects all |
+| Show or hide the sidebar and its sections | `t` for sidebar; `z` for the focused Files or Playlists section; Ctrl+Left/Right or `{`/`}` for sidebar width |
+| Search and refresh | `/` searches files; `F` searches the playlist; Ctrl+R or `u` refreshes the focused Files or Playlists pane |
+| Edit playlist columns | `H` focuses the header; Left/Right chooses a column; Enter sorts; `+`/`-` changes width; Ctrl+Left/Right or `[`/`]` reorders; `a` auto fits; `v` toggles visibility; `M` opens all column actions; Esc leaves the header |
+| Playback controls | Space play/pause, `s` stop, `<`/`>` previous/next, `G` seek to an exact time, `h`/`l` seek by ten seconds with Tracks focused, `+`/`-` volume, `R`/`S` repeat/shuffle |
+| Other transport and views | Playback menu for mute and radio; View menu for artwork, info, lyrics, equalizer, and spectrum; `C` enters or leaves compact view |
+| Edit a prompt | Ctrl+A select all, Ctrl+W delete word, Ctrl+U clear, Ctrl+Left/Right move by word or path component |
+
+The printable alternatives for range selection, context actions, resizing, reordering, and refreshing work when a terminal does not forward modified keys.
 
 ## Window and input
 
@@ -17,8 +35,10 @@ For range selection in any pane, click the first row, press `v`, then click the 
 - [x] Files and Playlists section headers expand and collapse.
 - [x] Hamburger opens a structured, keyboard and mouse operable menu with working commands.
 - [x] Right click opens context menus for tree items, playlist rows, saved playlists, and columns.
+- [x] The same context actions open from the keyboard, including at narrow terminal sizes; `?` shows the shortcut guide.
 - [x] Mouse wheel and Home/End navigation keep long tree and playlist selections visible, including at 48 columns.
 - [x] Multi selection supports Ctrl+click toggling, Alt+click ranges, `v` then click ranges, Shift+arrow ranges, and deletion of all selected rows. Shift+click also works when the terminal forwards it.
+- [x] Keyboard-only noncontiguous selection, section collapse, sidebar resize, column sorting/resizing/reordering, and exact seek are exercised in an isolated PTY without mouse events.
 - [x] Path, URL, name, and preference prompts edit in a centered dialog with a visible caret and Ctrl+A replacement.
 - [x] Music Folder opens a directory chooser with mouse and keyboard browsing, hidden folders, an editable location, and separate Choose and Cancel actions. Arrow keys select, Enter opens, Backspace or Alt+Up goes to the parent, Ctrl+L edits the location, Ctrl+W deletes the previous word, Alt+Backspace or Ctrl+Backspace removes the previous path component, and Ctrl+O chooses the displayed folder.
 
