@@ -249,10 +249,11 @@ pub struct MetadataRow {
     pub bits_per_sample: Option<u8>,
     pub codec: Option<String>,
     pub bitrate: Option<u32>,
+    pub file_size_bytes: Option<u64>,
 }
 
 impl MetadataRow {
-    fn from_properties(properties: StreamProperties) -> Self {
+    fn from_properties(properties: StreamProperties, file_size_bytes: Option<u64>) -> Self {
         Self {
             title: properties.title,
             artist: properties.artist,
@@ -268,6 +269,7 @@ impl MetadataRow {
             bits_per_sample: properties.bits_per_sample,
             codec: properties.codec,
             bitrate: properties.bitrate,
+            file_size_bytes,
         }
     }
 }
@@ -351,10 +353,9 @@ fn probe_metadata(
         location,
         fragment: (!fragment.trim().is_empty()).then(|| fragment.trim().to_owned()),
     };
-    Ok(streams
-        .probe_entry(source)
-        .ok()
-        .map(MetadataRow::from_properties))
+    Ok(streams.probe_entry_with_size(source).ok().map(
+        |(properties, file_size_bytes)| MetadataRow::from_properties(properties, file_size_bytes),
+    ))
 }
 
 /// Cache-first lookup. Failures are cached too, so a broken entry is not
@@ -2182,7 +2183,15 @@ mod tests {
             bits_per_sample: None,
             codec: None,
             bitrate: None,
+            file_size_bytes: None,
         }
+    }
+
+    #[test]
+    fn metadata_serializes_exact_file_bytes() {
+        let row = MetadataRow::from_properties(StreamProperties::default(), Some(1_572_864));
+        let json = serde_json::to_value(row).unwrap();
+        assert_eq!(json["fileSizeBytes"], 1_572_864);
     }
 
     #[test]

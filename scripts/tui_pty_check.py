@@ -297,7 +297,7 @@ try:
     click(95,1,2);send(b'\x1b[B'*6+b'\r')
     assert 'Visible Columns' in '\n'.join(screen.display)
     assert '╭─ Columns' in '\n'.join(screen.display)
-    menu_item('Visible Columns',11)
+    menu_item('Visible Columns',13)
     wait_for('Genre shown')
     click(95,1,2);send(b'\x1b[B'*6+b'\r')
     menu_item('Visible Columns',1)

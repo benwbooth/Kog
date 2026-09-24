@@ -83,6 +83,10 @@ Rectangle {
                 Text.AlignLeft, true),
             makeColumn("length", qsTr("Length"), qsTr("Length"), 70, 44, 160, true,
                 Text.AlignRight, false),
+            makeColumn("filesizebytes", qsTr("Size (bytes)"), qsTr("File Size (Bytes)"),
+                110, 82, 1024, false, Text.AlignRight, false),
+            makeColumn("filesize", qsTr("Size"), qsTr("File Size"), 88, 60, 1024,
+                true, Text.AlignRight, false),
             makeColumn("date", qsTr("Year"), qsTr("Year"), 58, 42, 160, true,
                 Text.AlignRight, false),
             makeColumn("genre", qsTr("Genre"), qsTr("Genre"), 120, 48, 32768, true,
@@ -185,8 +189,7 @@ Rectangle {
             const entries = value.split(";")
             const restored = []
             const seen = []
-            let valid = entries.length === defaults.length
-                || entries.length === defaults.length - 1
+            let valid = entries.length > 0 && entries.length <= defaults.length
             let visibleCount = 0
             for (let entryIndex = 0; valid && entryIndex < entries.length; ++entryIndex) {
                 const fields = entries[entryIndex].split(",")
@@ -565,6 +568,20 @@ Rectangle {
             checkable: true
             checked: root.columnVisible("filename")
             onTriggered: root.toggleColumn("filename")
+        }
+        MenuItem {
+            text: qsTr("File Size")
+            icon.name: checked ? "view-visible" : "view-hidden"
+            checkable: true
+            checked: root.columnVisible("filesize")
+            onTriggered: root.toggleColumn("filesize")
+        }
+        MenuItem {
+            text: qsTr("File Size (Bytes)")
+            icon.name: checked ? "view-visible" : "view-hidden"
+            checkable: true
+            checked: root.columnVisible("filesizebytes")
+            onTriggered: root.toggleColumn("filesizebytes")
         }
         MenuItem {
             text: qsTr("Genre")

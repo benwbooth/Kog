@@ -201,7 +201,7 @@ with tempfile.TemporaryDirectory(prefix="kog-tui-keyboard-") as base:
         assert "Alt+" in "\n".join(screen.display)
         send(b"\x1bc")  # Open the column visibility submenu by its accelerator.
         wait_for("Visible Columns")
-        send(b"\x1bj")  # Toggle Bitrate, below the visible page of the narrow menu.
+        send(b"\x1bu")  # Toggle Bitrate, below the visible page of the narrow menu.
         assert any(entry.startswith("bitrate,") and entry.endswith(",1") for entry in layouts[0].read_text().split(";"))
         send("H")
         send("?")

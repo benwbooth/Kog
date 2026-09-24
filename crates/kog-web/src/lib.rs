@@ -297,6 +297,7 @@ struct MetaRow {
     bits_per_sample: Option<u8>,
     codec: Option<String>,
     bitrate: Option<u32>,
+    file_size_bytes: Option<u64>,
 }
 
 /// The columns the pane sorts by, matching the visible header order.
@@ -312,6 +313,8 @@ enum SortKey {
     Composer,
     Album,
     Length,
+    FileSizeBytes,
+    FileSize,
     Year,
     Genre,
     Track,
@@ -342,6 +345,8 @@ enum ColumnId {
     Composer,
     Album,
     Length,
+    FileSizeBytes,
+    FileSize,
     Year,
     Genre,
     Track,
@@ -355,7 +360,7 @@ enum ColumnId {
 }
 
 impl ColumnId {
-    const ALL: [ColumnId; 20] = [
+    const ALL: [ColumnId; 22] = [
         ColumnId::Index,
         ColumnId::Star,
         ColumnId::Status,
@@ -366,6 +371,8 @@ impl ColumnId {
         ColumnId::Composer,
         ColumnId::Album,
         ColumnId::Length,
+        ColumnId::FileSizeBytes,
+        ColumnId::FileSize,
         ColumnId::Year,
         ColumnId::Genre,
         ColumnId::Track,
@@ -381,7 +388,7 @@ impl ColumnId {
     /// The order the header context menu lists the visibility toggles in,
     /// alphabetised by menu label exactly as `qml/PlaylistHeader.qml` does.
     /// Like the desktop, the menu does not offer to hide the Star column.
-    const MENU_ORDER: [ColumnId; 19] = [
+    const MENU_ORDER: [ColumnId; 21] = [
         ColumnId::Album,
         ColumnId::AlbumArtist,
         ColumnId::Artist,
@@ -390,6 +397,8 @@ impl ColumnId {
         ColumnId::Codec,
         ColumnId::Composer,
         ColumnId::Filename,
+        ColumnId::FileSize,
+        ColumnId::FileSizeBytes,
         ColumnId::Genre,
         ColumnId::Index,
         ColumnId::Length,
@@ -415,6 +424,8 @@ impl ColumnId {
             Self::Composer => "composer",
             Self::Album => "album",
             Self::Length => "length",
+            Self::FileSizeBytes => "filesizebytes",
+            Self::FileSize => "filesize",
             Self::Year => "year",
             Self::Genre => "genre",
             Self::Track => "track",
@@ -451,6 +462,8 @@ impl ColumnId {
             Self::Composer => "Composer",
             Self::Album => "Album",
             Self::Length => "Length",
+            Self::FileSizeBytes => "Size (bytes)",
+            Self::FileSize => "Size",
             Self::Year => "Year",
             Self::Genre => "Genre",
             Self::Track => "№",
@@ -477,6 +490,8 @@ impl ColumnId {
             Self::Composer => "Composer",
             Self::Album => "Album",
             Self::Length => "Length",
+            Self::FileSizeBytes => "File Size (Bytes)",
+            Self::FileSize => "File Size",
             Self::Year => "Year",
             Self::Genre => "Genre",
             Self::Track => "Track",
@@ -502,6 +517,8 @@ impl ColumnId {
             Self::Composer => "composer-cell",
             Self::Album => "album-cell",
             Self::Length => "duration-cell",
+            Self::FileSizeBytes => "filesizebytes-cell",
+            Self::FileSize => "filesize-cell",
             Self::Year => "year-cell",
             Self::Genre => "genre-cell",
             Self::Track => "trackno-cell",
@@ -527,6 +544,8 @@ impl ColumnId {
             Self::Composer => SortKey::Composer,
             Self::Album => SortKey::Album,
             Self::Length => SortKey::Length,
+            Self::FileSizeBytes => SortKey::FileSizeBytes,
+            Self::FileSize => SortKey::FileSize,
             Self::Year => SortKey::Year,
             Self::Genre => SortKey::Genre,
             Self::Track => SortKey::Track,
@@ -552,6 +571,8 @@ impl ColumnId {
             Self::Composer => 151.0,
             Self::Album => 220.0,
             Self::Length => 70.0,
+            Self::FileSizeBytes => 110.0,
+            Self::FileSize => 88.0,
             Self::Year => 58.0,
             Self::Genre => 120.0,
             Self::Track => 54.0,
@@ -577,6 +598,8 @@ impl ColumnId {
             Self::Composer => 96.0,
             Self::Album => 96.0,
             Self::Length => 44.0,
+            Self::FileSizeBytes => 82.0,
+            Self::FileSize => 60.0,
             Self::Year => 42.0,
             Self::Genre => 48.0,
             Self::Track => 32.0,
@@ -611,6 +634,8 @@ impl ColumnId {
             Self::Index
                 | Self::Year
                 | Self::Length
+                | Self::FileSizeBytes
+                | Self::FileSize
                 | Self::Track
                 | Self::PlayCount
                 | Self::SampleRate
@@ -628,7 +653,7 @@ impl ColumnId {
     fn default_visible(self) -> bool {
         matches!(
             self,
-            Self::Index | Self::Star | Self::Status | Self::Title | Self::Artist | Self::Album | Self::Length | Self::Track
+            Self::Index | Self::Star | Self::Status | Self::Title | Self::Artist | Self::Album | Self::Length | Self::FileSize | Self::Track
         )
     }
 }
@@ -873,6 +898,14 @@ fn column_text(
             .map(clock)
             .or_else(|| live_duration.map(clock))
             .unwrap_or_default(),
+        ColumnId::FileSizeBytes => meta
+            .and_then(|meta| meta.file_size_bytes)
+            .map(|bytes| bytes.to_string())
+            .unwrap_or_default(),
+        ColumnId::FileSize => meta
+            .and_then(|meta| meta.file_size_bytes)
+            .map(file_size_label)
+            .unwrap_or_default(),
         ColumnId::Track => meta
             .and_then(|meta| meta.track_number)
             .map(|number| number.to_string())
@@ -938,6 +971,22 @@ fn sample_rate_label(sample_rate: Option<u32>) -> String {
     } else {
         format!("{sample_rate} Hz")
     }
+}
+
+fn file_size_label(bytes: u64) -> String {
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+    let mut value = bytes as f64;
+    let mut unit = "B";
+    for next in ["KiB", "MiB", "GiB", "TiB", "PiB", "EiB"] {
+        value /= 1024.0;
+        unit = next;
+        if value < 1024.0 {
+            break;
+        }
+    }
+    format!("{value:.1} {unit}")
 }
 
 /// Repeat policy, cycled by the transport's repeat toggle.
@@ -4510,6 +4559,10 @@ fn App() -> impl IntoView {
                     SortKey::Length => meta
                         .and_then(|meta| meta.duration)
                         .map(|seconds| format!("{seconds:010.3}"))
+                        .unwrap_or_default(),
+                    SortKey::FileSizeBytes | SortKey::FileSize => meta
+                        .and_then(|meta| meta.file_size_bytes)
+                        .map(|bytes| format!("{bytes:020}"))
                         .unwrap_or_default(),
                     SortKey::Track => meta
                         .and_then(|meta| meta.track_number)

@@ -18,7 +18,7 @@ pub struct Columns {
     pub scroll: usize,
 }
 
-const DEFAULTS: [(&str, &str, usize, bool); 20] = [
+const DEFAULTS: [(&str, &str, usize, bool); 22] = [
     ("index", "#", 5, true),
     ("star", "★", 3, false),
     ("status", "Status", 7, false),
@@ -29,6 +29,8 @@ const DEFAULTS: [(&str, &str, usize, bool); 20] = [
     ("composer", "Composer", 18, false),
     ("album", "Album", 28, true),
     ("length", "Length", 8, false),
+    ("filesizebytes", "Size (bytes)", 15, false),
+    ("filesize", "Size", 11, true),
     ("date", "Year", 6, false),
     ("genre", "Genre", 18, false),
     ("track", "№", 5, false),
@@ -83,15 +85,15 @@ impl Columns {
                 visible,
             });
         }
-        if entries.len() == DEFAULTS.len() - 1 && entries.iter().all(|column| column.id != "star") {
-            let star = Self::default()
-                .entries
-                .into_iter()
-                .find(|column| column.id == "star")?;
-            entries.insert(1, star);
+        if entries.is_empty() || !entries.iter().any(|column| column.visible) {
+            return None;
         }
-        (entries.len() == DEFAULTS.len() && entries.iter().any(|column| column.visible))
-            .then_some(Self { entries, scroll: 0 })
+        for (default_index, column) in Self::default().entries.into_iter().enumerate() {
+            if !entries.iter().any(|saved| saved.id == column.id) {
+                entries.insert(default_index.min(entries.len()), column);
+            }
+        }
+        Some(Self { entries, scroll: 0 })
     }
 
     pub fn save(&self) -> Result<(), String> {
@@ -206,7 +208,22 @@ mod tests {
         let layout = Columns::parse(&value, true).unwrap();
         assert_eq!(layout.entries[0].id, "bitrate");
         assert_eq!(layout.entries[0].width, 12);
-        assert_eq!(layout.entries.len(), 20);
+        assert_eq!(layout.entries.len(), 22);
+    }
+
+    #[test]
+    fn old_layout_gains_size_columns_without_losing_saved_widths() {
+        let value = DEFAULTS
+            .iter()
+            .filter(|(id, ..)| *id != "filesize" && *id != "filesizebytes")
+            .map(|(id, _, _, _)| format!("{id},17,1"))
+            .collect::<Vec<_>>()
+            .join(";");
+        let layout = Columns::parse(&value, false).unwrap();
+        assert_eq!(layout.entries.len(), 22);
+        assert_eq!(layout.entries[0].width, 17);
+        assert!(layout.entries[layout.index("filesize").unwrap()].visible);
+        assert!(!layout.entries[layout.index("filesizebytes").unwrap()].visible);
     }
 
     #[test]

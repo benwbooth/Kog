@@ -161,6 +161,7 @@ struct TrackMetadata {
     disc_number: Option<u32>,
     track_number: Option<u32>,
     duration: Option<Duration>,
+    file_size_bytes: Option<u64>,
     lyrics: String,
     codec: String,
     genre: String,
@@ -883,6 +884,7 @@ impl Ui {
                         disc_number: track.disc_number,
                         track_number: track.track_number,
                         duration: track.duration,
+                        file_size_bytes: track.file_size_bytes,
                         lyrics: track.lyrics,
                         codec: track.codec,
                         genre: track.genre,
@@ -1591,6 +1593,14 @@ impl Ui {
             "length" => meta
                 .and_then(|m| m.duration)
                 .map(|d| format!("{}:{:02}", d.as_secs() / 60, d.as_secs() % 60))
+                .unwrap_or_default(),
+            "filesizebytes" => meta
+                .and_then(|m| m.file_size_bytes)
+                .map(|bytes| bytes.to_string())
+                .unwrap_or_default(),
+            "filesize" => meta
+                .and_then(|m| m.file_size_bytes)
+                .map(kog_audio::track::file_size_label)
                 .unwrap_or_default(),
             "date" => meta
                 .and_then(|m| m.year)
@@ -2604,6 +2614,13 @@ impl Ui {
         order.sort_by_key(|&index| {
             if id == "index" {
                 format!("{index:012}")
+            } else if id == "filesizebytes" || id == "filesize" {
+                format!(
+                    "{:020}",
+                    self.metadata_for(&self.tracks[index])
+                        .and_then(|meta| meta.file_size_bytes)
+                        .unwrap_or_default()
+                )
             } else if id == "title" {
                 self.title_for(&self.tracks[index]).to_lowercase()
             } else {
@@ -8745,7 +8762,7 @@ const COLUMNS_MENU: [&str; 12] = [
     "Scroll Columns Right",
     "Reset Column Layout",
 ];
-const COLUMN_VISIBILITY_MENU: [&str; 20] = [
+const COLUMN_VISIBILITY_MENU: [&str; 22] = [
     "Toggle #",
     "Toggle Star",
     "Toggle Status",
@@ -8756,6 +8773,8 @@ const COLUMN_VISIBILITY_MENU: [&str; 20] = [
     "Toggle Composer",
     "Toggle Album",
     "Toggle Length",
+    "Toggle Size (bytes)",
+    "Toggle Size",
     "Toggle Year",
     "Toggle Genre",
     "Toggle Track Number",

@@ -20,6 +20,8 @@ pub struct Track {
     pub disc_number: Option<u32>,
     pub track_number: Option<u32>,
     pub duration: Option<Duration>,
+    /// Size of the playable file (the extracted member for an archive entry).
+    pub file_size_bytes: Option<u64>,
     pub sample_rate: Option<u32>,
     pub channels: Option<u16>,
     pub bitrate: Option<u32>,
@@ -56,6 +58,11 @@ impl Track {
             codec,
             ..Self::default()
         };
+        if !track.source.is_remote() {
+            track.file_size_bytes = std::fs::metadata(&track.source.path)
+                .ok()
+                .map(|metadata| metadata.len());
+        }
 
         let mut tagged_metadata_loaded = false;
         if !track.source.is_remote()
@@ -235,6 +242,22 @@ pub fn duration_label(duration: Duration) -> String {
     }
 }
 
+pub fn file_size_label(bytes: u64) -> String {
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+    let mut value = bytes as f64;
+    let mut unit = "B";
+    for next in ["KiB", "MiB", "GiB", "TiB", "PiB", "EiB"] {
+        value /= 1024.0;
+        unit = next;
+        if value < 1024.0 {
+            break;
+        }
+    }
+    format!("{value:.1} {unit}")
+}
+
 pub fn canonical_path(path: &Path) -> Result<PathBuf, String> {
     path.canonicalize()
         .map_err(|error| format!("resolving {}: {error}", path.display()))
@@ -250,6 +273,14 @@ mod tests {
         assert_eq!(duration_label(Duration::from_secs(0)), "0:00");
         assert_eq!(duration_label(Duration::from_secs(185)), "3:05");
         assert_eq!(duration_label(Duration::from_secs(3_661)), "1:01:01");
+    }
+
+    #[test]
+    fn file_size_labels_use_binary_units() {
+        assert_eq!(file_size_label(0), "0 B");
+        assert_eq!(file_size_label(1023), "1023 B");
+        assert_eq!(file_size_label(1024), "1.0 KiB");
+        assert_eq!(file_size_label(1_572_864), "1.5 MiB");
     }
 
     #[test]

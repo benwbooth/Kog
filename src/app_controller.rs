@@ -1520,6 +1520,8 @@ enum PlaylistSortColumn {
     Composer,
     Album,
     Length,
+    FileSizeBytes,
+    FileSize,
     Date,
     Genre,
     Track,
@@ -1545,6 +1547,8 @@ impl PlaylistSortColumn {
             "composer" => Some(Self::Composer),
             "album" => Some(Self::Album),
             "length" => Some(Self::Length),
+            "filesizebytes" => Some(Self::FileSizeBytes),
+            "filesize" => Some(Self::FileSize),
             "year" | "date" => Some(Self::Date),
             "genre" => Some(Self::Genre),
             "track" => Some(Self::Track),
@@ -1571,6 +1575,8 @@ impl PlaylistSortColumn {
             Self::Composer => "composer",
             Self::Album => "album",
             Self::Length => "length",
+            Self::FileSizeBytes => "filesizebytes",
+            Self::FileSize => "filesize",
             Self::Date => "date",
             Self::Genre => "genre",
             Self::Track => "track",
@@ -1596,6 +1602,8 @@ impl PlaylistSortColumn {
             Self::Composer => "Composer",
             Self::Album => "Album",
             Self::Length => "Length",
+            Self::FileSizeBytes => "File Size (Bytes)",
+            Self::FileSize => "File Size",
             Self::Date => "Date",
             Self::Genre => "Genre",
             Self::Track => "Track",
@@ -1732,6 +1740,9 @@ fn compare_tracks(
         PlaylistSortColumn::Composer => natural_compare(&left.composer, &right.composer),
         PlaylistSortColumn::Album => natural_compare(&left.album, &right.album),
         PlaylistSortColumn::Length => left.duration.cmp(&right.duration),
+        PlaylistSortColumn::FileSizeBytes | PlaylistSortColumn::FileSize => {
+            left.file_size_bytes.cmp(&right.file_size_bytes)
+        }
         PlaylistSortColumn::Date => left.year.cmp(&right.year),
         PlaylistSortColumn::Genre => natural_compare(&left.genre, &right.genre),
         PlaylistSortColumn::Path => natural_compare(&track_path(left), &track_path(right)),
@@ -6373,6 +6384,14 @@ impl qobject::AppController {
             "composer" => qstring(&track.composer),
             "album" => qstring(&track.album),
             "length" => qstring(track.duration_label()),
+            "filesizebytes" => track
+                .file_size_bytes
+                .map(|bytes| qstring(bytes.to_string()))
+                .unwrap_or_default(),
+            "filesize" => track
+                .file_size_bytes
+                .map(|bytes| qstring(kog_audio::track::file_size_label(bytes)))
+                .unwrap_or_default(),
             "date" => track
                 .year
                 .map(|year| qstring(year.to_string()))

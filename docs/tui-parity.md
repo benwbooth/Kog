@@ -2,7 +2,7 @@
 
 This is the feature inventory for the terminal frontend, checked against `qml/Main.qml` and `crates/kog-web/src/lib.rs`. A checked item has been exercised in the isolated PTY test at the terminal sizes where the control is visible. Unchecked items still need implementation, verification, or both; the TUI should not be described as fully equivalent while they remain.
 
-Run `nix develop --command cargo build -p kog --bin kog`, then `uv run --python 3.13 --with pyte --with mutagen scripts/tui_pty_check.py`, `uv run --python 3.13 --with pyte scripts/tui_keyboard_check.py`, `uv run --python 3.13 --with pyte scripts/tui_transport_check.py`, `nix develop --command uv run --with pyte scripts/tui_server_interop_check.py`, and `uv run --with pyte scripts/tui_server_controls_check.py`. Set `KOG_TUI_TEST_BINARY` to an absolute `kog-tui` path to test the standalone executable instead. The tests create their own music trees, archives, settings directories, and SQLite databases. They do not write to the user's library or playlists.
+Run `nix develop --command cargo build -p kog --bin kog`, then `uv run --python 3.13 --with pyte --with mutagen scripts/tui_pty_check.py`, `uv run --python 3.13 --with pyte scripts/tui_keyboard_check.py`, `uv run --python 3.13 --with pyte scripts/tui_size_columns_check.py`, `uv run --python 3.13 --with pyte scripts/tui_transport_check.py`, `nix develop --command uv run --with pyte scripts/tui_server_interop_check.py`, and `uv run --with pyte scripts/tui_server_controls_check.py`. Set `KOG_TUI_TEST_BINARY` to an absolute `kog-tui` path to test the standalone executable instead. The tests create their own music trees, archives, settings directories, and SQLite databases. They do not write to the user's library or playlists.
 
 The provider smoke test is opt-in because it contacts public services: `nix develop --command cargo test -p kog-terminal --lib live_super_mario_galaxy_cover -- --ignored`.
 
@@ -59,7 +59,8 @@ The printable alternatives for range selection, context actions, resizing, reord
 - [x] The current playlist and selected row survive a TUI quit and relaunch in a separate atomic session file; the PTY fixture checks the full queue before and after restart.
 - [x] Playlist rows show decoded title, artist, and album without probing on the input thread.
 - [x] Default #, Title, Artist, and Album columns have header sorting, mouse resizing, visibility toggles, and auto fit from loaded metadata.
-- [x] All 20 Qt columns can be shown, hidden, sorted, resized, reordered, and scrolled horizontally with Left/Right in the playlist, a visible draggable scrollbar, native horizontal wheel, Shift/Ctrl+wheel, or bracket keys. The terminal saves its character-width layout and can import an existing Qt column order.
+- [x] All 22 Qt columns can be shown, hidden, sorted, resized, reordered, and scrolled horizontally with Left/Right in the playlist, a visible draggable scrollbar, native horizontal wheel, Shift/Ctrl+wheel, or bracket keys. The terminal saves its character-width layout and can import an existing Qt column order.
+- [x] File Size uses binary units and File Size (Bytes) shows the exact count; a PTY checks both values against a known WAV without touching the user's library.
 - [x] Right click opens row, file, saved playlist, column, and empty playlist menus. An open menu consumes right clicks inside it instead of passing them through to the underlying pane.
 - [x] Submenus open beside their selected parent item while parent menus remain visible; mouse selection and Left/Esc navigate the menu stack, including after terminal resize.
 - [x] Add File, Add URL, Save Current Playlist, and Add to Saved Playlist write the expected queue and database entries.

@@ -222,8 +222,12 @@ ApplicationWindow {
 
     component ResizeHandle: MouseArea {
         required property int edges
+        visible: root.visibility === Window.Windowed
         acceptedButtons: Qt.LeftButton
-        onPressed: root.startSystemResize(edges)
+        hoverEnabled: true
+        onPressed: {
+            root.startSystemResize(edges)
+        }
     }
 
     // VSCode-style sidebar accordion header: expander glyph plus title,
@@ -2037,6 +2041,8 @@ ApplicationWindow {
 
         RowLayout {
             anchors.fill: parent
+            anchors.leftMargin: 12
+            anchors.rightMargin: 12
             spacing: 2
 
             RowLayout {
@@ -2222,7 +2228,7 @@ ApplicationWindow {
             objectName: "buildStampFooter"
             anchors.right: parent.right
             anchors.bottom: parent.bottom
-            anchors.rightMargin: 10
+            anchors.rightMargin: 30
             anchors.bottomMargin: 4
             visible: !root.compactToolbar && root.buildStamp.length > 0
             text: qsTr("v%1 · %2").arg(Qt.application.version).arg(root.buildStamp)
@@ -2261,7 +2267,7 @@ ApplicationWindow {
 
         RowLayout {
             anchors.fill: parent
-            anchors.leftMargin: 12
+            anchors.leftMargin: 28
             anchors.rightMargin: 12
             anchors.topMargin: 8
             anchors.bottomMargin: 8
@@ -3623,6 +3629,7 @@ ApplicationWindow {
     }
 
     Rectangle {
+        parent: root.contentItem.parent
         anchors.fill: parent
         z: 9000
         color: "transparent"
@@ -3630,63 +3637,103 @@ ApplicationWindow {
         border.color: root.palette.mid
     }
 
+    // ApplicationWindow places the toolbar and playback bar outside contentItem.
+    // Each handle must belong to the section under its actual window edge.
     ResizeHandle {
         z: 10000
         edges: Qt.LeftEdge
-        width: 5
+        width: 8
         anchors { left: parent.left; top: parent.top; bottom: parent.bottom }
         cursorShape: Qt.SizeHorCursor
     }
     ResizeHandle {
         z: 10000
         edges: Qt.RightEdge
-        width: 5
+        width: 8
+        anchors { right: parent.right; top: parent.top; bottom: parent.bottom }
+        cursorShape: Qt.SizeHorCursor
+    }
+    ResizeHandle {
+        z: 10000
+        edges: Qt.LeftEdge
+        parent: root.header
+        width: 8
+        anchors { left: parent.left; top: parent.top; bottom: parent.bottom }
+        cursorShape: Qt.SizeHorCursor
+    }
+    ResizeHandle {
+        z: 10000
+        edges: Qt.RightEdge
+        parent: root.header
+        width: 8
+        anchors { right: parent.right; top: parent.top; bottom: parent.bottom }
+        cursorShape: Qt.SizeHorCursor
+    }
+    ResizeHandle {
+        z: 10000
+        edges: Qt.LeftEdge
+        parent: root.footer
+        width: 8
+        anchors { left: parent.left; top: parent.top; bottom: parent.bottom }
+        cursorShape: Qt.SizeHorCursor
+    }
+    ResizeHandle {
+        z: 10000
+        edges: Qt.RightEdge
+        parent: root.footer
+        width: 8
         anchors { right: parent.right; top: parent.top; bottom: parent.bottom }
         cursorShape: Qt.SizeHorCursor
     }
     ResizeHandle {
         z: 10000
         edges: Qt.TopEdge
-        height: 5
+        parent: root.header
+        height: 8
         anchors { left: parent.left; top: parent.top; right: parent.right }
         cursorShape: Qt.SizeVerCursor
     }
     ResizeHandle {
         z: 10000
         edges: Qt.BottomEdge
-        height: 5
+        parent: root.footer
+        height: 8
         anchors { left: parent.left; right: parent.right; bottom: parent.bottom }
         cursorShape: Qt.SizeVerCursor
     }
     ResizeHandle {
         z: 10001
         edges: Qt.TopEdge | Qt.LeftEdge
-        width: 9
-        height: 9
+        parent: root.header
+        width: 24
+        height: 24
         anchors { left: parent.left; top: parent.top }
         cursorShape: Qt.SizeFDiagCursor
     }
     ResizeHandle {
         z: 10001
         edges: Qt.TopEdge | Qt.RightEdge
-        width: 9
-        height: 9
+        parent: root.header
+        width: 24
+        height: 24
         anchors { right: parent.right; top: parent.top }
         cursorShape: Qt.SizeBDiagCursor
     }
     ResizeHandle {
         z: 10001
         edges: Qt.BottomEdge | Qt.LeftEdge
-        width: 9
-        height: 9
+        parent: root.footer
+        width: 24
+        height: 24
         anchors { left: parent.left; bottom: parent.bottom }
         cursorShape: Qt.SizeBDiagCursor
     }
     ResizeHandle {
         z: 10001
         edges: Qt.BottomEdge | Qt.RightEdge
-        width: 9
-        height: 9
+        parent: root.footer
+        width: 24
+        height: 24
         anchors { right: parent.right; bottom: parent.bottom }
         cursorShape: Qt.SizeFDiagCursor
     }

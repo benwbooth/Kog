@@ -982,6 +982,8 @@ body.touch .track .index-cell {
 
 .columns .index-cell,
 .columns .duration-cell,
+.columns .filesizebytes-cell,
+.columns .filesize-cell,
 .columns .trackno-cell,
 .columns .playcount-cell,
 .columns .samplerate-cell,
@@ -1015,6 +1017,8 @@ body.touch .track .index-cell {
 
 .track .index-cell,
 .track .duration-cell,
+.track .filesizebytes-cell,
+.track .filesize-cell,
 .track .trackno-cell,
 .track .playcount-cell,
 .track .samplerate-cell,

@@ -138,4 +138,20 @@ TestCase {
         compare(header.resizingColumn, "")
         compare(titleCell.width, title.width + 60)
     }
+
+    function test_saved_layout_gains_size_columns() {
+        header.resetLayout()
+        const oldLayout = header.columns
+            .filter(column => column.id !== "filesize" && column.id !== "filesizebytes")
+            .map(column => column.id + "," + column.width + ","
+                + (column.visible ? "1" : "0"))
+            .join(";")
+        header.savedLayout = oldLayout
+        header.restoreLayout()
+        compare(header.columns.length, 22)
+        compare(header.columns[header.columnIndex("title")].width, 220)
+        compare(header.columnVisible("filesize"), true)
+        compare(header.columnVisible("filesizebytes"), false)
+        header.resetLayout()
+    }
 }

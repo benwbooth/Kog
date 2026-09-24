@@ -113,6 +113,16 @@ impl StreamService {
     /// A dedicated `metadata` subdirectory keeps that file clear of the
     /// streaming path's.
     pub fn probe_entry(&self, entry: PlaylistEntry) -> Result<StreamProperties, String> {
+        self.probe_entry_with_size(entry).map(|(properties, _)| properties)
+    }
+
+    /// Probe tags and capture the resolved file's size during the same lookup.
+    /// Remote URLs have no local file size; archive members report their
+    /// extracted member size rather than the outer archive's size.
+    pub fn probe_entry_with_size(
+        &self,
+        entry: PlaylistEntry,
+    ) -> Result<(StreamProperties, Option<u64>), String> {
         let _guard = self
             .probe_lock
             .lock()
@@ -120,6 +130,11 @@ impl StreamService {
         let decoders = DecoderRegistry::new(self.decoder_settings.clone());
         let scratch = self.scratch.join("metadata");
         let source = resolve_entry(&entry, &decoders, &scratch)?;
+        let file_size_bytes = if source.is_remote() {
+            None
+        } else {
+            std::fs::metadata(&source.path).ok().map(|metadata| metadata.len())
+        };
         let mut properties = decoders.probe(&source)?;
         // The album artist and composer never come from a decoder backend;
         // read them the way the desktop's tag path does.
@@ -156,7 +171,7 @@ impl StreamService {
                 }
             }
         }
-        Ok(properties)
+        Ok((properties, file_size_bytes))
     }
 
     /// The synthesizer new MIDI streams decode with. `DecoderSettings`
@@ -354,6 +369,44 @@ mod tests {
         tee.write_all(b"streamed").unwrap();
         let received = receiver.try_recv().unwrap().unwrap();
         assert_eq!(received.as_ref(), b"streamed");
+    }
+
+    #[test]
+    fn local_probe_reports_file_bytes_without_using_stream_size() {
+        let (directory, cache) = cache();
+        let path = directory.path().join("song.wav");
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&36_u32.to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16_u32.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&8_000_u32.to_le_bytes());
+        wav.extend_from_slice(&16_000_u32.to_le_bytes());
+        wav.extend_from_slice(&2_u16.to_le_bytes());
+        wav.extend_from_slice(&16_u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&0_u32.to_le_bytes());
+        std::fs::write(&path, &wav).unwrap();
+        let desktop = Track::from_source(
+            PlaybackSource::from_path(path.clone()),
+            &DecoderRegistry::default(),
+        );
+        assert_eq!(desktop.file_size_bytes, Some(wav.len() as u64));
+        let service = StreamService::new(
+            cache,
+            DecoderSettings::default(),
+            PathBuf::from("ffmpeg"),
+            directory.path().join("scratch"),
+        );
+        let (_, file_size_bytes) = service
+            .probe_entry_with_size(PlaylistEntry {
+                location: PlaylistLocation::Local(path),
+                fragment: None,
+            })
+            .unwrap();
+        assert_eq!(file_size_bytes, Some(wav.len() as u64));
     }
 
     #[test]
