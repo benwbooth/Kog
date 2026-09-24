@@ -10,8 +10,8 @@ use directories::ProjectDirs;
 use image::imageops::FilterType;
 use kog_audio::cover_art;
 
-pub const COVER_WIDTH: usize = 4;
-pub const COVER_HEIGHT: usize = 4;
+pub const COVER_WIDTH: usize = 12;
+pub const COVER_HEIGHT: usize = 12;
 
 #[derive(Clone)]
 pub struct CoverPreview {

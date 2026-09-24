@@ -1,4 +1,4 @@
-import base64, fcntl, http.server, json, os, pty, select, signal, sqlite3, struct, subprocess, tempfile, threading, time, urllib.parse, wave, zipfile
+import base64, fcntl, http.server, json, os, pty, re, select, signal, sqlite3, struct, subprocess, tempfile, threading, time, urllib.parse, wave, zipfile
 from pathlib import Path
 import pyte
 from mutagen.wave import WAVE
@@ -111,6 +111,23 @@ def wait_for(text, timeout=5):
         if text in '\n'.join(screen.display): return
         drain(.1)
     raise AssertionError((text,'not on screen',screen.display[:15],screen.display[-3:]))
+def save_snapshot(path):
+    from PIL import Image, ImageDraw, ImageFont
+    font_path=subprocess.check_output(['fc-match','DejaVu Sans Mono','-f','%{file}'],text=True).strip()
+    font=ImageFont.truetype(font_path,16)
+    image=Image.new('RGB',(1200,800),'#202123');draw=ImageDraw.Draw(image)
+    named={'default':None,'black':'#000000','white':'#f4f4f4','brightwhite':'#ffffff','blue':'#4778ac','brightblue':'#6faee8','cyan':'#55b5bc','brightcyan':'#6cdbe0'}
+    def color(value,fallback):
+        resolved=named.get(value,value)
+        return fallback if resolved is None else ('#'+resolved if len(resolved)==6 and not resolved.startswith('#') else resolved)
+    for yy in range(40):
+        for xx in range(120):
+            cell=screen.buffer[yy][xx]
+            fg=color(cell.fg,'#dedede');bg=color(cell.bg,'#202123')
+            if cell.reverse:fg,bg=bg,fg
+            draw.rectangle((xx*10,yy*20,(xx+1)*10-1,(yy+1)*20-1),fill=bg)
+            if cell.data.strip():draw.text((xx*10,yy*20-1),cell.data,font=font,fill=fg)
+    image.save(path)
 try:
     wait_for('Search playlist')
     click(1,0)
@@ -313,6 +330,28 @@ try:
     assert '⏭1' not in screen.display[3],screen.display[3]
     click(50,36)
     wait_for('Playing long.wav')
+    click(5,0);click(10,11);click(10,8)
+    wait_for('Compact Player')
+    assert 'Title' not in screen.display[1],screen.display[1]
+    if compact_snapshot:=os.environ.get('KOG_TUI_COMPACT_SNAPSHOT_PATH'):
+        save_snapshot(compact_snapshot)
+    click(59,19)
+    assert '▶' in screen.display[36],screen.display[36]
+    click(59,19)
+    assert 'Ⅱ' in screen.display[36],screen.display[36]
+    click(62,17)
+    assert any(clock in screen.display[37] for clock in ('0:14','0:15','0:16')),screen.display[37]
+    click(59,20)
+    assert '84%' in screen.display[36],screen.display[36]
+    click(50,0)
+    assert 'Title' in screen.display[1],screen.display[1]
+    click(5,0);click(10,11);click(10,3)
+    wait_for('Position:')
+    first_position=re.search(r'Position: (\d+:\d+)', '\n'.join(screen.display)).group(1)
+    drain(1.6)
+    second_position=re.search(r'Position: (\d+:\d+)', '\n'.join(screen.display)).group(1)
+    assert first_position!=second_position,(first_position,second_position)
+    send(b'\x1b',.4)
     click(5,0);click(10,11);click(10,6)
     wait_for('Visualizer · Spectrum')
     send(b'\x1b',.4)
@@ -321,22 +360,7 @@ try:
     click(72,37)
     assert any(clock in screen.display[37] for clock in ('0:19','0:20','0:21')),screen.display[37]
     if snapshot_path:=os.environ.get('KOG_TUI_SNAPSHOT_PATH'):
-        from PIL import Image, ImageDraw, ImageFont
-        font_path=subprocess.check_output(['fc-match','DejaVu Sans Mono','-f','%{file}'],text=True).strip()
-        font=ImageFont.truetype(font_path,16)
-        image=Image.new('RGB',(1200,800),'#202123');draw=ImageDraw.Draw(image)
-        named={'default':None,'black':'#000000','white':'#f4f4f4','brightwhite':'#ffffff','blue':'#4778ac','brightblue':'#6faee8','cyan':'#55b5bc','brightcyan':'#6cdbe0'}
-        def color(value,fallback):
-            resolved=named.get(value,value)
-            return fallback if resolved is None else ('#'+resolved if len(resolved)==6 and not resolved.startswith('#') else resolved)
-        for yy in range(40):
-            for xx in range(120):
-                cell=screen.buffer[yy][xx]
-                fg=color(cell.fg,'#dedede');bg=color(cell.bg,'#202123')
-                if cell.reverse:fg,bg=bg,fg
-                draw.rectangle((xx*10,yy*20,(xx+1)*10-1,(yy+1)*20-1),fill=bg)
-                if cell.data.strip():draw.text((xx*10,yy*20-1),cell.data,font=font,fill=fg)
-        image.save(snapshot_path)
+        save_snapshot(snapshot_path)
     click(60,36)
     assert '▶' in screen.display[36],screen.display[36]
     click(5,0);click(10,2);send(os.path.join(music,'album','b.wav')+'\r',.3)

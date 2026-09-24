@@ -65,7 +65,7 @@ The provider smoke test is opt-in because it contacts public services: `nix deve
 - [x] SC-55 and MT-32 compressed ROM import uses the shared Qt importer and validator on a worker; shared unit tests check extraction and the PTY fixture rejects incomplete sets without retaining files.
 - [x] The API Server menu edits the shared bind address, port, authentication, credentials, HTTPS mode/certificate, codec, and cache settings; it starts and stops the embedded server and manages connected devices. A focused PTY test checks real HTTP and HTTPS requests with token and basic authentication, self-signed and imported PEM certificates, device blocking, and private settings storage.
 - [x] Player-relevant Qt preferences, including automatic cover downloads, are reachable. Qt window and tray controls do not apply to a terminal process.
-- [x] Track info, lyrics, and equalizer have terminal modal views. The info view includes Qt's technical fields and source path.
+- [x] Track info, lyrics, and equalizer have terminal modal views. The info view includes Qt's technical fields, source and artwork paths, and a playback position that refreshes while open in the PTY fixture.
 - [x] Supported Formats opens the shared decoder catalog in a scrollable terminal view; PTY checks its first format group.
 - [x] The spectrum visualizer reads live audio data, and individual equalizer bands can be edited from Preferences.
 
@@ -75,6 +75,7 @@ The provider smoke test is opt-in because it contacts public services: `nix deve
 - [x] Decoder diagnostics are written to an owner-only log instead of drawing over the TUI; the PTY fixture checks the log permissions.
 - [x] A populated 120×40 terminal frame was reviewed against the running Qt and web layouts for toolbar, sidebar, striped playlist, search fields, and transport placement.
 - [x] The footer shows a true-color Unicode cover preview from cached, embedded, nearby, or downloaded art; the track info view shows the artwork path. The PTY fixture checks a cover added through the tag editor, and an opt-in live provider test resolves Super Mario Galaxy.
+- [x] Compact Player hides the library and playlist and groups a larger Unicode cover, metadata, seek, transport, and volume in a mini-player card. A PTY check pauses, resumes, seeks, changes volume, and returns to the playlist.
 - [ ] The full Qt/Web information density has suitable terminal representations at every terminal size.
 
 ## Cross-frontend feature inventory
@@ -89,5 +90,5 @@ The Qt hamburger, playlist and file context menus, playlist header, and the web 
 | Library settings | Read CUE and M3U/PLS menu controls and folder behavior are checked. |
 | Synthesis | SC-55 and MT-32 archive controls reject incomplete fixtures; validating a complete proprietary ROM set needs user supplied files. |
 | Server settings | Shared configuration, embedded start/stop, device blocking, token/basic authentication, self-signed HTTPS, and PEM import are checked through real requests. |
-| Media | Automatic cover downloads use the Qt provider order and shared match rules; the footer cover preview is checked in a PTY, and an opt-in live test resolves Super Mario Galaxy. A larger artwork view is still missing. |
-| Views | Compact mini player, Winamp skin presentation, and live inspector refresh need terminal equivalents. |
+| Media | Automatic cover downloads use the Qt provider order and shared match rules; footer and compact-player cover previews are checked in a PTY, and an opt-in live test resolves Super Mario Galaxy. A full artwork inspector is still missing. |
+| Views | Compact Player covers the mini player workflow in the same terminal. Native Winamp skin windows have no terminal equivalent; the track inspector refreshes live. |

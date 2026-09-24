@@ -341,9 +341,11 @@ struct Ui {
     menu_x: usize,
     menu_y: usize,
     modal: Option<String>,
+    info_modal: bool,
     visualizer_open: bool,
     modal_scroll: usize,
     sidebar_visible: bool,
+    compact_mode: bool,
     files_expanded: bool,
     playlists_expanded: bool,
     sidebar_width: Option<usize>,
@@ -709,9 +711,11 @@ impl Ui {
             menu_x: 4,
             menu_y: 1,
             modal: None,
+            info_modal: false,
             visualizer_open: false,
             modal_scroll: 0,
             sidebar_visible: true,
+            compact_mode: false,
             files_expanded: true,
             playlists_expanded: true,
             sidebar_width: None,
@@ -1273,6 +1277,7 @@ impl Ui {
             (MenuPage::Main, 11) => self.open_submenu(MenuPage::Preferences),
             (MenuPage::Main, 13) => self.open_submenu(MenuPage::Remote),
             (MenuPage::Main, 14) => {
+                self.info_modal = false;
                 self.modal = Some(format!(
                     "Kog v{}\nTerminal player\nMusic folder: {}",
                     env!("CARGO_PKG_VERSION"),
@@ -1293,6 +1298,14 @@ impl Ui {
             (MenuPage::View, 3) => self.show_equalizer(),
             (MenuPage::View, 4) => self.show_visualizer(),
             (MenuPage::View, 5) => self.show_supported_formats(),
+            (MenuPage::View, 6) => {
+                self.compact_mode = !self.compact_mode;
+                self.status = if self.compact_mode {
+                    "Compact player · click the top bar to return".to_owned()
+                } else {
+                    "Playlist view".to_owned()
+                };
+            }
             (MenuPage::Playback, 0) => self.play_pause(),
             (MenuPage::Playback, 1) => {
                 self.player.stop();
@@ -1970,11 +1983,17 @@ impl Ui {
     }
 
     fn show_info(&mut self) {
+        let content = self.info_content();
+        self.show_modal(content);
+        self.info_modal = true;
+    }
+
+    fn info_content(&self) -> String {
         let track = self
             .playing
             .and_then(|index| self.tracks.get(index))
             .or_else(|| self.tracks.get(self.selected[2]));
-        let content = if let Some(track) = track {
+        if let Some(track) = track {
             let metadata = self.metadata_for(track);
             let length = metadata
                 .and_then(|m| m.duration)
@@ -1982,8 +2001,9 @@ impl Ui {
                     format!("{}:{:02}", duration.as_secs() / 60, duration.as_secs() % 60)
                 })
                 .unwrap_or_default();
+            let position = self.player.position();
             let mut content = format!(
-                "{}\n\nArtist: {}\nAlbum: {}\nTitle: {}\nAlbum Artist: {}\nComposer: {}\nTrack: {}\nDisc: {}\nLength: {}\nDate: {}\nGenre: {}\nFilename: {}\nFormat: {}\nSample Rate: {}\nChannels: {}\nBitrate: {}\nBits Per Sample: {}\n\n♫\n{}",
+                "{}\n\nArtist: {}\nAlbum: {}\nTitle: {}\nAlbum Artist: {}\nComposer: {}\nTrack: {}\nDisc: {}\nLength: {}\nPosition: {}:{:02}\nDate: {}\nGenre: {}\nFilename: {}\nFormat: {}\nSample Rate: {}\nChannels: {}\nBitrate: {}\nBits Per Sample: {}\n\n♫\n{}",
                 self.title_for(track),
                 metadata.map_or("", |m| &m.artist),
                 metadata.map_or("", |m| &m.album),
@@ -1997,6 +2017,8 @@ impl Ui {
                     .and_then(|m| m.disc_number)
                     .map_or(String::new(), |n| n.to_string()),
                 length,
+                position.as_secs() / 60,
+                position.as_secs() % 60,
                 metadata
                     .and_then(|m| m.year)
                     .map_or(String::new(), |n| n.to_string()),
@@ -2023,17 +2045,18 @@ impl Ui {
             content
         } else {
             "No track selected".to_owned()
-        };
-        self.show_modal(content);
+        }
     }
 
     fn show_modal(&mut self, content: String) {
         self.modal = Some(content);
+        self.info_modal = false;
         self.visualizer_open = false;
         self.modal_scroll = 0;
     }
 
     fn show_visualizer(&mut self) {
+        self.info_modal = false;
         self.visualizer_open = true;
         self.modal_scroll = 0;
     }
@@ -3192,6 +3215,7 @@ impl Ui {
     }
 
     fn show_blacklist(&mut self) {
+        self.info_modal = false;
         match self.library.db().list_blacklist() {
             Ok(entries) => {
                 self.modal = Some(if entries.is_empty() {
@@ -4340,6 +4364,7 @@ impl Ui {
             match key {
                 Key::Esc | Key::Enter | Key::Char(' ') => {
                     self.modal = None;
+                    self.info_modal = false;
                     self.visualizer_open = false;
                 }
                 Key::Up | Key::Char('k') => self.modal_scroll = self.modal_scroll.saturating_sub(1),
@@ -4688,6 +4713,7 @@ impl Ui {
                     .min(max);
             } else if button & 32 == 0 {
                 self.modal = None;
+                self.info_modal = false;
                 self.visualizer_open = false;
             }
             return;
@@ -4903,6 +4929,9 @@ impl Ui {
                 }
             } else if x >= size.0.saturating_sub(4) {
                 self.exit_requested = true;
+            } else if self.compact_mode {
+                self.compact_mode = false;
+                self.status = "Playlist view".to_owned();
             } else {
                 if !layout.show_sidebar && self.focus == Focus::Library {
                     self.begin_prompt(PromptKind::Search, self.search_query.clone());
@@ -4948,12 +4977,71 @@ impl Ui {
                     .and_then(|track| self.metadata_for(track))
                     .and_then(|meta| meta.duration);
                 if let Some(duration) = duration.filter(|time| !time.is_zero()) {
-                    let bar_left = start.saturating_sub(3) + 6;
+                    let clock = self.player.position();
+                    let clock_width =
+                        format!("{}:{:02}", clock.as_secs() / 60, clock.as_secs() % 60)
+                            .len()
+                            .max(5);
+                    let bar_left = start.saturating_sub(3) + clock_width + 1;
                     let bar_width = size.0.saturating_div(2).min(32).max(4);
                     if (bar_left..bar_left + bar_width).contains(&x) {
                         let fraction = (x - bar_left) as f64 / (bar_width - 1) as f64;
                         let _ = self.player.seek(duration.mul_f64(fraction));
                     }
+                }
+            }
+            return;
+        }
+        if self.compact_mode {
+            let card_width = size.0.saturating_sub(4).min(72);
+            let card_x = size.0.saturating_sub(card_width) / 2;
+            let rich = card_width >= 68 && layout.footer_top >= 18;
+            let card_y = if rich {
+                layout.footer_top.saturating_sub(11) / 2
+            } else {
+                layout.footer_top.saturating_div(2).saturating_sub(1).max(3)
+            };
+            if rich {
+                let position = self.player.position();
+                let clock_width =
+                    format!("{}:{:02}", position.as_secs() / 60, position.as_secs() % 60)
+                        .len()
+                        .max(6);
+                let seek_left = card_x + 17 + clock_width + 2;
+                if y == card_y + 5 && (seek_left..seek_left + 26).contains(&x) {
+                    let duration = self
+                        .playing
+                        .and_then(|index| self.tracks.get(index))
+                        .and_then(|track| self.metadata_for(track))
+                        .and_then(|meta| meta.duration);
+                    if let Some(duration) = duration.filter(|time| !time.is_zero()) {
+                        let fraction = (x - seek_left) as f64 / 25.0;
+                        let _ = self.player.seek(duration.mul_f64(fraction));
+                    }
+                } else if y == card_y + 7 && x >= card_x + 17 {
+                    match x - card_x - 17 {
+                        0..=13 => self.previous(),
+                        14..=30 => self.play_pause(),
+                        31..=40 => {
+                            self.player.stop();
+                            self.playing = None;
+                        }
+                        _ => self.next(false),
+                    }
+                } else if y == card_y + 8 && (card_x + 19..card_x + 39).contains(&x) {
+                    self.volume = (x - card_x - 19) as f32 / 19.0;
+                    self.volume_before_mute = self.volume.max(0.05);
+                    self.player.set_volume(self.volume);
+                }
+            } else if y == card_y + 3 && x >= card_x {
+                match x - card_x {
+                    0..=14 => self.previous(),
+                    15..=31 => self.play_pause(),
+                    32..=44 => {
+                        self.player.stop();
+                        self.playing = None;
+                    }
+                    _ => self.next(false),
                 }
             }
             return;
@@ -5201,6 +5289,9 @@ impl Ui {
 
     fn draw(&mut self, size: (usize, usize)) -> String {
         self.refresh_cover_request();
+        if self.info_modal && self.modal.is_some() {
+            self.modal = Some(self.info_content());
+        }
         let (width, height) = size;
         if width < 20 || height < 14 {
             let mut screen = String::from("\x1b[H\x1b[2J\x1b[?25l");
@@ -5689,6 +5780,235 @@ impl Ui {
             Surface::Muted,
             false,
         );
+        if self.compact_mode {
+            for y in 1..layout.footer_top {
+                paint(&mut screen, y + 1, 1, "", width, Surface::Main, false);
+            }
+            paint(
+                &mut screen,
+                1,
+                13,
+                "▣  Compact Player · click here for playlist",
+                width.saturating_sub(16),
+                Surface::Toolbar,
+                true,
+            );
+            let card_width = width.saturating_sub(4).min(72);
+            let card_x = width.saturating_sub(card_width) / 2 + 1;
+            let rich = card_width >= 68 && layout.footer_top >= 18;
+            let card_y = if rich {
+                layout.footer_top.saturating_sub(11) / 2
+            } else {
+                layout.footer_top.saturating_div(2).saturating_sub(1).max(3)
+            };
+            if rich {
+                for row in 0..11 {
+                    paint(
+                        &mut screen,
+                        card_y + row,
+                        card_x,
+                        &" ".repeat(card_width),
+                        card_width,
+                        Surface::Sidebar,
+                        false,
+                    );
+                }
+                paint(
+                    &mut screen,
+                    card_y,
+                    card_x,
+                    &format!("╭{}╮", "─".repeat(card_width - 2)),
+                    card_width,
+                    Surface::Accent,
+                    false,
+                );
+                paint(
+                    &mut screen,
+                    card_y + 10,
+                    card_x,
+                    &format!("╰{}╯", "─".repeat(card_width - 2)),
+                    card_width,
+                    Surface::Accent,
+                    false,
+                );
+                for row in 1..10 {
+                    paint(
+                        &mut screen,
+                        card_y + row,
+                        card_x,
+                        "│",
+                        1,
+                        Surface::Accent,
+                        false,
+                    );
+                    paint(
+                        &mut screen,
+                        card_y + row,
+                        card_x + card_width - 1,
+                        "│",
+                        1,
+                        Surface::Accent,
+                        false,
+                    );
+                }
+                paint(
+                    &mut screen,
+                    card_y,
+                    card_x + 3,
+                    " Now Playing ",
+                    13,
+                    Surface::Accent,
+                    true,
+                );
+                if let Some(cover) = &self.cover_preview {
+                    paint_cover_at_size(&mut screen, card_y + 2, card_x + 3, cover, 12);
+                } else {
+                    for row in 2..8 {
+                        paint(
+                            &mut screen,
+                            card_y + row,
+                            card_x + 3,
+                            "            ",
+                            12,
+                            Surface::MainAlt,
+                            false,
+                        );
+                    }
+                    paint(
+                        &mut screen,
+                        card_y + 4,
+                        card_x + 6,
+                        "◈ KOG",
+                        5,
+                        Surface::Accent,
+                        true,
+                    );
+                }
+                paint(
+                    &mut screen,
+                    card_y + 2,
+                    card_x + 18,
+                    &current,
+                    card_width - 21,
+                    Surface::Sidebar,
+                    true,
+                );
+                paint(
+                    &mut screen,
+                    card_y + 3,
+                    card_x + 18,
+                    &subtitle,
+                    card_width - 21,
+                    Surface::Muted,
+                    false,
+                );
+                let position = self.player.position();
+                let duration = self
+                    .playing
+                    .and_then(|index| self.tracks.get(index))
+                    .and_then(|track| self.metadata_for(track))
+                    .and_then(|meta| meta.duration);
+                let filled = duration
+                    .filter(|value| !value.is_zero())
+                    .map(|value| {
+                        ((position.as_secs_f64() / value.as_secs_f64()).clamp(0.0, 1.0) * 26.0)
+                            .round() as usize
+                    })
+                    .unwrap_or(0);
+                let duration_label = duration
+                    .map(|value| format!("{}:{:02}", value.as_secs() / 60, value.as_secs() % 60))
+                    .unwrap_or_else(|| "--:--".to_owned());
+                paint(
+                    &mut screen,
+                    card_y + 6,
+                    card_x + 18,
+                    &format!(
+                        "{:>6}  {}{}  {}",
+                        format!("{}:{:02}", position.as_secs() / 60, position.as_secs() % 60),
+                        "━".repeat(filled),
+                        "─".repeat(26 - filled),
+                        duration_label
+                    ),
+                    card_width - 21,
+                    Surface::Sidebar,
+                    false,
+                );
+                paint(
+                    &mut screen,
+                    card_y + 8,
+                    card_x + 18,
+                    "◀ Previous   ▶ Play/Pause   ■ Stop   ▶ Next",
+                    card_width - 21,
+                    Surface::Sidebar,
+                    false,
+                );
+                let volume_filled = (self.volume * 19.0).round() as usize;
+                paint(
+                    &mut screen,
+                    card_y + 9,
+                    card_x + 18,
+                    &format!(
+                        "♪ {}{} {:>3}%",
+                        "━".repeat(volume_filled),
+                        "─".repeat(20 - volume_filled),
+                        (self.volume * 100.0).round() as u8
+                    ),
+                    card_width - 21,
+                    Surface::Sidebar,
+                    false,
+                );
+            } else {
+                paint(
+                    &mut screen,
+                    card_y,
+                    card_x,
+                    "Now Playing",
+                    card_width,
+                    Surface::Accent,
+                    true,
+                );
+                if let Some(cover) = &self.cover_preview {
+                    paint_cover_preview(&mut screen, card_y + 1, card_x, cover);
+                } else {
+                    paint(
+                        &mut screen,
+                        card_y + 1,
+                        card_x,
+                        "◈",
+                        4,
+                        Surface::Accent,
+                        true,
+                    );
+                }
+                paint(
+                    &mut screen,
+                    card_y + 1,
+                    card_x + 6,
+                    &current,
+                    card_width.saturating_sub(6),
+                    Surface::Main,
+                    true,
+                );
+                paint(
+                    &mut screen,
+                    card_y + 2,
+                    card_x + 6,
+                    &subtitle,
+                    card_width.saturating_sub(6),
+                    Surface::Muted,
+                    false,
+                );
+                paint(
+                    &mut screen,
+                    card_y + 4,
+                    card_x,
+                    "◀ Previous     ▶ Play/Pause     ■ Stop     ▶ Next",
+                    card_width,
+                    Surface::Muted,
+                    false,
+                );
+            }
+        }
         let control_start = width.saturating_div(2).saturating_sub(11);
         paint(
             &mut screen,
@@ -6520,13 +6840,14 @@ const REMOTE_MENU: [&str; 9] = [
     "Queue Current Folder",
     "Use Local Library",
 ];
-const VIEW_MENU: [&str; 6] = [
+const VIEW_MENU: [&str; 7] = [
     "Show/Hide Files and Playlists",
     "Track Info…",
     "Lyrics…",
     "Equalizer…",
     "Visualizer…",
     "Supported Formats…",
+    "Compact Player On/Off",
 ];
 const PLAYBACK_MENU: [&str; 13] = [
     "Play/Pause",
@@ -6905,10 +7226,22 @@ fn paint(
 }
 
 fn paint_cover_preview(out: &mut String, row: usize, col: usize, cover: &CoverPreview) {
-    for y in 0..2 {
-        for x in 0..COVER_WIDTH {
-            let upper = cover.pixels[(y * 2) * COVER_WIDTH + x];
-            let lower = cover.pixels[(y * 2 + 1) * COVER_WIDTH + x];
+    paint_cover_at_size(out, row, col, cover, 4);
+}
+
+fn paint_cover_at_size(
+    out: &mut String,
+    row: usize,
+    col: usize,
+    cover: &CoverPreview,
+    width: usize,
+) {
+    let width = width.min(COVER_WIDTH);
+    for y in 0..width / 2 {
+        for x in 0..width {
+            let source_x = x * COVER_WIDTH / width;
+            let upper = cover.pixels[(y * 2 * COVER_WIDTH / width) * COVER_WIDTH + source_x];
+            let lower = cover.pixels[((y * 2 + 1) * COVER_WIDTH / width) * COVER_WIDTH + source_x];
             out.push_str(&format!(
                 "\x1b[{};{}H\x1b[38;2;{};{};{};48;2;{};{};{}m▀\x1b[0m",
                 row + y,
