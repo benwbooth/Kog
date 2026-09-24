@@ -443,7 +443,49 @@ try:
     for path in (long_path,third_path):
         tags=WAVE(path).tags
         assert tags.getall('TALB')[0].text==['PTY Album'],(path,tags)
-    print('search, tree/archive navigation/trash/blacklist, divider/column drag/visibility/reorder, volume, radio/blacklist/queue/stop-after, playback/seek/completion/order, saved-list CRUD/export/prune/multi-selection, tag editing, selection/reorder/sort, menus/dialogs, equalizer/visualizer, narrow wheel/keyboard navigation, resize: PASS')
+    click(1,0);send(b'\x01'+base.encode()+b'\r',.4)
+    wait_for('third.wav')
+    click(5,0);click(10,9)
+    click(10,row('long.wav'));click(10,row('third.wav'),4)
+    send('a')
+    wait_for('Added 3 track(s)')
+    assert all(name.removesuffix('.wav') in '\n'.join(line[52:] for line in screen.display[2:15]) for name in ('long.wav','second.wav','third.wav'))
+    click(5,0);click(10,9)
+    click(1,0);send(b'\x01'+base.encode()+b'\r',.4)
+    wait_for('third.wav')
+    click(10,row('long.wav'));click(10,row('third.wav'),16)
+    send('a')
+    wait_for('Added 2 track(s)')
+    assert 'second' not in '\n'.join(line[52:] for line in screen.display[2:15]),screen.display[2:15]
+    click(10,row('long.wav'),2);send(b'\x1b[B'*5+b'\r')
+    wait_for('Blacklisted 1 item(s)')
+    with sqlite3.connect(db_files[0]) as db:
+        assert db.execute("SELECT count(*) FROM blacklist WHERE kind='song' AND path=?",(third_path,)).fetchone()[0]==1
+    click(10,row('long.wav'));send(b'\x1b[1;2B'*2);send('a')
+    wait_for('Added 3 track(s)')
+    send(b'\x01')
+    assert 'Selected ' in screen.display[-1] and 'tree items' in screen.display[-1],screen.display[-1]
+    click(5,0);click(10,9)
+    click(10,row('RadioOnly'))
+    click(10,row('RadioOnly'),2);send(b'\x1b[B\r')
+    wait_for('Playing ban.wav',10)
+    batch_paths=[os.path.join(base,name) for name in ('batch1.wav','batch2.wav')]
+    for path in batch_paths:
+        with wave.open(path,'wb') as w:
+            w.setnchannels(1);w.setsampwidth(2);w.setframerate(8000);w.writeframes(b'\0\0'*8000)
+    click(1,0);send(b'\x01'+base.encode()+b'\r',.4)
+    wait_for('batch2.wav')
+    click(10,row('batch1.wav'));click(10,row('batch2.wav'),16)
+    send(b'\x1b[3~')
+    send('yes\r',.4)
+    wait_for('Moved '+batch_paths[1]+' to trash',10)
+    assert not any(os.path.exists(path) for path in batch_paths),batch_paths
+    click(10,row('RadioOnly'),2);send(b'\x1b[B'*8+b'\r')
+    wait_for('kept.wav')
+    assert 'long.wav' not in '\n'.join(line[:50] for line in screen.display[:20])
+    click(10,row('kept.wav'),2);send(b'\x1b[B'*9+b'\r')
+    assert any('▸ ▱ RadioOnly' in line[:50] for line in screen.display[:20]),screen.display[:20]
+    print('search, tree/archive navigation/trash/blacklist/group selection, divider/column drag/visibility/reorder, volume, radio/blacklist/queue/stop-after, playback/seek/completion/order, saved-list CRUD/export/prune/multi-selection, tag editing, selection/reorder/sort, menus/dialogs, equalizer/visualizer, narrow wheel/keyboard navigation, resize: PASS')
     send(b'\x1b',.3);send('q')
     p.wait(timeout=5)
 finally:

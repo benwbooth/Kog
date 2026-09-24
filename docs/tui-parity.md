@@ -22,6 +22,8 @@ Run `nix develop --command cargo build -p kog --bin kog`, then `uv run --with py
 - [x] Files are displayed in a lazily expandable tree, including nested folders.
 - [x] A folder click expands or collapses it; a folder double click queues its contents without starting playback.
 - [x] A file double click adds and plays; single click selects.
+- [x] Ctrl and Shift mouse selection, Shift arrow range selection, and Ctrl+A work in the tree; Add applies to selected files and folders. Play Now on a folder starts its first loaded track.
+- [x] Tree context actions can change and reset the visible root, blacklist selected songs, and move several local files to trash after one confirmation. Delete opens the same confirmation.
 - [x] Nested archive folders can be explored and added. Subsong expansion still needs a dedicated PTY fixture.
 - [x] Saved playlist single click selects the source; double click adds its tracks to the playing pane.
 - [x] Favorites, create, rename, delete, save current pane, and add to a saved playlist work.
@@ -36,7 +38,7 @@ Run `nix develop --command cargo build -p kog --bin kog`, then `uv run --with py
 - [x] Saved playlist export writes a portable M3U; prune missing deletes only absent local/archive entries.
 - [x] Ctrl and Shift select saved playlists; Add and Play use the selected set, and confirmed Delete removes the selected saved lists.
 - [x] Tree and playlist song/folder blacklist actions persist to the shared database; the menu can view and remove entries.
-- [x] Confirmed Move to Trash runs off the input thread, removes a local tree item and its current playlist rows, and is exercised with a disposable file.
+- [x] Confirmed Move to Trash runs off the input thread, removes local tree items and their current playlist rows, and is exercised with disposable files.
 - [x] Track tag editing stages the Qt fields and artwork actions, saves through the shared writer off the input thread, and updates multiple local files. The PTY test checks the written album tags.
 
 ## Playback and settings
@@ -69,7 +71,7 @@ The Qt hamburger, playlist and file context menus, playlist header, and the web 
 
 | Area | Qt/Web behavior still missing or unverified in TUI |
 | --- | --- |
-| File tree | Remote server browser, multi-item tree selection, and complete subsong fixtures. |
+| File tree | Remote server browser and complete subsong fixtures. |
 | Playlist | Tag artwork path and playback resume still need dedicated PTY fixtures. |
 | Playback | Album metadata changes during shuffle, playback error recovery, and output device test on real hardware. |
 | Settings | Server connection, decoder and synthesizer selection, media downloading, and remaining advanced preferences. |

@@ -59,6 +59,19 @@ struct TreeRow {
     depth: usize,
 }
 
+fn tree_item_key(item: &Item) -> String {
+    match item {
+        Item::Directory(_, path) => format!("directory\0{}", path.display()),
+        Item::Track(track) => format!(
+            "track\0{}\0{}\0{}\0{}",
+            track.entry.kind,
+            track.entry.path,
+            track.entry.entry,
+            track.entry.fragment.as_deref().unwrap_or_default()
+        ),
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Focus {
     Playlists,
@@ -174,6 +187,8 @@ struct Ui {
     root_items: Vec<Item>,
     expanded: HashSet<PathBuf>,
     children: HashMap<PathBuf, Vec<Item>>,
+    selected_tree: HashSet<String>,
+    tree_anchor: Option<usize>,
     lists: Vec<(i64, String)>,
     selected_lists: HashSet<i64>,
     list_anchor: Option<usize>,
@@ -213,12 +228,13 @@ struct Ui {
     metadata_pending: HashSet<String>,
     metadata_requests: Sender<(String, StoredEntry)>,
     metadata_results: Receiver<(String, Option<TrackMetadata>)>,
-    folder_requests: Sender<PathBuf>,
-    folder_results: Receiver<Result<Vec<Track>, String>>,
-    folder_jobs: usize,
+    folder_requests: Sender<(u64, PathBuf)>,
+    folder_results: Receiver<(u64, PathBuf, Result<Vec<Track>, String>)>,
+    folder_generation: u64,
+    folder_play_pending: HashSet<PathBuf>,
     delete_requests: Sender<PathBuf>,
     delete_results: Receiver<(PathBuf, Result<(), String>)>,
-    pending_delete_path: Option<PathBuf>,
+    pending_delete_paths: Vec<PathBuf>,
     tag_requests: Sender<TagCommand>,
     tag_results: Receiver<TagResponse>,
     tag_session: Option<TagSession>,
@@ -303,15 +319,13 @@ impl Ui {
             }
         });
         let library = Arc::new(Library::open());
-        let (folder_requests, pending_folders) = mpsc::channel::<PathBuf>();
+        let (folder_requests, pending_folders) = mpsc::channel::<(u64, PathBuf)>();
         let (completed_folders, folder_results) = mpsc::channel();
         let folder_library = library.clone();
         std::thread::spawn(move || {
-            while let Ok(path) = pending_folders.recv() {
-                if completed_folders
-                    .send(collect_folder(&folder_library, path))
-                    .is_err()
-                {
+            while let Ok((generation, path)) = pending_folders.recv() {
+                let result = collect_folder(&folder_library, path.clone());
+                if completed_folders.send((generation, path, result)).is_err() {
                     break;
                 }
             }
@@ -401,6 +415,8 @@ impl Ui {
             root_items: Vec::new(),
             expanded: HashSet::new(),
             children: HashMap::new(),
+            selected_tree: HashSet::new(),
+            tree_anchor: None,
             lists: Vec::new(),
             selected_lists: HashSet::new(),
             list_anchor: None,
@@ -446,10 +462,11 @@ impl Ui {
             metadata_results,
             folder_requests,
             folder_results,
-            folder_jobs: 0,
+            folder_generation: 0,
+            folder_play_pending: HashSet::new(),
             delete_requests,
             delete_results,
-            pending_delete_path: None,
+            pending_delete_paths: Vec::new(),
             tag_requests,
             tag_results,
             tag_session: None,
@@ -1035,6 +1052,20 @@ impl Ui {
             (MenuPage::Tree, 5) => self.blacklist_selected_tree(false),
             (MenuPage::Tree, 6) => self.blacklist_selected_tree(true),
             (MenuPage::Tree, 7) => self.begin_trash_selected(),
+            (MenuPage::Tree, 8) => {
+                if self.selected_tree.len() > 1 {
+                    self.status = "Select one folder to use as tree root".to_owned();
+                } else if let Some(TreeRow {
+                    item: Item::Directory(_, path),
+                    ..
+                }) = self.items.get(self.selected[1])
+                {
+                    self.browse(Some(path.clone()));
+                } else {
+                    self.status = "Select a folder to use as tree root".to_owned();
+                }
+            }
+            (MenuPage::Tree, 9) => self.browse(None),
             (MenuPage::Tracks, 0) => self.play_selected(),
             (MenuPage::Tracks, 1) => self.remove_selected(),
             (MenuPage::Tracks, 2) => self.begin_prompt(PromptKind::AddToPlaylist, String::new()),
@@ -1287,6 +1318,8 @@ impl Ui {
     }
 
     fn clear_playlist(&mut self) {
+        self.folder_generation = self.folder_generation.wrapping_add(1);
+        self.folder_play_pending.clear();
         self.player.stop();
         self.playing = None;
         self.tracks.clear();
@@ -1434,6 +1467,8 @@ impl Ui {
                 self.root_items = items;
                 self.expanded.clear();
                 self.children.clear();
+                self.selected_tree.clear();
+                self.tree_anchor = None;
                 self.rebuild_tree();
                 self.selected[1] = 0;
                 self.offsets[1] = 0;
@@ -1472,6 +1507,10 @@ impl Ui {
     }
 
     fn rebuild_tree(&mut self) {
+        let anchor_key = self
+            .tree_anchor
+            .and_then(|index| self.items.get(index))
+            .map(|row| tree_item_key(&row.item));
         fn append(
             rows: &mut Vec<TreeRow>,
             entries: &[Item],
@@ -1501,6 +1540,62 @@ impl Ui {
             &self.expanded,
             &self.children,
         );
+        let visible: HashSet<_> = self
+            .items
+            .iter()
+            .map(|row| tree_item_key(&row.item))
+            .collect();
+        self.selected_tree.retain(|key| visible.contains(key));
+        self.tree_anchor = anchor_key.and_then(|key| {
+            self.items
+                .iter()
+                .position(|row| tree_item_key(&row.item) == key)
+        });
+    }
+
+    fn select_tree_with_modifiers(&mut self, index: usize, shift: bool, ctrl: bool) {
+        let Some(row) = self.items.get(index) else {
+            return;
+        };
+        let key = tree_item_key(&row.item);
+        if shift {
+            let anchor = self.tree_anchor.unwrap_or(self.selected[1]);
+            if !ctrl {
+                self.selected_tree.clear();
+            }
+            for row in anchor.min(index)..=anchor.max(index) {
+                if let Some(item) = self.items.get(row) {
+                    self.selected_tree.insert(tree_item_key(&item.item));
+                }
+            }
+        } else if ctrl {
+            if !self.selected_tree.insert(key.clone()) {
+                self.selected_tree.remove(&key);
+            }
+            self.tree_anchor = Some(index);
+        } else {
+            self.selected_tree.clear();
+            self.selected_tree.insert(key);
+            self.tree_anchor = Some(index);
+        }
+        self.selected[1] = index;
+    }
+
+    fn selected_tree_items(&self) -> Vec<Item> {
+        let selected: Vec<_> = self
+            .items
+            .iter()
+            .filter(|row| self.selected_tree.contains(&tree_item_key(&row.item)))
+            .map(|row| row.item.clone())
+            .collect();
+        if selected.is_empty() && self.tree_anchor.is_none() {
+            self.items
+                .get(self.selected[1])
+                .map(|row| vec![row.item.clone()])
+                .unwrap_or_default()
+        } else {
+            selected
+        }
     }
 
     fn toggle_directory(&mut self, path: PathBuf) {
@@ -1630,8 +1725,11 @@ impl Ui {
     }
 
     fn enqueue_folder(&mut self, path: PathBuf) {
-        if self.folder_requests.send(path.clone()).is_ok() {
-            self.folder_jobs += 1;
+        if self
+            .folder_requests
+            .send((self.folder_generation, path.clone()))
+            .is_ok()
+        {
             self.status = format!("Adding tracks from {}…", path.display());
         } else {
             self.status = "Folder scanner is unavailable".to_owned();
@@ -1639,14 +1737,24 @@ impl Ui {
     }
 
     fn poll_folders(&mut self) {
-        while let Ok(result) = self.folder_results.try_recv() {
-            self.folder_jobs = self.folder_jobs.saturating_sub(1);
+        while let Ok((generation, path, result)) = self.folder_results.try_recv() {
+            if generation != self.folder_generation {
+                continue;
+            }
+            let play_when_loaded = self.folder_play_pending.remove(&path);
             match result {
                 Ok(tracks) => {
                     let count = tracks.len();
+                    let first = self.tracks.len();
                     self.tracks.extend(tracks);
                     self.order_tracks_changed();
                     self.status = format!("Added {count} tracks from folder");
+                    if play_when_loaded && count > 0 {
+                        self.folder_play_pending.clear();
+                        self.selected[2] = first;
+                        self.select_track(first, false, false);
+                        self.play_selected();
+                    }
                 }
                 Err(error) => self.status = error,
             }
@@ -1654,21 +1762,13 @@ impl Ui {
     }
 
     fn add_selected(&mut self, play: bool) {
-        let Some(TreeRow {
-            item: Item::Track(track),
-            ..
-        }) = self.items.get(self.selected[1]).cloned()
-        else {
-            if let Some(TreeRow {
-                item: Item::Directory(_, path),
-                ..
-            }) = self.items.get(self.selected[1])
-            {
-                self.enqueue_folder(path.clone());
-            }
+        let items = self.selected_tree_items();
+        if items.is_empty() {
             return;
-        };
+        }
         if play {
+            self.folder_generation = self.folder_generation.wrapping_add(1);
+            self.folder_play_pending.clear();
             self.player.stop();
             self.playing = None;
             self.tracks.clear();
@@ -1677,12 +1777,28 @@ impl Ui {
             self.stop_after_rows.clear();
             self.selected_tracks.clear();
         }
-        self.tracks.push(track.clone());
-        self.order_tracks_changed();
-        self.selected[2] = self.tracks.len() - 1;
-        self.select_track(self.selected[2], false, false);
-        self.status = format!("Added {}", track.name);
-        if play {
+        let first = self.tracks.len();
+        let mut folders = Vec::new();
+        for item in items {
+            match item {
+                Item::Track(track) => self.tracks.push(track),
+                Item::Directory(_, path) => {
+                    self.enqueue_folder(path.clone());
+                    folders.push(path);
+                }
+            }
+        }
+        let added = self.tracks.len() - first;
+        if added > 0 {
+            self.order_tracks_changed();
+            self.selected[2] = first;
+            self.select_track(first, false, false);
+            self.status = format!("Added {added} track(s)");
+        }
+        if play && added == 0 {
+            self.folder_play_pending.extend(folders);
+        }
+        if play && added > 0 {
             self.play_selected();
         }
     }
@@ -1987,50 +2103,46 @@ impl Ui {
     }
 
     fn blacklist_selected_tree(&mut self, folder: bool) {
-        let Some(row) = self.items.get(self.selected[1]) else {
-            return;
-        };
-        let entry = match (&row.item, folder) {
-            (Item::Directory(_, path), true) => {
-                if let Ok(Some(location)) = kog_audio::archive::tree_location(path) {
-                    BlacklistEntry {
-                        id: 0,
-                        kind: BLACKLIST_FOLDER.to_owned(),
-                        path: if location.entry.is_empty() {
-                            canonical_blacklist_path(&location.archive.to_string_lossy())
-                        } else {
-                            format!(
-                                "{} :: {}",
-                                canonical_blacklist_path(&location.archive.to_string_lossy()),
-                                location.entry
-                            )
-                        },
-                        entry: String::new(),
+        let mut entries = Vec::new();
+        let mut seen = HashSet::new();
+        for item in self.selected_tree_items() {
+            let entry = match (&item, folder) {
+                (Item::Directory(_, path), true) => {
+                    if let Ok(Some(location)) = kog_audio::archive::tree_location(path) {
+                        BlacklistEntry {
+                            id: 0,
+                            kind: BLACKLIST_FOLDER.to_owned(),
+                            path: if location.entry.is_empty() {
+                                canonical_blacklist_path(&location.archive.to_string_lossy())
+                            } else {
+                                format!(
+                                    "{} :: {}",
+                                    canonical_blacklist_path(&location.archive.to_string_lossy()),
+                                    location.entry
+                                )
+                            },
+                            entry: String::new(),
+                        }
+                    } else if path.is_dir() {
+                        BlacklistEntry {
+                            id: 0,
+                            kind: BLACKLIST_FOLDER.to_owned(),
+                            path: canonical_blacklist_path(&path.to_string_lossy()),
+                            entry: String::new(),
+                        }
+                    } else {
+                        continue;
                     }
-                } else if path.is_dir() {
-                    BlacklistEntry {
-                        id: 0,
-                        kind: BLACKLIST_FOLDER.to_owned(),
-                        path: canonical_blacklist_path(&path.to_string_lossy()),
-                        entry: String::new(),
-                    }
-                } else {
-                    self.status = "Select a folder".to_owned();
-                    return;
                 }
+                (Item::Track(track), false) => blacklist_song(&track.entry),
+                _ => continue,
+            };
+            let key = format!("{}:{}:{}", entry.kind, entry.path, entry.entry);
+            if seen.insert(key) {
+                entries.push(entry);
             }
-            (Item::Track(track), false) => blacklist_song(&track.entry),
-            _ => {
-                self.status = if folder {
-                    "Select a folder"
-                } else {
-                    "Select a song"
-                }
-                .to_owned();
-                return;
-            }
-        };
-        self.commit_blacklist(vec![entry]);
+        }
+        self.commit_blacklist(entries);
     }
 
     fn blacklist_selected_tracks(&mut self, folder: bool) {
@@ -2277,27 +2389,49 @@ impl Ui {
     }
 
     fn begin_trash_selected(&mut self) {
-        let path = match self.items.get(self.selected[1]).map(|row| &row.item) {
-            Some(Item::Directory(_, path))
-                if path.is_absolute() && !kog_audio::archive::is_tree_location(path) =>
+        let mut paths: Vec<_> = self
+            .selected_tree_items()
+            .into_iter()
+            .filter_map(|item| match item {
+                Item::Directory(_, path)
+                    if path.is_absolute() && !kog_audio::archive::is_tree_location(&path) =>
+                {
+                    Some(path)
+                }
+                Item::Track(track) if track.entry.kind == "local" => {
+                    Some(PathBuf::from(&track.entry.path))
+                }
+                _ => None,
+            })
+            .filter(|path| path.is_absolute() && path.parent().is_some())
+            .collect();
+        paths.sort_by_key(|path| path.components().count());
+        let mut unique = Vec::new();
+        for path in paths {
+            if !unique
+                .iter()
+                .any(|parent: &PathBuf| path.starts_with(parent))
             {
-                path.clone()
+                unique.push(path);
             }
-            Some(Item::Track(track)) if track.entry.kind == "local" => {
-                PathBuf::from(&track.entry.path)
-            }
-            _ => {
-                self.status = "Select a local file or folder to move to trash".to_owned();
-                return;
-            }
-        };
-        if !path.is_absolute() || path.parent().is_none() {
+        }
+        if unique.is_empty() {
             self.status = "Select a local file or folder to move to trash".to_owned();
             return;
         }
-        self.pending_delete_path = Some(path.clone());
+        self.pending_delete_paths = unique;
         self.begin_prompt(PromptKind::TrashSelected, String::new());
-        self.status = format!("Move {} to trash? Type yes to confirm", path.display());
+        self.status = if self.pending_delete_paths.len() == 1 {
+            format!(
+                "Move {} to trash? Type yes to confirm",
+                self.pending_delete_paths[0].display()
+            )
+        } else {
+            format!(
+                "Move {} selected items to trash? Type yes to confirm",
+                self.pending_delete_paths.len()
+            )
+        };
     }
 
     fn poll_deletes(&mut self) {
@@ -2377,6 +2511,8 @@ impl Ui {
                 self.search_query = value.to_owned();
                 self.search_done = false;
                 self.items.clear();
+                self.selected_tree.clear();
+                self.tree_anchor = None;
                 self.selected[1] = 0;
                 self.offsets[1] = 0;
                 self.focus = Focus::Library;
@@ -2635,13 +2771,13 @@ impl Ui {
                     return;
                 };
                 let entries: Vec<_> = if self.focus == Focus::Library {
-                    match self.items.get(self.selected[1]) {
-                        Some(TreeRow {
-                            item: Item::Track(track),
-                            ..
-                        }) => vec![track.entry.clone()],
-                        _ => Vec::new(),
-                    }
+                    self.selected_tree_items()
+                        .into_iter()
+                        .filter_map(|item| match item {
+                            Item::Track(track) => Some(track.entry),
+                            Item::Directory(..) => None,
+                        })
+                        .collect()
                 } else {
                     self.selected_tracks
                         .iter()
@@ -2759,15 +2895,22 @@ impl Ui {
                 Err(_) => self.status = "Enter a blacklist ID".to_owned(),
             },
             PromptKind::TrashSelected => {
-                let path = self.pending_delete_path.take();
+                let paths = std::mem::take(&mut self.pending_delete_paths);
                 if value != "yes" {
                     self.status = "Move to trash cancelled".to_owned();
-                } else if let Some(path) = path {
-                    if self.delete_requests.send(path.clone()).is_ok() {
-                        self.status = format!("Moving {} to trash…", path.display());
-                    } else {
-                        self.status = "Trash worker is unavailable".to_owned();
+                } else {
+                    let count = paths.len();
+                    for path in &paths {
+                        if self.delete_requests.send(path.clone()).is_err() {
+                            self.status = "Trash worker is unavailable".to_owned();
+                            return;
+                        }
                     }
+                    self.status = if count == 1 {
+                        format!("Moving {} to trash…", paths[0].display())
+                    } else {
+                        format!("Moving {count} selected items to trash…")
+                    };
                 }
             }
             PromptKind::TagField(index) => {
@@ -2863,7 +3006,13 @@ impl Ui {
         }
         let current = self.selected[pane];
         self.selected[pane] = current.saturating_add_signed(delta).min(len - 1);
-        if pane == 2 {
+        if pane == 1 {
+            self.selected_tree.clear();
+            if let Some(row) = self.items.get(self.selected[1]) {
+                self.selected_tree.insert(tree_item_key(&row.item));
+            }
+            self.tree_anchor = Some(self.selected[1]);
+        } else if pane == 2 {
             self.select_track(self.selected[2], false, false);
         }
         if self.selected[pane] < self.offsets[pane] {
@@ -2945,7 +3094,7 @@ impl Ui {
                     } else if kind == PromptKind::PlaylistSearch {
                         self.playlist_query.clear();
                     } else if kind == PromptKind::TrashSelected {
-                        self.pending_delete_path = None;
+                        self.pending_delete_paths.clear();
                     } else if matches!(kind, PromptKind::TagField(_) | PromptKind::TagArtwork) {
                         self.open_submenu(MenuPage::TagEditor);
                     }
@@ -3103,6 +3252,13 @@ impl Ui {
                 self.select_list_with_modifiers(self.selected[0], true, false);
                 self.list_anchor = Some(anchor);
             }
+            Key::ShiftUp | Key::ShiftDown if self.focus == Focus::Library => {
+                let anchor = self.tree_anchor.unwrap_or(self.selected[1]);
+                self.move_selection(if key == Key::ShiftUp { -1 } else { 1 }, page);
+                self.tree_anchor = Some(anchor);
+                self.select_tree_with_modifiers(self.selected[1], true, false);
+                self.tree_anchor = Some(anchor);
+            }
             Key::ShiftUp | Key::ShiftDown if self.focus == Focus::Tracks => {
                 let anchor = self.selection_anchor.unwrap_or(self.selected[2]);
                 self.move_selection(if key == Key::ShiftUp { -1 } else { 1 }, page);
@@ -3123,6 +3279,15 @@ impl Ui {
             Key::CtrlA if self.focus == Focus::Playlists => {
                 self.selected_lists = self.lists.iter().map(|(id, _)| *id).collect();
                 self.status = format!("Selected {} playlists", self.selected_lists.len());
+            }
+            Key::CtrlA if self.focus == Focus::Library => {
+                self.selected_tree = self
+                    .items
+                    .iter()
+                    .map(|row| tree_item_key(&row.item))
+                    .collect();
+                self.tree_anchor = Some(self.selected[1]);
+                self.status = format!("Selected {} tree items", self.selected_tree.len());
             }
             Key::PageUp => self.move_selection(-(page as isize), page),
             Key::PageDown => self.move_selection(page as isize, page),
@@ -3167,6 +3332,7 @@ impl Ui {
                     .unwrap_or_default(),
             ),
             Key::Delete if self.focus == Focus::Tracks => self.remove_selected(),
+            Key::Delete if self.focus == Focus::Library => self.begin_trash_selected(),
             Key::Char('f') => self.toggle_star(),
             Key::Char('e') if self.focus == Focus::Tracks => self.open_tag_editor(),
             Key::Char(' ') => self.play_pause(),
@@ -3337,7 +3503,14 @@ impl Ui {
                 self.focus = Focus::Library;
                 let index = self.offsets[1] + y - layout.tree_top;
                 if index < self.items.len() {
-                    self.selected[1] = index;
+                    if !self
+                        .selected_tree
+                        .contains(&tree_item_key(&self.items[index].item))
+                    {
+                        self.select_tree_with_modifiers(index, false, false);
+                    } else {
+                        self.selected[1] = index;
+                    }
                     self.open_context(MenuPage::Tree, x, y, size);
                 }
             } else if layout.show_sidebar
@@ -3361,7 +3534,14 @@ impl Ui {
             {
                 let index = self.offsets[1] + y - 2;
                 if index < self.items.len() {
-                    self.selected[1] = index;
+                    if !self
+                        .selected_tree
+                        .contains(&tree_item_key(&self.items[index].item))
+                    {
+                        self.select_tree_with_modifiers(index, false, false);
+                    } else {
+                        self.selected[1] = index;
+                    }
                     self.open_context(MenuPage::Tree, x, y, size);
                 }
             } else if !layout.show_sidebar
@@ -3556,36 +3736,43 @@ impl Ui {
                 if index >= self.items.len() {
                     return;
                 }
-                self.selected[1] = index;
+                let modified = button & 20 != 0;
+                self.select_tree_with_modifiers(index, button & 4 != 0, button & 16 != 0);
                 if let Some(TreeRow {
                     item: Item::Directory(_, path),
                     depth,
                 }) = self.items.get(index)
                 {
-                    if x <= depth * 2 + 2 {
+                    if !modified && x <= depth * 2 + 2 {
                         self.toggle_directory(path.clone());
                         self.last_click = None;
                         return;
                     }
                 }
                 let now = Instant::now();
-                let double = self.last_click.is_some_and(|(when, pane, row)| {
-                    pane == 1
-                        && row == index
-                        && now.duration_since(when) < Duration::from_millis(450)
-                });
-                self.last_click = Some((now, 1, index));
+                let double = !modified
+                    && self.last_click.is_some_and(|(when, pane, row)| {
+                        pane == 1
+                            && row == index
+                            && now.duration_since(when) < Duration::from_millis(450)
+                    });
+                self.last_click = if modified {
+                    None
+                } else {
+                    Some((now, 1, index))
+                };
                 if double {
                     match self.items.get(index).map(|row| row.item.clone()) {
-                        Some(Item::Directory(_, path)) => self.enqueue_folder(path),
+                        Some(Item::Directory(..)) => self.add_selected(false),
                         Some(Item::Track(_)) => self.add_selected(true),
                         None => {}
                     }
                     self.last_click = None;
-                } else if let Some(TreeRow {
-                    item: Item::Directory(_, path),
-                    ..
-                }) = self.items.get(index)
+                } else if !modified
+                    && let Some(TreeRow {
+                        item: Item::Directory(_, path),
+                        ..
+                    }) = self.items.get(index)
                 {
                     self.toggle_directory(path.clone());
                 }
@@ -3596,8 +3783,9 @@ impl Ui {
             if y >= 2 {
                 let index = self.offsets[1] + y - 2;
                 if index < self.items.len() {
-                    self.selected[1] = index;
-                    if x < 4 {
+                    let modified = button & 20 != 0;
+                    self.select_tree_with_modifiers(index, button & 4 != 0, button & 16 != 0);
+                    if !modified && x < 4 {
                         if let Some(TreeRow {
                             item: Item::Directory(_, path),
                             ..
@@ -3609,22 +3797,28 @@ impl Ui {
                         }
                     }
                     let now = Instant::now();
-                    let double = self.last_click.is_some_and(|(when, pane, row)| {
-                        pane == 1
-                            && row == index
-                            && now.duration_since(when) < Duration::from_millis(450)
-                    });
-                    self.last_click = if double { None } else { Some((now, 1, index)) };
+                    let double = !modified
+                        && self.last_click.is_some_and(|(when, pane, row)| {
+                            pane == 1
+                                && row == index
+                                && now.duration_since(when) < Duration::from_millis(450)
+                        });
+                    self.last_click = if double || modified {
+                        None
+                    } else {
+                        Some((now, 1, index))
+                    };
                     if double {
                         match self.items.get(index).map(|row| row.item.clone()) {
-                            Some(Item::Directory(_, path)) => self.enqueue_folder(path),
+                            Some(Item::Directory(..)) => self.add_selected(false),
                             Some(Item::Track(_)) => self.add_selected(true),
                             None => {}
                         }
-                    } else if let Some(TreeRow {
-                        item: Item::Directory(_, path),
-                        ..
-                    }) = self.items.get(index)
+                    } else if !modified
+                        && let Some(TreeRow {
+                            item: Item::Directory(_, path),
+                            ..
+                        }) = self.items.get(index)
                     {
                         self.toggle_directory(path.clone());
                     }
@@ -3905,7 +4099,13 @@ impl Ui {
             }
             for y in layout.tree_top..=layout.tree_bottom {
                 let index = self.offsets[1] + y - layout.tree_top;
-                let surface = if index == self.selected[1] && self.focus == Focus::Library {
+                let selected = self
+                    .items
+                    .get(index)
+                    .is_some_and(|row| self.selected_tree.contains(&tree_item_key(&row.item)));
+                let surface = if self.focus == Focus::Library
+                    && (selected || (self.selected_tree.is_empty() && index == self.selected[1]))
+                {
                     Surface::Selected
                 } else if index % 2 == 1 {
                     Surface::SidebarAlt
@@ -4048,13 +4248,18 @@ impl Ui {
                         Item::Track(track) => format!("   {} {}", glyph(&track.entry), track.name),
                     })
                     .unwrap_or_default();
-                let surface = if index == self.selected[1] {
-                    Surface::Selected
-                } else if index % 2 == 1 {
-                    Surface::MainAlt
-                } else {
-                    Surface::Main
-                };
+                let selected = self
+                    .items
+                    .get(index)
+                    .is_some_and(|row| self.selected_tree.contains(&tree_item_key(&row.item)));
+                let surface =
+                    if selected || (self.selected_tree.is_empty() && index == self.selected[1]) {
+                        Surface::Selected
+                    } else if index % 2 == 1 {
+                        Surface::MainAlt
+                    } else {
+                        Surface::Main
+                    };
                 paint(&mut screen, y + 1, 1, &label, width, surface, false);
             }
         } else {
@@ -4851,7 +5056,7 @@ const PREFERENCES_MENU: [&str; 11] = [
     "View Blacklist…",
     "Remove Blacklist Entry…",
 ];
-const TREE_MENU: [&str; 8] = [
+const TREE_MENU: [&str; 10] = [
     "Add to Current Playlist",
     "Play Now",
     "Expand/Collapse",
@@ -4860,6 +5065,8 @@ const TREE_MENU: [&str; 8] = [
     "Blacklist Song",
     "Blacklist Folder",
     "Move to Trash…",
+    "Use as Tree Root",
+    "Reset Tree Root",
 ];
 const TRACKS_MENU: [&str; 14] = [
     "Play",
