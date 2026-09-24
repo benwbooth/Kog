@@ -11,6 +11,7 @@ kog-audio = { path = "../kog-audio" }
 kog-server = { path = "../kog-server" }
 tokio = { version = "1", features = ["rt-multi-thread", "signal"] }
 unicode-width = "0.2.2"
+unicode-segmentation = "1.13.3"
 serde_json = "1.0.149"
 rand = "0.9"
 trash = "5.2.9"

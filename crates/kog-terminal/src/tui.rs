@@ -24,7 +24,8 @@ use kog_server::api::{Library, LocalSearch, browse_local, expand_stored_entry};
 use kog_server::radio::{Radio, RadioAdvance, RadioEntry, RadioStatus};
 use kog_server::{AuthMode, StreamCodec, TlsMode};
 use rand::Rng;
-use unicode_width::UnicodeWidthChar;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::columns::Columns;
 use crate::cover_preview::{self, COVER_WIDTH, CoverPreview};
@@ -43,6 +44,15 @@ const SESSION_FILE: &str = "tui-session.json";
 const SESSION_MAX_BYTES: usize = 64 * 1024 * 1024;
 const SESSION_MAX_TRACKS: usize = 100_000;
 const RADIO_READY_TARGET: usize = 10;
+const MEDIA_PLAY: &str = "▶️";
+const MEDIA_PAUSE: &str = "⏸️";
+const MEDIA_STOP: &str = "⏹️";
+const MEDIA_PREVIOUS: &str = "⏮️";
+const MEDIA_NEXT: &str = "⏭️";
+const MEDIA_SHUFFLE: &str = "🔀";
+const MEDIA_REPEAT: &str = "🔁";
+const MEDIA_REPEAT_ONE: &str = "🔂";
+const MEDIA_RADIO: &str = "📻";
 
 struct RestoredPlaylist {
     tracks: Vec<Track>,
@@ -1577,17 +1587,17 @@ impl Ui {
             .to_owned(),
             "status" => {
                 if self.stop_after_rows.contains(&index) {
-                    "■".to_owned()
+                    MEDIA_STOP.to_owned()
                 } else if self.playing == Some(index) {
                     match self.player.state() {
-                        PlaybackState::Playing => "▶",
-                        PlaybackState::Paused => "Ⅱ",
+                        PlaybackState::Playing => MEDIA_PLAY,
+                        PlaybackState::Paused => MEDIA_PAUSE,
                         PlaybackState::Stopped => "",
                     }
                     .to_owned()
                 } else if let Some(position) = self.queue.iter().position(|queued| *queued == index)
                 {
-                    format!("⏭{}", position + 1)
+                    format!("{MEDIA_NEXT}{}", position + 1)
                 } else {
                     String::new()
                 }
@@ -1598,17 +1608,21 @@ impl Ui {
                     .queue
                     .iter()
                     .position(|queued| *queued == index)
-                    .map(|position| format!("⏭{} ", position + 1))
+                    .map(|position| format!("{MEDIA_NEXT}{} ", position + 1))
                     .unwrap_or_default();
                 let stop_badge = if self.stop_after_rows.contains(&index) {
-                    "■ "
+                    "⏹️ "
                 } else {
                     ""
                 };
                 format!(
                     "{}  {queue_badge}{stop_badge}{}",
                     if self.playing == Some(index) {
-                        "▶"
+                        if self.player.state() == PlaybackState::Paused {
+                            MEDIA_PAUSE
+                        } else {
+                            MEDIA_PLAY
+                        }
                     } else {
                         glyph(&track.entry)
                     },
@@ -6595,7 +6609,11 @@ impl Ui {
                         let _ = self.player.seek(duration.mul_f64(fraction));
                     }
                 } else if y == card_y + 7 && x >= card_x + 17 {
-                    let transport = compact_transport(card_width - 21, true);
+                    let transport = compact_transport(
+                        card_width - 21,
+                        true,
+                        self.player.state() == PlaybackState::Playing,
+                    );
                     if let Some(action) = transport.action_at(x - card_x - 17) {
                         self.activate_transport(action);
                     }
@@ -6605,7 +6623,11 @@ impl Ui {
                     self.player.set_volume(self.volume);
                 }
             } else if y == card_y + 3 && x >= card_x {
-                let transport = compact_transport(card_width, false);
+                let transport = compact_transport(
+                    card_width,
+                    false,
+                    self.player.state() == PlaybackState::Playing,
+                );
                 if let Some(action) = transport.action_at(x - card_x) {
                     self.activate_transport(action);
                 }
@@ -7739,9 +7761,14 @@ impl Ui {
                     &mut screen,
                     card_y + 8,
                     card_x + 18,
-                    &compact_transport(card_width - 21, true).text,
+                    &compact_transport(
+                        card_width - 21,
+                        true,
+                        self.player.state() == PlaybackState::Playing,
+                    )
+                    .text,
                     card_width - 21,
-                    Surface::Sidebar,
+                    Surface::AccentSidebar,
                     false,
                 );
                 let volume_filled = (self.volume * 19.0).round() as usize;
@@ -7804,25 +7831,29 @@ impl Ui {
                     &mut screen,
                     card_y + 4,
                     card_x,
-                    &compact_transport(card_width, false).text,
+                    &compact_transport(
+                        card_width,
+                        false,
+                        self.player.state() == PlaybackState::Playing,
+                    )
+                    .text,
                     card_width,
-                    Surface::Muted,
+                    Surface::Accent,
                     false,
                 );
             }
         }
-        let play = if self.player.state() == PlaybackState::Playing {
-            "Ⅱ"
-        } else {
-            "▶"
-        };
+        let playing = self.player.state() == PlaybackState::Playing;
         for action in FOOTER_TRANSPORT {
+            let slot = footer_transport_slot(width, action);
+            let show_mode = slot.end - slot.start >= 3;
             let (icon, surface) = match action {
                 TransportAction::Shuffle => (
                     match self.shuffle_mode {
-                        ShuffleMode::Off => "⇄",
-                        ShuffleMode::Albums => "⇄A",
-                        ShuffleMode::All => "⇄•",
+                        ShuffleMode::Off => MEDIA_SHUFFLE,
+                        ShuffleMode::Albums if show_mode => "🔀A",
+                        ShuffleMode::All if show_mode => "🔀•",
+                        _ => MEDIA_SHUFFLE,
                     },
                     if self.shuffle_mode == ShuffleMode::Off {
                         Surface::Muted
@@ -7830,13 +7861,27 @@ impl Ui {
                         Surface::Accent
                     },
                 ),
-                TransportAction::Previous => ("⏮", Surface::Toolbar),
-                TransportAction::PlayPause => (play, Surface::Toolbar),
-                TransportAction::Stop => ("■", Surface::Toolbar),
-                TransportAction::Next => ("⏭", Surface::Toolbar),
-                TransportAction::Repeat => ("↻", Surface::Toolbar),
+                TransportAction::Previous => (MEDIA_PREVIOUS, Surface::Accent),
+                TransportAction::PlayPause => (
+                    if playing { MEDIA_PAUSE } else { MEDIA_PLAY },
+                    Surface::Accent,
+                ),
+                TransportAction::Stop => (MEDIA_STOP, Surface::Accent),
+                TransportAction::Next => (MEDIA_NEXT, Surface::Accent),
+                TransportAction::Repeat => (
+                    match self.repeat_mode {
+                        RepeatMode::One => MEDIA_REPEAT_ONE,
+                        RepeatMode::Album if show_mode => "🔁A",
+                        _ => MEDIA_REPEAT,
+                    },
+                    if self.repeat_mode == RepeatMode::Off {
+                        Surface::Muted
+                    } else {
+                        Surface::Accent
+                    },
+                ),
                 TransportAction::Radio => (
-                    "⚄",
+                    MEDIA_RADIO,
                     if self.radio_enabled {
                         Surface::Accent
                     } else {
@@ -7844,7 +7889,6 @@ impl Ui {
                     },
                 ),
             };
-            let slot = footer_transport_slot(width, action);
             let icon_width = cell_width(icon);
             let icon_x = slot.start + (slot.end - slot.start).saturating_sub(icon_width) / 2;
             paint(
@@ -8651,9 +8695,7 @@ fn next_path_boundary(text: &str, cursor: usize) -> usize {
 }
 
 fn cell_width(text: &str) -> usize {
-    text.chars()
-        .map(|character| character.width().unwrap_or(0))
-        .sum()
+    UnicodeWidthStr::width(text)
 }
 
 fn modal_lines(content: &str, width: usize) -> Vec<String> {
@@ -9251,13 +9293,30 @@ impl CompactTransport {
     }
 }
 
-fn compact_transport(width: usize, rich: bool) -> CompactTransport {
-    let labels: [&str; 4] = if rich {
-        ["⏮ Previous", "▶ Play/Pause", "■ Stop", "⏭ Next"]
+fn compact_transport(width: usize, rich: bool, playing: bool) -> CompactTransport {
+    let play_icon = if playing { MEDIA_PAUSE } else { MEDIA_PLAY };
+    let play_label = if playing { "Pause" } else { "Play" };
+    let labels = if rich {
+        [
+            format!("{MEDIA_PREVIOUS} Previous"),
+            format!("{play_icon} {play_label}"),
+            format!("{MEDIA_STOP} Stop"),
+            format!("{MEDIA_NEXT} Next"),
+        ]
     } else if width >= 36 {
-        ["⏮ Prev", "▶ Play", "■ Stop", "⏭ Next"]
+        [
+            format!("{MEDIA_PREVIOUS} Prev"),
+            format!("{play_icon} {play_label}"),
+            format!("{MEDIA_STOP} Stop"),
+            format!("{MEDIA_NEXT} Next"),
+        ]
     } else {
-        ["⏮", "▶", "■", "⏭"]
+        [
+            MEDIA_PREVIOUS.to_owned(),
+            play_icon.to_owned(),
+            MEDIA_STOP.to_owned(),
+            MEDIA_NEXT.to_owned(),
+        ]
     };
     let separator = if rich { "   " } else { "  " };
     let actions = [
@@ -9269,7 +9328,7 @@ fn compact_transport(width: usize, rich: bool) -> CompactTransport {
     let mut text = String::new();
     let mut buttons = Vec::with_capacity(actions.len());
     let mut x = 0;
-    for (index, (&label, action)) in labels.iter().zip(actions).enumerate() {
+    for (index, (label, action)) in labels.iter().zip(actions).enumerate() {
         if index > 0 {
             text.push_str(separator);
             x += cell_width(separator);
@@ -9311,12 +9370,7 @@ fn menu_row(label: &str, shortcut: Option<char>, width: usize) -> String {
 }
 
 fn truncate(text: &str, width: usize) -> String {
-    let clipped = text
-        .chars()
-        .filter(|c| !c.is_control())
-        .map(|c| c.width().unwrap_or(0))
-        .sum::<usize>()
-        > width;
+    let clipped = cell_width(text) > width;
     let limit = if clipped {
         width.saturating_sub(1)
     } else {
@@ -9324,15 +9378,15 @@ fn truncate(text: &str, width: usize) -> String {
     };
     let mut out = String::new();
     let mut used = 0;
-    for c in text.chars() {
-        if c.is_control() {
+    for grapheme in text.graphemes(true) {
+        if grapheme.chars().any(char::is_control) {
             continue;
         }
-        let cells = c.width().unwrap_or(0);
+        let cells = UnicodeWidthStr::width(grapheme);
         if used + cells > limit {
             break;
         }
-        out.push(c);
+        out.push_str(grapheme);
         used += cells;
     }
     if clipped && width > 0 {
@@ -9359,8 +9413,8 @@ fn saved_list_label(name: &str, favorite: bool, count: usize, width: usize) -> S
 fn cell_slice(text: &str, skip: usize, width: usize) -> String {
     let mut out = String::new();
     let mut position = 0;
-    for character in text.chars() {
-        let cells = character.width().unwrap_or(0);
+    for grapheme in text.graphemes(true) {
+        let cells = UnicodeWidthStr::width(grapheme);
         if position >= skip + width {
             break;
         }
@@ -9370,7 +9424,7 @@ fn cell_slice(text: &str, skip: usize, width: usize) -> String {
                     &" ".repeat((position + cells).min(skip + width) - position.max(skip)),
                 );
             } else {
-                out.push(character);
+                out.push_str(grapheme);
             }
         }
         position += cells;
@@ -9420,6 +9474,7 @@ enum Surface {
     MainAlt,
     Header,
     Accent,
+    AccentSidebar,
     Selected,
     Muted,
 }
@@ -9445,6 +9500,7 @@ fn paint(
         Surface::MainAlt => ("220;224;228", "32;35;37"),
         Surface::Header => ("225;230;235", "29;32;34"),
         Surface::Accent => ("103;179;233", "29;32;34"),
+        Surface::AccentSidebar => ("103;179;233", "34;37;39"),
         Surface::Selected => ("245;248;251", "49;84;106"),
         Surface::Muted => ("151;160;168", "29;32;34"),
     };
@@ -10315,10 +10371,10 @@ mod tests {
     }
     #[test]
     fn transport_hitboxes_follow_drawn_controls() {
-        for width in [30, 48, 70, 72, 80, 120] {
+        for width in [20, 30, 48, 70, 72, 80, 120] {
             for action in FOOTER_TRANSPORT {
                 let slot = footer_transport_slot(width, action);
-                assert!(slot.start < slot.end && slot.end <= width);
+                assert!(slot.end - slot.start >= 2 && slot.end <= width);
                 assert_eq!(footer_transport_at(width, slot.start), Some(action));
                 assert_eq!(footer_transport_at(width, slot.end - 1), Some(action));
             }
@@ -10330,14 +10386,17 @@ mod tests {
             let (_, bar_start, bar_width) = progress_bar_geometry(width, "8:01:03");
             assert!(bar_start < bar_start + bar_width);
         }
-        for (width, rich) in [(26, false), (44, false), (51, true)] {
-            let transport = compact_transport(width, rich);
-            assert!(cell_width(&transport.text) <= width);
-            for (range, action) in &transport.buttons {
-                assert_eq!(transport.action_at(range.start), Some(*action));
-                assert_eq!(transport.action_at(range.end - 1), Some(*action));
+        for (width, rich) in [(20, false), (26, false), (36, false), (44, false), (51, true)] {
+            for playing in [false, true] {
+                let transport = compact_transport(width, rich, playing);
+                assert!(cell_width(&transport.text) <= width);
+                for (range, action) in &transport.buttons {
+                    assert!(range.end <= width);
+                    assert_eq!(transport.action_at(range.start), Some(*action));
+                    assert_eq!(transport.action_at(range.end - 1), Some(*action));
+                }
+                assert_eq!(transport.action_at(width + 10), None);
             }
-            assert_eq!(transport.action_at(width + 10), None);
         }
     }
     #[test]
@@ -10349,6 +10408,23 @@ mod tests {
     #[test]
     fn truncate_handles_wide_unicode() {
         assert_eq!(truncate("♫ 漢字", 4), "♫ … ");
+        for icon in [
+            MEDIA_PLAY,
+            MEDIA_PAUSE,
+            MEDIA_STOP,
+            MEDIA_PREVIOUS,
+            MEDIA_NEXT,
+            MEDIA_SHUFFLE,
+            MEDIA_REPEAT,
+            MEDIA_REPEAT_ONE,
+            MEDIA_RADIO,
+        ] {
+            assert_eq!(cell_width(icon), 2, "{icon}");
+            assert_eq!(truncate(icon, 2), icon);
+        }
+        assert_eq!(cell_slice("▶️ Song", 0, 2), MEDIA_PLAY);
+        assert_eq!(cell_slice("▶️ Song", 1, 2), "  ");
+        assert_eq!(truncate("▶️ Song", 3), "▶️…");
     }
     #[test]
     fn saved_playlist_count_stays_visible_when_name_is_clipped() {
