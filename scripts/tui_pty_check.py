@@ -107,6 +107,14 @@ def row(text):
     for i,line in enumerate(screen.display):
         if text in line:return i
     raise AssertionError((text,'not on screen',screen.display[:15],screen.display[-3:]))
+def menu_item(title,index):
+    header=f'╭─ {title} '
+    for y,line in enumerate(screen.display):
+        x=line.find(header)
+        if x>=0:
+            click(x+3,y+1+index)
+            return
+    raise AssertionError((header,'not on screen',screen.display[:20]))
 def assert_saved_count(name,count):
     sidebar=screen.display[row(name)].split('│',1)[0]
     assert sidebar.rstrip().endswith(str(count)),(name,count,sidebar)
@@ -226,23 +234,24 @@ try:
         assert db.execute("SELECT count(*) FROM playlist_entries").fetchone()[0]==6
     click(95,1,2)
     assert 'Show/Hide Artist' in '\n'.join(screen.display)
-    click(90,5)
+    menu_item('Columns',3)
     assert 'Artist' not in screen.display[1]
-    click(95,1,2);click(90,5)
+    click(95,1,2);menu_item('Columns',3)
     assert 'Artist' in screen.display[1]
     artist_at=screen.display[1].find('Artist')
     send(f'\x1b[<0;{artist_at+1};2M')
     send(f'\x1b[<32;{artist_at+9};2M')
     send(f'\x1b[<0;{artist_at+9};2m')
     assert screen.display[1].find('Artist')>artist_at,screen.display[1]
-    click(95,1,2);click(90,7)
+    click(95,1,2);menu_item('Columns',5)
     assert 'Columns fitted' in screen.display[-1],screen.display[-1]
     click(95,1,2);send(b'\x1b[B'*6+b'\r')
     assert 'Visible Columns' in '\n'.join(screen.display)
-    click(10,13)
+    assert '╭─ Columns' in '\n'.join(screen.display)
+    menu_item('Visible Columns',11)
     wait_for('Genre shown')
     click(95,1,2);send(b'\x1b[B'*6+b'\r')
-    click(10,3)
+    menu_item('Visible Columns',1)
     wait_for('★ shown')
     star_at=screen.display[1].find('★')
     assert star_at>0,screen.display[1]
@@ -282,8 +291,16 @@ try:
     assert '2 ' in screen.display[3][50:80],screen.display[3]
     click(74,36);click(5,0);click(10,9)
     send('m');send(b'\x1b[B'*7);send(b'\r')
-    assert '╭─ View' in screen.display[1],screen.display[1]
-    send(b'\x1b',.4);send('m')
+    assert '╭─ Kog' in '\n'.join(screen.display)
+    assert '╭─ View' in '\n'.join(screen.display)
+    assert screen.display[row('View                     ›')].find('╭─ View') > screen.display[row('View                     ›')].find('View                     ›')
+    if menu_snapshot:=os.environ.get('KOG_TUI_MENU_SNAPSHOT_PATH'):
+        save_snapshot(menu_snapshot)
+    menu_item('Kog',10)
+    assert '╭─ Playback' in '\n'.join(screen.display)
+    send(b'\x1b',.4)
+    assert '╭─ Kog' in '\n'.join(screen.display) and '╭─ Playback' not in '\n'.join(screen.display)
+    send('m')
     click(10,row('album'))
     file_row=row('b.wav');click(10,file_row);click(10,file_row);drain(.3)
     assert '▶ b' in screen.display[2][50:],screen.display[2]
@@ -338,21 +355,21 @@ try:
     assert any('☁ track' in line for line in screen.display[2:35]),screen.display[:12]
     send(b'\x1b',.3)
     click(5,0);click(10,13)
-    assert '╭─ Preferences' in screen.display[1],screen.display[:18]
-    click(10,5);send(b'\x7f'*4+'Rock\r'.encode(),.3)
+    assert '╭─ Preferences' in '\n'.join(screen.display),screen.display[:18]
+    menu_item('Preferences',3);send(b'\x7f'*4+'Rock\r'.encode(),.3)
     assert 'Equalizer: On · Rock' in screen.display[-1],screen.display[-1]
-    click(5,0);click(10,13);click(10,10);send('3\r')
+    click(5,0);click(10,13);menu_item('Preferences',8);send('3\r')
     wait_for('Equalizer gain -20 to 20 dB')
     send(b'\x7f'*10+b'4.5\r')
     wait_for('Equalizer: On · Custom')
-    click(5,0);click(10,11);click(10,5)
+    click(5,0);click(10,11);menu_item('View',3)
     wait_for('+4.5 dB')
     send(b'\x1b',.4)
-    click(5,0);click(10,11);click(10,3)
+    click(5,0);click(10,11);menu_item('View',1)
     wait_for('Format:')
     assert 'Sample Rate:' in '\n'.join(screen.display) and 'Bits Per Sample:' in '\n'.join(screen.display)
     send(b'\x1b',.4)
-    click(5,0);click(10,11);click(10,4)
+    click(5,0);click(10,11);menu_item('View',2)
     wait_for('No embedded lyrics')
     send(b'\x1b',.4)
     click(5,0);click(10,9)
@@ -377,7 +394,7 @@ try:
     assert '⏭1' not in screen.display[3],screen.display[3]
     click(50,36)
     wait_for('Playing long.wav')
-    click(5,0);click(10,11);click(10,8)
+    click(5,0);click(10,11);menu_item('View',6)
     wait_for('Compact Player')
     assert 'Title' not in screen.display[1],screen.display[1]
     if compact_snapshot:=os.environ.get('KOG_TUI_COMPACT_SNAPSHOT_PATH'):
@@ -392,14 +409,14 @@ try:
     assert '84%' in screen.display[36],screen.display[36]
     click(50,0)
     assert 'Title' in screen.display[1],screen.display[1]
-    click(5,0);click(10,11);click(10,3)
+    click(5,0);click(10,11);menu_item('View',1)
     wait_for('Position:')
     first_position=re.search(r'Position: (\d+:\d+)', '\n'.join(screen.display)).group(1)
     drain(1.6)
     second_position=re.search(r'Position: (\d+:\d+)', '\n'.join(screen.display)).group(1)
     assert first_position!=second_position,(first_position,second_position)
     send(b'\x1b',.4)
-    click(5,0);click(10,11);click(10,6)
+    click(5,0);click(10,11);menu_item('View',4)
     wait_for('Visualizer · Spectrum')
     send(b'\x1b',.4)
     click(55,36)
@@ -455,6 +472,13 @@ try:
     assert '%' in screen.display[18]
     click(5,0)
     assert 'Save Current Playlist' in '\n'.join(screen.display)
+    menu_item('Kog',9)
+    assert '╭─ Kog' in '\n'.join(screen.display) and '╭─ View' in '\n'.join(screen.display)
+    resize(72,24);screen.resize(lines=24,columns=72);os.kill(p.pid,signal.SIGWINCH);drain(.5)
+    assert '╭─ Kog' in '\n'.join(screen.display) and '╭─ View' in '\n'.join(screen.display)
+    resize(48,20);screen.resize(lines=20,columns=48);os.kill(p.pid,signal.SIGWINCH);drain(.5)
+    send(b'\x1b',.4)
+    assert '╭─ Kog' in '\n'.join(screen.display) and '╭─ View' not in '\n'.join(screen.display)
     send(b'\x1b',.4)
     scroll_dir=os.path.join(music,'zzscroll')
     os.makedirs(scroll_dir)
@@ -653,9 +677,9 @@ try:
     removed_art=WAVE(art_track).tags
     assert removed_art is None or not removed_art.getall('APIC')
     remote_address=f'http://127.0.0.1:{remote_server.server_port}'
-    click(5,0);click(10,15);click(10,2);send(remote_address+'\r',.4)
+    click(5,0);click(10,15);menu_item('Remote Server',0);send(remote_address+'\r',.4)
     wait_for('Authentication failed',10)
-    click(5,0);click(10,15);click(10,3);send('PTY remote token\r',.4)
+    click(5,0);click(10,15);menu_item('Remote Server',1);send('PTY remote token\r',.4)
     wait_for('Connected to '+remote_address,10)
     assert any('▱ album' in line[:50] for line in screen.display[:20]),screen.display[:20]
     click(10,row('▱ album'));wait_for('remote.wav',10)
@@ -670,20 +694,20 @@ try:
     click(10,3);send('remote',.8)
     wait_for('remote matches for remote',10)
     send(b'\x1b',.4);wait_for('Connected to '+remote_address,10)
-    click(5,0);click(10,15);click(10,9)
+    click(5,0);click(10,15);menu_item('Remote Server',7)
     wait_for('Added 2 tracks from folder',10)
-    click(5,0);click(10,15);click(10,10)
+    click(5,0);click(10,15);menu_item('Remote Server',8)
     wait_for('Showing local library',10)
     remote_config=list(Path(base).rglob('tui-remote-server.json'))
     assert len(remote_config)==1 and os.stat(remote_config[0]).st_mode & 0o777==0o600
     assert any(path=='/api/library' and auth=='Bearer PTY remote token' for path,_,auth in remote_requests)
     assert any(path=='/api/expand' and auth=='Bearer PTY remote token' for path,_,auth in remote_requests)
-    click(5,0);click(10,13);click(10,13)
+    click(5,0);click(10,13);menu_item('Preferences',11)
     wait_for('Opening files: clearAndPlay')
     click(10,row('art.wav'));click(10,row('art.wav'))
     wait_for('Playing art.wav')
     assert 'remote.wav' not in '\n'.join(line[52:] for line in screen.display[2:20])
-    click(5,0);click(10,13);click(10,13)
+    click(5,0);click(10,13);menu_item('Preferences',11)
     wait_for('Opening files: enqueue')
     click(10,row('second.wav'));click(10,row('second.wav'))
     wait_for('Added 1 track(s)')
@@ -693,26 +717,27 @@ try:
     if os.path.isdir(f'/proc/{p.pid}/fd'):
         assert os.path.samefile(f'/proc/{p.pid}/fd/1',diagnostics[0])
         assert os.path.samefile(f'/proc/{p.pid}/fd/2',diagnostics[0])
-    click(5,0);click(10,13);click(10,14)
+    click(5,0);click(10,13);menu_item('Preferences',12)
     assert '╭─ MIDI Synthesis' in '\n'.join(screen.display),screen.display[:12]
-    click(10,2)
+    assert '╭─ Kog' in '\n'.join(screen.display) and '╭─ Preferences' in '\n'.join(screen.display)
+    menu_item('MIDI Synthesis',0)
     wait_for('MIDI backend: opl3windows')
     assert next(Path(base).rglob('midi-engine')).read_text()=='opl3windows'
-    click(5,0);click(10,13);click(10,14);click(10,6)
+    click(5,0);click(10,13);menu_item('Preferences',12);menu_item('MIDI Synthesis',4)
     wait_for('MT-32 GM program mapping: off')
     assert next(Path(base).rglob('mt32-gm-program-mapping')).read_text()=='false'
-    click(5,0);click(10,13);click(10,14);click(10,3)
+    click(5,0);click(10,13);menu_item('Preferences',12);menu_item('MIDI Synthesis',1)
     send(b'\x01'+os.path.join(base,'missing.sf2').encode()+b'\r')
     wait_for('Opening SoundFont:')
-    click(5,0);click(10,13);click(10,14);click(10,3)
+    click(5,0);click(10,13);menu_item('Preferences',12);menu_item('MIDI Synthesis',1)
     send(b'\x01\r')
     wait_for('MIDI SoundFont updated')
     assert next(Path(base).rglob('soundfont-path')).read_text()==''
     for y in (4,5):
-        click(5,0);click(10,13);click(10,14);click(10,y)
+        click(5,0);click(10,13);menu_item('Preferences',12);menu_item('MIDI Synthesis',y-2)
         send(b'\x01\r')
         wait_for('ROM directory updated')
-    click(5,0);click(10,13);click(10,14);click(10,7)
+    click(5,0);click(10,13);menu_item('Preferences',12);menu_item('MIDI Synthesis',5)
     wait_for('MIDI backend: opl3windows')
     assert 'MT-32 GM program mapping: off' in '\n'.join(screen.display)
     send(b'\x1b',.3)
@@ -733,17 +758,17 @@ try:
     click(5,0);click(10,9)
     click(10,row('SubsongFixture'));click(10,row('SubsongFixture'))
     wait_for('Added 3 tracks from folder',10)
-    click(5,0);click(10,11);click(10,7)
+    click(5,0);click(10,11);menu_item('View',5)
     wait_for('Supported Formats')
     assert '.m3u' in '\n'.join(screen.display),screen.display[:20]
     send(b'\x1b',.3)
-    click(5,0);click(10,13);click(10,15)
+    click(5,0);click(10,13);menu_item('Preferences',13)
     wait_for('Read CUE sheets in folders: off')
-    click(5,0);click(10,13);click(10,16)
+    click(5,0);click(10,13);menu_item('Preferences',14)
     wait_for('Read M3U/PLS in folders: off')
     assert next(Path(base).rglob('read-cue-sheets-in-folders')).read_text()=='false'
     assert next(Path(base).rglob('read-playlists-in-folders')).read_text()=='false'
-    click(5,0);click(10,13);click(10,18)
+    click(5,0);click(10,13);menu_item('Preferences',16)
     wait_for('Automatic cover downloads: off')
     assert next(Path(base).rglob('download-cover-art')).read_text()=='false'
     fake_rom_archive=os.path.join(base,'incomplete-roms.zip')
@@ -751,7 +776,7 @@ try:
         archive.writestr('nested/control.rom',b'not a real ROM')
         archive.writestr('nested/pcm.rom',b'not a real ROM')
     for y in (8,9):
-        click(5,0);click(10,13);click(10,14);click(10,y)
+        click(5,0);click(10,13);menu_item('Preferences',12);menu_item('MIDI Synthesis',y-2)
         send(fake_rom_archive+'\r',.3)
         wait_for('Incomplete ROM set',10)
     assert not list(Path(base).rglob('control.rom'))

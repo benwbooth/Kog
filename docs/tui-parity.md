@@ -37,6 +37,7 @@ The provider smoke test is opt-in because it contacts public services: `nix deve
 - [x] Default #, Title, Artist, and Album columns have header sorting, mouse resizing, visibility toggles, and auto fit from loaded metadata.
 - [x] All 20 Qt columns can be shown, hidden, sorted, resized, reordered, and scrolled horizontally with Left/Right in the playlist, a visible draggable scrollbar, native horizontal wheel, Shift/Ctrl+wheel, or bracket keys. The terminal saves its character-width layout and can import an existing Qt column order.
 - [x] Right click opens row, file, saved playlist, column, and empty playlist menus. An open menu consumes right clicks inside it instead of passing them through to the underlying pane.
+- [x] Submenus open beside their selected parent item while parent menus remain visible; mouse selection and Left/Esc navigate the menu stack, including after terminal resize.
 - [x] Add File, Add URL, Save Current Playlist, and Add to Saved Playlist write the expected queue and database entries.
 - [x] Save Selection As and saved playlist Duplicate write the expected database entries.
 - [x] Saved playlist Add, Play, and Replace are available from its context menu.

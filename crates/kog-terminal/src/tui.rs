@@ -215,6 +215,15 @@ enum MenuPage {
     Server,
 }
 
+#[derive(Clone, Copy)]
+struct MenuLayer {
+    page: MenuPage,
+    selected: usize,
+    offset: usize,
+    x: usize,
+    y: usize,
+}
+
 impl MenuPage {
     fn title(self) -> &'static str {
         match self {
@@ -453,6 +462,8 @@ struct Ui {
     menu_offset: usize,
     menu_x: usize,
     menu_y: usize,
+    menu_parents: Vec<MenuLayer>,
+    menu_size: (usize, usize),
     modal: Option<String>,
     info_modal: bool,
     artwork_modal: bool,
@@ -827,6 +838,8 @@ impl Ui {
             menu_offset: 0,
             menu_x: 4,
             menu_y: 1,
+            menu_parents: Vec::new(),
+            menu_size: (0, 0),
             modal: None,
             info_modal: false,
             artwork_modal: false,
@@ -1453,7 +1466,7 @@ impl Ui {
         }
     }
 
-    fn activate_menu(&mut self, index: usize) {
+    fn activate_menu(&mut self, index: usize, size: (usize, usize)) {
         if self.menu_page.labels().get(index) == Some(&"") {
             return;
         }
@@ -1473,10 +1486,10 @@ impl Ui {
             (MenuPage::Main, 5) => self.begin_prompt(PromptKind::SaveSelection, String::new()),
             (MenuPage::Main, 6) => self.remove_selected(),
             (MenuPage::Main, 7) => self.clear_playlist(),
-            (MenuPage::Main, 9) => self.open_submenu(MenuPage::View),
-            (MenuPage::Main, 10) => self.open_submenu(MenuPage::Playback),
-            (MenuPage::Main, 11) => self.open_submenu(MenuPage::Preferences),
-            (MenuPage::Main, 13) => self.open_submenu(MenuPage::Remote),
+            (MenuPage::Main, 9) => self.open_child_menu(MenuPage::View, size),
+            (MenuPage::Main, 10) => self.open_child_menu(MenuPage::Playback, size),
+            (MenuPage::Main, 11) => self.open_child_menu(MenuPage::Preferences, size),
+            (MenuPage::Main, 13) => self.open_child_menu(MenuPage::Remote, size),
             (MenuPage::Main, 14) => {
                 self.info_modal = false;
                 self.artwork_modal = false;
@@ -1573,7 +1586,7 @@ impl Ui {
                     Err(error) => self.status = error,
                 }
             }
-            (MenuPage::Preferences, 12) => self.open_submenu(MenuPage::Synthesis),
+            (MenuPage::Preferences, 12) => self.open_child_menu(MenuPage::Synthesis, size),
             (MenuPage::Preferences, 13) => {
                 let enabled = !AppSettings::load().read_cue_sheets_in_folders;
                 match AppSettings::save_read_cue_sheets_in_folders(enabled) {
@@ -1599,7 +1612,7 @@ impl Ui {
                     Err(error) => self.status = error,
                 }
             }
-            (MenuPage::Preferences, 15) => self.open_submenu(MenuPage::Server),
+            (MenuPage::Preferences, 15) => self.open_child_menu(MenuPage::Server, size),
             (MenuPage::Preferences, 16) => {
                 let enabled = !self.download_cover_art;
                 match AppSettings::save_download_cover_art(enabled) {
@@ -1776,7 +1789,7 @@ impl Ui {
                 self.status = format!("Selected {} tracks", self.selected_tracks.len());
             }
             (MenuPage::Playlist, 4) => self.clear_playlist(),
-            (MenuPage::Playlist, 5) => self.open_submenu(MenuPage::Columns),
+            (MenuPage::Playlist, 5) => self.open_child_menu(MenuPage::Columns, size),
             (MenuPage::Columns, 0..=2) => self.sort_tracks(index),
             (MenuPage::Columns, 3 | 4) => {
                 let id = if index == 3 { "artist" } else { "album" };
@@ -1785,7 +1798,7 @@ impl Ui {
                 }
             }
             (MenuPage::Columns, 5) => self.auto_fit_columns(),
-            (MenuPage::Columns, 6) => self.open_submenu(MenuPage::ColumnVisibility),
+            (MenuPage::Columns, 6) => self.open_child_menu(MenuPage::ColumnVisibility, size),
             (MenuPage::Columns, 7 | 8) => {
                 if let Some(column) = self.context_column {
                     let delta = if index == 7 { -1 } else { 1 };
@@ -1965,6 +1978,9 @@ impl Ui {
             }
             _ => {}
         }
+        if !self.menu_open {
+            self.menu_parents.clear();
+        }
     }
 
     fn persist_remote_settings(&mut self, reconnect: bool) {
@@ -2072,12 +2088,116 @@ impl Ui {
     }
 
     fn open_submenu(&mut self, page: MenuPage) {
+        self.menu_parents.clear();
         self.menu_page = page;
         self.menu_open = true;
         self.menu_selected = 0;
         self.menu_offset = 0;
         self.menu_x = 4;
         self.menu_y = 1;
+    }
+
+    fn active_menu_layer(&self) -> MenuLayer {
+        MenuLayer {
+            page: self.menu_page,
+            selected: self.menu_selected,
+            offset: self.menu_offset,
+            x: self.menu_x,
+            y: self.menu_y,
+        }
+    }
+
+    fn restore_menu_layer(&mut self, layer: MenuLayer) {
+        self.menu_page = layer.page;
+        self.menu_selected = layer.selected;
+        self.menu_offset = layer.offset;
+        self.menu_x = layer.x;
+        self.menu_y = layer.y;
+        self.menu_open = true;
+    }
+
+    fn open_child_menu(&mut self, page: MenuPage, size: (usize, usize)) {
+        let mut parent = self.active_menu_layer();
+        let width = menu_width(size.0);
+        let parent_width = width.min(size.0.saturating_sub(parent.x));
+        let right_x = parent.x + parent_width.saturating_sub(1);
+        let child_x = if right_x + width <= size.0 {
+            right_x
+        } else if parent.x >= width.saturating_sub(1) {
+            parent.x - width.saturating_sub(1)
+        } else if size.0 >= width.saturating_mul(2).saturating_sub(1) {
+            if parent.x + parent_width / 2 < size.0 / 2 {
+                parent.x = 0;
+                width.saturating_sub(1)
+            } else {
+                parent.x = size.0 - width;
+                parent.x - width.saturating_sub(1)
+            }
+        } else {
+            0
+        };
+        let selected_row = parent.y + 1 + parent.selected.saturating_sub(parent.offset);
+        let page_height = page.labels().len().min(size.1.saturating_sub(4));
+        self.menu_parents.push(parent);
+        self.menu_page = page;
+        self.menu_selected = 0;
+        self.menu_offset = 0;
+        self.menu_x = child_x;
+        self.menu_y = selected_row
+            .min(size.1.saturating_sub(page_height + 3))
+            .max(1);
+        self.menu_open = true;
+    }
+
+    fn reflow_menus(&mut self, size: (usize, usize)) {
+        if self.menu_size == size {
+            return;
+        }
+        self.menu_size = size;
+        if !self.menu_open {
+            return;
+        }
+        let mut layers = self.menu_parents.clone();
+        layers.push(self.active_menu_layer());
+        let mut root = layers[0];
+        let fit_selection = |layer: &mut MenuLayer| {
+            let page = layer
+                .page
+                .labels()
+                .len()
+                .min(size.1.saturating_sub(4))
+                .max(1);
+            layer.offset = layer
+                .offset
+                .min(layer.page.labels().len().saturating_sub(page));
+            if layer.selected < layer.offset {
+                layer.offset = layer.selected;
+            } else if layer.selected >= layer.offset + page {
+                layer.offset = layer.selected + 1 - page;
+            }
+        };
+        fit_selection(&mut root);
+        let root_page = root.page.labels().len().min(size.1.saturating_sub(4));
+        let max_x = size.0.saturating_sub(menu_width(size.0));
+        let max_y = size.1.saturating_sub(root_page + 3);
+        root.x = if root.page == MenuPage::Main {
+            4.min(max_x)
+        } else {
+            root.x.min(max_x)
+        };
+        root.y = if root.page == MenuPage::Main {
+            1.min(max_y)
+        } else {
+            root.y.min(max_y)
+        };
+        self.menu_parents.clear();
+        self.restore_menu_layer(root);
+        for mut layer in layers.into_iter().skip(1) {
+            self.open_child_menu(layer.page, size);
+            fit_selection(&mut layer);
+            self.menu_selected = layer.selected;
+            self.menu_offset = layer.offset;
+        }
     }
 
     fn open_context(&mut self, page: MenuPage, x: usize, y: usize, size: (usize, usize)) {
@@ -4714,32 +4834,23 @@ impl Ui {
         if self.menu_open {
             match key {
                 Key::Esc | Key::Left => {
-                    if self.menu_page == MenuPage::TagEditor {
+                    if let Some(parent) = self.menu_parents.pop() {
+                        self.restore_menu_layer(parent);
+                    } else if self.menu_page == MenuPage::TagEditor {
                         self.tag_session = None;
                         self.menu_open = false;
                         self.status = "Tag edits cancelled".to_owned();
-                        return true;
-                    }
-                    if self.menu_page == MenuPage::Main
-                        || matches!(
-                            self.menu_page,
-                            MenuPage::Tree
-                                | MenuPage::Tracks
-                                | MenuPage::Saved
-                                | MenuPage::Playlist
-                                | MenuPage::Columns
-                                | MenuPage::ColumnVisibility
-                        )
-                    {
-                        self.menu_open = false;
                     } else {
-                        self.open_submenu(MenuPage::Main);
+                        self.menu_open = false;
                     }
                 }
-                Key::Char('m') => self.menu_open = false,
+                Key::Char('m') => {
+                    self.menu_open = false;
+                    self.menu_parents.clear();
+                }
                 Key::Up | Key::Char('k') => self.move_menu_selection(-1, size.1),
                 Key::Down | Key::Char('j') => self.move_menu_selection(1, size.1),
-                Key::Enter | Key::Right => self.activate_menu(self.menu_selected),
+                Key::Enter | Key::Right => self.activate_menu(self.menu_selected, size),
                 _ => {}
             }
             return true;
@@ -5047,28 +5158,44 @@ impl Ui {
             return;
         }
         if self.menu_open && y > 0 {
-            let menu_width = size.0.saturating_sub(self.menu_x).min(33);
-            let inside = (self.menu_x..self.menu_x + menu_width).contains(&x)
-                && y >= self.menu_y + 1
-                && y < self.menu_y
-                    + 1
-                    + self.menu_page.labels().len().min(size.1.saturating_sub(4));
-            if inside {
-                if button & 3 == 0 {
-                    let index = self.menu_offset + y - self.menu_y - 1;
-                    if index < self.menu_page.labels().len()
-                        && !self.menu_page.labels()[index].is_empty()
+            let mut layers = self.menu_parents.clone();
+            layers.push(self.active_menu_layer());
+            for depth in (0..layers.len()).rev() {
+                let layer = layers[depth];
+                let width = menu_width(size.0).min(size.0.saturating_sub(layer.x));
+                let page = layer.page.labels().len().min(size.1.saturating_sub(4));
+                let inside = (layer.x..layer.x + width).contains(&x)
+                    && (layer.y..=layer.y + page + 1).contains(&y);
+                if !inside {
+                    continue;
+                }
+                if depth < self.menu_parents.len() {
+                    self.menu_parents.truncate(depth);
+                    self.restore_menu_layer(layer);
+                }
+                if button & 3 == 0 && (layer.y + 1..=layer.y + page).contains(&y) {
+                    let index = layer.offset + y - layer.y - 1;
+                    if layer
+                        .page
+                        .labels()
+                        .get(index)
+                        .is_some_and(|label| !label.is_empty())
                     {
                         self.menu_selected = index;
-                        self.activate_menu(index);
+                        self.activate_menu(index, size);
                     }
                 }
                 return;
             }
             self.menu_open = false;
+            self.menu_parents.clear();
             if button & 3 != 2 {
                 return;
             }
+        }
+        if self.menu_open && y == 0 && !(4..8).contains(&x) {
+            self.menu_open = false;
+            self.menu_parents.clear();
         }
         if let Some((kind, value)) = self.prompt.as_ref() {
             if matches!(kind, PromptKind::Search | PromptKind::PlaylistSearch) {
@@ -5600,6 +5727,7 @@ impl Ui {
     }
 
     fn draw(&mut self, size: (usize, usize)) -> String {
+        self.reflow_menus(size);
         self.refresh_cover_request();
         if self.info_modal && self.modal.is_some() {
             self.modal = Some(self.info_content());
@@ -6497,91 +6625,95 @@ impl Ui {
             false,
         );
         if self.menu_open {
-            let labels = self.menu_page.labels();
-            let page = labels.len().min(height.saturating_sub(4));
-            let menu_width = width.saturating_sub(self.menu_x).min(33);
-            paint(
-                &mut screen,
-                self.menu_y + 1,
-                self.menu_x + 1,
-                &format!("╭─ {} ", self.menu_page.title()),
-                menu_width,
-                Surface::Header,
-                true,
-            );
-            paint(
-                &mut screen,
-                self.menu_y + 1,
-                self.menu_x + menu_width,
-                "╮",
-                1,
-                Surface::Header,
-                false,
-            );
-            for (row, index) in (self.menu_offset..labels.len()).take(page).enumerate() {
-                let label = labels[index];
-                let shown = if label.is_empty() {
-                    "│ ─────────────────────────────".to_owned()
-                } else {
-                    format!("│ {label}")
-                };
+            let mut layers = self.menu_parents.clone();
+            layers.push(self.active_menu_layer());
+            for layer in layers {
+                let labels = layer.page.labels();
+                let page = labels.len().min(height.saturating_sub(4));
+                let menu_width = width.saturating_sub(layer.x).min(menu_width(width));
                 paint(
                     &mut screen,
-                    self.menu_y + row + 2,
-                    self.menu_x + 1,
-                    &shown,
+                    layer.y + 1,
+                    layer.x + 1,
+                    &format!("╭─ {} ", layer.page.title()),
                     menu_width,
-                    if index == self.menu_selected {
-                        Surface::Selected
-                    } else {
-                        Surface::Toolbar
-                    },
-                    index == self.menu_selected,
+                    Surface::Header,
+                    true,
                 );
                 paint(
                     &mut screen,
-                    self.menu_y + row + 2,
-                    self.menu_x + menu_width,
-                    "│",
-                    1,
-                    if index == self.menu_selected {
-                        Surface::Selected
-                    } else {
-                        Surface::Toolbar
-                    },
-                    false,
-                );
-            }
-            paint(
-                &mut screen,
-                self.menu_y + page + 2,
-                self.menu_x + 1,
-                &format!("╰{}╯", "─".repeat(menu_width.saturating_sub(2))),
-                menu_width,
-                Surface::Toolbar,
-                false,
-            );
-            if self.menu_offset > 0 {
-                paint(
-                    &mut screen,
-                    self.menu_y + 1,
-                    self.menu_x + menu_width.saturating_sub(3),
-                    "↑",
+                    layer.y + 1,
+                    layer.x + menu_width,
+                    "╮",
                     1,
                     Surface::Header,
                     false,
                 );
-            }
-            if self.menu_offset + page < labels.len() {
+                for (row, index) in (layer.offset..labels.len()).take(page).enumerate() {
+                    let label = labels[index];
+                    let shown = if label.is_empty() {
+                        "│ ─────────────────────────────".to_owned()
+                    } else {
+                        format!("│ {label}")
+                    };
+                    paint(
+                        &mut screen,
+                        layer.y + row + 2,
+                        layer.x + 1,
+                        &shown,
+                        menu_width,
+                        if index == layer.selected {
+                            Surface::Selected
+                        } else {
+                            Surface::Toolbar
+                        },
+                        index == layer.selected,
+                    );
+                    paint(
+                        &mut screen,
+                        layer.y + row + 2,
+                        layer.x + menu_width,
+                        "│",
+                        1,
+                        if index == layer.selected {
+                            Surface::Selected
+                        } else {
+                            Surface::Toolbar
+                        },
+                        false,
+                    );
+                }
                 paint(
                     &mut screen,
-                    self.menu_y + page + 1,
-                    self.menu_x + menu_width.saturating_sub(3),
-                    "↓",
-                    1,
+                    layer.y + page + 2,
+                    layer.x + 1,
+                    &format!("╰{}╯", "─".repeat(menu_width.saturating_sub(2))),
+                    menu_width,
                     Surface::Toolbar,
                     false,
                 );
+                if layer.offset > 0 {
+                    paint(
+                        &mut screen,
+                        layer.y + 1,
+                        layer.x + menu_width.saturating_sub(3),
+                        "↑",
+                        1,
+                        Surface::Header,
+                        false,
+                    );
+                }
+                if layer.offset + page < labels.len() {
+                    paint(
+                        &mut screen,
+                        layer.y + page + 1,
+                        layer.x + menu_width.saturating_sub(3),
+                        "↓",
+                        1,
+                        Surface::Toolbar,
+                        false,
+                    );
+                }
             }
         }
         if self.visualizer_open {
@@ -7559,6 +7691,14 @@ fn volume_geometry(width: usize, footer_top: usize) -> (usize, usize, usize, usi
     };
     let icon_x = width.saturating_sub(bar_width + 8);
     (row, icon_x, icon_x + 3, bar_width)
+}
+
+fn menu_width(terminal_width: usize) -> usize {
+    if terminal_width < 66 {
+        terminal_width.div_ceil(2).max(18).min(terminal_width)
+    } else {
+        33
+    }
 }
 
 fn truncate(text: &str, width: usize) -> String {
