@@ -41,13 +41,13 @@ Run `nix develop --command cargo build -p kog --bin kog`, then `uv run --with py
 
 - [x] Play, pause, stop, and seek respond to mouse input and update the transport in a PTY with a ten-second WAV.
 - [x] Previous, next, and automatic track completion respond correctly in PTY playback.
-- [ ] Repeat and shuffle playback order have focused tests for every mode.
+- [x] Repeat and shuffle use Qt's shared playback-order engine. Its focused unit tests cover repeat one, album, all, and album shuffle; the PTY test checks mode cycling, unique all-track shuffle, and previous.
 - [x] Volume is a visible draggable slider with click, drag, mute, keyboard, and percentage feedback.
 - [x] Random Radio can start from an empty queue, stage a round off the input thread, and play one track.
 - [x] Radio advances at the end of its visible queue and stages another song.
 - [x] Per-row queue and stop-after markers change playback order in PTY playback.
 - [x] Queue positions and stop-after markers stay with their tracks across sort, move, and removal.
-- [ ] Every shuffle and repeat mode matches Qt/Web ordering under album metadata changes.
+- [ ] Album metadata arriving during playback has a dedicated terminal regression fixture for shuffle and repeat order.
 - [x] Current track, elapsed time, duration, and play/pause state update during PTY playback.
 - [x] Music root, volume, equalizer preset, preamp, and output device controls are reachable from menus.
 - [ ] Remote server connection, decoder choices, and all Qt/Web playback preferences are reachable.
@@ -68,6 +68,6 @@ The Qt hamburger, playlist and file context menus, playlist header, and the web 
 | --- | --- |
 | File tree | Remote server browser, file deletion, blacklist, and complete subsong fixtures. |
 | Playlist | 20 optional columns, reorder and persist columns, horizontal scroll, tag editor, and multi-select saved lists. |
-| Playback | Complete repeat/shuffle tests, playback error recovery, and output device test on real hardware. |
+| Playback | Album metadata changes during shuffle, playback error recovery, and output device test on real hardware. |
 | Settings | Server connection, decoder and synthesizer selection, media downloading, and remaining advanced preferences. |
 | Views | Cover art, mini player, skins, and richer info inspector interaction. |

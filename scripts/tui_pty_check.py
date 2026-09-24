@@ -17,6 +17,9 @@ with wave.open(long_path,'wb') as w:
 second_path=os.path.join(base,'second.wav')
 with wave.open(second_path,'wb') as w:
     w.setnchannels(1);w.setsampwidth(2);w.setframerate(8000);w.writeframes(b'\0\0'*80000)
+third_path=os.path.join(base,'third.wav')
+with wave.open(third_path,'wb') as w:
+    w.setnchannels(1);w.setsampwidth(2);w.setframerate(8000);w.writeframes(b'\0\0'*80000)
 env=os.environ.copy()
 for key,sub in [('XDG_CONFIG_HOME','config'),('XDG_DATA_HOME','data'),('XDG_CACHE_HOME','cache')]:
     env[key]=os.path.join(base,sub)
@@ -318,7 +321,30 @@ try:
     send(b'\x1b[H')
     for _ in range(22):send('\x1b[<65;40;6M',.01)
     assert 'track49' in '\n'.join(screen.display),screen.display
-    print('search, tree/archive navigation, divider/column drag, volume, radio/queue/stop-after, playback/seek/completion, saved-list CRUD/export/prune, selection/reorder/sort, menus/dialogs, equalizer/visualizer, narrow wheel/keyboard navigation, resize: PASS')
+    resize(120,40);screen.resize(lines=40,columns=120);os.kill(p.pid,signal.SIGWINCH);drain(.5)
+    with wave.open(second_path,'wb') as w:
+        w.setnchannels(1);w.setsampwidth(2);w.setframerate(8000);w.writeframes(b'\0\0'*80000)
+    click(5,0);click(10,9)
+    assert 'Playlist cleared' in screen.display[-1],screen.display[-1]
+    for path in (long_path,second_path,third_path):
+        click(5,0);click(10,2);send(path+'\r',.3)
+    send('SS')
+    assert 'Shuffle: all' in screen.display[-1],screen.display[-1]
+    click(60,2);click(60,2)
+    wait_for('Playing long.wav')
+    shuffled=['long.wav']
+    for _ in range(2):
+        send('>')
+        shuffled.append(screen.display[-1].split('Playing ',1)[-1].strip())
+    assert set(shuffled)=={'long.wav','second.wav','third.wav'},shuffled
+    send('<')
+    assert shuffled[1] in screen.display[-1],(shuffled,screen.display[-1])
+    send('S')
+    assert 'Shuffle: off' in screen.display[-1],screen.display[-1]
+    for mode in ('one','album','all','off'):
+        send('R')
+        assert f'Repeat: {mode}' in screen.display[-1],screen.display[-1]
+    print('search, tree/archive navigation, divider/column drag, volume, radio/queue/stop-after, playback/seek/completion/order, saved-list CRUD/export/prune, selection/reorder/sort, menus/dialogs, equalizer/visualizer, narrow wheel/keyboard navigation, resize: PASS')
     send(b'\x1b',.3);send('q')
     p.wait(timeout=5)
 finally:

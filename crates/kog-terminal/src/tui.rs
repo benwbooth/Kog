@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use kog_audio::decoder::DecoderRegistry;
 use kog_audio::playback::{PlaybackEngine, PlaybackState, available_output_devices};
+use kog_audio::playback_order::PlaybackOrder;
 use kog_audio::playlist::{Playlist, PlaylistEntry, PlaylistLocation};
 use kog_audio::settings::{AppSettings, OutputDevicePreference, RepeatMode, ShuffleMode};
 use kog_audio::track::Track as AudioTrack;
@@ -29,6 +30,8 @@ struct TrackMetadata {
     title: String,
     artist: String,
     album: String,
+    disc_number: Option<u32>,
+    track_number: Option<u32>,
     duration: Option<Duration>,
     lyrics: String,
     codec: String,
@@ -151,6 +154,7 @@ struct Ui {
     volume_drag: bool,
     repeat_mode: RepeatMode,
     shuffle_mode: ShuffleMode,
+    order: PlaybackOrder,
     stop_after_current: bool,
     radio_enabled: bool,
     radio_pool: VecDeque<Track>,
@@ -232,6 +236,8 @@ impl Ui {
                         title,
                         artist: track.artist,
                         album: track.album,
+                        disc_number: track.disc_number,
+                        track_number: track.track_number,
                         duration: track.duration,
                         lyrics: track.lyrics,
                         codec: track.codec,
@@ -319,6 +325,11 @@ impl Ui {
             volume_drag: false,
             repeat_mode: settings.repeat_mode,
             shuffle_mode: settings.shuffle_mode,
+            order: PlaybackOrder::new(
+                settings.shuffle_mode,
+                settings.repeat_mode,
+                rand::rng().random(),
+            ),
             stop_after_current: false,
             radio_enabled: settings.radio_enabled,
             radio_pool: VecDeque::new(),
@@ -387,10 +398,35 @@ impl Ui {
     }
 
     fn poll_metadata(&mut self) {
+        let mut order_changed = false;
         while let Ok((key, metadata)) = self.metadata_results.try_recv() {
             self.metadata_pending.remove(&key);
+            order_changed |= metadata.as_ref().is_some_and(|meta| !meta.album.is_empty());
             self.metadata.insert(key, metadata);
         }
+        if order_changed {
+            self.order_tracks_changed();
+        }
+    }
+
+    fn order_tracks(&self) -> Vec<AudioTrack> {
+        self.tracks
+            .iter()
+            .map(|track| {
+                let mut ordered = AudioTrack::default();
+                if let Some(meta) = self.metadata_for(track) {
+                    ordered.album = meta.album.clone();
+                    ordered.disc_number = meta.disc_number;
+                    ordered.track_number = meta.track_number;
+                }
+                ordered
+            })
+            .collect()
+    }
+
+    fn order_tracks_changed(&mut self) {
+        let tracks = self.order_tracks();
+        self.order.tracks_changed(&tracks, self.playing);
     }
 
     fn poll_radio(&mut self) {
@@ -428,6 +464,9 @@ impl Ui {
         if self.radio_enabled {
             self.repeat_mode = RepeatMode::Off;
             self.shuffle_mode = ShuffleMode::Off;
+            self.order.set_repeat_mode(self.repeat_mode);
+            self.order
+                .set_shuffle_mode(self.shuffle_mode, &self.order_tracks(), self.playing);
             let _ = AppSettings::save_repeat_mode(self.repeat_mode);
             let _ = AppSettings::save_shuffle_mode(self.shuffle_mode);
         } else {
@@ -451,6 +490,9 @@ impl Ui {
         self.radio_pending_next = false;
         self.repeat_mode = RepeatMode::Off;
         self.shuffle_mode = ShuffleMode::Off;
+        self.order.set_repeat_mode(self.repeat_mode);
+        self.order
+            .set_shuffle_mode(self.shuffle_mode, &self.order_tracks(), self.playing);
         let _ = AppSettings::save_repeat_mode(self.repeat_mode);
         let _ = AppSettings::save_shuffle_mode(self.shuffle_mode);
         self.status = "Reshuffling Random Radio…".to_owned();
@@ -476,6 +518,7 @@ impl Ui {
                 continue;
             }
             self.tracks.push(track);
+            self.order_tracks_changed();
             self.selected[2] = self.tracks.len() - 1;
             self.select_track(self.selected[2], false, false);
             self.play_selected();
@@ -942,6 +985,7 @@ impl Ui {
         self.selection_anchor = self
             .selection_anchor
             .and_then(|old| mapping.get(old).copied());
+        self.order_tracks_changed();
     }
 
     fn move_menu_selection(&mut self, delta: isize, height: usize) {
@@ -970,6 +1014,7 @@ impl Ui {
         self.player.stop();
         self.playing = None;
         self.tracks.clear();
+        self.order.clear_tracks();
         self.queue.clear();
         self.stop_after_rows.clear();
         self.selected_tracks.clear();
@@ -1268,6 +1313,7 @@ impl Ui {
                 Ok(tracks) => {
                     let count = tracks.len();
                     self.tracks.extend(tracks);
+                    self.order_tracks_changed();
                     self.status = format!("Added {count} tracks from folder");
                 }
                 Err(error) => self.status = error,
@@ -1294,11 +1340,13 @@ impl Ui {
             self.player.stop();
             self.playing = None;
             self.tracks.clear();
+            self.order.clear_tracks();
             self.queue.clear();
             self.stop_after_rows.clear();
             self.selected_tracks.clear();
         }
         self.tracks.push(track.clone());
+        self.order_tracks_changed();
         self.selected[2] = self.tracks.len() - 1;
         self.select_track(self.selected[2], false, false);
         self.status = format!("Added {}", track.name);
@@ -1388,74 +1436,14 @@ impl Ui {
             self.append_next_radio();
             return;
         }
-        if honor_repeat_one && self.repeat_mode == RepeatMode::Album {
-            if let Some(current) = self.playing {
-                if let Some(album) = self
-                    .metadata_for(&self.tracks[current])
-                    .map(|meta| meta.album.clone())
-                    .filter(|album| !album.is_empty())
-                {
-                    let next =
-                        ((current + 1)..self.tracks.len())
-                            .chain(0..=current)
-                            .find(|&index| {
-                                self.metadata_for(&self.tracks[index])
-                                    .is_some_and(|meta| meta.album == album)
-                            });
-                    if let Some(next) = next {
-                        self.selected[2] = next;
-                        self.play_selected();
-                        return;
-                    }
-                }
-            }
-        }
-        if self.shuffle_mode != ShuffleMode::Off && self.tracks.len() > 1 {
-            let current = self.playing.unwrap_or(0);
-            let candidates: Vec<_> = if self.shuffle_mode == ShuffleMode::Albums {
-                let album = self
-                    .metadata_for(&self.tracks[current])
-                    .map(|meta| meta.album.as_str())
-                    .unwrap_or("");
-                self.tracks
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(index, track)| {
-                        let other = self
-                            .metadata_for(track)
-                            .map(|meta| meta.album.as_str())
-                            .unwrap_or("");
-                        (index != current
-                            && !album.is_empty()
-                            && !other.is_empty()
-                            && other != album)
-                            .then_some(index)
-                    })
-                    .collect()
-            } else {
-                Vec::new()
-            };
-            let candidates = if candidates.is_empty() {
-                (0..self.tracks.len())
-                    .filter(|&index| index != current)
-                    .collect::<Vec<_>>()
-            } else {
-                candidates
-            };
-            self.selected[2] = candidates[rand::rng().random_range(0..candidates.len())];
-            self.play_selected();
-            return;
-        }
-        let next = match self.playing {
-            Some(i) if honor_repeat_one && self.repeat_mode == RepeatMode::One => i,
-            Some(i) if i + 1 < self.tracks.len() => i + 1,
-            Some(_) if self.repeat_mode == RepeatMode::All => 0,
-            Some(_) => {
+        let tracks = self.order_tracks();
+        let next = match self.order.next(&tracks, self.playing, honor_repeat_one) {
+            Some(index) => index,
+            None => {
                 self.player.stop();
                 self.playing = None;
                 return;
             }
-            None => 0,
         };
         self.selected[2] = next;
         self.play_selected();
@@ -1477,16 +1465,11 @@ impl Ui {
         if self.tracks.is_empty() {
             return;
         }
-        let previous = self.playing.map_or(0, |i| {
-            i.checked_sub(1)
-                .unwrap_or(if self.repeat_mode == RepeatMode::All {
-                    self.tracks.len() - 1
-                } else {
-                    0
-                })
-        });
-        self.selected[2] = previous;
-        self.play_selected();
+        let tracks = self.order_tracks();
+        if let Some(previous) = self.order.previous(&tracks, self.playing) {
+            self.selected[2] = previous;
+            self.play_selected();
+        }
     }
 
     fn cycle_repeat(&mut self) {
@@ -1494,6 +1477,7 @@ impl Ui {
             self.toggle_radio();
         }
         self.repeat_mode = self.repeat_mode.next();
+        self.order.set_repeat_mode(self.repeat_mode);
         let _ = AppSettings::save_repeat_mode(self.repeat_mode);
         self.status = format!("Repeat: {}", self.repeat_mode.setting_value());
     }
@@ -1503,6 +1487,8 @@ impl Ui {
             self.toggle_radio();
         }
         self.shuffle_mode = self.shuffle_mode.next();
+        self.order
+            .set_shuffle_mode(self.shuffle_mode, &self.order_tracks(), self.playing);
         let _ = AppSettings::save_shuffle_mode(self.shuffle_mode);
         self.status = format!("Shuffle: {}", self.shuffle_mode.setting_value());
     }
@@ -1553,6 +1539,7 @@ impl Ui {
         if !self.tracks.is_empty() {
             self.select_track(self.selected[2], false, false);
         }
+        self.order_tracks_changed();
         self.status = format!("Removed {} track(s)", indices.len());
     }
 
@@ -1604,6 +1591,7 @@ impl Ui {
         self.selected_tracks = self.selected_tracks.iter().copied().map(remap).collect();
         self.selected[2] = remap(self.selected[2]);
         self.selection_anchor = self.selection_anchor.map(remap);
+        self.order_tracks_changed();
         self.status = format!("Moved track {} to {}", from + 1, to + 1);
     }
 
@@ -1811,6 +1799,7 @@ impl Ui {
                     });
                     self.status = format!("Added {}", track.name);
                     self.tracks.push(track);
+                    self.order_tracks_changed();
                 } else {
                     self.status = format!("Cannot add {}", path.display());
                 }
@@ -1827,6 +1816,7 @@ impl Ui {
                     });
                     self.status = format!("Added {}", track.name);
                     self.tracks.push(track);
+                    self.order_tracks_changed();
                 }
             }
             PromptKind::SavePlaylist | PromptKind::SaveSelection => {
