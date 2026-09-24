@@ -21,6 +21,7 @@ url = "2.5.8"
 ureq = { version = "3.4.0", features = ["json", "rustls"] }
 directories = "6.0"
 tempfile = "3.27.0"
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

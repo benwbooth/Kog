@@ -1016,16 +1016,11 @@ fn resolve_cover_art(request: &CoverArtRequest, cancel: &AtomicBool) -> Option<P
             && let Ok(text) = String::from_utf8(json)
         {
             let releases = kog_audio::cover_art::parse_mb_releases(&text);
-            // With no album artist, a short generic title may name several
-            // unrelated releases. Only trust an unambiguous exact title.
+            // Several editions of the same album can share an exact title.
+            // Try them when their album artist is consistent, so a missing
+            // cover on one edition does not hide another edition's art.
             if artist_query.is_empty()
-                && releases
-                    .iter()
-                    .filter(|(title, _, _)| {
-                        kog_audio::cover_art::album_title_exact(lookup_album, title)
-                    })
-                    .count()
-                    != 1
+                && !kog_audio::cover_art::consistent_exact_releases(&releases, lookup_album)
             {
                 continue;
             }

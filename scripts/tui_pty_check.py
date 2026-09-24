@@ -559,6 +559,8 @@ try:
     send(b'\x1b[B'*13+b'\r');send(artwork_path+'\r',.3)
     send(b'\x1b[B'*15+b'\r');wait_for('Updated tags for 1 file(s)',10)
     assert WAVE(art_track).tags.getall('APIC')
+    wait_for('▀▀▀▀',10)
+    assert '▀▀▀▀' in screen.display[36][1:8],screen.display[36][:12]
     assert 'Ⅱ' in screen.display[36],screen.display[36]
     send('e');wait_for('Editing tags for 1 file(s)')
     send(b'\x1b[B'*14+b'\r');send(b'\x1b[B'*15+b'\r')
@@ -653,6 +655,9 @@ try:
     wait_for('Read M3U/PLS in folders: off')
     assert next(Path(base).rglob('read-cue-sheets-in-folders')).read_text()=='false'
     assert next(Path(base).rglob('read-playlists-in-folders')).read_text()=='false'
+    click(5,0);click(10,13);click(10,18)
+    wait_for('Automatic cover downloads: off')
+    assert next(Path(base).rglob('download-cover-art')).read_text()=='false'
     fake_rom_archive=os.path.join(base,'incomplete-roms.zip')
     with zipfile.ZipFile(fake_rom_archive,'w') as archive:
         archive.writestr('nested/control.rom',b'not a real ROM')

@@ -463,6 +463,26 @@ pub fn album_title_exact(query_album: &str, candidate_title: &str) -> bool {
     album.len() >= 8 && album == normalize(candidate_title)
 }
 
+/// Exact-title release variants are safe to try when they all name the same
+/// album artist. MusicBrainz can list several editions of one soundtrack;
+/// requiring a single exact hit discards their usable front covers.
+pub fn consistent_exact_releases(releases: &[(String, String, String)], album: &str) -> bool {
+    let exact: Vec<_> = releases
+        .iter()
+        .filter(|(title, _, _)| album_title_exact(album, title))
+        .collect();
+    if exact.len() == 1 {
+        return true;
+    }
+    let Some(artist) = exact.first().map(|(_, artist, _)| artist.trim()) else {
+        return false;
+    };
+    !artist.is_empty()
+        && exact
+            .iter()
+            .all(|(_, candidate, _)| normalize(candidate) == normalize(artist))
+}
+
 /// First embedded picture of a tagged file, if it decodes as JPEG/PNG.
 /// Module music and untagged files yield nothing; the download chain covers
 /// those.
@@ -662,6 +682,19 @@ mod tests {
             "Super Mario Galaxy Original Soundtrack: Platinum Version"
         ));
         assert!(!album_title_exact("Super Mario Galaxy", "Super Mario Galaxy 2"));
+    }
+
+    #[test]
+    fn exact_release_editions_can_share_an_album_artist() {
+        let album = "Super Mario Galaxy";
+        let mut releases = vec![
+            (album.to_owned(), "Mario Galaxy Orchestra".to_owned(), "one".to_owned()),
+            (album.to_owned(), "Mario Galaxy Orchestra".to_owned(), "two".to_owned()),
+            ("Super Mario Galaxy 2".to_owned(), "Other".to_owned(), "other".to_owned()),
+        ];
+        assert!(consistent_exact_releases(&releases, album));
+        releases[1].1 = "Different Artist".to_owned();
+        assert!(!consistent_exact_releases(&releases, album));
     }
 
     #[test]

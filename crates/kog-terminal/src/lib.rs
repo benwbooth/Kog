@@ -1,4 +1,5 @@
 mod columns;
+mod cover_preview;
 mod remote;
 #[path = "../../../src/rom_import.rs"]
 mod rom_import;

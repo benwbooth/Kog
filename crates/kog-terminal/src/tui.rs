@@ -26,6 +26,7 @@ use rand::Rng;
 use unicode_width::UnicodeWidthChar;
 
 use crate::columns::Columns;
+use crate::cover_preview::{self, COVER_WIDTH, CoverPreview};
 use crate::remote::{RemoteFile, RemoteListing, RemoteSettings};
 use crate::rom_import::{RomKind, import_rom_archive};
 use crate::server_control::RunningServer;
@@ -299,6 +300,13 @@ struct Ui {
     metadata_generation: u64,
     metadata_requests: Sender<(u64, String, StoredEntry)>,
     metadata_results: Receiver<(u64, String, Option<TrackMetadata>)>,
+    cover_requests: Sender<(u64, Option<PathBuf>, String, String, bool)>,
+    cover_results: Receiver<(u64, Option<CoverPreview>)>,
+    cover_generation: u64,
+    cover_live_generation: Arc<AtomicU64>,
+    cover_key: String,
+    cover_preview: Option<CoverPreview>,
+    download_cover_art: bool,
     folder_requests: Sender<(u64, PathBuf)>,
     folder_results: Receiver<(u64, PathBuf, Result<Vec<Track>, String>)>,
     folder_generation: u64,
@@ -400,6 +408,28 @@ impl Ui {
                     }
                 });
                 if worker_results.send((generation, key, metadata)).is_err() {
+                    break;
+                }
+            }
+        });
+        let (cover_requests, cover_jobs) =
+            mpsc::channel::<(u64, Option<PathBuf>, String, String, bool)>();
+        let (cover_done, cover_results) = mpsc::channel();
+        let cover_live_generation = Arc::new(AtomicU64::new(0));
+        let cover_worker_generation = cover_live_generation.clone();
+        std::thread::spawn(move || {
+            while let Ok((generation, file, artist, album, allow_download)) = cover_jobs.recv() {
+                if cover_worker_generation.load(Ordering::Relaxed) != generation {
+                    continue;
+                }
+                let cover = cover_preview::resolve(
+                    file.as_deref(),
+                    &artist,
+                    &album,
+                    allow_download,
+                    || cover_worker_generation.load(Ordering::Relaxed) != generation,
+                );
+                if cover_done.send((generation, cover)).is_err() {
                     break;
                 }
             }
@@ -638,6 +668,13 @@ impl Ui {
             metadata_generation: 0,
             metadata_requests,
             metadata_results,
+            cover_requests,
+            cover_results,
+            cover_generation: 0,
+            cover_live_generation,
+            cover_key: String::new(),
+            cover_preview: None,
+            download_cover_art: settings.download_cover_art,
             folder_requests,
             folder_results,
             folder_generation: 0,
@@ -726,6 +763,54 @@ impl Ui {
         if order_changed && self.shuffle_mode == ShuffleMode::Albums {
             let tracks = self.order_tracks();
             self.order.album_metadata_changed(&tracks, self.playing);
+        }
+    }
+
+    fn refresh_cover_request(&mut self) {
+        let Some(track) = self.playing.and_then(|index| self.tracks.get(index)) else {
+            if !self.cover_key.is_empty() {
+                self.cover_generation = self.cover_generation.wrapping_add(1);
+                self.cover_live_generation
+                    .store(self.cover_generation, Ordering::Relaxed);
+            }
+            self.cover_key.clear();
+            self.cover_preview = None;
+            return;
+        };
+        let (artist, album) = self.metadata_for(track).map_or_else(
+            || (String::new(), String::new()),
+            |meta| (meta.artist.clone(), meta.album.clone()),
+        );
+        let key = format!(
+            "{}\0{}\0{}\0{}",
+            metadata_key(&track.entry),
+            artist,
+            album,
+            self.download_cover_art
+        );
+        if key == self.cover_key {
+            return;
+        }
+        self.cover_key = key;
+        self.cover_preview = None;
+        self.cover_generation = self.cover_generation.wrapping_add(1);
+        self.cover_live_generation
+            .store(self.cover_generation, Ordering::Relaxed);
+        let file = (track.entry.kind == "local").then(|| PathBuf::from(&track.entry.path));
+        let _ = self.cover_requests.send((
+            self.cover_generation,
+            file,
+            artist,
+            album,
+            self.download_cover_art,
+        ));
+    }
+
+    fn poll_cover_preview(&mut self) {
+        while let Ok((generation, cover)) = self.cover_results.try_recv() {
+            if generation == self.cover_generation {
+                self.cover_preview = cover;
+            }
         }
     }
 
@@ -1299,6 +1384,20 @@ impl Ui {
                 }
             }
             (MenuPage::Preferences, 15) => self.open_submenu(MenuPage::Server),
+            (MenuPage::Preferences, 16) => {
+                let enabled = !self.download_cover_art;
+                match AppSettings::save_download_cover_art(enabled) {
+                    Ok(()) => {
+                        self.download_cover_art = enabled;
+                        self.cover_key.clear();
+                        self.status = format!(
+                            "Automatic cover downloads: {}",
+                            if enabled { "on" } else { "off" }
+                        );
+                    }
+                    Err(error) => self.status = error,
+                }
+            }
             (MenuPage::Synthesis, 0) => {
                 let next = match self.decoder_settings.midi_engine() {
                     MidiEngine::RustySynth => MidiEngine::Opl3Windows,
@@ -1883,7 +1982,7 @@ impl Ui {
                     format!("{}:{:02}", duration.as_secs() / 60, duration.as_secs() % 60)
                 })
                 .unwrap_or_default();
-            format!(
+            let mut content = format!(
                 "{}\n\nArtist: {}\nAlbum: {}\nTitle: {}\nAlbum Artist: {}\nComposer: {}\nTrack: {}\nDisc: {}\nLength: {}\nDate: {}\nGenre: {}\nFilename: {}\nFormat: {}\nSample Rate: {}\nChannels: {}\nBitrate: {}\nBits Per Sample: {}\n\n♫\n{}",
                 self.title_for(track),
                 metadata.map_or("", |m| &m.artist),
@@ -1917,7 +2016,11 @@ impl Ui {
                     .and_then(|m| m.bits_per_sample)
                     .map_or(String::new(), |n| n.to_string()),
                 display_entry_path(&track.entry)
-            )
+            );
+            if let Some(cover) = &self.cover_preview {
+                content.push_str(&format!("\nArtwork: {}", cover.path.display()));
+            }
+            content
         } else {
             "No track selected".to_owned()
         };
@@ -3232,6 +3335,21 @@ impl Ui {
                 },
                 TagResponse::Saved(paths, error) => {
                     let succeeded = error.is_none();
+                    if self
+                        .playing
+                        .and_then(|index| self.tracks.get(index))
+                        .is_some_and(|track| {
+                            paths
+                                .iter()
+                                .any(|path| path == Path::new(&track.entry.path))
+                        })
+                    {
+                        if let Some(cover) = &self.cover_preview {
+                            let _ = std::fs::remove_file(&cover.path);
+                        }
+                        self.cover_key.clear();
+                        self.cover_preview = None;
+                    }
                     for track in &self.tracks {
                         if paths
                             .iter()
@@ -5082,6 +5200,7 @@ impl Ui {
     }
 
     fn draw(&mut self, size: (usize, usize)) -> String {
+        self.refresh_cover_request();
         let (width, height) = size;
         if width < 20 || height < 14 {
             let mut screen = String::from("\x1b[H\x1b[2J\x1b[?25l");
@@ -5508,20 +5627,37 @@ impl Ui {
             .and_then(|index| self.tracks.get(index))
             .map(|track| self.title_for(track))
             .unwrap_or_else(|| "Kog".to_owned());
+        let cover_space = if width >= 80 { 3 } else { 0 };
+        if cover_space > 0 {
+            if let Some(cover) = &self.cover_preview {
+                paint_cover_preview(&mut screen, layout.footer_top + 1, 2, cover);
+            } else {
+                paint(
+                    &mut screen,
+                    layout.footer_top + 1,
+                    2,
+                    "◈",
+                    4,
+                    Surface::Accent,
+                    true,
+                );
+            }
+        } else {
+            paint(
+                &mut screen,
+                layout.footer_top + 1,
+                2,
+                "◈",
+                2,
+                Surface::Accent,
+                true,
+            );
+        }
+        let title_width = width.saturating_div(2).saturating_sub(17 + cover_space);
         paint(
             &mut screen,
             layout.footer_top + 1,
-            2,
-            "⚙",
-            2,
-            Surface::Accent,
-            true,
-        );
-        let title_width = width.saturating_div(2).saturating_sub(17);
-        paint(
-            &mut screen,
-            layout.footer_top + 1,
-            5,
+            5 + cover_space,
             &current,
             title_width,
             Surface::Toolbar,
@@ -5547,7 +5683,7 @@ impl Ui {
         paint(
             &mut screen,
             layout.footer_top + 2,
-            5,
+            5 + cover_space,
             &subtitle,
             title_width,
             Surface::Muted,
@@ -6407,7 +6543,7 @@ const PLAYBACK_MENU: [&str; 13] = [
     "Toggle Stop After Selected",
     "Clear Queue",
 ];
-const PREFERENCES_MENU: [&str; 16] = [
+const PREFERENCES_MENU: [&str; 17] = [
     "Music Folder…",
     "Volume…",
     "Cycle Repeat",
@@ -6424,6 +6560,7 @@ const PREFERENCES_MENU: [&str; 16] = [
     "Read CUE Sheets On/Off",
     "Read M3U/PLS On/Off",
     "API Server               ›",
+    "Auto Download Covers On/Off",
 ];
 const SERVER_MENU: [&str; 17] = [
     "Start Server",
@@ -6767,6 +6904,26 @@ fn paint(
     ));
 }
 
+fn paint_cover_preview(out: &mut String, row: usize, col: usize, cover: &CoverPreview) {
+    for y in 0..2 {
+        for x in 0..COVER_WIDTH {
+            let upper = cover.pixels[(y * 2) * COVER_WIDTH + x];
+            let lower = cover.pixels[(y * 2 + 1) * COVER_WIDTH + x];
+            out.push_str(&format!(
+                "\x1b[{};{}H\x1b[38;2;{};{};{};48;2;{};{};{}m▀\x1b[0m",
+                row + y,
+                col + x,
+                upper[0],
+                upper[1],
+                upper[2],
+                lower[0],
+                lower[1],
+                lower[2],
+            ));
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Key {
     Char(char),
@@ -7028,6 +7185,7 @@ pub fn run() -> Result<(), String> {
         ui.poll_rom_imports();
         ui.poll_api_server();
         ui.poll_metadata();
+        ui.poll_cover_preview();
         ui.poll_radio();
         let size = terminal.size();
         if size != last_size || last_draw.elapsed() >= Duration::from_millis(150) {

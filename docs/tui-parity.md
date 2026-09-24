@@ -4,6 +4,8 @@ This is the feature inventory for the terminal frontend, checked against `qml/Ma
 
 Run `nix develop --command cargo build -p kog --bin kog`, then `uv run --with pyte --with mutagen scripts/tui_pty_check.py`, `nix develop --command uv run --with pyte scripts/tui_server_interop_check.py`, and `uv run --with pyte scripts/tui_server_controls_check.py`. The tests create their own music trees, archives, settings directories, and SQLite databases. They do not write to the user's library or playlists.
 
+The provider smoke test is opt-in because it contacts public services: `nix develop --command cargo test -p kog-terminal --lib live_super_mario_galaxy_cover -- --ignored`.
+
 ## Window and input
 
 - [x] Terminal resize redraws without losing the active pane.
@@ -62,7 +64,7 @@ Run `nix develop --command cargo build -p kog --bin kog`, then `uv run --with py
 - [x] MIDI backend, SoundFont, ROM directory, and MT-32 mapping controls update the live shared decoder settings; the PTY fixture checks menu access, validation, clearing, and persistence.
 - [x] SC-55 and MT-32 compressed ROM import uses the shared Qt importer and validator on a worker; shared unit tests check extraction and the PTY fixture rejects incomplete sets without retaining files.
 - [x] The API Server menu edits the shared bind address, port, authentication, credentials, HTTPS mode/certificate, codec, and cache settings; it starts and stops the embedded server and manages connected devices. A focused PTY test checks real HTTP and HTTPS requests with token and basic authentication, self-signed and imported PEM certificates, device blocking, and private settings storage.
-- [ ] Remaining Qt/Web playback preferences are reachable.
+- [x] Player-relevant Qt preferences, including automatic cover downloads, are reachable. Qt window and tray controls do not apply to a terminal process.
 - [x] Track info, lyrics, and equalizer have terminal modal views. The info view includes Qt's technical fields and source path.
 - [x] Supported Formats opens the shared decoder catalog in a scrollable terminal view; PTY checks its first format group.
 - [x] The spectrum visualizer reads live audio data, and individual equalizer bands can be edited from Preferences.
@@ -72,7 +74,8 @@ Run `nix develop --command cargo build -p kog --bin kog`, then `uv run --with py
 - [x] Tests exercise text entry, clicks, drags, double clicks, menus, resize, and the playlist database on a PTY.
 - [x] Decoder diagnostics are written to an owner-only log instead of drawing over the TUI; the PTY fixture checks the log permissions.
 - [x] A populated 120×40 terminal frame was reviewed against the running Qt and web layouts for toolbar, sidebar, striped playlist, search fields, and transport placement.
-- [ ] Cover art and the full Qt/Web information density have suitable terminal representations.
+- [x] The footer shows a true-color Unicode cover preview from cached, embedded, nearby, or downloaded art; the track info view shows the artwork path. The PTY fixture checks a cover added through the tag editor, and an opt-in live provider test resolves Super Mario Galaxy.
+- [ ] The full Qt/Web information density has suitable terminal representations at every terminal size.
 
 ## Cross-frontend feature inventory
 
@@ -86,5 +89,5 @@ The Qt hamburger, playlist and file context menus, playlist header, and the web 
 | Library settings | Read CUE and M3U/PLS menu controls and folder behavior are checked. |
 | Synthesis | SC-55 and MT-32 archive controls reject incomplete fixtures; validating a complete proprietary ROM set needs user supplied files. |
 | Server settings | Shared configuration, embedded start/stop, device blocking, token/basic authentication, self-signed HTTPS, and PEM import are checked through real requests. |
-| Media | Automatic cover downloading and cover art display need terminal representations and tests. |
+| Media | Automatic cover downloads use the Qt provider order and shared match rules; the footer cover preview is checked in a PTY, and an opt-in live test resolves Super Mario Galaxy. A larger artwork view is still missing. |
 | Views | Compact mini player, Winamp skin presentation, and live inspector refresh need terminal equivalents. |
