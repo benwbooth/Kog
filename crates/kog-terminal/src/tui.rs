@@ -308,6 +308,294 @@ enum PromptKind {
     ServerDevice,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FolderFocus {
+    List,
+    Location,
+    Choose,
+    Cancel,
+}
+
+struct FolderEntry {
+    name: String,
+    path: PathBuf,
+    parent: bool,
+}
+
+struct FolderChooser {
+    directory: PathBuf,
+    entries: Vec<FolderEntry>,
+    selected: usize,
+    offset: usize,
+    location: String,
+    cursor: usize,
+    select_all: bool,
+    focus: FolderFocus,
+    show_hidden: bool,
+    error: String,
+    last_click: Option<(Instant, usize)>,
+}
+
+#[derive(Clone, Copy)]
+struct FolderGeometry {
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+}
+
+impl FolderGeometry {
+    fn new(size: (usize, usize)) -> Self {
+        let width = size.0.saturating_sub(4).min(82);
+        let height = size.1.saturating_sub(4).min(26);
+        Self {
+            x: (size.0 - width) / 2,
+            y: (size.1 - height) / 2,
+            width,
+            height,
+        }
+    }
+
+    fn list_top(self) -> usize {
+        self.y + 4
+    }
+
+    fn list_rows(self) -> usize {
+        self.height.saturating_sub(7)
+    }
+}
+
+impl FolderChooser {
+    fn new(initial: &Path) -> Result<Self, String> {
+        let fallback = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+        let start = if initial.is_dir() {
+            initial.to_path_buf()
+        } else {
+            initial
+                .parent()
+                .filter(|path| path.is_dir())
+                .map(Path::to_path_buf)
+                .unwrap_or(fallback)
+        };
+        let mut chooser = Self {
+            directory: PathBuf::new(),
+            entries: Vec::new(),
+            selected: 0,
+            offset: 0,
+            location: String::new(),
+            cursor: 0,
+            select_all: false,
+            focus: FolderFocus::List,
+            show_hidden: false,
+            error: String::new(),
+            last_click: None,
+        };
+        chooser.navigate(&start)?;
+        Ok(chooser)
+    }
+
+    fn list_entries(directory: &Path, show_hidden: bool) -> Result<Vec<FolderEntry>, String> {
+        let mut entries = Vec::new();
+        if let Some(parent) = directory.parent() {
+            entries.push(FolderEntry {
+                name: "..".to_owned(),
+                path: parent.to_path_buf(),
+                parent: true,
+            });
+        }
+        let listing = std::fs::read_dir(directory)
+            .map_err(|error| format!("Reading {}: {error}", directory.display()))?;
+        for result in listing {
+            let Ok(entry) = result else { continue };
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !show_hidden && name.starts_with('.') {
+                continue;
+            }
+            let path = entry.path();
+            let is_dir = entry
+                .file_type()
+                .is_ok_and(|kind| kind.is_dir() || kind.is_symlink() && path.is_dir());
+            if is_dir {
+                entries.push(FolderEntry {
+                    name,
+                    path,
+                    parent: false,
+                });
+            }
+        }
+        let first = usize::from(entries.first().is_some_and(|entry| entry.parent));
+        entries[first..].sort_by(|left, right| {
+            left.name
+                .to_lowercase()
+                .cmp(&right.name.to_lowercase())
+                .then_with(|| left.name.cmp(&right.name))
+        });
+        Ok(entries)
+    }
+
+    fn navigate(&mut self, path: &Path) -> Result<(), String> {
+        let directory = path
+            .canonicalize()
+            .map_err(|error| format!("Opening {}: {error}", path.display()))?;
+        if !directory.is_dir() {
+            return Err(format!("{} is not a folder", directory.display()));
+        }
+        let entries = Self::list_entries(&directory, self.show_hidden)?;
+        self.directory = directory;
+        self.entries = entries;
+        self.selected = usize::from(self.entries.len() > 1 && self.entries[0].parent);
+        self.offset = 0;
+        self.location = self.directory.to_string_lossy().into_owned();
+        self.cursor = self.location.chars().count();
+        self.select_all = false;
+        self.error.clear();
+        self.last_click = None;
+        Ok(())
+    }
+
+    fn open_selected(&mut self) {
+        if let Some(path) = self
+            .entries
+            .get(self.selected)
+            .map(|entry| entry.path.clone())
+        {
+            if let Err(error) = self.navigate(&path) {
+                self.error = error;
+            }
+        }
+    }
+
+    fn parent(&mut self) {
+        if let Some(path) = self.directory.parent().map(Path::to_path_buf) {
+            if let Err(error) = self.navigate(&path) {
+                self.error = error;
+            }
+        }
+    }
+
+    fn navigate_location(&mut self) {
+        let typed = self.location.trim();
+        let path = if typed == "~" || typed.starts_with("~/") {
+            let home = std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_default();
+            home.join(typed.strip_prefix("~/").unwrap_or_default())
+        } else {
+            let path = PathBuf::from(typed);
+            if path.is_absolute() {
+                path
+            } else {
+                self.directory.join(path)
+            }
+        };
+        match self.navigate(&path) {
+            Ok(()) => self.focus = FolderFocus::List,
+            Err(error) => self.error = error,
+        }
+    }
+
+    fn toggle_hidden(&mut self) {
+        let old = self
+            .entries
+            .get(self.selected)
+            .map(|entry| entry.path.clone());
+        self.show_hidden = !self.show_hidden;
+        match Self::list_entries(&self.directory, self.show_hidden) {
+            Ok(entries) => {
+                self.entries = entries;
+                self.selected = old
+                    .and_then(|path| self.entries.iter().position(|entry| entry.path == path))
+                    .unwrap_or(0);
+                self.offset = 0;
+                self.error.clear();
+            }
+            Err(error) => self.error = error,
+        }
+    }
+
+    fn keep_selected_visible(&mut self, rows: usize) {
+        let rows = rows.max(1);
+        if self.selected < self.offset {
+            self.offset = self.selected;
+        } else if self.selected >= self.offset + rows {
+            self.offset = self.selected + 1 - rows;
+        }
+    }
+
+    fn edit_location(&mut self, key: Key) {
+        self.cursor = self.cursor.min(self.location.chars().count());
+        match key {
+            Key::CtrlA => self.select_all = true,
+            Key::CtrlU => {
+                self.location.clear();
+                self.cursor = 0;
+                self.select_all = false;
+            }
+            Key::Left | Key::CtrlLeft => {
+                self.select_all = false;
+                self.cursor = if key == Key::CtrlLeft {
+                    previous_path_boundary(&self.location, self.cursor)
+                } else {
+                    self.cursor.saturating_sub(1)
+                };
+            }
+            Key::Right | Key::CtrlRight => {
+                self.select_all = false;
+                self.cursor = if key == Key::CtrlRight {
+                    next_path_boundary(&self.location, self.cursor)
+                } else {
+                    (self.cursor + 1).min(self.location.chars().count())
+                };
+            }
+            Key::Home => {
+                self.cursor = 0;
+                self.select_all = false;
+            }
+            Key::End => {
+                self.cursor = self.location.chars().count();
+                self.select_all = false;
+            }
+            Key::Backspace | Key::Delete | Key::CtrlW | Key::CtrlBackspace => {
+                if self.select_all {
+                    self.location.clear();
+                    self.cursor = 0;
+                    self.select_all = false;
+                } else if matches!(key, Key::CtrlW | Key::CtrlBackspace) {
+                    let start = if key == Key::CtrlW {
+                        previous_path_word_boundary(&self.location, self.cursor)
+                    } else {
+                        previous_path_boundary(&self.location, self.cursor)
+                    };
+                    self.location.drain(
+                        byte_offset(&self.location, start)
+                            ..byte_offset(&self.location, self.cursor),
+                    );
+                    self.cursor = start;
+                } else if key == Key::Backspace && self.cursor > 0 {
+                    self.cursor -= 1;
+                    self.location
+                        .remove(byte_offset(&self.location, self.cursor));
+                } else if key == Key::Delete && self.cursor < self.location.chars().count() {
+                    self.location
+                        .remove(byte_offset(&self.location, self.cursor));
+                }
+            }
+            Key::Char(character) if !character.is_control() && self.location.len() < 4096 => {
+                if self.select_all {
+                    self.location.clear();
+                    self.cursor = 0;
+                    self.select_all = false;
+                }
+                self.location
+                    .insert(byte_offset(&self.location, self.cursor), character);
+                self.cursor += 1;
+            }
+            _ => {}
+        }
+        self.error.clear();
+    }
+}
+
 enum RadioCommand {
     Enable(bool),
     Reshuffle,
@@ -412,6 +700,7 @@ struct Ui {
     equalizer: EqualizerSettings,
     last_click: Option<(Instant, usize, usize)>,
     prompt: Option<(PromptKind, String)>,
+    folder_chooser: Option<FolderChooser>,
     input_cursor: usize,
     input_select_all: bool,
     search_due: Option<Instant>,
@@ -789,6 +1078,7 @@ impl Ui {
             equalizer: settings.equalizer,
             last_click: None,
             prompt: None,
+            folder_chooser: None,
             input_cursor: 0,
             input_select_all: false,
             search_due: None,
@@ -3888,6 +4178,18 @@ impl Ui {
     }
 
     fn begin_prompt(&mut self, kind: PromptKind, value: String) {
+        if kind == PromptKind::MusicFolder {
+            match FolderChooser::new(Path::new(&value)) {
+                Ok(chooser) => {
+                    self.folder_chooser = Some(chooser);
+                    self.prompt = None;
+                    self.menu_open = false;
+                    self.menu_parents.clear();
+                }
+                Err(error) => self.status = error,
+            }
+            return;
+        }
         if kind == PromptKind::Search {
             self.files_expanded = true;
             self.focus = Focus::Library;
@@ -3895,6 +4197,43 @@ impl Ui {
         self.input_cursor = value.chars().count();
         self.input_select_all = false;
         self.prompt = Some((kind, value));
+    }
+
+    fn apply_music_folder(&mut self, path: &Path) -> Result<(), String> {
+        let directory = path
+            .canonicalize()
+            .map_err(|error| format!("Opening {}: {error}", path.display()))?;
+        if !directory.is_dir() {
+            return Err(format!("{} is not a directory", directory.display()));
+        }
+        AppSettings::save_music_directory(&directory)?;
+        self.library.set_root(Some(directory.clone()));
+        if let Some(server) = &self.api_server {
+            server.library.set_root(Some(directory));
+        }
+        self.browse(None);
+        Ok(())
+    }
+
+    fn accept_folder_chooser(&mut self) {
+        let Some(chooser) = self.folder_chooser.as_mut() else {
+            return;
+        };
+        if chooser.location.trim() != chooser.directory.to_string_lossy() {
+            chooser.navigate_location();
+            if !chooser.error.is_empty() {
+                return;
+            }
+        }
+        let path = chooser.directory.clone();
+        match self.apply_music_folder(&path) {
+            Ok(()) => self.folder_chooser = None,
+            Err(error) => {
+                if let Some(chooser) = self.folder_chooser.as_mut() {
+                    chooser.error = error;
+                }
+            }
+        }
     }
 
     fn update_search_draft(&mut self, kind: PromptKind, value: &str) {
@@ -4017,25 +4356,10 @@ impl Ui {
             return;
         }
         match kind {
-            PromptKind::MusicFolder => {
-                let path = PathBuf::from(value)
-                    .canonicalize()
-                    .unwrap_or_else(|_| PathBuf::from(value));
-                if !path.is_dir() {
-                    self.status = format!("{} is not a directory", path.display());
-                    return;
-                }
-                match AppSettings::save_music_directory(&path) {
-                    Ok(()) => {
-                        self.library.set_root(Some(path.clone()));
-                        if let Some(server) = &self.api_server {
-                            server.library.set_root(Some(path));
-                        }
-                        self.browse(None);
-                    }
-                    Err(error) => self.status = error,
-                }
-            }
+            PromptKind::MusicFolder => match self.apply_music_folder(Path::new(value)) {
+                Ok(()) => {}
+                Err(error) => self.status = error,
+            },
             PromptKind::NewPlaylist => {
                 let result = self.library.db().create_playlist(value);
                 match result {
@@ -4786,6 +5110,70 @@ impl Ui {
             }
             return true;
         }
+        if let Some(mut chooser) = self.folder_chooser.take() {
+            let rows = FolderGeometry::new(size).list_rows();
+            let mut accept = false;
+            let mut cancel = false;
+            match key {
+                Key::Esc => cancel = true,
+                Key::CtrlO => accept = true,
+                Key::CtrlL => {
+                    chooser.focus = FolderFocus::Location;
+                    chooser.select_all = true;
+                }
+                Key::Tab | Key::BackTab => {
+                    chooser.select_all = false;
+                    chooser.focus = match (chooser.focus, key) {
+                        (FolderFocus::List, Key::Tab) | (FolderFocus::Choose, Key::BackTab) => {
+                            FolderFocus::Location
+                        }
+                        (FolderFocus::Location, Key::Tab) | (FolderFocus::Cancel, Key::BackTab) => {
+                            FolderFocus::Choose
+                        }
+                        (FolderFocus::Choose, Key::Tab) | (FolderFocus::List, Key::BackTab) => {
+                            FolderFocus::Cancel
+                        }
+                        _ => FolderFocus::List,
+                    };
+                }
+                Key::Enter => match chooser.focus {
+                    FolderFocus::List => chooser.open_selected(),
+                    FolderFocus::Location => chooser.navigate_location(),
+                    FolderFocus::Choose => accept = true,
+                    FolderFocus::Cancel => cancel = true,
+                },
+                Key::AltUp => chooser.parent(),
+                Key::Char('.') if chooser.focus == FolderFocus::List => chooser.toggle_hidden(),
+                Key::Char('/') if chooser.focus == FolderFocus::List => {
+                    chooser.focus = FolderFocus::Location;
+                    chooser.location = "/".to_owned();
+                    chooser.cursor = 1;
+                    chooser.select_all = false;
+                }
+                _ if chooser.focus == FolderFocus::Location => chooser.edit_location(key),
+                Key::Backspace => chooser.parent(),
+                Key::Up | Key::Down | Key::PageUp | Key::PageDown | Key::Home | Key::End => {
+                    let last = chooser.entries.len().saturating_sub(1);
+                    chooser.selected = match key {
+                        Key::Up => chooser.selected.saturating_sub(1),
+                        Key::Down => (chooser.selected + 1).min(last),
+                        Key::PageUp => chooser.selected.saturating_sub(rows),
+                        Key::PageDown => (chooser.selected + rows).min(last),
+                        Key::Home => 0,
+                        _ => last,
+                    };
+                    chooser.keep_selected_visible(rows);
+                }
+                _ => {}
+            }
+            if !cancel {
+                self.folder_chooser = Some(chooser);
+                if accept {
+                    self.accept_folder_chooser();
+                }
+            }
+            return true;
+        }
         if let Some((kind, mut value)) = self.prompt.take() {
             let mut edited = false;
             self.input_cursor = self.input_cursor.min(value.chars().count());
@@ -5094,6 +5482,12 @@ impl Ui {
     }
 
     fn mouse(&mut self, button: u16, x: usize, y: usize, release: bool, size: (usize, usize)) {
+        if self.folder_chooser.is_some() {
+            if !release {
+                self.folder_mouse(button, x, y, size);
+            }
+            return;
+        }
         if release {
             if self.column_drag.is_some() {
                 self.persist_columns();
@@ -5818,6 +6212,96 @@ impl Ui {
             if double {
                 self.play_selected();
                 self.last_click = None;
+            }
+        }
+    }
+
+    fn folder_mouse(&mut self, button: u16, x: usize, y: usize, size: (usize, usize)) {
+        let geometry = FolderGeometry::new(size);
+        let Some(mut chooser) = self.folder_chooser.take() else {
+            return;
+        };
+        let mut accept = false;
+        let mut cancel = false;
+        if (button & 0b1100_0000) == 64 {
+            if y >= geometry.list_top() && y < geometry.list_top() + geometry.list_rows() {
+                let last = chooser.entries.len().saturating_sub(1);
+                chooser.selected = chooser
+                    .selected
+                    .saturating_add_signed(if button & 1 == 0 { -3 } else { 3 })
+                    .min(last);
+                chooser.keep_selected_visible(geometry.list_rows());
+            }
+        } else if button & 32 == 0
+            && x >= geometry.x
+            && x < geometry.x + geometry.width
+            && y >= geometry.y
+            && y < geometry.y + geometry.height
+        {
+            let rel_x = x - geometry.x;
+            let rel_y = y - geometry.y;
+            match rel_y {
+                2 => {
+                    chooser.focus = FolderFocus::Location;
+                    chooser.select_all = true;
+                }
+                3 => {
+                    if rel_x < 9 {
+                        if let Some(home) = std::env::var_os("HOME") {
+                            if let Err(error) = chooser.navigate(Path::new(&home)) {
+                                chooser.error = error;
+                            }
+                        }
+                    } else if rel_x < 16 {
+                        chooser.parent();
+                    } else if rel_x < 24 {
+                        if let Err(error) = chooser.navigate(Path::new("/")) {
+                            chooser.error = error;
+                        }
+                    } else {
+                        chooser.toggle_hidden();
+                    }
+                }
+                row if row >= 4 && row < geometry.height.saturating_sub(3) => {
+                    if x > geometry.x && x < geometry.x + geometry.width - 1 {
+                        let index = chooser.offset + row - 4;
+                        if index < chooser.entries.len() {
+                            chooser.focus = FolderFocus::List;
+                            let now = Instant::now();
+                            let double = chooser.last_click.is_some_and(|(previous, selected)| {
+                                selected == index
+                                    && now.duration_since(previous) < Duration::from_millis(450)
+                            });
+                            chooser.selected = index;
+                            chooser.last_click = Some((now, index));
+                            if double {
+                                chooser.open_selected();
+                            }
+                        }
+                    }
+                }
+                row if row == geometry.height.saturating_sub(2) => {
+                    let compact = geometry.width < 36;
+                    let cancel_width = if compact { 5 } else { 10 };
+                    let choose_width = if compact { 8 } else { 22 };
+                    let choose_x = geometry
+                        .width
+                        .saturating_sub(choose_width + if compact { 1 } else { 2 });
+                    let cancel_x =
+                        choose_x.saturating_sub(cancel_width + if compact { 1 } else { 2 });
+                    if rel_x >= cancel_x && rel_x < cancel_x + cancel_width {
+                        cancel = true;
+                    } else if rel_x >= choose_x && rel_x < choose_x + choose_width {
+                        accept = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if !cancel {
+            self.folder_chooser = Some(chooser);
+            if accept {
+                self.accept_folder_chooser();
             }
         }
     }
@@ -7058,6 +7542,9 @@ impl Ui {
                 screen.push_str(&format!("\x1b[{};{}H\x1b[?25h", y + 1, x + 2 + cursor));
             }
         }
+        if let Some(chooser) = &mut self.folder_chooser {
+            draw_folder_chooser(&mut screen, chooser, size);
+        }
         screen
     }
 }
@@ -7328,6 +7815,42 @@ fn byte_offset(text: &str, character: usize) -> usize {
     text.char_indices()
         .nth(character)
         .map_or(text.len(), |(offset, _)| offset)
+}
+
+fn previous_path_boundary(text: &str, cursor: usize) -> usize {
+    let chars: Vec<char> = text.chars().collect();
+    let mut position = cursor.min(chars.len());
+    while position > 0 && chars[position - 1] == '/' {
+        position -= 1;
+    }
+    while position > 0 && chars[position - 1] != '/' {
+        position -= 1;
+    }
+    position
+}
+
+fn previous_path_word_boundary(text: &str, cursor: usize) -> usize {
+    let chars: Vec<char> = text.chars().collect();
+    let mut position = cursor.min(chars.len());
+    while position > 0 && (chars[position - 1] == '/' || chars[position - 1].is_whitespace()) {
+        position -= 1;
+    }
+    while position > 0 && chars[position - 1] != '/' && !chars[position - 1].is_whitespace() {
+        position -= 1;
+    }
+    position
+}
+
+fn next_path_boundary(text: &str, cursor: usize) -> usize {
+    let chars: Vec<char> = text.chars().collect();
+    let mut position = cursor.min(chars.len());
+    while position < chars.len() && chars[position] != '/' {
+        position += 1;
+    }
+    while position < chars.len() && chars[position] == '/' {
+        position += 1;
+    }
+    position
 }
 
 fn cell_width(text: &str) -> usize {
@@ -7942,6 +8465,212 @@ fn paint(
     ));
 }
 
+fn draw_folder_chooser(screen: &mut String, chooser: &mut FolderChooser, size: (usize, usize)) {
+    let geometry = FolderGeometry::new(size);
+    let (x, y, width, height) = (geometry.x, geometry.y, geometry.width, geometry.height);
+    let inner = width.saturating_sub(2);
+    for row in 0..height {
+        paint(
+            screen,
+            y + row + 1,
+            x + 1,
+            &" ".repeat(width),
+            width,
+            Surface::Toolbar,
+            false,
+        );
+        if row > 0 && row + 1 < height {
+            paint(screen, y + row + 1, x + 1, "│", 1, Surface::Header, false);
+            paint(
+                screen,
+                y + row + 1,
+                x + width,
+                "│",
+                1,
+                Surface::Header,
+                false,
+            );
+        }
+    }
+    paint(
+        screen,
+        y + 1,
+        x + 1,
+        &format!("╭{}╮", "─".repeat(inner)),
+        width,
+        Surface::Header,
+        true,
+    );
+    paint(
+        screen,
+        y + 1,
+        x + 3,
+        " Select Music Folder ",
+        inner.saturating_sub(2),
+        Surface::Header,
+        true,
+    );
+    paint(
+        screen,
+        y + height,
+        x + 1,
+        &format!("╰{}╯", "─".repeat(inner)),
+        width,
+        Surface::Header,
+        false,
+    );
+    paint(
+        screen,
+        y + 2,
+        x + 3,
+        "Location:",
+        inner.saturating_sub(2),
+        Surface::Toolbar,
+        true,
+    );
+    let field_width = width.saturating_sub(4);
+    let (shown, cursor) = input_window(&chooser.location, chooser.cursor, field_width);
+    paint(
+        screen,
+        y + 3,
+        x + 3,
+        &format!("{shown:<field_width$}"),
+        field_width,
+        if chooser.focus == FolderFocus::Location && chooser.select_all {
+            Surface::Selected
+        } else {
+            Surface::Input
+        },
+        false,
+    );
+    let toolbar = if width >= 44 {
+        format!(
+            "[Home]  [Up]  [Root]  [{} Hidden]",
+            if chooser.show_hidden { "✓" } else { " " }
+        )
+    } else {
+        format!(
+            "Home   Up   /   Hidden {}",
+            if chooser.show_hidden { "✓" } else { " " }
+        )
+    };
+    paint(
+        screen,
+        y + 4,
+        x + 3,
+        &toolbar,
+        field_width,
+        Surface::Toolbar,
+        false,
+    );
+    let list_rows = geometry.list_rows();
+    chooser.keep_selected_visible(list_rows);
+    if chooser.entries.is_empty() {
+        paint(
+            screen,
+            y + 5,
+            x + 3,
+            "No subfolders",
+            field_width,
+            Surface::Muted,
+            false,
+        );
+    }
+    for (row, entry) in chooser
+        .entries
+        .iter()
+        .skip(chooser.offset)
+        .take(list_rows)
+        .enumerate()
+    {
+        let index = chooser.offset + row;
+        let chosen = chooser.focus == FolderFocus::List && index == chooser.selected;
+        let icon = if entry.parent { "↰" } else { "▱" };
+        let label = format!(
+            "{} {} {}",
+            if index == chooser.selected {
+                "▸"
+            } else {
+                " "
+            },
+            icon,
+            entry.name
+        );
+        paint(
+            screen,
+            geometry.list_top() + row + 1,
+            x + 3,
+            &format!("{label:<field_width$}"),
+            field_width,
+            if chosen {
+                Surface::Selected
+            } else if row % 2 == 0 {
+                Surface::Main
+            } else {
+                Surface::MainAlt
+            },
+            chosen,
+        );
+    }
+    let hint = if chooser.error.is_empty() {
+        "Enter open · Backspace parent · Ctrl+L path · Ctrl+W erase word"
+    } else {
+        &chooser.error
+    };
+    paint(
+        screen,
+        y + height - 2,
+        x + 3,
+        hint,
+        field_width,
+        if chooser.error.is_empty() {
+            Surface::Muted
+        } else {
+            Surface::Accent
+        },
+        false,
+    );
+    let compact = width < 36;
+    let cancel = if compact { "[Esc]" } else { "[ Cancel ]" };
+    let choose = if compact {
+        "[Choose]"
+    } else {
+        "[ Choose This Folder ]"
+    };
+    let spacing = if compact { 1 } else { 2 };
+    let choose_x = x + width.saturating_sub(choose.len() + spacing);
+    let cancel_x = choose_x.saturating_sub(cancel.len() + spacing);
+    paint(
+        screen,
+        y + height - 1,
+        cancel_x + 1,
+        cancel,
+        cancel.len(),
+        if chooser.focus == FolderFocus::Cancel {
+            Surface::Selected
+        } else {
+            Surface::Toolbar
+        },
+        chooser.focus == FolderFocus::Cancel,
+    );
+    paint(
+        screen,
+        y + height - 1,
+        choose_x + 1,
+        choose,
+        choose.len(),
+        if chooser.focus == FolderFocus::Choose {
+            Surface::Selected
+        } else {
+            Surface::Accent
+        },
+        chooser.focus == FolderFocus::Choose,
+    );
+    if chooser.focus == FolderFocus::Location {
+        screen.push_str(&format!("\x1b[{};{}H\x1b[?25h", y + 3, x + 3 + cursor));
+    }
+}
+
 fn paint_cover_preview(out: &mut String, row: usize, col: usize, cover: &CoverPreview) {
     paint_cover_at_size(out, row, col, cover, 4);
 }
@@ -7979,6 +8708,14 @@ enum Key {
     Char(char),
     CtrlA,
     CtrlC,
+    CtrlL,
+    CtrlO,
+    CtrlU,
+    CtrlW,
+    CtrlBackspace,
+    CtrlLeft,
+    CtrlRight,
+    AltUp,
     Esc,
     Tab,
     BackTab,
@@ -8035,6 +8772,10 @@ fn parse_event(bytes: &mut Vec<u8>) -> Option<Event> {
         if bytes.len() < 2 {
             return None;
         }
+        if matches!(bytes[1], 8 | 127) {
+            bytes.drain(..2);
+            return Some(Event::Key(Key::CtrlBackspace));
+        }
         if bytes[1] != b'[' {
             bytes.drain(..1);
             return Some(Event::Key(Key::Esc));
@@ -8077,6 +8818,10 @@ fn parse_event(bytes: &mut Vec<u8>) -> Option<Event> {
             b"1;2B" => Key::ShiftDown,
             b"1;5A" => Key::CtrlUp,
             b"1;5B" => Key::CtrlDown,
+            b"1;3A" => Key::AltUp,
+            b"1;5D" => Key::CtrlLeft,
+            b"1;5C" => Key::CtrlRight,
+            b"127;5u" | b"8;5u" => Key::CtrlBackspace,
             b"C" => Key::Right,
             b"D" => Key::Left,
             b"Z" => Key::BackTab,
@@ -8093,6 +8838,10 @@ fn parse_event(bytes: &mut Vec<u8>) -> Option<Event> {
     let key = match byte {
         1 => Key::CtrlA,
         3 => Key::CtrlC,
+        12 => Key::CtrlL,
+        15 => Key::CtrlO,
+        21 => Key::CtrlU,
+        23 => Key::CtrlW,
         9 => Key::Tab,
         10 | 13 => Key::Enter,
         127 | 8 => Key::Backspace,
@@ -8343,6 +9092,44 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
+    fn folder_chooser_browses_directories_and_edits_path_components() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("Album With Spaces")).unwrap();
+        std::fs::create_dir(root.path().join(".private")).unwrap();
+        std::fs::write(root.path().join("song.mp3"), b"audio").unwrap();
+        let mut chooser = FolderChooser::new(root.path()).unwrap();
+        assert!(
+            chooser
+                .entries
+                .iter()
+                .any(|entry| entry.name == "Album With Spaces")
+        );
+        assert!(
+            !chooser
+                .entries
+                .iter()
+                .any(|entry| entry.name == "song.mp3" || entry.name == ".private")
+        );
+        chooser.toggle_hidden();
+        assert!(chooser.entries.iter().any(|entry| entry.name == ".private"));
+        chooser.focus = FolderFocus::Location;
+        chooser.location = format!("{}/Album With Spaces/other", root.path().display());
+        chooser.cursor = chooser.location.chars().count();
+        chooser.edit_location(Key::CtrlW);
+        assert!(chooser.location.ends_with("/Album With Spaces/"));
+        chooser.edit_location(Key::CtrlW);
+        assert!(chooser.location.ends_with("/Album With "));
+        chooser.edit_location(Key::CtrlBackspace);
+        assert_eq!(chooser.location, format!("{}/", root.path().display()));
+        chooser.navigate_location();
+        assert_eq!(chooser.directory, root.path().canonicalize().unwrap());
+        chooser.location = root.path().join("missing").to_string_lossy().into_owned();
+        chooser.navigate_location();
+        assert!(!chooser.error.is_empty());
+        assert_eq!(chooser.directory, root.path().canonicalize().unwrap());
+    }
+
+    #[test]
     fn terminal_session_preserves_order_fragments_and_names() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("tui-session.json");
@@ -8441,6 +9228,12 @@ mod tests {
             parse_event(&mut unicode),
             Some(Event::Key(Key::Char('é')))
         ));
+        let mut folder_keys = b"\x17\x1b\x7f\x1b[1;3A\x1b[1;5D".to_vec();
+        for expected in [Key::CtrlW, Key::CtrlBackspace, Key::AltUp, Key::CtrlLeft] {
+            assert!(
+                matches!(parse_event(&mut folder_keys), Some(Event::Key(key)) if key == expected)
+            );
+        }
     }
     #[test]
     fn truncate_handles_wide_unicode() {

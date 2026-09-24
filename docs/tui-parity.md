@@ -20,6 +20,7 @@ For range selection in any pane, click the first row, press `v`, then click the 
 - [x] Mouse wheel and Home/End navigation keep long tree and playlist selections visible, including at 48 columns.
 - [x] Multi selection supports Ctrl+click toggling, Alt+click ranges, `v` then click ranges, Shift+arrow ranges, and deletion of all selected rows. Shift+click also works when the terminal forwards it.
 - [x] Path, URL, name, and preference prompts edit in a centered dialog with a visible caret and Ctrl+A replacement.
+- [x] Music Folder opens a directory chooser with mouse and keyboard browsing, hidden folders, an editable location, and separate Choose and Cancel actions. Arrow keys select, Enter opens, Backspace or Alt+Up goes to the parent, Ctrl+L edits the location, Ctrl+W deletes the previous word, Alt+Backspace or Ctrl+Backspace removes the previous path component, and Ctrl+O chooses the displayed folder.
 
 ## Library and playlists
 

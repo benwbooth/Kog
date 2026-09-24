@@ -7,6 +7,7 @@ root=tempfile.TemporaryDirectory(prefix='kog-tui-pty-')
 base=root.name
 music=os.path.join(base,'Music')
 os.makedirs(os.path.join(music,'album','sub'))
+os.makedirs(os.path.join(base,'.HiddenMusic'))
 for name in ('album/a.wav','album/b.wav','album/sub/c.wav'):
     with wave.open(os.path.join(music,name),'wb') as w:
         w.setnchannels(1);w.setsampwidth(2);w.setframerate(8000);w.writeframes(b'\0\0'*8000)
@@ -103,6 +104,17 @@ def send(data,seconds=.25):
     os.write(master,data if isinstance(data,bytes) else data.encode());drain(seconds)
 def click(x,y,button=0):
     send(f'\x1b[<{button};{x+1};{y+1}M\x1b[<{button};{x+1};{y+1}m')
+def choose_music_folder(path):
+    click(1,0)
+    wait_for('Select Music Folder')
+    send(b'\x0c\x01'+os.fsencode(path)+b'\r',.5)
+    wait_for('Choose This Folder')
+    send(b'\x0f',.4)
+    assert 'Select Music Folder' not in '\n'.join(screen.display)
+def folder_row(name):
+    for i,line in enumerate(screen.display):
+        if line.find('▱ '+name)>15:return i
+    raise AssertionError((name,'not in folder chooser',screen.display))
 def row(text):
     for i,line in enumerate(screen.display):
         if text in line:return i
@@ -144,9 +156,31 @@ def save_snapshot(path):
 try:
     wait_for('Search playlist')
     click(1,0)
-    assert 'Music folder' in '\n'.join(screen.display)
-    assert screen.cursor.y not in (0,39),screen.cursor.y
-    send(music+'\r',.4)
+    wait_for('Select Music Folder')
+    send(b'\x0c')
+    assert 'Select Music Folder' in '\n'.join(screen.display),('after ctrl l',screen.display)
+    send(b'\x01'+os.fsencode(base)+b'/discard-me',.6)
+    wait_for('Select Music Folder')
+    send(b'\x17',.3)
+    assert base+'/' in '\n'.join(screen.display)
+    send(b'\r',.3)
+    assert '▱ Music' in '\n'.join(screen.display),screen.display
+    send('.',.3)
+    assert '▱ .HiddenMusic' in '\n'.join(screen.display)
+    send('.',.3)
+    assert '▱ .HiddenMusic' not in '\n'.join(screen.display)
+    if folder_snapshot:=os.environ.get('KOG_TUI_FOLDER_SNAPSHOT_PATH'):
+        save_snapshot(folder_snapshot)
+    folder_y=folder_row('Music')
+    click(30,folder_y);click(30,folder_y)
+    assert '▱ album' in '\n'.join(screen.display)
+    choose_y=row('[ Choose This Folder ]')
+    click(screen.display[choose_y].find('[ Choose This Folder ]')+4,choose_y)
+    assert 'Select Music Folder' not in '\n'.join(screen.display)
+    click(1,0);wait_for('Select Music Folder')
+    cancel_y=row('[ Cancel ]')
+    click(screen.display[cancel_y].find('[ Cancel ]')+4,cancel_y)
+    assert 'Select Music Folder' not in '\n'.join(screen.display)
     wait_for('album')
     y=row('album');click(10,y)
     assert 'a.wav' in '\n'.join(screen.display)
@@ -353,7 +387,7 @@ try:
     click(10,row('PTY Selection'),2);send(b'\x1b[B\r')
     wait_for('Playing')
     click(10,row('PTY Saved'),2);send(b'\x1b[B'*2+b'\r')
-    assert 'Playing ' in screen.display[-1],screen.display[-1]
+    wait_for('Playing ')
     click(60,2,2);send(b'\x1b[B'*6+b'\r')
     wait_for('Located ')
     click(5,2)
@@ -496,7 +530,7 @@ try:
     for number in range(50):
         with wave.open(os.path.join(scroll_dir,f'track{number:02}.wav'),'wb') as w:
             w.setnchannels(1);w.setsampwidth(2);w.setframerate(8000);w.writeframes(b'\0\0'*8)
-    send('o');send('\r',.4)
+    send('o');send(b'\x0f',.4)
     wait_for('zzscroll')
     click(10,row('zzscroll'))
     send(b'\x1b[F')
@@ -582,9 +616,7 @@ try:
     for name in ('ban.wav','kept.wav'):
         with wave.open(os.path.join(radio_root,name),'wb') as w:
             w.setnchannels(1);w.setsampwidth(2);w.setframerate(8000);w.writeframes(b'\0\0'*80000)
-    click(1,0)
-    assert 'Music folder' in '\n'.join(screen.display),screen.display[-3:]
-    send(b'\x01'+radio_root.encode()+b'\r',.4)
+    choose_music_folder(radio_root)
     wait_for('ban.wav')
     click(10,row('ban.wav'),2);send(b'\x1b[B'*5+b'\r')
     wait_for('Blacklisted 1 item(s)')
@@ -610,7 +642,7 @@ try:
     for path in (long_path,third_path):
         tags=WAVE(path).tags
         assert tags.getall('TALB')[0].text==['PTY Album'],(path,tags)
-    click(1,0);send(b'\x01'+base.encode()+b'\r',.4)
+    choose_music_folder(base)
     wait_for('third.wav')
     click(5,0);click(10,9)
     click(10,row('long.wav'));click(10,row('third.wav'),4)
@@ -618,7 +650,7 @@ try:
     wait_for('Added 3 track(s)')
     assert all(name.removesuffix('.wav') in '\n'.join(line[52:] for line in screen.display[2:15]) for name in ('long.wav','second.wav','third.wav'))
     click(5,0);click(10,9)
-    click(1,0);send(b'\x01'+base.encode()+b'\r',.4)
+    choose_music_folder(base)
     wait_for('third.wav')
     click(10,row('long.wav'));click(10,row('third.wav'),16)
     send('a')
@@ -640,7 +672,7 @@ try:
     for path in batch_paths:
         with wave.open(path,'wb') as w:
             w.setnchannels(1);w.setsampwidth(2);w.setframerate(8000);w.writeframes(b'\0\0'*8000)
-    click(1,0);send(b'\x01'+base.encode()+b'\r',.4)
+    choose_music_folder(base)
     wait_for('batch2.wav')
     click(10,row('batch1.wav'));click(10,row('batch2.wav'),16)
     send(b'\x1b[3~')
@@ -760,7 +792,7 @@ try:
     header[10:12]=(0x8000).to_bytes(2,'little')
     header[12:14]=(0x8001).to_bytes(2,'little')
     Path(subsong_dir,'game.nsf').write_bytes(header+b'\x60\x60')
-    click(1,0);send(b'\x01'+base.encode()+b'\r',.4)
+    choose_music_folder(base)
     wait_for('SubsongFixture')
     click(10,row('SubsongFixture'));wait_for('game.nsf')
     click(10,row('game.nsf'));send('a')
