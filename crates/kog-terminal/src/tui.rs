@@ -758,6 +758,7 @@ struct Ui {
     focus: Focus,
     playing: Option<usize>,
     status: String,
+    marquee_started: Instant,
     volume: f32,
     volume_before_mute: f32,
     volume_drag: bool,
@@ -1140,6 +1141,7 @@ impl Ui {
             focus: Focus::Library,
             playing: None,
             status: String::new(),
+            marquee_started: Instant::now(),
             volume,
             volume_before_mute: if volume > 0.0 { volume } else { 0.75 },
             volume_drag: false,
@@ -1283,7 +1285,7 @@ impl Ui {
             .retain(|id| self.lists.iter().any(|(current, _)| current == id));
     }
 
-    fn saved_list_label(&self, index: usize, width: usize) -> String {
+    fn saved_list_label(&self, index: usize, width: usize, tick: usize) -> String {
         let Some((id, name)) = self.lists.get(index) else {
             return String::new();
         };
@@ -1292,7 +1294,7 @@ impl Ui {
         } else {
             self.list_counts.get(id).copied().unwrap_or(0)
         };
-        saved_list_label(name, *id == 0, count, width)
+        saved_list_marquee_label(name, *id == 0, count, width, tick)
     }
 
     fn poll_metadata(&mut self) {
@@ -7031,6 +7033,7 @@ impl Ui {
             );
             return screen;
         }
+        let marquee_tick = (self.marquee_started.elapsed().as_millis() / 180) as usize;
         let visible_tracks = self.visible_tracks();
         let layout = self.layout_for_track_count(size, visible_tracks.len());
         let probe_range = if self.playlist_query.is_empty() {
@@ -7195,7 +7198,7 @@ impl Ui {
                     &mut screen,
                     3,
                     1,
-                    &format!(" ▱  ↻  {location}"),
+                    &marquee_prefixed(" ▱  ↻  ", &location, sidebar, marquee_tick),
                     sidebar,
                     Surface::SidebarAlt,
                     true,
@@ -7227,6 +7230,7 @@ impl Ui {
                 );
             }
             let tree_scrollbar = self.tree_scrollbar(&layout, size);
+            let tree_width = sidebar.saturating_sub(usize::from(tree_scrollbar.is_some()));
             for y in layout.tree_top..=layout.tree_bottom {
                 let index = self.offsets[1] + y - layout.tree_top;
                 let selected = self
@@ -7253,11 +7257,19 @@ impl Ui {
                                 } else {
                                     "▸"
                                 };
-                                format!("{indent}{arrow} ▱ {name}")
+                                marquee_prefixed(
+                                    &format!("{indent}{arrow} ▱ "),
+                                    name,
+                                    tree_width,
+                                    marquee_tick,
+                                )
                             }
-                            Item::Track(track) => {
-                                format!("{indent}  {} {}", glyph(&track.entry), track.name)
-                            }
+                            Item::Track(track) => marquee_prefixed(
+                                &format!("{indent}  {} ", glyph(&track.entry)),
+                                &track.name,
+                                tree_width,
+                                marquee_tick,
+                            ),
                         }
                     })
                     .unwrap_or_default();
@@ -7266,7 +7278,7 @@ impl Ui {
                     y + 1,
                     1,
                     &label,
-                    sidebar.saturating_sub(usize::from(tree_scrollbar.is_some())),
+                    tree_width,
                     surface,
                     false,
                 );
@@ -7308,7 +7320,7 @@ impl Ui {
                 } else {
                     Surface::Sidebar
                 };
-                let label = self.saved_list_label(index, sidebar);
+                let label = self.saved_list_label(index, sidebar, marquee_tick);
                 paint(&mut screen, y + 1, 1, &label, sidebar, surface, false);
             }
             for y in 1..layout.footer_top {
@@ -7352,7 +7364,7 @@ impl Ui {
                     break;
                 }
                 let index = self.offsets[0] + y - 2;
-                let label = self.saved_list_label(index, width);
+                let label = self.saved_list_label(index, width, marquee_tick);
                 let surface = if self
                     .lists
                     .get(index)
@@ -7369,6 +7381,7 @@ impl Ui {
             }
         } else if show_tree {
             let tree_scrollbar = self.tree_scrollbar(&layout, size);
+            let tree_width = width.saturating_sub(usize::from(tree_scrollbar.is_some()));
             paint(
                 &mut screen,
                 2,
@@ -7391,16 +7404,22 @@ impl Ui {
                     .items
                     .get(index)
                     .map(|row| match &row.item {
-                        Item::Directory(name, path) => format!(
-                            " {} ▱ {}",
+                        Item::Directory(name, path) => marquee_prefixed(
                             if self.expanded.contains(path) {
-                                "▾"
+                                " ▾ ▱ "
                             } else {
-                                "▸"
+                                " ▸ ▱ "
                             },
-                            name
+                            name,
+                            tree_width,
+                            marquee_tick,
                         ),
-                        Item::Track(track) => format!("   {} {}", glyph(&track.entry), track.name),
+                        Item::Track(track) => marquee_prefixed(
+                            &format!("   {} ", glyph(&track.entry)),
+                            &track.name,
+                            tree_width,
+                            marquee_tick,
+                        ),
                     })
                     .unwrap_or_default();
                 let selected = self
@@ -7419,7 +7438,7 @@ impl Ui {
                     y + 1,
                     1,
                     &label,
-                    width.saturating_sub(usize::from(tree_scrollbar.is_some())),
+                    tree_width,
                     surface,
                     false,
                 );
@@ -7451,6 +7470,7 @@ impl Ui {
                     column_width,
                     self.columns.scroll,
                     self.columns.entries[column_index].label,
+                    marquee_tick,
                     if selected {
                         Surface::Selected
                     } else {
@@ -7489,6 +7509,7 @@ impl Ui {
                             column_width,
                             self.columns.scroll,
                             &value,
+                            marquee_tick,
                             surface,
                             false,
                         );
@@ -7573,7 +7594,7 @@ impl Ui {
             &mut screen,
             layout.footer_top + 1,
             5 + cover_space,
-            &current,
+            &marquee_window(&current, title_width, marquee_tick),
             title_width,
             Surface::Toolbar,
             true,
@@ -7599,7 +7620,7 @@ impl Ui {
             &mut screen,
             layout.footer_top + 2,
             5 + cover_space,
-            &subtitle,
+            &marquee_window(&subtitle, title_width, marquee_tick),
             title_width,
             Surface::Muted,
             false,
@@ -7712,7 +7733,7 @@ impl Ui {
                     &mut screen,
                     card_y + 2,
                     card_x + 18,
-                    &current,
+                    &marquee_window(&current, card_width - 21, marquee_tick),
                     card_width - 21,
                     Surface::Sidebar,
                     true,
@@ -7721,7 +7742,7 @@ impl Ui {
                     &mut screen,
                     card_y + 3,
                     card_x + 18,
-                    &subtitle,
+                    &marquee_window(&subtitle, card_width - 21, marquee_tick),
                     card_width - 21,
                     Surface::Muted,
                     false,
@@ -7813,7 +7834,11 @@ impl Ui {
                     &mut screen,
                     card_y + 1,
                     card_x + 6,
-                    &current,
+                    &marquee_window(
+                        &current,
+                        card_width.saturating_sub(6),
+                        marquee_tick,
+                    ),
                     card_width.saturating_sub(6),
                     Surface::Main,
                     true,
@@ -7822,7 +7847,11 @@ impl Ui {
                     &mut screen,
                     card_y + 2,
                     card_x + 6,
-                    &subtitle,
+                    &marquee_window(
+                        &subtitle,
+                        card_width.saturating_sub(6),
+                        marquee_tick,
+                    ),
                     card_width.saturating_sub(6),
                     Surface::Muted,
                     false,
@@ -8352,7 +8381,7 @@ impl Ui {
             }
         }
         if let Some(chooser) = &mut self.folder_chooser {
-            draw_folder_chooser(&mut screen, chooser, size);
+            draw_folder_chooser(&mut screen, chooser, size, marquee_tick);
         }
         screen
     }
@@ -9410,6 +9439,54 @@ fn saved_list_label(name: &str, favorite: bool, count: usize, width: usize) -> S
     )
 }
 
+fn marquee_window(value: &str, width: usize, tick: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    let total = cell_width(value);
+    if total <= width {
+        return truncate(value, width);
+    }
+    let travel = total - width;
+    const DWELL: usize = 6;
+    let period = 2 * (travel + DWELL);
+    let phase = tick % period;
+    let offset = if phase < DWELL {
+        0
+    } else if phase < DWELL + travel {
+        phase - DWELL + 1
+    } else if phase < 2 * DWELL + travel {
+        travel
+    } else {
+        travel - (phase - (2 * DWELL + travel) + 1)
+    };
+    let visible = cell_slice(value, offset, width);
+    format!("{visible}{}", " ".repeat(width.saturating_sub(cell_width(&visible))))
+}
+
+fn marquee_prefixed(prefix: &str, value: &str, width: usize, tick: usize) -> String {
+    format!(
+        "{prefix}{}",
+        marquee_window(value, width.saturating_sub(cell_width(prefix)), tick)
+    )
+}
+
+fn saved_list_marquee_label(
+    name: &str,
+    favorite: bool,
+    count: usize,
+    width: usize,
+    tick: usize,
+) -> String {
+    let prefix = if favorite { " ★  " } else { "    " };
+    let suffix = format!("{count} ");
+    let available = width.saturating_sub(cell_width(prefix) + cell_width(&suffix));
+    if available == 0 {
+        return saved_list_label(name, favorite, count, width);
+    }
+    format!("{prefix}{}{suffix}", marquee_window(name, available, tick))
+}
+
 fn cell_slice(text: &str, skip: usize, width: usize) -> String {
     let mut out = String::new();
     let mut position = 0;
@@ -9441,6 +9518,7 @@ fn paint_playlist_cell(
     column_width: usize,
     scroll: usize,
     value: &str,
+    marquee_tick: usize,
     surface: Surface,
     bold: bool,
 ) {
@@ -9452,7 +9530,7 @@ fn paint_playlist_cell(
     let width = column_width
         .saturating_sub(clipped_left)
         .min(viewport_width - visible_left);
-    let cell = truncate(value, column_width.saturating_sub(1));
+    let cell = marquee_window(value, column_width.saturating_sub(1), marquee_tick);
     paint(
         out,
         row,
@@ -9511,7 +9589,12 @@ fn paint(
     ));
 }
 
-fn draw_folder_chooser(screen: &mut String, chooser: &mut FolderChooser, size: (usize, usize)) {
+fn draw_folder_chooser(
+    screen: &mut String,
+    chooser: &mut FolderChooser,
+    size: (usize, usize),
+    marquee_tick: usize,
+) {
     let geometry = FolderGeometry::new(size);
     let (x, y, width, height) = (geometry.x, geometry.y, geometry.width, geometry.height);
     let inner = width.saturating_sub(2);
@@ -9632,21 +9715,16 @@ fn draw_folder_chooser(screen: &mut String, chooser: &mut FolderChooser, size: (
         let index = chooser.offset + row;
         let chosen = chooser.focus == FolderFocus::List && index == chooser.selected;
         let icon = if entry.parent { "↰" } else { "▱" };
-        let label = format!(
-            "{} {} {}",
-            if index == chooser.selected {
-                "▸"
-            } else {
-                " "
-            },
-            icon,
-            entry.name
+        let prefix = format!(
+            "{} {icon} ",
+            if index == chooser.selected { "▸" } else { " " }
         );
+        let label = marquee_prefixed(&prefix, &entry.name, field_width, marquee_tick);
         paint(
             screen,
             geometry.list_top() + row + 1,
             x + 3,
-            &format!("{label:<field_width$}"),
+            &label,
             field_width,
             if chosen {
                 Surface::Selected
