@@ -1606,7 +1606,7 @@ impl Ui {
                     ""
                 };
                 format!(
-                    "{} {queue_badge}{stop_badge}{}",
+                    "{}  {queue_badge}{stop_badge}{}",
                     if self.playing == Some(index) {
                         "▶"
                     } else {
