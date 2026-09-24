@@ -42,6 +42,7 @@ struct Track {
 const SESSION_FILE: &str = "tui-session.json";
 const SESSION_MAX_BYTES: usize = 64 * 1024 * 1024;
 const SESSION_MAX_TRACKS: usize = 100_000;
+const RADIO_READY_TARGET: usize = 10;
 
 struct RestoredPlaylist {
     tracks: Vec<Track>,
@@ -757,6 +758,8 @@ struct Ui {
     radio_enabled: bool,
     radio_pool: VecDeque<Track>,
     radio_pending_next: bool,
+    radio_refill_pending: bool,
+    radio_exhausted: bool,
     radio_generation: u64,
     radio_requests: Sender<(u64, RadioCommand, Option<PathBuf>)>,
     radio_results: Receiver<(u64, RadioResponse)>,
@@ -1060,17 +1063,19 @@ impl Ui {
             while let Ok((generation, command, scope)) = radio_commands.recv() {
                 let root = radio_library.root();
                 let response = match command {
-                    RadioCommand::Enable(enabled) => RadioResponse::Status(radio.set_enabled(
-                        enabled,
-                        root.as_deref(),
-                        scope.as_deref(),
-                    )),
-                    RadioCommand::Reshuffle => {
-                        RadioResponse::Status(radio.reshuffle(root.as_deref(), scope.as_deref()))
-                    }
-                    RadioCommand::Advance => {
-                        RadioResponse::Advance(radio.advance(root.as_deref(), scope.as_deref()))
-                    }
+                    RadioCommand::Enable(enabled) => RadioResponse::Status(
+                        radio.set_enabled_incremental(
+                            enabled,
+                            root.as_deref(),
+                            scope.as_deref(),
+                        ),
+                    ),
+                    RadioCommand::Reshuffle => RadioResponse::Status(
+                        radio.reshuffle_incremental(root.as_deref(), scope.as_deref()),
+                    ),
+                    RadioCommand::Advance => RadioResponse::Advance(
+                        radio.advance_incremental(root.as_deref(), scope.as_deref()),
+                    ),
                 };
                 if radio_responses.send((generation, response)).is_err() {
                     break;
@@ -1137,6 +1142,8 @@ impl Ui {
             radio_enabled: settings.radio_enabled,
             radio_pool: VecDeque::new(),
             radio_pending_next: false,
+            radio_refill_pending: false,
+            radio_exhausted: false,
             radio_generation: 0,
             radio_requests,
             radio_results,
@@ -1238,11 +1245,7 @@ impl Ui {
             ui.start_api_server();
         }
         if ui.radio_enabled {
-            let _ = ui.radio_requests.send((
-                ui.radio_generation,
-                RadioCommand::Enable(true),
-                ui.browse_path.clone(),
-            ));
+            ui.request_radio_command(RadioCommand::Enable(true));
         }
         ui
     }
@@ -1387,10 +1390,22 @@ impl Ui {
     }
 
     fn poll_radio(&mut self) {
-        while let Ok((generation, response)) = self.radio_results.try_recv() {
+        loop {
+            let (generation, response) = match self.radio_results.try_recv() {
+                Ok(result) => result,
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    if self.radio_enabled && !self.radio_exhausted {
+                        self.radio_exhausted = true;
+                        self.status = "Random Radio worker stopped".to_owned();
+                    }
+                    break;
+                }
+            };
             if generation != self.radio_generation {
                 continue;
             }
+            self.radio_refill_pending = false;
             match response {
                 RadioResponse::Status(status) => {
                     self.radio_enabled = status.enabled;
@@ -1400,17 +1415,42 @@ impl Ui {
                     }
                 }
                 RadioResponse::Advance(advance) => {
+                    self.radio_exhausted = advance.exhausted;
                     self.radio_pool
                         .extend(advance.entries.into_iter().map(radio_track));
-                    if advance.exhausted && self.radio_pool.is_empty() {
-                        self.radio_pending_next = false;
-                        self.status = "Radio found no playable tracks".to_owned();
-                    }
                 }
             }
             if self.radio_pending_next && !self.radio_pool.is_empty() {
                 self.append_next_radio();
             }
+            if self.radio_pending_next && self.radio_exhausted && self.radio_pool.is_empty() {
+                self.radio_pending_next = false;
+                self.status = "Random Radio found no playable tracks".to_owned();
+            }
+            self.top_up_radio_pool();
+        }
+    }
+
+    fn request_radio_command(&mut self, command: RadioCommand) {
+        if self
+            .radio_requests
+            .send((self.radio_generation, command, self.browse_path.clone()))
+            .is_ok()
+        {
+            self.radio_refill_pending = true;
+        } else {
+            self.radio_exhausted = true;
+            self.status = "Random Radio worker stopped".to_owned();
+        }
+    }
+
+    fn top_up_radio_pool(&mut self) {
+        if self.radio_enabled
+            && !self.radio_refill_pending
+            && !self.radio_exhausted
+            && self.radio_pool.len() < RADIO_READY_TARGET
+        {
+            self.request_radio_command(RadioCommand::Advance);
         }
     }
 
@@ -1418,6 +1458,8 @@ impl Ui {
         self.radio_generation = self.radio_generation.wrapping_add(1);
         self.radio_enabled = !self.radio_enabled;
         self.radio_pending_next = false;
+        self.radio_refill_pending = false;
+        self.radio_exhausted = false;
         if self.radio_enabled {
             self.repeat_mode = RepeatMode::Off;
             self.shuffle_mode = ShuffleMode::Off;
@@ -1433,11 +1475,7 @@ impl Ui {
             "Random Radio: {}",
             if self.radio_enabled { "on" } else { "off" }
         );
-        let _ = self.radio_requests.send((
-            self.radio_generation,
-            RadioCommand::Enable(self.radio_enabled),
-            self.browse_path.clone(),
-        ));
+        self.request_radio_command(RadioCommand::Enable(self.radio_enabled));
     }
 
     fn activate_transport(&mut self, action: TransportAction) {
@@ -1460,6 +1498,8 @@ impl Ui {
         self.radio_enabled = true;
         self.radio_pool.clear();
         self.radio_pending_next = false;
+        self.radio_refill_pending = false;
+        self.radio_exhausted = false;
         self.repeat_mode = RepeatMode::Off;
         self.shuffle_mode = ShuffleMode::Off;
         self.order.set_repeat_mode(self.repeat_mode);
@@ -1468,41 +1508,26 @@ impl Ui {
         let _ = AppSettings::save_repeat_mode(self.repeat_mode);
         let _ = AppSettings::save_shuffle_mode(self.shuffle_mode);
         self.status = "Reshuffling Random Radio…".to_owned();
-        let _ = self.radio_requests.send((
-            self.radio_generation,
-            RadioCommand::Reshuffle,
-            self.browse_path.clone(),
-        ));
+        self.request_radio_command(RadioCommand::Reshuffle);
     }
 
     fn append_next_radio(&mut self) {
-        if self.radio_pending_next && self.radio_pool.is_empty() {
-            return;
-        }
         self.radio_pending_next = false;
-        while let Some(track) = self.radio_pool.pop_front() {
-            let locator = metadata_key(&track.entry);
-            if self
-                .tracks
-                .iter()
-                .any(|queued| metadata_key(&queued.entry) == locator)
-            {
-                continue;
-            }
+        if let Some(track) = self.radio_pool.pop_front() {
             self.tracks.push(track);
             self.order_tracks_changed();
             self.selected[2] = self.tracks.len() - 1;
             self.select_track(self.selected[2], false, false);
             self.play_selected();
+            self.top_up_radio_pool();
+            return;
+        }
+        if self.radio_exhausted {
+            self.status = "Random Radio found no playable tracks".to_owned();
             return;
         }
         self.radio_pending_next = true;
-        let _ = self.radio_requests.send((
-            self.radio_generation,
-            RadioCommand::Advance,
-            self.browse_path.clone(),
-        ));
-        self.status = "Finding the next radio track…".to_owned();
+        self.top_up_radio_pool();
     }
 
     fn request_metadata(&mut self, entry: &StoredEntry) {
@@ -4036,11 +4061,9 @@ impl Ui {
         if self.radio_enabled {
             self.radio_generation = self.radio_generation.wrapping_add(1);
             self.radio_pool.clear();
-            let _ = self.radio_requests.send((
-                self.radio_generation,
-                RadioCommand::Reshuffle,
-                self.browse_path.clone(),
-            ));
+            self.radio_refill_pending = false;
+            self.radio_exhausted = false;
+            self.request_radio_command(RadioCommand::Reshuffle);
         }
     }
 

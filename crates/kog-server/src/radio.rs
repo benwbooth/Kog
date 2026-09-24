@@ -98,6 +98,9 @@ struct Inner {
     root: Option<PathBuf>,
     save_path: Option<PathBuf>,
     round: Option<RadioRound>,
+    /// A playable pick has been served in this round. Incremental terminal
+    /// calls must preserve this across one-track refill requests.
+    round_live: bool,
     seed: u64,
     /// Unplayable locators remembered across reshuffles, as the desktop does.
     dead: HashSet<String>,
@@ -122,6 +125,7 @@ impl Radio {
                 root: None,
                 save_path: None,
                 round: None,
+                round_live: false,
                 seed: 0,
                 dead: HashSet::new(),
                 entries: Vec::new(),
@@ -140,6 +144,7 @@ impl Radio {
                 root: None,
                 save_path: None,
                 round: None,
+                round_live: false,
                 seed: 0,
                 dead: HashSet::new(),
                 entries: Vec::new(),
@@ -159,6 +164,7 @@ impl Radio {
                 root,
                 save_path,
                 round: None,
+                round_live: false,
                 seed: 0,
                 dead: HashSet::new(),
                 entries: Vec::new(),
@@ -186,6 +192,27 @@ impl Radio {
         library_root: Option<&Path>,
         scope: Option<&Path>,
     ) -> RadioStatus {
+        self.set_enabled_with_target(enabled, library_root, scope, WINDOW)
+    }
+
+    /// The terminal consumes one proved track at a time so its ten-track
+    /// background buffer can start playing before a whole web window is ready.
+    pub fn set_enabled_incremental(
+        &self,
+        enabled: bool,
+        library_root: Option<&Path>,
+        scope: Option<&Path>,
+    ) -> RadioStatus {
+        self.set_enabled_with_target(enabled, library_root, scope, 1)
+    }
+
+    fn set_enabled_with_target(
+        &self,
+        enabled: bool,
+        library_root: Option<&Path>,
+        scope: Option<&Path>,
+        target: usize,
+    ) -> RadioStatus {
         let mut inner = lock(&self.inner);
         Self::ensure_loaded(&mut inner, library_root);
         Self::reroot(&mut inner, scope);
@@ -194,7 +221,7 @@ impl Radio {
                 inner.enabled = true;
                 if inner.round.is_none() {
                     Self::open_round(&mut inner);
-                    Self::generate(&mut inner, WINDOW);
+                    Self::generate(&mut inner, target);
                 }
                 Self::persist_enabled(&inner, true);
             }
@@ -202,6 +229,7 @@ impl Radio {
             Self::save(&inner);
             inner.enabled = false;
             inner.round = None;
+            inner.round_live = false;
             inner.entries.clear();
             Self::persist_enabled(&inner, false);
         }
@@ -211,6 +239,24 @@ impl Radio {
     /// Start a fresh shuffle with a new seed, keeping unplayability knowledge,
     /// exactly like the desktop's reshuffle. Turns radio on if it was off.
     pub fn reshuffle(&self, library_root: Option<&Path>, scope: Option<&Path>) -> RadioStatus {
+        self.reshuffle_with_target(library_root, scope, WINDOW)
+    }
+
+    /// Start a fresh round and return its first proved track to the terminal.
+    pub fn reshuffle_incremental(
+        &self,
+        library_root: Option<&Path>,
+        scope: Option<&Path>,
+    ) -> RadioStatus {
+        self.reshuffle_with_target(library_root, scope, 1)
+    }
+
+    fn reshuffle_with_target(
+        &self,
+        library_root: Option<&Path>,
+        scope: Option<&Path>,
+        target: usize,
+    ) -> RadioStatus {
         let mut inner = lock(&self.inner);
         Self::ensure_loaded(&mut inner, library_root);
         Self::reroot(&mut inner, scope);
@@ -221,14 +267,34 @@ impl Radio {
         inner.enabled = true;
         inner.seed = seed;
         inner.round = Some(RadioRound::new(seed));
+        inner.round_live = false;
         inner.entries.clear();
         Self::persist_enabled(&inner, true);
-        Self::generate(&mut inner, WINDOW);
+        Self::generate(&mut inner, target);
         status_of(&inner)
     }
 
     /// Append the next window of the running round.
     pub fn advance(&self, library_root: Option<&Path>, scope: Option<&Path>) -> RadioAdvance {
+        self.advance_with_target(library_root, scope, WINDOW)
+    }
+
+    /// Continue the terminal's round by one proved track. The TUI asks again
+    /// in the background until its ready buffer reaches ten tracks.
+    pub fn advance_incremental(
+        &self,
+        library_root: Option<&Path>,
+        scope: Option<&Path>,
+    ) -> RadioAdvance {
+        self.advance_with_target(library_root, scope, 1)
+    }
+
+    fn advance_with_target(
+        &self,
+        library_root: Option<&Path>,
+        scope: Option<&Path>,
+        target: usize,
+    ) -> RadioAdvance {
         let mut inner = lock(&self.inner);
         Self::ensure_loaded(&mut inner, library_root);
         Self::reroot(&mut inner, scope);
@@ -242,7 +308,7 @@ impl Radio {
             Self::open_round(&mut inner);
         }
         inner.entries.clear();
-        Self::generate(&mut inner, WINDOW);
+        Self::generate(&mut inner, target);
         RadioAdvance {
             entries: inner.entries.clone(),
             exhausted: inner.entries.is_empty(),
@@ -272,6 +338,7 @@ impl Radio {
         if inner.root.as_deref() != Some(root) {
             inner.root = Some(root.to_path_buf());
             inner.round = None;
+            inner.round_live = false;
             inner.entries.clear();
         }
     }
@@ -292,6 +359,7 @@ impl Radio {
         inner.seed = initial.seed;
         inner.dead = initial.dead.iter().cloned().collect();
         inner.round = Some(RadioRound::restore(initial));
+        inner.round_live = false;
         inner.entries.clear();
     }
 
@@ -340,7 +408,6 @@ impl Radio {
         };
         let mut made = 0_usize;
         let mut empty_rounds = 0_usize;
-        let mut round_live = false;
         let mut skips = 0_usize;
         while made < target {
             match round.next_pick(&root, &ctx) {
@@ -374,7 +441,7 @@ impl Radio {
                         continue;
                     }
                     skips = 0;
-                    round_live = true;
+                    inner.round_live = true;
                     made += entries.len();
                     inner.entries.extend(entries);
                 }
@@ -387,8 +454,8 @@ impl Radio {
                     inner.seed = seed;
                     // Mirror the desktop: only a round that yielded something
                     // clears the dead proof. A fruitless round keeps it.
-                    if round_live {
-                        round_live = false;
+                    if inner.round_live {
+                        inner.round_live = false;
                         inner.dead.clear();
                     }
                     round = RadioRound::new(seed);
@@ -821,6 +888,27 @@ mod tests {
         assert!(fresh.enabled);
         assert_ne!(on.seed, fresh.seed, "a reshuffle uses a new seed");
         assert_ne!(paths(&on), paths(&fresh), "a reshuffle changes the order");
+    }
+
+    #[test]
+    fn incremental_radio_fills_and_refills_a_ten_track_buffer() {
+        let (_library, root, save) = fixture(30);
+        let radio = Radio::new(Some(root.clone()), Some(save), false);
+        let first = radio.set_enabled_incremental(true, Some(&root), None);
+        assert_eq!(first.entries.len(), 1, "the first track arrives alone");
+        let mut ready = std::collections::VecDeque::from(first.entries);
+        while ready.len() < 10 {
+            let advance = radio.advance_incremental(Some(&root), None);
+            assert!(!advance.exhausted);
+            assert_eq!(advance.entries.len(), 1);
+            ready.extend(advance.entries);
+        }
+        let first_ten: HashSet<_> = ready.iter().map(|entry| &entry.path).collect();
+        assert_eq!(first_ten.len(), 10, "the ready buffer spans ten picks");
+        ready.pop_front();
+        let advance = radio.advance_incremental(Some(&root), None);
+        ready.extend(advance.entries);
+        assert_eq!(ready.len(), 10, "one consumed track is replaced");
     }
 
     #[test]
