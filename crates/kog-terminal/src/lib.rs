@@ -1,3 +1,4 @@
+mod columns;
 mod tui;
 
 pub use tui::run as run_tui;

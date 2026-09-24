@@ -28,7 +28,7 @@ Run `nix develop --command cargo build -p kog --bin kog`, then `uv run --with py
 - [x] Queue remove, clear, reorder, sort, star, and search work with the visible selection.
 - [x] Playlist rows show decoded title, artist, and album without probing on the input thread.
 - [x] Default #, Title, Artist, and Album columns have header sorting, mouse resizing, visibility toggles, and auto fit from loaded metadata.
-- [ ] The other Qt/Web optional columns, column order, horizontal scrolling, and persisted column layouts are available.
+- [x] All 20 Qt columns can be shown, hidden, sorted, resized, reordered, and scrolled horizontally. The terminal saves its character-width layout and can import an existing Qt column order.
 - [x] Add File, Add URL, Save Current Playlist, and Add to Saved Playlist write the expected queue and database entries.
 - [x] Save Selection As and saved playlist Duplicate write the expected database entries.
 - [x] Saved playlist Add, Play, and Replace are available from its context menu.
@@ -58,7 +58,7 @@ Run `nix develop --command cargo build -p kog --bin kog`, then `uv run --with py
 
 - [x] Tests exercise text entry, clicks, drags, double clicks, menus, resize, and the playlist database on a PTY.
 - [x] A populated 120×40 terminal frame was reviewed against the running Qt and web layouts for toolbar, sidebar, striped playlist, search fields, and transport placement.
-- [ ] Cover art, optional columns, and the full Qt/Web information density have suitable terminal representations.
+- [ ] Cover art and the full Qt/Web information density have suitable terminal representations.
 
 ## Cross-frontend feature inventory
 
@@ -67,7 +67,7 @@ The Qt hamburger, playlist and file context menus, playlist header, and the web 
 | Area | Qt/Web behavior still missing or unverified in TUI |
 | --- | --- |
 | File tree | Remote server browser, file deletion, blacklist, and complete subsong fixtures. |
-| Playlist | 20 optional columns, reorder and persist columns, horizontal scroll, tag editor, and multi-select saved lists. |
+| Playlist | Tag editor and multi-select saved lists. |
 | Playback | Album metadata changes during shuffle, playback error recovery, and output device test on real hardware. |
 | Settings | Server connection, decoder and synthesizer selection, media downloading, and remaining advanced preferences. |
 | Views | Cover art, mini player, skins, and richer info inspector interaction. |

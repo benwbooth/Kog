@@ -20,6 +20,8 @@ use kog_server::radio::{Radio, RadioAdvance, RadioEntry, RadioStatus};
 use rand::Rng;
 use unicode_width::UnicodeWidthChar;
 
+use crate::columns::Columns;
+
 #[derive(Clone)]
 struct Track {
     name: String,
@@ -30,6 +32,12 @@ struct TrackMetadata {
     title: String,
     artist: String,
     album: String,
+    album_artist: String,
+    composer: String,
+    year: Option<u32>,
+    sample_rate: Option<u32>,
+    bits_per_sample: Option<u8>,
+    bitrate: Option<u32>,
     disc_number: Option<u32>,
     track_number: Option<u32>,
     duration: Option<Duration>,
@@ -67,6 +75,7 @@ enum MenuPage {
     Tracks,
     Saved,
     Columns,
+    ColumnVisibility,
 }
 
 impl MenuPage {
@@ -80,6 +89,7 @@ impl MenuPage {
             Self::Tracks => "Playlist Row",
             Self::Saved => "Saved Playlist",
             Self::Columns => "Columns",
+            Self::ColumnVisibility => "Visible Columns",
         }
     }
     fn labels(self) -> &'static [&'static str] {
@@ -92,6 +102,7 @@ impl MenuPage {
             Self::Tracks => &TRACKS_MENU,
             Self::Saved => &SAVED_MENU,
             Self::Columns => &COLUMNS_MENU,
+            Self::ColumnVisibility => &COLUMN_VISIBILITY_MENU,
         }
     }
 }
@@ -195,12 +206,12 @@ struct Ui {
     split_drag: bool,
     column_drag: Option<usize>,
     track_drag: Option<usize>,
-    show_artist: bool,
-    show_album: bool,
-    title_width_hint: Option<usize>,
-    artist_width_hint: Option<usize>,
     sort_column: Option<usize>,
     sort_ascending: bool,
+    columns: Columns,
+    context_column: Option<usize>,
+    column_viewport_width: usize,
+    starred_keys: HashSet<String>,
 }
 
 impl Ui {
@@ -236,6 +247,12 @@ impl Ui {
                         title,
                         artist: track.artist,
                         album: track.album,
+                        album_artist: track.album_artist,
+                        composer: track.composer,
+                        year: track.year,
+                        sample_rate: track.sample_rate,
+                        bits_per_sample: track.bits_per_sample,
+                        bitrate: track.bitrate,
                         disc_number: track.disc_number,
                         track_number: track.track_number,
                         duration: track.duration,
@@ -300,6 +317,14 @@ impl Ui {
         );
         let volume = settings.output_volume as f32;
         player.set_volume(volume);
+        let columns = Columns::load(&settings);
+        let starred_keys = library
+            .db()
+            .starred_entries()
+            .unwrap_or_default()
+            .iter()
+            .map(metadata_key)
+            .collect();
         let mut ui = Self {
             library,
             decoders,
@@ -370,12 +395,12 @@ impl Ui {
             split_drag: false,
             column_drag: None,
             track_drag: None,
-            show_artist: true,
-            show_album: true,
-            title_width_hint: None,
-            artist_width_hint: None,
             sort_column: None,
             sort_ascending: true,
+            columns,
+            context_column: None,
+            column_viewport_width: 40,
+            starred_keys,
         };
         ui.reload_lists();
         ui.browse(None);
@@ -404,7 +429,7 @@ impl Ui {
             order_changed |= metadata.as_ref().is_some_and(|meta| !meta.album.is_empty());
             self.metadata.insert(key, metadata);
         }
-        if order_changed {
+        if order_changed && self.shuffle_mode == ShuffleMode::Albums && self.playing.is_none() {
             self.order_tracks_changed();
         }
     }
@@ -554,6 +579,109 @@ impl Ui {
             .unwrap_or_else(|| display_title(track))
     }
 
+    fn column_value(&self, index: usize, track: &Track, id: &str) -> String {
+        let meta = self.metadata_for(track);
+        match id {
+            "index" => format!(" {:>3}", index + 1),
+            "star" => if self.starred_keys.contains(&metadata_key(&track.entry)) {
+                "★"
+            } else {
+                ""
+            }
+            .to_owned(),
+            "status" => {
+                if self.stop_after_rows.contains(&index) {
+                    "■".to_owned()
+                } else if self.playing == Some(index) {
+                    match self.player.state() {
+                        PlaybackState::Playing => "▶",
+                        PlaybackState::Paused => "Ⅱ",
+                        PlaybackState::Stopped => "",
+                    }
+                    .to_owned()
+                } else if let Some(position) = self.queue.iter().position(|queued| *queued == index)
+                {
+                    format!("⏭{}", position + 1)
+                } else {
+                    String::new()
+                }
+            }
+            "rating" | "playcount" => String::new(),
+            "title" => {
+                let queue_badge = self
+                    .queue
+                    .iter()
+                    .position(|queued| *queued == index)
+                    .map(|position| format!("⏭{} ", position + 1))
+                    .unwrap_or_default();
+                let stop_badge = if self.stop_after_rows.contains(&index) {
+                    "■ "
+                } else {
+                    ""
+                };
+                format!(
+                    "{} {queue_badge}{stop_badge}{}",
+                    if self.playing == Some(index) {
+                        "▶"
+                    } else {
+                        glyph(&track.entry)
+                    },
+                    self.title_for(track)
+                )
+            }
+            "albumartist" => meta.map_or("", |m| m.album_artist.as_str()).to_owned(),
+            "artist" => meta.map_or("", |m| m.artist.as_str()).to_owned(),
+            "composer" => meta.map_or("", |m| m.composer.as_str()).to_owned(),
+            "album" => meta.map_or("", |m| m.album.as_str()).to_owned(),
+            "length" => meta
+                .and_then(|m| m.duration)
+                .map(|d| format!("{}:{:02}", d.as_secs() / 60, d.as_secs() % 60))
+                .unwrap_or_default(),
+            "date" => meta
+                .and_then(|m| m.year)
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
+            "genre" => meta.map_or("", |m| m.genre.as_str()).to_owned(),
+            "track" => meta
+                .and_then(|m| m.track_number)
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
+            "path" => {
+                if track.entry.entry.is_empty() {
+                    track.entry.path.clone()
+                } else {
+                    format!(
+                        "{}/{}",
+                        track.entry.path.trim_end_matches('/'),
+                        track.entry.entry.trim_start_matches('/')
+                    )
+                }
+            }
+            "filename" => Path::new(if track.entry.entry.is_empty() {
+                &track.entry.path
+            } else {
+                &track.entry.entry
+            })
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+            "codec" => meta.map_or("", |m| m.codec.as_str()).to_owned(),
+            "samplerate" => meta
+                .and_then(|m| m.sample_rate)
+                .map(|v| format!("{} Hz", v))
+                .unwrap_or_default(),
+            "bitspersample" => meta
+                .and_then(|m| m.bits_per_sample)
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
+            "bitrate" => meta
+                .and_then(|m| m.bitrate)
+                .map(|v| format!("{} kbps", v))
+                .unwrap_or_default(),
+            _ => String::new(),
+        }
+    }
+
     fn show_queue(&mut self) {
         self.focus = Focus::Tracks;
     }
@@ -686,62 +814,41 @@ impl Ui {
         layout
     }
 
-    fn column_widths(&self, right_width: usize) -> (usize, usize, usize, usize) {
-        let number = 5.min(right_width / 5);
-        let min_artist = if self.show_artist { 8 } else { 0 };
-        let min_album = if self.show_album { 8 } else { 0 };
-        let available = right_width.saturating_sub(number);
-        let default_title = if self.show_artist || self.show_album {
-            right_width * 45 / 100
-        } else {
-            available
-        };
-        let title = self
-            .title_width_hint
-            .unwrap_or(default_title)
-            .max(8.min(available))
-            .min(
-                available
-                    .saturating_sub(min_artist + min_album)
-                    .max(8.min(available)),
-            );
-        let remaining = available.saturating_sub(title);
-        let artist = if self.show_artist {
-            if self.show_album {
-                self.artist_width_hint
-                    .unwrap_or(remaining / 2)
-                    .max(8.min(remaining))
-                    .min(remaining.saturating_sub(min_album).max(8.min(remaining)))
-            } else {
-                remaining
+    fn auto_fit_columns(&mut self) {
+        let widths: Vec<_> = self
+            .columns
+            .entries
+            .iter()
+            .map(|column| {
+                self.tracks
+                    .iter()
+                    .enumerate()
+                    .map(|(index, track)| cell_width(&self.column_value(index, track, column.id)))
+                    .max()
+                    .unwrap_or(0)
+                    .max(cell_width(column.label))
+                    .saturating_add(2)
+                    .max(match column.id {
+                        "title" => 24,
+                        "artist" | "album" => 12,
+                        _ => 3,
+                    })
+                    .clamp(3, 160)
+            })
+            .collect();
+        for (column, width) in self.columns.entries.iter_mut().zip(widths) {
+            if column.visible {
+                column.width = width;
             }
-        } else {
-            0
-        };
-        (number, title, artist, remaining.saturating_sub(artist))
+        }
+        self.persist_columns();
+        self.status = "Columns fitted to loaded metadata".to_owned();
     }
 
-    fn auto_fit_columns(&mut self) {
-        let title = self
-            .tracks
-            .iter()
-            .map(|track| cell_width(&self.title_for(track)))
-            .max()
-            .unwrap_or(8)
-            .max(8)
-            .min(80);
-        let artist = self
-            .tracks
-            .iter()
-            .filter_map(|track| self.metadata_for(track))
-            .map(|meta| cell_width(&meta.artist))
-            .max()
-            .unwrap_or(8)
-            .max(8)
-            .min(40);
-        self.title_width_hint = Some(title + 2);
-        self.artist_width_hint = Some(artist + 2);
-        self.status = "Columns fitted to loaded metadata".to_owned();
+    fn persist_columns(&mut self) {
+        if let Err(error) = self.columns.save() {
+            self.status = format!("Saving column layout: {error}");
+        }
     }
 
     fn activate_menu(&mut self, index: usize) {
@@ -908,10 +1015,58 @@ impl Ui {
             }
             (MenuPage::Saved, 7) => self.prune_missing_selected_list(),
             (MenuPage::Columns, 0..=2) => self.sort_tracks(index),
-            (MenuPage::Columns, 3) => self.show_artist = !self.show_artist,
-            (MenuPage::Columns, 4) => self.show_album = !self.show_album,
+            (MenuPage::Columns, 3 | 4) => {
+                let id = if index == 3 { "artist" } else { "album" };
+                if let Some(column) = self.columns.index(id) {
+                    self.toggle_column(column);
+                }
+            }
             (MenuPage::Columns, 5) => self.auto_fit_columns(),
+            (MenuPage::Columns, 6) => self.open_submenu(MenuPage::ColumnVisibility),
+            (MenuPage::Columns, 7 | 8) => {
+                if let Some(column) = self.context_column {
+                    let delta = if index == 7 { -1 } else { 1 };
+                    if let Some(target) = self.columns.move_by(column, delta) {
+                        self.context_column = Some(target);
+                        self.persist_columns();
+                        self.status = "Column moved".to_owned();
+                    }
+                }
+            }
+            (MenuPage::Columns, 9 | 10) => {
+                self.columns.scroll_by(
+                    if index == 9 { -12 } else { 12 },
+                    self.column_viewport_width,
+                );
+            }
+            (MenuPage::Columns, 11) => {
+                self.columns = Columns::default();
+                self.persist_columns();
+                self.status = "Column layout reset".to_owned();
+            }
+            (MenuPage::ColumnVisibility, index) => {
+                if let Some(id) = Columns::default()
+                    .entries
+                    .get(index)
+                    .map(|column| column.id)
+                    && let Some(column) = self.columns.index(id)
+                {
+                    self.toggle_column(column);
+                }
+            }
             _ => {}
+        }
+    }
+
+    fn toggle_column(&mut self, index: usize) {
+        if self.columns.toggle(index) {
+            let column = &self.columns.entries[index];
+            self.status = format!(
+                "{} {}",
+                column.label,
+                if column.visible { "shown" } else { "hidden" }
+            );
+            self.persist_columns();
         }
     }
 
@@ -934,6 +1089,16 @@ impl Ui {
     }
 
     fn sort_tracks(&mut self, column: usize) {
+        let id = ["title", "artist", "album"]
+            .get(column)
+            .copied()
+            .unwrap_or("title");
+        if let Some(index) = self.columns.index(id) {
+            self.sort_tracks_by_column(index);
+        }
+    }
+
+    fn sort_tracks_by_column(&mut self, column: usize) {
         self.sort_ascending = if self.sort_column == Some(column) {
             !self.sort_ascending
         } else {
@@ -941,14 +1106,16 @@ impl Ui {
         };
         self.sort_column = Some(column);
         let mut order: Vec<_> = (0..self.tracks.len()).collect();
-        order.sort_by_key(|&index| match column {
-            1 => self
-                .metadata_for(&self.tracks[index])
-                .map_or(String::new(), |m| m.artist.to_lowercase()),
-            2 => self
-                .metadata_for(&self.tracks[index])
-                .map_or(String::new(), |m| m.album.to_lowercase()),
-            _ => self.title_for(&self.tracks[index]).to_lowercase(),
+        let id = self.columns.entries[column].id;
+        order.sort_by_key(|&index| {
+            if id == "index" {
+                format!("{index:012}")
+            } else if id == "title" {
+                self.title_for(&self.tracks[index]).to_lowercase()
+            } else {
+                self.column_value(index, &self.tracks[index], id)
+                    .to_lowercase()
+            }
         });
         if !self.sort_ascending {
             order.reverse();
@@ -1385,12 +1552,20 @@ impl Ui {
         .and_then(|source| self.player.play_source(&source).map(|_| ()))
         {
             Ok(()) => {
+                let starting = self.playing.is_none();
                 if let Some(previous) = self.playing
                     && previous != index
                 {
                     self.stop_after_rows.remove(&previous);
                 }
                 self.playing = Some(index);
+                if starting && self.shuffle_mode != ShuffleMode::Off {
+                    self.order.set_shuffle_mode(
+                        self.shuffle_mode,
+                        &self.order_tracks(),
+                        self.playing,
+                    );
+                }
                 self.status = format!("Playing {}", track.name);
             }
             Err(error) => self.status = error,
@@ -1630,6 +1805,12 @@ impl Ui {
         drop(db);
         match result {
             Ok(()) => {
+                let key = metadata_key(&track.entry);
+                if starred {
+                    self.starred_keys.insert(key);
+                } else {
+                    self.starred_keys.remove(&key);
+                }
                 self.status = if starred {
                     format!("Starred {}", track.name)
                 } else {
@@ -2239,7 +2420,11 @@ impl Ui {
                     if self.menu_page == MenuPage::Main
                         || matches!(
                             self.menu_page,
-                            MenuPage::Tree | MenuPage::Tracks | MenuPage::Saved | MenuPage::Columns
+                            MenuPage::Tree
+                                | MenuPage::Tracks
+                                | MenuPage::Saved
+                                | MenuPage::Columns
+                                | MenuPage::ColumnVisibility
                         )
                     {
                         self.menu_open = false;
@@ -2364,6 +2549,14 @@ impl Ui {
             Key::Char('<') => self.previous(),
             Key::Char('R') => self.cycle_repeat(),
             Key::Char('S') => self.cycle_shuffle(),
+            Key::Char('[') if self.focus == Focus::Tracks => {
+                self.columns
+                    .scroll_by(-12, size.0.saturating_sub(layout.first + 1));
+            }
+            Key::Char(']') if self.focus == Focus::Tracks => {
+                self.columns
+                    .scroll_by(12, size.0.saturating_sub(layout.first + 1));
+            }
             Key::Char('Q') if self.focus == Focus::Tracks => self.toggle_selected_queue(),
             Key::Char('X') if self.focus == Focus::Tracks => self.toggle_selected_stop_after(),
             Key::Char('+') | Key::Char('=') => {
@@ -2393,6 +2586,9 @@ impl Ui {
 
     fn mouse(&mut self, button: u16, x: usize, y: usize, release: bool, size: (usize, usize)) {
         if release {
+            if self.column_drag.is_some() {
+                self.persist_columns();
+            }
             self.split_drag = false;
             self.column_drag = None;
             self.volume_drag = false;
@@ -2428,13 +2624,14 @@ impl Ui {
         if let Some(column) = self.column_drag
             && button & 32 != 0
         {
-            let right_width = size.0.saturating_sub(layout.first + 1);
-            let (number, title, _, _) = self.column_widths(right_width);
-            let relative = x.saturating_sub(layout.first + 1);
-            if column == 1 {
-                self.title_width_hint = Some(relative.saturating_sub(number));
-            } else {
-                self.artist_width_hint = Some(relative.saturating_sub(number + title));
+            let start = self
+                .columns
+                .positions()
+                .find(|(index, ..)| *index == column)
+                .map(|(_, start, _)| start);
+            if let Some(start) = start {
+                let relative = x.saturating_sub(layout.first + 1) + self.columns.scroll;
+                self.columns.entries[column].width = relative.saturating_sub(start).clamp(3, 160);
             }
             return;
         }
@@ -2455,6 +2652,13 @@ impl Ui {
             return;
         }
         if (button & 0b1100_0000) == 64 {
+            if button & 4 != 0 && x >= layout.first {
+                self.columns.scroll_by(
+                    if button & 1 == 0 { -8 } else { 8 },
+                    size.0.saturating_sub(layout.first + 1),
+                );
+                return;
+            }
             self.focus = if !layout.show_sidebar {
                 self.focus
             } else if x < layout.first {
@@ -2538,6 +2742,12 @@ impl Ui {
                     self.open_context(MenuPage::Saved, x, y, size);
                 }
             } else if x >= layout.first && y == 1 {
+                let relative = x.saturating_sub(layout.first + 1) + self.columns.scroll;
+                self.context_column = self
+                    .columns
+                    .positions()
+                    .find(|(_, start, width)| (*start..start + width).contains(&relative))
+                    .map(|(index, _, _)| index);
                 self.open_context(MenuPage::Columns, x, y, size);
             } else if x >= layout.first && y >= 2 && y < layout.footer_top {
                 self.focus = Focus::Tracks;
@@ -2810,18 +3020,15 @@ impl Ui {
             return;
         }
         if y == 1 && x >= layout.first {
-            let right_width = size.0.saturating_sub(layout.first + 1);
-            let (number_width, title_width, artist_width, _) = self.column_widths(right_width);
-            let relative = x.saturating_sub(layout.first + 1);
-            let boundary = number_width + title_width;
-            let artist_boundary = boundary + artist_width;
-            let dragging_title = (boundary.saturating_sub(1)..=boundary).contains(&relative)
-                && (self.show_artist || self.show_album);
-            let dragging_artist = self.show_artist
-                && self.show_album
-                && (artist_boundary.saturating_sub(1)..=artist_boundary).contains(&relative);
-            if dragging_title || dragging_artist {
-                let column = if dragging_artist { 2 } else { 1 };
+            let relative = x.saturating_sub(layout.first + 1) + self.columns.scroll;
+            let boundary_column = self
+                .columns
+                .positions()
+                .find(|(_, start, width)| {
+                    ((start + width).saturating_sub(1)..=start + width).contains(&relative)
+                })
+                .map(|(column, _, _)| column);
+            if let Some(column) = boundary_column {
                 let now = Instant::now();
                 let double = self.last_click.is_some_and(|(when, pane, previous)| {
                     pane == 3
@@ -2836,12 +3043,13 @@ impl Ui {
                 }
                 return;
             }
-            if relative >= number_width && relative < number_width + title_width {
-                self.sort_tracks(0);
-            } else if artist_width > 0 && relative < number_width + title_width + artist_width {
-                self.sort_tracks(1);
-            } else if self.show_album {
-                self.sort_tracks(2);
+            let clicked_column = self
+                .columns
+                .positions()
+                .find(|(_, start, width)| (*start..start + width).contains(&relative))
+                .map(|(column, _, _)| column);
+            if let Some(column) = clicked_column {
+                self.sort_tracks_by_column(column);
             }
             return;
         }
@@ -2852,6 +3060,16 @@ impl Ui {
                 return;
             };
             self.select_track(index, button & 4 != 0, button & 16 != 0);
+            let relative = x.saturating_sub(layout.first + 1) + self.columns.scroll;
+            let starred_cell = self
+                .columns
+                .positions()
+                .find(|(_, start, width)| (*start..start + width).contains(&relative))
+                .is_some_and(|(column, _, _)| self.columns.entries[column].id == "star");
+            if starred_cell {
+                self.toggle_star();
+                return;
+            }
             self.track_drag = (button & 20 == 0).then_some(index);
             let now = Instant::now();
             let double = self.last_click.is_some_and(|(when, pane, row)| {
@@ -2929,7 +3147,7 @@ impl Ui {
         let mut screen = String::from("\x1b[H\x1b[?25l");
         paint(&mut screen, 1, 1, "", width, Surface::Toolbar, false);
         paint(&mut screen, 1, 2, "⚙", 2, Surface::Accent, true);
-        paint(&mut screen, 1, 6, "☰", 2, Surface::Toolbar, false);
+        paint(&mut screen, 1, 6, "≡", 2, Surface::Toolbar, false);
         paint(&mut screen, 1, 10, "▤", 2, Surface::Toolbar, false);
         let search_x = (width / 2).saturating_sub(17).max(14);
         let search_width = width.saturating_sub(search_x + 7).min(36);
@@ -3136,14 +3354,10 @@ impl Ui {
 
         let right_x = layout.first + 2;
         let right_width = width.saturating_sub(layout.first + 1);
+        self.column_viewport_width = right_width;
+        self.columns.scroll_by(0, right_width);
         let show_tree = !layout.show_sidebar && self.focus == Focus::Library;
         let show_lists = !layout.show_sidebar && self.focus == Focus::Playlists;
-        let queue_positions: HashMap<usize, usize> = self
-            .queue
-            .iter()
-            .enumerate()
-            .map(|(position, &index)| (index, position + 1))
-            .collect();
         if show_lists {
             paint(
                 &mut screen,
@@ -3200,8 +3414,6 @@ impl Ui {
                 paint(&mut screen, y + 1, 1, &label, width, surface, false);
             }
         } else {
-            let (number_width, title_width, artist_width, album_width) =
-                self.column_widths(right_width);
             paint(
                 &mut screen,
                 2,
@@ -3211,42 +3423,16 @@ impl Ui {
                 Surface::Header,
                 true,
             );
-            paint(
-                &mut screen,
-                2,
-                right_x,
-                "#",
-                number_width.saturating_sub(1),
-                Surface::Header,
-                true,
-            );
-            paint(
-                &mut screen,
-                2,
-                right_x + number_width,
-                "Title",
-                title_width.saturating_sub(1),
-                Surface::Header,
-                true,
-            );
-            if artist_width > 0 {
-                paint(
+            for (column_index, start, column_width) in self.columns.positions() {
+                paint_playlist_cell(
                     &mut screen,
                     2,
-                    right_x + number_width + title_width,
-                    "Artist",
-                    artist_width.saturating_sub(1),
-                    Surface::Header,
-                    true,
-                );
-            }
-            if album_width > 0 {
-                paint(
-                    &mut screen,
-                    2,
-                    right_x + number_width + title_width + artist_width,
-                    "Album",
-                    album_width,
+                    right_x,
+                    right_width,
+                    start,
+                    column_width,
+                    self.columns.scroll,
+                    self.columns.entries[column_index].label,
                     Surface::Header,
                     true,
                 );
@@ -3266,66 +3452,21 @@ impl Ui {
                 if let Some((index, track)) =
                     index.and_then(|index| self.tracks.get(index).map(|track| (index, track)))
                 {
-                    let number = format!(" {:>3}", index + 1);
-                    let queue_badge = queue_positions
-                        .get(&index)
-                        .map(|position| format!("⏭{position} "))
-                        .unwrap_or_default();
-                    let stop_badge = if self.stop_after_rows.contains(&index) {
-                        "■ "
-                    } else {
-                        ""
-                    };
-                    let title = format!(
-                        "{} {queue_badge}{stop_badge}{}",
-                        if self.playing == Some(index) {
-                            "▶"
-                        } else {
-                            glyph(&track.entry)
-                        },
-                        self.title_for(track)
-                    );
-                    paint(
-                        &mut screen,
-                        y + 1,
-                        right_x,
-                        &number,
-                        number_width.saturating_sub(1),
-                        surface,
-                        false,
-                    );
-                    paint(
-                        &mut screen,
-                        y + 1,
-                        right_x + number_width,
-                        &title,
-                        title_width.saturating_sub(1),
-                        surface,
-                        false,
-                    );
-                    if let Some(metadata) = self.metadata_for(track) {
-                        if artist_width > 0 {
-                            paint(
-                                &mut screen,
-                                y + 1,
-                                right_x + number_width + title_width,
-                                &metadata.artist,
-                                artist_width.saturating_sub(1),
-                                surface,
-                                false,
-                            );
-                        }
-                        if album_width > 0 {
-                            paint(
-                                &mut screen,
-                                y + 1,
-                                right_x + number_width + title_width + artist_width,
-                                &metadata.album,
-                                album_width,
-                                surface,
-                                false,
-                            );
-                        }
+                    for (column_index, start, column_width) in self.columns.positions() {
+                        let value =
+                            self.column_value(index, track, self.columns.entries[column_index].id);
+                        paint_playlist_cell(
+                            &mut screen,
+                            y + 1,
+                            right_x,
+                            right_width,
+                            start,
+                            column_width,
+                            self.columns.scroll,
+                            &value,
+                            surface,
+                            false,
+                        );
                     }
                 }
             }
@@ -4046,13 +4187,41 @@ const SAVED_MENU: [&str; 8] = [
     "Export as M3U…",
     "Remove Missing Files",
 ];
-const COLUMNS_MENU: [&str; 6] = [
+const COLUMNS_MENU: [&str; 12] = [
     "Sort by Title",
     "Sort by Artist",
     "Sort by Album",
     "Show/Hide Artist",
     "Show/Hide Album",
     "Auto Fit Columns",
+    "Show/Hide Columns ▶",
+    "Move This Column Left",
+    "Move This Column Right",
+    "Scroll Columns Left",
+    "Scroll Columns Right",
+    "Reset Column Layout",
+];
+const COLUMN_VISIBILITY_MENU: [&str; 20] = [
+    "Toggle #",
+    "Toggle Star",
+    "Toggle Status",
+    "Toggle Rating",
+    "Toggle Title",
+    "Toggle Album Artist",
+    "Toggle Artist",
+    "Toggle Composer",
+    "Toggle Album",
+    "Toggle Length",
+    "Toggle Year",
+    "Toggle Genre",
+    "Toggle Track Number",
+    "Toggle Plays",
+    "Toggle Path",
+    "Toggle Filename",
+    "Toggle Codec",
+    "Toggle Sample Rate",
+    "Toggle Bits",
+    "Toggle Bitrate",
 ];
 
 struct Layout {
@@ -4158,6 +4327,60 @@ fn truncate(text: &str, width: usize) -> String {
     }
     out.push_str(&" ".repeat(width.saturating_sub(used)));
     out
+}
+
+fn cell_slice(text: &str, skip: usize, width: usize) -> String {
+    let mut out = String::new();
+    let mut position = 0;
+    for character in text.chars() {
+        let cells = character.width().unwrap_or(0);
+        if position >= skip + width {
+            break;
+        }
+        if position + cells > skip && position < skip + width {
+            if position < skip || position + cells > skip + width {
+                out.push_str(
+                    &" ".repeat((position + cells).min(skip + width) - position.max(skip)),
+                );
+            } else {
+                out.push(character);
+            }
+        }
+        position += cells;
+    }
+    out
+}
+
+fn paint_playlist_cell(
+    out: &mut String,
+    row: usize,
+    viewport_x: usize,
+    viewport_width: usize,
+    column_start: usize,
+    column_width: usize,
+    scroll: usize,
+    value: &str,
+    surface: Surface,
+    bold: bool,
+) {
+    let visible_left = column_start.saturating_sub(scroll);
+    let clipped_left = scroll.saturating_sub(column_start);
+    if visible_left >= viewport_width || clipped_left >= column_width {
+        return;
+    }
+    let width = column_width
+        .saturating_sub(clipped_left)
+        .min(viewport_width - visible_left);
+    let cell = truncate(value, column_width.saturating_sub(1));
+    paint(
+        out,
+        row,
+        viewport_x + visible_left,
+        &cell_slice(&cell, clipped_left, width),
+        width,
+        surface,
+        bold,
+    );
 }
 
 #[derive(Clone, Copy)]

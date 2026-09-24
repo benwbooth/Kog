@@ -119,6 +119,25 @@ try:
     assert screen.display[1].find('Artist')>artist_at,screen.display[1]
     click(95,1,2);click(90,7)
     assert 'Columns fitted' in screen.display[-1],screen.display[-1]
+    click(95,1,2);send(b'\x1b[B'*6+b'\r')
+    assert 'Visible Columns' in '\n'.join(screen.display)
+    send(b'\x1b[B'*11+b'\r')
+    assert 'Genre shown' in screen.display[-1],screen.display[-1]
+    click(95,1,2);send(b'\x1b[B'*6+b'\r')
+    send(b'\x1b[B\r')
+    assert '★ shown' in screen.display[-1],screen.display[-1]
+    star_at=screen.display[1].find('★')
+    assert star_at>0,screen.display[1]
+    click(star_at,2);wait_for('Starred ')
+    click(star_at,2);wait_for('Unstarred ')
+    column_layout=list(Path(base).rglob('tui-column-layout'))
+    assert len(column_layout)==1,column_layout
+    assert any(part.startswith('genre,') and part.endswith(',1') for part in column_layout[0].read_text().split(';'))
+    click(60,2)
+    send(']'*8)
+    assert 'Genre' in screen.display[1],screen.display[1]
+    send('['*8)
+    assert 'Title' in screen.display[1],screen.display[1]
     click(60,2);click(60,5,4);send(b'\x1b[3~')
     assert 'Removed 4 track(s)' in screen.display[-1],screen.display[-1]
     saved_row=row('PTY Saved');click(10,saved_row);click(10,saved_row)
@@ -344,6 +363,11 @@ try:
     for mode in ('one','album','all','off'):
         send('R')
         assert f'Repeat: {mode}' in screen.display[-1],screen.display[-1]
+    artist_at=screen.display[1].find('Artist')
+    assert artist_at>0,screen.display[1]
+    click(artist_at+2,1,2);send(b'\x1b[B'*7+b'\r')
+    assert 'Column moved' in screen.display[-1],screen.display[-1]
+    assert screen.display[1].find('Artist')<screen.display[1].find('Title'),screen.display[1]
     print('search, tree/archive navigation, divider/column drag, volume, radio/queue/stop-after, playback/seek/completion/order, saved-list CRUD/export/prune, selection/reorder/sort, menus/dialogs, equalizer/visualizer, narrow wheel/keyboard navigation, resize: PASS')
     send(b'\x1b',.3);send('q')
     p.wait(timeout=5)
