@@ -35,6 +35,15 @@ with tempfile.TemporaryDirectory(prefix="kog-tui-interop-") as root:
         sound.writeframes(b"\0\0" * 80000)
     with zipfile.ZipFile(album / "pack.zip", "w") as archive:
         archive.write(wav, "inner/sound.wav")
+    header = bytearray(128)
+    header[:5] = b"NESM\x1a"
+    header[5] = 1
+    header[6] = 3
+    header[7] = 1
+    header[8:10] = (0x8000).to_bytes(2, "little")
+    header[10:12] = (0x8000).to_bytes(2, "little")
+    header[12:14] = (0x8001).to_bytes(2, "little")
+    (music / "game.nsf").write_bytes(header + b"\x60\x60")
 
     env = os.environ.copy()
     for key, folder in (
@@ -167,7 +176,32 @@ with tempfile.TemporaryDirectory(prefix="kog-tui-interop-") as root:
             click(10, 3)
             send("sound", 0.6)
             wait_for("remote matches for sound", 20)
-            print("real headless server remote archive browse, stream, and search: PASS")
+            send(b"\x1b", 0.3)
+            wait_for("Connected to " + address)
+            click(10, row("game.nsf"))
+            send("a")
+            wait_for("Added 3 track(s)", 20)
+            playlist = "\n".join(line.split("│", 1)[-1] for line in screen.display[2:15])
+            assert all(f"game [{number}]" in playlist for number in (1, 2, 3)), playlist
+            click(5, 0)
+            click(10, 6)
+            send("Remote Interop\r")
+            wait_for("Saved 4 tracks")
+            click(5, 0)
+            click(10, 9)
+            wait_for("Playlist cleared")
+            click(10, row("Remote Interop"))
+            click(10, row("Remote Interop"))
+            wait_for("Added 4 tracks")
+            reloaded = "\n".join(line.split("│", 1)[-1] for line in screen.display[2:15])
+            assert "sound" in reloaded and all(f"game [{number}]" in reloaded for number in (1, 2, 3)), reloaded
+            send(f"\x1b[<2;11;{row('Remote Interop')+1}M\x1b[<2;11;{row('Remote Interop')+1}m")
+            send(b"\x1b[B" * 6 + b"\r")
+            send(b"\r")
+            wait_for("Exported 4 tracks")
+            exported = (music / "Remote Interop.m3u").read_text()
+            assert exported.count("/api/stream?") == 4, exported
+            print("real headless server archive browse/stream/search, NSF expansion, saved playlist reload and M3U export: PASS")
         finally:
             if tui is not None and tui.poll() is None:
                 tui.terminate()

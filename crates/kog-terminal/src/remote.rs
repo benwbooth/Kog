@@ -42,7 +42,7 @@ pub struct RemoteDirectory {
     pub path: String,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RemoteFile {
     pub name: String,
     pub path: String,
@@ -166,6 +166,63 @@ impl RemoteSettings {
             .map_err(|error| format!("Unexpected response from server: {error}"))
     }
 
+    /// Ask the server to turn multi-song locators into distinct playable
+    /// entries. The HTTP route uses the same expansion rules as Qt and Web.
+    pub fn expand_files(&self, files: &[RemoteFile]) -> Result<Vec<RemoteFile>, String> {
+        #[derive(Deserialize)]
+        struct Expanded {
+            tracks: Vec<Vec<RemoteFile>>,
+        }
+        let mut result = Vec::new();
+        for chunk in files.chunks(200) {
+            let url = self.endpoint("/api/expand")?;
+            let agent: ureq::Agent = ureq::Agent::config_builder()
+                .timeout_global(Some(Duration::from_secs(30)))
+                .build()
+                .into();
+            let mut request = agent.post(url.as_str());
+            match self.auth_mode.as_str() {
+                "token" if !self.token.is_empty() => {
+                    request = request.header("Authorization", format!("Bearer {}", self.token));
+                }
+                "basic" if !self.username.is_empty() => {
+                    request = request.header(
+                        "Authorization",
+                        format!(
+                            "Basic {}",
+                            base64::engine::general_purpose::STANDARD
+                                .encode(format!("{}:{}", self.username, self.password))
+                        ),
+                    );
+                }
+                _ => {}
+            }
+            let response = match request.send_json(chunk) {
+                Ok(response) => response,
+                Err(ureq::Error::StatusCode(404)) => {
+                    // Older Kog servers predate /api/expand. Ordinary tracks
+                    // still play; only multi-song splitting is unavailable.
+                    result.extend_from_slice(chunk);
+                    continue;
+                }
+                Err(error) => return Err(format!("Expanding remote tracks: {error}")),
+            };
+            let expanded: Expanded = serde_json::from_reader(response.into_body().as_reader())
+                .map_err(|error| format!("Unexpected expansion response: {error}"))?;
+            if expanded.tracks.len() != chunk.len() {
+                return Err("Server returned an incomplete track expansion".to_owned());
+            }
+            for (original, tracks) in chunk.iter().zip(expanded.tracks) {
+                if tracks.is_empty() {
+                    result.push(original.clone());
+                } else {
+                    result.extend(tracks);
+                }
+            }
+        }
+        Ok(result)
+    }
+
     pub fn search(
         &self,
         query: &str,
@@ -243,7 +300,21 @@ impl RemoteSettings {
                 return Err("Remote folder contains too many entries".to_owned());
             }
         }
-        Ok(files)
+        self.expand_files(&files)
+    }
+}
+
+impl RemoteFile {
+    pub fn from_stream_url(name: String, stream_url: &str) -> Option<Self> {
+        let url = Url::parse(stream_url).ok()?;
+        let pairs: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
+        Some(Self {
+            name,
+            path: pairs.get("path")?.clone(),
+            kind: pairs.get("kind")?.clone(),
+            entry: pairs.get("entry").cloned().unwrap_or_default(),
+            fragment: pairs.get("fragment").cloned(),
+        })
     }
 }
 
@@ -273,5 +344,26 @@ mod tests {
         assert_eq!(pairs["entry"], "inner/song.mid");
         assert_eq!(pairs["fragment"], "track 2");
         assert_eq!(pairs["token"], "a b/c");
+    }
+
+    #[test]
+    fn stream_url_round_trips_source_for_expansion() {
+        let settings = RemoteSettings {
+            server_url: "https://example.test".to_owned(),
+            token: "a b".to_owned(),
+            ..RemoteSettings::default()
+        };
+        let file = RemoteFile {
+            name: "game.nsf".to_owned(),
+            path: "/music/game.nsf".to_owned(),
+            kind: "local".to_owned(),
+            entry: String::new(),
+            fragment: None,
+        };
+        let url = settings.stream_url(&file).unwrap();
+        let recovered = RemoteFile::from_stream_url(file.name.clone(), &url).unwrap();
+        assert_eq!(recovered.path, file.path);
+        assert_eq!(recovered.kind, file.kind);
+        assert_eq!(recovered.name, file.name);
     }
 }

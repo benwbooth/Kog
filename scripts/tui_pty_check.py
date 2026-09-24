@@ -61,6 +61,16 @@ class RemoteHandler(http.server.BaseHTTPRequestHandler):
         elif url.path=='/api/library/search':
             self.respond(200,{'results':[file] if 'remote' in query.get('q',[''])[0] else [],'generation':1,'done':True})
         else:self.respond(404,{'error':'unknown endpoint'})
+    def do_POST(self):
+        url=urllib.parse.urlsplit(self.path)
+        remote_requests.append((url.path,{},self.headers.get('Authorization')))
+        if self.headers.get('Authorization')!='Bearer PTY remote token':
+            self.respond(401,{'error':'invalid token'});return
+        if url.path!='/api/expand':
+            self.respond(404,{'error':'unknown endpoint'});return
+        body=self.rfile.read(int(self.headers.get('Content-Length','0')))
+        files=json.loads(body)
+        self.respond(200,{'tracks':[[file] for file in files]})
 remote_server=http.server.ThreadingHTTPServer(('127.0.0.1',0),RemoteHandler)
 remote_server.daemon_threads=True
 threading.Thread(target=remote_server.serve_forever,daemon=True).start()
@@ -258,7 +268,11 @@ try:
     click(5,0);click(10,2);send(os.path.join(music,'album','sub','c.wav')+'\r',.3)
     wait_for('Added c.wav')
     click(5,0);click(10,3);send('https://example.invalid/track.mp3\r',.3)
-    wait_for('Added track.mp3')
+    # A playing queue can advance while the URL is added and replace the
+    # transient status with a decoder error. Check the durable queue row.
+    click(50,0);send('track.mp3',.3)
+    assert any('☁ track' in line for line in screen.display[2:35]),screen.display[:12]
+    send(b'\x1b',.3)
     click(5,0);click(10,13)
     assert '╭─ Preferences' in screen.display[1],screen.display[:18]
     click(10,5);send(b'\x7f'*4+'Rock\r'.encode(),.3)
@@ -576,6 +590,7 @@ try:
     remote_config=list(Path(base).rglob('tui-remote-server.json'))
     assert len(remote_config)==1 and os.stat(remote_config[0]).st_mode & 0o777==0o600
     assert any(path=='/api/library' and auth=='Bearer PTY remote token' for path,_,auth in remote_requests)
+    assert any(path=='/api/expand' and auth=='Bearer PTY remote token' for path,_,auth in remote_requests)
     click(5,0);click(10,13);click(10,13)
     wait_for('Opening files: clearAndPlay')
     click(10,row('art.wav'));click(10,row('art.wav'))
@@ -632,6 +647,21 @@ try:
     wait_for('Supported Formats')
     assert '.m3u' in '\n'.join(screen.display),screen.display[:20]
     send(b'\x1b',.3)
+    click(5,0);click(10,13);click(10,15)
+    wait_for('Read CUE sheets in folders: off')
+    click(5,0);click(10,13);click(10,16)
+    wait_for('Read M3U/PLS in folders: off')
+    assert next(Path(base).rglob('read-cue-sheets-in-folders')).read_text()=='false'
+    assert next(Path(base).rglob('read-playlists-in-folders')).read_text()=='false'
+    fake_rom_archive=os.path.join(base,'incomplete-roms.zip')
+    with zipfile.ZipFile(fake_rom_archive,'w') as archive:
+        archive.writestr('nested/control.rom',b'not a real ROM')
+        archive.writestr('nested/pcm.rom',b'not a real ROM')
+    for y in (8,9):
+        click(5,0);click(10,13);click(10,14);click(10,y)
+        send(fake_rom_archive+'\r',.3)
+        wait_for('Incomplete ROM set',10)
+    assert not list(Path(base).rglob('control.rom'))
     print('search, local/remote tree/archive navigation/trash/blacklist/group selection, divider/column drag/visibility/reorder, volume, radio/blacklist/queue/stop-after, playback/seek/completion/order, saved-list CRUD/export/prune/multi-selection, tag fields/artwork/playback resume, selection/reorder/sort, menus/dialogs, equalizer/visualizer, narrow wheel/keyboard navigation, resize: PASS')
     send(b'\x1b',.3);send('q')
     p.wait(timeout=5)

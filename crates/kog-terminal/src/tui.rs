@@ -25,6 +25,7 @@ use unicode_width::UnicodeWidthChar;
 
 use crate::columns::Columns;
 use crate::remote::{RemoteFile, RemoteListing, RemoteSettings};
+use crate::rom_import::{RomKind, import_rom_archive};
 use crate::tag_editor::{parse_edits, snapshot_json, write_tags};
 
 #[derive(Clone)]
@@ -167,6 +168,8 @@ enum PromptKind {
     SoundFont,
     Sc55Roms,
     Mt32Roms,
+    Sc55Archive,
+    Mt32Archive,
 }
 
 enum RadioCommand {
@@ -196,11 +199,17 @@ enum TagResponse {
     Saved(Vec<PathBuf>, Option<String>),
 }
 
+struct RomImportResult {
+    kind: RomKind,
+    result: Result<(PathBuf, usize, Vec<String>), String>,
+}
+
 enum RemoteCommand {
     Root(u64, RemoteSettings, Option<String>),
     Expand(u64, RemoteSettings, PathBuf),
     Collect(u64, u64, RemoteSettings, PathBuf),
     Search(u64, u64, RemoteSettings, String),
+    AddTracks(u64, u64, RemoteSettings, Vec<RemoteFile>, bool),
 }
 
 enum RemoteResponse {
@@ -214,6 +223,13 @@ enum RemoteResponse {
         Result<Vec<RemoteFile>, String>,
     ),
     Search(u64, u64, RemoteSettings, Result<Vec<RemoteFile>, String>),
+    AddTracks(
+        u64,
+        u64,
+        RemoteSettings,
+        bool,
+        Result<Vec<RemoteFile>, String>,
+    ),
 }
 
 struct Ui {
@@ -280,6 +296,8 @@ struct Ui {
     tag_session: Option<TagSession>,
     tag_busy: bool,
     tag_resume: Option<(usize, Duration, PlaybackState)>,
+    rom_import_requests: Sender<(RomKind, PathBuf)>,
+    rom_import_results: Receiver<RomImportResult>,
     remote_settings: RemoteSettings,
     remote_connection: Option<RemoteSettings>,
     remote_active: bool,
@@ -376,7 +394,14 @@ impl Ui {
         std::thread::spawn(move || {
             let decoders = DecoderRegistry::new(AppSettings::load().decoder_settings());
             while let Ok((generation, path)) = pending_folders.recv() {
-                let result = collect_folder(&folder_library, &decoders, path.clone());
+                let settings = AppSettings::load();
+                let result = collect_folder(
+                    &folder_library,
+                    &decoders,
+                    path.clone(),
+                    settings.read_cue_sheets_in_folders,
+                    settings.read_playlists_in_folders,
+                );
                 if completed_folders.send((generation, path, result)).is_err() {
                     break;
                 }
@@ -413,6 +438,35 @@ impl Ui {
                 }
             }
         });
+        let (rom_import_requests, rom_import_jobs) = mpsc::channel::<(RomKind, PathBuf)>();
+        let (rom_import_done, rom_import_results) = mpsc::channel::<RomImportResult>();
+        std::thread::spawn(move || {
+            while let Ok((kind, archive)) = rom_import_jobs.recv() {
+                let result = import_rom_archive(&archive, kind).and_then(|imported| {
+                    let validation = match kind {
+                        RomKind::Sc55 => {
+                            kog_audio::sc55::validate_rom_directory(&imported.directory)
+                                .map(|model| format!("{model:?}"))
+                        }
+                        RomKind::Mt32 => {
+                            kog_audio::mt32::validate_rom_directory(&imported.directory)
+                                .map(|model| format!("{model:?}"))
+                        }
+                    };
+                    if let Err(error) = validation {
+                        let _ = std::fs::remove_dir_all(&imported.directory);
+                        return Err(format!("Incomplete ROM set: {error}"));
+                    }
+                    Ok((imported.directory, imported.file_count, imported.warnings))
+                });
+                if rom_import_done
+                    .send(RomImportResult { kind, result })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
         let (remote_requests, remote_jobs) = mpsc::channel::<RemoteCommand>();
         let (remote_done, remote_results) = mpsc::channel::<RemoteResponse>();
         let remote_search_generation = Arc::new(AtomicU64::new(0));
@@ -443,6 +497,22 @@ impl Ui {
                             worker_search_generation.load(Ordering::Relaxed) != search_generation
                         });
                         RemoteResponse::Search(generation, search_generation, settings, result)
+                    }
+                    RemoteCommand::AddTracks(
+                        generation,
+                        folder_generation,
+                        settings,
+                        files,
+                        play,
+                    ) => {
+                        let result = settings.expand_files(&files);
+                        RemoteResponse::AddTracks(
+                            generation,
+                            folder_generation,
+                            settings,
+                            play,
+                            result,
+                        )
                     }
                 };
                 if remote_done.send(response).is_err() {
@@ -563,6 +633,8 @@ impl Ui {
             tag_session: None,
             tag_busy: false,
             tag_resume: None,
+            rom_import_requests,
+            rom_import_results,
             remote_settings: RemoteSettings::load(),
             remote_connection: None,
             remote_active: false,
@@ -1179,6 +1251,31 @@ impl Ui {
                 }
             }
             (MenuPage::Preferences, 12) => self.open_submenu(MenuPage::Synthesis),
+            (MenuPage::Preferences, 13) => {
+                let enabled = !AppSettings::load().read_cue_sheets_in_folders;
+                match AppSettings::save_read_cue_sheets_in_folders(enabled) {
+                    Ok(()) => {
+                        self.status = format!(
+                            "Read CUE sheets in folders: {}",
+                            if enabled { "on" } else { "off" }
+                        )
+                    }
+                    Err(error) => self.status = error,
+                }
+            }
+            (MenuPage::Preferences, 14) => {
+                let enabled = !AppSettings::load().read_playlists_in_folders;
+                match AppSettings::save_read_playlists_in_folders(enabled) {
+                    Ok(()) => {
+                        self.library.set_read_playlists_in_folders(enabled);
+                        self.status = format!(
+                            "Read M3U/PLS in folders: {}",
+                            if enabled { "on" } else { "off" }
+                        );
+                    }
+                    Err(error) => self.status = error,
+                }
+            }
             (MenuPage::Synthesis, 0) => {
                 let next = match self.decoder_settings.midi_engine() {
                     MidiEngine::RustySynth => MidiEngine::Opl3Windows,
@@ -1237,6 +1334,8 @@ impl Ui {
                     if self.decoder_settings.mt32_gm_program_mapping() { "on" } else { "off" }
                 ));
             }
+            (MenuPage::Synthesis, 6) => self.begin_prompt(PromptKind::Sc55Archive, String::new()),
+            (MenuPage::Synthesis, 7) => self.begin_prompt(PromptKind::Mt32Archive, String::new()),
             (MenuPage::Tree, 0) => self.add_selected(false),
             (MenuPage::Tree, 1) => self.add_selected(true),
             (MenuPage::Tree, 2) => self.open_selected(),
@@ -1948,6 +2047,41 @@ impl Ui {
                         Err(error) => self.status = error,
                     }
                 }
+                RemoteResponse::AddTracks(
+                    generation,
+                    folder_generation,
+                    settings,
+                    play,
+                    result,
+                ) => {
+                    if generation != self.remote_generation
+                        || folder_generation != self.folder_generation
+                    {
+                        continue;
+                    }
+                    match result.and_then(|files| {
+                        files
+                            .into_iter()
+                            .map(|file| remote_track(&settings, file))
+                            .collect::<Result<Vec<_>, _>>()
+                    }) {
+                        Ok(tracks) => {
+                            let count = tracks.len();
+                            let first = self.tracks.len();
+                            self.tracks.extend(tracks);
+                            self.order_tracks_changed();
+                            if count > 0 {
+                                self.selected[2] = first;
+                                self.select_track(first, false, false);
+                                self.status = format!("Added {count} track(s)");
+                                if play {
+                                    self.play_selected();
+                                }
+                            }
+                        }
+                        Err(error) => self.status = error,
+                    }
+                }
             }
         }
     }
@@ -2256,6 +2390,10 @@ impl Ui {
     }
 
     fn add_selected(&mut self, play: bool) {
+        self.add_selected_with_remote_play(play, play);
+    }
+
+    fn add_selected_with_remote_play(&mut self, play: bool, play_remote: bool) {
         let items = self.selected_tree_items();
         if items.is_empty() {
             return;
@@ -2273,12 +2411,21 @@ impl Ui {
         }
         let first = self.tracks.len();
         let mut folders = Vec::new();
+        let mut remote_files = Vec::new();
         let root = self.library.root();
         for item in items {
             match item {
                 Item::Track(track) => {
-                    self.tracks
-                        .extend(expand_track(&self.decoders, root.as_deref(), track))
+                    if track.entry.kind == "remote" {
+                        if let Some(file) =
+                            RemoteFile::from_stream_url(track.name, &track.entry.path)
+                        {
+                            remote_files.push(file);
+                        }
+                    } else {
+                        self.tracks
+                            .extend(expand_track(&self.decoders, root.as_deref(), track));
+                    }
                 }
                 Item::Directory(_, path) => {
                     self.enqueue_folder(path.clone());
@@ -2294,10 +2441,33 @@ impl Ui {
             self.status = format!("Added {added} track(s)");
         }
         if play && added == 0 {
-            self.folder_play_pending.extend(folders);
+            if remote_files.is_empty() {
+                self.folder_play_pending.extend(folders);
+            }
         }
         if play && added > 0 {
             self.play_selected();
+        }
+        if !remote_files.is_empty() {
+            let Some(settings) = self.remote_connection.clone() else {
+                self.status = "Connect to a server first".to_owned();
+                return;
+            };
+            if self
+                .remote_requests
+                .send(RemoteCommand::AddTracks(
+                    self.remote_generation,
+                    self.folder_generation,
+                    settings,
+                    remote_files,
+                    play_remote && added == 0,
+                ))
+                .is_ok()
+            {
+                self.status = "Expanding remote tracks…".to_owned();
+            } else {
+                self.status = "Remote browser worker is unavailable".to_owned();
+            }
         }
     }
 
@@ -2329,7 +2499,7 @@ impl Ui {
                         Item::Track(_) => None,
                     })
                     .collect();
-                self.add_selected(false);
+                self.add_selected_with_remote_play(false, true);
                 if first < self.tracks.len() {
                     self.selected[2] = first;
                     self.play_selected();
@@ -3606,6 +3776,60 @@ impl Ui {
                     }
                     Err(error) => self.status = error,
                 }
+            }
+            PromptKind::Sc55Archive | PromptKind::Mt32Archive => {
+                let kind = if kind == PromptKind::Sc55Archive {
+                    RomKind::Sc55
+                } else {
+                    RomKind::Mt32
+                };
+                if self
+                    .rom_import_requests
+                    .send((kind, PathBuf::from(value)))
+                    .is_err()
+                {
+                    self.status = "ROM import worker is unavailable".to_owned();
+                } else {
+                    self.status = "Importing ROM archive…".to_owned();
+                }
+            }
+        }
+    }
+
+    fn poll_rom_imports(&mut self) {
+        while let Ok(response) = self.rom_import_results.try_recv() {
+            let RomImportResult { kind, result } = response;
+            let (directory, count, warnings) = match result {
+                Ok(result) => result,
+                Err(error) => {
+                    self.status = error;
+                    continue;
+                }
+            };
+            let saved = match kind {
+                RomKind::Sc55 => AppSettings::save_sc55_rom_path(Some(&directory)),
+                RomKind::Mt32 => AppSettings::save_mt32_rom_path(Some(&directory)),
+            };
+            if let Err(error) = saved {
+                let _ = std::fs::remove_dir_all(&directory);
+                self.status = error;
+                continue;
+            }
+            let label = match kind {
+                RomKind::Sc55 => {
+                    self.decoder_settings.set_sc55_rom_path(Some(directory));
+                    "SC-55"
+                }
+                RomKind::Mt32 => {
+                    self.decoder_settings.set_mt32_rom_path(Some(directory));
+                    "MT-32"
+                }
+            };
+            self.invalidate_metadata();
+            self.status = format!("Imported {label} ROM set ({count} files)");
+            if !warnings.is_empty() {
+                self.status
+                    .push_str(&format!("; {} warning(s)", warnings.len()));
             }
         }
     }
@@ -5484,7 +5708,31 @@ impl Drop for Ui {
 }
 
 fn track_from_entry(entry: StoredEntry) -> Track {
-    let name = if entry.kind == "archive" && !entry.entry.is_empty() {
+    let name = if entry.kind == "remote" {
+        url::Url::parse(&entry.path)
+            .ok()
+            .and_then(|url| {
+                let pairs: HashMap<_, _> = url.query_pairs().into_owned().collect();
+                let source = pairs
+                    .get("entry")
+                    .or_else(|| pairs.get("path"))
+                    .map(String::as_str)
+                    .unwrap_or_else(|| url.path());
+                let mut name = Path::new(source)
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned();
+                if let Some(number) = pairs
+                    .get("fragment")
+                    .and_then(|value| value.parse::<u32>().ok())
+                {
+                    name.push_str(&format!(" [{}]", number.saturating_add(1)));
+                }
+                (!name.is_empty()).then_some(name)
+            })
+            .unwrap_or_else(|| "Remote stream".to_owned())
+    } else if entry.kind == "archive" && !entry.entry.is_empty() {
         Path::new(&entry.entry)
             .file_name()
             .unwrap_or_default()
@@ -5540,6 +5788,8 @@ fn collect_folder(
     library: &Arc<Library>,
     decoders: &DecoderRegistry,
     path: PathBuf,
+    read_cue_sheets: bool,
+    read_playlists: bool,
 ) -> Result<Vec<Track>, String> {
     let mut pending = vec![path];
     let mut tracks = Vec::new();
@@ -5561,11 +5811,50 @@ fn collect_folder(
                         entry: file["entry"].as_str().unwrap_or_default().to_owned(),
                         fragment: file["fragment"].as_str().map(str::to_owned),
                     });
+                    let extension_path =
+                        if track.entry.kind == "archive" && !track.entry.entry.is_empty() {
+                            &track.entry.entry
+                        } else {
+                            &track.entry.path
+                        };
+                    let extension = Path::new(extension_path)
+                        .extension()
+                        .and_then(|value| value.to_str())
+                        .unwrap_or_default();
+                    if extension.eq_ignore_ascii_case("cue") && !read_cue_sheets {
+                        continue;
+                    }
+                    if matches!(
+                        extension.to_ascii_lowercase().as_str(),
+                        "m3u" | "m3u8" | "pls"
+                    ) && !read_playlists
+                    {
+                        continue;
+                    }
                     tracks.extend(expand_track(decoders, library.root().as_deref(), track));
                 }
             }
         }
     }
+    let specific: HashSet<_> = tracks
+        .iter()
+        .filter(|track| track.entry.fragment.is_some())
+        .map(|track| {
+            (
+                track.entry.kind.clone(),
+                track.entry.path.clone(),
+                track.entry.entry.clone(),
+            )
+        })
+        .collect();
+    tracks.retain(|track| {
+        track.entry.fragment.is_some()
+            || !specific.contains(&(
+                track.entry.kind.clone(),
+                track.entry.path.clone(),
+                track.entry.entry.clone(),
+            ))
+    });
     Ok(tracks)
 }
 
@@ -5732,6 +6021,8 @@ fn prompt_label(kind: PromptKind) -> &'static str {
         PromptKind::SoundFont => "SF2 SoundFont path (empty to clear)",
         PromptKind::Sc55Roms => "SC-55 ROM directory (empty to clear)",
         PromptKind::Mt32Roms => "MT-32 ROM directory (empty to clear)",
+        PromptKind::Sc55Archive => "SC-55 ROM archive path",
+        PromptKind::Mt32Archive => "MT-32 ROM archive path",
     }
 }
 
@@ -5853,7 +6144,7 @@ const PLAYBACK_MENU: [&str; 13] = [
     "Toggle Stop After Selected",
     "Clear Queue",
 ];
-const PREFERENCES_MENU: [&str; 13] = [
+const PREFERENCES_MENU: [&str; 15] = [
     "Music Folder…",
     "Volume…",
     "Cycle Repeat",
@@ -5867,14 +6158,18 @@ const PREFERENCES_MENU: [&str; 13] = [
     "Remove Blacklist Entry…",
     "Cycle Opening Files Behavior",
     "MIDI Synthesis          ›",
+    "Read CUE Sheets On/Off",
+    "Read M3U/PLS On/Off",
 ];
-const SYNTHESIS_MENU: [&str; 6] = [
+const SYNTHESIS_MENU: [&str; 8] = [
     "Cycle MIDI Backend",
     "SoundFont Path…",
     "SC-55 ROM Directory…",
     "MT-32 ROM Directory…",
     "MT-32 GM Mapping On/Off",
     "Show Synthesis Settings…",
+    "Import SC-55 ROM Archive…",
+    "Import MT-32 ROM Archive…",
 ];
 const TREE_MENU: [&str; 10] = [
     "Add to Current Playlist",
@@ -6447,6 +6742,7 @@ pub fn run() -> Result<(), String> {
         ui.poll_remote();
         ui.poll_deletes();
         ui.poll_tags();
+        ui.poll_rom_imports();
         ui.poll_metadata();
         ui.poll_radio();
         let size = terminal.size();
@@ -6599,5 +6895,83 @@ mod tests {
             );
             assert_eq!(display_title(track), format!("game [{}]", index + 1));
         }
+    }
+
+    #[test]
+    fn saved_remote_subsong_recovers_its_title() {
+        let track = track_from_entry(StoredEntry {
+            kind: "remote".to_owned(),
+            path: "https://example.test/api/stream?kind=archive&path=%2Fmusic%2Fpack.zip&entry=inner%2Fgame.nsf&fragment=2&token=hidden".to_owned(),
+            entry: String::new(),
+            fragment: None,
+        });
+        assert_eq!(track.name, "game.nsf [3]");
+        assert_eq!(display_title(&track), "game [3]");
+    }
+
+    #[test]
+    fn folder_scan_respects_cue_and_playlist_preferences() {
+        let directory = tempfile::tempdir().unwrap();
+        let wav_path = directory.path().join("song.wav");
+        let samples = vec![0_u8; 800];
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + samples.len() as u32).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16_u32.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&8_000_u32.to_le_bytes());
+        wav.extend_from_slice(&8_000_u32.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&8_u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&(samples.len() as u32).to_le_bytes());
+        wav.extend_from_slice(&samples);
+        std::fs::write(&wav_path, wav).unwrap();
+        std::fs::write(
+            directory.path().join("album.cue"),
+            "FILE \"song.wav\" WAVE\n  TRACK 01 AUDIO\n    INDEX 01 00:00:00\n",
+        )
+        .unwrap();
+        std::fs::write(directory.path().join("album.m3u"), "song.wav\n").unwrap();
+        let database = kog_core::db::LibraryDb::open_in_memory().unwrap();
+        let library = Arc::new(Library::with_read_playlists_in_folders(
+            Some(directory.path().to_path_buf()),
+            database,
+            false,
+        ));
+        let decoders = DecoderRegistry::new(AppSettings::load().decoder_settings());
+        let without = collect_folder(
+            &library,
+            &decoders,
+            directory.path().to_path_buf(),
+            false,
+            false,
+        )
+        .unwrap();
+        assert_eq!(without.len(), 1);
+        assert_eq!(without[0].entry.path, wav_path.display().to_string());
+        library.set_read_playlists_in_folders(true);
+        let with_cue = collect_folder(
+            &library,
+            &decoders,
+            directory.path().to_path_buf(),
+            true,
+            true,
+        )
+        .unwrap();
+        assert!(
+            with_cue.iter().any(|track| track.entry.fragment.is_some()),
+            "{with_cue_len} tracks",
+            with_cue_len = with_cue.len()
+        );
+        assert_eq!(with_cue.len(), 2);
+        assert!(
+            with_cue
+                .iter()
+                .any(|track| track.entry.path.ends_with("album.cue")
+                    && track.entry.fragment.as_deref() == Some("1"))
+        );
     }
 }

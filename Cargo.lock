@@ -1694,6 +1694,7 @@ name = "kog-terminal"
 version = "0.9.41"
 dependencies = [
  "base64 0.22.1",
+ "directories",
  "kog-audio",
  "kog-core",
  "kog-server",

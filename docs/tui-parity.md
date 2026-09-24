@@ -58,7 +58,9 @@ Run `nix develop --command cargo build -p kog --bin kog`, then `uv run --with py
 - [x] Current track, elapsed time, duration, and play/pause state update during PTY playback.
 - [x] Music root, volume, equalizer preset, preamp, and output device controls are reachable from menus.
 - [x] The Qt opening-files preference is saved and applied to activated files; the PTY fixture checks replace-and-play and enqueue without interrupting playback.
+- [x] Read CUE and M3U/PLS folder preferences are saved and applied by folder scans; a focused unit test checks the resulting entries.
 - [x] MIDI backend, SoundFont, ROM directory, and MT-32 mapping controls update the live shared decoder settings; the PTY fixture checks menu access, validation, clearing, and persistence.
+- [x] SC-55 and MT-32 compressed ROM import uses the shared Qt importer and validator on a worker; shared unit tests check extraction and the PTY fixture rejects incomplete sets without retaining files.
 - [ ] Remaining Qt/Web playback preferences are reachable.
 - [x] Track info, lyrics, and equalizer have terminal modal views. The info view includes Qt's technical fields and source path.
 - [x] Supported Formats opens the shared decoder catalog in a scrollable terminal view; PTY checks its first format group.
@@ -77,11 +79,11 @@ The Qt hamburger, playlist and file context menus, playlist header, and the web 
 
 | Area | Qt/Web behavior still missing or unverified in TUI |
 | --- | --- |
-| File tree | Remote multi-song files need `/api/expand` when queued; local three-song NSF and remote nested archives are verified. |
-| Saved playlists | Remote track round trips through save, load, and export need a fixture. |
+| File tree | Remote multi-song files expand through `/api/expand`; the real server fixture checks a three-song NSF and remote nested archive playback. |
+| Saved playlists | Remote track save, reload, and M3U export are checked against the real server. |
 | Playback | Terminal timing fixture for late album tags, playback error recovery, and output device test on real hardware. |
-| Library settings | Read CUE and M3U/PLS folder preferences need menu controls and behavior tests. |
-| Synthesis | SC-55 and MT-32 archive import needs terminal controls and isolated ROM fixtures. |
+| Library settings | Read CUE and M3U/PLS menu controls and folder behavior are checked. |
+| Synthesis | SC-55 and MT-32 archive controls reject incomplete fixtures; validating a complete proprietary ROM set needs user supplied files. |
 | Server settings | Address, port, authentication, TLS, codec/cache, device management, and start/stop controls are not in the TUI; `--server` runs the persisted Qt configuration. |
 | Media | Automatic cover downloading and cover art display need terminal representations and tests. |
 | Views | Compact mini player, Winamp skin presentation, and live inspector refresh need terminal equivalents. |
