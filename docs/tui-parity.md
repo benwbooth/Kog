@@ -2,7 +2,7 @@
 
 This is the feature inventory for the terminal frontend, checked against `qml/Main.qml` and `crates/kog-web/src/lib.rs`. A checked item has been exercised in the isolated PTY test at the terminal sizes where the control is visible. Unchecked items still need implementation, verification, or both; the TUI should not be described as fully equivalent while they remain.
 
-Run `nix develop --command cargo build -p kog --bin kog`, then `uv run --with pyte --with mutagen scripts/tui_pty_check.py`. The test creates its own music tree, archive, settings directory, and SQLite database. It does not write to the user's library or playlists.
+Run `nix develop --command cargo build -p kog --bin kog`, then `uv run --with pyte --with mutagen scripts/tui_pty_check.py` and `nix develop --command uv run --with pyte scripts/tui_server_interop_check.py`. The tests create their own music trees, archives, settings directories, and SQLite databases. They do not write to the user's library or playlists.
 
 ## Window and input
 
@@ -20,12 +20,12 @@ Run `nix develop --command cargo build -p kog --bin kog`, then `uv run --with py
 ## Library and playlists
 
 - [x] Files are displayed in a lazily expandable tree, including nested folders.
-- [x] A token-protected remote Kog library can be browsed, searched, queued by folder, and streamed; URL, auth mode, and codec controls are in the Remote Server menu. The PTY fixture checks authenticated API requests and playback.
+- [x] A token-protected remote Kog library can be browsed, searched, queued by folder, and streamed; URL, auth mode, and codec controls are in the Remote Server menu. PTY fixtures check the mock API and a real headless Kog server, including nested archive playback.
 - [x] A folder click expands or collapses it; a folder double click queues its contents without starting playback.
 - [x] A file double click adds and plays; single click selects.
 - [x] Ctrl and Shift mouse selection, Shift arrow range selection, and Ctrl+A work in the tree; Add applies to selected files and folders. Play Now on a folder starts its first loaded track.
 - [x] Tree context actions can change and reset the visible root, blacklist selected songs, and move several local files to trash after one confirmation. Delete opens the same confirmation.
-- [x] Nested archive folders can be explored and added. Subsong expansion still needs a dedicated PTY fixture.
+- [x] Nested archive folders can be explored and added. Direct adds and folder scans expand multi-song files; a three-song NSF is checked in unit and PTY fixtures.
 - [x] Saved playlist single click selects the source; double click adds its tracks to the playing pane.
 - [x] Favorites, create, rename, delete, save current pane, and add to a saved playlist work.
 - [x] Queue remove, clear, reorder, sort, star, and search work with the visible selection.
@@ -58,8 +58,10 @@ Run `nix develop --command cargo build -p kog --bin kog`, then `uv run --with py
 - [x] Current track, elapsed time, duration, and play/pause state update during PTY playback.
 - [x] Music root, volume, equalizer preset, preamp, and output device controls are reachable from menus.
 - [x] The Qt opening-files preference is saved and applied to activated files; the PTY fixture checks replace-and-play and enqueue without interrupting playback.
-- [ ] Decoder choices and all Qt/Web playback preferences are reachable.
-- [x] Track info, lyrics, and equalizer have terminal modal views.
+- [x] MIDI backend, SoundFont, ROM directory, and MT-32 mapping controls update the live shared decoder settings; the PTY fixture checks menu access, validation, clearing, and persistence.
+- [ ] Remaining Qt/Web playback preferences are reachable.
+- [x] Track info, lyrics, and equalizer have terminal modal views. The info view includes Qt's technical fields and source path.
+- [x] Supported Formats opens the shared decoder catalog in a scrollable terminal view; PTY checks its first format group.
 - [x] The spectrum visualizer reads live audio data, and individual equalizer bands can be edited from Preferences.
 
 ## Verification
@@ -75,8 +77,11 @@ The Qt hamburger, playlist and file context menus, playlist header, and the web 
 
 | Area | Qt/Web behavior still missing or unverified in TUI |
 | --- | --- |
-| File tree | Complete subsong fixtures, and remote archives against a live Kog server. |
-| Playlist | Complete subsong and remote playlist integration still need dedicated fixtures. |
-| Playback | PTY timing fixture for late album metadata, playback error recovery, and output device test on real hardware. |
-| Settings | Decoder and synthesizer selection, media downloading, and remaining advanced preferences. |
-| Views | Cover art, mini player, skins, and richer info inspector interaction. |
+| File tree | Remote multi-song files need `/api/expand` when queued; local three-song NSF and remote nested archives are verified. |
+| Saved playlists | Remote track round trips through save, load, and export need a fixture. |
+| Playback | Terminal timing fixture for late album tags, playback error recovery, and output device test on real hardware. |
+| Library settings | Read CUE and M3U/PLS folder preferences need menu controls and behavior tests. |
+| Synthesis | SC-55 and MT-32 archive import needs terminal controls and isolated ROM fixtures. |
+| Server settings | Address, port, authentication, TLS, codec/cache, device management, and start/stop controls are not in the TUI; `--server` runs the persisted Qt configuration. |
+| Media | Automatic cover downloading and cover art display need terminal representations and tests. |
+| Views | Compact mini player, Winamp skin presentation, and live inspector refresh need terminal equivalents. |

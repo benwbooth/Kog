@@ -8,17 +8,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
-use kog_audio::decoder::{DecoderRegistry, PlaybackSource};
+use kog_audio::decoder::{DecoderRegistry, DecoderSettings, PlaybackSource, validate_soundfont};
 use kog_audio::playback::{PlaybackEngine, PlaybackState, available_output_devices};
 use kog_audio::playback_order::PlaybackOrder;
 use kog_audio::playlist::{Playlist, PlaylistEntry, PlaylistLocation};
 use kog_audio::settings::{
-    AppSettings, OpeningFilesBehavior, OutputDevicePreference, RepeatMode, ShuffleMode,
+    AppSettings, MidiEngine, OpeningFilesBehavior, OutputDevicePreference, RepeatMode, ShuffleMode,
 };
 use kog_audio::track::Track as AudioTrack;
 use kog_core::db::{BLACKLIST_FOLDER, BLACKLIST_SONG, BlacklistEntry, StoredEntry};
 use kog_core::equalizer::{EqualizerSettings, presets};
-use kog_server::api::{Library, LocalSearch, browse_local};
+use kog_server::api::{Library, LocalSearch, browse_local, expand_stored_entry};
 use kog_server::radio::{Radio, RadioAdvance, RadioEntry, RadioStatus};
 use rand::Rng;
 use unicode_width::UnicodeWidthChar;
@@ -41,6 +41,7 @@ struct TrackMetadata {
     composer: String,
     year: Option<u32>,
     sample_rate: Option<u32>,
+    channels: Option<u16>,
     bits_per_sample: Option<u8>,
     bitrate: Option<u32>,
     disc_number: Option<u32>,
@@ -96,6 +97,7 @@ enum MenuPage {
     ColumnVisibility,
     TagEditor,
     Remote,
+    Synthesis,
 }
 
 impl MenuPage {
@@ -112,6 +114,7 @@ impl MenuPage {
             Self::ColumnVisibility => "Visible Columns",
             Self::TagEditor => "Edit Tags",
             Self::Remote => "Remote Server",
+            Self::Synthesis => "MIDI Synthesis",
         }
     }
     fn labels(self) -> &'static [&'static str] {
@@ -127,6 +130,7 @@ impl MenuPage {
             Self::ColumnVisibility => &COLUMN_VISIBILITY_MENU,
             Self::TagEditor => &TAG_EDITOR_MENU,
             Self::Remote => &REMOTE_MENU,
+            Self::Synthesis => &SYNTHESIS_MENU,
         }
     }
 }
@@ -160,6 +164,9 @@ enum PromptKind {
     RemoteToken,
     RemoteUsername,
     RemotePassword,
+    SoundFont,
+    Sc55Roms,
+    Mt32Roms,
 }
 
 enum RadioCommand {
@@ -211,6 +218,7 @@ enum RemoteResponse {
 
 struct Ui {
     library: Arc<Library>,
+    decoder_settings: DecoderSettings,
     decoders: DecoderRegistry,
     player: PlaybackEngine,
     browse_path: Option<PathBuf>,
@@ -257,8 +265,9 @@ struct Ui {
     playlist_query: String,
     metadata: HashMap<String, Option<TrackMetadata>>,
     metadata_pending: HashSet<String>,
-    metadata_requests: Sender<(String, StoredEntry)>,
-    metadata_results: Receiver<(String, Option<TrackMetadata>)>,
+    metadata_generation: u64,
+    metadata_requests: Sender<(u64, String, StoredEntry)>,
+    metadata_results: Receiver<(u64, String, Option<TrackMetadata>)>,
     folder_requests: Sender<(u64, PathBuf)>,
     folder_results: Receiver<(u64, PathBuf, Result<Vec<Track>, String>)>,
     folder_generation: u64,
@@ -309,12 +318,13 @@ struct Ui {
 impl Ui {
     fn new() -> Self {
         let settings = AppSettings::load();
-        let (metadata_requests, worker_requests) = mpsc::channel::<(String, StoredEntry)>();
+        let decoder_settings = settings.decoder_settings();
+        let (metadata_requests, worker_requests) = mpsc::channel::<(u64, String, StoredEntry)>();
         let (worker_results, metadata_results) = mpsc::channel();
-        let metadata_settings = settings.decoder_settings();
+        let metadata_settings = decoder_settings.clone();
         std::thread::spawn(move || {
             let decoders = DecoderRegistry::new(metadata_settings);
-            while let Ok((key, entry)) = worker_requests.recv() {
+            while let Ok((generation, key, entry)) = worker_requests.recv() {
                 let resolved = kog_audio::streaming::resolve_entry(
                     &playlist_entry(&entry),
                     &decoders,
@@ -322,7 +332,7 @@ impl Ui {
                 );
                 let metadata = resolved.ok().map(|source| {
                     let track = AudioTrack::from_source(source, &decoders);
-                    let title = if entry.kind == "archive"
+                    let title = if (entry.kind == "archive" || entry.kind == "remote")
                         && track.title
                             == track
                                 .source
@@ -343,6 +353,7 @@ impl Ui {
                         composer: track.composer,
                         year: track.year,
                         sample_rate: track.sample_rate,
+                        channels: track.channels,
                         bits_per_sample: track.bits_per_sample,
                         bitrate: track.bitrate,
                         disc_number: track.disc_number,
@@ -353,7 +364,7 @@ impl Ui {
                         genre: track.genre,
                     }
                 });
-                if worker_results.send((key, metadata)).is_err() {
+                if worker_results.send((generation, key, metadata)).is_err() {
                     break;
                 }
             }
@@ -363,8 +374,9 @@ impl Ui {
         let (completed_folders, folder_results) = mpsc::channel();
         let folder_library = library.clone();
         std::thread::spawn(move || {
+            let decoders = DecoderRegistry::new(AppSettings::load().decoder_settings());
             while let Ok((generation, path)) = pending_folders.recv() {
-                let result = collect_folder(&folder_library, path.clone());
+                let result = collect_folder(&folder_library, &decoders, path.clone());
                 if completed_folders.send((generation, path, result)).is_err() {
                     break;
                 }
@@ -438,7 +450,7 @@ impl Ui {
                 }
             }
         });
-        let decoders = DecoderRegistry::new(settings.decoder_settings());
+        let decoders = DecoderRegistry::new(decoder_settings.clone());
         let (radio_requests, radio_commands) =
             mpsc::channel::<(u64, RadioCommand, Option<PathBuf>)>();
         let (radio_responses, radio_results) = mpsc::channel();
@@ -466,7 +478,7 @@ impl Ui {
             }
         });
         let mut player = PlaybackEngine::with_equalizer_and_output(
-            DecoderRegistry::new(settings.decoder_settings()),
+            DecoderRegistry::new(decoder_settings.clone()),
             settings.equalizer.clone(),
             settings
                 .output_device
@@ -485,6 +497,7 @@ impl Ui {
             .collect();
         let mut ui = Self {
             library,
+            decoder_settings,
             decoders,
             player,
             browse_path: None,
@@ -535,6 +548,7 @@ impl Ui {
             playlist_query: String::new(),
             metadata: HashMap::new(),
             metadata_pending: HashSet::new(),
+            metadata_generation: 0,
             metadata_requests,
             metadata_results,
             folder_requests,
@@ -607,7 +621,10 @@ impl Ui {
 
     fn poll_metadata(&mut self) {
         let mut order_changed = false;
-        while let Ok((key, metadata)) = self.metadata_results.try_recv() {
+        while let Ok((generation, key, metadata)) = self.metadata_results.try_recv() {
+            if generation != self.metadata_generation {
+                continue;
+            }
             self.metadata_pending.remove(&key);
             order_changed |= metadata.as_ref().is_some_and(|meta| !meta.album.is_empty());
             self.metadata.insert(key, metadata);
@@ -616,6 +633,12 @@ impl Ui {
             let tracks = self.order_tracks();
             self.order.album_metadata_changed(&tracks, self.playing);
         }
+    }
+
+    fn invalidate_metadata(&mut self) {
+        self.metadata_generation = self.metadata_generation.wrapping_add(1);
+        self.metadata.clear();
+        self.metadata_pending.clear();
     }
 
     fn order_tracks(&self) -> Vec<AudioTrack> {
@@ -747,7 +770,9 @@ impl Ui {
         if self.metadata.contains_key(&key) || !self.metadata_pending.insert(key.clone()) {
             return;
         }
-        let _ = self.metadata_requests.send((key, entry.clone()));
+        let _ = self
+            .metadata_requests
+            .send((self.metadata_generation, key, entry.clone()));
     }
 
     fn metadata_for(&self, track: &Track) -> Option<&TrackMetadata> {
@@ -757,10 +782,18 @@ impl Ui {
     }
 
     fn title_for(&self, track: &Track) -> String {
-        self.metadata_for(track)
+        let mut title = self
+            .metadata_for(track)
             .map(|meta| meta.title.clone())
             .filter(|title| !title.is_empty())
-            .unwrap_or_else(|| display_title(track))
+            .unwrap_or_else(|| display_title(track));
+        if let Some((_, suffix)) = numbered_track_name(&track.name)
+            && track.entry.fragment.is_some()
+            && !title.ends_with(suffix)
+        {
+            title.push_str(suffix);
+        }
+        title
     }
 
     fn column_value(&self, index: usize, track: &Track, id: &str) -> String {
@@ -1080,6 +1113,7 @@ impl Ui {
             (MenuPage::View, 2) => self.show_lyrics(),
             (MenuPage::View, 3) => self.show_equalizer(),
             (MenuPage::View, 4) => self.show_visualizer(),
+            (MenuPage::View, 5) => self.show_supported_formats(),
             (MenuPage::Playback, 0) => self.play_pause(),
             (MenuPage::Playback, 1) => {
                 self.player.stop();
@@ -1143,6 +1177,65 @@ impl Ui {
                     Ok(()) => self.status = format!("Opening files: {}", next.setting_value()),
                     Err(error) => self.status = error,
                 }
+            }
+            (MenuPage::Preferences, 12) => self.open_submenu(MenuPage::Synthesis),
+            (MenuPage::Synthesis, 0) => {
+                let next = match self.decoder_settings.midi_engine() {
+                    MidiEngine::RustySynth => MidiEngine::Opl3Windows,
+                    MidiEngine::Opl3Windows => MidiEngine::Sc55,
+                    MidiEngine::Sc55 => MidiEngine::Mt32,
+                    MidiEngine::Mt32 => MidiEngine::RustySynth,
+                };
+                match AppSettings::save_midi_engine(next) {
+                    Ok(()) => {
+                        self.decoder_settings.set_midi_engine(next);
+                        self.invalidate_metadata();
+                        self.status = format!("MIDI backend: {}", next.setting_value());
+                    }
+                    Err(error) => self.status = error,
+                }
+            }
+            (MenuPage::Synthesis, 1) => self.begin_prompt(
+                PromptKind::SoundFont,
+                self.decoder_settings
+                    .soundfont_path()
+                    .map_or_else(String::new, |path| path.display().to_string()),
+            ),
+            (MenuPage::Synthesis, 2) => self.begin_prompt(
+                PromptKind::Sc55Roms,
+                self.decoder_settings
+                    .sc55_rom_path()
+                    .map_or_else(String::new, |path| path.display().to_string()),
+            ),
+            (MenuPage::Synthesis, 3) => self.begin_prompt(
+                PromptKind::Mt32Roms,
+                self.decoder_settings
+                    .mt32_rom_path()
+                    .map_or_else(String::new, |path| path.display().to_string()),
+            ),
+            (MenuPage::Synthesis, 4) => {
+                let enabled = !self.decoder_settings.mt32_gm_program_mapping();
+                match AppSettings::save_mt32_gm_program_mapping(enabled) {
+                    Ok(()) => {
+                        self.decoder_settings.set_mt32_gm_program_mapping(enabled);
+                        self.invalidate_metadata();
+                        self.status = format!(
+                            "MT-32 GM program mapping: {}",
+                            if enabled { "on" } else { "off" }
+                        );
+                    }
+                    Err(error) => self.status = error,
+                }
+            }
+            (MenuPage::Synthesis, 5) => {
+                self.show_modal(format!(
+                    "MIDI backend: {}\nSoundFont: {}\nSC-55 ROMs: {}\nMT-32 ROMs: {}\nMT-32 GM program mapping: {}",
+                    self.decoder_settings.midi_engine().setting_value(),
+                    self.decoder_settings.soundfont_path().map_or_else(|| "None".to_owned(), |path| path.display().to_string()),
+                    self.decoder_settings.sc55_rom_path().map_or_else(|| "None".to_owned(), |path| path.display().to_string()),
+                    self.decoder_settings.mt32_rom_path().map_or_else(|| "None".to_owned(), |path| path.display().to_string()),
+                    if self.decoder_settings.mt32_gm_program_mapping() { "on" } else { "off" }
+                ));
             }
             (MenuPage::Tree, 0) => self.add_selected(false),
             (MenuPage::Tree, 1) => self.add_selected(true),
@@ -1502,13 +1595,45 @@ impl Ui {
             .or_else(|| self.tracks.get(self.selected[2]));
         let content = if let Some(track) = track {
             let metadata = self.metadata_for(track);
+            let length = metadata
+                .and_then(|m| m.duration)
+                .map(|duration| {
+                    format!("{}:{:02}", duration.as_secs() / 60, duration.as_secs() % 60)
+                })
+                .unwrap_or_default();
             format!(
-                "{}\nArtist: {}\nAlbum: {}\nGenre: {}\nCodec: {}\nPath: {}",
+                "{}\n\nArtist: {}\nAlbum: {}\nTitle: {}\nAlbum Artist: {}\nComposer: {}\nTrack: {}\nDisc: {}\nLength: {}\nDate: {}\nGenre: {}\nFilename: {}\nFormat: {}\nSample Rate: {}\nChannels: {}\nBitrate: {}\nBits Per Sample: {}\n\n♫\n{}",
                 self.title_for(track),
                 metadata.map_or("", |m| &m.artist),
                 metadata.map_or("", |m| &m.album),
+                self.title_for(track),
+                metadata.map_or("", |m| &m.album_artist),
+                metadata.map_or("", |m| &m.composer),
+                metadata
+                    .and_then(|m| m.track_number)
+                    .map_or(String::new(), |n| n.to_string()),
+                metadata
+                    .and_then(|m| m.disc_number)
+                    .map_or(String::new(), |n| n.to_string()),
+                length,
+                metadata
+                    .and_then(|m| m.year)
+                    .map_or(String::new(), |n| n.to_string()),
                 metadata.map_or("", |m| &m.genre),
+                track.name,
                 metadata.map_or("", |m| &m.codec),
+                metadata
+                    .and_then(|m| m.sample_rate)
+                    .map_or(String::new(), |n| format!("{n} Hz")),
+                metadata
+                    .and_then(|m| m.channels)
+                    .map_or(String::new(), |n| n.to_string()),
+                metadata
+                    .and_then(|m| m.bitrate)
+                    .map_or(String::new(), |n| format!("{n} kbps")),
+                metadata
+                    .and_then(|m| m.bits_per_sample)
+                    .map_or(String::new(), |n| n.to_string()),
                 display_entry_path(&track.entry)
             )
         } else {
@@ -1617,6 +1742,35 @@ impl Ui {
             }
             Err(error) => self.show_modal(error),
         }
+    }
+
+    fn show_supported_formats(&mut self) {
+        let value: serde_json::Value =
+            match serde_json::from_str(&self.decoders.supported_formats_json()) {
+                Ok(value) => value,
+                Err(error) => {
+                    self.status = format!("Reading decoder formats: {error}");
+                    return;
+                }
+            };
+        let mut lines = vec![format!(
+            "Supported Formats · {} extensions",
+            value["uniqueExtensionCount"].as_u64().unwrap_or_default()
+        )];
+        for group in value["groups"].as_array().into_iter().flatten() {
+            let name = group["name"].as_str().unwrap_or("Other");
+            let detail = group["detail"].as_str().unwrap_or_default();
+            let extensions = group["extensions"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(serde_json::Value::as_str)
+                .map(|extension| format!(".{extension}"))
+                .collect::<Vec<_>>()
+                .join("  ");
+            lines.push(format!("\n{name} · {detail}\n{extensions}"));
+        }
+        self.show_modal(lines.join("\n"));
     }
 
     fn browse(&mut self, path: Option<PathBuf>) {
@@ -2119,9 +2273,13 @@ impl Ui {
         }
         let first = self.tracks.len();
         let mut folders = Vec::new();
+        let root = self.library.root();
         for item in items {
             match item {
-                Item::Track(track) => self.tracks.push(track),
+                Item::Track(track) => {
+                    self.tracks
+                        .extend(expand_track(&self.decoders, root.as_deref(), track))
+                }
                 Item::Directory(_, path) => {
                     self.enqueue_folder(path.clone());
                     folders.push(path);
@@ -2954,6 +3112,9 @@ impl Ui {
                     | PromptKind::RemoteToken
                     | PromptKind::RemoteUsername
                     | PromptKind::RemotePassword
+                    | PromptKind::SoundFont
+                    | PromptKind::Sc55Roms
+                    | PromptKind::Mt32Roms
             )
         {
             self.status = "A value is required".to_owned();
@@ -3361,6 +3522,90 @@ impl Ui {
             PromptKind::RemotePassword => {
                 self.remote_settings.password = raw;
                 self.persist_remote_settings(true);
+            }
+            PromptKind::SoundFont => {
+                let path = if value.is_empty() {
+                    None
+                } else {
+                    let path = PathBuf::from(value);
+                    if !path
+                        .extension()
+                        .is_some_and(|extension| extension.eq_ignore_ascii_case("sf2"))
+                    {
+                        self.status = "Choose an SF2 SoundFont".to_owned();
+                        return;
+                    }
+                    let path = match path.canonicalize().and_then(|path| {
+                        if path.is_file() {
+                            Ok(path)
+                        } else {
+                            Err(io::Error::other("not a file"))
+                        }
+                    }) {
+                        Ok(path) => path,
+                        Err(error) => {
+                            self.status = format!("Opening SoundFont: {error}");
+                            return;
+                        }
+                    };
+                    if let Err(error) = validate_soundfont(&path) {
+                        self.status = error;
+                        return;
+                    }
+                    Some(path)
+                };
+                match AppSettings::save_soundfont_path(path.as_deref()) {
+                    Ok(()) => {
+                        self.decoder_settings.set_soundfont_path(path);
+                        self.invalidate_metadata();
+                        self.status = "MIDI SoundFont updated".to_owned();
+                    }
+                    Err(error) => self.status = error,
+                }
+            }
+            PromptKind::Sc55Roms | PromptKind::Mt32Roms => {
+                let path = if value.is_empty() {
+                    None
+                } else {
+                    let path = match PathBuf::from(value).canonicalize() {
+                        Ok(path) if path.is_dir() => path,
+                        Ok(_) => {
+                            self.status = "ROM path is not a directory".to_owned();
+                            return;
+                        }
+                        Err(error) => {
+                            self.status = format!("Opening ROM directory: {error}");
+                            return;
+                        }
+                    };
+                    let validation = if kind == PromptKind::Sc55Roms {
+                        kog_audio::sc55::validate_rom_directory(&path)
+                    } else {
+                        kog_audio::mt32::validate_rom_directory(&path)
+                    };
+                    if let Err(error) = validation {
+                        self.status = error;
+                        return;
+                    }
+                    Some(path)
+                };
+                let result = if kind == PromptKind::Sc55Roms {
+                    AppSettings::save_sc55_rom_path(path.as_deref())
+                } else {
+                    AppSettings::save_mt32_rom_path(path.as_deref())
+                };
+                match result {
+                    Ok(()) => {
+                        if kind == PromptKind::Sc55Roms {
+                            self.decoder_settings.set_sc55_rom_path(path);
+                        } else {
+                            self.decoder_settings.set_mt32_rom_path(path);
+                        }
+                        self.invalidate_metadata();
+                        self.status = "ROM directory updated".to_owned();
+                    }
+                    Err(error) => self.status = error,
+                }
             }
         }
     }
@@ -5291,7 +5536,11 @@ fn radio_track(entry: RadioEntry) -> Track {
     })
 }
 
-fn collect_folder(library: &Arc<Library>, path: PathBuf) -> Result<Vec<Track>, String> {
+fn collect_folder(
+    library: &Arc<Library>,
+    decoders: &DecoderRegistry,
+    path: PathBuf,
+) -> Result<Vec<Track>, String> {
     let mut pending = vec![path];
     let mut tracks = Vec::new();
     while let Some(directory) = pending.pop() {
@@ -5306,12 +5555,13 @@ fn collect_folder(library: &Arc<Library>, path: PathBuf) -> Result<Vec<Track>, S
         if let Some(files) = listing["files"].as_array() {
             for file in files {
                 if let (Some(kind), Some(path)) = (file["kind"].as_str(), file["path"].as_str()) {
-                    tracks.push(track_from_entry(StoredEntry {
+                    let track = track_from_entry(StoredEntry {
                         kind: kind.to_owned(),
                         path: path.to_owned(),
                         entry: file["entry"].as_str().unwrap_or_default().to_owned(),
                         fragment: file["fragment"].as_str().map(str::to_owned),
-                    }));
+                    });
+                    tracks.extend(expand_track(decoders, library.root().as_deref(), track));
                 }
             }
         }
@@ -5319,12 +5569,37 @@ fn collect_folder(library: &Arc<Library>, path: PathBuf) -> Result<Vec<Track>, S
     Ok(tracks)
 }
 
+fn expand_track(decoders: &DecoderRegistry, root: Option<&Path>, track: Track) -> Vec<Track> {
+    if track.entry.kind == "remote" || track.entry.fragment.is_some() {
+        return vec![track];
+    }
+    let expanded = expand_stored_entry(decoders, root, &track.entry, &track.name);
+    if expanded.is_empty() {
+        vec![track]
+    } else {
+        expanded
+            .into_iter()
+            .map(|(name, entry)| Track { name, entry })
+            .collect()
+    }
+}
+
 fn display_title(track: &Track) -> String {
-    Path::new(&track.name)
+    let (name, suffix) = numbered_track_name(&track.name).unwrap_or((&track.name, ""));
+    let mut title = Path::new(name)
         .file_stem()
         .and_then(|name| name.to_str())
-        .unwrap_or(&track.name)
-        .to_owned()
+        .unwrap_or(name)
+        .to_owned();
+    title.push_str(suffix);
+    title
+}
+
+fn numbered_track_name(name: &str) -> Option<(&str, &str)> {
+    let (base, number) = name.rsplit_once(" [")?;
+    let number = number.strip_suffix(']')?;
+    number.parse::<u32>().ok()?;
+    Some((base, &name[base.len()..]))
 }
 
 fn metadata_key(entry: &StoredEntry) -> String {
@@ -5454,6 +5729,9 @@ fn prompt_label(kind: PromptKind) -> &'static str {
         PromptKind::RemoteToken => "API token",
         PromptKind::RemoteUsername => "Server username",
         PromptKind::RemotePassword => "Server password",
+        PromptKind::SoundFont => "SF2 SoundFont path (empty to clear)",
+        PromptKind::Sc55Roms => "SC-55 ROM directory (empty to clear)",
+        PromptKind::Mt32Roms => "MT-32 ROM directory (empty to clear)",
     }
 }
 
@@ -5552,12 +5830,13 @@ const REMOTE_MENU: [&str; 9] = [
     "Queue Current Folder",
     "Use Local Library",
 ];
-const VIEW_MENU: [&str; 5] = [
+const VIEW_MENU: [&str; 6] = [
     "Show/Hide Files and Playlists",
     "Track Info…",
     "Lyrics…",
     "Equalizer…",
     "Visualizer…",
+    "Supported Formats…",
 ];
 const PLAYBACK_MENU: [&str; 13] = [
     "Play/Pause",
@@ -5574,7 +5853,7 @@ const PLAYBACK_MENU: [&str; 13] = [
     "Toggle Stop After Selected",
     "Clear Queue",
 ];
-const PREFERENCES_MENU: [&str; 12] = [
+const PREFERENCES_MENU: [&str; 13] = [
     "Music Folder…",
     "Volume…",
     "Cycle Repeat",
@@ -5587,6 +5866,15 @@ const PREFERENCES_MENU: [&str; 12] = [
     "View Blacklist…",
     "Remove Blacklist Entry…",
     "Cycle Opening Files Behavior",
+    "MIDI Synthesis          ›",
+];
+const SYNTHESIS_MENU: [&str; 6] = [
+    "Cycle MIDI Backend",
+    "SoundFont Path…",
+    "SC-55 ROM Directory…",
+    "MT-32 ROM Directory…",
+    "MT-32 GM Mapping On/Off",
+    "Show Synthesis Settings…",
 ];
 const TREE_MENU: [&str; 10] = [
     "Add to Current Playlist",
@@ -6273,5 +6561,43 @@ mod tests {
         assert!(wide.tree_bottom < wide.lists_header);
         assert_eq!(wide.list_top + wide.list_page, wide.footer_top);
         assert_eq!(narrow.footer_top, 14);
+    }
+
+    #[test]
+    fn nsf_expansion_keeps_each_subsong_visible() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("game.nsf");
+        let mut bytes = vec![0_u8; 128];
+        bytes[0..5].copy_from_slice(b"NESM\x1a");
+        bytes[5] = 1;
+        bytes[6] = 3;
+        bytes[7] = 1;
+        bytes[8..10].copy_from_slice(&0x8000_u16.to_le_bytes());
+        bytes[10..12].copy_from_slice(&0x8000_u16.to_le_bytes());
+        bytes[12..14].copy_from_slice(&0x8001_u16.to_le_bytes());
+        bytes.extend_from_slice(&[0x60, 0x60]);
+        std::fs::write(&path, bytes).unwrap();
+        let track = Track {
+            name: "game.nsf".to_owned(),
+            entry: StoredEntry {
+                kind: "local".to_owned(),
+                path: path.display().to_string(),
+                entry: String::new(),
+                fragment: None,
+            },
+        };
+        let expanded = expand_track(
+            &DecoderRegistry::new(AppSettings::load().decoder_settings()),
+            Some(root.path()),
+            track,
+        );
+        assert_eq!(expanded.len(), 3);
+        for (index, track) in expanded.iter().enumerate() {
+            assert_eq!(
+                track.entry.fragment.as_deref(),
+                Some(["0", "1", "2"][index])
+            );
+            assert_eq!(display_title(track), format!("game [{}]", index + 1));
+        }
     }
 }

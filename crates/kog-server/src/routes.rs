@@ -648,9 +648,10 @@ async fn require_auth(
             .uri()
             .query()
             .and_then(|query| {
-                query.split('&').find_map(|pair| pair.strip_prefix("token="))
+                url::form_urlencoded::parse(query.as_bytes())
+                    .find(|(key, _)| key == "token")
+                    .map(|(_, value)| format!("Bearer {value}"))
             })
-            .map(|value| format!("Bearer {value}"))
     } else {
         None
     };
@@ -1827,6 +1828,14 @@ mod tests {
         assert_eq!(body["ok"], false);
 
         let (status, _) = get_json(state(AuthMode::Token, "t"), "/api/codecs", Some("Bearer t")).await;
+        assert_eq!(status, StatusCode::OK);
+
+        let (status, _) = get_json(
+            state(AuthMode::Token, "a b/c+"),
+            "/api/codecs?token=a+b%2Fc%2B",
+            None,
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
     }
 

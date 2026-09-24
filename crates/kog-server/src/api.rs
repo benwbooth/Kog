@@ -559,6 +559,38 @@ fn expand_locator(
     }
 }
 
+/// Reuse the HTTP expansion rules in native frontends. A multi-song locator
+/// produces one stored entry per subsong while an explicit fragment stays
+/// intact. Callers decide how to handle an empty result.
+pub fn expand_stored_entry(
+    decoders: &kog_audio::decoder::DecoderRegistry,
+    root: Option<&std::path::Path>,
+    stored: &StoredEntry,
+    name: &str,
+) -> Vec<(String, StoredEntry)> {
+    let request = ExpandEntry {
+        kind: stored.kind.clone(),
+        path: stored.path.clone(),
+        entry: Some(stored.entry.clone()),
+        fragment: stored.fragment.clone(),
+        name: Some(name.to_owned()),
+    };
+    expand_locator(decoders, root, &request)
+        .into_iter()
+        .map(|file| {
+            (
+                file.name,
+                StoredEntry {
+                    kind: file.kind,
+                    path: file.path,
+                    entry: file.entry,
+                    fragment: file.fragment,
+                },
+            )
+        })
+        .collect()
+}
+
 /// Display name for a locator that already addresses one track: the file (or
 /// member) name the pane would show.
 fn expand_single_name(kind: &str, path: &str, entry: &str) -> String {

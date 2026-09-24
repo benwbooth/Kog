@@ -46,12 +46,17 @@ class RemoteHandler(http.server.BaseHTTPRequestHandler):
         if self.headers.get('Authorization')!='Bearer PTY remote token':
             self.respond(401,{'error':'invalid token'});return
         file={'name':'remote.wav','path':'/virtual/album/remote.wav','kind':'local','entry':'','fragment':None}
+        archive_file={'name':'song.wav','path':'/virtual/album/pack.zip','kind':'archive','entry':'inner/song.wav','fragment':None}
         if url.path=='/api/library':
             path=query.get('path',['/virtual'])[0]
             if path=='/virtual':
                 self.respond(200,{'path':'/virtual','directories':[{'name':'album','path':'/virtual/album'}],'files':[]})
             elif path=='/virtual/album':
-                self.respond(200,{'path':path,'directories':[],'files':[file]})
+                self.respond(200,{'path':path,'directories':[{'name':'pack.zip','path':'/virtual/album/pack.zip'}],'files':[file]})
+            elif path=='/virtual/album/pack.zip':
+                self.respond(200,{'path':path,'directories':[{'name':'inner','path':path+'/inner'}],'files':[]})
+            elif path=='/virtual/album/pack.zip/inner':
+                self.respond(200,{'path':path,'directories':[],'files':[archive_file]})
             else:self.respond(404,{'error':'unknown folder'})
         elif url.path=='/api/library/search':
             self.respond(200,{'results':[file] if 'remote' in query.get('q',[''])[0] else [],'generation':1,'done':True})
@@ -63,6 +68,8 @@ env=os.environ.copy()
 for key,sub in [('XDG_CONFIG_HOME','config'),('XDG_DATA_HOME','data'),('XDG_CACHE_HOME','cache')]:
     env[key]=os.path.join(base,sub)
 env['TERM']='xterm-256color'
+for key in ('KOG_MIDI_ENGINE','KOG_SOUNDFONT','KOG_SC55_ROMS','KOG_MT32_ROMS','KOG_MT32_GM_PROGRAM_MAPPING'):
+    env.pop(key,None)
 master,slave=pty.openpty()
 def resize(cols,rows):
     fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack('HHHH',rows,cols,0,0))
@@ -160,11 +167,11 @@ try:
     assert 'Columns fitted' in screen.display[-1],screen.display[-1]
     click(95,1,2);send(b'\x1b[B'*6+b'\r')
     assert 'Visible Columns' in '\n'.join(screen.display)
-    send(b'\x1b[B'*11+b'\r')
-    assert 'Genre shown' in screen.display[-1],screen.display[-1]
+    click(10,13)
+    wait_for('Genre shown')
     click(95,1,2);send(b'\x1b[B'*6+b'\r')
-    send(b'\x1b[B\r')
-    assert '★ shown' in screen.display[-1],screen.display[-1]
+    click(10,3)
+    wait_for('★ shown')
     star_at=screen.display[1].find('★')
     assert star_at>0,screen.display[1]
     click(star_at,2);wait_for('Starred ')
@@ -264,7 +271,8 @@ try:
     wait_for('+4.5 dB')
     send(b'\x1b',.4)
     click(5,0);click(10,11);click(10,3)
-    wait_for('Codec:')
+    wait_for('Format:')
+    assert 'Sample Rate:' in '\n'.join(screen.display) and 'Bits Per Sample:' in '\n'.join(screen.display)
     send(b'\x1b',.4)
     click(5,0);click(10,11);click(10,4)
     wait_for('No embedded lyrics')
@@ -553,11 +561,16 @@ try:
     click(10,row('remote.wav'));click(10,row('remote.wav'))
     wait_for('Playing remote.wav',10)
     assert any(path=='/api/stream' and query.get('token')==['PTY remote token'] for path,query,_ in remote_requests),remote_requests
+    click(10,row('pack.zip'));wait_for('inner',10)
+    click(10,row('inner'));wait_for('song.wav',10)
+    click(10,row('song.wav'));click(10,row('song.wav'))
+    wait_for('Playing song.wav',10)
+    assert any(path=='/api/stream' and query.get('kind')==['archive'] and query.get('entry')==['inner/song.wav'] for path,query,_ in remote_requests),remote_requests
     click(10,3);send('remote',.8)
     wait_for('remote matches for remote',10)
     send(b'\x1b',.4);wait_for('Connected to '+remote_address,10)
     click(5,0);click(10,15);click(10,9)
-    wait_for('Added 1 tracks from folder',10)
+    wait_for('Added 2 tracks from folder',10)
     click(5,0);click(10,15);click(10,10)
     wait_for('Showing local library',10)
     remote_config=list(Path(base).rglob('tui-remote-server.json'))
@@ -575,6 +588,50 @@ try:
     assert 'Ⅱ' in screen.display[36] and 'art' in '\n'.join(line[52:] for line in screen.display[2:20]),screen.display[36]
     diagnostics=list(Path(base).rglob('tui-diagnostics.log'))
     assert len(diagnostics)==1 and os.stat(diagnostics[0]).st_mode & 0o777==0o600
+    click(5,0);click(10,13);click(10,14)
+    assert '╭─ MIDI Synthesis' in '\n'.join(screen.display),screen.display[:12]
+    click(10,2)
+    wait_for('MIDI backend: opl3windows')
+    assert next(Path(base).rglob('midi-engine')).read_text()=='opl3windows'
+    click(5,0);click(10,13);click(10,14);click(10,6)
+    wait_for('MT-32 GM program mapping: off')
+    assert next(Path(base).rglob('mt32-gm-program-mapping')).read_text()=='false'
+    click(5,0);click(10,13);click(10,14);click(10,3)
+    send(b'\x01'+os.path.join(base,'missing.sf2').encode()+b'\r')
+    wait_for('Opening SoundFont:')
+    click(5,0);click(10,13);click(10,14);click(10,3)
+    send(b'\x01\r')
+    wait_for('MIDI SoundFont updated')
+    assert next(Path(base).rglob('soundfont-path')).read_text()==''
+    for y in (4,5):
+        click(5,0);click(10,13);click(10,14);click(10,y)
+        send(b'\x01\r')
+        wait_for('ROM directory updated')
+    click(5,0);click(10,13);click(10,14);click(10,7)
+    wait_for('MIDI backend: opl3windows')
+    assert 'MT-32 GM program mapping: off' in '\n'.join(screen.display)
+    send(b'\x1b',.3)
+    subsong_dir=os.path.join(base,'SubsongFixture')
+    os.makedirs(subsong_dir)
+    header=bytearray(128)
+    header[:5]=b'NESM\x1a';header[5]=1;header[6]=3;header[7]=1
+    header[8:10]=(0x8000).to_bytes(2,'little')
+    header[10:12]=(0x8000).to_bytes(2,'little')
+    header[12:14]=(0x8001).to_bytes(2,'little')
+    Path(subsong_dir,'game.nsf').write_bytes(header+b'\x60\x60')
+    click(1,0);send(b'\x01'+base.encode()+b'\r',.4)
+    wait_for('SubsongFixture')
+    click(10,row('SubsongFixture'));wait_for('game.nsf')
+    click(10,row('game.nsf'));send('a')
+    wait_for('Added 3 track(s)')
+    assert all(f'game [{number}]' in '\n'.join(line[52:] for line in screen.display[2:20]) for number in (1,2,3)),screen.display[2:14]
+    click(5,0);click(10,9)
+    click(10,row('SubsongFixture'));click(10,row('SubsongFixture'))
+    wait_for('Added 3 tracks from folder',10)
+    click(5,0);click(10,11);click(10,7)
+    wait_for('Supported Formats')
+    assert '.m3u' in '\n'.join(screen.display),screen.display[:20]
+    send(b'\x1b',.3)
     print('search, local/remote tree/archive navigation/trash/blacklist/group selection, divider/column drag/visibility/reorder, volume, radio/blacklist/queue/stop-after, playback/seek/completion/order, saved-list CRUD/export/prune/multi-selection, tag fields/artwork/playback resume, selection/reorder/sort, menus/dialogs, equalizer/visualizer, narrow wheel/keyboard navigation, resize: PASS')
     send(b'\x1b',.3);send('q')
     p.wait(timeout=5)
