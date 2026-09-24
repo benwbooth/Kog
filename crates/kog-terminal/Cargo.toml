@@ -16,10 +16,12 @@ rand = "0.9"
 trash = "5.2.9"
 base64 = "0.22.1"
 lofty = "0.25.1"
+serde = { version = "1.0", features = ["derive"] }
+url = "2.5.8"
+ureq = { version = "3.4.0", features = ["json", "rustls"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"
-url = "2.5.8"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

@@ -1,4 +1,5 @@
 mod columns;
+mod remote;
 #[path = "../../../src/tag_editor.rs"]
 mod tag_editor;
 mod tui;

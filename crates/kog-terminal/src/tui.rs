@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
@@ -11,7 +12,9 @@ use kog_audio::decoder::{DecoderRegistry, PlaybackSource};
 use kog_audio::playback::{PlaybackEngine, PlaybackState, available_output_devices};
 use kog_audio::playback_order::PlaybackOrder;
 use kog_audio::playlist::{Playlist, PlaylistEntry, PlaylistLocation};
-use kog_audio::settings::{AppSettings, OutputDevicePreference, RepeatMode, ShuffleMode};
+use kog_audio::settings::{
+    AppSettings, OpeningFilesBehavior, OutputDevicePreference, RepeatMode, ShuffleMode,
+};
 use kog_audio::track::Track as AudioTrack;
 use kog_core::db::{BLACKLIST_FOLDER, BLACKLIST_SONG, BlacklistEntry, StoredEntry};
 use kog_core::equalizer::{EqualizerSettings, presets};
@@ -21,6 +24,7 @@ use rand::Rng;
 use unicode_width::UnicodeWidthChar;
 
 use crate::columns::Columns;
+use crate::remote::{RemoteFile, RemoteListing, RemoteSettings};
 use crate::tag_editor::{parse_edits, snapshot_json, write_tags};
 
 #[derive(Clone)]
@@ -91,6 +95,7 @@ enum MenuPage {
     Columns,
     ColumnVisibility,
     TagEditor,
+    Remote,
 }
 
 impl MenuPage {
@@ -106,6 +111,7 @@ impl MenuPage {
             Self::Columns => "Columns",
             Self::ColumnVisibility => "Visible Columns",
             Self::TagEditor => "Edit Tags",
+            Self::Remote => "Remote Server",
         }
     }
     fn labels(self) -> &'static [&'static str] {
@@ -120,6 +126,7 @@ impl MenuPage {
             Self::Columns => &COLUMNS_MENU,
             Self::ColumnVisibility => &COLUMN_VISIBILITY_MENU,
             Self::TagEditor => &TAG_EDITOR_MENU,
+            Self::Remote => &REMOTE_MENU,
         }
     }
 }
@@ -149,6 +156,10 @@ enum PromptKind {
     TrashSelected,
     TagField(usize),
     TagArtwork,
+    RemoteUrl,
+    RemoteToken,
+    RemoteUsername,
+    RemotePassword,
 }
 
 enum RadioCommand {
@@ -176,6 +187,26 @@ enum TagCommand {
 enum TagResponse {
     Open(Vec<PlaybackSource>, Result<serde_json::Value, String>),
     Saved(Vec<PathBuf>, Option<String>),
+}
+
+enum RemoteCommand {
+    Root(u64, RemoteSettings, Option<String>),
+    Expand(u64, RemoteSettings, PathBuf),
+    Collect(u64, u64, RemoteSettings, PathBuf),
+    Search(u64, u64, RemoteSettings, String),
+}
+
+enum RemoteResponse {
+    Root(u64, RemoteSettings, Result<RemoteListing, String>),
+    Expand(u64, PathBuf, RemoteSettings, Result<RemoteListing, String>),
+    Collect(
+        u64,
+        u64,
+        PathBuf,
+        RemoteSettings,
+        Result<Vec<RemoteFile>, String>,
+    ),
+    Search(u64, u64, RemoteSettings, Result<Vec<RemoteFile>, String>),
 }
 
 struct Ui {
@@ -240,6 +271,15 @@ struct Ui {
     tag_session: Option<TagSession>,
     tag_busy: bool,
     tag_resume: Option<(usize, Duration, PlaybackState)>,
+    remote_settings: RemoteSettings,
+    remote_connection: Option<RemoteSettings>,
+    remote_active: bool,
+    remote_generation: u64,
+    remote_path: String,
+    remote_pending: HashSet<PathBuf>,
+    remote_requests: Sender<RemoteCommand>,
+    remote_results: Receiver<RemoteResponse>,
+    remote_search_generation: Arc<AtomicU64>,
     search_done: bool,
     exit_requested: bool,
     menu_open: bool,
@@ -361,6 +401,43 @@ impl Ui {
                 }
             }
         });
+        let (remote_requests, remote_jobs) = mpsc::channel::<RemoteCommand>();
+        let (remote_done, remote_results) = mpsc::channel::<RemoteResponse>();
+        let remote_search_generation = Arc::new(AtomicU64::new(0));
+        let worker_search_generation = remote_search_generation.clone();
+        std::thread::spawn(move || {
+            while let Ok(command) = remote_jobs.recv() {
+                let response = match command {
+                    RemoteCommand::Root(generation, settings, path) => {
+                        let result = settings.browse(path.as_deref());
+                        RemoteResponse::Root(generation, settings, result)
+                    }
+                    RemoteCommand::Expand(generation, settings, path) => {
+                        let result = settings.browse(path.to_str());
+                        RemoteResponse::Expand(generation, path, settings, result)
+                    }
+                    RemoteCommand::Collect(generation, folder_generation, settings, path) => {
+                        let result = settings.collect_folder(&path);
+                        RemoteResponse::Collect(
+                            generation,
+                            folder_generation,
+                            path,
+                            settings,
+                            result,
+                        )
+                    }
+                    RemoteCommand::Search(generation, search_generation, settings, query) => {
+                        let result = settings.search(&query, || {
+                            worker_search_generation.load(Ordering::Relaxed) != search_generation
+                        });
+                        RemoteResponse::Search(generation, search_generation, settings, result)
+                    }
+                };
+                if remote_done.send(response).is_err() {
+                    break;
+                }
+            }
+        });
         let decoders = DecoderRegistry::new(settings.decoder_settings());
         let (radio_requests, radio_commands) =
             mpsc::channel::<(u64, RadioCommand, Option<PathBuf>)>();
@@ -472,6 +549,15 @@ impl Ui {
             tag_session: None,
             tag_busy: false,
             tag_resume: None,
+            remote_settings: RemoteSettings::load(),
+            remote_connection: None,
+            remote_active: false,
+            remote_generation: 0,
+            remote_path: String::new(),
+            remote_pending: HashSet::new(),
+            remote_requests,
+            remote_results,
+            remote_search_generation,
             search_done: false,
             exit_requested: false,
             menu_open: false,
@@ -526,8 +612,9 @@ impl Ui {
             order_changed |= metadata.as_ref().is_some_and(|meta| !meta.album.is_empty());
             self.metadata.insert(key, metadata);
         }
-        if order_changed && self.shuffle_mode == ShuffleMode::Albums && self.playing.is_none() {
-            self.order_tracks_changed();
+        if order_changed && self.shuffle_mode == ShuffleMode::Albums {
+            let tracks = self.order_tracks();
+            self.order.album_metadata_changed(&tracks, self.playing);
         }
     }
 
@@ -743,17 +830,8 @@ impl Ui {
                 .and_then(|m| m.track_number)
                 .map(|v| v.to_string())
                 .unwrap_or_default(),
-            "path" => {
-                if track.entry.entry.is_empty() {
-                    track.entry.path.clone()
-                } else {
-                    format!(
-                        "{}/{}",
-                        track.entry.path.trim_end_matches('/'),
-                        track.entry.entry.trim_start_matches('/')
-                    )
-                }
-            }
+            "path" => display_entry_path(&track.entry),
+            "filename" if track.entry.kind == "remote" => track.name.clone(),
             "filename" => Path::new(if track.entry.entry.is_empty() {
                 &track.entry.path
             } else {
@@ -855,7 +933,17 @@ impl Ui {
             return;
         };
         if track.entry.kind == "remote" {
-            self.status = "Remote tracks have no local file tree location".to_owned();
+            if self.remote_active
+                && let Some(index) = self.items.iter().position(|row| {
+                    matches!(&row.item, Item::Track(item) if item.entry.path == track.entry.path)
+                })
+            {
+                self.selected[1] = index;
+                self.focus = Focus::Library;
+                self.status = format!("Located {}", track.name);
+            } else {
+                self.status = "Browse the source server to locate this track".to_owned();
+            }
             return;
         }
         let path = PathBuf::from(&track.entry.path);
@@ -971,7 +1059,8 @@ impl Ui {
             (MenuPage::Main, 9) => self.open_submenu(MenuPage::View),
             (MenuPage::Main, 10) => self.open_submenu(MenuPage::Playback),
             (MenuPage::Main, 11) => self.open_submenu(MenuPage::Preferences),
-            (MenuPage::Main, 13) => {
+            (MenuPage::Main, 13) => self.open_submenu(MenuPage::Remote),
+            (MenuPage::Main, 14) => {
                 self.modal = Some(format!(
                     "Kog v{}\nTerminal player\nMusic folder: {}",
                     env!("CARGO_PKG_VERSION"),
@@ -980,7 +1069,7 @@ impl Ui {
                         .map_or_else(|| "None".to_owned(), |p| p.display().to_string())
                 ))
             }
-            (MenuPage::Main, 14) => self.exit_requested = true,
+            (MenuPage::Main, 15) => self.exit_requested = true,
             (MenuPage::View, 0) => {
                 self.sidebar_visible = !self.sidebar_visible;
                 if !self.sidebar_visible {
@@ -1044,6 +1133,17 @@ impl Ui {
             (MenuPage::Preferences, 10) => {
                 self.begin_prompt(PromptKind::RemoveBlacklistId, String::new())
             }
+            (MenuPage::Preferences, 11) => {
+                let next = match AppSettings::load().opening_files_behavior {
+                    OpeningFilesBehavior::ClearAndPlay => OpeningFilesBehavior::Enqueue,
+                    OpeningFilesBehavior::Enqueue => OpeningFilesBehavior::EnqueueAndPlay,
+                    OpeningFilesBehavior::EnqueueAndPlay => OpeningFilesBehavior::ClearAndPlay,
+                };
+                match AppSettings::save_opening_files_behavior(next) {
+                    Ok(()) => self.status = format!("Opening files: {}", next.setting_value()),
+                    Err(error) => self.status = error,
+                }
+            }
             (MenuPage::Tree, 0) => self.add_selected(false),
             (MenuPage::Tree, 1) => self.add_selected(true),
             (MenuPage::Tree, 2) => self.open_selected(),
@@ -1060,12 +1160,22 @@ impl Ui {
                     ..
                 }) = self.items.get(self.selected[1])
                 {
-                    self.browse(Some(path.clone()));
+                    if self.remote_active {
+                        self.connect_remote(Some(path.to_string_lossy().into_owned()));
+                    } else {
+                        self.browse(Some(path.clone()));
+                    }
                 } else {
                     self.status = "Select a folder to use as tree root".to_owned();
                 }
             }
-            (MenuPage::Tree, 9) => self.browse(None),
+            (MenuPage::Tree, 9) => {
+                if self.remote_active {
+                    self.connect_remote(None);
+                } else {
+                    self.browse(None);
+                }
+            }
             (MenuPage::Tracks, 0) => self.play_selected(),
             (MenuPage::Tracks, 1) => self.remove_selected(),
             (MenuPage::Tracks, 2) => self.begin_prompt(PromptKind::AddToPlaylist, String::new()),
@@ -1194,7 +1304,59 @@ impl Ui {
                 self.tag_session = None;
                 self.status = "Tag edits cancelled".to_owned();
             }
+            (MenuPage::Remote, 0) => self.begin_prompt(
+                PromptKind::RemoteUrl,
+                self.remote_settings.server_url.clone(),
+            ),
+            (MenuPage::Remote, 1) => self.begin_prompt(PromptKind::RemoteToken, String::new()),
+            (MenuPage::Remote, 2) => self.begin_prompt(
+                PromptKind::RemoteUsername,
+                self.remote_settings.username.clone(),
+            ),
+            (MenuPage::Remote, 3) => self.begin_prompt(PromptKind::RemotePassword, String::new()),
+            (MenuPage::Remote, 4) => {
+                self.remote_settings.auth_mode = match self.remote_settings.auth_mode.as_str() {
+                    "token" => "basic",
+                    "basic" => "none",
+                    _ => "token",
+                }
+                .to_owned();
+                self.persist_remote_settings(false);
+                self.status = format!("Server authentication: {}", self.remote_settings.auth_mode);
+            }
+            (MenuPage::Remote, 5) => {
+                self.remote_settings.codec = match self.remote_settings.codec.as_str() {
+                    "aac" => "opus",
+                    "opus" => "flac",
+                    _ => "aac",
+                }
+                .to_owned();
+                self.persist_remote_settings(false);
+                self.status = format!("Remote stream: {}", self.remote_settings.codec);
+            }
+            (MenuPage::Remote, 6) => self.connect_remote(None),
+            (MenuPage::Remote, 7) => {
+                if self.remote_active {
+                    self.enqueue_folder(PathBuf::from(&self.remote_path));
+                } else {
+                    self.status = "Connect to a server first".to_owned();
+                }
+            }
+            (MenuPage::Remote, 8) => {
+                self.browse(None);
+                self.status = "Showing local library".to_owned();
+            }
             _ => {}
+        }
+    }
+
+    fn persist_remote_settings(&mut self, reconnect: bool) {
+        match self.remote_settings.save() {
+            Ok(()) if reconnect && !self.remote_settings.server_url.is_empty() => {
+                self.connect_remote(None);
+            }
+            Ok(()) => self.status = "Remote settings saved".to_owned(),
+            Err(error) => self.status = error,
         }
     }
 
@@ -1347,7 +1509,7 @@ impl Ui {
                 metadata.map_or("", |m| &m.album),
                 metadata.map_or("", |m| &m.genre),
                 metadata.map_or("", |m| &m.codec),
-                track.entry.path
+                display_entry_path(&track.entry)
             )
         } else {
             "No track selected".to_owned()
@@ -1463,6 +1625,13 @@ impl Ui {
         let result = self.read_directory(path.as_deref());
         match result {
             Ok((location, items)) => {
+                self.remote_search_generation
+                    .fetch_add(1, Ordering::Relaxed);
+                self.remote_active = false;
+                self.remote_connection = None;
+                self.remote_generation = self.remote_generation.wrapping_add(1);
+                self.remote_pending.clear();
+                self.remote_path.clear();
                 self.browse_path = location;
                 self.root_items = items;
                 self.expanded.clear();
@@ -1504,6 +1673,129 @@ impl Ui {
             }
         }
         Ok((value["path"].as_str().map(PathBuf::from), items))
+    }
+
+    fn connect_remote(&mut self, path: Option<String>) {
+        if let Err(error) = self.remote_settings.validate() {
+            self.status = error;
+            return;
+        }
+        self.remote_generation = self.remote_generation.wrapping_add(1);
+        self.remote_search_generation
+            .fetch_add(1, Ordering::Relaxed);
+        let generation = self.remote_generation;
+        let settings = self.remote_settings.clone();
+        if self
+            .remote_requests
+            .send(RemoteCommand::Root(generation, settings, path))
+            .is_ok()
+        {
+            self.status = "Connecting to remote library…".to_owned();
+        } else {
+            self.status = "Remote browser worker is unavailable".to_owned();
+        }
+    }
+
+    fn poll_remote(&mut self) {
+        while let Ok(response) = self.remote_results.try_recv() {
+            match response {
+                RemoteResponse::Root(generation, settings, result) => {
+                    if generation != self.remote_generation {
+                        continue;
+                    }
+                    match result.and_then(|listing| {
+                        let path = listing.path.clone();
+                        remote_items(&settings, listing).map(|items| (path, items))
+                    }) {
+                        Ok((path, items)) => {
+                            self.remote_active = true;
+                            self.remote_connection = Some(settings.clone());
+                            self.remote_path = path;
+                            self.browse_path = None;
+                            self.search = None;
+                            self.search_query.clear();
+                            self.root_items = items;
+                            self.expanded.clear();
+                            self.children.clear();
+                            self.remote_pending.clear();
+                            self.selected_tree.clear();
+                            self.tree_anchor = None;
+                            self.rebuild_tree();
+                            self.selected[1] = 0;
+                            self.offsets[1] = 0;
+                            self.focus = Focus::Library;
+                            self.status = format!("Connected to {}", settings.server_url);
+                        }
+                        Err(error) => self.status = error,
+                    }
+                }
+                RemoteResponse::Expand(generation, path, settings, result) => {
+                    if generation != self.remote_generation || !self.remote_active {
+                        continue;
+                    }
+                    self.remote_pending.remove(&path);
+                    match result.and_then(|listing| remote_items(&settings, listing)) {
+                        Ok(items) => {
+                            self.children.insert(path.clone(), items);
+                            self.expanded.insert(path);
+                            self.rebuild_tree();
+                        }
+                        Err(error) => self.status = error,
+                    }
+                }
+                RemoteResponse::Collect(generation, folder_generation, path, settings, result) => {
+                    if generation != self.remote_generation
+                        || folder_generation != self.folder_generation
+                    {
+                        continue;
+                    }
+                    let tracks = result.and_then(|files| {
+                        files
+                            .into_iter()
+                            .map(|file| remote_track(&settings, file))
+                            .collect()
+                    });
+                    self.accept_folder_result(path, tracks);
+                }
+                RemoteResponse::Search(generation, search_generation, settings, result) => {
+                    if generation != self.remote_generation
+                        || search_generation
+                            != self.remote_search_generation.load(Ordering::Relaxed)
+                    {
+                        continue;
+                    }
+                    match result.and_then(|files| {
+                        files
+                            .into_iter()
+                            .map(|file| {
+                                if file.kind == "dir" {
+                                    Ok(Item::Directory(file.name, PathBuf::from(file.path)))
+                                } else {
+                                    remote_track(&settings, file).map(Item::Track)
+                                }
+                            })
+                            .collect::<Result<Vec<_>, String>>()
+                    }) {
+                        Ok(items) => {
+                            self.root_items = items;
+                            self.expanded.clear();
+                            self.children.clear();
+                            self.selected_tree.clear();
+                            self.tree_anchor = None;
+                            self.rebuild_tree();
+                            self.search_done = true;
+                            self.status = format!(
+                                "{} remote matches for {}",
+                                self.items.len(),
+                                self.search_query
+                            );
+                        }
+                        Err(error) if error == "Search superseded" => {}
+                        Err(error) => self.status = error,
+                    }
+                }
+            }
+        }
     }
 
     fn rebuild_tree(&mut self) {
@@ -1604,6 +1896,29 @@ impl Ui {
             return;
         }
         if !self.children.contains_key(&path) {
+            if self.remote_active {
+                if self.remote_pending.insert(path.clone()) {
+                    let Some(settings) = self.remote_connection.clone() else {
+                        self.status = "Connect to a server first".to_owned();
+                        return;
+                    };
+                    if self
+                        .remote_requests
+                        .send(RemoteCommand::Expand(
+                            self.remote_generation,
+                            settings,
+                            path.clone(),
+                        ))
+                        .is_ok()
+                    {
+                        self.status = format!("Browsing {}…", path.display());
+                    } else {
+                        self.remote_pending.remove(&path);
+                        self.status = "Remote browser worker is unavailable".to_owned();
+                    }
+                }
+                return;
+            }
             match self.read_directory(Some(&path)) {
                 Ok((_, children)) => {
                     self.children.insert(path.clone(), children);
@@ -1725,6 +2040,27 @@ impl Ui {
     }
 
     fn enqueue_folder(&mut self, path: PathBuf) {
+        if self.remote_active {
+            let Some(settings) = self.remote_connection.clone() else {
+                self.status = "Connect to a server first".to_owned();
+                return;
+            };
+            if self
+                .remote_requests
+                .send(RemoteCommand::Collect(
+                    self.remote_generation,
+                    self.folder_generation,
+                    settings,
+                    path.clone(),
+                ))
+                .is_ok()
+            {
+                self.status = format!("Adding tracks from {}…", path.display());
+            } else {
+                self.status = "Remote browser worker is unavailable".to_owned();
+            }
+            return;
+        }
         if self
             .folder_requests
             .send((self.folder_generation, path.clone()))
@@ -1741,23 +2077,27 @@ impl Ui {
             if generation != self.folder_generation {
                 continue;
             }
-            let play_when_loaded = self.folder_play_pending.remove(&path);
-            match result {
-                Ok(tracks) => {
-                    let count = tracks.len();
-                    let first = self.tracks.len();
-                    self.tracks.extend(tracks);
-                    self.order_tracks_changed();
-                    self.status = format!("Added {count} tracks from folder");
-                    if play_when_loaded && count > 0 {
-                        self.folder_play_pending.clear();
-                        self.selected[2] = first;
-                        self.select_track(first, false, false);
-                        self.play_selected();
-                    }
+            self.accept_folder_result(path, result);
+        }
+    }
+
+    fn accept_folder_result(&mut self, path: PathBuf, result: Result<Vec<Track>, String>) {
+        let play_when_loaded = self.folder_play_pending.remove(&path);
+        match result {
+            Ok(tracks) => {
+                let count = tracks.len();
+                let first = self.tracks.len();
+                self.tracks.extend(tracks);
+                self.order_tracks_changed();
+                self.status = format!("Added {count} tracks from folder");
+                if play_when_loaded && count > 0 {
+                    self.folder_play_pending.clear();
+                    self.selected[2] = first;
+                    self.select_track(first, false, false);
+                    self.play_selected();
                 }
-                Err(error) => self.status = error,
             }
+            Err(error) => self.status = error,
         }
     }
 
@@ -1812,8 +2152,33 @@ impl Ui {
             Some(TreeRow {
                 item: Item::Track(_),
                 ..
-            }) => self.add_selected(true),
+            }) => self.activate_selected(),
             None => {}
+        }
+    }
+
+    fn activate_selected(&mut self) {
+        match AppSettings::load().opening_files_behavior {
+            OpeningFilesBehavior::ClearAndPlay => self.add_selected(true),
+            OpeningFilesBehavior::Enqueue => self.add_selected(false),
+            OpeningFilesBehavior::EnqueueAndPlay => {
+                let first = self.tracks.len();
+                let folders: Vec<_> = self
+                    .selected_tree_items()
+                    .into_iter()
+                    .filter_map(|item| match item {
+                        Item::Directory(_, path) => Some(path),
+                        Item::Track(_) => None,
+                    })
+                    .collect();
+                self.add_selected(false);
+                if first < self.tracks.len() {
+                    self.selected[2] = first;
+                    self.play_selected();
+                } else {
+                    self.folder_play_pending.extend(folders);
+                }
+            }
         }
     }
 
@@ -2366,6 +2731,10 @@ impl Ui {
                             self.metadata_pending.remove(&key);
                         }
                     }
+                    if !paths.is_empty() && self.shuffle_mode == ShuffleMode::Albums {
+                        let tracks = self.order_tracks();
+                        self.order.album_metadata_changed(&tracks, self.playing);
+                    }
                     if let Some((index, position, state)) = self.tag_resume.take() {
                         let selected = self.selected[2];
                         self.selected[2] = index;
@@ -2481,7 +2850,11 @@ impl Ui {
             PromptKind::Search => {
                 if value.trim().is_empty() {
                     self.search_due = None;
-                    self.browse(None);
+                    if self.remote_active {
+                        self.connect_remote(Some(self.remote_path.clone()));
+                    } else {
+                        self.browse(None);
+                    }
                 } else {
                     self.search_due = Some(Instant::now() + Duration::from_millis(250));
                 }
@@ -2499,7 +2872,44 @@ impl Ui {
 
     fn run_file_search(&mut self, value: &str) {
         if value.trim().is_empty() {
-            self.browse(None);
+            if self.remote_active {
+                self.connect_remote(Some(self.remote_path.clone()));
+            } else {
+                self.browse(None);
+            }
+            return;
+        }
+        if self.remote_active {
+            let Some(settings) = self.remote_connection.clone() else {
+                self.status = "Connect to a server first".to_owned();
+                return;
+            };
+            self.search_query = value.to_owned();
+            self.search_done = false;
+            self.items.clear();
+            self.selected_tree.clear();
+            self.tree_anchor = None;
+            self.selected[1] = 0;
+            self.offsets[1] = 0;
+            self.focus = Focus::Library;
+            let search_generation = self
+                .remote_search_generation
+                .fetch_add(1, Ordering::Relaxed)
+                .wrapping_add(1);
+            if self
+                .remote_requests
+                .send(RemoteCommand::Search(
+                    self.remote_generation,
+                    search_generation,
+                    settings,
+                    value.to_owned(),
+                ))
+                .is_ok()
+            {
+                self.status = format!("Searching server for {value}…");
+            } else {
+                self.status = "Remote browser worker is unavailable".to_owned();
+            }
             return;
         }
         if self.search_query == value && self.search.is_some() {
@@ -2533,11 +2943,17 @@ impl Ui {
     }
 
     fn finish_prompt(&mut self, kind: PromptKind, value: String) {
-        let value = value.trim();
+        let raw = value;
+        let value = raw.trim();
         if value.is_empty()
             && !matches!(
                 kind,
-                PromptKind::PlaylistSearch | PromptKind::Search | PromptKind::TagField(_)
+                PromptKind::PlaylistSearch
+                    | PromptKind::Search
+                    | PromptKind::TagField(_)
+                    | PromptKind::RemoteToken
+                    | PromptKind::RemoteUsername
+                    | PromptKind::RemotePassword
             )
         {
             self.status = "A value is required".to_owned();
@@ -2930,6 +3346,22 @@ impl Ui {
                     self.open_submenu(MenuPage::TagEditor);
                 }
             }
+            PromptKind::RemoteUrl => {
+                self.remote_settings.server_url = value.to_owned();
+                self.persist_remote_settings(true);
+            }
+            PromptKind::RemoteToken => {
+                self.remote_settings.token = value.to_owned();
+                self.persist_remote_settings(true);
+            }
+            PromptKind::RemoteUsername => {
+                self.remote_settings.username = value.to_owned();
+                self.persist_remote_settings(true);
+            }
+            PromptKind::RemotePassword => {
+                self.remote_settings.password = raw;
+                self.persist_remote_settings(true);
+            }
         }
     }
 
@@ -3090,7 +3522,11 @@ impl Ui {
                 Key::Esc => {
                     if kind == PromptKind::Search {
                         self.search_due = None;
-                        self.browse(None);
+                        if self.remote_active {
+                            self.connect_remote(Some(self.remote_path.clone()));
+                        } else {
+                            self.browse(None);
+                        }
                     } else if kind == PromptKind::PlaylistSearch {
                         self.playlist_query.clear();
                     } else if kind == PromptKind::TrashSelected {
@@ -3208,6 +3644,9 @@ impl Ui {
         match key {
             Key::Char('q') | Key::CtrlC => return false,
             Key::Esc if self.search.is_some() => self.browse(None),
+            Key::Esc if self.remote_active && !self.search_query.is_empty() => {
+                self.connect_remote(Some(self.remote_path.clone()));
+            }
             Key::Esc if !self.playlist_query.is_empty() => self.playlist_query.clear(),
             Key::Char('/') => self.begin_prompt(PromptKind::Search, self.search_query.clone()),
             Key::Char('F') => {
@@ -3685,15 +4124,23 @@ impl Ui {
             }
             if y == 2 && self.files_expanded {
                 if x < 4 {
-                    self.begin_prompt(
-                        PromptKind::MusicFolder,
-                        self.library
-                            .root()
-                            .map(|p| p.to_string_lossy().into_owned())
-                            .unwrap_or_default(),
-                    );
+                    if self.remote_active {
+                        self.open_submenu(MenuPage::Remote);
+                    } else {
+                        self.begin_prompt(
+                            PromptKind::MusicFolder,
+                            self.library
+                                .root()
+                                .map(|p| p.to_string_lossy().into_owned())
+                                .unwrap_or_default(),
+                        );
+                    }
                 } else if x < 8 {
-                    self.browse(None);
+                    if self.remote_active {
+                        self.connect_remote(Some(self.remote_path.clone()));
+                    } else {
+                        self.browse(None);
+                    }
                 }
                 return;
             }
@@ -3764,7 +4211,7 @@ impl Ui {
                 if double {
                     match self.items.get(index).map(|row| row.item.clone()) {
                         Some(Item::Directory(..)) => self.add_selected(false),
-                        Some(Item::Track(_)) => self.add_selected(true),
+                        Some(Item::Track(_)) => self.activate_selected(),
                         None => {}
                     }
                     self.last_click = None;
@@ -3811,7 +4258,7 @@ impl Ui {
                     if double {
                         match self.items.get(index).map(|row| row.item.clone()) {
                             Some(Item::Directory(..)) => self.add_selected(false),
-                            Some(Item::Track(_)) => self.add_selected(true),
+                            Some(Item::Track(_)) => self.activate_selected(),
                             None => {}
                         }
                     } else if !modified
@@ -4056,11 +4503,20 @@ impl Ui {
                 Surface::Toolbar,
                 true,
             );
-            let root_location = self.browse_path.clone().or_else(|| self.library.root());
-            let location = root_location
-                .as_ref()
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "Choose a music folder".to_owned());
+            let location = if self.remote_active {
+                let address = self
+                    .remote_connection
+                    .as_ref()
+                    .map_or("", |settings| settings.server_url.as_str());
+                format!("☁ {} · {}", address, self.remote_path)
+            } else {
+                self.browse_path
+                    .clone()
+                    .or_else(|| self.library.root())
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "Choose a music folder".to_owned())
+            };
             if self.files_expanded {
                 paint(
                     &mut screen,
@@ -4696,8 +5152,14 @@ impl Ui {
                 let box_width = width.saturating_sub(8).min(72).max(12);
                 let x = width.saturating_sub(box_width) / 2 + 1;
                 let y = height / 2;
+                let masked = if matches!(kind, PromptKind::RemoteToken | PromptKind::RemotePassword)
+                {
+                    "•".repeat(value.chars().count())
+                } else {
+                    value.clone()
+                };
                 let (shown, cursor) =
-                    input_window(value, self.input_cursor, box_width.saturating_sub(4));
+                    input_window(&masked, self.input_cursor, box_width.saturating_sub(4));
                 paint(
                     &mut screen,
                     y.saturating_sub(1),
@@ -4793,6 +5255,33 @@ fn track_from_entry(entry: StoredEntry) -> Track {
     Track { name, entry }
 }
 
+fn remote_track(settings: &RemoteSettings, file: RemoteFile) -> Result<Track, String> {
+    let url = settings.stream_url(&file)?;
+    Ok(Track {
+        name: file.name,
+        entry: StoredEntry {
+            kind: "remote".to_owned(),
+            path: url,
+            entry: String::new(),
+            fragment: None,
+        },
+    })
+}
+
+fn remote_items(settings: &RemoteSettings, listing: RemoteListing) -> Result<Vec<Item>, String> {
+    let mut items = Vec::new();
+    items.extend(
+        listing
+            .directories
+            .into_iter()
+            .map(|directory| Item::Directory(directory.name, PathBuf::from(directory.path))),
+    );
+    for file in listing.files {
+        items.push(Item::Track(remote_track(settings, file)?));
+    }
+    Ok(items)
+}
+
 fn radio_track(entry: RadioEntry) -> Track {
     track_from_entry(StoredEntry {
         kind: entry.kind,
@@ -4846,6 +5335,32 @@ fn metadata_key(entry: &StoredEntry) -> String {
         entry.entry,
         entry.fragment.as_deref().unwrap_or_default()
     )
+}
+
+fn display_entry_path(entry: &StoredEntry) -> String {
+    if entry.kind == "remote" {
+        if let Ok(url) = url::Url::parse(&entry.path) {
+            let mut path = url
+                .query_pairs()
+                .find(|(key, _)| key == "path")
+                .map(|(_, value)| value.into_owned())
+                .unwrap_or_else(|| url.path().to_owned());
+            if let Some((_, nested)) = url.query_pairs().find(|(key, _)| key == "entry") {
+                path.push('/');
+                path.push_str(&nested);
+            }
+            return format!("{} · {path}", url.origin().ascii_serialization());
+        }
+    }
+    if entry.entry.is_empty() {
+        entry.path.clone()
+    } else {
+        format!(
+            "{}/{}",
+            entry.path.trim_end_matches('/'),
+            entry.entry.trim_start_matches('/')
+        )
+    }
 }
 
 fn canonical_blacklist_path(path: &str) -> String {
@@ -4935,6 +5450,10 @@ fn prompt_label(kind: PromptKind) -> &'static str {
         PromptKind::TrashSelected => "Type yes to move selected item to trash",
         PromptKind::TagField(index) => TAG_FIELDS[index].1,
         PromptKind::TagArtwork => "Replacement artwork file path",
+        PromptKind::RemoteUrl => "Server address (http or https)",
+        PromptKind::RemoteToken => "API token",
+        PromptKind::RemoteUsername => "Server username",
+        PromptKind::RemotePassword => "Server password",
     }
 }
 
@@ -5004,7 +5523,7 @@ fn glyph(entry: &StoredEntry) -> &'static str {
     }
 }
 
-const MAIN_MENU: [&str; 15] = [
+const MAIN_MENU: [&str; 16] = [
     "Add Files or Folder…",
     "Add URL…",
     "Choose Music Folder…",
@@ -5018,8 +5537,20 @@ const MAIN_MENU: [&str; 15] = [
     "Playback                 ›",
     "Preferences              ›",
     "",
+    "Connect to Server        ›",
     "About Kog",
     "Quit",
+];
+const REMOTE_MENU: [&str; 9] = [
+    "Server Address…",
+    "API Token…",
+    "Username…",
+    "Password…",
+    "Cycle Authentication",
+    "Cycle Stream Codec",
+    "Connect and Browse",
+    "Queue Current Folder",
+    "Use Local Library",
 ];
 const VIEW_MENU: [&str; 5] = [
     "Show/Hide Files and Playlists",
@@ -5043,7 +5574,7 @@ const PLAYBACK_MENU: [&str; 13] = [
     "Toggle Stop After Selected",
     "Clear Queue",
 ];
-const PREFERENCES_MENU: [&str; 11] = [
+const PREFERENCES_MENU: [&str; 12] = [
     "Music Folder…",
     "Volume…",
     "Cycle Repeat",
@@ -5055,6 +5586,7 @@ const PREFERENCES_MENU: [&str; 11] = [
     "Edit Equalizer Band…",
     "View Blacklist…",
     "Remove Blacklist Entry…",
+    "Cycle Opening Files Behavior",
 ];
 const TREE_MENU: [&str; 10] = [
     "Add to Current Playlist",
@@ -5500,6 +6032,7 @@ fn parse_event(bytes: &mut Vec<u8>) -> Option<Event> {
 #[cfg(unix)]
 struct Terminal {
     original: libc::termios,
+    stderr_backup: Option<libc::c_int>,
 }
 #[cfg(unix)]
 impl Terminal {
@@ -5524,9 +6057,42 @@ impl Terminal {
                 io::Error::last_os_error()
             ));
         }
+        let stderr_backup = Self::redirect_diagnostics();
+        let terminal = Self {
+            original,
+            stderr_backup,
+        };
         print!("\x1b[?1049h\x1b[2J\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?25l");
         io::stdout().flush().map_err(|e| e.to_string())?;
-        Ok(Self { original })
+        Ok(terminal)
+    }
+
+    fn redirect_diagnostics() -> Option<libc::c_int> {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+        let path = kog_audio::settings::setting_path("tui-diagnostics.log")?;
+        std::fs::create_dir_all(path.parent()?).ok()?;
+        if path.exists() {
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).ok()?;
+        }
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .open(path)
+            .ok()?;
+        // SAFETY: dup/dup2 operate on live process descriptors. The original
+        // stderr is restored when the terminal session closes.
+        let saved = unsafe { libc::dup(libc::STDERR_FILENO) };
+        if saved < 0 {
+            return None;
+        }
+        if unsafe { libc::dup2(file.as_raw_fd(), libc::STDERR_FILENO) } < 0 {
+            unsafe { libc::close(saved) };
+            return None;
+        }
+        Some(saved)
     }
 
     fn size(&self) -> (usize, usize) {
@@ -5568,13 +6134,19 @@ impl Drop for Terminal {
         print!("\x1b[?25h\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?1049l");
         let _ = io::stdout().flush();
         unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &self.original) };
+        if let Some(saved) = self.stderr_backup.take() {
+            unsafe {
+                libc::dup2(saved, libc::STDERR_FILENO);
+                libc::close(saved);
+            }
+        }
     }
 }
 
 #[cfg(unix)]
 pub fn run() -> Result<(), String> {
-    let mut ui = Ui::new();
     let terminal = Terminal::open()?;
+    let mut ui = Ui::new();
     let mut input = Vec::new();
     let mut last_size = (0, 0);
     let mut last_draw = Instant::now() - Duration::from_secs(1);
@@ -5584,6 +6156,7 @@ pub fn run() -> Result<(), String> {
         ui.poll_search_due();
         ui.poll_search();
         ui.poll_folders();
+        ui.poll_remote();
         ui.poll_deletes();
         ui.poll_tags();
         ui.poll_metadata();

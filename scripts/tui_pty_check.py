@@ -1,4 +1,4 @@
-import fcntl, os, pty, select, signal, sqlite3, struct, subprocess, tempfile, time, wave, zipfile
+import base64, fcntl, http.server, json, os, pty, select, signal, sqlite3, struct, subprocess, tempfile, threading, time, urllib.parse, wave, zipfile
 from pathlib import Path
 import pyte
 from mutagen.wave import WAVE
@@ -14,13 +14,51 @@ with zipfile.ZipFile(os.path.join(music,'album','pack.zip'),'w') as z:
     z.write(os.path.join(music,'album','a.wav'),'inner/deep.wav')
 long_path=os.path.join(base,'long.wav')
 with wave.open(long_path,'wb') as w:
-    w.setnchannels(1);w.setsampwidth(2);w.setframerate(8000);w.writeframes(b'\0\0'*80000)
+    w.setnchannels(1);w.setsampwidth(2);w.setframerate(8000);w.writeframes(b'\0\0'*240000)
 second_path=os.path.join(base,'second.wav')
 with wave.open(second_path,'wb') as w:
     w.setnchannels(1);w.setsampwidth(2);w.setframerate(8000);w.writeframes(b'\0\0'*80000)
 third_path=os.path.join(base,'third.wav')
 with wave.open(third_path,'wb') as w:
     w.setnchannels(1);w.setsampwidth(2);w.setframerate(8000);w.writeframes(b'\0\0'*80000)
+remote_root=tempfile.TemporaryDirectory(prefix='kog-tui-remote-fixture-')
+remote_wav=os.path.join(remote_root.name,'remote.wav')
+with wave.open(remote_wav,'wb') as w:
+    w.setnchannels(1);w.setsampwidth(2);w.setframerate(8000);w.writeframes(b'\0\0'*80000)
+remote_requests=[]
+class RemoteHandler(http.server.BaseHTTPRequestHandler):
+    def log_message(self,*args):pass
+    def respond(self,code,payload):
+        body=json.dumps(payload).encode()
+        self.send_response(code);self.send_header('Content-Type','application/json')
+        self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
+    def do_GET(self):
+        url=urllib.parse.urlsplit(self.path)
+        query=urllib.parse.parse_qs(url.query)
+        remote_requests.append((url.path,query,self.headers.get('Authorization')))
+        if url.path=='/api/stream':
+            if query.get('token')!=['PTY remote token']:
+                self.respond(401,{'error':'invalid token'});return
+            body=Path(remote_wav).read_bytes()
+            self.send_response(200);self.send_header('Content-Type','audio/wav')
+            self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
+            return
+        if self.headers.get('Authorization')!='Bearer PTY remote token':
+            self.respond(401,{'error':'invalid token'});return
+        file={'name':'remote.wav','path':'/virtual/album/remote.wav','kind':'local','entry':'','fragment':None}
+        if url.path=='/api/library':
+            path=query.get('path',['/virtual'])[0]
+            if path=='/virtual':
+                self.respond(200,{'path':'/virtual','directories':[{'name':'album','path':'/virtual/album'}],'files':[]})
+            elif path=='/virtual/album':
+                self.respond(200,{'path':path,'directories':[],'files':[file]})
+            else:self.respond(404,{'error':'unknown folder'})
+        elif url.path=='/api/library/search':
+            self.respond(200,{'results':[file] if 'remote' in query.get('q',[''])[0] else [],'generation':1,'done':True})
+        else:self.respond(404,{'error':'unknown endpoint'})
+remote_server=http.server.ThreadingHTTPServer(('127.0.0.1',0),RemoteHandler)
+remote_server.daemon_threads=True
+threading.Thread(target=remote_server.serve_forever,daemon=True).start()
 env=os.environ.copy()
 for key,sub in [('XDG_CONFIG_HOME','config'),('XDG_DATA_HOME','data'),('XDG_CACHE_HOME','cache')]:
     env[key]=os.path.join(base,sub)
@@ -215,7 +253,7 @@ try:
     click(5,0);click(10,3);send('https://example.invalid/track.mp3\r',.3)
     wait_for('Added track.mp3')
     click(5,0);click(10,13)
-    assert '╭─ Preferences' in screen.display[1]
+    assert '╭─ Preferences' in screen.display[1],screen.display[:18]
     click(10,5);send(b'\x7f'*4+'Rock\r'.encode(),.3)
     assert 'Equalizer: On · Rock' in screen.display[-1],screen.display[-1]
     click(5,0);click(10,13);click(10,10);send('3\r')
@@ -241,7 +279,7 @@ try:
     click(60,2);send('X')
     assert '■' in screen.display[2],screen.display[2]
     send(b'\r')
-    wait_for('0:10')
+    wait_for('0:30')
     assert 'Ⅱ' in screen.display[36],screen.display[36]
     click(80,37)
     wait_for('Ready to play',5)
@@ -259,7 +297,7 @@ try:
     click(55,36)
     assert '▶' in screen.display[36],screen.display[36]
     click(72,37)
-    assert '0:06' in screen.display[37] or '0:07' in screen.display[37],screen.display[37]
+    assert any(clock in screen.display[37] for clock in ('0:19','0:20','0:21')),screen.display[37]
     if snapshot_path:=os.environ.get('KOG_TUI_SNAPSHOT_PATH'):
         from PIL import Image, ImageDraw, ImageFont
         font_path=subprocess.check_output(['fc-match','DejaVu Sans Mono','-f','%{file}'],text=True).strip()
@@ -485,10 +523,64 @@ try:
     assert 'long.wav' not in '\n'.join(line[:50] for line in screen.display[:20])
     click(10,row('kept.wav'),2);send(b'\x1b[B'*9+b'\r')
     assert any('▸ ▱ RadioOnly' in line[:50] for line in screen.display[:20]),screen.display[:20]
-    print('search, tree/archive navigation/trash/blacklist/group selection, divider/column drag/visibility/reorder, volume, radio/blacklist/queue/stop-after, playback/seek/completion/order, saved-list CRUD/export/prune/multi-selection, tag editing, selection/reorder/sort, menus/dialogs, equalizer/visualizer, narrow wheel/keyboard navigation, resize: PASS')
+    artwork_path=os.path.join(base,'cover.png')
+    with open(artwork_path,'wb') as artwork:
+        artwork.write(base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='))
+    art_track=os.path.join(base,'art.wav')
+    with wave.open(art_track,'wb') as w:
+        w.setnchannels(1);w.setsampwidth(2);w.setframerate(8000);w.writeframes(b'\0\0'*480000)
+    click(5,0);click(10,9)
+    click(5,0);click(10,2);send(art_track+'\r',.3)
+    click(60,2);click(60,2)
+    wait_for('Playing art.wav')
+    send('e');wait_for('Editing tags for 1 file(s)')
+    send(b'\x1b[B'*13+b'\r');send(artwork_path+'\r',.3)
+    send(b'\x1b[B'*15+b'\r');wait_for('Updated tags for 1 file(s)',10)
+    assert WAVE(art_track).tags.getall('APIC')
+    assert 'Ⅱ' in screen.display[36],screen.display[36]
+    send('e');wait_for('Editing tags for 1 file(s)')
+    send(b'\x1b[B'*14+b'\r');send(b'\x1b[B'*15+b'\r')
+    wait_for('Updated tags for 1 file(s)',10)
+    removed_art=WAVE(art_track).tags
+    assert removed_art is None or not removed_art.getall('APIC')
+    remote_address=f'http://127.0.0.1:{remote_server.server_port}'
+    click(5,0);click(10,15);click(10,2);send(remote_address+'\r',.4)
+    wait_for('Authentication failed',10)
+    click(5,0);click(10,15);click(10,3);send('PTY remote token\r',.4)
+    wait_for('Connected to '+remote_address,10)
+    assert any('▱ album' in line[:50] for line in screen.display[:20]),screen.display[:20]
+    click(10,row('▱ album'));wait_for('remote.wav',10)
+    click(10,row('remote.wav'));click(10,row('remote.wav'))
+    wait_for('Playing remote.wav',10)
+    assert any(path=='/api/stream' and query.get('token')==['PTY remote token'] for path,query,_ in remote_requests),remote_requests
+    click(10,3);send('remote',.8)
+    wait_for('remote matches for remote',10)
+    send(b'\x1b',.4);wait_for('Connected to '+remote_address,10)
+    click(5,0);click(10,15);click(10,9)
+    wait_for('Added 1 tracks from folder',10)
+    click(5,0);click(10,15);click(10,10)
+    wait_for('Showing local library',10)
+    remote_config=list(Path(base).rglob('tui-remote-server.json'))
+    assert len(remote_config)==1 and os.stat(remote_config[0]).st_mode & 0o777==0o600
+    assert any(path=='/api/library' and auth=='Bearer PTY remote token' for path,_,auth in remote_requests)
+    click(5,0);click(10,13);click(10,13)
+    wait_for('Opening files: clearAndPlay')
+    click(10,row('art.wav'));click(10,row('art.wav'))
+    wait_for('Playing art.wav')
+    assert 'remote.wav' not in '\n'.join(line[52:] for line in screen.display[2:20])
+    click(5,0);click(10,13);click(10,13)
+    wait_for('Opening files: enqueue')
+    click(10,row('second.wav'));click(10,row('second.wav'))
+    wait_for('Added 1 track(s)')
+    assert 'Ⅱ' in screen.display[36] and 'art' in '\n'.join(line[52:] for line in screen.display[2:20]),screen.display[36]
+    diagnostics=list(Path(base).rglob('tui-diagnostics.log'))
+    assert len(diagnostics)==1 and os.stat(diagnostics[0]).st_mode & 0o777==0o600
+    print('search, local/remote tree/archive navigation/trash/blacklist/group selection, divider/column drag/visibility/reorder, volume, radio/blacklist/queue/stop-after, playback/seek/completion/order, saved-list CRUD/export/prune/multi-selection, tag fields/artwork/playback resume, selection/reorder/sort, menus/dialogs, equalizer/visualizer, narrow wheel/keyboard navigation, resize: PASS')
     send(b'\x1b',.3);send('q')
     p.wait(timeout=5)
 finally:
     if p.poll() is None:p.terminate();p.wait(timeout=5)
     os.close(master)
+    remote_server.shutdown();remote_server.server_close()
+    remote_root.cleanup()
     root.cleanup()

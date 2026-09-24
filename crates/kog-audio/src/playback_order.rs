@@ -60,6 +60,44 @@ impl PlaybackOrder {
         self.reset_shuffle_order(tracks, current);
     }
 
+    /// Rebuild the unplayed part of album shuffle after tags arrive. The
+    /// played prefix must stay in place or a late metadata probe can replay a
+    /// song that was already heard in this shuffle round.
+    pub fn album_metadata_changed(&mut self, tracks: &[Track], current: Option<usize>) {
+        if self.shuffle_mode != ShuffleMode::Albums {
+            return;
+        }
+        self.ensure_shuffle_order(tracks, current);
+        let Some(position) = current.and_then(|current| {
+            self.shuffle_order
+                .iter()
+                .position(|index| *index == current)
+        }) else {
+            self.reset_shuffle_order(tracks, current);
+            return;
+        };
+        let played: HashSet<_> = self.shuffle_order[..=position].iter().copied().collect();
+        let album = &tracks[self.shuffle_order[position]].album;
+        let mut same_album: Vec<_> = (0..tracks.len())
+            .filter(|index| {
+                !played.contains(index) && tracks[*index].album.eq_ignore_ascii_case(album)
+            })
+            .collect();
+        same_album.sort_by_key(|index| {
+            let track = &tracks[*index];
+            (track.disc_number, track.track_number, *index)
+        });
+        let mut next = self.shuffle_order[..=position].to_vec();
+        next.extend(same_album);
+        let scheduled: HashSet<_> = next.iter().copied().collect();
+        next.extend(
+            self.build_shuffle_order(tracks)
+                .into_iter()
+                .filter(|index| !scheduled.contains(index)),
+        );
+        self.shuffle_order = next;
+    }
+
     pub fn clear_tracks(&mut self) {
         self.shuffle_order.clear();
         self.queue.clear();
@@ -406,6 +444,36 @@ mod tests {
         assert_eq!(order.shuffle_order[..2], [2, 0]);
         assert_eq!(order.shuffle_order[2..], [1, 3]);
         assert_eq!(order.next(&tracks, Some(0), true), Some(1));
+    }
+
+    #[test]
+    fn late_album_tags_regroup_only_unplayed_shuffle_tracks() {
+        let mut tracks = vec![Track::default(); 5];
+        let mut order = PlaybackOrder::new(ShuffleMode::Albums, RepeatMode::Off, 19);
+        order.set_shuffle_mode(ShuffleMode::Albums, &tracks, None);
+        let first = order.shuffle_order[0];
+        let current = order.shuffle_order[1];
+        let partner = order.shuffle_order[4];
+        for (index, track) in tracks.iter_mut().enumerate() {
+            track.album = format!("Album {index}");
+        }
+        tracks[current].album = "Shared".to_owned();
+        tracks[partner].album = "Shared".to_owned();
+        tracks[current].track_number = Some(1);
+        tracks[partner].track_number = Some(2);
+
+        order.album_metadata_changed(&tracks, Some(current));
+
+        assert_eq!(&order.shuffle_order[..2], &[first, current]);
+        assert_eq!(order.next(&tracks, Some(current), false), Some(partner));
+        let mut visited = vec![first, current];
+        let mut position = current;
+        while let Some(next) = order.next(&tracks, Some(position), false) {
+            assert!(!visited.contains(&next));
+            visited.push(next);
+            position = next;
+        }
+        assert_eq!(visited.len(), tracks.len());
     }
 
     #[test]

@@ -20,6 +20,7 @@ Run `nix develop --command cargo build -p kog --bin kog`, then `uv run --with py
 ## Library and playlists
 
 - [x] Files are displayed in a lazily expandable tree, including nested folders.
+- [x] A token-protected remote Kog library can be browsed, searched, queued by folder, and streamed; URL, auth mode, and codec controls are in the Remote Server menu. The PTY fixture checks authenticated API requests and playback.
 - [x] A folder click expands or collapses it; a folder double click queues its contents without starting playback.
 - [x] A file double click adds and plays; single click selects.
 - [x] Ctrl and Shift mouse selection, Shift arrow range selection, and Ctrl+A work in the tree; Add applies to selected files and folders. Play Now on a folder starts its first loaded track.
@@ -39,7 +40,7 @@ Run `nix develop --command cargo build -p kog --bin kog`, then `uv run --with py
 - [x] Ctrl and Shift select saved playlists; Add and Play use the selected set, and confirmed Delete removes the selected saved lists.
 - [x] Tree and playlist song/folder blacklist actions persist to the shared database; the menu can view and remove entries.
 - [x] Confirmed Move to Trash runs off the input thread, removes local tree items and their current playlist rows, and is exercised with disposable files.
-- [x] Track tag editing stages the Qt fields and artwork actions, saves through the shared writer off the input thread, and updates multiple local files. The PTY test checks the written album tags.
+- [x] Track tag editing stages the Qt fields and artwork actions, saves through the shared writer off the input thread, and updates multiple local files. The PTY test checks album and artwork tags and continued playback after saving.
 
 ## Playback and settings
 
@@ -52,16 +53,19 @@ Run `nix develop --command cargo build -p kog --bin kog`, then `uv run --with py
 - [x] Radio excludes blacklisted tracks after a root change; the PTY test verifies that only the allowed WAV plays.
 - [x] Per-row queue and stop-after markers change playback order in PTY playback.
 - [x] Queue positions and stop-after markers stay with their tracks across sort, move, and removal.
+- [x] Late album metadata regroups only the unplayed part of album shuffle; a focused playback-order test verifies the played prefix and remaining album sequence.
 - [ ] Album metadata arriving during playback has a dedicated terminal regression fixture for shuffle and repeat order.
 - [x] Current track, elapsed time, duration, and play/pause state update during PTY playback.
 - [x] Music root, volume, equalizer preset, preamp, and output device controls are reachable from menus.
-- [ ] Remote server connection, decoder choices, and all Qt/Web playback preferences are reachable.
+- [x] The Qt opening-files preference is saved and applied to activated files; the PTY fixture checks replace-and-play and enqueue without interrupting playback.
+- [ ] Decoder choices and all Qt/Web playback preferences are reachable.
 - [x] Track info, lyrics, and equalizer have terminal modal views.
 - [x] The spectrum visualizer reads live audio data, and individual equalizer bands can be edited from Preferences.
 
 ## Verification
 
 - [x] Tests exercise text entry, clicks, drags, double clicks, menus, resize, and the playlist database on a PTY.
+- [x] Decoder diagnostics are written to an owner-only log instead of drawing over the TUI; the PTY fixture checks the log permissions.
 - [x] A populated 120×40 terminal frame was reviewed against the running Qt and web layouts for toolbar, sidebar, striped playlist, search fields, and transport placement.
 - [ ] Cover art and the full Qt/Web information density have suitable terminal representations.
 
@@ -71,8 +75,8 @@ The Qt hamburger, playlist and file context menus, playlist header, and the web 
 
 | Area | Qt/Web behavior still missing or unverified in TUI |
 | --- | --- |
-| File tree | Remote server browser and complete subsong fixtures. |
-| Playlist | Tag artwork path and playback resume still need dedicated PTY fixtures. |
-| Playback | Album metadata changes during shuffle, playback error recovery, and output device test on real hardware. |
-| Settings | Server connection, decoder and synthesizer selection, media downloading, and remaining advanced preferences. |
+| File tree | Complete subsong fixtures, and remote archives against a live Kog server. |
+| Playlist | Complete subsong and remote playlist integration still need dedicated fixtures. |
+| Playback | PTY timing fixture for late album metadata, playback error recovery, and output device test on real hardware. |
+| Settings | Decoder and synthesizer selection, media downloading, and remaining advanced preferences. |
 | Views | Cover art, mini player, skins, and richer info inspector interaction. |
