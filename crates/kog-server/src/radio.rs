@@ -31,9 +31,11 @@ use serde::{Deserialize, Serialize};
 
 use kog_audio::decoder::{DecoderRegistry, PlaybackSource, StreamProperties};
 use kog_audio::radio::{
-    RadioCtx, RadioRound, RoundInitial, radio_locator_key, random_seed,
+    Blacklist, RadioCtx, RadioRound, RoundInitial, locator_is_blacklisted, radio_locator_key,
+    random_seed,
 };
 use kog_audio::settings::AppSettings;
+use kog_core::db::LibraryDb;
 
 use crate::routes::{AppState, bad_request};
 
@@ -307,6 +309,21 @@ impl Radio {
             return;
         };
         let settings = AppSettings::load();
+        let blacklist = if inner.configured {
+            LibraryDb::open()
+                .and_then(|db| db.list_blacklist())
+                .map(|rows| {
+                    Blacklist::from_rows(
+                        &rows
+                            .into_iter()
+                            .map(|entry| (entry.kind, entry.path, entry.entry))
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .unwrap_or_default()
+        } else {
+            Blacklist::default()
+        };
         let decoders = Arc::new(DecoderRegistry::new(settings.decoder_settings()));
         let audio_exts = decoders.audio_extensions();
         let nested_cache = kog_audio::archive::nested_cache_dir();
@@ -329,6 +346,13 @@ impl Radio {
             match round.next_pick(&root, &ctx) {
                 Some(pick) => {
                     empty_rounds = 0;
+                    if locator_is_blacklisted(&pick, &blacklist) {
+                        skips += 1;
+                        if skips >= MAX_SKIPS {
+                            break;
+                        }
+                        continue;
+                    }
                     let key = radio_locator_key(&pick);
                     if inner.dead.contains(&key) {
                         skips += 1;
@@ -337,8 +361,7 @@ impl Radio {
                         }
                         continue;
                     }
-                    let entries =
-                        prove_pick(&decoders, &pick, &root, PROVE_TIMEOUT);
+                    let entries = prove_pick(&decoders, &pick, &root, PROVE_TIMEOUT);
                     if entries.is_empty() {
                         // The pick cannot produce a single playable track;
                         // prove it dead for both clients, as the desktop does
@@ -382,9 +405,11 @@ impl Radio {
 
     /// Persist the in-memory round. Best-effort, like the desktop.
     fn save(inner: &Inner) {
-        let (Some(path), Some(root), Some(round)) =
-            (inner.save_path.clone(), inner.root.clone(), inner.round.as_ref())
-        else {
+        let (Some(path), Some(root), Some(round)) = (
+            inner.save_path.clone(),
+            inner.root.clone(),
+            inner.round.as_ref(),
+        ) else {
             return;
         };
         round.save(&path, &root, &inner.dead);
@@ -400,7 +425,9 @@ impl Radio {
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// The round root: the persisted root when it is a real directory inside the
@@ -414,9 +441,7 @@ fn resolve_root(save_path: Option<&Path>, library_root: Option<&Path>) -> Option
         return fallback;
     };
     let candidate = PathBuf::from(persisted);
-    if candidate.is_dir()
-        && library_root.is_some_and(|root| candidate.starts_with(root))
-    {
+    if candidate.is_dir() && library_root.is_some_and(|root| candidate.starts_with(root)) {
         Some(candidate)
     } else {
         fallback
@@ -471,9 +496,7 @@ fn prove_pick(
     match recv.recv_timeout(timeout) {
         Ok(entries) => entries,
         Err(_) => {
-            eprintln!(
-                "kog-server: radio pick timed out after {timeout:?}, marking dead: {label}"
-            );
+            eprintln!("kog-server: radio pick timed out after {timeout:?}, marking dead: {label}");
             Vec::new()
         }
     }
@@ -682,7 +705,9 @@ mod tests {
     /// absent, so this never fails on machines without that library.
     #[test]
     fn hanging_probe_times_out_instead_of_wedging() {
-        let pick = PathBuf::from("/mnt/stuff/Music/Chiptune/VGM-Cartridge/N64/Turok - Dinosaur Hunter [Jikku Senshi Turok] (1997-02-28)(Iguana)(Acclaim)[N64]/09 Catacombs.miniusf");
+        let pick = PathBuf::from(
+            "/mnt/stuff/Music/Chiptune/VGM-Cartridge/N64/Turok - Dinosaur Hunter [Jikku Senshi Turok] (1997-02-28)(Iguana)(Acclaim)[N64]/09 Catacombs.miniusf",
+        );
         if !pick.is_file() {
             eprintln!("skipped: hanging-probe fixture not present");
             return;
@@ -772,7 +797,11 @@ mod tests {
     }
 
     fn paths(status: &RadioStatus) -> Vec<String> {
-        status.entries.iter().map(|entry| entry.path.clone()).collect()
+        status
+            .entries
+            .iter()
+            .map(|entry| entry.path.clone())
+            .collect()
     }
 
     #[test]
@@ -803,7 +832,10 @@ mod tests {
         let _ = library;
         let unscoped = radio.set_enabled(true, Some(&root), None);
         assert!(
-            unscoped.entries.iter().any(|entry| entry.path.contains("/Two/")),
+            unscoped
+                .entries
+                .iter()
+                .any(|entry| entry.path.contains("/Two/")),
             "the unscoped round draws from the whole library"
         );
 
@@ -812,7 +844,10 @@ mod tests {
         let scoped = radio.reshuffle(Some(&root), Some(&one));
         assert_eq!(scoped.root.as_deref(), Some(one_str), "the round re-roots");
         assert!(
-            scoped.entries.iter().all(|entry| entry.path.starts_with(one_str)),
+            scoped
+                .entries
+                .iter()
+                .all(|entry| entry.path.starts_with(one_str)),
             "every pick comes from the scoped subtree: {:?}",
             paths(&scoped)
         );
@@ -900,9 +935,11 @@ mod tests {
         // track, not the whole album.
         assert_eq!(entries.len(), 1, "a cue pick becomes one track");
         assert!(entries.iter().all(|entry| entry.kind == "local"));
-        assert!(entries
-            .iter()
-            .all(|entry| entry.path == cue.display().to_string()));
+        assert!(
+            entries
+                .iter()
+                .all(|entry| entry.path == cue.display().to_string())
+        );
         // The fragment is the declared CUE track number, which is what
         // `resolve_entry` reads back, not the internal subsong index.
         let fragments: Vec<String> = entries
@@ -929,7 +966,11 @@ mod tests {
         let second = Radio::new(Some(root.clone()), Some(save), true);
         let tail = second.snapshot(Some(&root), None);
         assert_eq!(head.seed, tail.seed, "the seed survives a restart");
-        assert_ne!(paths(&head), paths(&tail), "the round continues, not restarts");
+        assert_ne!(
+            paths(&head),
+            paths(&tail),
+            "the round continues, not restarts"
+        );
         assert!(tail.entries.len() == WINDOW);
     }
 
@@ -965,10 +1006,12 @@ mod tests {
         );
         assert_eq!(status.seed, 4242, "the desktop's seed is respected");
         assert!(!status.entries.is_empty());
-        assert!(status
-            .entries
-            .iter()
-            .all(|entry| Path::new(&entry.path).starts_with(&sub)));
+        assert!(
+            status
+                .entries
+                .iter()
+                .all(|entry| Path::new(&entry.path).starts_with(&sub))
+        );
         // The round file now carries the server's continuation at the same root.
         assert_eq!(
             persisted_root(&save).as_deref(),
@@ -1073,13 +1116,7 @@ mod tests {
         assert_eq!(entries.len(), WINDOW);
         assert!(entries[0]["path"].as_str().unwrap().ends_with(".wav"));
 
-        let (status, body) = request(
-            state.clone(),
-            "POST",
-            "/api/radio/reshuffle",
-            None,
-        )
-        .await;
+        let (status, body) = request(state.clone(), "POST", "/api/radio/reshuffle", None).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["enabled"], true);
         assert_eq!(body["entries"].as_array().unwrap().len(), WINDOW);

@@ -48,13 +48,13 @@ def click(x,y,button=0):
 def row(text):
     for i,line in enumerate(screen.display):
         if text in line:return i
-    raise AssertionError((text,'not on screen',screen.display[:15]))
+    raise AssertionError((text,'not on screen',screen.display[:15],screen.display[-3:]))
 def wait_for(text, timeout=5):
     end=time.time()+timeout
     while time.time()<end:
         if text in '\n'.join(screen.display): return
         drain(.1)
-    raise AssertionError((text,'not on screen',screen.display[:15]))
+    raise AssertionError((text,'not on screen',screen.display[:15],screen.display[-3:]))
 try:
     wait_for('Search playlist')
     click(1,0)
@@ -180,6 +180,10 @@ try:
     wait_for('Starred b.wav')
     with sqlite3.connect(db_files[0]) as db:
         assert db.execute('SELECT count(*) FROM stars').fetchone()[0]==1
+    click(10,tree_row,2);send(b'\x1b[B'*5+b'\r')
+    wait_for('Blacklisted 1 item(s)')
+    with sqlite3.connect(db_files[0]) as db:
+        assert db.execute("SELECT count(*) FROM blacklist WHERE kind='song' AND path=?",(os.path.join(music,'album','b.wav'),)).fetchone()[0]==1
     send(b'\t\t\x1b[H')
     favorite_row=row('Favorites');click(10,favorite_row);click(10,favorite_row)
     assert 'Added 1 tracks' in screen.display[-1],screen.display[-1]
@@ -368,6 +372,8 @@ try:
     click(artist_at+2,1,2);send(b'\x1b[B'*7+b'\r')
     assert 'Column moved' in screen.display[-1],screen.display[-1]
     assert screen.display[1].find('Artist')<screen.display[1].find('Title'),screen.display[1]
+    send(b'\t\x1b[H')
+    if '▸ Playlists' in '\n'.join(screen.display):click(10,row('▸ Playlists'))
     saved_row=row('PTY Saved');selection_row=row('PTY Selection')
     click(10,saved_row);click(10,selection_row,16)
     click(10,saved_row,2);send(b'\r')
@@ -379,7 +385,47 @@ try:
     wait_for('Deleted 2 playlists')
     with sqlite3.connect(db_files[0]) as db:
         assert db.execute("SELECT count(*) FROM playlists WHERE name IN ('PTY Saved','PTY Selection')").fetchone()[0]==0
-    print('search, tree/archive navigation, divider/column drag/visibility/reorder, volume, radio/queue/stop-after, playback/seek/completion/order, saved-list CRUD/export/prune/multi-selection, selection/reorder/sort, menus/dialogs, equalizer/visualizer, narrow wheel/keyboard navigation, resize: PASS')
+    click(60,2,2);send(b'\x1b[B'*11+b'\r')
+    wait_for('Blacklisted 1 item(s)')
+    with sqlite3.connect(db_files[0]) as db:
+        assert db.execute("SELECT count(*) FROM blacklist WHERE kind='song' AND path=?",(long_path,)).fetchone()[0]==1
+    click(60,2,2);send(b'\x1b[B'*12+b'\r')
+    wait_for('Blacklisted 1 item(s)')
+    with sqlite3.connect(db_files[0]) as db:
+        assert db.execute("SELECT count(*) FROM blacklist WHERE kind='folder' AND path=?",(base,)).fetchone()[0]==1
+        remove_id=db.execute("SELECT id FROM blacklist WHERE kind='folder' AND path=?",(base,)).fetchone()[0]
+    click(5,0);click(10,13);send(b'\x1b[B'*9+b'\r')
+    wait_for('Blacklist · use Preferences')
+    send(b'\x1b',.4)
+    click(5,0);click(10,13);send(b'\x1b[B'*10+b'\r')
+    send(str(remove_id)+'\r',.3)
+    wait_for('Removed from blacklist')
+    with sqlite3.connect(db_files[0]) as db:
+        assert db.execute('SELECT count(*) FROM blacklist WHERE id=?',(remove_id,)).fetchone()[0]==0
+    trash_path=os.path.join(music,'album','sub','c.wav')
+    click(10,row('c.wav'),2);send(b'\x1b[B'*7+b'\r')
+    assert 'move selected item to trash' in '\n'.join(screen.display).lower()
+    send('yes\r',.3)
+    wait_for('Moved '+trash_path+' to trash',10)
+    assert not os.path.exists(trash_path)
+    assert not any('c.wav' in line[:50] for line in screen.display[:36]),screen.display[:15]
+    radio_root=os.path.join(base,'RadioOnly')
+    os.makedirs(radio_root)
+    for name in ('ban.wav','kept.wav'):
+        with wave.open(os.path.join(radio_root,name),'wb') as w:
+            w.setnchannels(1);w.setsampwidth(2);w.setframerate(8000);w.writeframes(b'\0\0'*80000)
+    click(1,0)
+    assert 'Music folder' in '\n'.join(screen.display),screen.display[-3:]
+    send(b'\x01'+radio_root.encode()+b'\r',.4)
+    wait_for('ban.wav')
+    click(10,row('ban.wav'),2);send(b'\x1b[B'*5+b'\r')
+    wait_for('Blacklisted 1 item(s)')
+    click(5,0);click(10,9)
+    assert 'Playlist cleared' in screen.display[-1],screen.display[-1]
+    click(74,36);click(55,36)
+    wait_for('Playing kept.wav',30)
+    assert 'Playing ban.wav' not in screen.display[-1],screen.display[-1]
+    print('search, tree/archive navigation/trash/blacklist, divider/column drag/visibility/reorder, volume, radio/blacklist/queue/stop-after, playback/seek/completion/order, saved-list CRUD/export/prune/multi-selection, selection/reorder/sort, menus/dialogs, equalizer/visualizer, narrow wheel/keyboard navigation, resize: PASS')
     send(b'\x1b',.3);send('q')
     p.wait(timeout=5)
 finally:

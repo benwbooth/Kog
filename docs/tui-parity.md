@@ -15,7 +15,7 @@ Run `nix develop --command cargo build -p kog --bin kog`, then `uv run --with py
 - [x] Right click opens context menus for tree items, playlist rows, saved playlists, and columns.
 - [x] Mouse wheel and Home/End navigation keep long tree and playlist selections visible, including at 48 columns.
 - [x] Multi selection supports Ctrl, Shift, and deletion of all selected rows.
-- [x] Path, URL, name, and preference prompts edit in a centered dialog with a visible caret.
+- [x] Path, URL, name, and preference prompts edit in a centered dialog with a visible caret and Ctrl+A replacement.
 
 ## Library and playlists
 
@@ -35,7 +35,9 @@ Run `nix develop --command cargo build -p kog --bin kog`, then `uv run --with py
 - [x] Playlist row Show in File Tree focuses the matching local file.
 - [x] Saved playlist export writes a portable M3U; prune missing deletes only absent local/archive entries.
 - [x] Ctrl and Shift select saved playlists; Add and Play use the selected set, and confirmed Delete removes the selected saved lists.
-- [ ] Track tag editing, blacklist, and tree file deletion are available.
+- [x] Tree and playlist song/folder blacklist actions persist to the shared database; the menu can view and remove entries.
+- [x] Confirmed Move to Trash runs off the input thread, removes a local tree item and its current playlist rows, and is exercised with a disposable file.
+- [ ] Track tag editing is available.
 
 ## Playback and settings
 
@@ -45,6 +47,7 @@ Run `nix develop --command cargo build -p kog --bin kog`, then `uv run --with py
 - [x] Volume is a visible draggable slider with click, drag, mute, keyboard, and percentage feedback.
 - [x] Random Radio can start from an empty queue, stage a round off the input thread, and play one track.
 - [x] Radio advances at the end of its visible queue and stages another song.
+- [x] Radio excludes blacklisted tracks after a root change; the PTY test verifies that only the allowed WAV plays.
 - [x] Per-row queue and stop-after markers change playback order in PTY playback.
 - [x] Queue positions and stop-after markers stay with their tracks across sort, move, and removal.
 - [ ] Album metadata arriving during playback has a dedicated terminal regression fixture for shuffle and repeat order.
@@ -66,7 +69,7 @@ The Qt hamburger, playlist and file context menus, playlist header, and the web 
 
 | Area | Qt/Web behavior still missing or unverified in TUI |
 | --- | --- |
-| File tree | Remote server browser, file deletion, blacklist, and complete subsong fixtures. |
+| File tree | Remote server browser, multi-item tree selection, and complete subsong fixtures. |
 | Playlist | Tag editor. |
 | Playback | Album metadata changes during shuffle, playback error recovery, and output device test on real hardware. |
 | Settings | Server connection, decoder and synthesizer selection, media downloading, and remaining advanced preferences. |

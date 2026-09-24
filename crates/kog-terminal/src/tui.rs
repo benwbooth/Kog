@@ -13,7 +13,7 @@ use kog_audio::playback_order::PlaybackOrder;
 use kog_audio::playlist::{Playlist, PlaylistEntry, PlaylistLocation};
 use kog_audio::settings::{AppSettings, OutputDevicePreference, RepeatMode, ShuffleMode};
 use kog_audio::track::Track as AudioTrack;
-use kog_core::db::StoredEntry;
+use kog_core::db::{BLACKLIST_FOLDER, BLACKLIST_SONG, BlacklistEntry, StoredEntry};
 use kog_core::equalizer::{EqualizerSettings, presets};
 use kog_server::api::{Library, LocalSearch, browse_local};
 use kog_server::radio::{Radio, RadioAdvance, RadioEntry, RadioStatus};
@@ -128,6 +128,8 @@ enum PromptKind {
     EqualizerBandGain(usize),
     Preamp,
     OutputDevice,
+    RemoveBlacklistId,
+    TrashSelected,
 }
 
 enum RadioCommand {
@@ -179,6 +181,7 @@ struct Ui {
     last_click: Option<(Instant, usize, usize)>,
     prompt: Option<(PromptKind, String)>,
     input_cursor: usize,
+    input_select_all: bool,
     search_due: Option<Instant>,
     search: Option<LocalSearch>,
     search_query: String,
@@ -190,6 +193,9 @@ struct Ui {
     folder_requests: Sender<PathBuf>,
     folder_results: Receiver<Result<Vec<Track>, String>>,
     folder_jobs: usize,
+    delete_requests: Sender<PathBuf>,
+    delete_results: Receiver<(PathBuf, Result<(), String>)>,
+    pending_delete_path: Option<PathBuf>,
     search_done: bool,
     exit_requested: bool,
     menu_open: bool,
@@ -282,6 +288,16 @@ impl Ui {
                 }
             }
         });
+        let (delete_requests, delete_jobs) = mpsc::channel::<PathBuf>();
+        let (delete_done, delete_results) = mpsc::channel();
+        std::thread::spawn(move || {
+            while let Ok(path) = delete_jobs.recv() {
+                let result = trash::delete(&path).map_err(|error| error.to_string());
+                if delete_done.send((path, result)).is_err() {
+                    break;
+                }
+            }
+        });
         let decoders = DecoderRegistry::new(settings.decoder_settings());
         let (radio_requests, radio_commands) =
             mpsc::channel::<(u64, RadioCommand, Option<PathBuf>)>();
@@ -370,6 +386,7 @@ impl Ui {
             last_click: None,
             prompt: None,
             input_cursor: 0,
+            input_select_all: false,
             search_due: None,
             search: None,
             search_query: String::new(),
@@ -381,6 +398,9 @@ impl Ui {
             folder_requests,
             folder_results,
             folder_jobs: 0,
+            delete_requests,
+            delete_results,
+            pending_delete_path: None,
             search_done: false,
             exit_requested: false,
             menu_open: false,
@@ -949,11 +969,18 @@ impl Ui {
             (MenuPage::Preferences, 8) => {
                 self.begin_prompt(PromptKind::EqualizerBandNumber, String::new())
             }
+            (MenuPage::Preferences, 9) => self.show_blacklist(),
+            (MenuPage::Preferences, 10) => {
+                self.begin_prompt(PromptKind::RemoveBlacklistId, String::new())
+            }
             (MenuPage::Tree, 0) => self.add_selected(false),
             (MenuPage::Tree, 1) => self.add_selected(true),
             (MenuPage::Tree, 2) => self.open_selected(),
             (MenuPage::Tree, 3) => self.toggle_star(),
             (MenuPage::Tree, 4) => self.begin_prompt(PromptKind::AddToPlaylist, String::new()),
+            (MenuPage::Tree, 5) => self.blacklist_selected_tree(false),
+            (MenuPage::Tree, 6) => self.blacklist_selected_tree(true),
+            (MenuPage::Tree, 7) => self.begin_trash_selected(),
             (MenuPage::Tracks, 0) => self.play_selected(),
             (MenuPage::Tracks, 1) => self.remove_selected(),
             (MenuPage::Tracks, 2) => self.begin_prompt(PromptKind::AddToPlaylist, String::new()),
@@ -968,6 +995,8 @@ impl Ui {
             }
             (MenuPage::Tracks, 9) => self.toggle_selected_queue(),
             (MenuPage::Tracks, 10) => self.toggle_selected_stop_after(),
+            (MenuPage::Tracks, 11) => self.blacklist_selected_tracks(false),
+            (MenuPage::Tracks, 12) => self.blacklist_selected_tracks(true),
             (MenuPage::Saved, 0) => self.enqueue_selected_lists(false),
             (MenuPage::Saved, 1) => self.enqueue_selected_lists(true),
             (MenuPage::Saved, 2) => {
@@ -1876,12 +1905,214 @@ impl Ui {
         }
     }
 
+    fn blacklist_selected_tree(&mut self, folder: bool) {
+        let Some(row) = self.items.get(self.selected[1]) else {
+            return;
+        };
+        let entry = match (&row.item, folder) {
+            (Item::Directory(_, path), true) => {
+                if let Ok(Some(location)) = kog_audio::archive::tree_location(path) {
+                    BlacklistEntry {
+                        id: 0,
+                        kind: BLACKLIST_FOLDER.to_owned(),
+                        path: if location.entry.is_empty() {
+                            canonical_blacklist_path(&location.archive.to_string_lossy())
+                        } else {
+                            format!(
+                                "{} :: {}",
+                                canonical_blacklist_path(&location.archive.to_string_lossy()),
+                                location.entry
+                            )
+                        },
+                        entry: String::new(),
+                    }
+                } else if path.is_dir() {
+                    BlacklistEntry {
+                        id: 0,
+                        kind: BLACKLIST_FOLDER.to_owned(),
+                        path: canonical_blacklist_path(&path.to_string_lossy()),
+                        entry: String::new(),
+                    }
+                } else {
+                    self.status = "Select a folder".to_owned();
+                    return;
+                }
+            }
+            (Item::Track(track), false) => blacklist_song(&track.entry),
+            _ => {
+                self.status = if folder {
+                    "Select a folder"
+                } else {
+                    "Select a song"
+                }
+                .to_owned();
+                return;
+            }
+        };
+        self.commit_blacklist(vec![entry]);
+    }
+
+    fn blacklist_selected_tracks(&mut self, folder: bool) {
+        let indices: Vec<_> = if self.selected_tracks.is_empty() {
+            vec![self.selected[2]]
+        } else {
+            self.selected_tracks.iter().copied().collect()
+        };
+        let mut entries = Vec::new();
+        let mut seen = HashSet::new();
+        for index in indices {
+            let Some(track) = self.tracks.get(index) else {
+                continue;
+            };
+            let entry = if folder {
+                if track.entry.kind != "local" {
+                    continue;
+                }
+                let Some(parent) = Path::new(&track.entry.path).parent() else {
+                    continue;
+                };
+                BlacklistEntry {
+                    id: 0,
+                    kind: BLACKLIST_FOLDER.to_owned(),
+                    path: canonical_blacklist_path(&parent.to_string_lossy()),
+                    entry: String::new(),
+                }
+            } else {
+                blacklist_song(&track.entry)
+            };
+            let key = format!("{}:{}:{}", entry.kind, entry.path, entry.entry);
+            if seen.insert(key) {
+                entries.push(entry);
+            }
+        }
+        self.commit_blacklist(entries);
+    }
+
+    fn commit_blacklist(&mut self, entries: Vec<BlacklistEntry>) {
+        if entries.is_empty() {
+            self.status = "Nothing selected can be blacklisted".to_owned();
+            return;
+        }
+        let result = self.library.db().add_blacklist_entries(&entries);
+        match result {
+            Ok(added) => {
+                self.status = if added == 0 {
+                    "Already blacklisted".to_owned()
+                } else {
+                    format!("Blacklisted {added} item(s)")
+                };
+                self.refresh_radio_blacklist();
+            }
+            Err(error) => self.status = error,
+        }
+    }
+
+    fn refresh_radio_blacklist(&mut self) {
+        if self.radio_enabled {
+            self.radio_generation = self.radio_generation.wrapping_add(1);
+            self.radio_pool.clear();
+            let _ = self.radio_requests.send((
+                self.radio_generation,
+                RadioCommand::Reshuffle,
+                self.browse_path.clone(),
+            ));
+        }
+    }
+
+    fn show_blacklist(&mut self) {
+        match self.library.db().list_blacklist() {
+            Ok(entries) => {
+                self.modal = Some(if entries.is_empty() {
+                    "Blacklist is empty".to_owned()
+                } else {
+                    format!(
+                        "Blacklist · use Preferences to remove by ID\n{}",
+                        entries
+                            .iter()
+                            .map(|entry| format!(
+                                "{}  {}  {}{}",
+                                entry.id,
+                                entry.kind,
+                                entry.path,
+                                if entry.entry.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!(" :: {}", entry.entry)
+                                }
+                            ))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    )
+                });
+                self.modal_scroll = 0;
+            }
+            Err(error) => self.status = error,
+        }
+    }
+
+    fn begin_trash_selected(&mut self) {
+        let path = match self.items.get(self.selected[1]).map(|row| &row.item) {
+            Some(Item::Directory(_, path))
+                if path.is_absolute() && !kog_audio::archive::is_tree_location(path) =>
+            {
+                path.clone()
+            }
+            Some(Item::Track(track)) if track.entry.kind == "local" => {
+                PathBuf::from(&track.entry.path)
+            }
+            _ => {
+                self.status = "Select a local file or folder to move to trash".to_owned();
+                return;
+            }
+        };
+        if !path.is_absolute() || path.parent().is_none() {
+            self.status = "Select a local file or folder to move to trash".to_owned();
+            return;
+        }
+        self.pending_delete_path = Some(path.clone());
+        self.begin_prompt(PromptKind::TrashSelected, String::new());
+        self.status = format!("Move {} to trash? Type yes to confirm", path.display());
+    }
+
+    fn poll_deletes(&mut self) {
+        while let Ok((path, result)) = self.delete_results.try_recv() {
+            match result {
+                Ok(()) => {
+                    self.root_items.retain(|item| !item_under_path(item, &path));
+                    for items in self.children.values_mut() {
+                        items.retain(|item| !item_under_path(item, &path));
+                    }
+                    self.children.retain(|item, _| !item.starts_with(&path));
+                    self.expanded.retain(|item| !item.starts_with(&path));
+                    self.rebuild_tree();
+                    let doomed: Vec<_> = self
+                        .tracks
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, track)| {
+                            (track.entry.kind != "remote"
+                                && Path::new(&track.entry.path).starts_with(&path))
+                            .then_some(index)
+                        })
+                        .collect();
+                    if !doomed.is_empty() {
+                        self.selected_tracks = doomed.into_iter().collect();
+                        self.remove_selected();
+                    }
+                    self.status = format!("Moved {} to trash", path.display());
+                }
+                Err(error) => self.status = format!("Moving {} to trash: {error}", path.display()),
+            }
+        }
+    }
+
     fn begin_prompt(&mut self, kind: PromptKind, value: String) {
         if kind == PromptKind::Search {
             self.files_expanded = true;
             self.focus = Focus::Library;
         }
         self.input_cursor = value.chars().count();
+        self.input_select_all = false;
         self.prompt = Some((kind, value));
     }
 
@@ -2283,6 +2514,31 @@ impl Ui {
                     }
                 }
             }
+            PromptKind::RemoveBlacklistId => match value.parse::<i64>() {
+                Ok(id) => {
+                    let result = self.library.db().remove_blacklist_entry(id);
+                    match result {
+                        Ok(()) => {
+                            self.refresh_radio_blacklist();
+                            self.status = "Removed from blacklist".to_owned();
+                        }
+                        Err(error) => self.status = error,
+                    }
+                }
+                Err(_) => self.status = "Enter a blacklist ID".to_owned(),
+            },
+            PromptKind::TrashSelected => {
+                let path = self.pending_delete_path.take();
+                if value != "yes" {
+                    self.status = "Move to trash cancelled".to_owned();
+                } else if let Some(path) = path {
+                    if self.delete_requests.send(path.clone()).is_ok() {
+                        self.status = format!("Moving {} to trash…", path.display());
+                    } else {
+                        self.status = "Trash worker is unavailable".to_owned();
+                    }
+                }
+            }
         }
     }
 
@@ -2440,6 +2696,8 @@ impl Ui {
                         self.browse(None);
                     } else if kind == PromptKind::PlaylistSearch {
                         self.playlist_query.clear();
+                    } else if kind == PromptKind::TrashSelected {
+                        self.pending_delete_path = None;
                     }
                     self.status.clear();
                     return true;
@@ -2449,26 +2707,54 @@ impl Ui {
                     return true;
                 }
                 Key::CtrlC => return false,
-                Key::Left => self.input_cursor = self.input_cursor.saturating_sub(1),
+                Key::CtrlA => self.input_select_all = true,
+                Key::Left => {
+                    self.input_select_all = false;
+                    self.input_cursor = self.input_cursor.saturating_sub(1);
+                }
                 Key::Right => {
+                    self.input_select_all = false;
                     self.input_cursor = (self.input_cursor + 1).min(value.chars().count())
                 }
-                Key::Home => self.input_cursor = 0,
-                Key::End => self.input_cursor = value.chars().count(),
+                Key::Home => {
+                    self.input_select_all = false;
+                    self.input_cursor = 0;
+                }
+                Key::End => {
+                    self.input_select_all = false;
+                    self.input_cursor = value.chars().count();
+                }
                 Key::Backspace => {
-                    if self.input_cursor > 0 {
+                    if self.input_select_all {
+                        value.clear();
+                        self.input_cursor = 0;
+                        self.input_select_all = false;
+                        edited = true;
+                    } else if self.input_cursor > 0 {
                         self.input_cursor -= 1;
                         value.remove(byte_offset(&value, self.input_cursor));
                         edited = true;
                     }
                 }
                 Key::Delete => {
-                    if self.input_cursor < value.chars().count() {
+                    if self.input_select_all {
+                        value.clear();
+                        self.input_cursor = 0;
+                        self.input_select_all = false;
+                        edited = true;
+                    } else if self.input_cursor < value.chars().count() {
                         value.remove(byte_offset(&value, self.input_cursor));
                         edited = true;
                     }
                 }
-                Key::Char(c) if !c.is_control() && value.len() < 1024 => {
+                Key::Char(c)
+                    if !c.is_control() && (value.len() < 1024 || self.input_select_all) =>
+                {
+                    if self.input_select_all {
+                        value.clear();
+                        self.input_cursor = 0;
+                        self.input_select_all = false;
+                    }
                     value.insert(byte_offset(&value, self.input_cursor), c);
                     self.input_cursor += 1;
                     edited = true;
@@ -2778,6 +3064,7 @@ impl Ui {
                 };
                 if y == row && (col..col + width).contains(&x) {
                     self.input_cursor = (x.saturating_sub(col + 4)).min(value.chars().count());
+                    self.input_select_all = false;
                     return;
                 }
                 let (kind, value) = self.prompt.take().unwrap();
@@ -3985,6 +4272,17 @@ impl Ui {
                     Surface::Input,
                     false,
                 );
+                if self.input_select_all {
+                    paint(
+                        &mut screen,
+                        y + 1,
+                        x + 2,
+                        &shown,
+                        box_width.saturating_sub(4),
+                        Surface::Selected,
+                        false,
+                    );
+                }
                 paint(
                     &mut screen,
                     y + 1,
@@ -4088,6 +4386,39 @@ fn metadata_key(entry: &StoredEntry) -> String {
     )
 }
 
+fn canonical_blacklist_path(path: &str) -> String {
+    std::fs::canonicalize(path)
+        .unwrap_or_else(|_| PathBuf::from(path))
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn blacklist_song(entry: &StoredEntry) -> BlacklistEntry {
+    BlacklistEntry {
+        id: 0,
+        kind: BLACKLIST_SONG.to_owned(),
+        path: if entry.kind == "remote" {
+            entry.path.clone()
+        } else {
+            canonical_blacklist_path(&entry.path)
+        },
+        entry: if entry.kind == "archive" {
+            entry.entry.clone()
+        } else {
+            String::new()
+        },
+    }
+}
+
+fn item_under_path(item: &Item, deleted: &Path) -> bool {
+    match item {
+        Item::Directory(_, path) => path.starts_with(deleted),
+        Item::Track(track) => {
+            track.entry.kind != "remote" && Path::new(&track.entry.path).starts_with(deleted)
+        }
+    }
+}
+
 fn byte_offset(text: &str, character: usize) -> usize {
     text.char_indices()
         .nth(character)
@@ -4138,6 +4469,8 @@ fn prompt_label(kind: PromptKind) -> &'static str {
         PromptKind::EqualizerBandGain(_) => "Equalizer gain -20 to 20 dB",
         PromptKind::Preamp => "Preamp dB",
         PromptKind::OutputDevice => "Output device name or default",
+        PromptKind::RemoveBlacklistId => "Remove blacklist entry ID",
+        PromptKind::TrashSelected => "Type yes to move selected item to trash",
     }
 }
 
@@ -4246,7 +4579,7 @@ const PLAYBACK_MENU: [&str; 13] = [
     "Toggle Stop After Selected",
     "Clear Queue",
 ];
-const PREFERENCES_MENU: [&str; 9] = [
+const PREFERENCES_MENU: [&str; 11] = [
     "Music Folder…",
     "Volume…",
     "Cycle Repeat",
@@ -4256,15 +4589,20 @@ const PREFERENCES_MENU: [&str; 9] = [
     "Output Device…",
     "List Output Devices…",
     "Edit Equalizer Band…",
+    "View Blacklist…",
+    "Remove Blacklist Entry…",
 ];
-const TREE_MENU: [&str; 5] = [
+const TREE_MENU: [&str; 8] = [
     "Add to Current Playlist",
     "Play Now",
     "Expand/Collapse",
     "Star/Unstar",
     "Add to Saved Playlist…",
+    "Blacklist Song",
+    "Blacklist Folder",
+    "Move to Trash…",
 ];
-const TRACKS_MENU: [&str; 11] = [
+const TRACKS_MENU: [&str; 13] = [
     "Play",
     "Remove Selected",
     "Add to Saved Playlist…",
@@ -4276,6 +4614,8 @@ const TRACKS_MENU: [&str; 11] = [
     "Select All",
     "Toggle Queue",
     "Toggle Stop After",
+    "Blacklist Song",
+    "Blacklist Folder",
 ];
 const SAVED_MENU: [&str; 8] = [
     "Add to Current Playlist",
@@ -4743,6 +5083,7 @@ pub fn run() -> Result<(), String> {
         ui.poll_search_due();
         ui.poll_search();
         ui.poll_folders();
+        ui.poll_deletes();
         ui.poll_metadata();
         ui.poll_radio();
         let size = terminal.size();

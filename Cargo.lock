@@ -1655,6 +1655,7 @@ dependencies = [
  "rand",
  "serde_json",
  "tokio",
+ "trash",
  "unicode-width 0.2.2",
 ]
 
