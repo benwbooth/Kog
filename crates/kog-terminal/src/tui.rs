@@ -342,6 +342,7 @@ struct Ui {
     menu_y: usize,
     modal: Option<String>,
     info_modal: bool,
+    artwork_modal: bool,
     visualizer_open: bool,
     modal_scroll: usize,
     sidebar_visible: bool,
@@ -712,6 +713,7 @@ impl Ui {
             menu_y: 1,
             modal: None,
             info_modal: false,
+            artwork_modal: false,
             visualizer_open: false,
             modal_scroll: 0,
             sidebar_visible: true,
@@ -1278,6 +1280,7 @@ impl Ui {
             (MenuPage::Main, 13) => self.open_submenu(MenuPage::Remote),
             (MenuPage::Main, 14) => {
                 self.info_modal = false;
+                self.artwork_modal = false;
                 self.modal = Some(format!(
                     "Kog v{}\nTerminal player\nMusic folder: {}",
                     env!("CARGO_PKG_VERSION"),
@@ -1306,6 +1309,7 @@ impl Ui {
                     "Playlist view".to_owned()
                 };
             }
+            (MenuPage::View, 7) => self.show_artwork(),
             (MenuPage::Playback, 0) => self.play_pause(),
             (MenuPage::Playback, 1) => {
                 self.player.stop();
@@ -1988,6 +1992,11 @@ impl Ui {
         self.info_modal = true;
     }
 
+    fn show_artwork(&mut self) {
+        self.show_modal("Album cover".to_owned());
+        self.artwork_modal = true;
+    }
+
     fn info_content(&self) -> String {
         let track = self
             .playing
@@ -2051,12 +2060,14 @@ impl Ui {
     fn show_modal(&mut self, content: String) {
         self.modal = Some(content);
         self.info_modal = false;
+        self.artwork_modal = false;
         self.visualizer_open = false;
         self.modal_scroll = 0;
     }
 
     fn show_visualizer(&mut self) {
         self.info_modal = false;
+        self.artwork_modal = false;
         self.visualizer_open = true;
         self.modal_scroll = 0;
     }
@@ -3216,6 +3227,7 @@ impl Ui {
 
     fn show_blacklist(&mut self) {
         self.info_modal = false;
+        self.artwork_modal = false;
         match self.library.db().list_blacklist() {
             Ok(entries) => {
                 self.modal = Some(if entries.is_empty() {
@@ -4365,6 +4377,7 @@ impl Ui {
                 Key::Esc | Key::Enter | Key::Char(' ') => {
                     self.modal = None;
                     self.info_modal = false;
+                    self.artwork_modal = false;
                     self.visualizer_open = false;
                 }
                 Key::Up | Key::Char('k') => self.modal_scroll = self.modal_scroll.saturating_sub(1),
@@ -4714,6 +4727,7 @@ impl Ui {
             } else if button & 32 == 0 {
                 self.modal = None;
                 self.info_modal = false;
+                self.artwork_modal = false;
                 self.visualizer_open = false;
             }
             return;
@@ -4942,6 +4956,10 @@ impl Ui {
             return;
         }
         if y >= layout.footer_top {
+            if y <= layout.footer_top + 1 && x < 8 && self.cover_preview.is_some() {
+                self.show_artwork();
+                return;
+            }
             let (volume_row, icon_x, bar_x, bar_width) = volume_geometry(size.0, layout.footer_top);
             if y == volume_row && x >= icon_x {
                 if x < bar_x {
@@ -5002,6 +5020,10 @@ impl Ui {
                 layout.footer_top.saturating_div(2).saturating_sub(1).max(3)
             };
             if rich {
+                if (card_y + 1..card_y + 8).contains(&y) && (card_x + 2..card_x + 15).contains(&x) {
+                    self.show_artwork();
+                    return;
+                }
                 let position = self.player.position();
                 let clock_width =
                     format!("{}:{:02}", position.as_secs() / 60, position.as_secs() % 60)
@@ -6251,7 +6273,94 @@ impl Ui {
         if self.visualizer_open {
             self.modal = Some(self.visualizer_text());
         }
-        if let Some(modal) = &self.modal {
+        if self.artwork_modal && self.modal.is_some() && width >= 24 && height >= 18 {
+            let art_size = if width >= 40 && height >= 25 { 24 } else { 12 };
+            let box_width = art_size + 8;
+            let box_height = art_size / 2 + 5;
+            let x = width.saturating_sub(box_width) / 2 + 1;
+            let y = height.saturating_sub(box_height) / 2 + 1;
+            for row in 0..box_height {
+                paint(
+                    &mut screen,
+                    y + row,
+                    x,
+                    &" ".repeat(box_width),
+                    box_width,
+                    Surface::Toolbar,
+                    false,
+                );
+            }
+            paint(
+                &mut screen,
+                y,
+                x,
+                &format!("╭{}╮", "─".repeat(box_width - 2)),
+                box_width,
+                Surface::Header,
+                false,
+            );
+            paint(
+                &mut screen,
+                y + box_height - 1,
+                x,
+                &format!("╰{}╯", "─".repeat(box_width - 2)),
+                box_width,
+                Surface::Header,
+                false,
+            );
+            for row in 1..box_height - 1 {
+                paint(&mut screen, y + row, x, "│", 1, Surface::Header, false);
+                paint(
+                    &mut screen,
+                    y + row,
+                    x + box_width - 1,
+                    "│",
+                    1,
+                    Surface::Header,
+                    false,
+                );
+            }
+            paint(
+                &mut screen,
+                y + 1,
+                x + 2,
+                &current,
+                box_width - 4,
+                Surface::Toolbar,
+                true,
+            );
+            if let Some(cover) = &self.cover_preview {
+                paint_cover_at_size(&mut screen, y + 2, x + 4, cover, art_size);
+            } else {
+                paint(
+                    &mut screen,
+                    y + 2 + art_size / 4,
+                    x + 4,
+                    "◈ KOG",
+                    art_size,
+                    Surface::Accent,
+                    true,
+                );
+            }
+            paint(
+                &mut screen,
+                y + 2 + art_size / 2,
+                x + 2,
+                &subtitle,
+                box_width - 4,
+                Surface::Muted,
+                false,
+            );
+            paint(
+                &mut screen,
+                y + 3 + art_size / 2,
+                x + 2,
+                "Click or Esc to close",
+                box_width - 4,
+                Surface::Muted,
+                false,
+            );
+        } else if let Some(modal) = &self.modal {
             let lines = modal_lines(modal, width.saturating_sub(12));
             let page = lines.len().min(height.saturating_sub(8)).max(1);
             self.modal_scroll = self.modal_scroll.min(lines.len().saturating_sub(page));
@@ -6840,7 +6949,7 @@ const REMOTE_MENU: [&str; 9] = [
     "Queue Current Folder",
     "Use Local Library",
 ];
-const VIEW_MENU: [&str; 7] = [
+const VIEW_MENU: [&str; 8] = [
     "Show/Hide Files and Playlists",
     "Track Info…",
     "Lyrics…",
@@ -6848,6 +6957,7 @@ const VIEW_MENU: [&str; 7] = [
     "Visualizer…",
     "Supported Formats…",
     "Compact Player On/Off",
+    "Show Album Cover…",
 ];
 const PLAYBACK_MENU: [&str; 13] = [
     "Play/Pause",

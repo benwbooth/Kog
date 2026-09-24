@@ -1,4 +1,4 @@
-import base64, fcntl, http.server, json, os, pty, re, select, signal, sqlite3, struct, subprocess, tempfile, threading, time, urllib.parse, wave, zipfile
+import fcntl, http.server, json, os, pty, re, select, signal, sqlite3, struct, subprocess, tempfile, threading, time, urllib.parse, wave, zipfile, zlib
 from pathlib import Path
 import pyte
 from mutagen.wave import WAVE
@@ -570,8 +570,14 @@ try:
     click(10,row('kept.wav'),2);send(b'\x1b[B'*9+b'\r')
     assert any('▸ ▱ RadioOnly' in line[:50] for line in screen.display[:20]),screen.display[:20]
     artwork_path=os.path.join(base,'cover.png')
+    def png_chunk(kind,payload):
+        return struct.pack('>I',len(payload))+kind+payload+struct.pack('>I',zlib.crc32(kind+payload))
+    artwork_pixels=b''.join(
+        b'\0'+bytes(channel for x in range(24) for channel in (40+x*7,70+y*5,180-x*4))
+        for y in range(24)
+    )
     with open(artwork_path,'wb') as artwork:
-        artwork.write(base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='))
+        artwork.write(b'\x89PNG\r\n\x1a\n'+png_chunk(b'IHDR',struct.pack('>IIBBBBB',24,24,8,2,0,0,0))+png_chunk(b'IDAT',zlib.compress(artwork_pixels))+png_chunk(b'IEND',b''))
     art_track=os.path.join(base,'art.wav')
     with wave.open(art_track,'wb') as w:
         w.setnchannels(1);w.setsampwidth(2);w.setframerate(8000);w.writeframes(b'\0\0'*480000)
@@ -586,6 +592,13 @@ try:
     wait_for('▀▀▀▀',10)
     assert '▀▀▀▀' in screen.display[36][1:8],screen.display[36][:12]
     assert 'Ⅱ' in screen.display[36],screen.display[36]
+    click(3,36)
+    wait_for('Click or Esc to close')
+    assert any(line.count('▀')>=24 for line in screen.display),screen.display
+    if artwork_snapshot:=os.environ.get('KOG_TUI_ARTWORK_SNAPSHOT_PATH'):
+        save_snapshot(artwork_snapshot)
+    click(60,20)
+    assert 'Click or Esc to close' not in '\n'.join(screen.display)
     send('e');wait_for('Editing tags for 1 file(s)')
     send(b'\x1b[B'*14+b'\r');send(b'\x1b[B'*15+b'\r')
     wait_for('Updated tags for 1 file(s)',10)

@@ -75,6 +75,7 @@ The provider smoke test is opt-in because it contacts public services: `nix deve
 - [x] Decoder diagnostics are written to an owner-only log instead of drawing over the TUI; the PTY fixture checks the log permissions.
 - [x] A populated 120×40 terminal frame was reviewed against the running Qt and web layouts for toolbar, sidebar, striped playlist, search fields, and transport placement.
 - [x] The footer shows a true-color Unicode cover preview from cached, embedded, nearby, or downloaded art; the track info view shows the artwork path. The PTY fixture checks a cover added through the tag editor, and an opt-in live provider test resolves Super Mario Galaxy.
+- [x] Clicking the footer cover or using View → Show Album Cover opens a larger, closable artwork dialog. A PTY fixture checks the enlarged pixels and mouse close action.
 - [x] Compact Player hides the library and playlist and groups a larger Unicode cover, metadata, seek, transport, and volume in a mini-player card. A PTY check pauses, resumes, seeks, changes volume, and returns to the playlist.
 - [ ] The full Qt/Web information density has suitable terminal representations at every terminal size.
 
@@ -90,5 +91,5 @@ The Qt hamburger, playlist and file context menus, playlist header, and the web 
 | Library settings | Read CUE and M3U/PLS menu controls and folder behavior are checked. |
 | Synthesis | SC-55 and MT-32 archive controls reject incomplete fixtures; validating a complete proprietary ROM set needs user supplied files. |
 | Server settings | Shared configuration, embedded start/stop, device blocking, token/basic authentication, self-signed HTTPS, and PEM import are checked through real requests. |
-| Media | Automatic cover downloads use the Qt provider order and shared match rules; footer and compact-player cover previews are checked in a PTY, and an opt-in live test resolves Super Mario Galaxy. A full artwork inspector is still missing. |
+| Media | Automatic cover downloads use the Qt provider order and shared match rules; footer, compact-player, and enlarged cover views are checked in a PTY, and an opt-in live test resolves Super Mario Galaxy. |
 | Views | Compact Player covers the mini player workflow in the same terminal. Native Winamp skin windows have no terminal equivalent; the track inspector refreshes live. |
