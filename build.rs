@@ -161,6 +161,7 @@ fn main() {
         "src/skin_library.rs",
     ])
     .cpp_file("native/kog_desktop_integration.cpp")
+    .cpp_file("native/kog_single_instance.cpp")
     .cpp_file("native/kog_window_state.cpp")
     .cpp_file("native/kog_skin_network.cpp")
     .cpp_file("native/kog_cover_art_network.cpp")

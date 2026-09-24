@@ -5,6 +5,7 @@ import Qt.labs.settings
 
 ApplicationWindow {
     id: root
+    objectName: "kogClassicPlayer"
     required property var app
     required property var mainWindow
     property var skin: ({assets: {}})

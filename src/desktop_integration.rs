@@ -5,6 +5,10 @@ mod ffi {
         #[cxx_name = "kogConfigureArchiveDecoder"]
         fn configure_archive_decoder(decoder: fn(bytes: &[u8]) -> String);
         include!("kog/kog_desktop_integration.h");
+        include!("kog/kog_single_instance.h");
+
+        #[cxx_name = "kogSingleInstanceStart"]
+        fn single_instance_start() -> QString;
 
         type QApplication;
 
@@ -28,6 +32,19 @@ mod ffi {
 
         include!("cxx-qt-lib/qstring.h");
         type QString = cxx_qt_lib::QString;
+    }
+}
+
+pub enum GuiInstance {
+    Primary,
+    Raised,
+}
+
+pub fn claim_gui_instance() -> Result<GuiInstance, String> {
+    match ffi::single_instance_start().to_string().as_str() {
+        "primary" => Ok(GuiInstance::Primary),
+        "raised" => Ok(GuiInstance::Raised),
+        error => Err(error.to_owned()),
     }
 }
 

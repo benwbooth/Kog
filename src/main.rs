@@ -113,10 +113,19 @@ fn main() {
     }
     configure_platform_theme();
     let mut application = desktop_integration::DesktopApplication::new();
-    let mut engine = QQmlApplicationEngine::new();
 
     QGuiApplication::set_desktop_file_name(&QString::from("org.kog.player"));
     application.set_application_name(&QString::from("Kog"));
+    match desktop_integration::claim_gui_instance() {
+        Ok(desktop_integration::GuiInstance::Primary) => {}
+        Ok(desktop_integration::GuiInstance::Raised) => return,
+        Err(error) => {
+            eprintln!("kog: {error}");
+            std::process::exit(1);
+        }
+    }
+
+    let mut engine = QQmlApplicationEngine::new();
 
     if let Some(engine) = engine.as_mut() {
         // Development shortcut: with KOG_QML_DIR pointing at the source tree,

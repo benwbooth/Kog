@@ -7,6 +7,7 @@ import org.kog.native 1.0
 
 ApplicationWindow {
     id: root
+    objectName: "kogModernPlayer"
     required property var app
     required property var mainWindow
     property var skin: ({})
