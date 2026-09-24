@@ -833,6 +833,8 @@ struct Ui {
     split_drag: bool,
     column_drag: Option<usize>,
     column_scroll_drag: Option<usize>,
+    vertical_scroll_drag: Option<(usize, usize)>,
+    manual_scroll_selection: [Option<usize>; 3],
     track_drag: Option<usize>,
     sort_column: Option<usize>,
     sort_ascending: bool,
@@ -1217,6 +1219,8 @@ impl Ui {
             split_drag: false,
             column_drag: None,
             column_scroll_drag: None,
+            vertical_scroll_drag: None,
+            manual_scroll_selection: [None; 3],
             track_drag: None,
             sort_column: None,
             sort_ascending: true,
@@ -1790,6 +1794,18 @@ impl Ui {
     }
 
     fn layout(&self, size: (usize, usize)) -> Layout {
+        self.layout_for_track_count(size, self.visible_track_count())
+    }
+
+    fn visible_track_count(&self) -> usize {
+        if self.playlist_query.is_empty() {
+            self.tracks.len()
+        } else {
+            self.visible_tracks().len()
+        }
+    }
+
+    fn layout_for_track_count(&self, size: (usize, usize), track_count: usize) -> Layout {
         let mut layout = Layout::new(
             size.0,
             size.1,
@@ -1805,8 +1821,10 @@ impl Ui {
                 layout.first = width.clamp(18, size.0.saturating_sub(30).max(18));
             }
         }
-        if self.columns.total_width() > size.0.saturating_sub(layout.first + 1)
-            && size.0.saturating_sub(layout.first + 1) >= 5
+        let track_width = size.0.saturating_sub(layout.first + 1);
+        let vertical = track_count > layout.track_page;
+        if self.columns.total_width() > track_width.saturating_sub(usize::from(vertical))
+            && track_width >= 5
         {
             layout.track_page = layout.track_page.saturating_sub(1).max(1);
         }
@@ -1814,16 +1832,113 @@ impl Ui {
     }
 
     fn scrollbar(&self, layout: &Layout, size: (usize, usize)) -> Option<HorizontalScrollbar> {
+        self.scrollbar_for_track_count(layout, size, self.visible_track_count())
+    }
+
+    fn scrollbar_for_track_count(
+        &self,
+        layout: &Layout,
+        size: (usize, usize),
+        track_count: usize,
+    ) -> Option<HorizontalScrollbar> {
         (!self.compact_mode && (layout.show_sidebar || self.focus == Focus::Tracks))
             .then(|| {
                 HorizontalScrollbar::new(
                     layout.first + 1,
-                    size.0.saturating_sub(layout.first + 1),
+                    size.0.saturating_sub(layout.first + 1 + usize::from(
+                        self.track_scrollbar_for_count(layout, size, track_count)
+                            .is_some(),
+                    )),
                     self.columns.total_width(),
                     self.columns.scroll,
                 )
             })
             .flatten()
+    }
+
+    fn tree_scrollbar(&self, layout: &Layout, size: (usize, usize)) -> Option<VerticalScrollbar> {
+        if self.compact_mode || !self.files_expanded {
+            return None;
+        }
+        let (top, height, x) = if layout.show_sidebar {
+            if layout.tree_bottom < layout.tree_top {
+                return None;
+            }
+            (
+                layout.tree_top,
+                layout.tree_bottom - layout.tree_top + 1,
+                layout.first.saturating_sub(1),
+            )
+        } else if self.focus == Focus::Library {
+            (2, layout.footer_top.saturating_sub(2), size.0.saturating_sub(1))
+        } else {
+            return None;
+        };
+        VerticalScrollbar::new(x, top, height, self.items.len(), self.offsets[1])
+    }
+
+    fn tree_page(&self, layout: &Layout) -> usize {
+        if !layout.show_sidebar && self.focus == Focus::Library {
+            layout.footer_top.saturating_sub(2)
+        } else if layout.tree_bottom >= layout.tree_top {
+            layout.tree_bottom - layout.tree_top + 1
+        } else {
+            0
+        }
+    }
+
+    fn track_scrollbar(&self, layout: &Layout, size: (usize, usize)) -> Option<VerticalScrollbar> {
+        self.track_scrollbar_for_count(layout, size, self.visible_track_count())
+    }
+
+    fn track_scrollbar_for_count(
+        &self,
+        layout: &Layout,
+        size: (usize, usize),
+        count: usize,
+    ) -> Option<VerticalScrollbar> {
+        if self.compact_mode || !(layout.show_sidebar || self.focus == Focus::Tracks) {
+            return None;
+        }
+        VerticalScrollbar::new(
+            size.0.saturating_sub(1),
+            2,
+            layout.track_page,
+            count,
+            self.offsets[2],
+        )
+    }
+
+    fn vertical_scrollbar_at(
+        &self,
+        layout: &Layout,
+        size: (usize, usize),
+        x: usize,
+        y: usize,
+    ) -> Option<(usize, VerticalScrollbar)> {
+        let hit = |bar: VerticalScrollbar| {
+            x == bar.x && (bar.top..bar.top + bar.height).contains(&y)
+        };
+        if let Some(bar) = self.tree_scrollbar(layout, size).filter(|bar| hit(*bar)) {
+            return Some((1, bar));
+        }
+        if x != size.0.saturating_sub(1) {
+            return None;
+        }
+        self.track_scrollbar(layout, size)
+            .filter(|bar| hit(*bar))
+            .map(|bar| (2, bar))
+    }
+
+    fn scroll_vertical_to_mouse(
+        &mut self,
+        pane: usize,
+        bar: VerticalScrollbar,
+        y: usize,
+        grip: usize,
+    ) {
+        self.offsets[pane] = bar.offset_at(y, grip);
+        self.manual_scroll_selection[pane] = Some(self.selected[pane]);
     }
 
     fn scroll_columns_to_mouse(&mut self, bar: HorizontalScrollbar, x: usize, grip: usize) {
@@ -5782,7 +5897,7 @@ impl Ui {
         let layout = self.layout(size);
         let page = match self.focus {
             Focus::Playlists => layout.list_page,
-            Focus::Library => layout.tree_bottom.saturating_sub(layout.tree_top) + 1,
+            Focus::Library => self.tree_page(&layout),
             Focus::Tracks => layout.track_page,
         }
         .max(1);
@@ -6040,6 +6155,7 @@ impl Ui {
             self.split_drag = false;
             self.column_drag = None;
             self.column_scroll_drag = None;
+            self.vertical_scroll_drag = None;
             self.volume_drag = false;
             self.track_drag = None;
             return;
@@ -6080,6 +6196,19 @@ impl Ui {
             }
             return;
         }
+        if let Some((pane, grip)) = self.vertical_scroll_drag
+            && button & 32 != 0
+        {
+            let bar = if pane == 1 {
+                self.tree_scrollbar(&layout, size)
+            } else {
+                self.track_scrollbar(&layout, size)
+            };
+            if let Some(bar) = bar {
+                self.scroll_vertical_to_mouse(pane, bar, y, grip);
+            }
+            return;
+        }
         if let Some(column) = self.column_drag
             && button & 32 != 0
         {
@@ -6101,7 +6230,10 @@ impl Ui {
         if let Some(from) = self.track_drag
             && button & 32 != 0
         {
-            if x >= layout.first && y >= 2 && y < layout.footer_top {
+            let right_edge = size.0.saturating_sub(usize::from(
+                self.track_scrollbar(&layout, size).is_some(),
+            ));
+            if x > layout.first && x < right_edge && y >= 2 && y < 2 + layout.track_page {
                 let visible = self.visible_tracks();
                 if let Some(&to) = visible.get(self.offsets[2] + y - 2) {
                     self.move_track(from, to);
@@ -6134,7 +6266,7 @@ impl Ui {
                 Focus::Tracks
             };
             let page = match self.focus {
-                Focus::Library => layout.tree_bottom.saturating_sub(layout.tree_top) + 1,
+                Focus::Library => self.tree_page(&layout),
                 Focus::Playlists => layout.list_page,
                 Focus::Tracks => layout.track_page,
             };
@@ -6211,6 +6343,9 @@ impl Ui {
             }
         }
         if button & 3 == 2 {
+            if self.vertical_scrollbar_at(&layout, size, x, y).is_some() {
+                return;
+            }
             if layout.show_sidebar
                 && x < layout.first
                 && y >= layout.tree_top
@@ -6312,6 +6447,28 @@ impl Ui {
             self.split_drag = true;
             return;
         }
+        if let Some((pane, bar)) = self.vertical_scrollbar_at(&layout, size, x, y) {
+            self.focus = if pane == 1 { Focus::Library } else { Focus::Tracks };
+            self.manual_scroll_selection[pane] = Some(self.selected[pane]);
+            if y == bar.top {
+                self.offsets[pane] = self.offsets[pane].saturating_sub(1);
+            } else if y == bar.top + bar.height - 1 {
+                self.offsets[pane] = (self.offsets[pane] + 1).min(bar.max_scroll);
+            } else if bar.travel == 0 {
+                return;
+            } else {
+                let position = y - bar.top - 1;
+                let grip =
+                    if (bar.thumb_start..bar.thumb_start + bar.thumb_height).contains(&position) {
+                        position - bar.thumb_start
+                    } else {
+                        bar.thumb_height / 2
+                    };
+                self.vertical_scroll_drag = Some((pane, grip));
+                self.scroll_vertical_to_mouse(pane, bar, y, grip);
+            }
+            return;
+        }
         if let Some(bar) = self.scrollbar(&layout, size)
             && y == layout.footer_top - 1
             && (bar.x..bar.x + bar.width).contains(&x)
@@ -6331,6 +6488,13 @@ impl Ui {
                 self.column_scroll_drag = Some(grip);
                 self.scroll_columns_to_mouse(bar, x, grip);
             }
+            return;
+        }
+        if self.scrollbar(&layout, size).is_some()
+            && self.track_scrollbar(&layout, size).is_some()
+            && y == layout.footer_top - 1
+            && x == size.0.saturating_sub(1)
+        {
             return;
         }
         if y == 0 {
@@ -6852,7 +7016,8 @@ impl Ui {
             );
             return screen;
         }
-        let layout = self.layout(size);
+        let visible_tracks = self.visible_tracks();
+        let layout = self.layout_for_track_count(size, visible_tracks.len());
         let probe_range = if self.playlist_query.is_empty() {
             self.offsets[2].min(self.tracks.len())
                 ..self
@@ -6869,9 +7034,8 @@ impl Ui {
         for entry in &to_probe {
             self.request_metadata(entry);
         }
-        let tree_page = layout.tree_bottom.saturating_sub(layout.tree_top) + 1;
+        let tree_page = self.tree_page(&layout);
         let pages = [layout.list_page, tree_page, layout.track_page];
-        let visible_tracks = self.visible_tracks();
         for (pane, len) in [self.lists.len(), self.items.len(), visible_tracks.len()]
             .into_iter()
             .enumerate()
@@ -6879,6 +7043,7 @@ impl Ui {
             if len == 0 {
                 self.selected[pane] = 0;
                 self.offsets[pane] = 0;
+                self.manual_scroll_selection[pane] = None;
                 continue;
             }
             let selected_position = if pane == 2 {
@@ -6891,6 +7056,11 @@ impl Ui {
                 self.selected[pane]
             };
             let page = pages[pane].max(1);
+            self.offsets[pane] = self.offsets[pane].min(len.saturating_sub(page));
+            if self.manual_scroll_selection[pane] == Some(self.selected[pane]) {
+                continue;
+            }
+            self.manual_scroll_selection[pane] = None;
             if selected_position < self.offsets[pane] {
                 self.offsets[pane] = selected_position;
             } else if selected_position >= self.offsets[pane] + page {
@@ -7041,6 +7211,7 @@ impl Ui {
                     false,
                 );
             }
+            let tree_scrollbar = self.tree_scrollbar(&layout, size);
             for y in layout.tree_top..=layout.tree_bottom {
                 let index = self.offsets[1] + y - layout.tree_top;
                 let selected = self
@@ -7075,7 +7246,18 @@ impl Ui {
                         }
                     })
                     .unwrap_or_default();
-                paint(&mut screen, y + 1, 1, &label, sidebar, surface, false);
+                paint(
+                    &mut screen,
+                    y + 1,
+                    1,
+                    &label,
+                    sidebar.saturating_sub(usize::from(tree_scrollbar.is_some())),
+                    surface,
+                    false,
+                );
+            }
+            if let Some(bar) = tree_scrollbar {
+                paint_vertical_scrollbar(&mut screen, bar);
             }
             paint(
                 &mut screen,
@@ -7128,10 +7310,12 @@ impl Ui {
         }
 
         let right_x = layout.first + 2;
+        let track_scrollbar = self.track_scrollbar_for_count(&layout, size, visible_tracks.len());
         let right_width = width.saturating_sub(layout.first + 1);
-        self.column_viewport_width = right_width;
-        self.columns.scroll_by(0, right_width);
-        let scrollbar = self.scrollbar(&layout, size);
+        let content_width = right_width.saturating_sub(usize::from(track_scrollbar.is_some()));
+        self.column_viewport_width = content_width;
+        self.columns.scroll_by(0, content_width);
+        let scrollbar = self.scrollbar_for_track_count(&layout, size, visible_tracks.len());
         let show_tree = !layout.show_sidebar && self.focus == Focus::Library;
         let show_lists = !layout.show_sidebar && self.focus == Focus::Playlists;
         if show_lists {
@@ -7169,6 +7353,7 @@ impl Ui {
                 paint(&mut screen, y + 1, 1, &label, width, surface, false);
             }
         } else if show_tree {
+            let tree_scrollbar = self.tree_scrollbar(&layout, size);
             paint(
                 &mut screen,
                 2,
@@ -7214,7 +7399,18 @@ impl Ui {
                 } else {
                     Surface::Main
                 };
-                paint(&mut screen, y + 1, 1, &label, width, surface, false);
+                paint(
+                    &mut screen,
+                    y + 1,
+                    1,
+                    &label,
+                    width.saturating_sub(usize::from(tree_scrollbar.is_some())),
+                    surface,
+                    false,
+                );
+            }
+            if let Some(bar) = tree_scrollbar {
+                paint_vertical_scrollbar(&mut screen, bar);
             }
         } else {
             paint(
@@ -7222,17 +7418,20 @@ impl Ui {
                 2,
                 right_x,
                 "",
-                right_width,
+                content_width,
                 Surface::Header,
                 true,
             );
+            if track_scrollbar.is_some() {
+                paint(&mut screen, 2, width, "", 1, Surface::Header, false);
+            }
             for (column_index, start, column_width) in self.columns.positions() {
                 let selected = self.keyboard_column == Some(column_index);
                 paint_playlist_cell(
                     &mut screen,
                     2,
                     right_x,
-                    right_width,
+                    content_width,
                     start,
                     column_width,
                     self.columns.scroll,
@@ -7259,7 +7458,7 @@ impl Ui {
                 } else {
                     Surface::Main
                 };
-                paint(&mut screen, y + 1, right_x, "", right_width, surface, false);
+                paint(&mut screen, y + 1, right_x, "", content_width, surface, false);
                 if let Some((index, track)) =
                     index.and_then(|index| self.tracks.get(index).map(|track| (index, track)))
                 {
@@ -7270,7 +7469,7 @@ impl Ui {
                             &mut screen,
                             y + 1,
                             right_x,
-                            right_width,
+                            content_width,
                             start,
                             column_width,
                             self.columns.scroll,
@@ -7311,6 +7510,12 @@ impl Ui {
                     Surface::Header,
                     true,
                 );
+                if track_scrollbar.is_some() {
+                    paint(&mut screen, row, width, "┘", 1, Surface::Header, false);
+                }
+            }
+            if let Some(bar) = track_scrollbar {
+                paint_vertical_scrollbar(&mut screen, bar);
             }
         }
 
@@ -8843,6 +9048,79 @@ impl HorizontalScrollbar {
     }
 }
 
+#[derive(Clone, Copy)]
+struct VerticalScrollbar {
+    x: usize,
+    top: usize,
+    height: usize,
+    track_height: usize,
+    thumb_start: usize,
+    thumb_height: usize,
+    travel: usize,
+    max_scroll: usize,
+}
+
+impl VerticalScrollbar {
+    fn new(x: usize, top: usize, height: usize, total: usize, scroll: usize) -> Option<Self> {
+        if height < 3 || total <= height {
+            return None;
+        }
+        let track_height = height - 2;
+        let thumb_height = if track_height == 1 {
+            1
+        } else {
+            (track_height.saturating_mul(height) / total).clamp(1, track_height - 1)
+        };
+        let travel = track_height - thumb_height;
+        let max_scroll = total - height;
+        let thumb_start = scroll.min(max_scroll).saturating_mul(travel) / max_scroll;
+        Some(Self {
+            x,
+            top,
+            height,
+            track_height,
+            thumb_start,
+            thumb_height,
+            travel,
+            max_scroll,
+        })
+    }
+
+    fn offset_at(&self, y: usize, grip: usize) -> usize {
+        let position = y.saturating_sub(self.top + 1).min(self.track_height - 1);
+        position
+            .saturating_sub(grip)
+            .min(self.travel)
+            .saturating_mul(self.max_scroll)
+            / self.travel.max(1)
+    }
+}
+
+fn paint_vertical_scrollbar(out: &mut String, bar: VerticalScrollbar) {
+    paint(out, bar.top + 1, bar.x + 1, "▴", 1, Surface::Header, true);
+    for row in 0..bar.track_height {
+        let thumb = (bar.thumb_start..bar.thumb_start + bar.thumb_height).contains(&row);
+        paint(
+            out,
+            bar.top + row + 2,
+            bar.x + 1,
+            if thumb { "┃" } else { "│" },
+            1,
+            if thumb { Surface::Accent } else { Surface::Header },
+            thumb,
+        );
+    }
+    paint(
+        out,
+        bar.top + bar.height,
+        bar.x + 1,
+        "▾",
+        1,
+        Surface::Header,
+        true,
+    );
+}
+
 struct Layout {
     first: usize,
     show_sidebar: bool,
@@ -10112,6 +10390,29 @@ mod tests {
         assert_eq!(right.thumb_start, right.travel);
         assert!(right.thumb_width < right.track_width);
         assert!(HorizontalScrollbar::new(41, 79, 79, 0).is_none());
+    }
+
+    #[test]
+    fn vertical_scrollbar_reaches_both_ends_and_preserves_drag_grip() {
+        let top = VerticalScrollbar::new(39, 5, 10, 50, 0).unwrap();
+        let bottom = VerticalScrollbar::new(39, 5, 10, 50, 40).unwrap();
+        assert_eq!(top.thumb_start, 0);
+        assert_eq!(bottom.thumb_start, bottom.travel);
+        assert_eq!(top.offset_at(top.top + 1, 0), 0);
+        assert_eq!(bottom.offset_at(bottom.top + bottom.track_height, 0), 40);
+        let gripped = VerticalScrollbar::new(39, 5, 10, 20, 10).unwrap();
+        assert_eq!(
+            gripped.offset_at(gripped.top + gripped.height - 2, gripped.thumb_height - 1),
+            gripped.max_scroll
+        );
+        assert!(VerticalScrollbar::new(39, 5, 10, 10, 0).is_none());
+        assert!(VerticalScrollbar::new(39, 5, 3, 50, 0).is_some());
+        assert!(VerticalScrollbar::new(39, 5, 2, 50, 0).is_none());
+        let mut painted = String::new();
+        paint_vertical_scrollbar(&mut painted, top);
+        for glyph in ["▴", "▾", "┃", "│"] {
+            assert!(painted.contains(glyph));
+        }
     }
 
     #[test]
