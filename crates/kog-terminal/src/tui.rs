@@ -372,6 +372,7 @@ struct Ui {
     selected_tree: HashSet<String>,
     tree_anchor: Option<usize>,
     lists: Vec<(i64, String)>,
+    list_counts: HashMap<i64, usize>,
     selected_lists: HashSet<i64>,
     list_anchor: Option<usize>,
     tracks: Vec<Track>,
@@ -741,6 +742,7 @@ impl Ui {
             selected_tree: HashSet::new(),
             tree_anchor: None,
             lists: Vec::new(),
+            list_counts: HashMap::new(),
             selected_lists: HashSet::new(),
             list_anchor: None,
             tracks: Vec::new(),
@@ -876,12 +878,33 @@ impl Ui {
 
     fn reload_lists(&mut self) {
         self.lists = vec![(0, "Favorites".to_owned())];
+        self.list_counts.clear();
         match self.library.db().list_playlists() {
-            Ok(lists) => self.lists.extend(lists.into_iter().map(|p| (p.id, p.name))),
+            Ok(lists) => {
+                for playlist in lists {
+                    self.list_counts.insert(
+                        playlist.id,
+                        usize::try_from(playlist.entry_count).unwrap_or(0),
+                    );
+                    self.lists.push((playlist.id, playlist.name));
+                }
+            }
             Err(error) => self.status = error,
         }
         self.selected_lists
             .retain(|id| self.lists.iter().any(|(current, _)| current == id));
+    }
+
+    fn saved_list_label(&self, index: usize, width: usize) -> String {
+        let Some((id, name)) = self.lists.get(index) else {
+            return String::new();
+        };
+        let count = if *id == 0 {
+            self.starred_keys.len()
+        } else {
+            self.list_counts.get(id).copied().unwrap_or(0)
+        };
+        saved_list_label(name, *id == 0, count, width)
     }
 
     fn poll_metadata(&mut self) {
@@ -1284,10 +1307,13 @@ impl Ui {
         });
         self.status = match result {
             Ok(0) => "No missing files in the playlist".to_owned(),
-            Ok(count) => format!(
-                "Removed {count} missing file{} from the playlist",
-                if count == 1 { "" } else { "s" }
-            ),
+            Ok(count) => {
+                self.reload_lists();
+                format!(
+                    "Removed {count} missing file{} from the playlist",
+                    if count == 1 { "" } else { "s" }
+                )
+            }
             Err(error) => error,
         };
     }
@@ -4085,8 +4111,13 @@ impl Ui {
                     self.status = "Select a track to add".to_owned();
                     return;
                 }
-                match self.library.db().append_entries(*id, &entries) {
-                    Ok(()) => self.status = format!("Added {} track(s) to {value}", entries.len()),
+                let id = *id;
+                let result = self.library.db().append_entries(id, &entries);
+                match result {
+                    Ok(()) => {
+                        self.reload_lists();
+                        self.status = format!("Added {} track(s) to {value}", entries.len());
+                    }
                     Err(error) => self.status = error,
                 }
             }
@@ -5838,14 +5869,7 @@ impl Ui {
                 } else {
                     Surface::Sidebar
                 };
-                let label = self
-                    .lists
-                    .get(index)
-                    .map(|(id, name)| {
-                        let icon = if *id == 0 { "★" } else { " " };
-                        format!(" {icon}  {name}")
-                    })
-                    .unwrap_or_default();
+                let label = self.saved_list_label(index, sidebar);
                 paint(&mut screen, y + 1, 1, &label, sidebar, surface, false);
             }
             for y in 1..layout.footer_top {
@@ -5880,11 +5904,7 @@ impl Ui {
             );
             for y in 2..layout.footer_top {
                 let index = self.offsets[0] + y - 2;
-                let label = self
-                    .lists
-                    .get(index)
-                    .map(|(id, name)| format!(" {}  {}", if *id == 0 { "★" } else { " " }, name))
-                    .unwrap_or_default();
+                let label = self.saved_list_label(index, width);
                 let surface = if self
                     .lists
                     .get(index)
@@ -7574,6 +7594,19 @@ fn truncate(text: &str, width: usize) -> String {
     out
 }
 
+fn saved_list_label(name: &str, favorite: bool, count: usize, width: usize) -> String {
+    let suffix = format!("{count} ");
+    if suffix.len() >= width {
+        return truncate(&suffix, width);
+    }
+    let prefix = if favorite { " ★  " } else { "    " };
+    format!(
+        "{}{}",
+        truncate(&format!("{prefix}{name}"), width - suffix.len()),
+        suffix
+    )
+}
+
 fn cell_slice(text: &str, skip: usize, width: usize) -> String {
     let mut out = String::new();
     let mut position = 0;
@@ -8176,6 +8209,20 @@ mod tests {
     #[test]
     fn truncate_handles_wide_unicode() {
         assert_eq!(truncate("♫ 漢字", 4), "♫ … ");
+    }
+    #[test]
+    fn saved_playlist_count_stays_visible_when_name_is_clipped() {
+        let label = saved_list_label("Long 漢字 Playlist", false, 42, 18);
+        assert!(label.contains('…'));
+        assert!(label.ends_with("42 "));
+        assert_eq!(
+            label.chars().map(|c| c.width().unwrap_or(0)).sum::<usize>(),
+            18
+        );
+
+        let favorite = saved_list_label("Favorites", true, 1, 24);
+        assert!(favorite.contains("★  Favorites"));
+        assert!(favorite.ends_with("1 "));
     }
     #[test]
     fn layout_reflows_at_terminal_widths() {

@@ -107,6 +107,9 @@ def row(text):
     for i,line in enumerate(screen.display):
         if text in line:return i
     raise AssertionError((text,'not on screen',screen.display[:15],screen.display[-3:]))
+def assert_saved_count(name,count):
+    sidebar=screen.display[row(name)].split('│',1)[0]
+    assert sidebar.rstrip().endswith(str(count)),(name,count,sidebar)
 def wait_for(text, timeout=5):
     end=time.time()+timeout
     while time.time()<end:
@@ -203,6 +206,7 @@ try:
     assert 'Save Current Playlist' in '\n'.join(screen.display)
     click(10,6);send('PTY Saved\r',.3)
     wait_for('Saved 4 tracks')
+    assert_saved_count('PTY Saved',4)
     db_files=list(Path(base).rglob('kog.db'))
     assert len(db_files)==1,db_files
     with sqlite3.connect(db_files[0]) as db:
@@ -212,10 +216,12 @@ try:
     click(62,5,2)
     assert 'Add to Saved Playlist' in '\n'.join(screen.display)
     click(62,5);send('PTY Saved\r',.3)
+    assert_saved_count('PTY Saved',5)
     with sqlite3.connect(db_files[0]) as db:
         assert db.execute("SELECT count(*) FROM playlist_entries").fetchone()[0]==5
     click(60,2);click(5,0);click(10,7);send('PTY Selection\r',.3)
     wait_for('Saved 1 tracks')
+    assert_saved_count('PTY Selection',1)
     with sqlite3.connect(db_files[0]) as db:
         assert db.execute("SELECT count(*) FROM playlist_entries").fetchone()[0]==6
     click(95,1,2)
@@ -297,6 +303,7 @@ try:
     with sqlite3.connect(db_files[0]) as db:
         assert db.execute("SELECT count(*) FROM blacklist WHERE kind='song' AND path=?",(os.path.join(music,'album','b.wav'),)).fetchone()[0]==1
     send(b'\t\t\x1b[H')
+    assert_saved_count('Favorites',1)
     favorite_row=row('Favorites');click(10,favorite_row);click(10,favorite_row)
     assert 'Added 1 tracks' in screen.display[-1],screen.display[-1]
     send('n');send('PTY Rename\r',.3);wait_for('Created PTY Rename')
@@ -309,6 +316,7 @@ try:
     send(b'\x1b[B'*4+b'\r')
     send('\r',.3)
     wait_for('Duplicated playlist as PTY Saved copy')
+    assert_saved_count('PTY Saved copy',5)
     with sqlite3.connect(db_files[0]) as db:
         assert db.execute("SELECT count(*) FROM playlist_entries pe JOIN playlists p ON p.id=pe.playlist_id WHERE p.name='PTY Saved copy'").fetchone()[0]==5
     click(10,row('PTY Saved'),2);send(b'\x1b[B'*6+b'\r');send(b'\r',.3)
@@ -416,6 +424,7 @@ try:
     assert 'Remove Missing Files' in '\n'.join(screen.display),screen.display[27:40]
     send(b'\r',.4)
     wait_for('Removed 1 missing file')
+    assert_saved_count('PTY Prune',2)
     with sqlite3.connect(db_files[0]) as db:
         assert db.execute("SELECT count(*) FROM playlist_entries pe JOIN playlists p ON p.id=pe.playlist_id WHERE p.name='PTY Prune'").fetchone()[0]==2
     click(60,4);send('Q')

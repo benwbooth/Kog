@@ -30,6 +30,7 @@ The provider smoke test is opt-in because it contacts public services: `nix deve
 - [x] Nested archive folders can be explored and added. Direct adds and folder scans expand multi-song files; a three-song NSF is checked in unit and PTY fixtures.
 - [x] Saved playlist single click selects the source; double click adds its tracks to the playing pane.
 - [x] Favorites, create, rename, delete, save current pane, and add to a saved playlist work.
+- [x] Saved playlists show right-aligned song counts, including Favorites; counts refresh after adding, duplicating, and pruning tracks.
 - [x] Queue remove, clear, reorder, sort, star, and search work with the visible selection.
 - [x] The current playlist and selected row survive a TUI quit and relaunch in a separate atomic session file; the PTY fixture checks the full queue before and after restart.
 - [x] Playlist rows show decoded title, artist, and album without probing on the input thread.
