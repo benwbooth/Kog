@@ -2,7 +2,7 @@
 
 This is the feature inventory for the terminal frontend, checked against `qml/Main.qml` and `crates/kog-web/src/lib.rs`. A checked item has been exercised in the isolated PTY test at the terminal sizes where the control is visible. Unchecked items still need implementation, verification, or both; the TUI should not be described as fully equivalent while they remain.
 
-Run `nix develop --command cargo build -p kog --bin kog`, then `uv run --with pyte scripts/tui_pty_check.py`. The test creates its own music tree, archive, settings directory, and SQLite database. It does not write to the user's library or playlists.
+Run `nix develop --command cargo build -p kog --bin kog`, then `uv run --with pyte --with mutagen scripts/tui_pty_check.py`. The test creates its own music tree, archive, settings directory, and SQLite database. It does not write to the user's library or playlists.
 
 ## Window and input
 
@@ -37,7 +37,7 @@ Run `nix develop --command cargo build -p kog --bin kog`, then `uv run --with py
 - [x] Ctrl and Shift select saved playlists; Add and Play use the selected set, and confirmed Delete removes the selected saved lists.
 - [x] Tree and playlist song/folder blacklist actions persist to the shared database; the menu can view and remove entries.
 - [x] Confirmed Move to Trash runs off the input thread, removes a local tree item and its current playlist rows, and is exercised with a disposable file.
-- [ ] Track tag editing is available.
+- [x] Track tag editing stages the Qt fields and artwork actions, saves through the shared writer off the input thread, and updates multiple local files. The PTY test checks the written album tags.
 
 ## Playback and settings
 
@@ -70,7 +70,7 @@ The Qt hamburger, playlist and file context menus, playlist header, and the web 
 | Area | Qt/Web behavior still missing or unverified in TUI |
 | --- | --- |
 | File tree | Remote server browser, multi-item tree selection, and complete subsong fixtures. |
-| Playlist | Tag editor. |
+| Playlist | Tag artwork path and playback resume still need dedicated PTY fixtures. |
 | Playback | Album metadata changes during shuffle, playback error recovery, and output device test on real hardware. |
 | Settings | Server connection, decoder and synthesizer selection, media downloading, and remaining advanced preferences. |
 | Views | Cover art, mini player, skins, and richer info inspector interaction. |

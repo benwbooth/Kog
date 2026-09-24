@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
-use kog_audio::decoder::DecoderRegistry;
+use kog_audio::decoder::{DecoderRegistry, PlaybackSource};
 use kog_audio::playback::{PlaybackEngine, PlaybackState, available_output_devices};
 use kog_audio::playback_order::PlaybackOrder;
 use kog_audio::playlist::{Playlist, PlaylistEntry, PlaylistLocation};
@@ -21,6 +21,7 @@ use rand::Rng;
 use unicode_width::UnicodeWidthChar;
 
 use crate::columns::Columns;
+use crate::tag_editor::{parse_edits, snapshot_json, write_tags};
 
 #[derive(Clone)]
 struct Track {
@@ -76,6 +77,7 @@ enum MenuPage {
     Saved,
     Columns,
     ColumnVisibility,
+    TagEditor,
 }
 
 impl MenuPage {
@@ -90,6 +92,7 @@ impl MenuPage {
             Self::Saved => "Saved Playlist",
             Self::Columns => "Columns",
             Self::ColumnVisibility => "Visible Columns",
+            Self::TagEditor => "Edit Tags",
         }
     }
     fn labels(self) -> &'static [&'static str] {
@@ -103,6 +106,7 @@ impl MenuPage {
             Self::Saved => &SAVED_MENU,
             Self::Columns => &COLUMNS_MENU,
             Self::ColumnVisibility => &COLUMN_VISIBILITY_MENU,
+            Self::TagEditor => &TAG_EDITOR_MENU,
         }
     }
 }
@@ -130,6 +134,8 @@ enum PromptKind {
     OutputDevice,
     RemoveBlacklistId,
     TrashSelected,
+    TagField(usize),
+    TagArtwork,
 }
 
 enum RadioCommand {
@@ -140,6 +146,23 @@ enum RadioCommand {
 enum RadioResponse {
     Status(RadioStatus),
     Advance(RadioAdvance),
+}
+
+struct TagSession {
+    sources: Vec<PlaybackSource>,
+    snapshot: serde_json::Value,
+    fields: serde_json::Map<String, serde_json::Value>,
+    artwork: Option<serde_json::Value>,
+}
+
+enum TagCommand {
+    Open(Vec<PlaybackSource>),
+    Save(Vec<PlaybackSource>, String),
+}
+
+enum TagResponse {
+    Open(Vec<PlaybackSource>, Result<serde_json::Value, String>),
+    Saved(Vec<PathBuf>, Option<String>),
 }
 
 struct Ui {
@@ -196,6 +219,11 @@ struct Ui {
     delete_requests: Sender<PathBuf>,
     delete_results: Receiver<(PathBuf, Result<(), String>)>,
     pending_delete_path: Option<PathBuf>,
+    tag_requests: Sender<TagCommand>,
+    tag_results: Receiver<TagResponse>,
+    tag_session: Option<TagSession>,
+    tag_busy: bool,
+    tag_resume: Option<(usize, Duration, PlaybackState)>,
     search_done: bool,
     exit_requested: bool,
     menu_open: bool,
@@ -294,6 +322,27 @@ impl Ui {
             while let Ok(path) = delete_jobs.recv() {
                 let result = trash::delete(&path).map_err(|error| error.to_string());
                 if delete_done.send((path, result)).is_err() {
+                    break;
+                }
+            }
+        });
+        let (tag_requests, tag_jobs) = mpsc::channel::<TagCommand>();
+        let (tag_done, tag_results) = mpsc::channel::<TagResponse>();
+        std::thread::spawn(move || {
+            while let Ok(command) = tag_jobs.recv() {
+                let response = match command {
+                    TagCommand::Open(sources) => {
+                        TagResponse::Open(sources.clone(), snapshot_json(&sources))
+                    }
+                    TagCommand::Save(sources, request) => match parse_edits(&request) {
+                        Ok(edits) => {
+                            let outcome = write_tags(&sources, &edits);
+                            TagResponse::Saved(outcome.updated_paths, outcome.error)
+                        }
+                        Err(error) => TagResponse::Saved(Vec::new(), Some(error)),
+                    },
+                };
+                if tag_done.send(response).is_err() {
                     break;
                 }
             }
@@ -401,6 +450,11 @@ impl Ui {
             delete_requests,
             delete_results,
             pending_delete_path: None,
+            tag_requests,
+            tag_results,
+            tag_session: None,
+            tag_busy: false,
+            tag_resume: None,
             search_done: false,
             exit_requested: false,
             menu_open: false,
@@ -997,6 +1051,7 @@ impl Ui {
             (MenuPage::Tracks, 10) => self.toggle_selected_stop_after(),
             (MenuPage::Tracks, 11) => self.blacklist_selected_tracks(false),
             (MenuPage::Tracks, 12) => self.blacklist_selected_tracks(true),
+            (MenuPage::Tracks, 13) => self.open_tag_editor(),
             (MenuPage::Saved, 0) => self.enqueue_selected_lists(false),
             (MenuPage::Saved, 1) => self.enqueue_selected_lists(true),
             (MenuPage::Saved, 2) => {
@@ -1081,6 +1136,32 @@ impl Ui {
                 {
                     self.toggle_column(column);
                 }
+            }
+            (MenuPage::TagEditor, 0..=12) => {
+                if let Some(session) = &self.tag_session {
+                    let id = TAG_FIELDS[index].0;
+                    let value = session
+                        .fields
+                        .get(id)
+                        .and_then(|value| value.as_str())
+                        .or_else(|| session.snapshot["fields"][id]["value"].as_str())
+                        .unwrap_or_default()
+                        .to_owned();
+                    self.begin_prompt(PromptKind::TagField(index), value);
+                }
+            }
+            (MenuPage::TagEditor, 13) => self.begin_prompt(PromptKind::TagArtwork, String::new()),
+            (MenuPage::TagEditor, 14) => {
+                if let Some(session) = self.tag_session.as_mut() {
+                    session.artwork = Some(serde_json::json!({"action":"remove"}));
+                    self.status = "Artwork removal staged".to_owned();
+                    self.open_submenu(MenuPage::TagEditor);
+                }
+            }
+            (MenuPage::TagEditor, 15) => self.save_tag_edits(),
+            (MenuPage::TagEditor, 16) => {
+                self.tag_session = None;
+                self.status = "Tag edits cancelled".to_owned();
             }
             _ => {}
         }
@@ -2050,6 +2131,151 @@ impl Ui {
         }
     }
 
+    fn open_tag_editor(&mut self) {
+        if self.tag_busy {
+            return;
+        }
+        let mut indices: Vec<_> = if self.selected_tracks.is_empty() {
+            vec![self.selected[2]]
+        } else {
+            self.selected_tracks.iter().copied().collect()
+        };
+        indices.sort_unstable();
+        let mut sources = Vec::new();
+        for index in indices {
+            let Some(track) = self.tracks.get(index) else {
+                continue;
+            };
+            if track.entry.kind != "local" || track.entry.fragment.is_some() {
+                self.status = "Tags can only be edited on local, whole files".to_owned();
+                return;
+            }
+            sources.push(PlaybackSource::from_path(PathBuf::from(&track.entry.path)));
+        }
+        if sources.is_empty() {
+            self.status = "Select a track to edit tags".to_owned();
+            return;
+        }
+        self.tag_busy = true;
+        if self.tag_requests.send(TagCommand::Open(sources)).is_err() {
+            self.tag_busy = false;
+            self.status = "Tag worker is unavailable".to_owned();
+        } else {
+            self.status = "Reading tags…".to_owned();
+        }
+    }
+
+    fn save_tag_edits(&mut self) {
+        let Some(session) = self.tag_session.as_ref() else {
+            return;
+        };
+        if session.fields.is_empty() && session.artwork.is_none() {
+            self.status = "No tag changes staged".to_owned();
+            self.open_submenu(MenuPage::TagEditor);
+            return;
+        }
+        let mut request = serde_json::Map::new();
+        if !session.fields.is_empty() {
+            request.insert(
+                "fields".to_owned(),
+                serde_json::Value::Object(session.fields.clone()),
+            );
+        }
+        if let Some(artwork) = &session.artwork {
+            request.insert("artwork".to_owned(), artwork.clone());
+        }
+        let request = serde_json::Value::Object(request).to_string();
+        if let Err(error) = parse_edits(&request) {
+            self.status = error;
+            self.open_submenu(MenuPage::TagEditor);
+            return;
+        }
+        let sources = session.sources.clone();
+        self.tag_resume = self
+            .playing
+            .and_then(|index| self.tracks.get(index).map(|track| (index, track)))
+            .filter(|(_, track)| {
+                sources
+                    .iter()
+                    .any(|source| source.path == PathBuf::from(&track.entry.path))
+            })
+            .and_then(|(index, _)| {
+                let state = self.player.state();
+                (state != PlaybackState::Stopped).then_some((index, self.player.position(), state))
+            });
+        if self.tag_resume.is_some() {
+            self.player.stop();
+        }
+        self.tag_busy = true;
+        if self
+            .tag_requests
+            .send(TagCommand::Save(sources, request))
+            .is_err()
+        {
+            self.tag_busy = false;
+            self.status = "Tag worker is unavailable".to_owned();
+        } else {
+            self.status = "Writing tags…".to_owned();
+        }
+    }
+
+    fn poll_tags(&mut self) {
+        while let Ok(response) = self.tag_results.try_recv() {
+            self.tag_busy = false;
+            match response {
+                TagResponse::Open(sources, result) => match result {
+                    Ok(mut snapshot) => {
+                        if let Some(artwork) = snapshot
+                            .get_mut("artwork")
+                            .and_then(|value| value.as_object_mut())
+                        {
+                            artwork.remove("uri");
+                        }
+                        self.status = format!("Editing tags for {} file(s)", sources.len());
+                        self.tag_session = Some(TagSession {
+                            sources,
+                            snapshot,
+                            fields: serde_json::Map::new(),
+                            artwork: None,
+                        });
+                        self.open_submenu(MenuPage::TagEditor);
+                    }
+                    Err(error) => self.status = error,
+                },
+                TagResponse::Saved(paths, error) => {
+                    let succeeded = error.is_none();
+                    for track in &self.tracks {
+                        if paths
+                            .iter()
+                            .any(|path| path == Path::new(&track.entry.path))
+                        {
+                            let key = metadata_key(&track.entry);
+                            self.metadata.remove(&key);
+                            self.metadata_pending.remove(&key);
+                        }
+                    }
+                    if let Some((index, position, state)) = self.tag_resume.take() {
+                        let selected = self.selected[2];
+                        self.selected[2] = index;
+                        self.play_selected();
+                        let _ = self.player.seek(position);
+                        if state == PlaybackState::Paused {
+                            self.player.play_pause();
+                        }
+                        self.selected[2] = selected;
+                    }
+                    self.status = error
+                        .unwrap_or_else(|| format!("Updated tags for {} file(s)", paths.len()));
+                    if succeeded {
+                        self.tag_session = None;
+                    } else {
+                        self.open_submenu(MenuPage::TagEditor);
+                    }
+                }
+            }
+        }
+    }
+
     fn begin_trash_selected(&mut self) {
         let path = match self.items.get(self.selected[1]).map(|row| &row.item) {
             Some(Item::Directory(_, path))
@@ -2172,7 +2398,12 @@ impl Ui {
 
     fn finish_prompt(&mut self, kind: PromptKind, value: String) {
         let value = value.trim();
-        if value.is_empty() && !matches!(kind, PromptKind::PlaylistSearch | PromptKind::Search) {
+        if value.is_empty()
+            && !matches!(
+                kind,
+                PromptKind::PlaylistSearch | PromptKind::Search | PromptKind::TagField(_)
+            )
+        {
             self.status = "A value is required".to_owned();
             return;
         }
@@ -2539,6 +2770,23 @@ impl Ui {
                     }
                 }
             }
+            PromptKind::TagField(index) => {
+                if let Some(session) = self.tag_session.as_mut() {
+                    session.fields.insert(
+                        TAG_FIELDS[index].0.to_owned(),
+                        serde_json::Value::String(value.to_owned()),
+                    );
+                    self.status = format!("{} change staged", TAG_FIELDS[index].1);
+                    self.open_submenu(MenuPage::TagEditor);
+                }
+            }
+            PromptKind::TagArtwork => {
+                if let Some(session) = self.tag_session.as_mut() {
+                    session.artwork = Some(serde_json::json!({"action":"replace","path":value}));
+                    self.status = "Artwork replacement staged".to_owned();
+                    self.open_submenu(MenuPage::TagEditor);
+                }
+            }
         }
     }
 
@@ -2698,6 +2946,8 @@ impl Ui {
                         self.playlist_query.clear();
                     } else if kind == PromptKind::TrashSelected {
                         self.pending_delete_path = None;
+                    } else if matches!(kind, PromptKind::TagField(_) | PromptKind::TagArtwork) {
+                        self.open_submenu(MenuPage::TagEditor);
                     }
                     self.status.clear();
                     return true;
@@ -2770,6 +3020,12 @@ impl Ui {
         if self.menu_open {
             match key {
                 Key::Esc | Key::Left => {
+                    if self.menu_page == MenuPage::TagEditor {
+                        self.tag_session = None;
+                        self.menu_open = false;
+                        self.status = "Tag edits cancelled".to_owned();
+                        return true;
+                    }
                     if self.menu_page == MenuPage::Main
                         || matches!(
                             self.menu_page,
@@ -2912,6 +3168,7 @@ impl Ui {
             ),
             Key::Delete if self.focus == Focus::Tracks => self.remove_selected(),
             Key::Char('f') => self.toggle_star(),
+            Key::Char('e') if self.focus == Focus::Tracks => self.open_tag_editor(),
             Key::Char(' ') => self.play_pause(),
             Key::Char('s') => {
                 self.player.stop();
@@ -4471,6 +4728,8 @@ fn prompt_label(kind: PromptKind) -> &'static str {
         PromptKind::OutputDevice => "Output device name or default",
         PromptKind::RemoveBlacklistId => "Remove blacklist entry ID",
         PromptKind::TrashSelected => "Type yes to move selected item to trash",
+        PromptKind::TagField(index) => TAG_FIELDS[index].1,
+        PromptKind::TagArtwork => "Replacement artwork file path",
     }
 }
 
@@ -4602,7 +4861,7 @@ const TREE_MENU: [&str; 8] = [
     "Blacklist Folder",
     "Move to Trash…",
 ];
-const TRACKS_MENU: [&str; 13] = [
+const TRACKS_MENU: [&str; 14] = [
     "Play",
     "Remove Selected",
     "Add to Saved Playlist…",
@@ -4616,6 +4875,41 @@ const TRACKS_MENU: [&str; 13] = [
     "Toggle Stop After",
     "Blacklist Song",
     "Blacklist Folder",
+    "Edit Tags…",
+];
+const TAG_FIELDS: [(&str, &str); 13] = [
+    ("title", "Title"),
+    ("artist", "Artist"),
+    ("albumArtist", "Album Artist"),
+    ("album", "Album"),
+    ("composer", "Composer"),
+    ("genre", "Genre"),
+    ("year", "Year"),
+    ("trackNumber", "Track Number"),
+    ("trackTotal", "Track Total"),
+    ("discNumber", "Disc Number"),
+    ("discTotal", "Disc Total"),
+    ("comment", "Comment"),
+    ("lyrics", "Lyrics"),
+];
+const TAG_EDITOR_MENU: [&str; 17] = [
+    "Title…",
+    "Artist…",
+    "Album Artist…",
+    "Album…",
+    "Composer…",
+    "Genre…",
+    "Year…",
+    "Track Number…",
+    "Track Total…",
+    "Disc Number…",
+    "Disc Total…",
+    "Comment…",
+    "Lyrics…",
+    "Replace Artwork…",
+    "Remove Artwork",
+    "Save Changes",
+    "Cancel",
 ];
 const SAVED_MENU: [&str; 8] = [
     "Add to Current Playlist",
@@ -5084,6 +5378,7 @@ pub fn run() -> Result<(), String> {
         ui.poll_search();
         ui.poll_folders();
         ui.poll_deletes();
+        ui.poll_tags();
         ui.poll_metadata();
         ui.poll_radio();
         let size = terminal.size();

@@ -1,6 +1,7 @@
 import fcntl, os, pty, select, signal, sqlite3, struct, subprocess, tempfile, time, wave, zipfile
 from pathlib import Path
 import pyte
+from mutagen.wave import WAVE
 
 root=tempfile.TemporaryDirectory(prefix='kog-tui-pty-')
 base=root.name
@@ -425,7 +426,24 @@ try:
     click(74,36);click(55,36)
     wait_for('Playing kept.wav',30)
     assert 'Playing ban.wav' not in screen.display[-1],screen.display[-1]
-    print('search, tree/archive navigation/trash/blacklist, divider/column drag/visibility/reorder, volume, radio/blacklist/queue/stop-after, playback/seek/completion/order, saved-list CRUD/export/prune/multi-selection, selection/reorder/sort, menus/dialogs, equalizer/visualizer, narrow wheel/keyboard navigation, resize: PASS')
+    click(5,0);click(10,9)
+    assert 'Playlist cleared' in screen.display[-1],screen.display[-1]
+    for path in (long_path,third_path):
+        click(5,0);click(10,2);send(path+'\r',.3)
+    click(60,2);click(60,3,16)
+    send('e')
+    wait_for('Editing tags for 2 file(s)')
+    assert 'Save Changes' in '\n'.join(screen.display)
+    send(b'\x1b[B'*3+b'\r')
+    assert 'Album' in '\n'.join(screen.display)
+    send('PTY Album\r',.4)
+    assert 'Save Changes' in '\n'.join(screen.display)
+    send(b'\x1b[B'*15+b'\r')
+    wait_for('Updated tags for 2 file(s)',10)
+    for path in (long_path,third_path):
+        tags=WAVE(path).tags
+        assert tags.getall('TALB')[0].text==['PTY Album'],(path,tags)
+    print('search, tree/archive navigation/trash/blacklist, divider/column drag/visibility/reorder, volume, radio/blacklist/queue/stop-after, playback/seek/completion/order, saved-list CRUD/export/prune/multi-selection, tag editing, selection/reorder/sort, menus/dialogs, equalizer/visualizer, narrow wheel/keyboard navigation, resize: PASS')
     send(b'\x1b',.3);send('q')
     p.wait(timeout=5)
 finally:

@@ -1648,15 +1648,19 @@ dependencies = [
 name = "kog-terminal"
 version = "0.9.41"
 dependencies = [
+ "base64",
  "kog-audio",
  "kog-core",
  "kog-server",
  "libc",
+ "lofty",
  "rand",
  "serde_json",
+ "tempfile",
  "tokio",
  "trash",
  "unicode-width 0.2.2",
+ "url",
 ]
 
 [[package]]
