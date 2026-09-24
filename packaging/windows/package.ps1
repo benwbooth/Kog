@@ -67,9 +67,19 @@ foreach ($relativePath in $webEngineRuntime) {
     }
 }
 
-$process = Start-Process -FilePath (Join-Path $stage "Kog.exe") -PassThru
+$smokeStdout = Join-Path $output "Kog-launch-stdout.log"
+$smokeStderr = Join-Path $output "Kog-launch-stderr.log"
+$process = Start-Process -FilePath (Join-Path $stage "Kog.exe") `
+    -ArgumentList "--gui" -WorkingDirectory $stage -PassThru `
+    -RedirectStandardOutput $smokeStdout -RedirectStandardError $smokeStderr
 Start-Sleep -Seconds 5
 if ($process.HasExited) {
+    foreach ($log in @($smokeStdout, $smokeStderr)) {
+        if (Test-Path $log) {
+            Write-Host "--- $([System.IO.Path]::GetFileName($log)) ---"
+            Write-Host (Get-Content -Raw $log)
+        }
+    }
     throw "Packaged Kog exited during the Windows launch smoke test with code $($process.ExitCode)"
 }
 Stop-Process -Id $process.Id -Force

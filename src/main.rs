@@ -44,6 +44,7 @@ enum Mode {
 fn select_mode(
     args: impl IntoIterator<Item = String>,
     terminal: bool,
+    tui_supported: bool,
 ) -> Result<Option<Mode>, String> {
     let mut chosen = None;
     for arg in args {
@@ -68,7 +69,10 @@ fn select_mode(
             return Err("choose only one of --gui, --tui, or --server".to_owned());
         }
     }
-    Ok(Some(chosen.unwrap_or(if terminal {
+    if chosen == Some(Mode::Tui) && !tui_supported {
+        return Err("--tui is currently supported on Unix terminals only".to_owned());
+    }
+    Ok(Some(chosen.unwrap_or(if terminal && tui_supported {
         Mode::Tui
     } else {
         Mode::Gui
@@ -77,7 +81,8 @@ fn select_mode(
 
 fn main() {
     let terminal = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
-    let mode = match select_mode(std::env::args().skip(1), terminal) {
+    let tui_supported = cfg!(unix);
+    let mode = match select_mode(std::env::args().skip(1), terminal, tui_supported) {
         Ok(Some(mode)) => mode,
         Ok(None) => return,
         Err(error) => {
@@ -142,16 +147,27 @@ mod tests {
 
     #[test]
     fn selects_terminal_only_for_interactive_launches() {
-        assert_eq!(select_mode(Vec::new(), true).unwrap(), Some(Mode::Tui));
-        assert_eq!(select_mode(Vec::new(), false).unwrap(), Some(Mode::Gui));
         assert_eq!(
-            select_mode(["--gui".to_owned()], true).unwrap(),
+            select_mode(Vec::new(), true, true).unwrap(),
+            Some(Mode::Tui)
+        );
+        assert_eq!(
+            select_mode(Vec::new(), false, true).unwrap(),
             Some(Mode::Gui)
         );
         assert_eq!(
-            select_mode(["--server".to_owned()], false).unwrap(),
+            select_mode(Vec::new(), true, false).unwrap(),
+            Some(Mode::Gui)
+        );
+        assert_eq!(
+            select_mode(["--gui".to_owned()], true, false).unwrap(),
+            Some(Mode::Gui)
+        );
+        assert_eq!(
+            select_mode(["--server".to_owned()], false, false).unwrap(),
             Some(Mode::Server)
         );
-        assert!(select_mode(["--tui".to_owned(), "--gui".to_owned()], true).is_err());
+        assert!(select_mode(["--tui".to_owned()], true, false).is_err());
+        assert!(select_mode(["--tui".to_owned(), "--gui".to_owned()], true, true).is_err());
     }
 }
