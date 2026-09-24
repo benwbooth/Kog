@@ -34,7 +34,7 @@ Run `nix develop --command cargo build -p kog --bin kog`, then `uv run --with py
 - [x] Saved playlist Add, Play, and Replace are available from its context menu.
 - [x] Playlist row Show in File Tree focuses the matching local file.
 - [x] Saved playlist export writes a portable M3U; prune missing deletes only absent local/archive entries.
-- [ ] Multi-selection of saved playlists is available.
+- [x] Ctrl and Shift select saved playlists; Add and Play use the selected set, and confirmed Delete removes the selected saved lists.
 - [ ] Track tag editing, blacklist, and tree file deletion are available.
 
 ## Playback and settings
@@ -67,7 +67,7 @@ The Qt hamburger, playlist and file context menus, playlist header, and the web 
 | Area | Qt/Web behavior still missing or unverified in TUI |
 | --- | --- |
 | File tree | Remote server browser, file deletion, blacklist, and complete subsong fixtures. |
-| Playlist | Tag editor and multi-select saved lists. |
+| Playlist | Tag editor. |
 | Playback | Album metadata changes during shuffle, playback error recovery, and output device test on real hardware. |
 | Settings | Server connection, decoder and synthesizer selection, media downloading, and remaining advanced preferences. |
 | Views | Cover art, mini player, skins, and richer info inspector interaction. |

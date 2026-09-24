@@ -368,7 +368,18 @@ try:
     click(artist_at+2,1,2);send(b'\x1b[B'*7+b'\r')
     assert 'Column moved' in screen.display[-1],screen.display[-1]
     assert screen.display[1].find('Artist')<screen.display[1].find('Title'),screen.display[1]
-    print('search, tree/archive navigation, divider/column drag, volume, radio/queue/stop-after, playback/seek/completion/order, saved-list CRUD/export/prune, selection/reorder/sort, menus/dialogs, equalizer/visualizer, narrow wheel/keyboard navigation, resize: PASS')
+    saved_row=row('PTY Saved');selection_row=row('PTY Selection')
+    click(10,saved_row);click(10,selection_row,16)
+    click(10,saved_row,2);send(b'\r')
+    assert 'Added 1 tracks' in screen.display[-1],screen.display[-1]
+    assert ' 9 ' in screen.display[10][50:],screen.display[2:12]
+    click(10,saved_row);click(10,selection_row,4)
+    click(10,saved_row,2);send(b'\x1b[B'*5+b'\r')
+    send('yes\r',.3)
+    wait_for('Deleted 2 playlists')
+    with sqlite3.connect(db_files[0]) as db:
+        assert db.execute("SELECT count(*) FROM playlists WHERE name IN ('PTY Saved','PTY Selection')").fetchone()[0]==0
+    print('search, tree/archive navigation, divider/column drag/visibility/reorder, volume, radio/queue/stop-after, playback/seek/completion/order, saved-list CRUD/export/prune/multi-selection, selection/reorder/sort, menus/dialogs, equalizer/visualizer, narrow wheel/keyboard navigation, resize: PASS')
     send(b'\x1b',.3);send('q')
     p.wait(timeout=5)
 finally:

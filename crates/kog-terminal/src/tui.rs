@@ -150,6 +150,8 @@ struct Ui {
     expanded: HashSet<PathBuf>,
     children: HashMap<PathBuf, Vec<Item>>,
     lists: Vec<(i64, String)>,
+    selected_lists: HashSet<i64>,
+    list_anchor: Option<usize>,
     tracks: Vec<Track>,
     queue: VecDeque<usize>,
     stop_after_rows: HashSet<usize>,
@@ -335,6 +337,8 @@ impl Ui {
             expanded: HashSet::new(),
             children: HashMap::new(),
             lists: Vec::new(),
+            selected_lists: HashSet::new(),
+            list_anchor: None,
             tracks: Vec::new(),
             queue: VecDeque::new(),
             stop_after_rows: HashSet::new(),
@@ -420,6 +424,8 @@ impl Ui {
             Ok(lists) => self.lists.extend(lists.into_iter().map(|p| (p.id, p.name))),
             Err(error) => self.status = error,
         }
+        self.selected_lists
+            .retain(|id| self.lists.iter().any(|(current, _)| current == id));
     }
 
     fn poll_metadata(&mut self) {
@@ -962,15 +968,8 @@ impl Ui {
             }
             (MenuPage::Tracks, 9) => self.toggle_selected_queue(),
             (MenuPage::Tracks, 10) => self.toggle_selected_stop_after(),
-            (MenuPage::Saved, 0) => self.enqueue_list(self.selected[0]),
-            (MenuPage::Saved, 1) => {
-                let first = self.tracks.len();
-                self.enqueue_list(self.selected[0]);
-                if self.tracks.len() > first {
-                    self.select_track(first, false, false);
-                    self.play_selected();
-                }
-            }
+            (MenuPage::Saved, 0) => self.enqueue_selected_lists(false),
+            (MenuPage::Saved, 1) => self.enqueue_selected_lists(true),
             (MenuPage::Saved, 2) => {
                 let index = self.selected[0];
                 self.clear_playlist();
@@ -996,9 +995,9 @@ impl Ui {
             }
             (MenuPage::Saved, 5) => {
                 if self
-                    .lists
-                    .get(self.selected[0])
-                    .is_some_and(|(id, _)| *id > 0)
+                    .selected_list_indices()
+                    .iter()
+                    .any(|&index| self.lists[index].0 > 0)
                 {
                     self.begin_prompt(PromptKind::DeletePlaylist, String::new());
                 }
@@ -1441,6 +1440,61 @@ impl Ui {
     fn select_list(&mut self, index: usize) {
         if index < self.lists.len() {
             self.selected[0] = index;
+            self.selected_lists.clear();
+            self.selected_lists.insert(self.lists[index].0);
+            self.list_anchor = Some(index);
+        }
+    }
+
+    fn select_list_with_modifiers(&mut self, index: usize, shift: bool, ctrl: bool) {
+        if index >= self.lists.len() {
+            return;
+        }
+        if shift {
+            let anchor = self.list_anchor.unwrap_or(self.selected[0]);
+            if !ctrl {
+                self.selected_lists.clear();
+            }
+            for row in anchor.min(index)..=anchor.max(index) {
+                self.selected_lists.insert(self.lists[row].0);
+            }
+        } else if ctrl {
+            let id = self.lists[index].0;
+            if !self.selected_lists.insert(id) {
+                self.selected_lists.remove(&id);
+            }
+        } else {
+            self.selected_lists.clear();
+            self.selected_lists.insert(self.lists[index].0);
+        }
+        self.selected[0] = index;
+        self.list_anchor = Some(index);
+    }
+
+    fn selected_list_indices(&self) -> Vec<usize> {
+        let selected: Vec<_> = self
+            .lists
+            .iter()
+            .enumerate()
+            .filter_map(|(index, (id, _))| self.selected_lists.contains(id).then_some(index))
+            .collect();
+        if selected.is_empty() && self.selected[0] < self.lists.len() {
+            vec![self.selected[0]]
+        } else {
+            selected
+        }
+    }
+
+    fn enqueue_selected_lists(&mut self, play: bool) {
+        let selected = self.selected_list_indices();
+        let mut last_start = None;
+        for index in selected {
+            last_start = Some(self.tracks.len());
+            self.enqueue_list(index);
+        }
+        if play && let Some(start) = last_start.filter(|start| *start < self.tracks.len()) {
+            self.selected[2] = start;
+            self.play_selected();
         }
     }
 
@@ -1458,6 +1512,7 @@ impl Ui {
                 let count = entries.len();
                 self.tracks
                     .extend(entries.into_iter().map(track_from_entry));
+                self.order_tracks_changed();
                 self.status = format!("Added {count} tracks to the playlist");
             }
             Err(error) => self.status = error,
@@ -1938,22 +1993,34 @@ impl Ui {
                 }
             }
             PromptKind::DeletePlaylist => {
-                let id = self.lists.get(self.selected[0]).map_or(0, |(id, _)| *id);
-                if id <= 0 {
-                    return;
-                }
                 if value != "yes" {
                     self.status = "Playlist deletion cancelled".to_owned();
                     return;
                 }
-                let result = self.library.db().delete_playlist(id);
-                match result {
-                    Ok(()) => {
-                        self.reload_lists();
-                        self.select_list(0);
-                        self.status = "Playlist deleted".to_owned();
+                let ids: Vec<_> = self
+                    .selected_list_indices()
+                    .into_iter()
+                    .filter_map(|index| self.lists.get(index).map(|(id, _)| *id))
+                    .filter(|id| *id > 0)
+                    .collect();
+                let mut deleted = 0;
+                for id in ids {
+                    match self.library.db().delete_playlist(id) {
+                        Ok(()) => deleted += 1,
+                        Err(error) => {
+                            self.status = error;
+                            break;
+                        }
                     }
-                    Err(error) => self.status = error,
+                }
+                if deleted > 0 {
+                    self.reload_lists();
+                    self.select_list(0);
+                    self.status = if deleted == 1 {
+                        "Playlist deleted".to_owned()
+                    } else {
+                        format!("Deleted {deleted} playlists")
+                    };
                 }
             }
             PromptKind::Search => {
@@ -2477,8 +2544,23 @@ impl Ui {
                     Focus::Tracks => Focus::Library,
                 }
             }
+            Key::Up | Key::Char('k') if self.focus == Focus::Playlists => {
+                self.move_selection(-1, page);
+                self.select_list(self.selected[0]);
+            }
+            Key::Down | Key::Char('j') if self.focus == Focus::Playlists => {
+                self.move_selection(1, page);
+                self.select_list(self.selected[0]);
+            }
             Key::Up | Key::Char('k') => self.move_selection(-1, page),
             Key::Down | Key::Char('j') => self.move_selection(1, page),
+            Key::ShiftUp | Key::ShiftDown if self.focus == Focus::Playlists => {
+                let anchor = self.list_anchor.unwrap_or(self.selected[0]);
+                self.move_selection(if key == Key::ShiftUp { -1 } else { 1 }, page);
+                self.list_anchor = Some(anchor);
+                self.select_list_with_modifiers(self.selected[0], true, false);
+                self.list_anchor = Some(anchor);
+            }
             Key::ShiftUp | Key::ShiftDown if self.focus == Focus::Tracks => {
                 let anchor = self.selection_anchor.unwrap_or(self.selected[2]);
                 self.move_selection(if key == Key::ShiftUp { -1 } else { 1 }, page);
@@ -2495,6 +2577,10 @@ impl Ui {
             Key::CtrlA if self.focus == Focus::Tracks => {
                 self.selected_tracks = self.visible_tracks().into_iter().collect();
                 self.status = format!("Selected {} tracks", self.selected_tracks.len());
+            }
+            Key::CtrlA if self.focus == Focus::Playlists => {
+                self.selected_lists = self.lists.iter().map(|(id, _)| *id).collect();
+                self.status = format!("Selected {} playlists", self.selected_lists.len());
             }
             Key::PageUp => self.move_selection(-(page as isize), page),
             Key::PageDown => self.move_selection(page as isize, page),
@@ -2525,9 +2611,9 @@ impl Ui {
             Key::Delete
                 if self.focus == Focus::Playlists
                     && self
-                        .lists
-                        .get(self.selected[0])
-                        .is_some_and(|(id, _)| *id > 0) =>
+                        .selected_list_indices()
+                        .iter()
+                        .any(|&index| self.lists[index].0 > 0) =>
             {
                 self.begin_prompt(PromptKind::DeletePlaylist, String::new());
             }
@@ -2718,7 +2804,10 @@ impl Ui {
                 self.focus = Focus::Playlists;
                 let index = self.offsets[0] + y - layout.list_top;
                 if index < self.lists.len() {
-                    self.select_list(index);
+                    if !self.selected_lists.contains(&self.lists[index].0) {
+                        self.select_list(index);
+                    }
+                    self.selected[0] = index;
                     self.open_context(MenuPage::Saved, x, y, size);
                 }
             } else if !layout.show_sidebar
@@ -2738,7 +2827,10 @@ impl Ui {
             {
                 let index = self.offsets[0] + y - 2;
                 if index < self.lists.len() {
-                    self.select_list(index);
+                    if !self.selected_lists.contains(&self.lists[index].0) {
+                        self.select_list(index);
+                    }
+                    self.selected[0] = index;
                     self.open_context(MenuPage::Saved, x, y, size);
                 }
             } else if x >= layout.first && y == 1 {
@@ -2906,10 +2998,9 @@ impl Ui {
                             && row == index
                             && now.duration_since(when) < Duration::from_millis(450)
                     });
-                    self.selected[0] = index;
-                    self.select_list(index);
+                    self.select_list_with_modifiers(index, button & 4 != 0, button & 16 != 0);
                     self.last_click = if double { None } else { Some((now, 0, index)) };
-                    if double {
+                    if double && button & 20 == 0 {
                         self.enqueue_list(index);
                     }
                 }
@@ -3009,10 +3100,9 @@ impl Ui {
                             && row == index
                             && now.duration_since(when) < Duration::from_millis(450)
                     });
-                    self.selected[0] = index;
-                    self.select_list(index);
+                    self.select_list_with_modifiers(index, button & 4 != 0, button & 16 != 0);
                     self.last_click = if double { None } else { Some((now, 0, index)) };
-                    if double {
+                    if double && button & 20 == 0 {
                         self.enqueue_list(index);
                     }
                 }
@@ -3324,7 +3414,12 @@ impl Ui {
             );
             for y in layout.list_top..layout.footer_top {
                 let index = self.offsets[0] + y - layout.list_top;
-                let surface = if index == self.selected[0] && self.focus == Focus::Playlists {
+                let surface = if self
+                    .lists
+                    .get(index)
+                    .is_some_and(|(id, _)| self.selected_lists.contains(id))
+                    || index == self.selected[0] && self.focus == Focus::Playlists
+                {
                     Surface::Selected
                 } else {
                     Surface::Sidebar
@@ -3375,7 +3470,12 @@ impl Ui {
                     .get(index)
                     .map(|(id, name)| format!(" {}  {}", if *id == 0 { "★" } else { " " }, name))
                     .unwrap_or_default();
-                let surface = if index == self.selected[0] {
+                let surface = if self
+                    .lists
+                    .get(index)
+                    .is_some_and(|(id, _)| self.selected_lists.contains(id))
+                    || index == self.selected[0]
+                {
                     Surface::Selected
                 } else if index % 2 == 1 {
                     Surface::MainAlt
@@ -4022,7 +4122,7 @@ fn prompt_label(kind: PromptKind) -> &'static str {
         PromptKind::MusicFolder => "Music folder",
         PromptKind::NewPlaylist => "New playlist",
         PromptKind::RenamePlaylist => "Rename playlist",
-        PromptKind::DeletePlaylist => "Type yes to delete playlist",
+        PromptKind::DeletePlaylist => "Type yes to delete selected playlists",
         PromptKind::Search => "Search files",
         PromptKind::PlaylistSearch => "Search playlist",
         PromptKind::AddFile => "Add file or folder",
