@@ -34,7 +34,7 @@ The provider smoke test is opt-in because it contacts public services: `nix deve
 - [x] The current playlist and selected row survive a TUI quit and relaunch in a separate atomic session file; the PTY fixture checks the full queue before and after restart.
 - [x] Playlist rows show decoded title, artist, and album without probing on the input thread.
 - [x] Default #, Title, Artist, and Album columns have header sorting, mouse resizing, visibility toggles, and auto fit from loaded metadata.
-- [x] All 20 Qt columns can be shown, hidden, sorted, resized, reordered, and scrolled horizontally with a visible draggable scrollbar, native horizontal wheel, Shift/Ctrl+wheel, or keyboard shortcuts. The terminal saves its character-width layout and can import an existing Qt column order.
+- [x] All 20 Qt columns can be shown, hidden, sorted, resized, reordered, and scrolled horizontally with Left/Right in the playlist, a visible draggable scrollbar, native horizontal wheel, Shift/Ctrl+wheel, or bracket keys. The terminal saves its character-width layout and can import an existing Qt column order.
 - [x] Right click opens row, file, saved playlist, column, and empty playlist menus. An open menu consumes right clicks inside it instead of passing them through to the underlying pane.
 - [x] Add File, Add URL, Save Current Playlist, and Add to Saved Playlist write the expected queue and database entries.
 - [x] Save Selection As and saved playlist Duplicate write the expected database entries.

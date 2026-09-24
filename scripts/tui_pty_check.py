@@ -155,6 +155,11 @@ try:
         raise AssertionError('terminal playlist was not saved during the session')
     assert '━' in screen.display[35],screen.display[35]
     initial_header=screen.display[1]
+    click(60,2)
+    send(b'\x1b[C')  # playlist Right scrolls columns
+    assert screen.display[1]!=initial_header,screen.display[1]
+    send(b'\x1b[D')  # playlist Left scrolls back
+    assert screen.display[1]==initial_header,screen.display[1]
     send('\x1b[<67;81;10M')  # native horizontal wheel right
     assert screen.display[1]!=initial_header,screen.display[1]
     shifted_header=screen.display[1]

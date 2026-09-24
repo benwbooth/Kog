@@ -4813,6 +4813,12 @@ impl Ui {
             Key::End => self.move_selection(isize::MAX / 2, page),
             Key::Left | Key::Backspace if self.focus == Focus::Library => self.up_directory(),
             Key::Right | Key::Enter if self.focus == Focus::Library => self.open_selected(),
+            Key::Left | Key::Right if self.focus == Focus::Tracks && !self.compact_mode => {
+                self.columns.scroll_by(
+                    if key == Key::Left { -8 } else { 8 },
+                    size.0.saturating_sub(layout.first + 1),
+                );
+            }
             Key::Enter if self.focus == Focus::Playlists => self.enqueue_list(self.selected[0]),
             Key::Enter if self.focus == Focus::Tracks => self.play_selected(),
             Key::Char('a') if self.focus == Focus::Library => self.add_selected(false),
