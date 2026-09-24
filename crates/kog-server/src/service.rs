@@ -125,6 +125,36 @@ impl StreamService {
         // read them the way the desktop's tag path does.
         if !source.is_remote() {
             properties.fill_local_tags(&source.path);
+            let no_main_tags = properties.title.is_none()
+                && properties.artist.is_none()
+                && properties.album.is_none();
+            if (no_main_tags || kog_audio::legacy_id3::looks_misdecoded(&[
+                properties.title.as_deref().unwrap_or_default(),
+                properties.artist.as_deref().unwrap_or_default(),
+                properties.album.as_deref().unwrap_or_default(),
+                properties.album_artist.as_deref().unwrap_or_default(),
+                properties.composer.as_deref().unwrap_or_default(),
+                properties.genre.as_deref().unwrap_or_default(),
+            ])) && let Some(corrected) = kog_audio::legacy_id3::corrected_text(&source.path) {
+                if let Some(value) = corrected.title {
+                    properties.title = Some(value);
+                }
+                if let Some(value) = corrected.artist {
+                    properties.artist = Some(value);
+                }
+                if let Some(value) = corrected.album {
+                    properties.album = Some(value);
+                }
+                if let Some(value) = corrected.album_artist {
+                    properties.album_artist = Some(value);
+                }
+                if let Some(value) = corrected.composer {
+                    properties.composer = Some(value);
+                }
+                if let Some(value) = corrected.genre {
+                    properties.genre = Some(value);
+                }
+            }
         }
         Ok(properties)
     }
@@ -265,7 +295,9 @@ pub fn scratch_root() -> PathBuf {
 mod tests {
     use super::*;
     use crate::stream::StreamCache;
+    use kog_audio::decoder::{DecoderRegistry, PlaybackSource};
     use kog_audio::playlist::PlaylistLocation;
+    use kog_audio::track::Track;
 
     fn cache() -> (tempfile::TempDir, StreamCache) {
         let directory = tempfile::tempdir().unwrap();
@@ -322,5 +354,33 @@ mod tests {
         tee.write_all(b"streamed").unwrap();
         let received = receiver.try_recv().unwrap().unwrap();
         assert_eq!(received.as_ref(), b"streamed");
+    }
+
+    #[test]
+    #[ignore = "requires KOG_TEST_LEGACY_MP3 pointing to an MP3 with mislabelled ID3 text"]
+    fn legacy_mp3_metadata_matches_in_desktop_and_web_probe() {
+        let path = PathBuf::from(std::env::var_os("KOG_TEST_LEGACY_MP3").expect("fixture path"));
+        let decoders = DecoderRegistry::default();
+        let track = Track::from_source(PlaybackSource::from_path(path.clone()), &decoders);
+        assert_eq!(track.title, "I Believe");
+        assert_eq!(track.artist, "孙楠");
+        assert_eq!(track.album, "缘份的天空");
+
+        let (directory, cache) = cache();
+        let service = StreamService::new(
+            cache,
+            DecoderSettings::default(),
+            PathBuf::from("ffmpeg"),
+            directory.path().join("scratch"),
+        );
+        let properties = service
+            .probe_entry(PlaylistEntry {
+                location: PlaylistLocation::Local(path),
+                fragment: None,
+            })
+            .unwrap();
+        assert_eq!(properties.title.as_deref(), Some("I Believe"));
+        assert_eq!(properties.artist.as_deref(), Some("孙楠"));
+        assert_eq!(properties.album.as_deref(), Some("缘份的天空"));
     }
 }

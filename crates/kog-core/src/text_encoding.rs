@@ -39,6 +39,49 @@ pub fn decode(bytes: &[u8]) -> String {
         .into_owned()
 }
 
+/// Repair ID3 text frames whose encoding byte says Latin-1 even though the
+/// fields were written in the same legacy multibyte code page. Detect from
+/// multiple text fields together: one field is too ambiguous to override an
+/// explicit Latin-1 declaration.
+/// Leave correctly labelled Western Latin-1 alone unless the candidate has
+/// convincing non-Latin script evidence.
+pub fn decode_mislabelled_latin1_fields(fields: &[&[u8]]) -> Option<Vec<String>> {
+    let mut sample = Vec::new();
+    let mut non_ascii_fields = 0;
+    for field in fields {
+        if field.iter().any(|byte| *byte >= 0x80) {
+            non_ascii_fields += 1;
+            sample.extend_from_slice(field);
+            sample.push(b' ');
+        }
+    }
+    let high = sample.iter().filter(|byte| **byte >= 0x80).count();
+    if non_ascii_fields < 2 || high < 6 || high * 2 < sample.len() {
+        return None;
+    }
+    let mut detector = EncodingDetector::new(Iso2022JpDetection::Allow);
+    detector.feed(&sample, true);
+    let encoding = detector.guess(None, Utf8Detection::Allow);
+    let mut decoded = Vec::with_capacity(fields.len());
+    for field in fields {
+        let (text, errors) = encoding.decode_without_bom_handling(field);
+        if errors {
+            return None;
+        }
+        decoded.push(text.into_owned());
+    }
+    let recovered_script = decoded
+        .iter()
+        .flat_map(|text| text.chars())
+        .filter(|character| {
+            matches!(character,
+            '\u{0400}'..='\u{052f}' | '\u{3040}'..='\u{30ff}' |
+            '\u{3400}'..='\u{9fff}' | '\u{ac00}'..='\u{d7af}')
+        })
+        .count();
+    (recovered_script >= 4).then_some(decoded)
+}
+
 fn decode_utf32(bytes: &[u8], order: fn([u8; 4]) -> u32) -> Option<String> {
     if !bytes.len().is_multiple_of(4) {
         return None;
@@ -150,5 +193,32 @@ mod tests {
         let (western, _, errors) = WINDOWS_1252.encode("Björk – Jóga");
         assert!(!errors);
         assert_eq!(decode(&western), "Björk – Jóga");
+    }
+
+    #[test]
+    fn decodes_legacy_chinese_album_and_artist_bytes() {
+        assert_eq!(
+            decode(&[0xd4, 0xb5, 0xb7, 0xdd, 0xb5, 0xc4, 0xcc, 0xec, 0xbf, 0xd5]),
+            "缘份的天空"
+        );
+        assert_eq!(decode(&[0xcb, 0xef, 0xe9, 0xaa]), "孙楠");
+        let album = [0xd4, 0xb5, 0xb7, 0xdd, 0xb5, 0xc4, 0xcc, 0xec, 0xbf, 0xd5];
+        let artist = [0xcb, 0xef, 0xe9, 0xaa];
+        assert_eq!(
+            decode_mislabelled_latin1_fields(&[&album, &artist]),
+            Some(vec!["缘份的天空".to_owned(), "孙楠".to_owned()])
+        );
+        assert_eq!(
+            decode_mislabelled_latin1_fields(&[b"Bj\xf6rk", b"J\xf3ga"]),
+            None
+        );
+        assert_eq!(
+            decode_mislabelled_latin1_fields(&[b"\xe0\xe9\xe8\xf9\xf4\xf6\xee\xef"]),
+            None
+        );
+        assert_eq!(
+            decode_mislabelled_latin1_fields(&[b"\xe0\xe9\xe8\xf9", b"\xf4\xf6\xee\xef"]),
+            None
+        );
     }
 }

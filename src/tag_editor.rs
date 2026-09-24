@@ -8,7 +8,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use lofty::config::WriteOptions;
 use lofty::file::TaggedFileExt;
 use lofty::picture::{Picture, PictureType};
-use lofty::tag::{Accessor, ItemKey, Tag, TagExt};
+use lofty::tag::{Accessor, ItemKey, Tag, TagExt, TagType};
 use serde_json::{Map, Value, json};
 
 use kog_audio::decoder::PlaybackSource;
@@ -139,7 +139,30 @@ pub fn snapshot_json(sources: &[PlaybackSource]) -> Result<Value, String> {
         let tagged = lofty::read_from_path(path)
             .map_err(|error| format!("Reading tags from {}: {error}", path.display()))?;
         let tag = tagged.primary_tag().or_else(|| tagged.first_tag());
-        values.push(TagValues::from_tag(tag));
+        let mut visible = TagValues::from_tag(tag);
+        if tag.is_some_and(|tag| tag.tag_type() == TagType::Id3v2)
+            && let Some(corrected) = kog_audio::legacy_id3::corrected_text(path)
+        {
+            if let Some(value) = corrected.title {
+                visible.title = value;
+            }
+            if let Some(value) = corrected.artist {
+                visible.artist = value;
+            }
+            if let Some(value) = corrected.album {
+                visible.album = value;
+            }
+            if let Some(value) = corrected.album_artist {
+                visible.album_artist = value;
+            }
+            if let Some(value) = corrected.composer {
+                visible.composer = value;
+            }
+            if let Some(value) = corrected.genre {
+                visible.genre = value;
+            }
+        }
+        values.push(visible);
         artwork.push(tag.and_then(selected_artwork));
     }
 
@@ -378,6 +401,29 @@ fn prepare_tag(
         tag.re_map(tag_type);
     }
 
+    if tag_type == TagType::Id3v2
+        && let Some(corrected) = kog_audio::legacy_id3::corrected_text(path)
+    {
+        for (key, value) in [
+            (ItemKey::TrackTitle, corrected.title),
+            (ItemKey::TrackArtist, corrected.artist),
+            (ItemKey::AlbumTitle, corrected.album),
+            (ItemKey::AlbumArtist, corrected.album_artist),
+            (ItemKey::Composer, corrected.composer),
+            (ItemKey::Genre, corrected.genre),
+        ] {
+            if let Some(value) = value {
+                tag.remove_key(key);
+                if !tag.insert_text(key, value) {
+                    return Err(format!(
+                        "{} cannot store corrected text tags",
+                        path.display()
+                    ));
+                }
+            }
+        }
+    }
+
     for (name, key, value) in &edits.fields {
         clear_equivalent_keys(&mut tag, name, *key);
         if !value.is_empty() && !tag.insert_text(*key, value.clone()) {
@@ -592,6 +638,18 @@ mod tests {
     use lofty::tag::TagType;
 
     use super::*;
+
+    #[test]
+    #[ignore = "requires KOG_TEST_LEGACY_MP3 pointing to an MP3 with mislabelled ID3 text"]
+    fn legacy_mp3_tag_editor_shows_and_preserves_corrected_text() {
+        let path = PathBuf::from(std::env::var_os("KOG_TEST_LEGACY_MP3").expect("fixture path"));
+        let snapshot = snapshot_json(&[source(&path)]).unwrap();
+        assert_eq!(snapshot["fields"]["artist"]["value"], "孙楠");
+        assert_eq!(snapshot["fields"]["album"]["value"], "缘份的天空");
+        let prepared = prepare_tag(&path, &TagEdits::default(), None).unwrap();
+        assert_eq!(prepared.artist().as_deref(), Some("孙楠"));
+        assert_eq!(prepared.album().as_deref(), Some("缘份的天空"));
+    }
 
     fn write_wav(path: &Path) {
         let sample_rate = 8_000_u32;

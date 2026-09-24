@@ -136,6 +136,37 @@ impl Track {
             track.decoder_warning = properties.warning;
         }
 
+        if !track.source.is_remote()
+            && crate::legacy_id3::looks_misdecoded(&[
+                &track.title,
+                &track.artist,
+                &track.album,
+                &track.album_artist,
+                &track.composer,
+                &track.genre,
+            ])
+            && let Some(corrected) = crate::legacy_id3::corrected_text(&track.source.path)
+        {
+            if let Some(value) = corrected.title {
+                track.title = value;
+            }
+            if let Some(value) = corrected.artist {
+                track.artist = value;
+            }
+            if let Some(value) = corrected.album {
+                track.album = value;
+            }
+            if let Some(value) = corrected.album_artist {
+                track.album_artist = value;
+            }
+            if let Some(value) = corrected.composer {
+                track.composer = value;
+            }
+            if let Some(value) = corrected.genre {
+                track.genre = value;
+            }
+        }
+
         track.refresh_search_text();
         track
     }
