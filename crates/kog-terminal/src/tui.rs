@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{self, Write};
 use std::net::IpAddr;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -1435,6 +1436,21 @@ impl Ui {
             RadioCommand::Enable(self.radio_enabled),
             self.browse_path.clone(),
         ));
+    }
+
+    fn activate_transport(&mut self, action: TransportAction) {
+        match action {
+            TransportAction::Shuffle => self.cycle_shuffle(),
+            TransportAction::Previous => self.previous(),
+            TransportAction::PlayPause => self.play_pause(),
+            TransportAction::Stop => {
+                self.player.stop();
+                self.playing = None;
+            }
+            TransportAction::Next => self.next(false),
+            TransportAction::Repeat => self.cycle_repeat(),
+            TransportAction::Radio => self.toggle_radio(),
+        }
     }
 
     fn reshuffle_radio(&mut self) {
@@ -6319,32 +6335,18 @@ impl Ui {
                 return;
             }
             let (volume_row, icon_x, bar_x, bar_width) = volume_geometry(size.0, layout.footer_top);
-            if y == volume_row && x >= icon_x {
+            if y == volume_row && (icon_x..bar_x + bar_width).contains(&x) {
                 if x < bar_x {
                     self.toggle_mute();
-                } else if x < bar_x + bar_width {
+                } else {
                     self.set_volume_from_bar(x, size);
                     self.volume_drag = true;
                 }
                 return;
             }
-            let start = size.0.saturating_div(2).saturating_sub(11);
             if y == layout.footer_top {
-                if (start.saturating_sub(5)..start).contains(&x) {
-                    self.cycle_shuffle();
-                    return;
-                }
-                match x.saturating_sub(start) / 5 {
-                    0 if x >= start => self.previous(),
-                    1 if x >= start => self.play_pause(),
-                    2 if x >= start => {
-                        self.player.stop();
-                        self.playing = None;
-                    }
-                    3 if x >= start => self.next(false),
-                    4 if x >= start => self.cycle_repeat(),
-                    5 if x >= start => self.toggle_radio(),
-                    _ => {}
+                if let Some(action) = footer_transport_at(size.0, x) {
+                    self.activate_transport(action);
                 }
             } else if y == layout.footer_top + 1 {
                 let duration = self
@@ -6354,12 +6356,9 @@ impl Ui {
                     .and_then(|meta| meta.duration);
                 if let Some(duration) = duration.filter(|time| !time.is_zero()) {
                     let clock = self.player.position();
-                    let clock_width =
-                        format!("{}:{:02}", clock.as_secs() / 60, clock.as_secs() % 60)
-                            .len()
-                            .max(5);
-                    let bar_left = start.saturating_sub(3) + clock_width + 1;
-                    let bar_width = size.0.saturating_div(2).min(32).max(4);
+                    let clock_label =
+                        format!("{}:{:02}", clock.as_secs() / 60, clock.as_secs() % 60);
+                    let (_, bar_left, bar_width) = progress_bar_geometry(size.0, &clock_label);
                     if (bar_left..bar_left + bar_width).contains(&x) {
                         let fraction = (x - bar_left) as f64 / (bar_width - 1) as f64;
                         let _ = self.player.seek(duration.mul_f64(fraction));
@@ -6399,14 +6398,9 @@ impl Ui {
                         let _ = self.player.seek(duration.mul_f64(fraction));
                     }
                 } else if y == card_y + 7 && x >= card_x + 17 {
-                    match x - card_x - 17 {
-                        0..=13 => self.previous(),
-                        14..=28 => self.play_pause(),
-                        29..=37 => {
-                            self.player.stop();
-                            self.playing = None;
-                        }
-                        _ => self.next(false),
+                    let transport = compact_transport(card_width - 21, true);
+                    if let Some(action) = transport.action_at(x - card_x - 17) {
+                        self.activate_transport(action);
                     }
                 } else if y == card_y + 8 && (card_x + 19..card_x + 39).contains(&x) {
                     self.volume = (x - card_x - 19) as f32 / 19.0;
@@ -6414,14 +6408,9 @@ impl Ui {
                     self.player.set_volume(self.volume);
                 }
             } else if y == card_y + 3 && x >= card_x {
-                match x - card_x {
-                    0..=15 => self.previous(),
-                    16..=32 => self.play_pause(),
-                    33..=43 => {
-                        self.player.stop();
-                        self.playing = None;
-                    }
-                    _ => self.next(false),
+                let transport = compact_transport(card_width, false);
+                if let Some(action) = transport.action_at(x - card_x) {
+                    self.activate_transport(action);
                 }
             }
             return;
@@ -7512,7 +7501,7 @@ impl Ui {
                     &mut screen,
                     card_y + 8,
                     card_x + 18,
-                    "│◀ Previous   ▶ Play/Pause   ■ Stop   ▶│ Next",
+                    &compact_transport(card_width - 21, true).text,
                     card_width - 21,
                     Surface::Sidebar,
                     false,
@@ -7577,60 +7566,59 @@ impl Ui {
                     &mut screen,
                     card_y + 4,
                     card_x,
-                    "│◀ Previous     ▶ Play/Pause     ■ Stop     ▶│ Next",
+                    &compact_transport(card_width, false).text,
                     card_width,
                     Surface::Muted,
                     false,
                 );
             }
         }
-        let control_start = width.saturating_div(2).saturating_sub(11);
-        paint(
-            &mut screen,
-            layout.footer_top + 1,
-            control_start.saturating_sub(5),
-            match self.shuffle_mode {
-                ShuffleMode::Off => "⇄",
-                ShuffleMode::Albums => "⇄A",
-                ShuffleMode::All => "⇄•",
-            },
-            3,
-            if self.shuffle_mode == ShuffleMode::Off {
-                Surface::Muted
-            } else {
-                Surface::Accent
-            },
-            true,
-        );
         let play = if self.player.state() == PlaybackState::Playing {
             "Ⅱ"
         } else {
             "▶"
         };
-        for (index, icon) in ["│◀", play, "■", "▶│", "↻"].into_iter().enumerate() {
+        for action in FOOTER_TRANSPORT {
+            let (icon, surface) = match action {
+                TransportAction::Shuffle => (
+                    match self.shuffle_mode {
+                        ShuffleMode::Off => "⇄",
+                        ShuffleMode::Albums => "⇄A",
+                        ShuffleMode::All => "⇄•",
+                    },
+                    if self.shuffle_mode == ShuffleMode::Off {
+                        Surface::Muted
+                    } else {
+                        Surface::Accent
+                    },
+                ),
+                TransportAction::Previous => ("⏮", Surface::Toolbar),
+                TransportAction::PlayPause => (play, Surface::Toolbar),
+                TransportAction::Stop => ("■", Surface::Toolbar),
+                TransportAction::Next => ("⏭", Surface::Toolbar),
+                TransportAction::Repeat => ("↻", Surface::Toolbar),
+                TransportAction::Radio => (
+                    "⚄",
+                    if self.radio_enabled {
+                        Surface::Accent
+                    } else {
+                        Surface::Muted
+                    },
+                ),
+            };
+            let slot = footer_transport_slot(width, action);
+            let icon_width = cell_width(icon);
+            let icon_x = slot.start + (slot.end - slot.start).saturating_sub(icon_width) / 2;
             paint(
                 &mut screen,
                 layout.footer_top + 1,
-                control_start + index * 5,
+                icon_x + 1,
                 icon,
-                2,
-                Surface::Toolbar,
+                icon_width.min(slot.end - slot.start),
+                surface,
                 true,
             );
         }
-        paint(
-            &mut screen,
-            layout.footer_top + 1,
-            control_start + 25,
-            "⚄",
-            2,
-            if self.radio_enabled {
-                Surface::Accent
-            } else {
-                Surface::Muted
-            },
-            true,
-        );
         let progress = self.player.position();
         let clock = format!(
             "{:01}:{:02}",
@@ -7645,7 +7633,7 @@ impl Ui {
         let duration_label = duration
             .map(|time| format!("{}:{:02}", time.as_secs() / 60, time.as_secs() % 60))
             .unwrap_or_else(|| "--:--".to_owned());
-        let bar_width = width.saturating_div(2).min(32).max(4);
+        let (progress_x, _, bar_width) = progress_bar_geometry(width, &clock);
         let filled = duration
             .filter(|time| !time.is_zero())
             .map(|time| {
@@ -7657,9 +7645,9 @@ impl Ui {
         paint(
             &mut screen,
             layout.footer_top + 2,
-            control_start.saturating_sub(3),
+            progress_x + 1,
             &format!("{clock:>5}  {progress_bar}  {duration_label}"),
-            width.saturating_sub(control_start),
+            width.saturating_sub(progress_x),
             Surface::Toolbar,
             false,
         );
@@ -8876,13 +8864,109 @@ impl Layout {
 
 fn volume_geometry(width: usize, footer_top: usize) -> (usize, usize, usize, usize) {
     let bar_width = if width >= 70 { 12 } else { 8 };
-    let row = if width >= 70 {
+    let row = if width >= 80 {
         footer_top
     } else {
         footer_top + 2
     };
     let icon_x = width.saturating_sub(bar_width + 8);
     (row, icon_x, icon_x + 3, bar_width)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TransportAction {
+    Shuffle,
+    Previous,
+    PlayPause,
+    Stop,
+    Next,
+    Repeat,
+    Radio,
+}
+
+const FOOTER_TRANSPORT: [TransportAction; 7] = [
+    TransportAction::Shuffle,
+    TransportAction::Previous,
+    TransportAction::PlayPause,
+    TransportAction::Stop,
+    TransportAction::Next,
+    TransportAction::Repeat,
+    TransportAction::Radio,
+];
+
+fn footer_transport_layout(width: usize) -> (usize, usize) {
+    let slot_width = (width / FOOTER_TRANSPORT.len()).clamp(1, 5);
+    let total = slot_width * FOOTER_TRANSPORT.len();
+    (width.saturating_sub(total) / 2, slot_width)
+}
+
+fn footer_transport_slot(width: usize, action: TransportAction) -> Range<usize> {
+    let (left, slot_width) = footer_transport_layout(width);
+    let index = FOOTER_TRANSPORT
+        .iter()
+        .position(|candidate| *candidate == action)
+        .expect("footer transport action");
+    let start = left + index * slot_width;
+    start..start + slot_width
+}
+
+fn footer_transport_at(width: usize, x: usize) -> Option<TransportAction> {
+    FOOTER_TRANSPORT
+        .iter()
+        .copied()
+        .find(|action| footer_transport_slot(width, *action).contains(&x))
+}
+
+fn progress_bar_geometry(width: usize, clock: &str) -> (usize, usize, usize) {
+    let (left, slot_width) = footer_transport_layout(width);
+    let text_start = (left + slot_width).saturating_sub(3);
+    let bar_start = text_start + cell_width(clock).max(5) + 2;
+    let bar_width = (width / 2).clamp(4, 32);
+    (text_start, bar_start, bar_width)
+}
+
+struct CompactTransport {
+    text: String,
+    buttons: Vec<(Range<usize>, TransportAction)>,
+}
+
+impl CompactTransport {
+    fn action_at(&self, x: usize) -> Option<TransportAction> {
+        self.buttons
+            .iter()
+            .find_map(|(range, action)| range.contains(&x).then_some(*action))
+    }
+}
+
+fn compact_transport(width: usize, rich: bool) -> CompactTransport {
+    let labels: [&str; 4] = if rich {
+        ["⏮ Previous", "▶ Play/Pause", "■ Stop", "⏭ Next"]
+    } else if width >= 36 {
+        ["⏮ Prev", "▶ Play", "■ Stop", "⏭ Next"]
+    } else {
+        ["⏮", "▶", "■", "⏭"]
+    };
+    let separator = if rich { "   " } else { "  " };
+    let actions = [
+        TransportAction::Previous,
+        TransportAction::PlayPause,
+        TransportAction::Stop,
+        TransportAction::Next,
+    ];
+    let mut text = String::new();
+    let mut buttons = Vec::with_capacity(actions.len());
+    let mut x = 0;
+    for (index, (&label, action)) in labels.iter().zip(actions).enumerate() {
+        if index > 0 {
+            text.push_str(separator);
+            x += cell_width(separator);
+        }
+        let end = x + cell_width(label);
+        buttons.push((x..end, action));
+        text.push_str(label);
+        x = end;
+    }
+    CompactTransport { text, buttons }
 }
 
 fn menu_width(terminal_width: usize) -> usize {
@@ -9913,6 +9997,33 @@ mod tests {
         assert_eq!(parse_seek_position("1:60"), None);
         assert_eq!(parse_seek_position("1:01:60"), None);
         assert_eq!(parse_seek_position("1::03"), None);
+    }
+    #[test]
+    fn transport_hitboxes_follow_drawn_controls() {
+        for width in [30, 48, 70, 72, 80, 120] {
+            for action in FOOTER_TRANSPORT {
+                let slot = footer_transport_slot(width, action);
+                assert!(slot.start < slot.end && slot.end <= width);
+                assert_eq!(footer_transport_at(width, slot.start), Some(action));
+                assert_eq!(footer_transport_at(width, slot.end - 1), Some(action));
+            }
+            let (volume_row, icon_x, bar_x, bar_width) = volume_geometry(width, 36);
+            if volume_row == 36 {
+                assert!(footer_transport_slot(width, TransportAction::Radio).end <= icon_x);
+            }
+            assert!(bar_x + bar_width <= width);
+            let (_, bar_start, bar_width) = progress_bar_geometry(width, "8:01:03");
+            assert!(bar_start < bar_start + bar_width);
+        }
+        for (width, rich) in [(26, false), (44, false), (51, true)] {
+            let transport = compact_transport(width, rich);
+            assert!(cell_width(&transport.text) <= width);
+            for (range, action) in &transport.buttons {
+                assert_eq!(transport.action_at(range.start), Some(*action));
+                assert_eq!(transport.action_at(range.end - 1), Some(*action));
+            }
+            assert_eq!(transport.action_at(width + 10), None);
+        }
     }
     #[test]
     fn prompt_word_navigation_handles_names_and_paths() {

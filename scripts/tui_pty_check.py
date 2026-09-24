@@ -104,6 +104,10 @@ def send(data,seconds=.25):
     os.write(master,data if isinstance(data,bytes) else data.encode());drain(seconds)
 def click(x,y,button=0):
     send(f'\x1b[<{button};{x+1};{y+1}M\x1b[<{button};{x+1};{y+1}m')
+def glyph_x(glyph,y):
+    for x in range(screen.columns):
+        if screen.buffer[y][x].data == glyph:return x
+    raise AssertionError((glyph,y,screen.display[y]))
 def choose_music_folder(path):
     click(1,0)
     wait_for('Select Music Folder')
@@ -325,16 +329,16 @@ try:
     assert 'Removed 2 track(s)' in screen.display[-1],screen.display[-1]
     click(5,0);click(10,9)
     assert 'Playlist cleared' in screen.display[-1],screen.display[-1]
-    click(74,36)
+    click(glyph_x('⚄',36),36)
     assert 'Random Radio: on' in screen.display[-1],screen.display[-1]
     click(55,36)
     wait_for('Playing',30)
     assert '▶' in screen.display[2][50:],screen.display[2]
-    click(65,36)
+    click(glyph_x('⏭',36),36)
     until=time.time()+30
     while time.time()<until and '2 ' not in screen.display[3][50:80]:drain(.2)
     assert '2 ' in screen.display[3][50:80],screen.display[3]
-    click(74,36);click(5,0);click(10,9)
+    click(glyph_x('⚄',36),36);click(5,0);click(10,9)
     send('m');send(b'\x1b[B'*7);send(b'\r')
     assert '╭─ Kog' in '\n'.join(screen.display)
     assert '╭─ View' in '\n'.join(screen.display)
@@ -434,19 +438,19 @@ try:
     assert '⏭1' in screen.display[3],screen.display[3]
     send(b'\r')
     assert 'Ⅱ' in screen.display[36],screen.display[36]
-    click(65,36)
+    click(glyph_x('⏭',36),36)
     wait_for('Playing second.wav')
     assert '⏭1' not in screen.display[3],screen.display[3]
-    click(50,36)
+    click(glyph_x('⏮',36),36)
     wait_for('Playing long.wav')
     click(5,0);click(10,11);menu_item('View',6)
     wait_for('Compact Player')
     assert 'Title' not in screen.display[1],screen.display[1]
     if compact_snapshot:=os.environ.get('KOG_TUI_COMPACT_SNAPSHOT_PATH'):
         save_snapshot(compact_snapshot)
-    click(59,19)
+    click(glyph_x('▶',19),19)
     assert '▶' in screen.display[36],screen.display[36]
-    click(59,19)
+    click(glyph_x('▶',19),19)
     assert 'Ⅱ' in screen.display[36],screen.display[36]
     click(62,17)
     assert any(clock in screen.display[37] for clock in ('0:14','0:15','0:16')),screen.display[37]
