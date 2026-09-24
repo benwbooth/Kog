@@ -73,6 +73,7 @@ try:
     send(b'\x1b',.3)
     click(10,3);send('b.wav',.7)
     assert 'b.wav' in '\n'.join(screen.display)
+    assert 'matches for b.wav' in screen.display[-1],screen.display[-1]
     send(b'\x1b',.3)
     send('\x1b[<0;41;9M');send('\x1b[<32;51;9M');send('\x1b[<0;51;9m')
     assert screen.display[8][50]=='│', screen.display[8][45:55]
@@ -197,6 +198,12 @@ try:
     click(5,0);click(10,11);click(10,5)
     wait_for('+4.5 dB')
     send(b'\x1b',.4)
+    click(5,0);click(10,11);click(10,3)
+    wait_for('Codec:')
+    send(b'\x1b',.4)
+    click(5,0);click(10,11);click(10,4)
+    wait_for('No embedded lyrics')
+    send(b'\x1b',.4)
     click(5,0);click(10,9)
     click(5,0);click(10,2);send(long_path+'\r',.3)
     wait_for('Added long.wav')
@@ -261,12 +268,24 @@ try:
     wait_for('Removed 1 missing file')
     with sqlite3.connect(db_files[0]) as db:
         assert db.execute("SELECT count(*) FROM playlist_entries pe JOIN playlists p ON p.id=pe.playlist_id WHERE p.name='PTY Prune'").fetchone()[0]==2
+    click(60,4);send('Q')
+    click(60,2);send('X')
+    title_at=screen.display[1].find('Title')
+    click(title_at+2,1);click(title_at+2,1)
+    assert 'b' in screen.display[row('⏭1')],screen.display[row('⏭1')]
+    assert 'long' in screen.display[row('■')],screen.display[row('■')]
+    click(60,row('⏭1'));send(b'\x1b[1;5A')
+    assert 'b' in screen.display[row('⏭1')],screen.display[row('⏭1')]
+    click(60,row('second'));send(b'\x1b[3~')
+    assert 'b' in screen.display[row('⏭1')],screen.display[row('⏭1')]
+    assert 'long' in screen.display[row('■')],screen.display[row('■')]
     resize(72,24);screen.resize(lines=24,columns=72);os.kill(p.pid,signal.SIGWINCH);drain(.5)
-    assert 'Search playlist' in screen.display[0]
+    assert 'Title' in screen.display[1],screen.display[:3]
     assert screen.display[8][42]=='│',screen.display[8][38:46]
     resize(48,20);screen.resize(lines=20,columns=48);os.kill(p.pid,signal.SIGWINCH);drain(.5)
     send('/c.wav',.5)
-    assert 'c.wav' in screen.display[0] and 'c.wav' not in screen.display[-1]
+    assert 'c.wav' in screen.display[0],screen.display[0]
+    assert 'c.wav' in screen.display[-1] and ('matches' in screen.display[-1] or 'Searching' in screen.display[-1]),screen.display[-1]
     send(b'\x1b',.5)
     wait_for('Search files')
     assert 'Search files' in screen.display[0],screen.display[:5]

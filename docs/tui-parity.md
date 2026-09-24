@@ -46,7 +46,7 @@ Run `nix develop --command cargo build -p kog --bin kog`, then `uv run --with py
 - [x] Random Radio can start from an empty queue, stage a round off the input thread, and play one track.
 - [x] Radio advances at the end of its visible queue and stages another song.
 - [x] Per-row queue and stop-after markers change playback order in PTY playback.
-- [ ] Queue positions and stop-after markers have focused tests across sort, move, and removal.
+- [x] Queue positions and stop-after markers stay with their tracks across sort, move, and removal.
 - [ ] Every shuffle and repeat mode matches Qt/Web ordering under album metadata changes.
 - [x] Current track, elapsed time, duration, and play/pause state update during PTY playback.
 - [x] Music root, volume, equalizer preset, preamp, and output device controls are reachable from menus.

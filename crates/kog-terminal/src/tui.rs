@@ -1655,6 +1655,7 @@ impl Ui {
     fn begin_prompt(&mut self, kind: PromptKind, value: String) {
         if kind == PromptKind::Search {
             self.files_expanded = true;
+            self.focus = Focus::Library;
         }
         self.input_cursor = value.chars().count();
         self.prompt = Some((kind, value));
@@ -3523,6 +3524,9 @@ impl Ui {
         );
         let message = self.prompt.as_ref().map(|(kind, value)| {
             if matches!(kind, PromptKind::Search | PromptKind::PlaylistSearch) {
+                if *kind == PromptKind::Search && !self.status.is_empty() {
+                    return format!("{} · Enter finish · Esc clear", self.status);
+                }
                 return "Search updates as you type · Enter finish · Esc clear".to_owned();
             }
             let _ = value;
