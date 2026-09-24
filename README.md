@@ -65,6 +65,8 @@ removes a playlist row, Space pauses, `<`/`>` skip tracks, `h`/`l` seek, and
 mouse. Mouse clicks, double clicks and wheel
 scrolling work in terminals that support SGR mouse reporting; the layout
 reflows when the terminal changes size.
+The current terminal playlist and selected row are restored on the next launch;
+named playlists remain in the shared library database.
 
 The terminal UI is in active development. It does not yet include the desktop's
 multi-row selection, radio, full settings, or visualizer controls.

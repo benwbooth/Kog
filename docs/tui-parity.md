@@ -31,6 +31,7 @@ The provider smoke test is opt-in because it contacts public services: `nix deve
 - [x] Saved playlist single click selects the source; double click adds its tracks to the playing pane.
 - [x] Favorites, create, rename, delete, save current pane, and add to a saved playlist work.
 - [x] Queue remove, clear, reorder, sort, star, and search work with the visible selection.
+- [x] The current playlist and selected row survive a TUI quit and relaunch in a separate atomic session file; the PTY fixture checks the full queue before and after restart.
 - [x] Playlist rows show decoded title, artist, and album without probing on the input thread.
 - [x] Default #, Title, Artist, and Album columns have header sorting, mouse resizing, visibility toggles, and auto fit from loaded metadata.
 - [x] All 20 Qt columns can be shown, hidden, sorted, resized, reordered, and scrolled horizontally with a visible draggable scrollbar, native horizontal wheel, Shift/Ctrl+wheel, or keyboard shortcuts. The terminal saves its character-width layout and can import an existing Qt column order.

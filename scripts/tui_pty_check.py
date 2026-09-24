@@ -145,6 +145,14 @@ try:
     assert 'deep.wav' in '\n'.join(screen.display)
     click(10,y);click(10,y);drain(.5)
     assert 'Added 4 tracks' in screen.display[-1], screen.display[-1]
+    session_path=Path(base)/'config/kog/tui-session.json'
+    until=time.time()+5
+    while time.time()<until:
+        if session_path.exists() and len(json.loads(session_path.read_text())['tracks'])>=4:
+            break
+        drain(.1)
+    else:
+        raise AssertionError('terminal playlist was not saved during the session')
     assert '━' in screen.display[35],screen.display[35]
     initial_header=screen.display[1]
     send('\x1b[<67;81;10M')  # native horizontal wheel right
@@ -749,6 +757,21 @@ try:
     print('search, local/remote tree/archive navigation/trash/blacklist/group selection, divider/column drag/visibility/reorder, volume, radio/blacklist/queue/stop-after, playback/seek/completion/order/error recovery, saved-list CRUD/export/prune/multi-selection, tag fields/artwork/playback resume, selection/reorder/sort, menus/dialogs, equalizer/visualizer, narrow wheel/keyboard navigation, resize: PASS')
     send(b'\x1b',.3);send('q')
     p.wait(timeout=5)
+    session=json.loads(session_path.read_text())
+    saved_paths=[track['path'] for track in session['tracks']]
+    assert all(path in saved_paths for path in recover_paths),saved_paths
+    assert session['selectedIndex'] < len(saved_paths),session
+    os.close(master)
+    master,slave=pty.openpty()
+    resize(120,40)
+    p=subprocess.Popen(args,stdin=slave,stdout=slave,stderr=slave,env=env,close_fds=True)
+    os.close(slave)
+    screen=pyte.Screen(120,40);stream=pyte.Stream(screen)
+    wait_for('recover3.wav')
+    send('q');p.wait(timeout=5)
+    restored=json.loads(session_path.read_text())
+    assert [track['path'] for track in restored['tracks']]==saved_paths,restored
+    print('terminal playlist survives quit and relaunch: PASS')
 finally:
     if p.poll() is None:p.terminate();p.wait(timeout=5)
     os.close(master)

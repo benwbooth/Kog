@@ -38,6 +38,114 @@ struct Track {
     entry: StoredEntry,
 }
 
+const SESSION_FILE: &str = "tui-session.json";
+const SESSION_MAX_BYTES: usize = 64 * 1024 * 1024;
+const SESSION_MAX_TRACKS: usize = 100_000;
+
+struct RestoredPlaylist {
+    tracks: Vec<Track>,
+    selected: usize,
+}
+
+fn load_playlist_session(path: &Path) -> Option<RestoredPlaylist> {
+    let contents = std::fs::read(path).ok()?;
+    if contents.len() > SESSION_MAX_BYTES {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_slice(&contents).ok()?;
+    let saved = value.get("tracks")?.as_array()?;
+    if saved.len() > SESSION_MAX_TRACKS {
+        return None;
+    }
+    let mut selected = value
+        .get("selectedIndex")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|index| usize::try_from(index).ok())
+        .unwrap_or(0);
+    let mut tracks = Vec::with_capacity(saved.len());
+    for (index, row) in saved.iter().enumerate() {
+        let kind = row.get("kind").and_then(serde_json::Value::as_str);
+        let path = row.get("path").and_then(serde_json::Value::as_str);
+        let entry = row
+            .get("entry")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        let valid = matches!(kind, Some("local" | "archive" | "remote"))
+            && path.is_some_and(|path| !path.is_empty())
+            && (kind != Some("archive") || !entry.is_empty());
+        if !valid {
+            if index < selected {
+                selected -= 1;
+            }
+            continue;
+        }
+        let stored = StoredEntry {
+            kind: kind.unwrap().to_owned(),
+            path: path.unwrap().to_owned(),
+            entry: entry.to_owned(),
+            fragment: row
+                .get("fragment")
+                .and_then(serde_json::Value::as_str)
+                .filter(|fragment| !fragment.is_empty())
+                .map(str::to_owned),
+        };
+        let saved_name = row
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .filter(|name| !name.is_empty() && name.len() <= 8_192);
+        let mut track = track_from_entry(stored);
+        if let Some(name) = saved_name {
+            track.name = name.to_owned();
+        }
+        tracks.push(track);
+    }
+    Some(RestoredPlaylist {
+        selected: selected.min(tracks.len().saturating_sub(1)),
+        tracks,
+    })
+}
+
+fn save_playlist_session(path: &Path, tracks: &[Track], selected: usize) -> Result<(), String> {
+    if tracks.len() > SESSION_MAX_TRACKS {
+        return Err("the current playlist is too large to save as a session".to_owned());
+    }
+    let rows: Vec<_> = tracks
+        .iter()
+        .map(|track| {
+            serde_json::json!({
+                "name": track.name,
+                "kind": track.entry.kind,
+                "path": track.entry.path,
+                "entry": track.entry.entry,
+                "fragment": track.entry.fragment,
+            })
+        })
+        .collect();
+    let contents = serde_json::to_vec(&serde_json::json!({
+        "tracks": rows,
+        "selectedIndex": selected,
+    }))
+    .map_err(|error| format!("serializing terminal playlist session: {error}"))?;
+    if contents.len() > SESSION_MAX_BYTES {
+        return Err("the current playlist session is too large to save".to_owned());
+    }
+    let parent = path
+        .parent()
+        .ok_or("Invalid terminal playlist session path")?;
+    std::fs::create_dir_all(parent)
+        .map_err(|error| format!("creating {}: {error}", parent.display()))?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|error| format!("creating terminal playlist session: {error}"))?;
+    temporary
+        .write_all(&contents)
+        .and_then(|()| temporary.flush())
+        .map_err(|error| format!("writing terminal playlist session: {error}"))?;
+    temporary
+        .persist(path)
+        .map_err(|error| format!("replacing {}: {}", path.display(), error.error))?;
+    Ok(())
+}
+
 struct TrackMetadata {
     title: String,
     artist: String,
@@ -271,6 +379,7 @@ struct Ui {
     stop_after_rows: HashSet<usize>,
     selected_tracks: HashSet<usize>,
     selection_anchor: Option<usize>,
+    session_dirty: bool,
     selected: [usize; 3],
     offsets: [usize; 3],
     focus: Focus,
@@ -639,6 +748,7 @@ impl Ui {
             stop_after_rows: HashSet::new(),
             selected_tracks: HashSet::new(),
             selection_anchor: None,
+            session_dirty: false,
             selected: [0; 3],
             offsets: [0; 3],
             focus: Focus::Library,
@@ -736,6 +846,19 @@ impl Ui {
             column_viewport_width: 40,
             starred_keys,
         };
+        if let Some(session) = kog_audio::settings::setting_path(SESSION_FILE)
+            .as_deref()
+            .and_then(load_playlist_session)
+        {
+            ui.tracks = session.tracks;
+            ui.selected[2] = session.selected;
+            if !ui.tracks.is_empty() {
+                ui.selected_tracks.insert(session.selected);
+                ui.selection_anchor = Some(session.selected);
+            }
+            ui.order_tracks_changed();
+            ui.session_dirty = false;
+        }
         ui.reload_lists();
         ui.browse(None);
         if kog_server::config::load_config().enabled {
@@ -849,6 +972,24 @@ impl Ui {
     fn order_tracks_changed(&mut self) {
         let tracks = self.order_tracks();
         self.order.tracks_changed(&tracks, self.playing);
+        self.session_dirty = true;
+    }
+
+    fn flush_session(&mut self) -> Result<(), String> {
+        if !self.session_dirty {
+            return Ok(());
+        }
+        let path = kog_audio::settings::setting_path(SESSION_FILE)
+            .ok_or("Cannot find the terminal playlist settings directory")?;
+        save_playlist_session(&path, &self.tracks, self.selected[2])?;
+        self.session_dirty = false;
+        Ok(())
+    }
+
+    fn finish_session(&mut self) -> Result<(), String> {
+        // Save the final selection even if the playlist has not changed.
+        self.session_dirty = true;
+        self.flush_session()
     }
 
     fn poll_radio(&mut self) {
@@ -2024,6 +2165,7 @@ impl Ui {
         self.selection_anchor = None;
         self.selected[2] = 0;
         self.offsets[2] = 0;
+        self.session_dirty = true;
         self.status = "Playlist cleared".to_owned();
     }
 
@@ -2769,6 +2911,7 @@ impl Ui {
             self.queue.clear();
             self.stop_after_rows.clear();
             self.selected_tracks.clear();
+            self.session_dirty = true;
         }
         let first = self.tracks.len();
         let mut folders = Vec::new();
@@ -6667,6 +6810,9 @@ impl Ui {
 
 impl Drop for Ui {
     fn drop(&mut self) {
+        if self.session_dirty {
+            let _ = self.flush_session();
+        }
         let _ = AppSettings::save_output_volume(f64::from(self.volume));
     }
 }
@@ -7839,6 +7985,7 @@ pub fn run() -> Result<(), String> {
     let mut last_draw = Instant::now() - Duration::from_secs(1);
     let mut last_frame = String::new();
     let mut escape_pending = None::<Instant>;
+    let mut last_session_flush = Instant::now();
     loop {
         ui.poll_search_due();
         ui.poll_search();
@@ -7851,6 +7998,12 @@ pub fn run() -> Result<(), String> {
         ui.poll_metadata();
         ui.poll_cover_preview();
         ui.poll_radio();
+        if last_session_flush.elapsed() >= Duration::from_secs(1) {
+            if let Err(error) = ui.flush_session() {
+                ui.status = format!("Could not save playlist: {error}");
+            }
+            last_session_flush = Instant::now();
+        }
         let size = terminal.size();
         if size != last_size || last_draw.elapsed() >= Duration::from_millis(150) {
             let frame = ui.draw(size);
@@ -7880,7 +8033,7 @@ pub fn run() -> Result<(), String> {
             match event {
                 Event::Key(key) => {
                     if !ui.key(key, size) {
-                        return Ok(());
+                        return ui.finish_session();
                     }
                 }
                 Event::Mouse {
@@ -7891,7 +8044,7 @@ pub fn run() -> Result<(), String> {
                 } => ui.mouse(button, x, y, release, size),
             }
             if ui.exit_requested {
-                return Ok(());
+                return ui.finish_session();
             }
             let frame = ui.draw(size);
             if frame != last_frame {
@@ -7911,6 +8064,55 @@ pub fn run() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn terminal_session_preserves_order_fragments_and_names() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("tui-session.json");
+        let tracks = vec![
+            Track {
+                name: "Archive title [2]".to_owned(),
+                entry: StoredEntry {
+                    kind: "archive".to_owned(),
+                    path: "/music/collection.zip".to_owned(),
+                    entry: "nested/song.nsf".to_owned(),
+                    fragment: Some("1".to_owned()),
+                },
+            },
+            Track {
+                name: "Remote title".to_owned(),
+                entry: StoredEntry {
+                    kind: "remote".to_owned(),
+                    path: "https://example.invalid/audio?id=3".to_owned(),
+                    entry: String::new(),
+                    fragment: None,
+                },
+            },
+        ];
+        save_playlist_session(&path, &tracks, 1).unwrap();
+        #[cfg(unix)]
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let restored = load_playlist_session(&path).unwrap();
+        assert_eq!(restored.selected, 1);
+        assert_eq!(restored.tracks.len(), 2);
+        assert_eq!(restored.tracks[0].name, "Archive title [2]");
+        assert_eq!(restored.tracks[0].entry.entry, "nested/song.nsf");
+        assert_eq!(restored.tracks[0].entry.fragment.as_deref(), Some("1"));
+        assert_eq!(restored.tracks[1].entry.path, tracks[1].entry.path);
+        assert_eq!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .matches("Remote title")
+                .count(),
+            1
+        );
+    }
+
     #[test]
     fn parser_handles_mouse_and_keys() {
         let mut input = b"\x1b[<0;12;5M\x1b[3~".to_vec();
