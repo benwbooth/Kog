@@ -7337,6 +7337,8 @@ impl Ui {
             if (layout.footer_top..layout.footer_top + 4).contains(&y)
                 && x < 10
                 && size.0 >= 80
+                && !self.tracks.is_empty()
+                && self.player.state() != PlaybackState::Stopped
                 && self.cover_preview.is_some()
             {
                 self.show_artwork();
@@ -8549,20 +8551,23 @@ impl Ui {
             progress.as_secs() % 60
         );
         let (progress_x, _, bar_width) = progress_bar_geometry(width, &clock);
+        let idle_artwork = self.tracks.is_empty() || self.player.state() == PlaybackState::Stopped;
+        let active_cover = self.cover_preview.as_ref().filter(|_| !idle_artwork);
+        let fallback_artwork = if idle_artwork { "⚙" } else { "◈" };
         let cover_space = if width >= 80 {
-            if self.cover_preview.is_some() { 6 } else { 3 }
+            if active_cover.is_some() { 6 } else { 3 }
         } else {
             0
         };
         if cover_space > 0 {
-            if let Some(cover) = &self.cover_preview {
+            if let Some(cover) = active_cover {
                 paint_cover_preview(&mut screen, layout.footer_top + 1, 2, cover);
             } else {
                 paint(
                     &mut screen,
                     layout.footer_top + 1,
                     2,
-                    "◈",
+                    fallback_artwork,
                     4,
                     Surface::Accent,
                     true,
@@ -8573,7 +8578,7 @@ impl Ui {
                 &mut screen,
                 layout.footer_top + 1,
                 2,
-                "◈",
+                fallback_artwork,
                 2,
                 Surface::Accent,
                 true,
@@ -8722,7 +8727,7 @@ impl Ui {
                     Surface::Accent,
                     true,
                 );
-                if let Some(cover) = &self.cover_preview {
+                if let Some(cover) = active_cover {
                     paint_cover_at_size(&mut screen, card_y + 2, card_x + 3, cover, 12);
                 } else {
                     for row in 2..8 {
@@ -8740,7 +8745,7 @@ impl Ui {
                         &mut screen,
                         card_y + 4,
                         card_x + 6,
-                        "◈ KOG",
+                        if idle_artwork { "⚙ KOG" } else { "◈ KOG" },
                         5,
                         Surface::Accent,
                         true,
@@ -8850,14 +8855,14 @@ impl Ui {
                     Surface::Accent,
                     true,
                 );
-                if let Some(cover) = &self.cover_preview {
+                if let Some(cover) = active_cover {
                     paint_cover_at_size(&mut screen, card_y + 1, card_x, cover, 4);
                 } else {
                     paint(
                         &mut screen,
                         card_y + 1,
                         card_x,
-                        "◈",
+                        fallback_artwork,
                         4,
                         Surface::Accent,
                         true,
