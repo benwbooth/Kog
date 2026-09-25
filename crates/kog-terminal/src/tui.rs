@@ -5508,28 +5508,72 @@ impl Ui {
     }
 
     fn show_keyboard_help(&mut self) {
+        let row = |keys: &str, action: &str| {
+            format!(
+                "  {keys}{} {action}",
+                " ".repeat(18_usize.saturating_sub(cell_width(keys)))
+            )
+        };
         self.show_modal(
             [
-                "Keyboard controls",
-                "",
-                "Tab / Shift+Tab: change pane; arrows, Page Up/Down, Home/End: move",
-                "Enter: open folder, add saved list, or play track",
-                "m: application menu; M or Shift+F10: selected item actions",
-                "Alt+letter: choose the labeled item in an open menu; main menu works directly",
-                "Menus: arrows, Enter, Left/Esc; Page Up/Down and Home/End also work",
-                "Shift+Up/Down or v then arrows: select a range; J/K: move cursor only",
-                "x or Ctrl+Space: toggle the cursor row; Ctrl+A: select all",
-                "z: collapse the focused Files or Playlists section",
-                "Ctrl+Left/Right or { / }: resize sidebar; Ctrl+R or u: refresh",
-                "H: focus columns; Left/Right choose; Enter sort; +/- resize",
-                "In column mode: Ctrl+Left/Right or [ / ] reorder; a fit; v hide; M actions",
-                "/: search files; F: search playlist; o: choose music folder",
-                "a: add selected files; Delete: remove or move to trash; f: star",
-                "Space: play/pause; s: stop; </>: previous/next; h/l: seek 10 seconds",
-                "G: seek to a time; +/-: volume; R/S: repeat/shuffle; C: compact view",
-                "In compact view, C returns to the playlist; playback keys still work",
-                "Prompt editing: Ctrl+A select all; Ctrl+W delete word; Ctrl+U clear",
-                "Esc closes dialogs; Esc or q quits from the main view.",
+                "Keyboard controls".to_owned(),
+                "  ↑ ↓ / PgUp PgDn scroll help · Esc closes".to_owned(),
+                String::new(),
+                "NAVIGATION".to_owned(),
+                row("Tab / Shift+Tab", "Switch pane"),
+                row("↑ ↓ / j k", "Move selection"),
+                row("PgUp / PgDn", "Move one page"),
+                row("Home / End", "First / last item"),
+                row("Enter", "Open folder, list, or track"),
+                row("J / K", "Move cursor only"),
+                String::new(),
+                "SELECTION".to_owned(),
+                row("Shift+↑ / ↓", "Extend selected range"),
+                row("v then arrows", "Range selection without Shift"),
+                row("x / Ctrl+Space", "Toggle cursor row"),
+                row("Ctrl+A", "Select all"),
+                String::new(),
+                "FILES AND PLAYLISTS".to_owned(),
+                row("/", "Search files"),
+                row("F", "Search playlist"),
+                row("o", "Choose music folder"),
+                row("a", "Add selected files"),
+                row("Delete", "Remove tracks or trash files"),
+                row("f", "Star selected track"),
+                row("Ctrl+R / u", "Refresh focused pane"),
+                String::new(),
+                "PLAYBACK".to_owned(),
+                row("Space", "Play / pause"),
+                row("s", "Stop"),
+                row("<", "Previous track"),
+                row(">", "Next track"),
+                row("h", "Seek back 10 seconds"),
+                row("l", "Seek forward 10 seconds"),
+                row("G", "Seek to a time"),
+                row("+ / -", "Volume up / down"),
+                row("R", "Cycle repeat mode"),
+                row("S", "Cycle shuffle mode"),
+                String::new(),
+                "COLUMNS AND LAYOUT".to_owned(),
+                row("H", "Focus playlist columns"),
+                row("← / →", "Choose column; Enter sorts"),
+                row("+ / -", "Resize focused column"),
+                row("[ / ]", "Reorder focused column"),
+                row("a / v", "Fit / hide focused column"),
+                row("{ / }", "Resize sidebar"),
+                row("z", "Collapse Files or Playlists"),
+                row("C", "Toggle compact player"),
+                String::new(),
+                "MENUS AND TEXT".to_owned(),
+                row("m", "Application menu"),
+                row("M / Shift+F10", "Selected item menu"),
+                row("Alt+letter", "Menu shortcut"),
+                row("Arrows / Enter", "Navigate / activate menu"),
+                row("Ctrl+A", "Select all prompt text"),
+                row("Ctrl+W", "Erase previous word"),
+                row("Ctrl+U", "Clear prompt"),
+                row("Esc", "Close dialog or quit main view"),
+                row("q", "Quit from main view"),
             ]
             .join("\n"),
         );
@@ -8376,16 +8420,21 @@ impl Ui {
             }
         } else if let Some(modal) = &self.modal {
             let lines = modal_lines(modal, width.saturating_sub(12));
+            let keyboard_help = modal.starts_with("Keyboard controls\n");
             let page = lines.len().min(height.saturating_sub(8)).max(1);
             self.modal_scroll = self.modal_scroll.min(lines.len().saturating_sub(page));
             let shown = &lines[self.modal_scroll..(self.modal_scroll + page).min(lines.len())];
-            let box_width = shown
-                .iter()
-                .map(|line| line.chars().count())
-                .max()
-                .unwrap_or(0)
-                .min(width.saturating_sub(8))
-                + 4;
+            let box_width = if keyboard_help {
+                width.saturating_sub(8).min(74)
+            } else {
+                shown
+                    .iter()
+                    .map(|line| cell_width(line))
+                    .max()
+                    .unwrap_or(0)
+                    .min(width.saturating_sub(8))
+                    + 4
+            };
             let x = width.saturating_sub(box_width) / 2 + 1;
             let y = height.saturating_sub(shown.len() + 2) / 2 + 1;
             paint(
@@ -8398,14 +8447,19 @@ impl Ui {
                 true,
             );
             for (index, line) in shown.iter().enumerate() {
+                let heading = keyboard_help && !line.is_empty() && !line.starts_with(' ');
                 paint(
                     &mut screen,
                     y + index + 1,
                     x,
                     &format!("│ {line}"),
                     box_width,
-                    Surface::Toolbar,
-                    false,
+                    if heading {
+                        Surface::Accent
+                    } else {
+                        Surface::Toolbar
+                    },
+                    heading,
                 );
                 paint(
                     &mut screen,
@@ -8879,12 +8933,52 @@ fn cell_width(text: &str) -> usize {
 
 fn modal_lines(content: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
+    let keyboard_help = content.starts_with("Keyboard controls\n");
     let mut result = Vec::new();
     for line in content.lines() {
-        let chars: Vec<_> = line.chars().collect();
-        if chars.is_empty() {
+        if line.is_empty() {
             result.push(String::new());
+        } else if keyboard_help {
+            let mut rest = line;
+            let mut continuation = false;
+            loop {
+                let prefix = if continuation && width > 5 && line.starts_with("  ") {
+                    "    "
+                } else {
+                    ""
+                };
+                let available = width.saturating_sub(cell_width(prefix)).max(1);
+                if cell_width(rest) <= available {
+                    result.push(format!("{prefix}{rest}"));
+                    break;
+                }
+                let mut fitting_end = 0;
+                let mut word_break = 0;
+                let mut used = 0;
+                for (byte, grapheme) in rest.grapheme_indices(true) {
+                    let cells = cell_width(grapheme);
+                    if used + cells > available {
+                        break;
+                    }
+                    used += cells;
+                    fitting_end = byte + grapheme.len();
+                    if byte > 0 && grapheme.chars().all(char::is_whitespace) {
+                        word_break = byte;
+                    }
+                }
+                let end = if word_break > 0 {
+                    word_break
+                } else if fitting_end > 0 {
+                    fitting_end
+                } else {
+                    rest.graphemes(true).next().map_or(0, str::len)
+                };
+                result.push(format!("{prefix}{}", rest[..end].trim_end()));
+                rest = rest[end..].trim_start();
+                continuation = true;
+            }
         } else {
+            let chars: Vec<_> = line.chars().collect();
             result.extend(chars.chunks(width).map(|part| part.iter().collect()));
         }
     }
