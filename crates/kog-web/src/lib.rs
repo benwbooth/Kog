@@ -2172,12 +2172,18 @@ fn App() -> impl IntoView {
     let (files_expanded, set_files_expanded) = signal(true);
     let (playlists_expanded, set_playlists_expanded) = signal(true);
 
+    // Use the saved tree root on the first radio request, even before its
+    // directory listing has finished restoring.
+    let restored = load("kog.session")
+        .map(|raw| decode_session(&raw))
+        .unwrap_or_default();
+
     // Library tree, loaded one directory at a time as it is expanded.
     let (children, set_children) = signal(HashMap::<String, Vec<Entry>>::new());
     let (expanded, set_expanded) = signal(HashSet::<String>::new());
     let (library_root, set_library_root) = signal(String::new());
     // The directory the tree is rooted at: "" means the server's library root.
-    let (tree_root, set_tree_root) = signal(String::new());
+    let (tree_root, set_tree_root) = signal(restored.tree_root.clone());
     let (tree_selected, set_tree_selected) = signal(String::new());
     // Whether the selected tree row is a folder, so the root button knows
     // whether to re-root or step up.
@@ -2260,14 +2266,8 @@ fn App() -> impl IntoView {
     let (resizing, set_resizing) = signal(Option::<(ColumnId, f64, f64)>::None);
 
     let (playlists, set_playlists) = signal(Vec::<(i64, String, i64)>::new());
-    // The remembered session (pane, tree, transport modes) is restored here,
-    // before any signal is read by the view, so the first paint already shows
-    // the saved pane. `restoring` suppresses persistence until the initial
-    // restore has settled, so the empty defaults never overwrite the saved
-    // session.
-    let restored = load("kog.session")
-        .map(|raw| decode_session(&raw))
-        .unwrap_or_default();
+    // The remembered pane and transport modes appear on the first paint.
+    // `restoring` suppresses persistence until the initial restore settles.
     // While this is true the session effect ignores signal changes, so the
     // empty defaults never overwrite the saved session before the restore has
     // run.
@@ -2345,6 +2345,9 @@ fn App() -> impl IntoView {
     // window and plays it. `radio_busy` guards the async window top-up.
     let (radio_on, set_radio_on) = signal(restored.radio_on);
     let (radio_busy, set_radio_busy) = signal(false);
+    // Discard responses started under an earlier tree root. Their network
+    // requests cannot be cancelled once the server is probing a large file.
+    let (radio_generation, set_radio_generation) = signal(0_u64);
     // The desktop stages radio picks into a hidden buffer and moves one onto
     // the playlist at a time; the pool is that buffer. Only shifted tracks
     // become rows.
@@ -2616,15 +2619,18 @@ fn App() -> impl IntoView {
         set_radio_pool.set(entries);
     };
 
-    // The radio plays the browsed subtree, like the desktop's radio playing
-    // the folder the tree is rooted at: every radio call carries the current
-    // tree root, and the server scopes (and re-roots) the round to it.
-    let radio_root = move || {
+    // An empty tree root means the server's library root. Send that path
+    // explicitly: omitting ?root would leave a previously scoped round in
+    // place when the user moves the tree back to the library root.
+    let radio_scope = move || {
         let root = tree_root.get();
-        if root.is_empty() {
-            String::new()
-        } else {
-            format!("?root={}", url_encode(&root))
+        if root.is_empty() { library_root.get() } else { root }
+    };
+    let radio_root = {
+        let radio_scope = radio_scope.clone();
+        move || {
+            let root = radio_scope();
+            if root.is_empty() { String::new() } else { format!("?root={}", url_encode(&root)) }
         }
     };
 
@@ -2632,10 +2638,18 @@ fn App() -> impl IntoView {
         let get_json = get_json;
         let apply_radio = apply_radio.clone();
         let radio_root = radio_root.clone();
+        let radio_generation = radio_generation.clone();
         move || {
+            let generation = radio_generation.get_untracked();
+            let radio_generation = radio_generation.clone();
             leptos::task::spawn_local(async move {
-                if let Ok(value) = get_json(format!("/api/radio{}", radio_root())).await {
-                    apply_radio(&value);
+                let result = get_json(format!("/api/radio{}", radio_root())).await;
+                if radio_generation.get_untracked() != generation {
+                    return;
+                }
+                match result {
+                    Ok(value) => apply_radio(&value),
+                    Err(error) => set_message.set(error),
                 }
             });
         }
@@ -2645,19 +2659,27 @@ fn App() -> impl IntoView {
         let apply_radio = apply_radio.clone();
         let radio_on = radio_on.clone();
         let radio_root = radio_root.clone();
+        let radio_generation = radio_generation.clone();
         move |enabled: bool| {
+            let root = radio_root();
+            if root.is_empty() {
+                return;
+            }
             // Flip at once: building the first round can keep the server busy
             // for a long while on a huge library, and a toggle that waits for
             // that reads as broken. The response still lands here and wins.
             set_radio_on.set(enabled);
-            let url = format!("{}/api/radio/enabled{}", base(), radio_root());
+            let url = format!("{}/api/radio/enabled{root}", base());
             let header = auth().header();
             let apply_radio = apply_radio.clone();
+            let generation = radio_generation.get_untracked();
+            let radio_generation = radio_generation.clone();
             leptos::task::spawn_local(async move {
                 let body = serde_json::json!({ "enabled": enabled });
                 match post_json(url, header, body).await {
-                    Ok(value) => apply_radio(&value),
-                    Err(error) => set_message.set(error),
+                    Ok(value) if radio_generation.get_untracked() == generation => apply_radio(&value),
+                    Err(error) if radio_generation.get_untracked() == generation => set_message.set(error),
+                    _ => {}
                 }
             });
         }
@@ -2666,14 +2688,22 @@ fn App() -> impl IntoView {
     let reshuffle_radio = {
         let apply_radio = apply_radio.clone();
         let radio_root = radio_root.clone();
+        let radio_generation = radio_generation.clone();
         move || {
-            let url = format!("{}/api/radio/reshuffle{}", base(), radio_root());
+            let root = radio_root();
+            if root.is_empty() {
+                return;
+            }
+            let url = format!("{}/api/radio/reshuffle{root}", base());
             let header = auth().header();
             let apply_radio = apply_radio.clone();
+            let generation = radio_generation.get_untracked();
+            let radio_generation = radio_generation.clone();
             leptos::task::spawn_local(async move {
                 match post_json(url, header, serde_json::json!({})).await {
-                    Ok(value) => apply_radio(&value),
-                    Err(error) => set_message.set(error),
+                    Ok(value) if radio_generation.get_untracked() == generation => apply_radio(&value),
+                    Err(error) if radio_generation.get_untracked() == generation => set_message.set(error),
+                    _ => {}
                 }
             });
         }
@@ -3241,7 +3271,6 @@ fn App() -> impl IntoView {
     let connect = {
         let load_dir = load_dir.clone();
         let load_playlists = load_playlists.clone();
-        let load_radio = load_radio.clone();
         let load_stars = load_stars.clone();
         let load_midi = load_midi.clone();
         let load_shared_columns = load_shared_columns.clone();
@@ -3258,7 +3287,6 @@ fn App() -> impl IntoView {
             }
             let load_dir = load_dir.clone();
             let load_playlists = load_playlists.clone();
-            let load_radio = load_radio.clone();
             let load_stars = load_stars.clone();
             let load_midi = load_midi.clone();
             let load_shared_columns = load_shared_columns.clone();
@@ -3288,7 +3316,6 @@ fn App() -> impl IntoView {
                         }
                         load_dir(String::new(), None);
                         load_playlists();
-                        load_radio();
                         load_stars();
                         load_midi();
                         load_shared_columns();
@@ -3306,6 +3333,35 @@ fn App() -> impl IntoView {
             });
         }
     };
+
+    // A tree-root change invalidates staged picks immediately and asks the
+    // server for a window under the new root. This also waits until the base
+    // library path is known before loading radio at the default tree root.
+    {
+        let load_radio = load_radio.clone();
+        let radio_scope = radio_scope.clone();
+        let radio_generation = radio_generation.clone();
+        let set_radio_generation = set_radio_generation.clone();
+        let last_scope = Rc::new(RefCell::new(None::<String>));
+        Effect::new(move |_| {
+            let scope = if connected.get() {
+                let root = radio_scope();
+                (!root.is_empty()).then_some(root)
+            } else {
+                None
+            };
+            if *last_scope.borrow() == scope {
+                return;
+            }
+            *last_scope.borrow_mut() = scope.clone();
+            set_radio_generation.set(radio_generation.get_untracked().wrapping_add(1));
+            set_radio_pool.set(Vec::new());
+            set_radio_busy.set(false);
+            if scope.is_some() {
+                load_radio();
+            }
+        });
+    }
 
     // The page is served by the Kog server itself, so connect on load rather
     // than landing on an empty shell until the user finds the server settings.
@@ -4308,8 +4364,14 @@ fn App() -> impl IntoView {
     // refetched after a reload never duplicates restored rows.
     let shift_radio = {
         let jump = jump.clone();
+        let radio_scope = radio_scope.clone();
         move || -> bool {
             let mut pool = radio_pool.get_untracked();
+            let scope = radio_scope();
+            if scope.is_empty() {
+                return false;
+            }
+            pool.retain(|entry| is_under(&entry.path, &scope));
             let Some(pos) = pool
                 .iter()
                 .position(|entry| {
@@ -4344,18 +4406,28 @@ fn App() -> impl IntoView {
         let set_radio_busy = set_radio_busy.clone();
         let reshuffle_radio = reshuffle_radio.clone();
         let radio_root = radio_root.clone();
+        let radio_generation = radio_generation.clone();
         move || {
             if radio_busy.get_untracked() {
                 return;
             }
+            let root = radio_root();
+            if root.is_empty() {
+                return;
+            }
             set_radio_busy.set(true);
-            let url = format!("{}/api/radio/advance{}", base(), radio_root());
+            let url = format!("{}/api/radio/advance{root}", base());
             let header = auth().header();
             let set_radio_pool = set_radio_pool.clone();
             let set_radio_busy = set_radio_busy.clone();
             let reshuffle_radio = reshuffle_radio.clone();
+            let generation = radio_generation.get_untracked();
+            let radio_generation = radio_generation.clone();
             leptos::task::spawn_local(async move {
                 let result = post_json(url, header, serde_json::json!({})).await;
+                if radio_generation.get_untracked() != generation {
+                    return;
+                }
                 set_radio_busy.set(false);
                 match result {
                     Ok(value) => {
@@ -4378,6 +4450,7 @@ fn App() -> impl IntoView {
         let refill_radio_pool = refill_radio_pool.clone();
         let radio_pool = radio_pool.clone();
         let radio_root = radio_root.clone();
+        let radio_generation = radio_generation.clone();
         move || {
             // The staged pool serves the press at once; a fresh window is
             // fetched in the background once it starts running low.
@@ -4390,8 +4463,12 @@ fn App() -> impl IntoView {
             if radio_busy.get_untracked() {
                 return;
             }
+            let root = radio_root();
+            if root.is_empty() {
+                return;
+            }
             set_radio_busy.set(true);
-            let url = format!("{}/api/radio/advance{}", base(), radio_root());
+            let url = format!("{}/api/radio/advance{root}", base());
             let header = auth().header();
             let shift_radio = shift_radio.clone();
             let reshuffle_radio = reshuffle_radio.clone();
@@ -4399,8 +4476,13 @@ fn App() -> impl IntoView {
             let set_radio_pool = set_radio_pool.clone();
             let refill_radio_pool = refill_radio_pool.clone();
             let radio_on = radio_on.clone();
+            let generation = radio_generation.get_untracked();
+            let radio_generation = radio_generation.clone();
             leptos::task::spawn_local(async move {
                 let result = post_json(url, header, serde_json::json!({})).await;
+                if radio_generation.get_untracked() != generation {
+                    return;
+                }
                 set_radio_busy.set(false);
                 match result {
                     Ok(value) => {

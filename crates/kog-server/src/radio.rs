@@ -682,28 +682,39 @@ pub struct EnabledRequest {
 pub struct RootQuery {
     /// Optional scope: the client's current tree root. Radio plays that
     /// subtree, like the desktop's radio restarting under a changed tree
-    /// root. Anything that is not a directory inside the configured library
-    /// root is ignored, so the parameter cannot widen what the server serves.
+    /// root. An invalid explicit root is rejected instead of silently
+    /// falling back to a wider directory.
     pub root: Option<String>,
 }
 
-/// The requested scope as a real path, when it is safely inside the
-/// configured library root.
-fn scoped_root(state: &AppState, requested: Option<&str>) -> Option<PathBuf> {
+/// The requested scope as a real directory. The tree picker can root outside
+/// the configured music folder, so radio follows any directory it can browse.
+fn scoped_root(requested: Option<&str>) -> Result<Option<PathBuf>, String> {
     // The scope is the client's tree root, wherever it points: the tree view
-    // may root anywhere the server can read, and radio follows the tree, not
-    // the configured music folder. Only existence is checked; the state
-    // parameter stays for the library-root fallback at the call sites.
-    let _ = state;
-    let requested = requested.map(str::trim).filter(|root| !root.is_empty())?;
-    let requested = Path::new(requested).canonicalize().ok()?;
-    requested.is_dir().then_some(requested)
+    // may root anywhere the server can read, and radio follows the tree.
+    let Some(requested) = requested else {
+        return Ok(None);
+    };
+    let requested = requested.trim();
+    if requested.is_empty() {
+        return Err("random radio root is empty".to_owned());
+    }
+    let requested = Path::new(requested)
+        .canonicalize()
+        .map_err(|_| "random radio root is unavailable".to_owned())?;
+    if !requested.is_dir() {
+        return Err("random radio root is not a directory".to_owned());
+    }
+    Ok(Some(requested))
 }
 
 /// `GET /api/radio` — current state and the visible round window.
 pub async fn status(State(state): State<AppState>, query: Query<RootQuery>) -> Response {
     let radio = state.radio.clone();
-    let scope = scoped_root(&state, query.root.as_deref());
+    let scope = match scoped_root(query.root.as_deref()) {
+        Ok(scope) => scope,
+        Err(error) => return bad_request(&error),
+    };
     let root = scope.clone().or_else(|| state.library.root());
     blocking(move || radio.snapshot(root.as_deref(), scope.as_deref())).await
 }
@@ -715,7 +726,10 @@ pub async fn set_enabled(
     axum::Json(request): axum::Json<EnabledRequest>,
 ) -> Response {
     let radio = state.radio.clone();
-    let scope = scoped_root(&state, query.root.as_deref());
+    let scope = match scoped_root(query.root.as_deref()) {
+        Ok(scope) => scope,
+        Err(error) => return bad_request(&error),
+    };
     let root = scope.clone().or_else(|| state.library.root());
     let enabled = request.enabled;
     blocking(move || radio.set_enabled(enabled, root.as_deref(), scope.as_deref())).await
@@ -724,7 +738,10 @@ pub async fn set_enabled(
 /// `POST /api/radio/reshuffle` — fresh shuffle under the requested scope.
 pub async fn reshuffle(State(state): State<AppState>, query: Query<RootQuery>) -> Response {
     let radio = state.radio.clone();
-    let scope = scoped_root(&state, query.root.as_deref());
+    let scope = match scoped_root(query.root.as_deref()) {
+        Ok(scope) => scope,
+        Err(error) => return bad_request(&error),
+    };
     let root = scope.clone().or_else(|| state.library.root());
     blocking(move || radio.reshuffle(root.as_deref(), scope.as_deref())).await
 }
@@ -732,7 +749,10 @@ pub async fn reshuffle(State(state): State<AppState>, query: Query<RootQuery>) -
 /// `POST /api/radio/advance` — the next window of the running round.
 pub async fn advance(State(state): State<AppState>, query: Query<RootQuery>) -> Response {
     let radio = state.radio.clone();
-    let scope = scoped_root(&state, query.root.as_deref());
+    let scope = match scoped_root(query.root.as_deref()) {
+        Ok(scope) => scope,
+        Err(error) => return bad_request(&error),
+    };
     let root = scope.clone().or_else(|| state.library.root());
     blocking(move || radio.advance(root.as_deref(), scope.as_deref())).await
 }
@@ -1184,7 +1204,7 @@ mod tests {
     #[tokio::test]
     async fn radio_endpoints_round_trip_through_the_router() {
         let (library, root, save) = fixture(30);
-        let state = state_with_radio(library, root, save);
+        let state = state_with_radio(library, root.clone(), save);
 
         let (status, body) = request(state.clone(), "GET", "/api/radio", None).await;
         assert_eq!(status, StatusCode::OK);
@@ -1203,6 +1223,39 @@ mod tests {
         let entries = body["entries"].as_array().unwrap();
         assert_eq!(entries.len(), WINDOW);
         assert!(entries[0]["path"].as_str().unwrap().ends_with(".wav"));
+
+        let one = root.join("One");
+        let (status, body) = request(
+            state.clone(),
+            "GET",
+            &format!("/api/radio?root={}", one.display()),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["root"], one.to_string_lossy().as_ref());
+        assert!(body["entries"].as_array().unwrap().iter().all(|entry| {
+            entry["path"].as_str().unwrap().starts_with(one.to_str().unwrap())
+        }));
+
+        let (status, body) = request(
+            state.clone(),
+            "GET",
+            &format!("/api/radio?root={}", root.display()),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["root"], root.to_string_lossy().as_ref());
+
+        let (status, _) = request(
+            state.clone(),
+            "GET",
+            "/api/radio?root=/nonexistent/kog-radio-root",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
 
         let (status, body) = request(state.clone(), "POST", "/api/radio/reshuffle", None).await;
         assert_eq!(status, StatusCode::OK);
