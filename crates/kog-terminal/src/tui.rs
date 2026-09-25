@@ -6068,8 +6068,12 @@ impl Ui {
         self.hover_position = None;
         if self.exit_confirm_open {
             match key {
-                Key::Esc | Key::Char('n') | Key::Char('N') => self.exit_confirm_open = false,
-                Key::Char('y') | Key::Char('Y') => {
+                Key::Esc
+                | Key::Char('n')
+                | Key::Char('N')
+                | Key::Char('s')
+                | Key::Char('S') => self.exit_confirm_open = false,
+                Key::Char('y') | Key::Char('Y') | Key::Char('e') | Key::Char('E') => {
                     self.exit_confirm_open = false;
                     self.exit_requested = true;
                 }
@@ -8909,7 +8913,7 @@ impl Ui {
                     if let Some(shortcut) = shortcuts[index]
                         && let Some((offset, character)) = menu_mnemonic(&shown, shortcut)
                     {
-                        paint_menu_mnemonic(
+                        paint_mnemonic(
                             &mut screen,
                             layer.y + row + 2,
                             layer.x + offset + 1,
@@ -9319,17 +9323,31 @@ fn draw_exit_confirmation(screen: &mut String, size: (usize, usize), exit_select
         Surface::Toolbar,
         false,
     );
+    let stay_surface = if exit_selected {
+        Surface::Toolbar
+    } else {
+        Surface::Selected
+    };
+    let exit_surface = if exit_selected {
+        Surface::Selected
+    } else {
+        Surface::Toolbar
+    };
     paint(
         screen,
         dialog.y + 5,
         dialog.stay_x() + 1,
         "[Stay]",
         6,
-        if exit_selected {
-            Surface::Toolbar
-        } else {
-            Surface::Selected
-        },
+        stay_surface,
+        !exit_selected,
+    );
+    paint_mnemonic(
+        screen,
+        dialog.y + 5,
+        dialog.stay_x() + 2,
+        'S',
+        stay_surface,
         !exit_selected,
     );
     paint(
@@ -9338,11 +9356,15 @@ fn draw_exit_confirmation(screen: &mut String, size: (usize, usize), exit_select
         dialog.exit_x() + 1,
         "[Exit]",
         6,
-        if exit_selected {
-            Surface::Selected
-        } else {
-            Surface::Toolbar
-        },
+        exit_surface,
+        exit_selected,
+    );
+    paint_mnemonic(
+        screen,
+        dialog.y + 5,
+        dialog.exit_x() + 2,
+        'E',
+        exit_surface,
         exit_selected,
     );
 }
@@ -10751,7 +10773,7 @@ fn paint(
     ));
 }
 
-fn paint_menu_mnemonic(
+fn paint_mnemonic(
     out: &mut String,
     row: usize,
     col: usize,
