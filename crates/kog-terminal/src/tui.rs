@@ -8864,7 +8864,7 @@ impl Ui {
                 };
                 let cursor =
                     input_window(value, self.input_cursor, field_width.saturating_sub(5)).1;
-                let column = (col + 5 + cursor).min(col + field_width.saturating_sub(1));
+                let column = (col + 4 + cursor).min(col + field_width.saturating_sub(1));
                 screen.push_str(&format!("\x1b[{row};{column}H\x1b[?25h"));
             } else {
                 let box_width = width.saturating_sub(8).min(72).max(12);
