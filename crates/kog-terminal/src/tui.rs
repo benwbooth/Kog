@@ -1,6 +1,6 @@
 //! A small terminal frontend. The terminal protocol, layout and hit testing
 //! live here; browsing, persistence and playback use Kog's existing crates.
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::io::{self, Write};
 use std::net::IpAddr;
 use std::ops::Range;
@@ -38,6 +38,13 @@ use crate::tag_editor::{parse_edits, snapshot_json, write_tags};
 struct Track {
     name: String,
     entry: StoredEntry,
+}
+
+struct AutoFitCache {
+    columns: Vec<(&'static str, bool)>,
+    rows_by_key: HashMap<String, Vec<usize>>,
+    row_widths: Vec<Vec<usize>>,
+    width_counts: Vec<BTreeMap<usize, usize>>,
 }
 
 const SESSION_FILE: &str = "tui-session.json";
@@ -850,6 +857,7 @@ struct Ui {
     sort_column: Option<usize>,
     sort_ascending: bool,
     columns: Columns,
+    auto_fit_cache: Option<AutoFitCache>,
     context_column: Option<usize>,
     keyboard_column: Option<usize>,
     column_viewport_width: usize,
@@ -1237,6 +1245,7 @@ impl Ui {
             sort_column: None,
             sort_ascending: true,
             columns,
+            auto_fit_cache: None,
             context_column: None,
             keyboard_column: None,
             column_viewport_width: 40,
@@ -1299,14 +1308,17 @@ impl Ui {
 
     fn poll_metadata(&mut self) {
         let mut order_changed = false;
+        let mut changed_keys = Vec::new();
         while let Ok((generation, key, metadata)) = self.metadata_results.try_recv() {
             if generation != self.metadata_generation {
                 continue;
             }
             self.metadata_pending.remove(&key);
             order_changed |= metadata.as_ref().is_some_and(|meta| !meta.album.is_empty());
-            self.metadata.insert(key, metadata);
+            self.metadata.insert(key.clone(), metadata);
+            changed_keys.push(key);
         }
+        self.refresh_auto_fit_metadata(&changed_keys);
         if order_changed && self.shuffle_mode == ShuffleMode::Albums {
             let tracks = self.order_tracks();
             self.order.album_metadata_changed(&tracks, self.playing);
@@ -1365,6 +1377,7 @@ impl Ui {
         self.metadata_generation = self.metadata_generation.wrapping_add(1);
         self.metadata.clear();
         self.metadata_pending.clear();
+        self.auto_fit_cache = None;
     }
 
     fn order_tracks(&self) -> Vec<AudioTrack> {
@@ -1386,6 +1399,7 @@ impl Ui {
         let tracks = self.order_tracks();
         self.order.tracks_changed(&tracks, self.playing);
         self.session_dirty = true;
+        self.auto_fit_cache = None;
     }
 
     fn flush_session(&mut self) -> Result<(), String> {
@@ -1709,6 +1723,7 @@ impl Ui {
                 self.queue.push_back(index);
             }
         }
+        self.auto_fit_cache = None;
         self.status = format!("{} track(s) queued", self.queue.len());
     }
 
@@ -1718,11 +1733,13 @@ impl Ui {
                 self.stop_after_rows.insert(index);
             }
         }
+        self.auto_fit_cache = None;
         self.status = format!("{} stop-after marker(s)", self.stop_after_rows.len());
     }
 
     fn clear_queue(&mut self) {
         self.queue.clear();
+        self.auto_fit_cache = None;
         self.status = "Queue cleared".to_owned();
     }
 
@@ -1967,34 +1984,122 @@ impl Ui {
     }
 
     fn auto_fit_columns(&mut self) {
-        let widths: Vec<_> = self
+        self.auto_fit_cache = None;
+        self.ensure_auto_fit_columns();
+        self.status = "Columns fitted to playlist content".to_owned();
+    }
+
+    fn ensure_auto_fit_columns(&mut self) {
+        let signature: Vec<_> = self
             .columns
             .entries
             .iter()
-            .map(|column| {
-                self.tracks
-                    .iter()
-                    .enumerate()
-                    .map(|(index, track)| cell_width(&self.column_value(index, track, column.id)))
-                    .max()
-                    .unwrap_or(0)
-                    .max(cell_width(column.label))
-                    .saturating_add(2)
-                    .max(match column.id {
-                        "title" => 24,
-                        "artist" | "album" => 12,
-                        _ => 3,
-                    })
-                    .clamp(3, 160)
-            })
+            .map(|column| (column.id, column.visible))
             .collect();
-        for (column, width) in self.columns.entries.iter_mut().zip(widths) {
-            if column.visible {
-                column.width = width;
+        if self
+            .auto_fit_cache
+            .as_ref()
+            .is_some_and(|cache| cache.columns == signature)
+        {
+            return;
+        }
+        let mut cache = AutoFitCache {
+            columns: signature,
+            rows_by_key: HashMap::new(),
+            row_widths: self
+                .columns
+                .entries
+                .iter()
+                .map(|column| {
+                    if column.visible {
+                        vec![0; self.tracks.len()]
+                    } else {
+                        Vec::new()
+                    }
+                })
+                .collect(),
+            width_counts: vec![BTreeMap::new(); self.columns.entries.len()],
+        };
+        for (row, track) in self.tracks.iter().enumerate() {
+            cache
+                .rows_by_key
+                .entry(metadata_key(&track.entry))
+                .or_default()
+                .push(row);
+            for (column_index, column) in self.columns.entries.iter().enumerate() {
+                if !column.visible {
+                    continue;
+                }
+                let width = cell_width(&self.column_value(row, track, column.id));
+                cache.row_widths[column_index][row] = width;
+                *cache.width_counts[column_index].entry(width).or_default() += 1;
             }
         }
-        self.persist_columns();
-        self.status = "Columns fitted to loaded metadata".to_owned();
+        self.apply_auto_fit_widths(&cache);
+        self.auto_fit_cache = Some(cache);
+    }
+
+    fn refresh_auto_fit_metadata(&mut self, keys: &[String]) {
+        if keys.is_empty() {
+            return;
+        }
+        let Some(mut cache) = self.auto_fit_cache.take() else {
+            return;
+        };
+        let signature_matches = self
+            .columns
+            .entries
+            .iter()
+            .map(|column| (column.id, column.visible))
+            .eq(cache.columns.iter().copied());
+        if !signature_matches {
+            return;
+        }
+        for key in keys {
+            let Some(rows) = cache.rows_by_key.get(key).cloned() else {
+                continue;
+            };
+            for row in rows {
+                let Some(track) = self.tracks.get(row) else {
+                    continue;
+                };
+                for (column_index, column) in self.columns.entries.iter().enumerate() {
+                    if !column.visible {
+                        continue;
+                    }
+                    let width = cell_width(&self.column_value(row, track, column.id));
+                    let previous = &mut cache.row_widths[column_index][row];
+                    if *previous == width {
+                        continue;
+                    }
+                    let old_width = *previous;
+                    let counts = &mut cache.width_counts[column_index];
+                    if counts.get(&old_width) == Some(&1) {
+                        counts.remove(&old_width);
+                    } else if let Some(count) = counts.get_mut(&old_width) {
+                        *count -= 1;
+                    }
+                    *counts.entry(width).or_default() += 1;
+                    *previous = width;
+                }
+            }
+        }
+        self.apply_auto_fit_widths(&cache);
+        self.auto_fit_cache = Some(cache);
+    }
+
+    fn apply_auto_fit_widths(&mut self, cache: &AutoFitCache) {
+        for (column, counts) in self.columns.entries.iter_mut().zip(&cache.width_counts) {
+            if column.visible {
+                column.width = counts
+                    .last_key_value()
+                    .map(|(width, _)| *width)
+                    .unwrap_or(0)
+                    .max(cell_width(column.label))
+                    .saturating_add(1)
+                    .max(3);
+            }
+        }
     }
 
     fn persist_columns(&mut self) {
@@ -2355,6 +2460,7 @@ impl Ui {
             }
             (MenuPage::Columns, 11) => {
                 self.columns = Columns::default();
+                self.auto_fit_cache = None;
                 self.persist_columns();
                 self.status = "Column layout reset".to_owned();
             }
@@ -2870,6 +2976,7 @@ impl Ui {
         self.player.stop();
         self.playing = None;
         self.tracks.clear();
+        self.auto_fit_cache = None;
         self.order.clear_tracks();
         self.queue.clear();
         self.stop_after_rows.clear();
@@ -3621,6 +3728,7 @@ impl Ui {
             self.player.stop();
             self.playing = None;
             self.tracks.clear();
+            self.auto_fit_cache = None;
             self.order.clear_tracks();
             self.queue.clear();
             self.stop_after_rows.clear();
@@ -3755,6 +3863,7 @@ impl Ui {
                     self.stop_after_rows.remove(&previous);
                 }
                 self.playing = Some(index);
+                self.auto_fit_cache = None;
                 if starting && self.shuffle_mode != ShuffleMode::Off {
                     self.order.set_shuffle_mode(
                         self.shuffle_mode,
@@ -3791,6 +3900,7 @@ impl Ui {
             }
             self.player.stop();
             self.playing = None;
+            self.auto_fit_cache = None;
             return;
         }
         if honor_repeat_one && self.repeat_mode == RepeatMode::One {
@@ -3829,6 +3939,7 @@ impl Ui {
         }
         self.player.stop();
         self.playing = None;
+        self.auto_fit_cache = None;
     }
 
     fn play_pause(&mut self) {
@@ -4368,6 +4479,9 @@ impl Ui {
                             self.metadata.remove(&key);
                             self.metadata_pending.remove(&key);
                         }
+                    }
+                    if !paths.is_empty() {
+                        self.auto_fit_cache = None;
                     }
                     if !paths.is_empty() && self.shuffle_mode == ShuffleMode::Albums {
                         let tracks = self.order_tracks();
@@ -7014,6 +7128,7 @@ impl Ui {
     }
 
     fn draw(&mut self, size: (usize, usize)) -> String {
+        self.ensure_auto_fit_columns();
         self.reflow_menus(size);
         self.refresh_cover_request();
         if self.info_modal && self.modal.is_some() {
@@ -9530,7 +9645,12 @@ fn paint_playlist_cell(
     let width = column_width
         .saturating_sub(clipped_left)
         .min(viewport_width - visible_left);
-    let cell = marquee_window(value, column_width.saturating_sub(1), marquee_tick);
+    let content_width = column_width.saturating_sub(1);
+    let cell = if cell_width(value) > content_width {
+        marquee_window(value, content_width, marquee_tick)
+    } else {
+        value.to_owned()
+    };
     paint(
         out,
         row,
