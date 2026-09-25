@@ -299,6 +299,7 @@ struct TrackMetadata {
 
 #[derive(Clone)]
 enum Item {
+    Parent(PathBuf),
     Directory(String, PathBuf),
     Track(Track),
 }
@@ -325,6 +326,7 @@ struct SearchTreeMatch {
 
 fn tree_item_key(item: &Item) -> String {
     match item {
+        Item::Parent(path) => format!("parent\0{}", path.display()),
         Item::Directory(_, path) => format!("directory\0{}", path.display()),
         Item::Track(track) => format!(
             "track\0{}\0{}\0{}\0{}",
@@ -334,6 +336,11 @@ fn tree_item_key(item: &Item) -> String {
             track.entry.fragment.as_deref().unwrap_or_default()
         ),
     }
+}
+
+fn browse_parent_path(location: &Path, root: &Path) -> Option<PathBuf> {
+    let parent = location.parent()?;
+    (parent != location && parent.starts_with(root)).then(|| parent.to_path_buf())
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -2046,6 +2053,7 @@ impl Ui {
         };
         self.browse(Some(parent.to_path_buf()));
         if let Some(index) = self.items.iter().position(|row| match &row.item {
+            Item::Parent(_) => false,
             Item::Track(item) => item.entry.path == track.entry.path,
             Item::Directory(_, location) => location == &path,
         }) {
@@ -3448,7 +3456,13 @@ impl Ui {
         self.clear_search_tree();
         let result = self.read_directory(path.as_deref());
         match result {
-            Ok((location, items)) => {
+            Ok((location, mut items)) => {
+                if let (Some(location), Some(root)) = (location.as_deref(), self.library.root()) {
+                    let root = root.canonicalize().unwrap_or(root);
+                    if let Some(parent) = browse_parent_path(location, &root) {
+                        items.insert(0, Item::Parent(parent));
+                    }
+                }
                 self.remote_search_generation
                     .fetch_add(1, Ordering::Relaxed);
                 self.remote_active = false;
@@ -3462,6 +3476,7 @@ impl Ui {
                 self.children.clear();
                 self.selected_tree.clear();
                 self.tree_anchor = None;
+                self.last_click = None;
                 if let Some(saved) = saved_state
                     && saved.browse_path == self.browse_path
                 {
@@ -3759,6 +3774,7 @@ impl Ui {
             .search_hits
             .iter()
             .filter_map(|hit| match &hit.item {
+                Item::Parent(_) => None,
                 Item::Directory(..) => Some(hit.hierarchy.clone()),
                 Item::Track(_) => None,
             })
@@ -3828,10 +3844,12 @@ impl Ui {
         for bucket in buckets.values_mut() {
             bucket.sort_by(|left, right| {
                 let left_name = match left {
+                    Item::Parent(_) => "..",
                     Item::Directory(name, _) => name,
                     Item::Track(track) => &track.name,
                 };
                 let right_name = match right {
+                    Item::Parent(_) => "..",
                     Item::Directory(name, _) => name,
                     Item::Track(track) => &track.name,
                 };
@@ -3855,6 +3873,26 @@ impl Ui {
         let Some(row) = self.items.get(index) else {
             return;
         };
+        if matches!(&row.item, Item::Parent(_)) {
+            if shift {
+                let anchor = self.tree_anchor.unwrap_or(self.selected[1]);
+                if !ctrl {
+                    self.selected_tree.clear();
+                }
+                for row in anchor.min(index)..=anchor.max(index) {
+                    if let Some(item) = self.items.get(row)
+                        && !matches!(&item.item, Item::Parent(_))
+                    {
+                        self.selected_tree.insert(tree_item_key(&item.item));
+                    }
+                }
+            } else if !ctrl {
+                self.selected_tree.clear();
+                self.tree_anchor = None;
+            }
+            self.selected[1] = index;
+            return;
+        }
         let key = tree_item_key(&row.item);
         if shift {
             let anchor = self.tree_anchor.unwrap_or(self.selected[1]);
@@ -3863,7 +3901,9 @@ impl Ui {
             }
             for row in anchor.min(index)..=anchor.max(index) {
                 if let Some(item) = self.items.get(row) {
-                    self.selected_tree.insert(tree_item_key(&item.item));
+                    if !matches!(&item.item, Item::Parent(_)) {
+                        self.selected_tree.insert(tree_item_key(&item.item));
+                    }
                 }
             }
         } else if ctrl {
@@ -3883,12 +3923,16 @@ impl Ui {
         let selected: Vec<_> = self
             .items
             .iter()
-            .filter(|row| self.selected_tree.contains(&tree_item_key(&row.item)))
+            .filter(|row| {
+                !matches!(&row.item, Item::Parent(_))
+                    && self.selected_tree.contains(&tree_item_key(&row.item))
+            })
             .map(|row| row.item.clone())
             .collect();
         if selected.is_empty() && self.tree_anchor.is_none() {
             self.items
                 .get(self.selected[1])
+                .filter(|row| !matches!(&row.item, Item::Parent(_)))
                 .map(|row| vec![row.item.clone()])
                 .unwrap_or_default()
         } else {
@@ -3993,6 +4037,14 @@ impl Ui {
     fn up_directory(&mut self) {
         let selected = self.selected[1];
         if let Some(TreeRow {
+            item: Item::Parent(path),
+            ..
+        }) = self.items.get(selected)
+        {
+            self.browse(Some(path.clone()));
+            return;
+        }
+        if let Some(TreeRow {
             item: Item::Directory(_, path),
             ..
         }) = self.items.get(selected)
@@ -4007,6 +4059,8 @@ impl Ui {
             if let Some(parent) = (0..selected).rev().find(|&i| self.items[i].depth < depth) {
                 self.selected[1] = parent;
             }
+        } else if let Some(Item::Parent(path)) = self.items.first().map(|row| &row.item) {
+            self.browse(Some(path.clone()));
         }
     }
 
@@ -4184,6 +4238,7 @@ impl Ui {
         let root = self.library.root();
         for item in items {
             match item {
+                Item::Parent(_) => {}
                 Item::Track(track) => {
                     if track.entry.kind == "remote" {
                         if let Some(file) =
@@ -4243,6 +4298,10 @@ impl Ui {
     fn open_selected(&mut self) {
         match self.items.get(self.selected[1]).cloned() {
             Some(TreeRow {
+                item: Item::Parent(path),
+                ..
+            }) => self.browse(Some(path)),
+            Some(TreeRow {
                 item: Item::Directory(_, path),
                 ..
             }) => self.toggle_directory(path),
@@ -4264,6 +4323,7 @@ impl Ui {
                     .selected_tree_items()
                     .into_iter()
                     .filter_map(|item| match item {
+                        Item::Parent(_) => None,
                         Item::Directory(_, path) => Some(path),
                         Item::Track(_) => None,
                     })
@@ -5457,6 +5517,7 @@ impl Ui {
                     self.selected_tree_items()
                         .into_iter()
                         .filter_map(|item| match item {
+                            Item::Parent(_) => None,
                             Item::Track(track) => Some(track.entry),
                             Item::Directory(..) => None,
                         })
@@ -5922,7 +5983,9 @@ impl Ui {
         if pane == 1 {
             self.selected_tree.clear();
             if let Some(row) = self.items.get(self.selected[1]) {
-                self.selected_tree.insert(tree_item_key(&row.item));
+                if !matches!(&row.item, Item::Parent(_)) {
+                    self.selected_tree.insert(tree_item_key(&row.item));
+                }
             }
             self.tree_anchor = Some(self.selected[1]);
         } else if pane == 2 {
@@ -5987,6 +6050,7 @@ impl Ui {
                 row("PgUp / PgDn", "Move one page"),
                 row("Home / End", "First / last item"),
                 row("Enter", "Open folder, list, or track"),
+                row("Enter on ..", "Go to parent folder"),
                 row("J / K", "Move cursor only"),
                 row("Mouse hover", "Read a clipped label"),
                 String::new(),
@@ -6049,6 +6113,7 @@ impl Ui {
     fn show_selected_label(&mut self) {
         let label = match self.focus {
             Focus::Library => self.items.get(self.selected[1]).map(|row| match &row.item {
+                Item::Parent(path) => format!(".. ({})", path.display()),
                 Item::Directory(name, _) => name.clone(),
                 Item::Track(track) => track.name.clone(),
             }),
@@ -6070,6 +6135,15 @@ impl Ui {
     }
 
     fn open_keyboard_context(&mut self, size: (usize, usize)) {
+        if self.focus == Focus::Library
+            && self
+                .items
+                .get(self.selected[1])
+                .is_some_and(|row| matches!(&row.item, Item::Parent(_)))
+        {
+            self.status = "Press Enter to go to the parent folder".to_owned();
+            return;
+        }
         let layout = self.layout(size);
         if let Some(column) = self.keyboard_column {
             self.context_column = Some(column);
@@ -6744,6 +6818,7 @@ impl Ui {
                 self.selected_tree = self
                     .items
                     .iter()
+                    .filter(|row| !matches!(&row.item, Item::Parent(_)))
                     .map(|row| tree_item_key(&row.item))
                     .collect();
                 self.tree_anchor = Some(self.selected[1]);
@@ -7133,6 +7208,9 @@ impl Ui {
                 self.focus = Focus::Library;
                 let index = self.offsets[1] + y - layout.tree_top;
                 if index < self.items.len() {
+                    if matches!(self.items[index].item, Item::Parent(_)) {
+                        return;
+                    }
                     if !self
                         .selected_tree
                         .contains(&tree_item_key(&self.items[index].item))
@@ -7164,6 +7242,9 @@ impl Ui {
             {
                 let index = self.offsets[1] + y - 2;
                 if index < self.items.len() {
+                    if matches!(self.items[index].item, Item::Parent(_)) {
+                        return;
+                    }
                     if !self
                         .selected_tree
                         .contains(&tree_item_key(&self.items[index].item))
@@ -7524,6 +7605,12 @@ impl Ui {
                 if index >= self.items.len() {
                     return;
                 }
+                if let Item::Parent(path) = &self.items[index].item {
+                    if button & (3 | 4 | 8 | 16) == 0 {
+                        self.browse(Some(path.clone()));
+                    }
+                    return;
+                }
                 let ranged = button & (4 | 8) != 0 || range_pending == Some(Focus::Library);
                 let modified = ranged || button & 16 != 0;
                 self.select_tree_with_modifiers(index, ranged, button & 16 != 0);
@@ -7555,6 +7642,7 @@ impl Ui {
                 };
                 if double {
                     match self.items.get(index).map(|row| row.item.clone()) {
+                        Some(Item::Parent(path)) => self.browse(Some(path)),
                         Some(Item::Directory(..)) => self.add_selected(false),
                         Some(Item::Track(_)) => self.activate_selected(),
                         None => {}
@@ -7577,6 +7665,12 @@ impl Ui {
             } else if y >= 2 && self.files_expanded {
                 let index = self.offsets[1] + y - 2;
                 if index < self.items.len() {
+                    if let Item::Parent(path) = &self.items[index].item {
+                        if button & (3 | 4 | 8 | 16) == 0 {
+                            self.browse(Some(path.clone()));
+                        }
+                        return;
+                    }
                     let ranged = button & (4 | 8) != 0 || range_pending == Some(Focus::Library);
                     let modified = ranged || button & 16 != 0;
                     self.select_tree_with_modifiers(index, ranged, button & 16 != 0);
@@ -7614,6 +7708,7 @@ impl Ui {
                     };
                     if double {
                         match self.items.get(index).map(|row| row.item.clone()) {
+                            Some(Item::Parent(path)) => self.browse(Some(path)),
                             Some(Item::Directory(..)) => self.add_selected(false),
                             Some(Item::Track(_)) => self.activate_selected(),
                             None => {}
@@ -8129,6 +8224,17 @@ impl Ui {
                     .map(|row| {
                         let indent = "  ".repeat(row.depth.min(12));
                         match &row.item {
+                            Item::Parent(path) => {
+                                if hover_labels
+                                    .pointer
+                                    .is_some_and(|(x, row)| row == y && x < tree_width)
+                                {
+                                    hover_labels.label = Some(HoverLabel {
+                                        text: path.display().to_string(),
+                                    });
+                                }
+                                "  ↑  ..".to_owned()
+                            }
                             Item::Directory(name, path) => {
                                 let arrow = if self.expanded.contains(path) {
                                     "▾"
@@ -8320,6 +8426,17 @@ impl Ui {
                     .map(|row| {
                         let indent = "  ".repeat(row.depth.min(12));
                         match &row.item {
+                            Item::Parent(path) => {
+                                if hover_labels
+                                    .pointer
+                                    .is_some_and(|(x, row)| row == y && x < tree_width)
+                                {
+                                    hover_labels.label = Some(HoverLabel {
+                                        text: path.display().to_string(),
+                                    });
+                                }
+                                "  ↑  ..".to_owned()
+                            }
                             Item::Directory(name, path) => {
                                 let prefix = format!(
                                     "{indent}{} {FOLDER_ICON} ",
@@ -9881,6 +9998,7 @@ fn blacklist_song(entry: &StoredEntry) -> BlacklistEntry {
 
 fn item_under_path(item: &Item, deleted: &Path) -> bool {
     match item {
+        Item::Parent(_) => false,
         Item::Directory(_, path) => path.starts_with(deleted),
         Item::Track(track) => {
             track.entry.kind != "remote" && Path::new(&track.entry.path).starts_with(deleted)
@@ -12111,6 +12229,21 @@ mod tests {
     use super::*;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn parent_navigation_stays_inside_music_root() {
+        let root = Path::new("/music");
+        assert_eq!(browse_parent_path(root, root), None);
+        assert_eq!(
+            browse_parent_path(Path::new("/music/games/mario"), root),
+            Some(PathBuf::from("/music/games"))
+        );
+        assert_eq!(
+            browse_parent_path(Path::new("/music/songs.zip/nested"), root),
+            Some(PathBuf::from("/music/songs.zip"))
+        );
+        assert_eq!(browse_parent_path(Path::new("/music-other/album"), root), None);
+    }
 
     #[test]
     fn waveform_fits_beside_play_indicator_and_full_visualizer_remains_available() {
