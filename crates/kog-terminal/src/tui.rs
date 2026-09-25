@@ -6003,6 +6003,7 @@ impl Ui {
                 row("o", "Choose music folder"),
                 row("a", "Add selected files"),
                 row("Delete", "Remove tracks or trash files"),
+                row("D", "Clear playlist"),
                 row("f", "Star selected track"),
                 row("Ctrl+R / u", "Refresh focused pane"),
                 String::new(),
@@ -6799,6 +6800,7 @@ impl Ui {
             Key::Delete if self.focus == Focus::Tracks => self.remove_selected(),
             Key::Delete if self.focus == Focus::Library => self.begin_trash_selected(),
             Key::Char('f') => self.toggle_star(),
+            Key::Char('D') => self.clear_playlist(),
             Key::Char('e') if self.focus == Focus::Tracks => self.open_tag_editor(),
             Key::Char(' ') => self.play_pause(),
             Key::Char('s') => {
@@ -7341,6 +7343,13 @@ impl Ui {
                 return;
             }
             let (volume_row, icon_x, bar_x, bar_width) = volume_geometry(size.0, layout.footer_top);
+            let (clear_row, clear_range) = clear_playlist_geometry(size.0, layout.footer_top);
+            if y == clear_row && clear_range.contains(&x) {
+                if !self.tracks.is_empty() {
+                    self.clear_playlist();
+                }
+                return;
+            }
             if y == volume_row && (icon_x..bar_x + bar_width).contains(&x) {
                 if x < bar_x {
                     self.toggle_mute();
@@ -8996,6 +9005,21 @@ impl Ui {
             false,
         );
         let (volume_row, icon_x, bar_x, volume_width) = volume_geometry(width, layout.footer_top);
+        let (clear_row, clear_range) = clear_playlist_geometry(width, layout.footer_top);
+        if !clear_range.is_empty() {
+            paint(
+                &mut screen,
+                clear_row + 1,
+                clear_range.start + 1,
+                if clear_range.len() >= 8 { "[Clear] " } else { "×" },
+                clear_range.len(),
+                if self.tracks.is_empty() { Surface::Muted } else { Surface::Accent },
+                true,
+            );
+            if hover_labels.pointer.is_some_and(|(x, y)| y == clear_row && clear_range.contains(&x)) {
+                hover_labels.label = Some(HoverLabel { text: "Clear Playlist · D".to_owned() });
+            }
+        }
         paint(
             &mut screen,
             volume_row + 1,
@@ -10528,12 +10552,17 @@ fn volume_geometry(width: usize, footer_top: usize) -> (usize, usize, usize, usi
     let icon_x = width.saturating_sub(bar_width + 8);
     let (transport_left, transport_slot_width) = footer_transport_layout(width);
     let transport_right = transport_left + transport_slot_width * FOOTER_TRANSPORT.len();
-    let row = if icon_x >= transport_right {
+    let row = if icon_x >= transport_right + 8 {
         footer_top
     } else {
         footer_top + 2
     };
     (row, icon_x, icon_x + 3, bar_width)
+}
+
+fn clear_playlist_geometry(width: usize, footer_top: usize) -> (usize, Range<usize>) {
+    let (row, icon_x, _, _) = volume_geometry(width, footer_top);
+    (row, icon_x.saturating_sub(8)..icon_x)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -12326,8 +12355,12 @@ mod tests {
                 assert_eq!(footer_transport_at(width, slot.end - 1), Some(action));
             }
             let (volume_row, icon_x, bar_x, bar_width) = volume_geometry(width, 36);
+            let (clear_row, clear_range) = clear_playlist_geometry(width, 36);
+            assert_eq!(clear_row, volume_row);
+            assert_eq!(clear_range.end, icon_x);
+            assert!(!clear_range.is_empty());
             if volume_row == 36 {
-                assert!(footer_transport_slot(width, TransportAction::Radio).end <= icon_x);
+                assert!(footer_transport_slot(width, TransportAction::Radio).end <= clear_range.start);
             }
             assert!(bar_x + bar_width <= width);
             let (_, bar_start, bar_width) = progress_bar_geometry(width, "8:01:03");
