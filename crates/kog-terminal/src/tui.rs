@@ -8380,76 +8380,71 @@ impl Ui {
         if self.menu_open {
             let mut layers = self.menu_parents.clone();
             layers.push(self.active_menu_layer());
+            for layer in &layers {
+                let page = layer.page.labels().len().min(height.saturating_sub(4));
+                let panel_width = width.saturating_sub(layer.x).min(menu_width(width));
+                paint_menu_shadow(&mut screen, *layer, panel_width, page, size);
+            }
             for layer in layers {
                 let labels = layer.page.labels();
                 let shortcuts = menu_shortcuts(layer.page);
                 let page = labels.len().min(height.saturating_sub(4));
-                let menu_width = width.saturating_sub(layer.x).min(menu_width(width));
+                let panel_width = width.saturating_sub(layer.x).min(menu_width(width));
+                let title = format!(
+                    "╭─ {} ",
+                    truncate(layer.page.title(), panel_width.saturating_sub(5))
+                );
+                let top = format!(
+                    "{title}{}╮",
+                    "─".repeat(panel_width.saturating_sub(cell_width(&title) + 1))
+                );
                 paint(
                     &mut screen,
                     layer.y + 1,
                     layer.x + 1,
-                    &format!("╭─ {} ", layer.page.title()),
-                    menu_width,
-                    Surface::Header,
+                    &top,
+                    panel_width,
+                    Surface::MenuTitle,
                     true,
-                );
-                paint(
-                    &mut screen,
-                    layer.y + 1,
-                    layer.x + menu_width,
-                    "╮",
-                    1,
-                    Surface::Header,
-                    false,
                 );
                 for (row, index) in (layer.offset..labels.len()).take(page).enumerate() {
                     let label = labels[index];
-                    let shown = menu_row(label, shortcuts[index], menu_width);
+                    let selected = index == layer.selected;
+                    let surface = if selected {
+                        Surface::MenuSelected
+                    } else if label.is_empty() {
+                        Surface::MenuSeparator
+                    } else {
+                        Surface::MenuBody
+                    };
+                    let shown = menu_row(label, shortcuts[index], panel_width);
                     paint(
                         &mut screen,
                         layer.y + row + 2,
                         layer.x + 1,
-                        &shown,
-                        menu_width,
-                        if index == layer.selected {
-                            Surface::Selected
-                        } else {
-                            Surface::Toolbar
-                        },
-                        index == layer.selected,
-                    );
-                    paint(
-                        &mut screen,
-                        layer.y + row + 2,
-                        layer.x + menu_width,
-                        "│",
-                        1,
-                        if index == layer.selected {
-                            Surface::Selected
-                        } else {
-                            Surface::Toolbar
-                        },
-                        false,
+                        &format!("{shown}│"),
+                        panel_width,
+                        surface,
+                        selected,
                     );
                 }
                 paint(
                     &mut screen,
                     layer.y + page + 2,
                     layer.x + 1,
-                    &format!("╰{}╯", "─".repeat(menu_width.saturating_sub(2))),
-                    menu_width,
-                    Surface::Toolbar,
+                    &format!("╰{}╯", "─".repeat(panel_width.saturating_sub(2))),
+                    panel_width,
+                    Surface::MenuBody,
                     false,
                 );
                 if layer.offset > 0 {
                     paint(
                         &mut screen,
                         layer.y + 1,
-                        layer.x + menu_width.saturating_sub(3),
+                        layer.x + panel_width.saturating_sub(3),
                         "↑",
                         1,
-                        Surface::Header,
+                        Surface::MenuTitle,
                         false,
                     );
                 }
@@ -8457,10 +8452,10 @@ impl Ui {
                     paint(
                         &mut screen,
                         layer.y + page + 1,
-                        layer.x + menu_width.saturating_sub(3),
+                        layer.x + panel_width.saturating_sub(3),
                         "↓",
                         1,
-                        Surface::Toolbar,
+                        Surface::MenuBody,
                         false,
                     );
                 }
@@ -9896,7 +9891,7 @@ fn menu_width(terminal_width: usize) -> usize {
 
 fn menu_row(label: &str, shortcut: Option<char>, width: usize) -> String {
     if label.is_empty() {
-        return format!("│ {}", "─".repeat(width.saturating_sub(3)));
+        return format!("│{}", "─".repeat(width.saturating_sub(2)));
     }
     let hint = shortcut.map_or_else(String::new, |key| format!("Alt+{key}"));
     let normalized = label.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -9908,10 +9903,21 @@ fn menu_row(label: &str, shortcut: Option<char>, width: usize) -> String {
     } else {
         (normalized.as_str(), "")
     };
+    let right = if hint.is_empty() {
+        arrow.trim().to_owned()
+    } else if arrow.is_empty() {
+        hint
+    } else {
+        format!("{}  {hint}", arrow.trim())
+    };
     let label_width = width
         .saturating_sub(3)
-        .saturating_sub(hint.len() + 1 + cell_width(arrow));
-    format!("│ {}{arrow} {hint}", truncate(name, label_width))
+        .saturating_sub(cell_width(&right) + usize::from(!right.is_empty()));
+    let shown = truncate(name, label_width);
+    let spaces = width
+        .saturating_sub(3)
+        .saturating_sub(cell_width(&shown) + cell_width(&right));
+    format!("│ {shown}{}{right}", " ".repeat(spaces))
 }
 
 fn truncate(text: &str, width: usize) -> String {
@@ -10077,6 +10083,11 @@ enum Surface {
     RadioOn,
     Selected,
     Muted,
+    MenuBody,
+    MenuTitle,
+    MenuSelected,
+    MenuSeparator,
+    MenuShadow,
 }
 
 fn paint(
@@ -10104,12 +10115,42 @@ fn paint(
         Surface::RadioOn => ("255;169;68", "29;32;34"),
         Surface::Selected => ("245;248;251", "49;84;106"),
         Surface::Muted => ("151;160;168", "29;32;34"),
+        Surface::MenuBody => ("27;42;78", "212;221;236"),
+        Surface::MenuTitle => ("255;237;171", "39;68;128"),
+        Surface::MenuSelected => ("255;255;255", "38;88;166"),
+        Surface::MenuSeparator => ("103;120;151", "212;221;236"),
+        Surface::MenuShadow => ("10;14;23", "10;14;23"),
     };
     out.push_str(&format!(
         "\x1b[{row};{col}H\x1b[{};38;2;{foreground};48;2;{background}m{}\x1b[0m",
         if bold { "1" } else { "22" },
         truncate(text, width)
     ));
+}
+
+fn paint_menu_shadow(
+    out: &mut String,
+    layer: MenuLayer,
+    panel_width: usize,
+    page: usize,
+    size: (usize, usize),
+) {
+    let left = layer.x.saturating_add(2);
+    let right = layer.x.saturating_add(panel_width + 2).min(size.0);
+    if left >= right {
+        return;
+    }
+    for row in layer.y.saturating_add(1)..layer.y.saturating_add(page + 3).min(size.1) {
+        paint(
+            out,
+            row + 1,
+            left + 1,
+            &" ".repeat(right - left),
+            right - left,
+            Surface::MenuShadow,
+            false,
+        );
+    }
 }
 
 fn braille_dot(dots: &mut [u8], width: usize, x: usize, y: usize) {
