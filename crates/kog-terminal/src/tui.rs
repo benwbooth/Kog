@@ -48,6 +48,7 @@ struct AutoFitCache {
 }
 
 const SESSION_FILE: &str = "tui-session.json";
+const SIDEBAR_WIDTH_FILE: &str = "tui-sidebar-width";
 const SESSION_MAX_BYTES: usize = 64 * 1024 * 1024;
 const SESSION_MAX_TRACKS: usize = 100_000;
 const RADIO_READY_TARGET: usize = 10;
@@ -63,6 +64,26 @@ const MEDIA_REPEAT_ONE: &str = "🔂";
 const MEDIA_RADIO: &str = "⚄";
 const PLAYLIST_PLAY: &str = "▶ ";
 const PLAYLIST_PAUSE: &str = "❚❚";
+
+fn load_sidebar_width() -> Option<usize> {
+    let path = kog_audio::settings::setting_path(SIDEBAR_WIDTH_FILE)?;
+    std::fs::read_to_string(path)
+        .ok()?
+        .trim()
+        .parse::<usize>()
+        .ok()
+        .filter(|width| *width >= 18)
+}
+
+fn save_sidebar_width(width: usize) -> Result<(), String> {
+    let path = kog_audio::settings::setting_path(SIDEBAR_WIDTH_FILE)
+        .ok_or("Cannot find the terminal settings directory")?;
+    let parent = path.parent().ok_or("Invalid terminal settings path")?;
+    std::fs::create_dir_all(parent)
+        .map_err(|error| format!("creating {}: {error}", parent.display()))?;
+    std::fs::write(&path, width.to_string())
+        .map_err(|error| format!("writing {}: {error}", path.display()))
+}
 
 struct RestoredPlaylist {
     tracks: Vec<Track>,
@@ -1377,7 +1398,7 @@ impl Ui {
             compact_mode: false,
             files_expanded: true,
             playlists_expanded: true,
-            sidebar_width: None,
+            sidebar_width: load_sidebar_width(),
             split_drag: false,
             column_drag: None,
             column_scroll_drag: None,
@@ -2239,6 +2260,14 @@ impl Ui {
     fn persist_columns(&mut self) {
         if let Err(error) = self.columns.save() {
             self.status = format!("Saving column layout: {error}");
+        }
+    }
+
+    fn persist_sidebar_width(&mut self) {
+        if let Some(width) = self.sidebar_width
+            && let Err(error) = save_sidebar_width(width)
+        {
+            self.status = format!("Saving sidebar width: {error}");
         }
     }
 
@@ -6486,7 +6515,7 @@ impl Ui {
             Key::CtrlLeft | Key::CtrlRight | Key::Char('{') | Key::Char('}')
                 if layout.show_sidebar && !self.compact_mode =>
             {
-                let current = self.sidebar_width.unwrap_or(layout.first);
+                let current = layout.first;
                 let next = current.saturating_add_signed(
                     if matches!(key, Key::CtrlLeft | Key::Char('{')) {
                         -1
@@ -6497,6 +6526,7 @@ impl Ui {
                 let width = next.clamp(18, size.0.saturating_sub(30).max(18));
                 self.sidebar_width = Some(width);
                 self.status = format!("Sidebar width: {width} cells");
+                self.persist_sidebar_width();
             }
             Key::Char('z') if self.focus == Focus::Library => {
                 self.files_expanded = !self.files_expanded
@@ -6705,6 +6735,9 @@ impl Ui {
         if release {
             if self.column_drag.is_some() {
                 self.persist_columns();
+            }
+            if self.split_drag {
+                self.persist_sidebar_width();
             }
             self.split_drag = false;
             self.column_drag = None;
@@ -9375,6 +9408,9 @@ impl Drop for Ui {
             let _ = self.flush_session();
         }
         let _ = AppSettings::save_output_volume(f64::from(self.volume));
+        if let Some(width) = self.sidebar_width {
+            let _ = save_sidebar_width(width);
+        }
     }
 }
 
