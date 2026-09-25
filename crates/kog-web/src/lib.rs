@@ -26,6 +26,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use gloo_net::http::Request;
+use kog_playback_policy::{OrderTrack, PlaybackOrder, RepeatMode, ShuffleMode};
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::closure::Closure;
@@ -1003,6 +1004,58 @@ enum Repeat {
     All,
 }
 
+/// Each browser owns its queue, while ordering decisions use the same policy
+/// engine as the native players. The locator list detects additions, removals,
+/// and reordering without resetting a shuffle round on every transport press.
+struct WebPlaybackOrder {
+    order: PlaybackOrder,
+    locators: Vec<String>,
+}
+
+impl WebPlaybackOrder {
+    fn new() -> Self {
+        Self {
+            order: PlaybackOrder::new(ShuffleMode::Off, RepeatMode::Off, js_sys::Date::now() as u64),
+            locators: Vec::new(),
+        }
+    }
+
+    fn tracks(
+        &mut self,
+        queue: &[Entry],
+        cache: &HashMap<String, Option<MetaRow>>,
+        current: usize,
+        shuffle: bool,
+        repeat: Repeat,
+    ) -> Vec<OrderTrack> {
+        let tracks: Vec<_> = queue
+            .iter()
+            .map(|entry| OrderTrack {
+                album: meta_for(cache, entry)
+                    .and_then(|meta| meta.album)
+                    .unwrap_or_default(),
+                ..OrderTrack::default()
+            })
+            .collect();
+        let locators: Vec<_> = queue.iter().map(meta_key).collect();
+        if locators != self.locators {
+            self.locators = locators;
+            self.order.tracks_changed(&tracks, Some(current));
+        }
+        let shuffle_mode = if shuffle { ShuffleMode::All } else { ShuffleMode::Off };
+        if self.order.shuffle_mode() != shuffle_mode {
+            self.order.set_shuffle_mode(shuffle_mode, &tracks, Some(current));
+        }
+        let repeat_mode = match repeat {
+            Repeat::Off => RepeatMode::Off,
+            Repeat::One => RepeatMode::One,
+            Repeat::All => RepeatMode::All,
+        };
+        self.order.set_repeat_mode(repeat_mode);
+        tracks
+    }
+}
+
 #[derive(Clone, Debug)]
 enum Auth {
     None,
@@ -1694,22 +1747,6 @@ fn parent_path(path: &str) -> String {
 }
 
 /// Whether `child` is `root` or lives inside it.
-/// A random queue position other than `current`, for shuffle playback.
-fn random_other(current: usize, len: usize) -> usize {
-    if len <= 1 {
-        return current;
-    }
-    let mut candidate = current;
-    for _ in 0..8 {
-        let roll = (js_sys::Math::random() * len as f64).floor() as usize;
-        candidate = roll.min(len - 1);
-        if candidate != current {
-            break;
-        }
-    }
-    candidate
-}
-
 /// `POST` a JSON body and decode a JSON response, carrying the same auth and
 /// errors as the `get_json` wrapper.
 async fn post_json(
@@ -2318,6 +2355,7 @@ fn App() -> impl IntoView {
     // the lookup. Keep failures separate from cached "no tags" results.
     let (metadata_failed, set_metadata_failed) =
         signal_local(Rc::new(HashSet::<String>::new()));
+    let web_order = StoredValue::new(WebPlaybackOrder::new());
     // Starred locators from `GET /api/stars`, in the same scheme the server
     // stores them under. An `Rc` for the same reason as `metadata`.
     let (stars, set_stars) = signal_local(Rc::new(HashSet::<String>::new()));
@@ -4389,10 +4427,11 @@ fn App() -> impl IntoView {
     };
 
     // End-of-track advance: radio shifts in one staged track when the queue
-    // runs out, shuffle picks any other row, otherwise step the queue and
-    // wrap only when repeat is on.
+    // runs out; every other ordering decision uses the native players'
+    // shared shuffle and repeat policy.
     let advance_after_track = {
         let advance_radio = advance_radio.clone();
+        let web_order = web_order;
         move || -> Option<usize> {
             let len = queue.get().len();
             if len == 0 {
@@ -4402,21 +4441,19 @@ fn App() -> impl IntoView {
                 advance_radio();
                 return None;
             }
-            if shuffle.get() {
-                return Some(random_other(current.get(), len));
-            }
-            if current.get() + 1 < len {
-                return Some(current.get() + 1);
-            }
-            if repeat_mode.get() == Repeat::All {
-                return Some(0);
-            }
-            None
+            queue.with_untracked(|items| {
+                let cache = metadata.get_untracked();
+                let current = current.get();
+                let mut policy = web_order.write_value();
+                let tracks = policy.tracks(items, &cache, current, shuffle.get(), repeat_mode.get());
+                policy.order.next(&tracks, Some(current), true)
+            })
         }
     };
 
     let step = {
         let advance_radio = advance_radio.clone();
+        let web_order = web_order;
         move |delta: i64| {
             let len = queue.get().len();
             if len == 0 {
@@ -4438,26 +4475,18 @@ fn App() -> impl IntoView {
                 advance_radio();
                 return;
             }
-            let next = if shuffle.get() {
-                random_other(current.get(), len)
-            } else if delta < 0 {
-                if current.get() == 0 {
-                    if repeat_mode.get() == Repeat::All {
-                        len - 1
-                    } else {
-                        0
-                    }
+            let next = queue.with_untracked(|items| {
+                let cache = metadata.get_untracked();
+                let current = current.get();
+                let mut policy = web_order.write_value();
+                let tracks = policy.tracks(items, &cache, current, shuffle.get(), repeat_mode.get());
+                if delta < 0 {
+                    policy.order.previous(&tracks, Some(current))
                 } else {
-                    current.get() - 1
+                    policy.order.next(&tracks, Some(current), false)
                 }
-            } else if current.get() + 1 < len {
-                current.get() + 1
-            } else if repeat_mode.get() == Repeat::All {
-                0
-            } else {
-                current.get()
-            };
-            if next != current.get() {
+            });
+            if let Some(next) = next.filter(|next| *next != current.get()) {
                 jump(next);
             }
         }

@@ -1642,6 +1642,7 @@ dependencies = [
  "encoding_rs",
  "futures-lite",
  "kog-core",
+ "kog-playback-policy",
  "lofty",
  "midly",
  "orgorg",
@@ -1670,6 +1671,10 @@ dependencies = [
  "serde_json",
  "tempfile",
 ]
+
+[[package]]
+name = "kog-playback-policy"
+version = "0.9.41"
 
 [[package]]
 name = "kog-server"

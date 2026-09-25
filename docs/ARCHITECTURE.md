@@ -30,6 +30,9 @@ backends may use safe Rust, C, or C++ libraries.
 Qt, TUI, and Web keep separate playback queues so each device can listen on its
 own. They share the decoder registry, archive classification, folder-add file
 policy, playlist expansion, metadata/stream locators, and radio-round rules.
+The queue, shuffle, and repeat policy lives in the platform-neutral
+`kog-playback-policy` crate; native players call it through `kog-audio`, and
+the browser compiles it to WebAssembly.
 The Web frontend reaches the Rust library backend through authenticated HTTP;
 the TUI calls the same library collector directly. Qt keeps a parallel scan
 worker for progress and cancellation, then uses the same archive decoder and

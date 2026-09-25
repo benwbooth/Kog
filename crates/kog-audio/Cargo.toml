@@ -14,6 +14,7 @@ test-util = []
 
 [dependencies]
 kog-core = { path = "../kog-core" }
+kog-playback-policy = { path = "../kog-playback-policy" }
 compress-tools = "0.16.1"
 directories = "6.0.0"
 encoding_rs = "0.8.35"

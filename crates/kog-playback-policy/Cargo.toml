@@ -1,0 +1,7 @@
+[package]
+name = "kog-playback-policy"
+version = "0.9.41"
+edition = "2024"
+license = "GPL-3.0-or-later"
+description = "Platform-neutral playback order policy shared by Kog frontends"
+repository = "https://github.com/benwbooth/Kog"
