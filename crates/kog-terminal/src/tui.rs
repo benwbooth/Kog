@@ -61,6 +61,8 @@ const MEDIA_SHUFFLE: &str = "🔀";
 const MEDIA_REPEAT: &str = "🔁";
 const MEDIA_REPEAT_ONE: &str = "🔂";
 const MEDIA_RADIO: &str = "⚄";
+const PLAYLIST_PLAY: &str = "▶ ";
+const PLAYLIST_PAUSE: &str = "❚❚";
 
 struct RestoredPlaylist {
     tracks: Vec<Track>,
@@ -1638,8 +1640,8 @@ impl Ui {
                     MEDIA_STOP.to_owned()
                 } else if self.playing == Some(index) {
                     match self.player.state() {
-                        PlaybackState::Playing => MEDIA_PLAY,
-                        PlaybackState::Paused => MEDIA_PAUSE,
+                        PlaybackState::Playing => PLAYLIST_PLAY,
+                        PlaybackState::Paused => PLAYLIST_PAUSE,
                         PlaybackState::Stopped => "",
                     }
                     .to_owned()
@@ -1667,9 +1669,9 @@ impl Ui {
                     "{}  {queue_badge}{stop_badge}{}",
                     if self.playing == Some(index) {
                         if self.player.state() == PlaybackState::Paused {
-                            MEDIA_PAUSE
+                            PLAYLIST_PAUSE
                         } else {
-                            MEDIA_PLAY
+                            PLAYLIST_PLAY
                         }
                     } else {
                         glyph(&track.entry)
