@@ -1690,32 +1690,7 @@ impl Ui {
                 }
             }
             "rating" | "playcount" => String::new(),
-            "title" => {
-                let queue_badge = self
-                    .queue
-                    .iter()
-                    .position(|queued| *queued == index)
-                    .map(|position| format!("{MEDIA_NEXT}{} ", position + 1))
-                    .unwrap_or_default();
-                let stop_badge = if self.stop_after_rows.contains(&index) {
-                    "⏹️ "
-                } else {
-                    ""
-                };
-                format!(
-                    "{}  {queue_badge}{stop_badge}{}",
-                    if self.playing == Some(index) {
-                        if self.player.state() == PlaybackState::Paused {
-                            PLAYLIST_PAUSE
-                        } else {
-                            PLAYLIST_PLAY
-                        }
-                    } else {
-                        glyph(&track.entry)
-                    },
-                    self.title_for(track)
-                )
-            }
+            "title" => format!("{}  {}", glyph(&track.entry), self.title_for(track)),
             "albumartist" => meta.map_or("", |m| m.album_artist.as_str()).to_owned(),
             "artist" => meta.map_or("", |m| m.artist.as_str()).to_owned(),
             "composer" => meta.map_or("", |m| m.composer.as_str()).to_owned(),
