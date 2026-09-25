@@ -1322,12 +1322,43 @@ pub async fn pause_search(
     axum::Json(serde_json::json!({ "ok": true, "paused": paused })).into_response()
 }
 
-/// `GET /api/art` — embedded or sibling cover art for one library file,
-/// addressed like streaming (`kind`, `path`). A track without artwork
+fn cached_or_downloaded_cover(
+    file: &std::path::Path,
+    artist: &str,
+    tagged_album: &str,
+    cache_dir: &std::path::Path,
+    allow_download: bool,
+    fetch: impl FnMut(&str, u32) -> Option<Vec<u8>>,
+) -> Option<Vec<u8>> {
+    use kog_audio::cover_art;
+
+    let album = cover_art::fallback_album(file, tagged_album);
+    if album.is_empty() {
+        return None;
+    }
+    let (key, may_download) = cover_art::track_cache_key(artist, tagged_album, &album, file);
+    if let Some(bytes) = cover_art::cache_lookup(cache_dir, &key)
+        .and_then(|path| std::fs::read(path).ok())
+        .filter(|bytes| cover_art::sniff_image_kind(bytes).is_some())
+    {
+        return Some(bytes);
+    }
+    if !may_download || !allow_download {
+        return None;
+    }
+    cover_art::download_cover(artist, &album, fetch, || false, |bytes| {
+        let _ = cover_art::store_cache(cache_dir, &key, &bytes);
+        Some(bytes)
+    })
+}
+
+/// `GET /api/art` — local, cached, or downloaded cover art for one library
+/// file, addressed like streaming (`kind`, `path`). A track without artwork
 /// answers 404 and the player falls back to its logo.
 pub async fn art(State(state): State<AppState>, Query(query): Query<ArtQuery>) -> Response {
     let kind = query.kind.unwrap_or_else(|| "local".to_owned());
     let library = state.library.clone();
+    let streams = state.streams.clone();
     let result = tokio::task::spawn_blocking(move || {
         // Archives are not materialized for art lookups: their files only
         // exist once streamed, and chiptune containers carry no artwork.
@@ -1340,8 +1371,27 @@ pub async fn art(State(state): State<AppState>, Query(query): Query<ArtQuery>) -
         if !file.is_file() {
             return None;
         }
-        kog_audio::cover_art::embedded_cover_bytes(&file)
-            .or_else(|| kog_audio::cover_art::sibling_cover_bytes(&file))
+        use kog_audio::cover_art;
+        if let Some(bytes) = cover_art::embedded_cover_bytes(&file)
+            .or_else(|| cover_art::sibling_cover_bytes(&file))
+        {
+            return Some(bytes);
+        }
+        let source = PlaylistEntry::from_locator("local", &file.to_string_lossy(), "", None).ok()?;
+        let properties = streams.probe_entry(source).ok()?;
+        let artist = properties.artist.unwrap_or_default();
+        let tagged_album = properties.album.unwrap_or_default();
+        let cache_dir = directories::ProjectDirs::from("org", "Kog", "Kog")
+            .map(|directories| cover_art::cache_directory(directories.cache_dir()))
+            .unwrap_or_else(|| std::env::temp_dir().join("kog-covers"));
+        cached_or_downloaded_cover(
+            &file,
+            &artist,
+            &tagged_album,
+            &cache_dir,
+            kog_audio::settings::AppSettings::load().download_cover_art,
+            crate::cover_network::fetch,
+        )
     })
     .await
     .unwrap_or_else(|error| {
@@ -2327,6 +2377,55 @@ pub fn router() -> axum::Router<AppState> {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn web_cover_uses_shared_search_then_cache_without_redownloading() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("song.mp3");
+        let jpeg = vec![0xff, 0xd8, 0xff, 0xe0];
+        let mut requested = Vec::new();
+        let resolved = cached_or_downloaded_cover(
+            &file,
+            "Artist",
+            "Album",
+            directory.path(),
+            true,
+            |url, _| {
+                requested.push(url.to_owned());
+                if url.starts_with("https://api.deezer.com/") {
+                    Some(br#"{"data":[{"title":"Album","artist":{"name":"Artist"},"cover_xl":"https://example.test/cover.jpg"}]}"#.to_vec())
+                } else if url == "https://example.test/cover.jpg" {
+                    Some(jpeg.clone())
+                } else {
+                    None
+                }
+            },
+        );
+        assert_eq!(resolved, Some(jpeg.clone()));
+        assert_eq!(requested.len(), 2);
+        assert_eq!(
+            cached_or_downloaded_cover(
+                &file,
+                "Artist",
+                "Album",
+                directory.path(),
+                false,
+                |_, _| panic!("cached art should not request the network"),
+            ),
+            Some(jpeg),
+        );
+        assert_eq!(
+            cached_or_downloaded_cover(
+                &file,
+                "",
+                "",
+                directory.path(),
+                true,
+                |_, _| panic!("untagged files should not request the network"),
+            ),
+            None,
+        );
+    }
 
     #[test]
     fn archive_browse_omits_images_and_explicit_directory_members() {

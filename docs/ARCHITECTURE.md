@@ -46,7 +46,9 @@ output remain platform adapters; neither decides which files are playable.
 Cover-art keying, provider order, result matching, image validation, and
 MusicBrainz pacing also live in `kog-audio::cover_art`. Qt and TUI supply their
 own network transports and display adapters to that shared policy. The Web
-server uses the same embedded and sibling-art readers for its artwork endpoint.
+server uses the same embedded and sibling-art readers, then the same cache key
+and provider search when downloads are enabled. Its HTTPS transport checks
+every redirect against the cover-provider allowlist.
 
 New decoders integrate maintained libraries in-process by default. A companion
 process is reserved for a proven license incompatibility or a narrowly audited

@@ -1682,6 +1682,7 @@ version = "0.9.41"
 dependencies = [
  "axum",
  "base64 0.22.1",
+ "directories",
  "getrandom 0.4.3",
  "http-body-util",
  "hyper",
@@ -1703,6 +1704,7 @@ dependencies = [
  "tokio-util",
  "tower",
  "tower-http",
+ "ureq",
  "url",
 ]
 
