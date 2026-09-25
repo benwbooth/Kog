@@ -1383,6 +1383,8 @@ body.touch .track .index-cell {
   padding: 0;
   border: 0;
   font-size: 14px;
+  display: grid;
+  place-items: center;
 }
 
 /* The mute button's inlined desktop speaker icon, tinted like its text. */
