@@ -200,6 +200,15 @@ struct TreeRow {
     depth: usize,
 }
 
+struct HoverLabel {
+    text: String,
+}
+
+struct HoverLabels {
+    pointer: Option<(usize, usize)>,
+    label: Option<HoverLabel>,
+}
+
 struct SearchTreeMatch {
     item: Item,
     hierarchy: PathBuf,
@@ -879,6 +888,8 @@ struct Ui {
     playing: Option<usize>,
     status: String,
     marquee_started: Instant,
+    hover_position: Option<(usize, usize)>,
+    hover_since: Instant,
     volume: f32,
     volume_before_mute: f32,
     volume_drag: bool,
@@ -1271,6 +1282,8 @@ impl Ui {
             playing: None,
             status: String::new(),
             marquee_started: Instant::now(),
+            hover_position: None,
+            hover_since: Instant::now(),
             volume,
             volume_before_mute: if volume > 0.0 { volume } else { 0.75 },
             volume_drag: false,
@@ -5819,12 +5832,14 @@ impl Ui {
                 row("Home / End", "First / last item"),
                 row("Enter", "Open folder, list, or track"),
                 row("J / K", "Move cursor only"),
+                row("Mouse hover", "Read a clipped label"),
                 String::new(),
                 "SELECTION".to_owned(),
                 row("Shift+↑ / ↓", "Extend selected range"),
                 row("v then arrows", "Range selection without Shift"),
                 row("x / Ctrl+Space", "Toggle cursor row"),
                 row("Ctrl+A", "Select all"),
+                row("I", "Show full selected label"),
                 String::new(),
                 "FILES AND PLAYLISTS".to_owned(),
                 row("/", "Search files"),
@@ -5872,6 +5887,29 @@ impl Ui {
             ]
             .join("\n"),
         );
+    }
+
+    fn show_selected_label(&mut self) {
+        let label = match self.focus {
+            Focus::Library => self.items.get(self.selected[1]).map(|row| match &row.item {
+                Item::Directory(name, _) => name.clone(),
+                Item::Track(track) => track.name.clone(),
+            }),
+            Focus::Playlists => self.lists.get(self.selected[0]).map(|(_, name)| name.clone()),
+            Focus::Tracks => self.tracks.get(self.selected[2]).map(|track| {
+                if let Some(column) = self
+                    .keyboard_column
+                    .and_then(|index| self.columns.entries.get(index))
+                {
+                    self.column_value(self.selected[2], track, column.id)
+                } else {
+                    self.title_for(track)
+                }
+            }),
+        };
+        if let Some(label) = label {
+            self.show_modal(format!("Full label\n\n{label}"));
+        }
     }
 
     fn open_keyboard_context(&mut self, size: (usize, usize)) {
@@ -6027,6 +6065,7 @@ impl Ui {
     }
 
     fn key(&mut self, key: Key, size: (usize, usize)) -> bool {
+        self.hover_position = None;
         if self.exit_confirm_open {
             match key {
                 Key::Esc | Key::Char('n') | Key::Char('N') => self.exit_confirm_open = false,
@@ -6462,6 +6501,7 @@ impl Ui {
                 self.playlists_expanded = !self.playlists_expanded
             }
             Key::Char('x') | Key::CtrlSpace => self.toggle_cursor_selection(),
+            Key::Char('I') => self.show_selected_label(),
             Key::AltUp | Key::Char('K') => self.move_cursor_only(-1, page),
             Key::AltDown | Key::Char('J') => self.move_cursor_only(1, page),
             Key::Char('/') => self.begin_prompt(PromptKind::Search, self.search_query.clone()),
@@ -6643,6 +6683,15 @@ impl Ui {
     }
 
     fn mouse(&mut self, button: u16, x: usize, y: usize, release: bool, size: (usize, usize)) {
+        if !release && button & 32 != 0 && button & 3 == 3 {
+            if self.hover_position != Some((x, y)) {
+                self.hover_position = Some((x, y));
+                self.hover_since = Instant::now();
+            }
+            return;
+        } else if !release {
+            self.hover_position = None;
+        }
         if self.folder_chooser.is_some() {
             if !release {
                 self.folder_mouse(button, x, y, size);
@@ -7636,6 +7685,12 @@ impl Ui {
             return screen;
         }
         let marquee_tick = (self.marquee_started.elapsed().as_millis() / 180) as usize;
+        let mut hover_labels = HoverLabels {
+            pointer: self
+                .hover_position
+                .filter(|_| self.hover_since.elapsed() >= Duration::from_millis(450)),
+            label: None,
+        };
         let visible_tracks = self.visible_tracks();
         let layout = self.layout_for_track_count(size, visible_tracks.len());
         let tree_page = self.tree_page(&layout);
@@ -7806,16 +7861,20 @@ impl Ui {
                     .unwrap_or_else(|| "Choose a music folder".to_owned())
             };
             if self.files_expanded {
+                let prefix = format!(" {FOLDER_ICON}  ↻  ");
+                register_hover_label(
+                    &mut hover_labels,
+                    cell_width(&prefix),
+                    2,
+                    sidebar.saturating_sub(cell_width(&prefix)),
+                    &location,
+                    sidebar.saturating_sub(cell_width(&prefix)),
+                );
                 paint(
                     &mut screen,
                     3,
                     1,
-                    &marquee_prefixed(
-                        &format!(" {FOLDER_ICON}  ↻  "),
-                        &location,
-                        sidebar,
-                        marquee_tick,
-                    ),
+                    &marquee_prefixed(&prefix, &location, sidebar, marquee_tick),
                     sidebar,
                     Surface::SidebarAlt,
                     true,
@@ -7886,19 +7945,36 @@ impl Ui {
                                 } else {
                                     "▸"
                                 };
+                                let prefix = format!("{indent}{arrow} {FOLDER_ICON} ");
+                                let name_width = tree_width.saturating_sub(cell_width(&prefix));
+                                register_hover_label(
+                                    &mut hover_labels,
+                                    cell_width(&prefix),
+                                    y,
+                                    name_width,
+                                    name,
+                                    name_width,
+                                );
                                 marquee_prefixed(
-                                    &format!("{indent}{arrow} {FOLDER_ICON} "),
+                                    &prefix,
                                     name,
                                     tree_width,
                                     marquee_tick,
                                 )
                             }
-                            Item::Track(track) => marquee_prefixed(
-                                &format!("{indent}  {} ", glyph(&track.entry)),
-                                &track.name,
-                                tree_width,
-                                marquee_tick,
-                            ),
+                            Item::Track(track) => {
+                                let prefix = format!("{indent}  {} ", glyph(&track.entry));
+                                let name_width = tree_width.saturating_sub(cell_width(&prefix));
+                                register_hover_label(
+                                    &mut hover_labels,
+                                    cell_width(&prefix),
+                                    y,
+                                    name_width,
+                                    &track.name,
+                                    name_width,
+                                );
+                                marquee_prefixed(&prefix, &track.name, tree_width, marquee_tick)
+                            }
                         }
                     })
                     .unwrap_or_default();
@@ -7950,6 +8026,15 @@ impl Ui {
                     Surface::Sidebar
                 };
                 let label = self.saved_list_label(index, sidebar, marquee_tick);
+                if let Some((id, name)) = self.lists.get(index) {
+                    let count = if *id == 0 {
+                        self.starred_keys.len()
+                    } else {
+                        self.list_counts.get(id).copied().unwrap_or(0)
+                    };
+                    let name_width = sidebar.saturating_sub(4 + cell_width(&format!("{count} ")));
+                    register_hover_label(&mut hover_labels, 4, y, name_width, name, name_width);
+                }
                 paint(&mut screen, y + 1, 1, &label, sidebar, surface, false);
             }
             for y in 1..layout.footer_top {
@@ -7994,6 +8079,15 @@ impl Ui {
                 }
                 let index = self.offsets[0] + y - 2;
                 let label = self.saved_list_label(index, width, marquee_tick);
+                if let Some((id, name)) = self.lists.get(index) {
+                    let count = if *id == 0 {
+                        self.starred_keys.len()
+                    } else {
+                        self.list_counts.get(id).copied().unwrap_or(0)
+                    };
+                    let name_width = width.saturating_sub(4 + cell_width(&format!("{count} ")));
+                    register_hover_label(&mut hover_labels, 4, y, name_width, name, name_width);
+                }
                 let surface = if self
                     .lists
                     .get(index)
@@ -8035,25 +8129,39 @@ impl Ui {
                     .map(|row| {
                         let indent = "  ".repeat(row.depth.min(12));
                         match &row.item {
-                            Item::Directory(name, path) => marquee_prefixed(
-                                &format!(
+                            Item::Directory(name, path) => {
+                                let prefix = format!(
                                     "{indent}{} {FOLDER_ICON} ",
                                     if self.expanded.contains(path) {
                                         "▾"
                                     } else {
                                         "▸"
                                     }
-                                ),
-                                name,
-                                tree_width,
-                                marquee_tick,
-                            ),
-                            Item::Track(track) => marquee_prefixed(
-                                &format!("{indent}  {} ", glyph(&track.entry)),
-                                &track.name,
-                                tree_width,
-                                marquee_tick,
-                            ),
+                                );
+                                let name_width = tree_width.saturating_sub(cell_width(&prefix));
+                                register_hover_label(
+                                    &mut hover_labels,
+                                    cell_width(&prefix),
+                                    y,
+                                    name_width,
+                                    name,
+                                    name_width,
+                                );
+                                marquee_prefixed(&prefix, name, tree_width, marquee_tick)
+                            }
+                            Item::Track(track) => {
+                                let prefix = format!("{indent}  {} ", glyph(&track.entry));
+                                let name_width = tree_width.saturating_sub(cell_width(&prefix));
+                                register_hover_label(
+                                    &mut hover_labels,
+                                    cell_width(&prefix),
+                                    y,
+                                    name_width,
+                                    &track.name,
+                                    name_width,
+                                );
+                                marquee_prefixed(&prefix, &track.name, tree_width, marquee_tick)
+                            }
                         }
                     })
                     .unwrap_or_default();
@@ -8098,6 +8206,7 @@ impl Ui {
                 let selected = self.keyboard_column == Some(column_index);
                 paint_playlist_cell(
                     &mut screen,
+                    &mut hover_labels,
                     2,
                     right_x,
                     content_width,
@@ -8140,6 +8249,7 @@ impl Ui {
                             self.column_value(index, track, self.columns.entries[column_index].id);
                         paint_playlist_cell(
                             &mut screen,
+                            &mut hover_labels,
                             y + 1,
                             right_x,
                             content_width,
@@ -8242,6 +8352,14 @@ impl Ui {
             .saturating_div(2)
             .saturating_sub(17 + cover_space)
             .min(progress_x.saturating_sub(5 + cover_space));
+        register_hover_label(
+            &mut hover_labels,
+            4 + cover_space,
+            layout.footer_top,
+            title_width,
+            &current,
+            title_width,
+        );
         paint(
             &mut screen,
             layout.footer_top + 1,
@@ -8275,6 +8393,14 @@ impl Ui {
                     PlaybackState::Stopped => "Ready to play".to_owned(),
                 })
         };
+        register_hover_label(
+            &mut hover_labels,
+            4 + cover_space,
+            layout.footer_top + 1,
+            title_width,
+            &subtitle,
+            title_width,
+        );
         paint(
             &mut screen,
             layout.footer_top + 2,
@@ -8285,6 +8411,7 @@ impl Ui {
             false,
         );
         if self.compact_mode {
+            hover_labels.label = None;
             for y in 1..layout.footer_top {
                 paint(&mut screen, y + 1, 1, "", width, Surface::Main, false);
             }
@@ -8388,6 +8515,14 @@ impl Ui {
                         true,
                     );
                 }
+                register_hover_label(
+                    &mut hover_labels,
+                    card_x + 17,
+                    card_y + 1,
+                    card_width - 21,
+                    &current,
+                    card_width - 21,
+                );
                 paint(
                     &mut screen,
                     card_y + 2,
@@ -8396,6 +8531,14 @@ impl Ui {
                     card_width - 21,
                     Surface::Sidebar,
                     true,
+                );
+                register_hover_label(
+                    &mut hover_labels,
+                    card_x + 17,
+                    card_y + 2,
+                    card_width - 21,
+                    &subtitle,
+                    card_width - 21,
                 );
                 paint(
                     &mut screen,
@@ -8489,6 +8632,14 @@ impl Ui {
                         true,
                     );
                 }
+                register_hover_label(
+                    &mut hover_labels,
+                    card_x + 5,
+                    card_y,
+                    card_width.saturating_sub(6),
+                    &current,
+                    card_width.saturating_sub(6),
+                );
                 paint(
                     &mut screen,
                     card_y + 1,
@@ -8501,6 +8652,14 @@ impl Ui {
                     card_width.saturating_sub(6),
                     Surface::Main,
                     true,
+                );
+                register_hover_label(
+                    &mut hover_labels,
+                    card_x + 5,
+                    card_y + 1,
+                    card_width.saturating_sub(6),
+                    &subtitle,
+                    card_width.saturating_sub(6),
                 );
                 paint(
                     &mut screen,
@@ -9067,7 +9226,17 @@ impl Ui {
             }
         }
         if let Some(chooser) = &mut self.folder_chooser {
-            draw_folder_chooser(&mut screen, chooser, size, marquee_tick);
+            hover_labels.label = None;
+            draw_folder_chooser(&mut screen, &mut hover_labels, chooser, size, marquee_tick);
+        }
+        if self.modal.is_none()
+            && !self.menu_open
+            && self.prompt.is_none()
+            && !self.exit_confirm_open
+            && let Some(pointer) = hover_labels.pointer
+            && let Some(label) = hover_labels.label.as_ref()
+        {
+            draw_hover_tooltip(&mut screen, size, pointer, &label.text);
         }
         if self.exit_confirm_open {
             screen.push_str("\x1b[?25l");
@@ -10314,29 +10483,133 @@ fn saved_list_label(name: &str, favorite: bool, count: usize, width: usize) -> S
     )
 }
 
-fn marquee_window(value: &str, width: usize, tick: usize) -> String {
-    if width == 0 {
-        return String::new();
+fn marquee_window(value: &str, width: usize, _tick: usize) -> String {
+    truncate(value, width)
+}
+
+fn register_hover_label(
+    labels: &mut HoverLabels,
+    x: usize,
+    y: usize,
+    width: usize,
+    text: &str,
+    available: usize,
+) {
+    if let Some(pointer) = labels.pointer
+        && pointer.1 == y
+        && pointer.0 >= x
+        && pointer.0 < x + width
+        && available > 0
+        && cell_width(text) > available
+    {
+        labels.label = Some(HoverLabel {
+            text: text.to_owned(),
+        });
     }
-    let total = cell_width(value);
-    if total <= width {
-        return truncate(value, width);
+}
+
+fn tooltip_lines(text: &str, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    for source in text.lines() {
+        let mut rest = source.trim();
+        while cell_width(rest) > width {
+            let mut fitting_end = 0;
+            let mut word_break = 0;
+            let mut used = 0;
+            for (byte, grapheme) in rest.grapheme_indices(true) {
+                let cells = cell_width(grapheme);
+                if used + cells > width {
+                    break;
+                }
+                used += cells;
+                fitting_end = byte + grapheme.len();
+                if grapheme.chars().all(char::is_whitespace) {
+                    word_break = byte;
+                }
+            }
+            let end = if word_break > 0 { word_break } else { fitting_end };
+            if end == 0 {
+                break;
+            }
+            lines.push(rest[..end].trim_end().to_owned());
+            rest = rest[end..].trim_start();
+        }
+        lines.push(rest.to_owned());
     }
-    let travel = total - width;
-    const DWELL: usize = 6;
-    let period = 2 * (travel + DWELL);
-    let phase = tick % period;
-    let offset = if phase < DWELL {
-        0
-    } else if phase < DWELL + travel {
-        phase - DWELL + 1
-    } else if phase < 2 * DWELL + travel {
-        travel
+    lines
+}
+
+fn draw_hover_tooltip(
+    screen: &mut String,
+    size: (usize, usize),
+    pointer: (usize, usize),
+    text: &str,
+) {
+    let content_width = size.0.saturating_sub(6).min(72);
+    if content_width == 0 {
+        return;
+    }
+    let mut lines = tooltip_lines(text, content_width);
+    let max_lines = size.1.saturating_sub(4);
+    if lines.len() > max_lines {
+        lines.truncate(max_lines);
+        if let Some(last) = lines.last_mut() {
+            *last = truncate(&format!("{last}…"), content_width).trim_end().to_owned();
+        }
+    }
+    if lines.is_empty() {
+        return;
+    }
+    let panel_width = lines.iter().map(|line| cell_width(line)).max().unwrap_or(0) + 4;
+    let panel_height = lines.len() + 2;
+    let x = if pointer.0 + panel_width + 1 < size.0 {
+        pointer.0 + 1
     } else {
-        travel - (phase - (2 * DWELL + travel) + 1)
+        size.0.saturating_sub(panel_width + 1)
     };
-    let visible = cell_slice(value, offset, width);
-    format!("{visible}{}", " ".repeat(width.saturating_sub(cell_width(&visible))))
+    let y = if pointer.1 + panel_height + 1 < size.1 {
+        pointer.1 + 1
+    } else {
+        pointer.1.saturating_sub(panel_height)
+    };
+    paint(
+        screen,
+        y + 1,
+        x + 1,
+        &format!("╭{}╮", "─".repeat(panel_width - 2)),
+        panel_width,
+        Surface::MenuTitle,
+        false,
+    );
+    for (index, line) in lines.iter().enumerate() {
+        paint(
+            screen,
+            y + index + 2,
+            x + 1,
+            &format!("│ {line}"),
+            panel_width - 1,
+            Surface::MenuBody,
+            false,
+        );
+        paint(
+            screen,
+            y + index + 2,
+            x + panel_width,
+            "│",
+            1,
+            Surface::MenuBody,
+            false,
+        );
+    }
+    paint(
+        screen,
+        y + panel_height,
+        x + 1,
+        &format!("╰{}╯", "─".repeat(panel_width - 2)),
+        panel_width,
+        Surface::MenuBody,
+        false,
+    );
 }
 
 fn marquee_prefixed(prefix: &str, value: &str, width: usize, tick: usize) -> String {
@@ -10386,6 +10659,7 @@ fn cell_slice(text: &str, skip: usize, width: usize) -> String {
 
 fn paint_playlist_cell(
     out: &mut String,
+    hover_labels: &mut HoverLabels,
     row: usize,
     viewport_x: usize,
     viewport_width: usize,
@@ -10406,7 +10680,21 @@ fn paint_playlist_cell(
         .saturating_sub(clipped_left)
         .min(viewport_width - visible_left);
     let content_width = column_width.saturating_sub(1);
-    let cell = if cell_width(value) > content_width {
+    let clipped = cell_width(value) > content_width;
+    let tooltip_available = if clipped_left > 0 {
+        cell_width(value).saturating_sub(1)
+    } else {
+        content_width.min(width)
+    };
+    register_hover_label(
+        hover_labels,
+        viewport_x + visible_left - 1,
+        row - 1,
+        width,
+        value,
+        tooltip_available,
+    );
+    let cell = if clipped {
         marquee_window(value, content_width, marquee_tick)
     } else {
         value.to_owned()
@@ -10756,6 +11044,7 @@ fn draw_visualizer_modal(
 
 fn draw_folder_chooser(
     screen: &mut String,
+    hover_labels: &mut HoverLabels,
     chooser: &mut FolderChooser,
     size: (usize, usize),
     marquee_tick: usize,
@@ -10824,6 +11113,14 @@ fn draw_folder_chooser(
     );
     let field_width = width.saturating_sub(4);
     let (shown, cursor) = input_window(&chooser.location, chooser.cursor, field_width);
+    register_hover_label(
+        hover_labels,
+        x + 2,
+        y + 2,
+        field_width,
+        &chooser.location,
+        field_width,
+    );
     paint(
         screen,
         y + 3,
@@ -10883,6 +11180,15 @@ fn draw_folder_chooser(
         let prefix = format!(
             "{} {icon} ",
             if index == chooser.selected { "▸" } else { " " }
+        );
+        let name_width = field_width.saturating_sub(cell_width(&prefix));
+        register_hover_label(
+            hover_labels,
+            x + 2 + cell_width(&prefix),
+            geometry.list_top() + row,
+            name_width,
+            &entry.name,
+            name_width,
         );
         let label = marquee_prefixed(&prefix, &entry.name, field_width, marquee_tick);
         paint(
@@ -11213,7 +11519,7 @@ impl Terminal {
             output,
             stderr_backup,
         };
-        terminal.write("\x1b[?1049h\x1b[2J\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?25l")?;
+        terminal.write("\x1b[?1049h\x1b[2J\x1b[?1000h\x1b[?1003h\x1b[?1006h\x1b[?25l")?;
         Ok(terminal)
     }
 
@@ -11313,7 +11619,7 @@ impl Terminal {
 impl Drop for Terminal {
     fn drop(&mut self) {
         use std::os::fd::AsRawFd;
-        let _ = self.write("\x1b[?25h\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?1049l");
+        let _ = self.write("\x1b[?25h\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?1049l");
         unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &self.original) };
         unsafe {
             libc::fflush(std::ptr::null_mut());
@@ -11380,6 +11686,14 @@ pub fn run() -> Result<(), String> {
             escape_pending = None;
         }
         while let Some(event) = parse_event(&mut input) {
+            let passive_hover_motion = matches!(
+                &event,
+                Event::Mouse {
+                    button,
+                    release: false,
+                    ..
+                } if *button & 32 != 0 && *button & 3 == 3
+            );
             match event {
                 Event::Key(key) => {
                     if !ui.key(key, size) {
@@ -11395,6 +11709,9 @@ pub fn run() -> Result<(), String> {
             }
             if ui.exit_requested {
                 return ui.finish_session();
+            }
+            if passive_hover_motion {
+                continue;
             }
             let frame = ui.draw(size);
             if frame != last_frame {
