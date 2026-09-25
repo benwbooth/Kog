@@ -2299,7 +2299,10 @@ fn App() -> impl IntoView {
                             // archive container matches as a folder too, but
                             // its members were never walked, so its bucket
                             // stays missing and expanding fetches the listing.
-                            let kind = if item["is_dir"].as_bool().unwrap_or(false) {
+                            let is_dir = item["is_dir"].as_bool().unwrap_or(false);
+                            let member = item["entry"].as_str().unwrap_or_default();
+                            let member_dir = is_dir && !member.is_empty();
+                            let kind = if is_dir {
                                 "dir".to_owned()
                             } else {
                                 item["kind"]
@@ -2307,12 +2310,19 @@ fn App() -> impl IntoView {
                                     .unwrap_or("local")
                                     .to_owned()
                             };
-                            let member = item["entry"].as_str().unwrap_or_default();
                             rows.push(Entry {
                                 name,
-                                path,
+                                path: if member_dir {
+                                    format!("{}/{}", path.trim_end_matches('/'), member)
+                                } else {
+                                    path
+                                },
                                 kind,
-                                entry: member.to_owned(),
+                                entry: if member_dir {
+                                    String::new()
+                                } else {
+                                    member.to_owned()
+                                },
                                 fragment: None,
                                 location: member.to_owned(),
                             });

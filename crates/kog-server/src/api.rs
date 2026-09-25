@@ -1271,6 +1271,7 @@ pub(crate) struct SearchMatch {
     /// `dir` for folders and archive containers, `local` for files,
     /// `archive` for members inside an archive.
     kind: &'static str,
+    is_dir: bool,
 }
 
 /// The shared state of the one active search walk, plus the progress
@@ -1310,6 +1311,7 @@ pub struct LocalSearchHit {
     pub path: String,
     pub entry: String,
     pub kind: &'static str,
+    pub is_dir: bool,
 }
 
 impl LocalSearch {
@@ -1343,6 +1345,7 @@ impl LocalSearch {
                 path: hit.path.clone(),
                 entry: hit.entry.clone(),
                 kind: hit.kind,
+                is_dir: hit.is_dir,
             })
             .collect();
         let done = self.shared.done.load(Ordering::Relaxed);
@@ -1402,7 +1405,7 @@ fn search_snapshot(state: &AppState, generation: u64, offset: usize) -> Response
                     "path": m.path,
                     "entry": m.entry,
                     "kind": m.kind,
-                    "is_dir": m.kind == "dir",
+                    "is_dir": m.is_dir,
                 })
             })
             .collect::<Vec<_>>(),
@@ -1507,6 +1510,7 @@ fn walk_library_for_search(
                         path: path.to_string_lossy().into_owned(),
                         entry: String::new(),
                         kind: "dir",
+                        is_dir: true,
                     });
                     publish(&shared, &mut matches, &mut limited, &mut published);
                     if limited {
@@ -1539,6 +1543,7 @@ fn walk_library_for_search(
                     path: path.to_string_lossy().into_owned(),
                     entry: String::new(),
                     kind: if container { "dir" } else { "local" },
+                    is_dir: container,
                 });
                 publish(&shared, &mut matches, &mut limited, &mut published);
                 if limited {
@@ -1609,6 +1614,7 @@ fn walk_library_for_search(
                     path: archive.to_string_lossy().into_owned(),
                     entry: member.trim_end_matches('/').to_owned(),
                     kind: "archive",
+                    is_dir: container,
                 });
                 publish(&shared, &mut matches, &mut limited, &mut published);
                 if limited {

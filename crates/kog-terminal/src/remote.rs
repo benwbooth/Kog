@@ -53,6 +53,11 @@ pub struct RemoteFile {
     pub fragment: Option<String>,
 }
 
+pub struct RemoteSearchHit {
+    pub file: RemoteFile,
+    pub is_dir: bool,
+}
+
 fn local_kind() -> String {
     "local".to_owned()
 }
@@ -227,7 +232,8 @@ impl RemoteSettings {
         &self,
         query: &str,
         cancelled: impl Fn() -> bool,
-    ) -> Result<Vec<RemoteFile>, String> {
+    ) -> Result<(String, Vec<RemoteSearchHit>), String> {
+        let root = self.browse(None)?.path;
         let mut url = self.endpoint("/api/library/search")?;
         url.query_pairs_mut().append_pair("q", query);
         let mut page: serde_json::Value = self.get_json(url)?;
@@ -242,10 +248,13 @@ impl RemoteSettings {
             for item in page["results"].as_array().into_iter().flatten() {
                 let file: RemoteFile = serde_json::from_value(item.clone())
                     .map_err(|error| format!("Invalid server search result: {error}"))?;
-                results.push(file);
+                results.push(RemoteSearchHit {
+                    file,
+                    is_dir: item["is_dir"].as_bool().unwrap_or(false),
+                });
             }
             if page["done"].as_bool().unwrap_or(false) || results.len() >= 2_000 {
-                return Ok(results);
+                return Ok((root, results));
             }
             std::thread::sleep(Duration::from_millis(120));
             let mut url = self.endpoint("/api/library/search/more")?;

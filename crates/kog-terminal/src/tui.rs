@@ -29,7 +29,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::columns::Columns;
 use crate::cover_preview::{self, COVER_HEIGHT, COVER_WIDTH, CoverPreview};
-use crate::remote::{RemoteFile, RemoteListing, RemoteSettings};
+use crate::remote::{RemoteFile, RemoteListing, RemoteSearchHit, RemoteSettings};
 use crate::rom_import::{RomKind, import_rom_archive};
 use crate::server_control::RunningServer;
 use crate::tag_editor::{parse_edits, snapshot_json, write_tags};
@@ -198,6 +198,11 @@ enum Item {
 struct TreeRow {
     item: Item,
     depth: usize,
+}
+
+struct SearchTreeMatch {
+    item: Item,
+    hierarchy: PathBuf,
 }
 
 fn tree_item_key(item: &Item) -> String {
@@ -792,7 +797,7 @@ enum RemoteResponse {
         RemoteSettings,
         Result<Vec<RemoteFile>, String>,
     ),
-    Search(u64, u64, RemoteSettings, Result<Vec<RemoteFile>, String>),
+    Search(u64, u64, RemoteSettings, Result<(String, Vec<RemoteSearchHit>), String>),
     AddTracks(
         u64,
         u64,
@@ -855,6 +860,11 @@ struct Ui {
     search_due: Option<Instant>,
     search: Option<LocalSearch>,
     search_query: String,
+    search_root: Option<PathBuf>,
+    search_seen: usize,
+    search_hits: Vec<SearchTreeMatch>,
+    search_browsed_children: HashMap<PathBuf, Vec<Item>>,
+    search_user_collapsed: HashSet<PathBuf>,
     playlist_query: String,
     metadata: HashMap<String, Option<TrackMetadata>>,
     metadata_pending: HashSet<String>,
@@ -1246,6 +1256,11 @@ impl Ui {
             search_due: None,
             search: None,
             search_query: String::new(),
+            search_root: None,
+            search_seen: 0,
+            search_hits: Vec::new(),
+            search_browsed_children: HashMap::new(),
+            search_user_collapsed: HashSet::new(),
             playlist_query: String::new(),
             metadata: HashMap::new(),
             metadata_pending: HashSet::new(),
@@ -3238,6 +3253,7 @@ impl Ui {
     fn browse(&mut self, path: Option<PathBuf>) {
         self.search = None;
         self.search_query.clear();
+        self.clear_search_tree();
         let result = self.read_directory(path.as_deref());
         match result {
             Ok((location, items)) => {
@@ -3330,6 +3346,7 @@ impl Ui {
                             self.browse_path = None;
                             self.search = None;
                             self.search_query.clear();
+                            self.clear_search_tree();
                             self.root_items = items;
                             self.expanded.clear();
                             self.children.clear();
@@ -3349,9 +3366,15 @@ impl Ui {
                     if generation != self.remote_generation || !self.remote_active {
                         continue;
                     }
-                    self.remote_pending.remove(&path);
+                    if !self.remote_pending.remove(&path) {
+                        continue;
+                    }
                     match result.and_then(|listing| remote_items(&settings, listing)) {
                         Ok(items) => {
+                            if self.search_root.is_some() {
+                                self.search_browsed_children
+                                    .insert(path.clone(), items.clone());
+                            }
                             self.children.insert(path.clone(), items);
                             self.expanded.insert(path);
                             self.rebuild_tree();
@@ -3380,29 +3403,40 @@ impl Ui {
                     {
                         continue;
                     }
-                    match result.and_then(|files| {
-                        files
+                    match result.and_then(|(root, files)| {
+                        let count = files.len();
+                        let hits = files
                             .into_iter()
-                            .map(|file| {
-                                if file.kind == "dir" {
-                                    Ok(Item::Directory(file.name, PathBuf::from(file.path)))
+                            .map(|hit| {
+                                let file = hit.file;
+                                let hierarchy =
+                                    if file.kind == "archive" && !file.entry.is_empty() {
+                                        PathBuf::from(&file.path).join(&file.entry)
+                                    } else {
+                                        PathBuf::from(&file.path)
+                                    };
+                                let item = if hit.is_dir || file.kind == "dir" {
+                                    Item::Directory(file.name, hierarchy.clone())
                                 } else {
-                                    remote_track(&settings, file).map(Item::Track)
-                                }
+                                    Item::Track(remote_track(&settings, file)?)
+                                };
+                                Ok(SearchTreeMatch { item, hierarchy })
                             })
-                            .collect::<Result<Vec<_>, String>>()
+                            .collect::<Result<Vec<_>, String>>()?;
+                        Ok((root, count, hits))
                     }) {
-                        Ok(items) => {
-                            self.root_items = items;
+                        Ok((root, count, hits)) => {
+                            self.search_root = Some(PathBuf::from(root));
+                            self.search_seen = count;
+                            self.search_hits = hits;
                             self.expanded.clear();
-                            self.children.clear();
                             self.selected_tree.clear();
                             self.tree_anchor = None;
-                            self.rebuild_tree();
+                            self.rebuild_search_tree();
                             self.search_done = true;
                             self.status = format!(
                                 "{} remote matches for {}",
-                                self.items.len(),
+                                count,
                                 self.search_query
                             );
                         }
@@ -3496,6 +3530,118 @@ impl Ui {
         });
     }
 
+    fn clear_search_tree(&mut self) {
+        self.search_root = None;
+        self.search_seen = 0;
+        self.search_hits.clear();
+        self.search_browsed_children.clear();
+        self.search_user_collapsed.clear();
+    }
+
+    fn rebuild_search_tree(&mut self) {
+        let Some(root) = self.search_root.as_ref() else {
+            return;
+        };
+        let selected_key = self
+            .items
+            .get(self.selected[1])
+            .map(|row| tree_item_key(&row.item));
+        let matched_directories: HashSet<_> = self
+            .search_hits
+            .iter()
+            .filter_map(|hit| match &hit.item {
+                Item::Directory(..) => Some(hit.hierarchy.clone()),
+                Item::Track(_) => None,
+            })
+            .collect();
+        let mut buckets: HashMap<PathBuf, Vec<Item>> = HashMap::new();
+        let mut seen: HashMap<PathBuf, HashSet<String>> = HashMap::new();
+        let push = |parent: PathBuf,
+                    item: Item,
+                    buckets: &mut HashMap<PathBuf, Vec<Item>>,
+                    seen: &mut HashMap<PathBuf, HashSet<String>>| {
+            if seen
+                .entry(parent.clone())
+                .or_default()
+                .insert(tree_item_key(&item))
+            {
+                buckets.entry(parent).or_default().push(item);
+            }
+        };
+        for hit in &self.search_hits {
+            if !hit.hierarchy.starts_with(root) || hit.hierarchy.as_path() == root.as_path() {
+                continue;
+            }
+            let mut ancestors = Vec::new();
+            let mut parent = hit.hierarchy.parent();
+            while let Some(path) = parent {
+                if path == root.as_path() {
+                    break;
+                }
+                if !path.starts_with(root) {
+                    ancestors.clear();
+                    break;
+                }
+                ancestors.push(path.to_path_buf());
+                parent = path.parent();
+            }
+            ancestors.reverse();
+            let mut below_match = false;
+            for ancestor in ancestors {
+                let name = ancestor
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                push(
+                    ancestor.parent().unwrap_or(root.as_path()).to_path_buf(),
+                    Item::Directory(name, ancestor.clone()),
+                    &mut buckets,
+                    &mut seen,
+                );
+                if !below_match {
+                    if matched_directories.contains(&ancestor) {
+                        below_match = true;
+                    } else if !self.search_user_collapsed.contains(&ancestor) {
+                        self.expanded.insert(ancestor);
+                    }
+                }
+            }
+            push(
+                hit.hierarchy.parent().unwrap_or(root.as_path()).to_path_buf(),
+                hit.item.clone(),
+                &mut buckets,
+                &mut seen,
+            );
+        }
+        for (path, children) in &self.search_browsed_children {
+            buckets.insert(path.clone(), children.clone());
+        }
+        for bucket in buckets.values_mut() {
+            bucket.sort_by(|left, right| {
+                let left_name = match left {
+                    Item::Directory(name, _) => name,
+                    Item::Track(track) => &track.name,
+                };
+                let right_name = match right {
+                    Item::Directory(name, _) => name,
+                    Item::Track(track) => &track.name,
+                };
+                left_name.to_lowercase().cmp(&right_name.to_lowercase())
+            });
+        }
+        self.root_items = buckets.remove(root).unwrap_or_default();
+        self.children = buckets;
+        self.rebuild_tree();
+        if let Some(key) = selected_key
+            && let Some(index) = self
+                .items
+                .iter()
+                .position(|row| tree_item_key(&row.item) == key)
+        {
+            self.selected[1] = index;
+        }
+    }
+
     fn select_tree_with_modifiers(&mut self, index: usize, shift: bool, ctrl: bool) {
         let Some(row) = self.items.get(index) else {
             return;
@@ -3543,6 +3689,55 @@ impl Ui {
 
     fn toggle_directory(&mut self, path: PathBuf) {
         if self.expanded.remove(&path) {
+            if self.search_root.is_some() {
+                self.search_user_collapsed.insert(path.clone());
+            }
+            self.rebuild_tree();
+            return;
+        }
+        if self.search_root.is_some() {
+            self.search_user_collapsed.remove(&path);
+            let browseable = self.search_hits.iter().any(|hit| {
+                matches!(&hit.item, Item::Directory(..)) && path.starts_with(&hit.hierarchy)
+            });
+            if browseable && !self.search_browsed_children.contains_key(&path) {
+                if self.remote_active {
+                    if self.remote_pending.insert(path.clone()) {
+                        let Some(settings) = self.remote_connection.clone() else {
+                            self.remote_pending.remove(&path);
+                            self.status = "Connect to a server first".to_owned();
+                            return;
+                        };
+                        if self
+                            .remote_requests
+                            .send(RemoteCommand::Expand(
+                                self.remote_generation,
+                                settings,
+                                path.clone(),
+                            ))
+                            .is_ok()
+                        {
+                            self.status = format!("Browsing {}…", path.display());
+                        } else {
+                            self.remote_pending.remove(&path);
+                            self.status = "Remote browser worker is unavailable".to_owned();
+                        }
+                    }
+                    return;
+                }
+                match self.read_directory(Some(&path)) {
+                    Ok((_, children)) => {
+                        self.search_browsed_children
+                            .insert(path.clone(), children.clone());
+                        self.children.insert(path.clone(), children);
+                    }
+                    Err(error) => {
+                        self.status = error;
+                        return;
+                    }
+                }
+            }
+            self.expanded.insert(path);
             self.rebuild_tree();
             return;
         }
@@ -3585,10 +3780,6 @@ impl Ui {
     }
 
     fn up_directory(&mut self) {
-        if self.search.is_some() {
-            self.browse(None);
-            return;
-        }
         let selected = self.selected[1];
         if let Some(TreeRow {
             item: Item::Directory(_, path),
@@ -4737,7 +4928,12 @@ impl Ui {
             };
             self.search_query = value.to_owned();
             self.search_done = false;
+            self.clear_search_tree();
+            self.remote_pending.clear();
             self.items.clear();
+            self.root_items.clear();
+            self.children.clear();
+            self.expanded.clear();
             self.selected_tree.clear();
             self.tree_anchor = None;
             self.selected[1] = 0;
@@ -4771,7 +4967,12 @@ impl Ui {
                 self.search = Some(search);
                 self.search_query = value.to_owned();
                 self.search_done = false;
+                self.clear_search_tree();
+                self.search_root = self.library.root().and_then(|root| root.canonicalize().ok());
                 self.items.clear();
+                self.root_items.clear();
+                self.children.clear();
+                self.expanded.clear();
                 self.selected_tree.clear();
                 self.tree_anchor = None;
                 self.selected[1] = 0;
@@ -5434,35 +5635,40 @@ impl Ui {
         if self.search_done {
             return;
         }
-        let (hits, done) = search.results_since(self.items.len());
+        let (hits, done) = search.results_since(self.search_seen);
+        self.search_seen += hits.len();
+        let changed = !hits.is_empty();
         for hit in hits {
-            if hit.kind == "dir" {
-                self.items.push(TreeRow {
-                    item: Item::Directory(hit.name, PathBuf::from(hit.path)),
-                    depth: 0,
-                });
+            let hierarchy = if hit.kind == "archive" && !hit.entry.is_empty() {
+                PathBuf::from(&hit.path).join(&hit.entry)
             } else {
-                self.items.push(TreeRow {
-                    item: Item::Track(Track {
-                        name: hit.name,
-                        entry: StoredEntry {
-                            kind: hit.kind.to_owned(),
-                            path: hit.path,
-                            entry: hit.entry,
-                            fragment: None,
-                        },
-                    }),
-                    depth: 0,
-                });
-            }
+                PathBuf::from(&hit.path)
+            };
+            let item = if hit.is_dir {
+                Item::Directory(hit.name, hierarchy.clone())
+            } else {
+                Item::Track(Track {
+                    name: hit.name,
+                    entry: StoredEntry {
+                        kind: hit.kind.to_owned(),
+                        path: hit.path,
+                        entry: hit.entry,
+                        fragment: None,
+                    },
+                })
+            };
+            self.search_hits.push(SearchTreeMatch { item, hierarchy });
+        }
+        if changed {
+            self.rebuild_search_tree();
         }
         if done {
             self.search_done = true;
-            self.status = format!("{} matches for {}", self.items.len(), self.search_query);
-        } else if !self.items.is_empty() {
+            self.status = format!("{} matches for {}", self.search_seen, self.search_query);
+        } else if self.search_seen > 0 {
             self.status = format!(
                 "{} matches so far for {}…",
-                self.items.len(),
+                self.search_seen,
                 self.search_query
             );
         }
@@ -7065,7 +7271,13 @@ impl Ui {
                     if ranged {
                         self.status = format!("Selected {} tree items", self.selected_tree.len());
                     }
-                    if !modified && x < 4 {
+                    if !modified
+                        && x
+                            <= self.items[index]
+                                .depth
+                                .saturating_mul(2)
+                                .saturating_add(2)
+                    {
                         if let Some(TreeRow {
                             item: Item::Directory(_, path),
                             ..
@@ -7715,26 +7927,29 @@ impl Ui {
                 let label = self
                     .items
                     .get(index)
-                    .map(|row| match &row.item {
-                        Item::Directory(name, path) => marquee_prefixed(
-                            &format!(
-                                " {} {FOLDER_ICON} ",
-                                if self.expanded.contains(path) {
-                                    "▾"
-                                } else {
-                                    "▸"
-                                }
+                    .map(|row| {
+                        let indent = "  ".repeat(row.depth.min(12));
+                        match &row.item {
+                            Item::Directory(name, path) => marquee_prefixed(
+                                &format!(
+                                    "{indent}{} {FOLDER_ICON} ",
+                                    if self.expanded.contains(path) {
+                                        "▾"
+                                    } else {
+                                        "▸"
+                                    }
+                                ),
+                                name,
+                                tree_width,
+                                marquee_tick,
                             ),
-                            name,
-                            tree_width,
-                            marquee_tick,
-                        ),
-                        Item::Track(track) => marquee_prefixed(
-                            &format!("   {} ", glyph(&track.entry)),
-                            &track.name,
-                            tree_width,
-                            marquee_tick,
-                        ),
+                            Item::Track(track) => marquee_prefixed(
+                                &format!("{indent}  {} ", glyph(&track.entry)),
+                                &track.name,
+                                tree_width,
+                                marquee_tick,
+                            ),
+                        }
                     })
                     .unwrap_or_default();
                 let selected = self
