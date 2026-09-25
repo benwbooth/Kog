@@ -63,6 +63,7 @@ mod icons {
     pub const FOLDER_OPEN: &str = include_str!("../../../qml/icons/folder-open.svg");
     pub const VIEW_LIST_TREE: &str = include_str!("../../../qml/icons/view-list-tree.svg");
     pub const CLEAR_LIST: &str = include_str!("../../../qml/icons/edit-clear-list.svg");
+    pub const QUEUE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" d="M3 5h13v2H3zm0 6h13v2H3zm0 6h9v2H3zm13-3 6 4-6 4z"/></svg>"#;
     /// Per-format tree art, the same files the Qt tree shows
     /// (qml/icons/kog-format-*.svg), inlined so the stylesheet can tint them
     /// with the row text color. Only the dark-theme variant is inlined: the
@@ -4215,7 +4216,7 @@ fn App() -> impl IntoView {
     };
 
     // Album art for the transport thumbnail: the current track's embedded
-    // or sibling cover through the server, falling back to the logo when a
+    // or sibling cover through the server, falling back to a neutral cover when a
     // track has none (the img swaps itself back on a load error, and the
     // src changes with the track so the fallback does not stick).
     let art_src = move || {
@@ -4227,7 +4228,7 @@ fn App() -> impl IntoView {
                 url_encode(&entry.path),
                 url_encode(&token.get()),
             ),
-            _ => "/icons/kog.svg".to_owned(),
+            _ => "/icons/cover-placeholder.svg".to_owned(),
         }
     };
 
@@ -5364,9 +5365,6 @@ fn App() -> impl IntoView {
     });
 
     // ------------------------------------------------------- shell actions
-    // The application (`☰`) menu's playlist/queue actions. The web pane is the
-    // queue, so Clear Playlist and Clear Queue both empty it: the desktop's
-    // separate up-next queue has no web counterpart.
     let add_url = move || {
         let url = add_url_text.get_untracked().trim().to_owned();
         if url.is_empty() {
@@ -5392,67 +5390,7 @@ fn App() -> impl IntoView {
         set_menu_open.set(false);
     };
 
-    // Save the current pane as a new server playlist, then append its entries,
-    // the same two calls the desktop makes.
-    let save_playlist_as = {
-        let load_playlists = load_playlists.clone();
-        move || {
-            let entries = queue.get_untracked();
-            if entries.is_empty() {
-                set_message.set("There is nothing to save".to_owned());
-                set_menu_open.set(false);
-                return;
-            }
-            let Some(window) = web_sys::window() else {
-                return;
-            };
-            let Ok(Some(name)) = window.prompt_with_message("Save playlist as") else {
-                return;
-            };
-            let name = name.trim().to_owned();
-            if name.is_empty() {
-                return;
-            }
-            set_menu_open.set(false);
-            let root = base();
-            let header = auth().header();
-            let load_playlists = load_playlists.clone();
-            leptos::task::spawn_local(async move {
-                let body = serde_json::json!({ "name": name.clone() });
-                let id = match post_json(format!("{root}/api/playlists"), header.clone(), body).await
-                {
-                    Ok(value) => value["id"].as_i64(),
-                    Err(error) => {
-                        set_message.set(error);
-                        return;
-                    }
-                };
-                let Some(id) = id else {
-                    return;
-                };
-                let body = serde_json::json!({
-                    "entries": entries
-                        .iter()
-                        .map(|entry| serde_json::json!({
-                            "kind": entry.kind,
-                            "path": entry.path,
-                            "entry": entry.entry,
-                            "fragment": entry.fragment.clone().unwrap_or_default(),
-                        }))
-                        .collect::<Vec<_>>(),
-                });
-                match post_json(format!("{root}/api/playlists/{id}/entries"), header, body).await {
-                    Ok(_) => {
-                        set_list_name.set(name);
-                        load_playlists();
-                    }
-                    Err(error) => set_message.set(error),
-                }
-            });
-        }
-    };
-
-    // Clear Playlist / Clear Queue: the web pane is the queue, so both empty it.
+    // Clear the web queue and reset its playback state.
     let clear_pane = move || {
         set_queue.set(Vec::new());
         set_current.set(0);
@@ -5980,6 +5918,42 @@ fn App() -> impl IntoView {
                 .unwrap_or_else(|| "Ready to play".to_owned()),
         }
     };
+    // A phone player has very little room for a path. When tags are absent,
+    // show the containing folder as context; the full location remains in
+    // Track Details and the desktop subtitle.
+    let now_mobile_subtitle = move || {
+        let Some(entry) = current_entry() else {
+            return "Ready to play".to_owned();
+        };
+        let cache = metadata.get();
+        if !metadata_ready(&cache, &metadata_failed.get(), &entry) {
+            return String::new();
+        }
+        let meta = meta_for(&cache, &entry);
+        let artist = meta.as_ref().and_then(|row| row.artist.as_deref()).unwrap_or("");
+        let album = meta.as_ref().and_then(|row| row.album.as_deref()).unwrap_or("");
+        if !artist.trim().is_empty() && !album.trim().is_empty() {
+            return format!("{artist} · {album}");
+        }
+        if !artist.trim().is_empty() {
+            return artist.to_owned();
+        }
+        if !album.trim().is_empty() {
+            return album.to_owned();
+        }
+        let location = if entry.kind == "archive" && !entry.entry.is_empty() {
+            entry.entry.as_str()
+        } else {
+            entry.path.as_str()
+        };
+        std::path::Path::new(location)
+            .parent()
+            .and_then(|parent| parent.file_name())
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .unwrap_or("Unknown artist")
+            .to_owned()
+    };
     let repeat_badge = move || match repeat_mode.get() {
         Repeat::Off => "",
         Repeat::One => "1",
@@ -6065,6 +6039,13 @@ fn App() -> impl IntoView {
                     aria-label="Sort queue"
                     on:click=move |_| set_mobile_sort_open.set(true)
                 >"↕"</button>
+                <button
+                    class="flat icon-button mobile-create-playlist"
+                    type="button"
+                    title="Create a playlist"
+                    aria-label="Create a playlist"
+                    on:click=move |_| open_create_playlist_dialog()
+                >"+"</button>
                 <select
                     class="codec"
                     title="Stream format"
@@ -6082,8 +6063,10 @@ fn App() -> impl IntoView {
                 <button
                     class="flat server"
                     title=move || if connected.get() { "Connected" } else { "Not connected" }
+                    aria-label=move || if connected.get() { "Server settings, connected" } else { "Server settings, disconnected" }
                     on:click=move |_| set_settings_open.update(|open| *open = !*open)
                 >
+                    <span class="mobile-server-icon" aria-hidden="true" inner_html=icons::GEAR></span>
                     <span class=move || {
                         if connected.get() { "server-dot online" } else { "server-dot offline" }
                     }>{move || if connected.get() { "●" } else { "○" }}</span>
@@ -6387,7 +6370,7 @@ fn App() -> impl IntoView {
                                                         class:selected=move || {
                                                             tree_selected.get() == selected
                                                         }
-                                                        style=format!("padding-left: {indent}px")
+                                                        style=format!("--tree-indent: {indent}px")
                                                         title=row_tooltip
                                                         draggable="true"
                                                         on:click=move |ev: web_sys::MouseEvent| {
@@ -6455,7 +6438,7 @@ fn App() -> impl IntoView {
                                                         // stylesheet, like the drag grip.
                                                         <span
                                                             class="tree-add"
-                                                            title="Add to playlist"
+                                                            title=if touch_mode { "Add to queue" } else { "Add to playlist" }
                                                             on:click={
                                                                 let add_row_to_playlist =
                                                                     add_row_to_playlist.clone();
@@ -6574,7 +6557,7 @@ fn App() -> impl IntoView {
                                         view! {
                                         <button
                                             class="tree-row favorite-row"
-                                            title=if touch_mode { "Tap to open Favorites; use + to add it" } else { "Double-click to add to the playlist, or drag it there" }
+                                            title=if touch_mode { "Tap to open Favorites; use + to add it to the queue" } else { "Double-click to add to the playlist, or drag it there" }
                                             draggable="true"
                                             on:click=move |_| {
                                                 // Touch: a tap opens the list in
@@ -6606,8 +6589,25 @@ fn App() -> impl IntoView {
                                             <span class="favorite-star">"★"</span>
                                             <span class="label">"Favorites"</span>
                                             <span
+                                                class="mobile-playlist-more"
+                                                role="button"
+                                                tabindex="0"
+                                                aria-label="Favorites actions"
+                                                on:click=move |ev: web_sys::MouseEvent| {
+                                                    ev.stop_propagation();
+                                                    set_playlist_menu.set(Some((ev.client_x() as f64, ev.client_y() as f64, 0, "Favorites".to_owned())));
+                                                }
+                                                on:keydown=move |ev: web_sys::KeyboardEvent| {
+                                                    if ev.key() == "Enter" || ev.key() == " " {
+                                                        ev.prevent_default();
+                                                        ev.stop_propagation();
+                                                        set_playlist_menu.set(Some((0.0, 0.0, 0, "Favorites".to_owned())));
+                                                    }
+                                                }
+                                            >"⋯"</span>
+                                            <span
                                                 class="tree-add"
-                                                title="Add to playlist"
+                                                title=if touch_mode { "Add to queue" } else { "Add to playlist" }
                                                 on:click={
                                                     let append_playlist = append_playlist.clone();
                                                     move |ev: web_sys::MouseEvent| {
@@ -6632,11 +6632,14 @@ fn App() -> impl IntoView {
                                             let drag_id = id;
                                             let drag_label = label.clone();
                                             let menu_label = label.clone();
+                                            let more_click_label = label.clone();
+                                            let more_key_label = label.clone();
+                                            let more_aria_label = format!("Actions for {label}");
                                             let open_label = label.clone();
                                             view! {
                                                 <button
                                                     class="tree-row playlist-row"
-                                                    title=if touch_mode { "Tap to open playlist; use + to add it" } else { "Double-click to add to the playlist, or drag it there" }
+                                                    title=if touch_mode { "Tap to open playlist; use + to add it to the queue" } else { "Double-click to add to the playlist, or drag it there" }
                                                     draggable="true"
                                                     on:click=move |_| {
                                                         // Touch: a tap opens the
@@ -6676,6 +6679,7 @@ fn App() -> impl IntoView {
                                                     }
                                                 >
                                                     <span class="twisty"></span>
+                                                    <span class="playlist-entry-icon" aria-hidden="true" inner_html=icons::FMT_PLAYLIST></span>
                                                     <Show
                                                         when=move || renaming_playlist.get() == Some(drag_id)
                                                         fallback=move || view! {
@@ -6699,8 +6703,25 @@ fn App() -> impl IntoView {
                                                     </Show>
                                                     <span class="count">{count}</span>
                                                     <span
+                                                        class="mobile-playlist-more"
+                                                        role="button"
+                                                        tabindex="0"
+                                                        aria-label=more_aria_label
+                                                        on:click=move |ev: web_sys::MouseEvent| {
+                                                            ev.stop_propagation();
+                                                            set_playlist_menu.set(Some((ev.client_x() as f64, ev.client_y() as f64, drag_id, more_click_label.clone())));
+                                                        }
+                                                        on:keydown=move |ev: web_sys::KeyboardEvent| {
+                                                            if ev.key() == "Enter" || ev.key() == " " {
+                                                                ev.prevent_default();
+                                                                ev.stop_propagation();
+                                                                set_playlist_menu.set(Some((0.0, 0.0, drag_id, more_key_label.clone())));
+                                                            }
+                                                        }
+                                                    >"⋯"</span>
+                                                    <span
                                                         class="tree-add"
-                                                        title="Add to playlist"
+                                                        title=if touch_mode { "Add to queue" } else { "Add to playlist" }
                                                         on:click={
                                                             let append_playlist =
                                                                 append_playlist.clone();
@@ -7366,7 +7387,10 @@ fn App() -> impl IntoView {
                     type="button"
                     class:active=move || mobile_view.get() == MobileView::Library
                     aria-current=move || if mobile_view.get() == MobileView::Library { "page" } else { "false" }
-                    on:click=move |_| set_mobile_view.set(MobileView::Library)
+                    on:click=move |_| {
+                        set_files_expanded.set(true);
+                        set_mobile_view.set(MobileView::Library);
+                    }
                 >
                     <span class="mobile-tab-icon" inner_html=icons::VIEW_LIST_TREE></span>
                     <span>"Library"</span>
@@ -7377,16 +7401,19 @@ fn App() -> impl IntoView {
                     aria-current=move || if mobile_view.get() == MobileView::Queue { "page" } else { "false" }
                     on:click=move |_| set_mobile_view.set(MobileView::Queue)
                 >
-                    <span class="mobile-tab-icon" inner_html=icons::FMT_PLAYLIST></span>
+                    <span class="mobile-tab-icon" inner_html=icons::QUEUE></span>
                     <span>"Queue"</span>
                 </button>
                 <button
                     type="button"
                     class:active=move || mobile_view.get() == MobileView::Playlists
                     aria-current=move || if mobile_view.get() == MobileView::Playlists { "page" } else { "false" }
-                    on:click=move |_| set_mobile_view.set(MobileView::Playlists)
+                    on:click=move |_| {
+                        set_playlists_expanded.set(true);
+                        set_mobile_view.set(MobileView::Playlists);
+                    }
                 >
-                    <span class="mobile-tab-icon">"♫"</span>
+                    <span class="mobile-tab-icon" inner_html=icons::FMT_PLAYLIST></span>
                     <span>"Playlists"</span>
                 </button>
             </nav>
@@ -7421,7 +7448,9 @@ fn App() -> impl IntoView {
                                     .target()
                                     .and_then(|target| target.dyn_into::<web_sys::HtmlImageElement>().ok())
                                 {
-                                    let _ = img.set_src("/icons/kog.svg");
+                                    if !img.src().ends_with("/icons/cover-placeholder.svg") {
+                                        let _ = img.set_src("/icons/cover-placeholder.svg");
+                                    }
                                 }
                             }
                         />
@@ -7429,6 +7458,7 @@ fn App() -> impl IntoView {
                     <div class="now-text">
                         <div class="title">{move || now_title()}</div>
                         <div class="subtitle">{move || now_subtitle()}</div>
+                        <div class="mobile-now-subtitle">{move || now_mobile_subtitle()}</div>
                     </div>
                 </div>
 
@@ -7583,7 +7613,7 @@ fn App() -> impl IntoView {
                     <div class="volume-row">
                         <button
                             class="flat clear-list"
-                            title="Clear Playlist"
+                            title=if touch_mode { "Clear queue" } else { "Clear Playlist" }
                             disabled=move || queue.get().is_empty()
                             on:click=move |_| clear_pane()
                         >
@@ -7941,7 +7971,9 @@ fn App() -> impl IntoView {
                                 .target()
                                 .and_then(|target| target.dyn_into::<web_sys::HtmlImageElement>().ok())
                             {
-                                let _ = img.set_src("/icons/kog.svg");
+                                if !img.src().ends_with("/icons/cover-placeholder.svg") {
+                                    let _ = img.set_src("/icons/cover-placeholder.svg");
+                                }
                             }
                         }
                     />
@@ -8066,7 +8098,7 @@ fn App() -> impl IntoView {
                                     }
                                 }
                             >
-                                "Add to Playlist"
+                                {if touch_mode { "Add to Queue" } else { "Add to Playlist" }}
                             </button>
                             <Show
                                 when=move || {
@@ -8180,7 +8212,7 @@ fn App() -> impl IntoView {
                             clear_pane();
                         }
                     >
-                        "Clear Playlist"
+                        {if touch_mode { "Clear Queue" } else { "Clear Playlist" }}
                     </button>
                     <div class="menu-separator"></div>
                     <button
@@ -8257,7 +8289,7 @@ fn App() -> impl IntoView {
                             }
                         }
                     >
-                        "Add to Pane"
+                        {if touch_mode { "Add to Queue" } else { "Add to Pane" }}
                     </button>
                     <button
                         class="menu-item"
@@ -8281,7 +8313,7 @@ fn App() -> impl IntoView {
                             }
                         }
                     >
-                        "Replace Pane"
+                        {if touch_mode { "Replace Queue" } else { "Replace Pane" }}
                     </button>
                     <Show
                         when=move || {
@@ -8662,7 +8694,10 @@ fn App() -> impl IntoView {
                     <button
                         class="menu-item"
                         disabled=move || queue.get().is_empty()
-                        on:click=move |_| save_playlist_as()
+                        on:click=move |_| {
+                            set_menu_open.set(false);
+                            open_create_playlist_dialog();
+                        }
                     >
                         "Save Playlist…"
                     </button>
@@ -8679,15 +8714,23 @@ fn App() -> impl IntoView {
                         disabled=move || queue.get().is_empty()
                         on:click=move |_| clear_pane()
                     >
-                        "Clear Playlist"
+                        {if touch_mode { "Clear Queue" } else { "Clear Playlist" }}
                     </button>
                     <div class="menu-separator"></div>
                     <div class="menu-group">"View"</div>
-                    <button class="menu-item" on:click=move |_| toggle_sidebar()>
+                    <button class="menu-item" on:click=move |_| {
+                        if touch_mode {
+                            set_files_expanded.set(true);
+                            set_mobile_view.set(MobileView::Library);
+                        } else {
+                            toggle_sidebar();
+                        }
+                        set_menu_open.set(false);
+                    }>
                         <span class="menu-check">
                             {move || if sidebar_shown() { "✓" } else { "" }}
                         </span>
-                        "Show File Tree"
+                        {if touch_mode { "Library" } else { "Show File Tree" }}
                     </button>
                     <div class="menu-separator"></div>
                     <div class="menu-group">"Playback"</div>
@@ -8809,14 +8852,6 @@ fn App() -> impl IntoView {
                         }
                     >
                         "Reshuffle Radio"
-                    </button>
-                    <div class="menu-separator"></div>
-                    <button
-                        class="menu-item"
-                        disabled=move || queue.get().is_empty()
-                        on:click=move |_| clear_pane()
-                    >
-                        "Clear Queue"
                     </button>
                     <div class="menu-separator"></div>
                     <button class="menu-item" on:click=move |_| open_preferences()>

@@ -610,7 +610,7 @@ button:focus-visible {
   height: var(--row-height);
   border: 0;
   border-radius: 0;
-  padding: 0 8px 0 0;
+  padding: 0 8px 0 var(--tree-indent, 0px);
   text-align: left;
   white-space: nowrap;
   color: var(--text);
@@ -2169,6 +2169,14 @@ body.touch .track .index-cell {
   color: var(--highlight);
 }
 
+.mobile-create-playlist,
+.mobile-server-icon,
+.mobile-now-subtitle,
+.mobile-playlist-more,
+.playlist-entry-icon {
+  display: none;
+}
+
 /* The phone surface has its own navigation and queue presentation. */
 .mobile-title,
 .mobile-sort,
@@ -2938,5 +2946,443 @@ body.touch .track .index-cell {
 
   .transport .now-text .subtitle {
     display: none;
+  }
+}
+
+/* Phone presentation: keep the full desktop features, with persistent tabs,
+ * visible row actions, and a player whose controls can be hit with one thumb. */
+@media (max-width: 820px), (pointer: coarse) and (max-width: 1200px) {
+  body {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  button:focus-visible,
+  [role="button"]:focus-visible,
+  input:focus-visible {
+    outline: 2px solid var(--highlight);
+    outline-offset: -2px;
+  }
+
+  .toolbar {
+    background: var(--window);
+    border-bottom-color: color-mix(in srgb, var(--border) 65%, transparent);
+  }
+
+  .toolbar .mobile-title {
+    font-size: 22px;
+    line-height: 1;
+  }
+
+  .toolbar .mobile-create-playlist {
+    display: none;
+    font-size: 28px;
+    font-weight: 300;
+    line-height: 1;
+    color: var(--highlight);
+  }
+
+  .mobile-playlists .toolbar .mobile-create-playlist {
+    display: grid;
+  }
+
+  .toolbar .server {
+    position: relative;
+    color: var(--muted);
+  }
+
+  .toolbar .mobile-server-icon {
+    display: grid;
+    place-items: center;
+  }
+
+  .mobile-server-icon svg {
+    display: block;
+    width: 21px;
+    height: 21px;
+  }
+
+  .toolbar .server-dot {
+    position: absolute;
+    right: 5px;
+    top: 4px;
+    font-size: 11px;
+    line-height: 1;
+  }
+
+  .mobile-library .section.files .section-header,
+  .mobile-playlists .section.playlists .section-header {
+    display: none;
+  }
+
+  .section.files .section-body,
+  .section.playlists .section-body {
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+
+  .section.files .section-body::-webkit-scrollbar,
+  .section.playlists .section-body::-webkit-scrollbar,
+  .playlist .rows::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+  }
+
+  .tree-root {
+    height: 54px;
+    padding: 0 10px;
+    background: var(--surface);
+  }
+
+  .tree-root .root-path {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--muted);
+  }
+
+  .tree-search {
+    margin: 12px 14px;
+    background: var(--alternate);
+    border-color: transparent;
+  }
+
+  .tree-row {
+    min-height: 54px;
+    height: 54px;
+    padding-left: min(var(--tree-indent, 0px), 68px);
+    padding-right: 10px;
+    border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+    background: transparent;
+  }
+
+  .tree-row:nth-child(even) {
+    background: transparent;
+  }
+
+  .tree-row:active {
+    background: var(--alternate);
+  }
+
+  .tree-row.directory .label {
+    font-weight: 600;
+  }
+
+  .tree-row .twisty {
+    width: 20px;
+    font-size: 13px;
+  }
+
+  .tree-icon {
+    width: 20px;
+    height: 20px;
+    background-size: 18px 18px;
+  }
+
+  body.touch .tree-add {
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: 44px;
+    height: 44px;
+    margin-left: auto;
+    line-height: 1;
+    font-size: 22px;
+    font-weight: 300;
+    color: var(--highlight);
+    border: 0;
+  }
+
+  .mobile-playlists .section.playlists .section-body {
+    padding: 12px;
+  }
+
+  .mobile-playlists .tree-row.favorite-row,
+  .mobile-playlists .tree-row.playlist-row {
+    height: 60px;
+    min-height: 60px;
+    margin-bottom: 6px;
+    padding: 0 8px 0 14px;
+    border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+    border-radius: 12px;
+    background: var(--alternate);
+  }
+
+  .mobile-playlists .tree-row.favorite-row .twisty,
+  .mobile-playlists .tree-row.playlist-row .twisty {
+    display: none;
+  }
+
+  .mobile-playlists .tree-row .label {
+    flex: 1;
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  .mobile-playlists .tree-row .count {
+    margin-left: 0;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .mobile-playlists .playlist-entry-icon {
+    display: grid;
+    place-items: center;
+    width: 24px;
+    height: 24px;
+    flex: none;
+    color: var(--highlight);
+  }
+
+  .mobile-playlists .playlist-entry-icon svg {
+    display: block;
+    width: 21px;
+    height: 21px;
+    stroke: currentColor;
+  }
+
+  .mobile-playlists .favorite-star {
+    width: 24px;
+    font-size: 18px;
+  }
+
+  .mobile-playlists .mobile-playlist-more {
+    display: grid;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    flex: none;
+    border-radius: 10px;
+    color: var(--muted);
+    font-size: 24px;
+    line-height: 1;
+  }
+
+  .mobile-playlists .mobile-playlist-more:active {
+    background: var(--surface);
+  }
+
+  .mobile-tabs {
+    background: var(--window);
+  }
+
+  .mobile-tabs button.active {
+    background: transparent;
+  }
+
+  .mobile-tabs button:active {
+    background: var(--alternate);
+  }
+
+  .track {
+    min-height: 80px;
+    padding-right: 8px;
+    border-bottom-color: color-mix(in srgb, var(--border) 55%, transparent);
+  }
+
+  .track.current,
+  .track.current:hover {
+    color: var(--text);
+    background: color-mix(in srgb, var(--highlight) 12%, var(--base));
+    box-shadow: inset 3px 0 var(--highlight);
+  }
+
+  .track.current .mobile-track-icon,
+  .track.current .mobile-track-status,
+  .track.current .mobile-track-star {
+    color: var(--highlight);
+  }
+
+  .track.current .mobile-track-detail,
+  .track.current .mobile-track-duration,
+  .track.current .mobile-track-more {
+    color: var(--muted);
+  }
+
+  .mobile-track-title {
+    font-size: 15px;
+  }
+
+  .mobile-track-duration {
+    font-size: 12px;
+  }
+
+  .transport,
+  .transport-compact .transport {
+    width: calc(100% - 16px);
+    height: 58px;
+    margin: 4px 8px;
+    border: 1px solid color-mix(in srgb, var(--highlight) 30%, var(--border));
+    border-radius: 13px;
+    background: color-mix(in srgb, var(--highlight) 8%, var(--surface));
+    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.16);
+    padding: 4px 6px;
+  }
+
+  .transport .now .art {
+    width: 44px;
+    height: 44px;
+    border: 0;
+    border-radius: 8px;
+  }
+
+  .transport .now .art img {
+    width: 44px;
+    height: 44px;
+    object-fit: cover;
+  }
+
+  .transport .now-text .subtitle {
+    display: none;
+  }
+
+  .transport .now-text .mobile-now-subtitle {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--muted);
+    font-size: 11px;
+  }
+
+  .transport-compact .transport-expand {
+    background: transparent;
+  }
+
+  .app:not(.transport-compact) .transport {
+    width: 100%;
+    height: min(84dvh, 760px);
+    margin: 0;
+    padding: 48px 20px calc(24px + env(safe-area-inset-bottom, 0px));
+    gap: 18px;
+    border-radius: 24px 24px 0 0;
+    border: 0;
+    background: var(--surface);
+    box-shadow: 0 -18px 50px rgba(0, 0, 0, 0.38);
+  }
+
+  .app:not(.transport-compact) .transport::before,
+  .context-menu::before {
+    content: "";
+    position: absolute;
+    top: 9px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 38px;
+    height: 4px;
+    border-radius: 3px;
+    background: var(--faint);
+    opacity: 0.55;
+  }
+
+  .app:not(.transport-compact) .transport .art {
+    width: min(30dvh, 220px);
+    height: min(30dvh, 220px);
+  }
+
+  .app:not(.transport-compact) .transport .art img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
+  .app:not(.transport-compact) .controls {
+    grid-template-columns: repeat(12, minmax(0, 1fr));
+    grid-template-rows: 68px 44px;
+    gap: 10px 0;
+  }
+
+  .app:not(.transport-compact) .controls button:nth-child(2) { grid-area: 1 / 1 / 2 / 5; }
+  .app:not(.transport-compact) .controls .play { grid-area: 1 / 5 / 2 / 9; }
+  .app:not(.transport-compact) .controls button:nth-child(5) { grid-area: 1 / 9 / 2 / 13; }
+  .app:not(.transport-compact) .controls .shuffle { grid-area: 2 / 1 / 3 / 4; }
+  .app:not(.transport-compact) .controls .repeat { grid-area: 2 / 4 / 3 / 7; }
+  .app:not(.transport-compact) .controls .radio { grid-area: 2 / 7 / 3 / 10; }
+  .app:not(.transport-compact) .controls button:nth-child(4) { grid-area: 2 / 10 / 3 / 13; }
+
+  .app:not(.transport-compact) .controls .play {
+    width: 64px;
+    height: 64px;
+    border-radius: 18px;
+  }
+
+  .app:not(.transport-compact) .controls .play svg {
+    width: 26px;
+    height: 26px;
+  }
+
+  .app:not(.transport-compact) .seek-row .seek,
+  .app:not(.transport-compact) .volume {
+    min-height: 44px;
+  }
+
+  .volume-wrap:hover .volume-tip {
+    display: none;
+  }
+
+  .menu-scrim {
+    background: rgba(0, 0, 0, 0.52);
+  }
+
+  .context-menu,
+  .context-menu.app-menu {
+    left: 0 !important;
+    right: 0 !important;
+    bottom: 0 !important;
+    max-height: 82dvh;
+    padding: 24px 12px calc(14px + env(safe-area-inset-bottom, 0px));
+    border-radius: 22px 22px 0 0;
+    border-bottom: 0;
+  }
+
+  .context-menu .menu-item {
+    border-radius: 10px;
+  }
+}
+
+@media (max-width: 820px) and (max-height: 700px),
+       (pointer: coarse) and (max-width: 1200px) and (max-height: 700px) {
+  .app:not(.transport-compact) .transport {
+    height: 92dvh;
+    gap: 10px;
+    padding: 40px 16px calc(14px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .app:not(.transport-compact) .transport .art {
+    width: min(20dvh, 150px);
+    height: min(20dvh, 150px);
+  }
+
+  .app:not(.transport-compact) .transport .now,
+  .app:not(.transport-compact) .transport-center {
+    gap: 8px;
+  }
+
+  .app:not(.transport-compact) .controls {
+    grid-template-rows: 60px 44px;
+    gap: 4px 0;
+  }
+
+  .app:not(.transport-compact) .controls .play {
+    width: 58px;
+    height: 58px;
+  }
+}
+
+@media (max-width: 820px) and (max-height: 500px),
+       (pointer: coarse) and (max-width: 1200px) and (max-height: 500px) {
+  .transport,
+  .transport-compact .transport {
+    height: 46px;
+  }
+}
+
+@media (max-width: 359px) {
+  .mobile-track-card {
+    grid-template-columns: 20px minmax(0, 1fr) 40px 40px;
+    gap: 4px;
+  }
+
+  .mobile-track-star,
+  .mobile-track-more {
+    width: 40px;
   }
 }
