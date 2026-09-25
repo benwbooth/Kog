@@ -20,7 +20,7 @@ use kog_audio::settings::{
 use kog_audio::track::Track as AudioTrack;
 use kog_core::db::{BLACKLIST_FOLDER, BLACKLIST_SONG, BlacklistEntry, StoredEntry};
 use kog_core::equalizer::{EqualizerSettings, presets};
-use kog_server::api::{Library, LocalSearch, browse_local_unrestricted, expand_stored_entry};
+use kog_server::api::{Library, LocalSearch, browse_local_unrestricted, collect_local_folder, expand_stored_entry};
 use kog_server::radio::{Radio, RadioAdvance, RadioEntry, RadioStatus};
 use kog_server::{AuthMode, StreamCodec, TlsMode};
 use rand::Rng;
@@ -9909,71 +9909,20 @@ fn collect_folder(
     read_cue_sheets: bool,
     read_playlists: bool,
 ) -> Result<Vec<Track>, String> {
-    let mut pending = vec![path];
-    let mut tracks = Vec::new();
-    while let Some(directory) = pending.pop() {
-        let listing = browse_local_unrestricted(library, directory.to_str())?;
-        if let Some(dirs) = listing["directories"].as_array() {
-            for dir in dirs.iter().rev() {
-                if let Some(path) = dir["path"].as_str() {
-                    pending.push(PathBuf::from(path));
-                }
-            }
-        }
-        if let Some(files) = listing["files"].as_array() {
-            for file in files {
-                if let (Some(kind), Some(path)) = (file["kind"].as_str(), file["path"].as_str()) {
-                    let track = track_from_entry(StoredEntry {
-                        kind: kind.to_owned(),
-                        path: path.to_owned(),
-                        entry: file["entry"].as_str().unwrap_or_default().to_owned(),
-                        fragment: file["fragment"].as_str().map(str::to_owned),
-                    });
-                    let extension_path =
-                        if track.entry.kind == "archive" && !track.entry.entry.is_empty() {
-                            &track.entry.entry
-                        } else {
-                            &track.entry.path
-                        };
-                    let extension = Path::new(extension_path)
-                        .extension()
-                        .and_then(|value| value.to_str())
-                        .unwrap_or_default();
-                    if extension.eq_ignore_ascii_case("cue") && !read_cue_sheets {
-                        continue;
-                    }
-                    if matches!(
-                        extension.to_ascii_lowercase().as_str(),
-                        "m3u" | "m3u8" | "pls"
-                    ) && !read_playlists
-                    {
-                        continue;
-                    }
-                    tracks.extend(expand_track(decoders, library.root().as_deref(), track));
-                }
-            }
-        }
-    }
-    let specific: HashSet<_> = tracks
-        .iter()
-        .filter(|track| track.entry.fragment.is_some())
-        .map(|track| {
-            (
-                track.entry.kind.clone(),
-                track.entry.path.clone(),
-                track.entry.entry.clone(),
-            )
-        })
-        .collect();
-    tracks.retain(|track| {
-        track.entry.fragment.is_some()
-            || !specific.contains(&(
-                track.entry.kind.clone(),
-                track.entry.path.clone(),
-                track.entry.entry.clone(),
-            ))
-    });
-    Ok(tracks)
+    collect_local_folder(
+        library,
+        decoders,
+        &path,
+        true,
+        read_cue_sheets,
+        read_playlists,
+    )
+    .map(|entries| {
+        entries
+            .into_iter()
+            .map(|(name, entry)| Track { name, entry })
+            .collect()
+    })
 }
 
 fn expand_track(decoders: &DecoderRegistry, root: Option<&Path>, track: Track) -> Vec<Track> {

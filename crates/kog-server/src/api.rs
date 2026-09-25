@@ -947,6 +947,122 @@ pub fn browse_local_unrestricted(
     browse_blocking(library, requested, true)
 }
 
+/// Collect a folder through the same browse and expansion rules used by the
+/// web API. Native callers may opt out of the configured-root restriction;
+/// HTTP callers must leave it enabled.
+pub fn collect_local_folder(
+    library: &Arc<Library>,
+    decoders: &kog_audio::decoder::DecoderRegistry,
+    path: &std::path::Path,
+    unrestricted: bool,
+    read_cue_sheets: bool,
+    read_playlists: bool,
+) -> Result<Vec<(String, StoredEntry)>, String> {
+    let mut pending = vec![path.to_path_buf()];
+    let mut tracks = Vec::new();
+    let root = library.root();
+    while let Some(directory) = pending.pop() {
+        let listing = browse_blocking(library, directory.to_str(), unrestricted)?;
+        if let Some(dirs) = listing["directories"].as_array() {
+            for dir in dirs.iter().rev() {
+                if let Some(path) = dir["path"].as_str() {
+                    pending.push(PathBuf::from(path));
+                }
+            }
+        }
+        if let Some(files) = listing["files"].as_array() {
+            for file in files {
+                let (Some(kind), Some(path)) = (file["kind"].as_str(), file["path"].as_str()) else {
+                    continue;
+                };
+                let entry = StoredEntry {
+                    kind: kind.to_owned(),
+                    path: path.to_owned(),
+                    entry: file["entry"].as_str().unwrap_or_default().to_owned(),
+                    fragment: file["fragment"].as_str().map(str::to_owned),
+                };
+                let extension_path = if entry.kind == "archive" && !entry.entry.is_empty() {
+                    &entry.entry
+                } else {
+                    &entry.path
+                };
+                if !kog_audio::library_policy::include_discovered_file(
+                    std::path::Path::new(extension_path),
+                    read_cue_sheets,
+                    read_playlists,
+                    false,
+                ) {
+                    continue;
+                }
+                let name = file["name"].as_str().unwrap_or_default();
+                let expanded = expand_stored_entry(decoders, root.as_deref(), &entry, name);
+                if expanded.is_empty() {
+                    tracks.push((name.to_owned(), entry));
+                } else {
+                    tracks.extend(expanded);
+                }
+            }
+        }
+    }
+    let specific: HashSet<_> = tracks
+        .iter()
+        .filter(|(_, entry)| entry.fragment.is_some())
+        .map(|(_, entry)| (entry.kind.clone(), entry.path.clone(), entry.entry.clone()))
+        .collect();
+    tracks.retain(|(_, entry)| {
+        entry.fragment.is_some()
+            || !specific.contains(&(entry.kind.clone(), entry.path.clone(), entry.entry.clone()))
+    });
+    Ok(tracks)
+}
+
+/// HTTP and native frontends use the same recursive folder collector. The
+/// HTTP route keeps the configured music-root boundary enforced by browse.
+pub async fn collect_folder_http(
+    State(state): State<AppState>,
+    Query(query): Query<BrowseQuery>,
+) -> Response {
+    let library = Arc::clone(&state.library);
+    let result = tokio::task::spawn_blocking(move || {
+        let settings = kog_audio::settings::AppSettings::load();
+        let decoders = kog_audio::decoder::DecoderRegistry::new(settings.decoder_settings());
+        let path = query.path.or_else(|| library.root().map(|path| path.to_string_lossy().into_owned()))
+            .ok_or_else(|| "no music directory is configured".to_owned())?;
+        let root = library.root();
+        let entries = collect_local_folder(
+            &library,
+            &decoders,
+            std::path::Path::new(&path),
+            false,
+            settings.read_cue_sheets_in_folders,
+            library.read_playlists_in_folders(),
+        )?;
+        let files: Vec<_> = entries.into_iter().map(|(name, entry)| {
+            let relative = root
+                .as_deref()
+                .and_then(|root| std::path::Path::new(&entry.path).strip_prefix(root).ok())
+                .unwrap_or_else(|| std::path::Path::new(&entry.path))
+                .to_string_lossy()
+                .into_owned();
+            let relative = if entry.entry.is_empty() { relative } else { format!("{relative}/{}", entry.entry) };
+            serde_json::json!({
+                "name": name,
+                "relative": relative,
+                "kind": entry.kind,
+                "path": entry.path,
+                "entry": entry.entry,
+                "fragment": entry.fragment,
+            })
+        }).collect();
+        Ok::<_, String>(serde_json::json!({ "tracks": files }))
+    }).await;
+    match result {
+        Ok(Ok(value)) => axum::Json(value).into_response(),
+        Ok(Err(error)) => bad_request(&error),
+        Err(error) => bad_request(&format!("collecting folder failed: {error}")),
+    }
+}
+
 fn browse_blocking(
     library: &Arc<Library>,
     requested: Option<&str>,
@@ -1718,16 +1834,7 @@ fn archive_listing_from_names(
     // libarchive may report a directory as a bare member without a trailing
     // slash. Derive directories from descendants so such entries can never
     // become bogus playlist tracks.
-    let mut member_directories = HashSet::new();
-    for member in &members {
-        let normalized = member.replace('\\', "/");
-        for (index, _) in normalized.match_indices('/') {
-            member_directories.insert(normalized[..index].to_owned());
-        }
-        if normalized.ends_with('/') {
-            member_directories.insert(normalized.trim_end_matches('/').to_owned());
-        }
-    }
+    let member_directories = kog_audio::archive::member_directory_names(&members);
     for member in members {
         let normalized = member.replace('\\', "/");
         if member_directories.contains(normalized.trim_end_matches('/')) {
@@ -2209,6 +2316,7 @@ pub fn router() -> axum::Router<AppState> {
     use axum::routing::{get, post};
     axum::Router::new()
         .route("/api/library", get(browse))
+        .route("/api/library/collect", get(collect_folder_http))
         .route("/api/library/search", get(search))
         .route("/api/library/search/more", get(search_more))
         .route("/api/library/search/pause", post(pause_search))

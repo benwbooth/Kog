@@ -1314,6 +1314,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn folder_collection_uses_shared_archive_rules_and_music_root() {
+        let (library, root) = library_with(&["Album/one.wav"]);
+        let archive = root.join("Album/pack.zip");
+        let wav = kog_audio::archive::tests::wav_bytes(100);
+        kog_audio::archive::tests::write_stored_zip(
+            &archive,
+            &[("Disc", b""), ("Disc/song.wav", &wav), ("Disc/cover.jpg", b"image")],
+        );
+        let native = kog_audio::decoder::DecoderRegistry::default()
+            .expand_detailed(archive.clone())
+            .unwrap();
+        assert_eq!(native.sources.len(), 1, "Qt's decoder sees one playable archive member");
+        let state = state_with(AuthMode::None, "", library);
+        let (status, body) = get_json(
+            state.clone(),
+            &format!("/api/library/collect?path={}", root.join("Album").display()),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let tracks = body["tracks"].as_array().unwrap();
+        assert_eq!(tracks.len(), 2, "only playable tracks are collected: {tracks:?}");
+        assert!(tracks.iter().any(|entry| entry["name"] == "one.wav"));
+        assert!(tracks.iter().any(|entry| entry["entry"] == "Disc/song.wav"));
+
+        let (status, _) = get_json(
+            state,
+            &format!("/api/library/collect?path={}", root.parent().unwrap().display()),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
     async fn browsing_expands_folder_playlists_and_drops_gme_companions() {
         let (library, root) = library_with(&["Album/one.wav"]);
         let album = root.join("Album");

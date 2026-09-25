@@ -5501,6 +5501,7 @@ fn App() -> impl IntoView {
                 }
             }
         };
+        let append_folder_entries = append_entries;
         // Expand through the server before appending, like the desktop's add
         // path: a multi-song file contributes one row per song instead of
         // only its first track. Chunked to the endpoint's batch cap.
@@ -5578,33 +5579,19 @@ fn App() -> impl IntoView {
                 expand_and_append(vec![entry]);
                 return;
             }
-            let expand_and_append = expand_and_append.clone();
+            let report_add = report_add.clone();
             leptos::task::spawn_local(async move {
-                let mut pending = vec![row.path];
-                let mut visited = HashSet::new();
-                let mut files = Vec::new();
-                while let Some(path) = pending.pop() {
-                    if !visited.insert(path.clone()) {
-                        continue;
+                let route = format!("/api/library/collect?path={}", url_encode(&row.path));
+                match get_json(route).await {
+                    Ok(value) => {
+                        let entries = value["tracks"]
+                            .as_array()
+                            .map(|tracks| tracks.iter().map(browse_file_entry).collect())
+                            .unwrap_or_default();
+                        report_add(append_folder_entries(entries));
                     }
-                    let route = format!("/api/library?path={}", url_encode(&path));
-                    let value = match get_json(route).await {
-                        Ok(value) => value,
-                        Err(error) => {
-                            set_message.set(error);
-                            return;
-                        }
-                    };
-                    files.extend(library_files(&value));
-                    if let Some(dirs) = value["directories"].as_array() {
-                        for dir in dirs.iter().rev() {
-                            if let Some(child) = dir["path"].as_str() {
-                                pending.push(child.to_owned());
-                            }
-                        }
-                    }
+                    Err(error) => set_message.set(error),
                 }
-                expand_and_append(files);
             });
         }
     };

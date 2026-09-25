@@ -25,6 +25,17 @@ backends may use safe Rust, C, or C++ libraries.
 5. **Native library adapters** isolate unsafe FFI and convert library-specific
    streams into interleaved floating-point PCM.
 
+## Frontend sharing
+
+Qt, TUI, and Web keep separate playback queues so each device can listen on its
+own. They share the decoder registry, archive classification, folder-add file
+policy, playlist expansion, metadata/stream locators, and radio-round rules.
+The Web frontend reaches the Rust library backend through authenticated HTTP;
+the TUI calls the same library collector directly. Qt keeps a parallel scan
+worker for progress and cancellation, then uses the same archive decoder and
+folder-add policy to prepare tracks. Browser audio output and native device
+output remain platform adapters; neither decides which files are playable.
+
 New decoders integrate maintained libraries in-process by default. A companion
 process is reserved for a proven license incompatibility or a narrowly audited
 legacy-core containment need; Cargo builds it from pinned source and release

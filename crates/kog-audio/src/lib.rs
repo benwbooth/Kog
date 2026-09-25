@@ -24,6 +24,7 @@ pub mod gsf_decoder;
 pub mod hively;
 pub mod hively_decoder;
 pub mod legacy_id3;
+pub mod library_policy;
 pub mod libvgm;
 pub mod libvgm_decoder;
 pub mod mt32;

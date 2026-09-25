@@ -120,6 +120,13 @@ impl ExtractedArchive {
                 .iter()
                 .any(|candidate| candidate.eq_ignore_ascii_case(value))
         });
+        // Some archives store a directory as a bare, regular-looking member.
+        // The names of its descendants are the reliable way to identify it.
+        let member_directories = if raw_stream {
+            HashSet::new()
+        } else {
+            member_directory_names(&list_archive_names(path)?)
+        };
         let iterator = ArchiveIteratorBuilder::new(source)
             .decoder(decode_archive_name)
             .mtree_format(false)
@@ -175,7 +182,9 @@ impl ExtractedArchive {
 
                     let mode = u32::from(stat.st_mode) & FILE_TYPE_MASK;
                     let named_directory = name.ends_with('/') || name.ends_with('\\');
-                    let is_directory = mode == FILE_TYPE_DIRECTORY || named_directory;
+                    let is_directory = mode == FILE_TYPE_DIRECTORY
+                        || named_directory
+                        || member_directories.contains(&portable_name(&relative));
                     let is_regular = mode == 0 || mode == FILE_TYPE_REGULAR;
                     let target = temporary_directory.path().join(&relative);
                     if is_directory {
@@ -340,6 +349,27 @@ pub fn list_archive_names(path: &Path) -> Result<Vec<String>, String> {
         File::open(path).map_err(|error| format!("opening archive {}: {error}", path.display()))?;
     compress_tools::list_archive_files_with_encoding(file, decode_archive_name)
         .map_err(|error| format!("listing archive {}: {error}", path.display()))
+}
+
+/// Directory names inferred from member paths, including explicit records
+/// whose stored name has no trailing slash. Browsing and extraction use this
+/// same classification so they never disagree about a playable member.
+pub fn member_directory_names(members: &[String]) -> HashSet<String> {
+    let mut directories = HashSet::new();
+    for name in members {
+        let Ok(relative) = safe_relative_path(name) else {
+            continue;
+        };
+        let mut parent = relative.parent();
+        while let Some(path) = parent.filter(|path| !path.as_os_str().is_empty()) {
+            directories.insert(portable_name(path));
+            parent = path.parent();
+        }
+        if name.ends_with('/') || name.ends_with('\\') {
+            directories.insert(portable_name(&relative));
+        }
+    }
+    directories
 }
 
 /// Longest leading run of `entry` components naming an archive file member

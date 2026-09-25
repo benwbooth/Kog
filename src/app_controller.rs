@@ -1102,19 +1102,12 @@ fn prepare_scan_file(
     if !decoders.accepts_path(&path) {
         return prepared;
     }
-    let extension = path
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or_default();
-    if extension.eq_ignore_ascii_case("cue") && !read_cue_sheets && !explicit_root {
-        return prepared;
-    }
-    if matches!(
-        extension.to_ascii_lowercase().as_str(),
-        "m3u" | "m3u8" | "pls"
-    ) && !read_playlists
-        && !explicit_root
-    {
+    if !kog_audio::library_policy::include_discovered_file(
+        &path,
+        read_cue_sheets,
+        read_playlists,
+        explicit_root,
+    ) {
         return prepared;
     }
 
@@ -2826,18 +2819,12 @@ impl AppControllerRust {
         if !self.decoders.accepts_path(&path) {
             return Ok(AddPathResult::default());
         }
-        let extension = path
-            .extension()
-            .and_then(|value| value.to_str())
-            .unwrap_or_default();
-        if extension.eq_ignore_ascii_case("cue") && !self.read_cue_sheets_in_folders {
-            return Ok(AddPathResult::default());
-        }
-        if matches!(
-            extension.to_ascii_lowercase().as_str(),
-            "m3u" | "m3u8" | "pls"
-        ) && !self.read_playlists_in_folders
-        {
+        if !kog_audio::library_policy::include_discovered_file(
+            &path,
+            self.read_cue_sheets_in_folders,
+            self.read_playlists_in_folders,
+            false,
+        ) {
             return Ok(AddPathResult::default());
         }
         self.add_path(path)
