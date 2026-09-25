@@ -1194,9 +1194,10 @@ fn scan_directory_paths(
             continue;
         }
 
+        let scan_root = root.clone();
         let mut pending = vec![(root, true)];
         while let Some((path, is_directory)) = pending.pop() {
-            if kog_core::media_path::is_metadata(&path) {
+            if path != scan_root && kog_server::media_filter::is_hidden(&path) {
                 continue;
             }
             if cancel.load(AtomicOrdering::Relaxed) {
@@ -7804,6 +7805,7 @@ mod tests {
         fs::create_dir(root.join("__MACOSX")).unwrap();
         fs::write(root.join("__MACOSX/ghost.flac"), []).unwrap();
         fs::write(root.join("._ghost.flac"), []).unwrap();
+        fs::write(root.join(".hidden.flac"), []).unwrap();
         fs::create_dir(root.join("02-disc")).expect("create nested album folder");
         fs::write(root.join("01-first.flac"), []).expect("create first track");
         fs::write(root.join("02-disc/01-middle.flac"), []).expect("create nested first track");
