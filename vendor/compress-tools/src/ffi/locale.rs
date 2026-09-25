@@ -28,7 +28,7 @@ mod inner {
             #[cfg(any(target_os = "linux", target_os = "illumos", target_os = "android"))]
             let locale = b"\0";
 
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "ios"))]
             let locale = b"UTF-8\0";
 
             let utf8_locale = unsafe {

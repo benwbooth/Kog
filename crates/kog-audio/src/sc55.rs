@@ -786,6 +786,12 @@ fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+#[cfg(target_os = "ios")]
+fn helper_path() -> Result<PathBuf, String> {
+    Err("SC-55 helper decoder needs an in-process iOS port".to_owned())
+}
+
+#[cfg(not(target_os = "ios"))]
 fn helper_path() -> Result<PathBuf, String> {
     if let Some(path) = std::env::var_os("KOG_SC55_HELPER") {
         let path = PathBuf::from(path);

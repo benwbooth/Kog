@@ -5,6 +5,10 @@
 /android/build/
 /android/.native-build/
 /android/app/src/main/jniLibs/
+/ios/.native-build/
+/ios/DerivedData/
+*.xcuserstate
+xcuserdata/
 /dist/
 /.flatpak-builder/
 /.direnv/

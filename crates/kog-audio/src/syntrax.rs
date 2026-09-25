@@ -308,6 +308,12 @@ fn spawn_helper(
     Ok((SyntraxProcess { child, stdout }, header))
 }
 
+#[cfg(target_os = "ios")]
+fn helper_path() -> Result<PathBuf, String> {
+    Err("Syntrax helper decoder needs an in-process iOS port".to_owned())
+}
+
+#[cfg(not(target_os = "ios"))]
 fn helper_path() -> Result<PathBuf, String> {
     if let Some(path) = std::env::var_os("KOG_SYNTRAX_HELPER") {
         let path = PathBuf::from(path);

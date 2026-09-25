@@ -341,6 +341,12 @@ fn validate_header(header: &HelperHeader, path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(target_os = "ios")]
+fn helper_path(_source: &Path) -> Result<PathBuf, String> {
+    Err("PSF helper decoders need an in-process iOS port".to_owned())
+}
+
+#[cfg(not(target_os = "ios"))]
 fn helper_path(source: &Path) -> Result<PathBuf, String> {
     let version = psf_format_version(source)?;
     let (override_name, executable_name, build_helper) = match version {

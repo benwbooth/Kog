@@ -40,14 +40,23 @@ fn main() {
     build_spessasynth_midi();
     build_mt32emu();
     build_game_music_emu();
-    build_sfm_helper();
+    let ios = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("ios");
+    if ios {
+        // iOS cannot launch bundled helper executables. Keep their decoder
+        // modules compilable, but report unsupported playback at runtime.
+        for name in ["SFM", "PSF", "PSF2", "2SF", "SNSF", "SYNTRAX", "SC55"] {
+            println!("cargo:rustc-env=KOG_BUILD_{name}_HELPER=unsupported-on-ios");
+        }
+    } else {
+        build_sfm_helper();
+        build_psf_helper();
+        build_psf2_helper();
+        build_twosf_helper();
+        build_snsf_helper();
+        build_syntrax_helper();
+        build_sc55_helper();
+    }
     let libvgm_output = build_libvgm();
-    build_psf_helper();
-    build_psf2_helper();
-    build_twosf_helper();
-    build_snsf_helper();
-    build_syntrax_helper();
-    build_sc55_helper();
     build_adlmidi();
     build_openmpt();
     build_hivelytracker();

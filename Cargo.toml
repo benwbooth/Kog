@@ -7,7 +7,7 @@ description = "A cross-platform, format-comprehensive local music player"
 repository = "https://github.com/benwbooth/Kog"
 
 [workspace]
-members = ["crates/kog-core", "crates/kog-audio", "crates/kog-playback-policy", "crates/kog-server", "crates/kog-terminal", "crates/kog-android-audio"]
+members = ["crates/kog-core", "crates/kog-audio", "crates/kog-playback-policy", "crates/kog-server", "crates/kog-terminal", "crates/kog-android-audio", "crates/kog-ios-audio"]
 
 # compress-tools 0.16.1 omits Android from its Unix locale selection, so the
 # unmodified crate does not compile for Android. Keep the tiny target fix local

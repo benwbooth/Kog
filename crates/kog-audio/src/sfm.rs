@@ -291,6 +291,12 @@ fn spawn_helper(path: &Path, start_frame: u64) -> Result<(SfmProcess, HelperHead
     Ok((SfmProcess { child, stdout }, header))
 }
 
+#[cfg(target_os = "ios")]
+fn helper_path() -> Result<PathBuf, String> {
+    Err("SFM helper decoder needs an in-process iOS port".to_owned())
+}
+
+#[cfg(not(target_os = "ios"))]
 fn helper_path() -> Result<PathBuf, String> {
     if let Some(path) = std::env::var_os("KOG_SFM_HELPER") {
         let path = PathBuf::from(path);
