@@ -10582,56 +10582,45 @@ fn draw_hover_tooltip(
     if lines.is_empty() {
         return;
     }
-    let panel_width = lines.iter().map(|line| cell_width(line)).max().unwrap_or(0) + 4;
+    let panel_width = lines.iter().map(|line| cell_width(line)).max().unwrap_or(0) + 2;
     let panel_height = lines.len() + 2;
-    let x = if pointer.0 + panel_width + 1 < size.0 {
+    let x = if pointer.0 + panel_width + 3 <= size.0 {
         pointer.0 + 1
     } else {
-        size.0.saturating_sub(panel_width + 1)
+        size.0.saturating_sub(panel_width + 2)
     };
-    let y = if pointer.1 + panel_height + 1 < size.1 {
+    let y = if pointer.1 + panel_height + 2 <= size.1 {
         pointer.1 + 1
     } else {
-        pointer.1.saturating_sub(panel_height)
+        pointer.1.saturating_sub(panel_height + 1)
     };
-    paint(
-        screen,
-        y + 1,
-        x + 1,
-        &format!("╭{}╮", "─".repeat(panel_width - 2)),
-        panel_width,
-        Surface::MenuTitle,
-        false,
-    );
-    for (index, line) in lines.iter().enumerate() {
+    for row in 0..panel_height {
         paint(
             screen,
-            y + index + 2,
-            x + 1,
-            &format!("│ {line}"),
-            panel_width - 1,
-            Surface::MenuBody,
-            false,
-        );
-        paint(
-            screen,
-            y + index + 2,
-            x + panel_width,
-            "│",
-            1,
-            Surface::MenuBody,
+            y + row + 2,
+            x + 3,
+            "",
+            panel_width,
+            Surface::TooltipShadow,
             false,
         );
     }
-    paint(
-        screen,
-        y + panel_height,
-        x + 1,
-        &format!("╰{}╯", "─".repeat(panel_width - 2)),
-        panel_width,
-        Surface::MenuBody,
-        false,
-    );
+    for row in 0..panel_height {
+        let content = if row > 0 && row <= lines.len() {
+            format!(" {}", lines[row - 1])
+        } else {
+            String::new()
+        };
+        paint(
+            screen,
+            y + row + 1,
+            x + 1,
+            &content,
+            panel_width,
+            Surface::Tooltip,
+            false,
+        );
+    }
 }
 
 fn marquee_prefixed(prefix: &str, value: &str, width: usize, tick: usize) -> String {
@@ -10751,6 +10740,8 @@ enum Surface {
     MenuSelected,
     MenuSeparator,
     MenuShadow,
+    Tooltip,
+    TooltipShadow,
 }
 
 fn paint(
@@ -10807,6 +10798,8 @@ fn surface_colors(surface: Surface) -> (&'static str, &'static str) {
         Surface::MenuSelected => ("255;255;255", "38;88;166"),
         Surface::MenuSeparator => ("103;120;151", "212;221;236"),
         Surface::MenuShadow => ("10;14;23", "10;14;23"),
+        Surface::Tooltip => ("18;20;23", "190;194;198"),
+        Surface::TooltipShadow => ("8;9;11", "8;9;11"),
     }
 }
 
