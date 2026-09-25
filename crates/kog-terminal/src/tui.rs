@@ -67,6 +67,7 @@ const MEDIA_REPEAT_ONE: &str = "🔂";
 const MEDIA_RADIO: &str = "⚄";
 const PLAYLIST_PLAY: &str = "▶ ";
 const PLAYLIST_PAUSE: &str = "❚❚";
+const STATUS_WAVEFORM_WIDTH: usize = 4;
 
 fn load_sidebar_width() -> Option<usize> {
     let path = kog_audio::settings::setting_path(SIDEBAR_WIDTH_FILE)?;
@@ -7349,13 +7350,6 @@ impl Ui {
                 }
                 return;
             }
-            if y == layout.footer_top + 2
-                && inline_waveform_geometry(size, self.cover_preview.is_some())
-                    .is_some_and(|(left, width)| (left..left + width).contains(&x))
-            {
-                self.show_visualizer();
-                return;
-            }
             if y == layout.footer_top {
                 if let Some(action) = footer_transport_at(size.0, x) {
                     self.activate_transport(action);
@@ -7700,13 +7694,27 @@ impl Ui {
             let Some(&index) = visible.get(self.offsets[2] + y - 2) else {
                 return;
             };
+            let relative = x.saturating_sub(layout.playlist_left()) + self.columns.scroll;
+            if button & (3 | 4 | 8 | 16) == 0
+                && self.playing == Some(index)
+                && self.player.state() == PlaybackState::Playing
+                && self.columns.positions().any(|(column, start, width)| {
+                    self.columns.entries[column].id == "status"
+                        && (start + cell_width(PLAYLIST_PLAY)
+                            ..start + (cell_width(PLAYLIST_PLAY) + STATUS_WAVEFORM_WIDTH)
+                                .min(width.saturating_sub(1)))
+                            .contains(&relative)
+                })
+            {
+                self.show_visualizer();
+                return;
+            }
             let ranged = button & (4 | 8) != 0 || range_pending == Some(Focus::Tracks);
             let modified = ranged || button & 16 != 0;
             self.select_track(index, ranged, button & 16 != 0);
             if ranged {
                 self.status = format!("Selected {} tracks", self.selected_tracks.len());
             }
-            let relative = x.saturating_sub(layout.playlist_left()) + self.columns.scroll;
             let starred_cell = self
                 .columns
                 .positions()
@@ -8405,6 +8413,7 @@ impl Ui {
                 Surface::Header,
                 self.keyboard_column,
             );
+            let mut status_waveform = None::<Vec<char>>;
             for y in 2..layout
                 .footer_top
                 .saturating_sub(usize::from(scrollbar.is_some()))
@@ -8444,6 +8453,25 @@ impl Ui {
                                 surface,
                                 false,
                             );
+                            if self.columns.entries[column_index].id == "status"
+                                && self.playing == Some(index)
+                                && self.player.state() == PlaybackState::Playing
+                            {
+                                let glyphs = status_waveform.get_or_insert_with(|| {
+                                    status_waveform_glyphs(&self.player.visualizer_frame())
+                                });
+                                paint_playlist_waveform(
+                                    &mut screen,
+                                    y + 1,
+                                    right_x,
+                                    content_width,
+                                    start,
+                                    column_width,
+                                    self.columns.scroll,
+                                    glyphs,
+                                    surface,
+                                );
+                            }
                         }
                     }
                 }
@@ -9016,17 +9044,6 @@ impl Ui {
             Surface::Toolbar,
             false,
         );
-        if let Some((left, width)) = inline_waveform_geometry(size, self.cover_preview.is_some()) {
-            let frame = (self.player.state() == PlaybackState::Playing)
-                .then(|| self.player.visualizer_frame());
-            draw_inline_waveform(
-                &mut screen,
-                layout.footer_top + 3,
-                left,
-                width,
-                frame.as_deref(),
-            );
-        }
         let message = self.prompt.as_ref().map(|(kind, value)| {
             if matches!(kind, PromptKind::Search | PromptKind::PlaylistSearch) {
                 if *kind == PromptKind::Search && !self.status.is_empty() {
@@ -10519,19 +10536,6 @@ fn volume_geometry(width: usize, footer_top: usize) -> (usize, usize, usize, usi
     (row, icon_x, icon_x + 3, bar_width)
 }
 
-fn inline_waveform_geometry(size: (usize, usize), cover_present: bool) -> Option<(usize, usize)> {
-    let footer_top = size.1.saturating_sub(4);
-    let (volume_row, icon_x, _, _) = volume_geometry(size.0, footer_top);
-    let left = if size.0 >= 80 && cover_present { 11 } else { 2 };
-    let right = if volume_row == footer_top + 2 {
-        icon_x.saturating_sub(2)
-    } else {
-        size.0.saturating_sub(2)
-    };
-    let width = right.saturating_sub(left).min(64);
-    (width >= 16).then_some((left, width))
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TransportAction {
     Shuffle,
@@ -11145,35 +11149,49 @@ fn waveform_color(column: usize, width: usize) -> (u8, u8, u8) {
     )
 }
 
-fn draw_inline_waveform(
-    screen: &mut String,
-    row: usize,
-    left: usize,
-    width: usize,
-    frame_json: Option<&str>,
-) {
-    paint(screen, row, left + 1, "Wave ", 5, Surface::Muted, false);
-    let plot_width = width.saturating_sub(5);
-    let frame = frame_json.and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok());
-    let wave: Vec<f32> = frame
-        .as_ref()
-        .and_then(|frame| frame["wave"].as_array())
+fn status_waveform_glyphs(frame_json: &str) -> Vec<char> {
+    let frame = serde_json::from_str::<serde_json::Value>(frame_json).unwrap_or_default();
+    let wave: Vec<f32> = frame["wave"]
+        .as_array()
         .into_iter()
         .flatten()
         .filter_map(|value| value.as_f64().map(|sample| sample as f32))
         .collect();
-    let dots = waveform_dots(&wave, plot_width, 1);
-    let (_, background) = surface_colors(Surface::Toolbar);
-    for (column, &mask) in dots.iter().enumerate() {
-        let (red, green, blue) = waveform_color(column, plot_width);
-        let glyph = if mask == 0 {
-            '⠤'
-        } else {
-            char::from_u32(0x2800 + u32::from(mask)).unwrap_or(' ')
+    waveform_dots(&wave, STATUS_WAVEFORM_WIDTH, 1)
+        .into_iter()
+        .map(|mask| char::from_u32(0x2800 + u32::from(mask)).unwrap_or(' '))
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn paint_playlist_waveform(
+    screen: &mut String,
+    row: usize,
+    viewport_x: usize,
+    viewport_width: usize,
+    column_start: usize,
+    column_width: usize,
+    scroll: usize,
+    glyphs: &[char],
+    surface: Surface,
+) {
+    let (_, background) = surface_colors(surface);
+    let prefix_width = cell_width(PLAYLIST_PLAY);
+    for (column, &glyph) in glyphs.iter().enumerate() {
+        let cell_offset = prefix_width + column;
+        if cell_offset >= column_width.saturating_sub(1) {
+            break;
+        }
+        let Some(visible_x) = (column_start + cell_offset).checked_sub(scroll) else {
+            continue;
         };
+        if visible_x >= viewport_width {
+            continue;
+        }
+        let (red, green, blue) = waveform_color(column, glyphs.len());
         screen.push_str(&format!(
             "\x1b[{row};{}H\x1b[38;2;{red};{green};{blue};48;2;{background}m{glyph}\x1b[0m",
-            left + 6 + column,
+            viewport_x + visible_x,
         ));
     }
 }
@@ -11984,7 +12002,8 @@ pub fn run() -> Result<(), String> {
         }
         let size = terminal.size();
         let live_waveform = ui.player.state() == PlaybackState::Playing
-            && inline_waveform_geometry(size, ui.cover_preview.is_some()).is_some();
+            && !ui.compact_mode
+            && ui.columns.entries.iter().any(|column| column.id == "status" && column.visible);
         let animate = ui.visualizer_open || live_waveform;
         let frame_interval = if animate { 66 } else { 150 };
         if size != last_size || last_draw.elapsed() >= Duration::from_millis(frame_interval) {
@@ -12063,15 +12082,20 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
-    fn waveform_is_visible_in_footer_and_full_visualizer() {
+    fn waveform_fits_beside_play_indicator_and_full_visualizer_remains_available() {
         let wave: Vec<f32> = (0..256)
             .map(|sample| (sample as f32 * std::f32::consts::TAU / 32.0).sin())
             .collect();
         let frame = serde_json::json!({"wave": wave, "spectrum": vec![0.0_f32; 40]}).to_string();
-        let mut footer = String::new();
-        draw_inline_waveform(&mut footer, 22, 2, 32, Some(&frame));
-        assert!(footer.contains("Wave "));
-        assert!(footer.chars().any(|glyph| ('\u{2801}'..='\u{28ff}').contains(&glyph)));
+        let glyphs = status_waveform_glyphs(&frame);
+        assert_eq!(glyphs.len(), STATUS_WAVEFORM_WIDTH);
+        assert!(glyphs.iter().any(|glyph| ('\u{2801}'..='\u{28ff}').contains(glyph)));
+        let mut status = String::new();
+        paint(&mut status, 12, 10, PLAYLIST_PLAY, 6, Surface::Main, false);
+        paint_playlist_waveform(&mut status, 12, 10, 20, 0, 7, 0, &glyphs, Surface::Main);
+        assert!(status.contains(PLAYLIST_PLAY));
+        assert!(status.contains("\x1b[12;12H"));
+        assert!(!status.contains("Wave "));
 
         let mut modal = String::new();
         draw_visualizer_modal(&mut modal, (80, 24), VisualizerMode::Waveform, &frame);
