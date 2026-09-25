@@ -51,6 +51,7 @@ const SESSION_FILE: &str = "tui-session.json";
 const SESSION_MAX_BYTES: usize = 64 * 1024 * 1024;
 const SESSION_MAX_TRACKS: usize = 100_000;
 const RADIO_READY_TARGET: usize = 10;
+const FOLDER_ICON: &str = "🗀";
 const MEDIA_PLAY: &str = "▶️";
 const MEDIA_PAUSE: &str = "⏸️";
 const MEDIA_STOP: &str = "⏹️";
@@ -7321,7 +7322,12 @@ impl Ui {
                     &mut screen,
                     3,
                     1,
-                    &marquee_prefixed(" ▱  ↻  ", &location, sidebar, marquee_tick),
+                    &marquee_prefixed(
+                        &format!(" {FOLDER_ICON}  ↻  "),
+                        &location,
+                        sidebar,
+                        marquee_tick,
+                    ),
                     sidebar,
                     Surface::SidebarAlt,
                     true,
@@ -7381,7 +7387,7 @@ impl Ui {
                                     "▸"
                                 };
                                 marquee_prefixed(
-                                    &format!("{indent}{arrow} ▱ "),
+                                    &format!("{indent}{arrow} {FOLDER_ICON} "),
                                     name,
                                     tree_width,
                                     marquee_tick,
@@ -7528,11 +7534,14 @@ impl Ui {
                     .get(index)
                     .map(|row| match &row.item {
                         Item::Directory(name, path) => marquee_prefixed(
-                            if self.expanded.contains(path) {
-                                " ▾ ▱ "
-                            } else {
-                                " ▸ ▱ "
-                            },
+                            &format!(
+                                " {} {FOLDER_ICON} ",
+                                if self.expanded.contains(path) {
+                                    "▾"
+                                } else {
+                                    "▸"
+                                }
+                            ),
                             name,
                             tree_width,
                             marquee_tick,
@@ -9856,7 +9865,7 @@ fn draw_folder_chooser(
     {
         let index = chooser.offset + row;
         let chosen = chooser.focus == FolderFocus::List && index == chooser.selected;
-        let icon = if entry.parent { "↰" } else { "▱" };
+        let icon = if entry.parent { "↰" } else { FOLDER_ICON };
         let prefix = format!(
             "{} {icon} ",
             if index == chooser.selected { "▸" } else { " " }
