@@ -11145,12 +11145,12 @@ fn waveform_color(column: usize, width: usize) -> (u8, u8, u8) {
 }
 
 fn status_waveform_glyphs(envelope: [f32; 8]) -> Vec<char> {
+    const DISPLAY_GAIN: f32 = 2.5;
     let mut dots = vec![0_u8; STATUS_WAVEFORM_WIDTH];
     for (x, amplitude) in envelope.into_iter().enumerate() {
-        // RMS is measured linearly; a square-root display scale preserves
-        // quieter passages in this four-step indicator without inventing
-        // movement when the signal is silent.
-        let height = (amplitude.clamp(0.0, 1.0).sqrt() * 4.0).ceil() as usize;
+        // RMS is measured linearly. Boost only the display scale so ordinary
+        // passages reach the upper dots, while silence remains blank.
+        let height = ((amplitude * DISPLAY_GAIN).clamp(0.0, 1.0).sqrt() * 4.0).ceil() as usize;
         for y in 4 - height..4 {
             braille_dot(&mut dots, STATUS_WAVEFORM_WIDTH, x, y);
         }
@@ -12088,6 +12088,7 @@ mod tests {
         assert_eq!(glyphs.len(), STATUS_WAVEFORM_WIDTH);
         assert!(glyphs.iter().any(|glyph| ('\u{2801}'..='\u{28ff}').contains(glyph)));
         assert_eq!(status_waveform_glyphs([0.0; 8]), vec!['\u{2800}'; 4]);
+        assert_eq!(status_waveform_glyphs([0.25; 8]), vec!['\u{28ff}'; 4]);
         let mut status = String::new();
         paint(&mut status, 12, 10, PLAYLIST_PLAY, 6, Surface::Main, false);
         paint_playlist_waveform(&mut status, 12, 10, 20, 0, 7, 0, &glyphs, Surface::Main);
