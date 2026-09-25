@@ -2848,6 +2848,23 @@ ApplicationWindow {
 
                 TreeView {
                     id: directoryTree
+                    property Item tooltipOwner: null
+                    property string tooltipText: ""
+
+                    function showRowTooltip(pointer, path) {
+                        if (!path)
+                            return
+                        tooltipText = fileTreeModel.display_path(path)
+                        tooltipOwner = tooltipText.length > 0 ? pointer : null
+                    }
+
+                    function hideRowTooltip(pointer) {
+                        if (tooltipOwner !== pointer)
+                            return
+                        tooltipOwner = null
+                        tooltipText = ""
+                    }
+
                     onExpanded: row => root.noteTreeExpanded(row)
                     onCollapsed: (row, recursively) =>
                         root.noteTreeCollapsed(row, recursively)
@@ -2882,6 +2899,21 @@ ApplicationWindow {
                             ? directoryScrollBar.implicitWidth + 4 : 0
                     columnWidthProvider: function(column) {
                         return Math.max(0, width - scrollGutter)
+                    }
+
+                    // One local tooltip follows the hovered row. Attached
+                    // ToolTips share a visual popup across the whole window;
+                    // a row leaving it can clear the text while another row
+                    // is opening it. Set text before changing its owner.
+                    ToolTip {
+                        parent: directoryTree.tooltipOwner
+                            ? directoryTree.tooltipOwner : directoryTree
+                        visible: directoryTree.tooltipOwner !== null
+                            && directoryTree.tooltipOwner.containsMouse
+                            && !directoryTree.moving
+                            && directoryTree.tooltipText.length > 0
+                        delay: 700
+                        text: directoryTree.tooltipText
                     }
 
                     delegate: TreeViewDelegate {
@@ -3003,6 +3035,7 @@ ApplicationWindow {
                             property bool collapseSelectionOnClick: false
 
                             function resetGesture() {
+                                directoryTree.hideRowTooltip(treePointer)
                                 manualDragging = false
                                 collapseSelectionOnClick = false
                                 root.playlistDropTarget = -1
@@ -3012,15 +3045,13 @@ ApplicationWindow {
                             z: 2
                             acceptedButtons: Qt.LeftButton | Qt.RightButton
                             hoverEnabled: true
-                            ToolTip.visible: containsMouse && !directoryTree.moving
-                                && rowPath.length > 0
-                            ToolTip.delay: 700
-                            ToolTip.text: containsMouse
-                                ? fileTreeModel.display_path(rowPath) : ""
                             readonly property string rowPath:
                                 treeDelegate.filePath.length > 0
                                     ? treeDelegate.filePath
                                     : root.treePathAtRow(treeDelegate.row)
+                            onEntered: directoryTree.showRowTooltip(
+                                treePointer, rowPath)
+                            onExited: directoryTree.hideRowTooltip(treePointer)
                             preventStealing: true
                             scrollGestureEnabled: false
 
