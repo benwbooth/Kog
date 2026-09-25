@@ -7100,7 +7100,7 @@ impl Ui {
             if let Some((pane, bar)) = self.vertical_scrollbar_at(&layout, size, x, y) {
                 self.focus = if pane == 1 { Focus::Library } else { Focus::Tracks };
                 self.offsets[pane] = self.offsets[pane]
-                    .saturating_add_signed(if wheel & 1 == 0 { -3 } else { 3 })
+                    .saturating_add_signed(if wheel & 1 == 0 { 3 } else { -3 })
                     .min(bar.max_scroll);
                 self.manual_scroll_selection[pane] = Some(self.selected[pane]);
                 return;
@@ -7110,7 +7110,7 @@ impl Ui {
                 && (bar.x..bar.x + bar.width).contains(&x)
             {
                 self.columns
-                    .scroll_by(if wheel & 1 == 0 { -8 } else { 8 }, bar.width);
+                    .scroll_by(if wheel & 1 == 0 { 8 } else { -8 }, bar.width);
                 return;
             }
             if x >= layout.playlist_left()
