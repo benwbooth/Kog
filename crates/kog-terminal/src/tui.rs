@@ -7097,6 +7097,22 @@ impl Ui {
         }
         if (button & 0b1100_0000) == 64 {
             let wheel = button & 3;
+            if let Some((pane, bar)) = self.vertical_scrollbar_at(&layout, size, x, y) {
+                self.focus = if pane == 1 { Focus::Library } else { Focus::Tracks };
+                self.offsets[pane] = self.offsets[pane]
+                    .saturating_add_signed(if wheel & 1 == 0 { -3 } else { 3 })
+                    .min(bar.max_scroll);
+                self.manual_scroll_selection[pane] = Some(self.selected[pane]);
+                return;
+            }
+            if let Some(bar) = self.scrollbar(&layout, size)
+                && y == layout.footer_top - 1
+                && (bar.x..bar.x + bar.width).contains(&x)
+            {
+                self.columns
+                    .scroll_by(if wheel & 1 == 0 { -8 } else { 8 }, bar.width);
+                return;
+            }
             if x >= layout.playlist_left()
                 && self.scrollbar(&layout, size).is_some()
                 && (wheel >= 2 || button & (4 | 16) != 0)
