@@ -11006,17 +11006,6 @@ fn draw_hover_tooltip(
     } else {
         pointer.1.saturating_sub(panel_height + 1)
     };
-    for row in 0..panel_height {
-        paint(
-            screen,
-            y + row + 2,
-            x + 3,
-            "",
-            panel_width,
-            Surface::TooltipShadow,
-            false,
-        );
-    }
     for (row, line) in lines.iter().enumerate() {
         paint(
             screen,
@@ -11185,7 +11174,6 @@ enum Surface {
     MenuSeparator,
     MenuShadow,
     Tooltip,
-    TooltipShadow,
 }
 
 fn paint(
@@ -11243,7 +11231,6 @@ fn surface_colors(surface: Surface) -> (&'static str, &'static str) {
         Surface::MenuSeparator => ("103;120;151", "212;221;236"),
         Surface::MenuShadow => ("10;14;23", "10;14;23"),
         Surface::Tooltip => ("255;255;255", "18;20;23"),
-        Surface::TooltipShadow => ("8;9;11", "8;9;11"),
     }
 }
 
