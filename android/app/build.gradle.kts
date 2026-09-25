@@ -10,7 +10,7 @@ android {
 
     defaultConfig {
         applicationId = "org.kog.player"
-        minSdk = 26
+        minSdk = 28
         targetSdk = 35
         versionCode = 1
         versionName = "0.9.41-dev"
@@ -24,7 +24,12 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     buildFeatures { compose = true }
-    packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
+    packaging {
+        resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        // Helper executables are packed as native libraries and need a real
+        // executable path in applicationInfo.nativeLibraryDir.
+        jniLibs.useLegacyPackaging = true
+    }
 }
 
 kotlin {

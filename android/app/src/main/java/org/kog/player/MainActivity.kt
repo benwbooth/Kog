@@ -252,7 +252,7 @@ private fun LibraryView(state: KogState, pickFiles: () -> Unit, pickFolder: () -
             TextButton(onClick = { deviceMode = false }) {
                 Text("Server", color = if (!deviceMode) Accent else Muted)
             }
-            TextButton(onClick = { deviceMode = true }) {
+            TextButton(onClick = { deviceMode = true; state.refreshDevice() }) {
                 Text("On this device", color = if (deviceMode) Accent else Muted)
             }
         }

@@ -5,6 +5,8 @@
 //! depends on the UI, so engine edits and UI edits compile apart.
 
 pub mod adlmidi;
+#[cfg(target_os = "android")]
+pub mod android_helpers;
 pub mod adlmidi_decoder;
 pub mod adplug;
 pub mod adplug_decoder;

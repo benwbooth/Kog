@@ -147,7 +147,9 @@ fn build_spessasynth_midi() {
         .unwrap_or_else(|error| panic!("zlib is required for compressed XMF support: {error}"));
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         println!("cargo:rustc-link-lib=m");
-        println!("cargo:rustc-link-lib=pthread");
+        if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("android") {
+            println!("cargo:rustc-link-lib=pthread");
+        }
     }
 
     watch_native("../../native/spessasynth-core/spessasynth_core");
@@ -1306,7 +1308,9 @@ fn build_ncsf(mgba_output: &Path) {
         println!("cargo:rustc-link-lib=shlwapi");
     } else {
         println!("cargo:rustc-link-lib=m");
-        println!("cargo:rustc-link-lib=pthread");
+        if !target.contains("android") {
+            println!("cargo:rustc-link-lib=pthread");
+        }
     }
     if target.contains("apple") {
         println!("cargo:rustc-link-lib=framework=Foundation");

@@ -75,7 +75,7 @@ impl Mt32Synth {
     fn open(rom_directory: &Path) -> Result<Self, String> {
         let directory = CString::new(rom_directory.to_string_lossy().as_bytes())
             .map_err(|_| "MT-32 ROM directory contains a NUL byte".to_owned())?;
-        let mut error = [0_i8; ERROR_BYTES];
+        let mut error = [0 as c_char; ERROR_BYTES];
         // SAFETY: `directory` and the writable error buffer remain valid for
         // the duration of the call. Ownership of a successful handle is
         // transferred to this RAII wrapper.
@@ -116,7 +116,7 @@ impl Mt32Synth {
         if bytes.is_empty() || bytes.len() > MAX_EVENT_BYTES {
             return Err("MT-32 MIDI event is empty or exceeds Munt's 32 KiB limit".to_owned());
         }
-        let mut error = [0_i8; ERROR_BYTES];
+        let mut error = [0 as c_char; ERROR_BYTES];
         // SAFETY: the handle is exclusively borrowed and the event/error
         // buffers remain valid for the call.
         let success = unsafe {
@@ -140,7 +140,7 @@ impl Mt32Synth {
             return Err("Munt output must contain complete stereo frames".to_owned());
         }
         let frames = output.len() / usize::from(CHANNELS);
-        let mut error = [0_i8; ERROR_BYTES];
+        let mut error = [0 as c_char; ERROR_BYTES];
         // SAFETY: the handle is exclusively borrowed and the output/error
         // buffers are writable for their advertised lengths.
         let success = unsafe {

@@ -11,6 +11,7 @@ import androidx.compose.runtime.setValue
 import androidx.documentfile.provider.DocumentFile
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
@@ -160,8 +161,13 @@ class KogState(private val context: Context) {
         val meta = MediaMetadata.Builder()
             .setTitle(track.label).setArtist(track.artist).setAlbumTitle(track.album)
         api.art(track)?.let { meta.setArtworkUri(Uri.parse(it)) }
-        return MediaItem.Builder().setMediaId(track.key).setUri(api.stream(track))
-            .setMediaMetadata(meta.build()).build()
+        val builder = MediaItem.Builder().setMediaId(track.key).setMediaMetadata(meta.build())
+        if (NativeAudio.useFor(track)) {
+            builder.setUri(NativeAudio.uri(track)).setMimeType(MimeTypes.AUDIO_WAV)
+        } else {
+            builder.setUri(api.stream(track))
+        }
+        return builder.build()
     }
 
     private fun saveQueue() {
@@ -388,6 +394,10 @@ class KogState(private val context: Context) {
             .sortedBy { it.name?.lowercase() })
         deviceFiles.replaceWith(children.filter { it.isFile && it.name?.startsWith('.') != true }
             .sortedBy { it.name?.lowercase() })
+    }
+
+    fun refreshDevice() {
+        deviceCurrent?.let(::browseDevice)
     }
 
     fun deviceUp() {

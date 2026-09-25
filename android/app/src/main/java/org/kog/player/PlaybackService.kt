@@ -15,6 +15,7 @@ class PlaybackService : MediaSessionService() {
 
     override fun onCreate() {
         super.onCreate()
+        NativeAudio.configure(this)
         val http = DataSource.Factory {
             val api = KogApi(this)
             val headers = when {
@@ -25,7 +26,9 @@ class PlaybackService : MediaSessionService() {
             }
             DefaultHttpDataSource.Factory().setDefaultRequestProperties(headers).createDataSource()
         }
-        val data = DefaultDataSource.Factory(this, http)
+        val data = DefaultDataSource.Factory(this, DataSource.Factory {
+            KogBaseDataSource(this, http.createDataSource())
+        })
         val player = ExoPlayer.Builder(this)
             .setMediaSourceFactory(DefaultMediaSourceFactory(data))
             .build()

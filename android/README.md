@@ -8,13 +8,24 @@ in the background and receives system and Bluetooth media controls.
 
 ## Build and install
 
-Install JDK 17 and the Android SDK (platform 36 and build tools 35), then run:
+Install JDK 17, Rust, CMake, Ninja, pkg-config, and the Android SDK (platform
+36, build tools 35, and NDK 28.2.13676358). Initialize the Git submodules and
+build the native decoders before Gradle:
 
 ```sh
+git submodule update --init --recursive
+android/native/build.sh arm64-v8a
 cd android
 ./gradlew :app:assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
+
+Set `ANDROID_HOME` and, if the NDK is elsewhere, `ANDROID_NDK_HOME`. The native
+build downloads and statically links FFmpeg 8.1.2 and libarchive 3.8.8, builds
+Kog's other vendored decoders and helper programs, and packages the C++ runtime.
+The APK produced by GitHub Actions includes arm64; run
+`android/native/build.sh x86_64` as well for an x86_64 emulator. Android 9
+(API 28) or newer is required because libvgm uses the platform's iconv API.
 
 The app accepts a Kog server URL and access token or Basic credentials in
 Settings. On an Android emulator, `http://10.0.2.2:8420` reaches a server on
@@ -24,15 +35,17 @@ Android's document picker. Access to those files persists across app starts.
 
 ## Current playback coverage
 
-Server tracks use Kog's existing Rust decoders and the server's AAC, Opus, or
-FLAC stream. Device files currently use Android Media3's built-in decoders.
-MP3 device playback has been verified on an Android emulator. Kog-specific
-local formats such as NSF, VGM, and tracker modules require an Android build
-of `kog-audio` and a native decoder bridge; their file icons and queue entries
-alone do not make them playable offline. This is the remaining format-parity
-work for Android.
+Server tracks use Kog's Rust decoders and the server's AAC, Opus, or FLAC
+stream. Common device formats, including MP3 and FLAC, use Media3's platform
+decoders. Other device files use the packaged `kog-audio` Rust decoder through
+a JNI bridge and are delivered to the Media3 session as 48 kHz stereo PCM.
+The bridge shares Kog's decoder registry and its format libraries with the
+desktop and server. The Android Media3 session handles background playback,
+lock screen controls, and Bluetooth controls for both paths.
 
-`kog-audio` currently builds many C and C++ libraries in `build.rs`, and its
-archive and FFmpeg dependencies come from desktop `pkg-config`. An Android
-cross build requires target versions of those dependencies before a JNI bridge
-can use Kog's shared `PcmReader` decoder path.
+The device picker stores access to selected files and folders. Native playback
+copies a selected file into the app cache because Kog's decoders require a
+filesystem path. Companion-file formats currently need more work: only the
+selected file is copied, so external sample banks or related miniPSF files may
+not be available. Opening a local archive plays its first expanded track; the
+Android library does not yet show individual archive members or subsongs.

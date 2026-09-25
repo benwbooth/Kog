@@ -324,6 +324,8 @@ fn helper_path() -> Result<PathBuf, String> {
     } else {
         "kog-syntrax-helper"
     };
+    #[cfg(target_os = "android")]
+    return crate::android_helpers::helper_path(executable_name);
     if let Ok(executable) = std::env::current_exe() {
         let sibling = executable.with_file_name(executable_name);
         if sibling.is_file() {

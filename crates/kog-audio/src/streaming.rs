@@ -10,7 +10,8 @@
 
 use std::io::Read;
 use std::num::{NonZeroU16, NonZeroU32};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use rodio::Player;
 use rodio::mixer::{MixerSource, mixer};
@@ -51,6 +52,8 @@ pub struct PcmReader {
     pending: Vec<u8>,
     position: usize,
     finished: bool,
+    duration: Option<Duration>,
+    total_frames: Option<u64>,
     /// Frames to deliver before stopping. A rodio player keeps its mixer alive
     /// by feeding silence, so end-of-stream has to come from the track's known
     /// duration rather than from the mixer running dry.
@@ -58,19 +61,39 @@ pub struct PcmReader {
 }
 
 impl PcmReader {
+    /// Expand a device path through the same archive, cue, and subsong rules as
+    /// the desktop library. The registry stays alive with the PCM reader so
+    /// extracted archive members remain available while playback runs.
+    pub fn open_path(path: PathBuf, settings: DecoderSettings) -> Result<Self, String> {
+        let registry = DecoderRegistry::new(settings);
+        let source = registry
+            .expand_detailed(path)?
+            .sources
+            .into_iter()
+            .next()
+            .ok_or_else(|| "No playable track was found in this file".to_owned())?;
+        Self::open_with_registry(source, registry)
+    }
+
     /// Open a track from the library for streaming. Decoding starts lazily as
     /// the reader is polled, so opening is quick even for emulator backends.
     pub fn open(source: PlaybackSource, settings: DecoderSettings) -> Result<Self, String> {
         let registry = DecoderRegistry::new(settings);
+        Self::open_with_registry(source, registry)
+    }
+
+    fn open_with_registry(
+        source: PlaybackSource,
+        registry: DecoderRegistry,
+    ) -> Result<Self, String> {
         // The track's declared length is the only reliable end marker here.
         // A source that reports no duration falls back to the cap, so a
         // mislabelled file can never stream forever.
-        let remaining_frames = Some(stream_frame_limit(
-            registry
-                .probe(&source)
-                .ok()
-                .and_then(|properties| properties.duration),
-        ));
+        let duration = registry
+            .probe(&source)
+            .ok()
+            .and_then(|properties| properties.duration);
+        let total_frames = Some(stream_frame_limit(duration));
         let (mixer_input, mixer_output) = stream_mixer();
         let player = Player::connect_new(&mixer_input);
         registry.append(&source, &player)?;
@@ -81,7 +104,9 @@ impl PcmReader {
             pending: Vec::with_capacity(PULL_BATCH * 4),
             position: 0,
             finished: false,
-            remaining_frames,
+            duration,
+            total_frames,
+            remaining_frames: total_frames,
         })
     }
 
@@ -102,6 +127,8 @@ impl PcmReader {
             pending: Vec::with_capacity(PULL_BATCH * 4),
             position: 0,
             finished: false,
+            duration: None,
+            total_frames: None,
             remaining_frames: None,
         }
     }
@@ -112,6 +139,43 @@ impl PcmReader {
 
     pub const fn channels(&self) -> u16 {
         STREAM_CHANNELS
+    }
+
+    pub fn duration(&self) -> Option<Duration> {
+        self.duration
+    }
+
+    /// Move an open decoder before the next PCM read. Sources that do not
+    /// support seeking report the same error as desktop playback.
+    pub fn seek(&mut self, position: Duration) -> Result<(), String> {
+        let player = self
+            ._player
+            .as_ref()
+            .ok_or_else(|| "This source cannot seek".to_owned())?;
+        // Rodio's seek order is applied by the mixer when its source is
+        // polled. In a pull stream there is no separate audio thread polling
+        // it, so calling try_seek here directly would wait forever. Drive the
+        // mixer while the seek runs on a scoped thread, discarding samples
+        // until the seek order has been processed.
+        std::thread::scope(|scope| -> Result<(), String> {
+            let seek = scope.spawn(|| player.try_seek(position));
+            while !seek.is_finished() {
+                if self.source.next().is_none() {
+                    return Err("Audio source ended while seeking".to_owned());
+                }
+                std::thread::yield_now();
+            }
+            seek.join()
+                .map_err(|_| "Audio decoder panicked while seeking".to_owned())?
+                .map_err(|error| error.to_string())
+        })?;
+        self.pending.clear();
+        self.position = 0;
+        self.finished = false;
+        self.remaining_frames = self.total_frames.map(|total| {
+            total.saturating_sub((position.as_secs_f64() * f64::from(STREAM_SAMPLE_RATE)) as u64)
+        });
+        Ok(())
     }
 
     fn refill(&mut self) {
@@ -296,6 +360,36 @@ mod tests {
             assert!(count <= small.len());
         }
         assert_eq!(total, 16, "four f32 samples are still delivered in full");
+    }
+
+    #[test]
+    fn a_pull_reader_can_seek_without_an_audio_thread() {
+        let frames = STREAM_SAMPLE_RATE as usize;
+        let samples: Vec<f32> = (0..frames * usize::from(STREAM_CHANNELS))
+            .map(|sample| if sample < frames { 0.25 } else { 0.75 })
+            .collect();
+        let (input, source) = stream_mixer();
+        let player = Player::connect_new(&input);
+        player.append(rodio::buffer::SamplesBuffer::new(
+            NonZeroU16::new(STREAM_CHANNELS).unwrap(),
+            NonZeroU32::new(STREAM_SAMPLE_RATE).unwrap(),
+            samples,
+        ));
+        let mut reader = PcmReader {
+            source,
+            _player: Some(player),
+            _registry: None,
+            pending: Vec::new(),
+            position: 0,
+            finished: false,
+            duration: Some(Duration::from_secs(1)),
+            total_frames: Some(frames as u64),
+            remaining_frames: Some(frames as u64),
+        };
+        reader.seek(Duration::from_millis(750)).expect("seek");
+        let mut output = [0_u8; 4];
+        reader.read_exact(&mut output).expect("read after seek");
+        assert!((f32::from_le_bytes(output) - 0.75).abs() < 0.01);
     }
 
     #[test]

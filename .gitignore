@@ -3,6 +3,8 @@
 /android/local.properties
 /android/app/build/
 /android/build/
+/android/.native-build/
+/android/app/src/main/jniLibs/
 /dist/
 /.flatpak-builder/
 /.direnv/

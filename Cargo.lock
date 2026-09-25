@@ -507,8 +507,6 @@ dependencies = [
 [[package]]
 name = "compress-tools"
 version = "0.16.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "51fb07cbf6204adb9e71af7b689dc5caeca6147f9d9dd5c8f9ae3447147012c0"
 dependencies = [
  "derive_more",
  "libc",
@@ -1628,6 +1626,14 @@ dependencies = [
  "tokio",
  "trash",
  "url",
+]
+
+[[package]]
+name = "kog-android-audio"
+version = "0.9.41"
+dependencies = [
+ "jni",
+ "kog-audio",
 ]
 
 [[package]]
