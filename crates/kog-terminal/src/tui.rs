@@ -426,6 +426,33 @@ struct FolderGeometry {
     height: usize,
 }
 
+struct ExitDialog {
+    x: usize,
+    y: usize,
+    width: usize,
+}
+
+impl ExitDialog {
+    const HEIGHT: usize = 6;
+
+    fn new(size: (usize, usize)) -> Self {
+        let width = size.0.saturating_sub(4).min(44);
+        Self {
+            x: size.0.saturating_sub(width) / 2,
+            y: size.1.saturating_sub(Self::HEIGHT) / 2,
+            width,
+        }
+    }
+
+    fn stay_x(&self) -> usize {
+        self.x + self.width.saturating_sub(14) / 2
+    }
+
+    fn exit_x(&self) -> usize {
+        self.stay_x() + 8
+    }
+}
+
 impl FolderGeometry {
     fn new(size: (usize, usize)) -> Self {
         let width = size.0.saturating_sub(4).min(82);
@@ -831,6 +858,8 @@ struct Ui {
     remote_search_generation: Arc<AtomicU64>,
     search_done: bool,
     exit_requested: bool,
+    exit_confirm_open: bool,
+    exit_confirm_yes: bool,
     menu_open: bool,
     menu_selected: usize,
     menu_page: MenuPage,
@@ -1219,6 +1248,8 @@ impl Ui {
             remote_search_generation,
             search_done: false,
             exit_requested: false,
+            exit_confirm_open: false,
+            exit_confirm_yes: false,
             menu_open: false,
             menu_selected: 0,
             menu_page: MenuPage::Main,
@@ -2144,7 +2175,7 @@ impl Ui {
                         .map_or_else(|| "None".to_owned(), |p| p.display().to_string())
                 ))
             }
-            (MenuPage::Main, 15) => self.exit_requested = true,
+            (MenuPage::Main, 15) => self.request_exit(),
             (MenuPage::View, 0) => {
                 self.sidebar_visible = !self.sidebar_visible;
                 if !self.sidebar_visible {
@@ -3066,6 +3097,12 @@ impl Ui {
         self.artwork_modal = false;
         self.visualizer_open = false;
         self.modal_scroll = 0;
+    }
+
+    fn request_exit(&mut self) {
+        self.menu_open = false;
+        self.exit_confirm_open = true;
+        self.exit_confirm_yes = false;
     }
 
     fn show_visualizer(&mut self) {
@@ -5572,8 +5609,8 @@ impl Ui {
                 row("Ctrl+A", "Select all prompt text"),
                 row("Ctrl+W", "Erase previous word"),
                 row("Ctrl+U", "Clear prompt"),
-                row("Esc", "Close dialog or quit main view"),
-                row("q", "Quit from main view"),
+                row("Esc", "Close dialog or confirm exit"),
+                row("q", "Confirm exit from main view"),
             ]
             .join("\n"),
         );
@@ -5732,6 +5769,25 @@ impl Ui {
     }
 
     fn key(&mut self, key: Key, size: (usize, usize)) -> bool {
+        if self.exit_confirm_open {
+            match key {
+                Key::Esc | Key::Char('n') | Key::Char('N') => self.exit_confirm_open = false,
+                Key::Char('y') | Key::Char('Y') => {
+                    self.exit_confirm_open = false;
+                    self.exit_requested = true;
+                }
+                Key::Left => self.exit_confirm_yes = false,
+                Key::Right => self.exit_confirm_yes = true,
+                Key::Tab | Key::BackTab => self.exit_confirm_yes = !self.exit_confirm_yes,
+                Key::Enter | Key::Char(' ') => {
+                    self.exit_confirm_open = false;
+                    self.exit_requested = self.exit_confirm_yes;
+                }
+                Key::CtrlC => return false,
+                _ => {}
+            }
+            return true;
+        }
         if self.modal.is_some() {
             let max = self
                 .modal
@@ -6001,7 +6057,7 @@ impl Ui {
         }
         if let Some(column) = self.keyboard_column {
             match key {
-                Key::Esc => return false,
+                Key::Esc | Key::Char('q') => self.request_exit(),
                 Key::Char('H') => self.keyboard_column = None,
                 Key::Left | Key::Right => {
                     self.move_keyboard_column(if key == Key::Left { -1 } else { 1 }, size)
@@ -6078,7 +6134,8 @@ impl Ui {
         }
         .max(1);
         match key {
-            Key::Esc | Key::Char('q') | Key::CtrlC => return false,
+            Key::Esc | Key::Char('q') => self.request_exit(),
+            Key::CtrlC => return false,
             Key::Alt(character) => {
                 if menu_shortcut_index(MenuPage::Main, character).is_some() {
                     self.open_submenu(MenuPage::Main);
@@ -6326,6 +6383,28 @@ impl Ui {
             self.vertical_scroll_drag = None;
             self.volume_drag = false;
             self.track_drag = None;
+            return;
+        }
+        if self.exit_confirm_open {
+            if button & 32 == 0 && (button & 0b1100_0000) != 64 && button & 3 == 0 {
+                let dialog = ExitDialog::new(size);
+                if y == dialog.y + 4
+                    && (dialog.stay_x()..dialog.stay_x() + 6).contains(&x)
+                {
+                    self.exit_confirm_open = false;
+                } else if y == dialog.y + 4
+                    && (dialog.exit_x()..dialog.exit_x() + 6).contains(&x)
+                {
+                    self.exit_confirm_open = false;
+                    self.exit_requested = true;
+                } else if x < dialog.x
+                    || x >= dialog.x + dialog.width
+                    || y < dialog.y
+                    || y >= dialog.y + ExitDialog::HEIGHT
+                {
+                    self.exit_confirm_open = false;
+                }
+            }
             return;
         }
         let layout = self.layout(size);
@@ -6692,7 +6771,7 @@ impl Ui {
             } else if x >= size.0.saturating_sub(8) && x < size.0.saturating_sub(4) {
                 self.show_keyboard_help();
             } else if x >= size.0.saturating_sub(4) {
-                self.exit_requested = true;
+                self.request_exit();
             } else if self.compact_mode {
                 self.compact_mode = false;
                 self.status = "Playlist view".to_owned();
@@ -7198,7 +7277,11 @@ impl Ui {
                 &mut screen,
                 1,
                 1,
-                "Kog · Enlarge terminal",
+                if self.exit_confirm_open {
+                    "Exit Kog? Y/N"
+                } else {
+                    "Kog · Enlarge terminal"
+                },
                 width,
                 Surface::Toolbar,
                 true,
@@ -8587,8 +8670,113 @@ impl Ui {
         if let Some(chooser) = &mut self.folder_chooser {
             draw_folder_chooser(&mut screen, chooser, size, marquee_tick);
         }
+        if self.exit_confirm_open {
+            screen.push_str("\x1b[?25l");
+            draw_exit_confirmation(&mut screen, size, self.exit_confirm_yes);
+        }
         screen
     }
+}
+
+fn draw_exit_confirmation(screen: &mut String, size: (usize, usize), exit_selected: bool) {
+    let dialog = ExitDialog::new(size);
+    for row in 0..ExitDialog::HEIGHT {
+        paint(
+            screen,
+            dialog.y + row + 1,
+            dialog.x + 1,
+            "",
+            dialog.width,
+            Surface::Toolbar,
+            false,
+        );
+    }
+    paint(
+        screen,
+        dialog.y + 1,
+        dialog.x + 1,
+        &format!("╭{}╮", "─".repeat(dialog.width.saturating_sub(2))),
+        dialog.width,
+        Surface::Header,
+        true,
+    );
+    paint(
+        screen,
+        dialog.y + ExitDialog::HEIGHT,
+        dialog.x + 1,
+        &format!("╰{}╯", "─".repeat(dialog.width.saturating_sub(2))),
+        dialog.width,
+        Surface::Header,
+        false,
+    );
+    for row in 1..ExitDialog::HEIGHT - 1 {
+        paint(
+            screen,
+            dialog.y + row + 1,
+            dialog.x + 1,
+            "│",
+            1,
+            Surface::Header,
+            false,
+        );
+        paint(
+            screen,
+            dialog.y + row + 1,
+            dialog.x + dialog.width,
+            "│",
+            1,
+            Surface::Header,
+            false,
+        );
+    }
+    paint(
+        screen,
+        dialog.y + 2,
+        dialog.x + 3,
+        "Confirm exit",
+        dialog.width.saturating_sub(4),
+        Surface::Accent,
+        true,
+    );
+    paint(
+        screen,
+        dialog.y + 3,
+        dialog.x + 3,
+        if dialog.width >= 35 {
+            "Are you sure you want to exit?"
+        } else {
+            "Exit Kog?"
+        },
+        dialog.width.saturating_sub(4),
+        Surface::Toolbar,
+        false,
+    );
+    paint(
+        screen,
+        dialog.y + 5,
+        dialog.stay_x() + 1,
+        "[Stay]",
+        6,
+        if exit_selected {
+            Surface::Toolbar
+        } else {
+            Surface::Selected
+        },
+        !exit_selected,
+    );
+    paint(
+        screen,
+        dialog.y + 5,
+        dialog.exit_x() + 1,
+        "[Exit]",
+        6,
+        if exit_selected {
+            Surface::Selected
+        } else {
+            Surface::Toolbar
+        },
+        exit_selected,
+    );
 }
 
 impl Drop for Ui {
