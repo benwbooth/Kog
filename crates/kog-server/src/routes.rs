@@ -257,24 +257,13 @@ impl StreamQuery {
     }
 
     fn location(&self) -> Result<kog_audio::playlist::PlaylistLocation, String> {
-        use kog_audio::playlist::PlaylistLocation;
-        if self.path.trim().is_empty() {
-            return Err("a track path is required".to_owned());
-        }
-        match self.kind.as_str() {
-            "local" => Ok(PlaylistLocation::Local(std::path::PathBuf::from(&self.path))),
-            "archive" => {
-                if self.entry.trim().is_empty() {
-                    return Err("an archive member name is required".to_owned());
-                }
-                Ok(PlaylistLocation::Archive {
-                    archive_path: std::path::PathBuf::from(&self.path),
-                    entry_name: self.entry.clone(),
-                })
-            }
-            "remote" => Ok(PlaylistLocation::Remote(self.path.clone())),
-            other => Err(format!("unknown track kind: {other}")),
-        }
+        kog_audio::playlist::PlaylistEntry::from_locator(
+            &self.kind,
+            &self.path,
+            &self.entry,
+            (!self.fragment.trim().is_empty()).then(|| self.fragment.trim().to_owned()),
+        )
+        .map(|entry| entry.location)
     }
 
     fn codec(&self, default_codec: StreamCodec) -> Result<StreamCodec, String> {

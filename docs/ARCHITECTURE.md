@@ -33,6 +33,9 @@ policy, playlist expansion, metadata/stream locators, and radio-round rules.
 The queue, shuffle, and repeat policy lives in the platform-neutral
 `kog-playback-policy` crate; native players call it through `kog-audio`, and
 the browser compiles it to WebAssembly.
+Saved and streamed track locators are validated by `PlaylistEntry::from_locator`
+in `kog-audio`, so a malformed archive member or unknown kind cannot be
+silently interpreted as a local file by one frontend.
 The Web frontend reaches the Rust library backend through authenticated HTTP;
 the TUI calls the same library collector directly. Qt keeps a parallel scan
 worker for progress and cancellation, then uses the same archive decoder and

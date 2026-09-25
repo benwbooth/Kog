@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use percent_encoding::{AsciiSet, CONTROLS, percent_decode_str, utf8_percent_encode};
 use url::Url;
+use kog_core::db::{KIND_ARCHIVE, KIND_LOCAL, KIND_REMOTE, StoredEntry};
 
 const UNPACK_COMPONENT_ENCODE_SET: &AsciiSet = &CONTROLS
     .add(b' ')
@@ -33,6 +34,49 @@ pub enum PlaylistLocation {
 pub struct PlaylistEntry {
     pub location: PlaylistLocation,
     pub fragment: Option<String>,
+}
+
+impl PlaylistEntry {
+    /// Parse one saved or streamed locator with identical validation in Qt,
+    /// TUI, and the HTTP server. Fragments remain attached to the same source.
+    pub fn from_locator(
+        kind: &str,
+        path: &str,
+        member: &str,
+        fragment: Option<String>,
+    ) -> Result<Self, String> {
+        if path.trim().is_empty() {
+            return Err("a track path is required".to_owned());
+        }
+        let location = match kind {
+            KIND_LOCAL => PlaylistLocation::Local(PathBuf::from(path)),
+            KIND_ARCHIVE => {
+                if member.trim().is_empty() {
+                    return Err("an archive member name is required".to_owned());
+                }
+                PlaylistLocation::Archive {
+                    archive_path: PathBuf::from(path),
+                    entry_name: member.to_owned(),
+                }
+            }
+            KIND_REMOTE => PlaylistLocation::Remote(path.to_owned()),
+            other => return Err(format!("unknown track kind: {other}")),
+        };
+        Ok(Self { location, fragment })
+    }
+}
+
+impl TryFrom<&StoredEntry> for PlaylistEntry {
+    type Error = String;
+
+    fn try_from(entry: &StoredEntry) -> Result<Self, Self::Error> {
+        Self::from_locator(
+            &entry.kind,
+            &entry.path,
+            &entry.entry,
+            entry.fragment.clone(),
+        )
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -627,6 +671,30 @@ mod tests {
     use encoding_rs::{GB18030, WINDOWS_1251};
     use std::io::Write;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[test]
+    fn saved_locator_conversion_rejects_invalid_kinds_and_preserves_subsongs() {
+        let stored = StoredEntry {
+            kind: KIND_ARCHIVE.to_owned(),
+            path: "/music/album.zip".to_owned(),
+            entry: "disc/song.mid".to_owned(),
+            fragment: Some("3".to_owned()),
+        };
+        let parsed = PlaylistEntry::try_from(&stored).unwrap();
+        assert_eq!(
+            parsed,
+            PlaylistEntry {
+                location: PlaylistLocation::Archive {
+                    archive_path: PathBuf::from("/music/album.zip"),
+                    entry_name: "disc/song.mid".to_owned(),
+                },
+                fragment: Some("3".to_owned()),
+            }
+        );
+        assert!(PlaylistEntry::from_locator("bogus", "/music/song.mp3", "", None).is_err());
+        assert!(PlaylistEntry::from_locator(KIND_LOCAL, " ", "", None).is_err());
+        assert!(PlaylistEntry::from_locator(KIND_ARCHIVE, "/music/album.zip", "", None).is_err());
+    }
 
     static FIXTURE_ID: AtomicU64 = AtomicU64::new(0);
 

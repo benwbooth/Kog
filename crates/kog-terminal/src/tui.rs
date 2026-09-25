@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use kog_audio::decoder::{DecoderRegistry, DecoderSettings, PlaybackSource, validate_soundfont};
 use kog_audio::playback::{PlaybackEngine, PlaybackState, available_output_devices};
 use kog_audio::playback_order::PlaybackOrder;
-use kog_audio::playlist::{Playlist, PlaylistEntry, PlaylistLocation};
+use kog_audio::playlist::{Playlist, PlaylistEntry};
 use kog_audio::settings::{
     AppSettings, MidiEngine, OpeningFilesBehavior, OutputDevicePreference, RepeatMode, ShuffleMode,
 };
@@ -1137,11 +1137,9 @@ impl Ui {
                     let Ok((generation, key, entry)) = request else {
                         break;
                     };
-                    let resolved = kog_audio::streaming::resolve_entry(
-                        &playlist_entry(&entry),
-                        &decoders,
-                        &scratch,
-                    );
+                    let resolved = PlaylistEntry::try_from(&entry).and_then(|playlist_entry| {
+                        kog_audio::streaming::resolve_entry(&playlist_entry, &decoders, &scratch)
+                    });
                     let metadata = resolved.ok().map(|source| {
                         let track = AudioTrack::from_source(source, &decoders);
                         let title = if (entry.kind == "archive" || entry.kind == "remote")
@@ -4385,7 +4383,13 @@ impl Ui {
         let Some(track) = self.tracks.get(index) else {
             return false;
         };
-        let entry = playlist_entry(&track.entry);
+        let entry = match PlaylistEntry::try_from(&track.entry) {
+            Ok(entry) => entry,
+            Err(error) => {
+                self.status = error;
+                return false;
+            }
+        };
         // The decoder registry holds any extracted archive files alive while
         // this playback engine plays them.
         match kog_audio::streaming::resolve_entry(
@@ -5512,13 +5516,21 @@ impl Ui {
                         ) {
                             path.set_extension("m3u");
                         }
-                        let count = entries.len();
-                        let entries: Vec<_> = entries.iter().map(playlist_entry).collect();
-                        match Playlist::save_portable(&path, &entries) {
-                            Ok(()) => {
-                                self.status =
-                                    format!("Exported {count} tracks to {}", path.display())
-                            }
+                        match entries
+                            .iter()
+                            .map(PlaylistEntry::try_from)
+                            .collect::<Result<Vec<_>, _>>()
+                        {
+                            Ok(entries) => match Playlist::save_portable(&path, &entries) {
+                                Ok(()) => {
+                                    self.status = format!(
+                                        "Exported {} tracks to {}",
+                                        entries.len(),
+                                        path.display()
+                                    )
+                                }
+                                Err(error) => self.status = error,
+                            },
                             Err(error) => self.status = error,
                         }
                     }
@@ -10255,21 +10267,6 @@ fn search_box_label(value: &str, cursor: Option<usize>, width: usize, placeholde
         }
     };
     format!(" ⌕  {text}")
-}
-
-fn playlist_entry(entry: &StoredEntry) -> PlaylistEntry {
-    let location = match entry.kind.as_str() {
-        "archive" => PlaylistLocation::Archive {
-            archive_path: PathBuf::from(&entry.path),
-            entry_name: entry.entry.clone(),
-        },
-        "remote" => PlaylistLocation::Remote(entry.path.clone()),
-        _ => PlaylistLocation::Local(PathBuf::from(&entry.path)),
-    };
-    PlaylistEntry {
-        location,
-        fragment: entry.fragment.clone(),
-    }
 }
 
 fn glyph(entry: &StoredEntry) -> &'static str {

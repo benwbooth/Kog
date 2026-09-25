@@ -1718,37 +1718,10 @@ fn stored_entry_for_track(track: &Track) -> Option<kog_core::db::StoredEntry> {
 
 /// Playlist entries back out of database rows. Remote entries keep their
 /// URL; anything malformed is left for the caller to skip and count.
-fn playlist_entry_from_stored(entry: &kog_core::db::StoredEntry) -> Option<kog_audio::playlist::PlaylistEntry> {
-    use kog_core::db::{KIND_ARCHIVE, KIND_LOCAL, KIND_REMOTE};
-    use kog_audio::playlist::{PlaylistEntry, PlaylistLocation};
-    let location = match entry.kind.as_str() {
-        KIND_LOCAL => {
-            if entry.path.is_empty() {
-                return None;
-            }
-            PlaylistLocation::Local(PathBuf::from(&entry.path))
-        }
-        KIND_ARCHIVE => {
-            if entry.path.is_empty() || entry.entry.is_empty() {
-                return None;
-            }
-            PlaylistLocation::Archive {
-                archive_path: PathBuf::from(&entry.path),
-                entry_name: entry.entry.clone(),
-            }
-        }
-        KIND_REMOTE => {
-            if entry.path.is_empty() {
-                return None;
-            }
-            PlaylistLocation::Remote(entry.path.clone())
-        }
-        _ => return None,
-    };
-    Some(PlaylistEntry {
-        location,
-        fragment: entry.fragment.clone(),
-    })
+fn playlist_entry_from_stored(
+    entry: &kog_core::db::StoredEntry,
+) -> Option<kog_audio::playlist::PlaylistEntry> {
+    kog_audio::playlist::PlaylistEntry::try_from(entry).ok()
 }
 
 /// Name of the pane/tree snapshot kept beside the other Kog settings.

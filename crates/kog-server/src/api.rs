@@ -325,34 +325,12 @@ fn probe_metadata(
     entry: &str,
     fragment: &str,
 ) -> Result<Option<MetadataRow>, String> {
-    let location = match kind {
-        "local" => {
-            if path.trim().is_empty() {
-                return Err("a track path is required".to_owned());
-            }
-            PlaylistLocation::Local(PathBuf::from(path))
-        }
-        "archive" => {
-            if path.trim().is_empty() || entry.trim().is_empty() {
-                return Err("an archive path and member name are required".to_owned());
-            }
-            PlaylistLocation::Archive {
-                archive_path: PathBuf::from(path),
-                entry_name: entry.to_owned(),
-            }
-        }
-        "remote" => {
-            if path.trim().is_empty() {
-                return Err("a remote URL is required".to_owned());
-            }
-            PlaylistLocation::Remote(path.to_owned())
-        }
-        other => return Err(format!("unknown track kind: {other}")),
-    };
-    let source = PlaylistEntry {
-        location,
-        fragment: (!fragment.trim().is_empty()).then(|| fragment.trim().to_owned()),
-    };
+    let source = PlaylistEntry::from_locator(
+        kind,
+        path,
+        entry,
+        (!fragment.trim().is_empty()).then(|| fragment.trim().to_owned()),
+    )?;
     Ok(streams.probe_entry_with_size(source).ok().map(
         |(properties, file_size_bytes)| MetadataRow::from_properties(properties, file_size_bytes),
     ))
