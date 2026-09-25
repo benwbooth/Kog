@@ -633,7 +633,7 @@ fn expand_source_browse_file(
 pub async fn browse(State(state): State<AppState>, Query(query): Query<BrowseQuery>) -> Response {
     let library = state.library.clone();
     let requested = query.path.clone();
-    let result = tokio::task::spawn_blocking(move || browse_blocking(&library, requested.as_deref()))
+    let result = tokio::task::spawn_blocking(move || browse_blocking(&library, requested.as_deref(), false))
         .await
         .unwrap_or_else(|error| Err(format!("library browse failed: {error}")));
     match result {
@@ -935,30 +935,55 @@ pub fn browse_local(
     library: &Arc<Library>,
     requested: Option<&str>,
 ) -> Result<serde_json::Value, String> {
-    browse_blocking(library, requested)
+    browse_blocking(library, requested, false)
 }
 
-fn browse_blocking(library: &Arc<Library>, requested: Option<&str>) -> Result<serde_json::Value, String> {
+/// Local terminal browsing may leave the configured music root. HTTP callers
+/// continue to use the restricted path above.
+pub fn browse_local_unrestricted(
+    library: &Arc<Library>,
+    requested: Option<&str>,
+) -> Result<serde_json::Value, String> {
+    browse_blocking(library, requested, true)
+}
+
+fn browse_blocking(
+    library: &Arc<Library>,
+    requested: Option<&str>,
+    unrestricted: bool,
+) -> Result<serde_json::Value, String> {
+    let resolve = |path: Option<&str>| -> Result<PathBuf, String> {
+        if !unrestricted {
+            return library.resolve(path);
+        }
+        let candidate = path
+            .map(PathBuf::from)
+            .or_else(|| library.root())
+            .ok_or_else(|| "no music directory is configured".to_owned())?;
+        candidate
+            .canonicalize()
+            .map_err(|error| format!("reading {}: {error}", candidate.display()))
+    };
     // An archive file, or a path inside one, browses the archive's members;
     // the real-filesystem checks below would reject both.
     if let Some(requested) = requested {
         let path = std::path::Path::new(requested);
         if !path.is_dir() {
             if path.is_file() && kog_audio::archive::is_path(path) {
-                return archive_listing(path, "");
+                return archive_listing(&resolve(Some(requested))?, "");
             }
             if let Some((archive, subpath)) = archive_ancestor(path) {
-                return archive_listing(&archive, &subpath);
+                return archive_listing(&resolve(archive.to_str())?, &subpath);
             }
         }
     }
-    let directory = library.resolve(requested)?;
+    let directory = resolve(requested)?;
     let decoders = kog_audio::decoder::DecoderRegistry::new(
         kog_audio::settings::AppSettings::load().decoder_settings(),
     );
     let read_playlists = library.read_playlists_in_folders();
     let root = library.root();
-    let root = root.as_deref();
+    let root = root.as_deref().filter(|root| directory.starts_with(root));
 
     let mut directories = Vec::new();
     let mut candidates = Vec::new();
@@ -2172,6 +2197,30 @@ pub fn router() -> axum::Router<AppState> {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn terminal_can_browse_above_music_root_without_exposing_it_over_http() {
+        let directory = tempfile::tempdir().unwrap();
+        let music = directory.path().join("music");
+        let sibling = directory.path().join("other");
+        std::fs::create_dir(&music).unwrap();
+        std::fs::create_dir(&sibling).unwrap();
+        std::fs::write(sibling.join("outside.zip"), b"not an archive").unwrap();
+        let library = Arc::new(Library::new(
+            Some(music),
+            LibraryDb::open_in_memory().unwrap(),
+        ));
+
+        let local = browse_local_unrestricted(&library, sibling.to_str()).unwrap();
+        assert_eq!(local["path"], sibling.to_string_lossy().as_ref());
+        assert_eq!(local["directories"][0]["name"], "outside.zip");
+        assert!(browse_local(&library, sibling.to_str())
+            .unwrap_err()
+            .contains("outside the music directory"));
+        assert!(browse_local(&library, sibling.join("outside.zip").to_str())
+            .unwrap_err()
+            .contains("outside the music directory"));
+    }
 
     fn row(title: &str) -> MetadataRow {
         MetadataRow {

@@ -34,9 +34,11 @@ Download the latest packages from [GitHub Releases](https://github.com/benwbooth
 | macOS | DMG for Apple Silicon |
 | Linux | AppImage, portable AppDir archive, Flatpak bundle, or Flatpak repository archive |
 
-Linux and Apple Silicon release builds also offer a CLI archive with separate
-`kog-tui` and `kog-server` executables. These use system audio and codec
-libraries; the desktop packages bundle more of their runtime dependencies.
+Linux and Apple Silicon release builds also offer separate archives for
+`kog-tui` and the headless `kog-server`. Each includes the decoder helpers,
+FFmpeg encoder, and required third-party libraries; keep the extracted
+directory together. Linux needs a compatible glibc and host audio stack, and
+macOS needs its system libraries and frameworks.
 
 Desktop release packages include the decoder components they need. You do not need to
 install separate player programs or command-line decoders.

@@ -73,11 +73,19 @@ impl StreamService {
         &self.cache
     }
 
-    /// Resolve the encoder: `KOG_FFMPEG`, then `ffmpeg` on `PATH`.
+    /// Resolve the encoder: `KOG_FFMPEG`, a bundled sibling, then `PATH`.
     pub fn default_encoder() -> PathBuf {
-        std::env::var_os("KOG_FFMPEG")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("ffmpeg"))
+        if let Some(path) = std::env::var_os("KOG_FFMPEG") {
+            return PathBuf::from(path);
+        }
+        let name = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
+        if let Ok(executable) = std::env::current_exe() {
+            let sibling = executable.with_file_name(name);
+            if sibling.is_file() {
+                return sibling;
+            }
+        }
+        PathBuf::from(name)
     }
 
     /// Open a stream for one entry, encoding on a miss.

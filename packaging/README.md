@@ -30,6 +30,14 @@ Qt Quick platform/QML plugins, FFmpeg, libarchive, desktop portals, and the host
 audio stack. Both the AppImage and the AppDir tarball bundle the required shared
 libraries while preserving the dynamic plugin model Qt requires.
 
+The standalone TUI and headless server are published as separate archives on
+Linux and Apple Silicon macOS. Each archive includes its executable, decoder
+helpers, FFmpeg, and non-system shared libraries, without Qt. Linux still needs
+a compatible glibc and host audio stack. macOS requires dynamic linking to its
+system libraries and frameworks, so a fully static macOS executable is not
+supported. The packaging scripts check that no third-party library points
+outside each archive.
+
 The Nix shell and Flatpak include Layer Shell Qt for positioning custom
 notifications above the panel on supported Wayland desktops. The older Qt
 baseline used by the AppImage does not bundle that optional module; without it,

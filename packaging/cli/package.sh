@@ -14,18 +14,54 @@ esac
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$root/Cargo.toml" | head -n1)"
-bundle="Kog-$version-$platform-$architecture-cli"
-mkdir -p "$root/dist/cli/$bundle"
-cp "$root/target/release/kog-tui" "$root/target/release/kog-server" "$root/dist/cli/$bundle/"
-cat > "$root/dist/cli/$bundle/README.txt" <<'EOF'
-Kog terminal and headless server binaries
+dist="$root/dist/cli"
+mkdir -p "$dist"
+stage="$(mktemp -d "$dist/.stage.XXXXXX")"
+trap 'rm -rf "$stage"' EXIT
 
-Run ./kog-tui in a terminal to browse and play locally.
-Run ./kog-server to serve the web UI and API using Kog's saved server settings.
-The server binds the saved address and port even when the desktop server toggle is off.
-Configure credentials and TLS in Kog before exposing the server beyond loopback.
+helpers=(
+  kog-sfm-helper kog-psf-helper kog-psf2-helper kog-2sf-helper
+  kog-snsf-helper kog-syntrax-helper kog-sc55-helper
+)
+ffmpeg="$(command -v ffmpeg || true)"
+if [[ -z "$ffmpeg" ]]; then
+  echo "ffmpeg is required for the self-contained server and TUI packages" >&2
+  exit 1
+fi
 
-These binaries use the system's native audio and codec libraries. Install Kog's
-usual runtime dependencies for your platform, including FFmpeg for transcoding.
+for target in tui server; do
+  bundle="Kog-$version-$platform-$architecture-$target"
+  directory="$stage/$bundle"
+  mkdir -p "$directory"
+  install -m755 "$root/target/release/kog-$target" "$directory/kog-$target"
+  install -m755 "$ffmpeg" "$directory/ffmpeg"
+  for helper in "${helpers[@]}"; do
+    helper_path="$(find "$root/target/release/build" -type f \
+      -path "*/bin/$helper" -print -quit)"
+    if [[ -z "$helper_path" ]]; then
+      echo "missing release helper: $helper" >&2
+      exit 1
+    fi
+    install -m755 "$helper_path" "$directory/$helper"
+  done
+
+  if [[ "$platform" == linux ]]; then
+    python3 "$root/packaging/cli/bundle-linux.py" "$directory"
+  else
+    python3 "$root/packaging/cli/bundle-macos.py" "$directory"
+  fi
+
+  cat > "$directory/README.txt" <<EOF
+Kog $target for $platform $architecture
+
+Run ./kog-$target from this directory. The ffmpeg encoder and Kog decoder
+helpers are included beside it; non-system shared libraries are in ./lib.
+Keep the whole directory together when moving it to another machine.
+
+Linux still needs a compatible glibc, the kernel, and an audio device for TUI
+playback. macOS uses its built-in system libraries and frameworks. No Qt or
+Homebrew installation is needed for these command-line packages.
 EOF
-tar -C "$root/dist/cli" -czf "$root/dist/cli/$bundle.tar.gz" "$bundle"
+  install -m644 "$root/LICENSE" "$directory/LICENSE"
+  tar -C "$stage" -czf "$dist/$bundle.tar.gz" "$bundle"
+done

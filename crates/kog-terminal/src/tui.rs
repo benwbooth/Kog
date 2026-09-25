@@ -20,7 +20,7 @@ use kog_audio::settings::{
 use kog_audio::track::Track as AudioTrack;
 use kog_core::db::{BLACKLIST_FOLDER, BLACKLIST_SONG, BlacklistEntry, StoredEntry};
 use kog_core::equalizer::{EqualizerSettings, presets};
-use kog_server::api::{Library, LocalSearch, browse_local, expand_stored_entry};
+use kog_server::api::{Library, LocalSearch, browse_local_unrestricted, expand_stored_entry};
 use kog_server::radio::{Radio, RadioAdvance, RadioEntry, RadioStatus};
 use kog_server::{AuthMode, StreamCodec, TlsMode};
 use rand::Rng;
@@ -107,9 +107,7 @@ fn load_tree_state(library_root: Option<&Path>) -> Option<SavedTreeState> {
         return None;
     }
     let browse_path = value["browsePath"].as_str().map(PathBuf::from);
-    if browse_path.as_ref().is_some_and(|path| {
-        !path.is_absolute() || library_root.is_some_and(|root| !path.starts_with(root))
-    }) {
+    if browse_path.as_ref().is_some_and(|path| !path.is_absolute()) {
         return None;
     }
     let paths = value["expanded"].as_array()?;
@@ -339,9 +337,9 @@ fn tree_item_key(item: &Item) -> String {
     }
 }
 
-fn browse_parent_path(location: &Path, root: &Path) -> Option<PathBuf> {
+fn browse_parent_path(location: &Path) -> Option<PathBuf> {
     let parent = location.parent()?;
-    (parent != location && parent.starts_with(root)).then(|| parent.to_path_buf())
+    (parent != location).then(|| parent.to_path_buf())
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -3458,11 +3456,10 @@ impl Ui {
         let result = self.read_directory(path.as_deref());
         match result {
             Ok((location, mut items)) => {
-                if let (Some(location), Some(root)) = (location.as_deref(), self.library.root()) {
-                    let root = root.canonicalize().unwrap_or(root);
-                    if let Some(parent) = browse_parent_path(location, &root) {
-                        items.insert(0, Item::Parent(parent));
-                    }
+                if let Some(location) = location.as_deref() {
+                    let parent =
+                        browse_parent_path(location).unwrap_or_else(|| location.to_path_buf());
+                    items.insert(0, Item::Parent(parent));
                 }
                 self.remote_search_generation
                     .fetch_add(1, Ordering::Relaxed);
@@ -3494,7 +3491,7 @@ impl Ui {
     }
 
     fn read_directory(&self, path: Option<&Path>) -> Result<(Option<PathBuf>, Vec<Item>), String> {
-        let value = browse_local(&self.library, path.and_then(Path::to_str))?;
+        let value = browse_local_unrestricted(&self.library, path.and_then(Path::to_str))?;
         let mut items = Vec::new();
         for dir in value["directories"].as_array().into_iter().flatten() {
             if let (Some(name), Some(path)) = (dir["name"].as_str(), dir["path"].as_str()) {
@@ -3858,6 +3855,12 @@ impl Ui {
             });
         }
         self.root_items = buckets.remove(root).unwrap_or_default();
+        if !self.remote_active {
+            self.root_items.insert(
+                0,
+                Item::Parent(self.browse_path.clone().unwrap_or_else(|| root.clone())),
+            );
+        }
         self.children = buckets;
         self.rebuild_tree();
         if let Some(key) = selected_key
@@ -4042,7 +4045,7 @@ impl Ui {
             ..
         }) = self.items.get(selected)
         {
-            self.browse(Some(path.clone()));
+            self.open_parent(path.clone());
             return;
         }
         if let Some(TreeRow {
@@ -4061,7 +4064,15 @@ impl Ui {
                 self.selected[1] = parent;
             }
         } else if let Some(Item::Parent(path)) = self.items.first().map(|row| &row.item) {
-            self.browse(Some(path.clone()));
+            self.open_parent(path.clone());
+        }
+    }
+
+    fn open_parent(&mut self, path: PathBuf) {
+        if self.search_root.is_none() && self.browse_path.as_deref() == Some(path.as_path()) {
+            self.status = "Already at the filesystem root".to_owned();
+        } else {
+            self.browse(Some(path));
         }
     }
 
@@ -4301,7 +4312,7 @@ impl Ui {
             Some(TreeRow {
                 item: Item::Parent(path),
                 ..
-            }) => self.browse(Some(path)),
+            }) => self.open_parent(path),
             Some(TreeRow {
                 item: Item::Directory(_, path),
                 ..
@@ -6051,6 +6062,7 @@ impl Ui {
                 row("PgUp / PgDn", "Move one page"),
                 row("Home / End", "First / last item"),
                 row("→ tree / ← edge", "Switch tree and playlist"),
+                row("Backspace", "Go up or close a folder"),
                 row("Enter", "Open folder, list, or track"),
                 row("Enter on ..", "Go to parent folder"),
                 row("J / K", "Move cursor only"),
@@ -6830,7 +6842,7 @@ impl Ui {
             Key::PageDown => self.move_selection(page as isize, page),
             Key::Home => self.move_selection(-(isize::MAX / 2), page),
             Key::End => self.move_selection(isize::MAX / 2, page),
-            Key::Left | Key::Backspace if self.focus == Focus::Library => self.up_directory(),
+            Key::Backspace if self.focus == Focus::Library => self.up_directory(),
             Key::Right if self.focus == Focus::Library => {
                 self.range_click_pending = None;
                 self.focus = Focus::Tracks;
@@ -7636,7 +7648,7 @@ impl Ui {
                 }
                 if let Item::Parent(path) = &self.items[index].item {
                     if button & (3 | 4 | 8 | 16) == 0 {
-                        self.browse(Some(path.clone()));
+                        self.open_parent(path.clone());
                     }
                     return;
                 }
@@ -7671,7 +7683,7 @@ impl Ui {
                 };
                 if double {
                     match self.items.get(index).map(|row| row.item.clone()) {
-                        Some(Item::Parent(path)) => self.browse(Some(path)),
+                        Some(Item::Parent(path)) => self.open_parent(path),
                         Some(Item::Directory(..)) => self.add_selected(false),
                         Some(Item::Track(_)) => self.activate_selected(),
                         None => {}
@@ -7696,7 +7708,7 @@ impl Ui {
                 if index < self.items.len() {
                     if let Item::Parent(path) = &self.items[index].item {
                         if button & (3 | 4 | 8 | 16) == 0 {
-                            self.browse(Some(path.clone()));
+                            self.open_parent(path.clone());
                         }
                         return;
                     }
@@ -7737,7 +7749,7 @@ impl Ui {
                     };
                     if double {
                         match self.items.get(index).map(|row| row.item.clone()) {
-                            Some(Item::Parent(path)) => self.browse(Some(path)),
+                            Some(Item::Parent(path)) => self.open_parent(path),
                             Some(Item::Directory(..)) => self.add_selected(false),
                             Some(Item::Track(_)) => self.activate_selected(),
                             None => {}
@@ -9875,7 +9887,7 @@ fn collect_folder(
     let mut pending = vec![path];
     let mut tracks = Vec::new();
     while let Some(directory) = pending.pop() {
-        let listing = browse_local(library, directory.to_str())?;
+        let listing = browse_local_unrestricted(library, directory.to_str())?;
         if let Some(dirs) = listing["directories"].as_array() {
             for dir in dirs.iter().rev() {
                 if let Some(path) = dir["path"].as_str() {
@@ -12267,18 +12279,17 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
-    fn parent_navigation_stays_inside_music_root() {
-        let root = Path::new("/music");
-        assert_eq!(browse_parent_path(root, root), None);
+    fn parent_navigation_can_leave_music_root() {
+        assert_eq!(browse_parent_path(Path::new("/")), None);
         assert_eq!(
-            browse_parent_path(Path::new("/music/games/mario"), root),
+            browse_parent_path(Path::new("/music/games/mario")),
             Some(PathBuf::from("/music/games"))
         );
         assert_eq!(
-            browse_parent_path(Path::new("/music/songs.zip/nested"), root),
+            browse_parent_path(Path::new("/music/songs.zip/nested")),
             Some(PathBuf::from("/music/songs.zip"))
         );
-        assert_eq!(browse_parent_path(Path::new("/music-other/album"), root), None);
+        assert_eq!(browse_parent_path(Path::new("/music")), Some(PathBuf::from("/")));
     }
 
     #[test]
