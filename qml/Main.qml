@@ -2849,20 +2849,25 @@ ApplicationWindow {
                 TreeView {
                     id: directoryTree
                     property Item tooltipOwner: null
+                    property Item tooltipAnchor: directoryTree
                     property string tooltipText: ""
 
                     function showRowTooltip(pointer, path) {
                         if (!path)
                             return
-                        tooltipText = fileTreeModel.display_path(path)
-                        tooltipOwner = tooltipText.length > 0 ? pointer : null
+                        const text = fileTreeModel.display_path(path)
+                        if (!text)
+                            return
+                        tooltipOwner = null
+                        tooltipText = text
+                        tooltipAnchor = pointer
+                        tooltipOwner = pointer
                     }
 
                     function hideRowTooltip(pointer) {
                         if (tooltipOwner !== pointer)
                             return
                         tooltipOwner = null
-                        tooltipText = ""
                     }
 
                     onExpanded: row => root.noteTreeExpanded(row)
@@ -2901,13 +2906,12 @@ ApplicationWindow {
                         return Math.max(0, width - scrollGutter)
                     }
 
-                    // One local tooltip follows the hovered row. Attached
-                    // ToolTips share a visual popup across the whole window;
-                    // a row leaving it can clear the text while another row
-                    // is opening it. Set text before changing its owner.
+                    // Keep the local tooltip anchored to its last row while
+                    // closing. Reparenting it to the view and clearing its
+                    // text during the close can briefly draw an empty popup
+                    // above the tree before Qt finishes hiding it.
                     ToolTip {
-                        parent: directoryTree.tooltipOwner
-                            ? directoryTree.tooltipOwner : directoryTree
+                        parent: directoryTree.tooltipAnchor
                         visible: directoryTree.tooltipOwner !== null
                             && directoryTree.tooltipOwner.containsMouse
                             && !directoryTree.moving
@@ -3022,11 +3026,8 @@ ApplicationWindow {
                                     : treeDelegate.palette.text
                             }
                         }
-                        // A regular attached ToolTip driven by the row's own
-                        // MouseArea: it covers the delegate, so the
-                        // delegate's hovered never fires. A single global
-                        // ToolTip follows the shared delay and shows the
-                        // full path, wrapped rather than elided.
+                        // The MouseArea covers the delegate, so its hover
+                        // events drive the tree's single local tooltip.
                         MouseArea {
                             id: treePointer
                             property real pressX: 0
