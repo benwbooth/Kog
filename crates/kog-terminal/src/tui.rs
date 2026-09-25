@@ -6016,7 +6016,7 @@ impl Ui {
                 row("+ / -", "Volume up / down"),
                 row("R", "Cycle repeat mode"),
                 row("S", "Cycle shuffle mode"),
-                row("View → Visualizer", "Open live audio view"),
+                row("V / View → Visualizer", "Open live waveform and spectrum"),
                 row("1 / 2 / ← →", "Switch waveform / spectrum"),
                 String::new(),
                 "COLUMNS AND LAYOUT".to_owned(),
@@ -6630,6 +6630,7 @@ impl Ui {
                 .to_owned();
             }
             Key::Char('G') => self.begin_seek_prompt(),
+            Key::Char('V') => self.show_visualizer(),
             Key::CtrlR | Key::Char('u') if self.focus == Focus::Library => {
                 if self.remote_active {
                     self.connect_remote(Some(self.remote_path.clone()));
@@ -7346,6 +7347,13 @@ impl Ui {
                     self.set_volume_from_bar(x, size);
                     self.volume_drag = true;
                 }
+                return;
+            }
+            if y == layout.footer_top + 2
+                && inline_waveform_geometry(size, self.cover_preview.is_some())
+                    .is_some_and(|(left, width)| (left..left + width).contains(&x))
+            {
+                self.show_visualizer();
                 return;
             }
             if y == layout.footer_top {
@@ -9008,6 +9016,17 @@ impl Ui {
             Surface::Toolbar,
             false,
         );
+        if let Some((left, width)) = inline_waveform_geometry(size, self.cover_preview.is_some()) {
+            let frame = (self.player.state() == PlaybackState::Playing)
+                .then(|| self.player.visualizer_frame());
+            draw_inline_waveform(
+                &mut screen,
+                layout.footer_top + 3,
+                left,
+                width,
+                frame.as_deref(),
+            );
+        }
         let message = self.prompt.as_ref().map(|(kind, value)| {
             if matches!(kind, PromptKind::Search | PromptKind::PlaylistSearch) {
                 if *kind == PromptKind::Search && !self.status.is_empty() {
@@ -9019,7 +9038,7 @@ impl Ui {
             "Enter confirm · Esc cancel · ←/→ move caret".to_owned()
         }).unwrap_or_else(|| {
             if self.status.is_empty() {
-                "Tab pane · M actions · H columns · x mark · ? keys · Enter open/play · Space pause".to_owned()
+                "V waveform · Tab pane · M actions · H columns · x mark · ? keys · Enter open/play · Space pause".to_owned()
             } else { self.status.clone() }
         });
         let message = if let Some(column) = self
@@ -10500,6 +10519,19 @@ fn volume_geometry(width: usize, footer_top: usize) -> (usize, usize, usize, usi
     (row, icon_x, icon_x + 3, bar_width)
 }
 
+fn inline_waveform_geometry(size: (usize, usize), cover_present: bool) -> Option<(usize, usize)> {
+    let footer_top = size.1.saturating_sub(4);
+    let (volume_row, icon_x, _, _) = volume_geometry(size.0, footer_top);
+    let left = if size.0 >= 80 && cover_present { 11 } else { 2 };
+    let right = if volume_row == footer_top + 2 {
+        icon_x.saturating_sub(2)
+    } else {
+        size.0.saturating_sub(2)
+    };
+    let width = right.saturating_sub(left).min(64);
+    (width >= 16).then_some((left, width))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TransportAction {
     Shuffle,
@@ -11065,6 +11097,87 @@ fn braille_dot(dots: &mut [u8], width: usize, x: usize, y: usize) {
     dots[(y / 4) * width + x / 2] |= 1 << BITS[x % 2][y % 4];
 }
 
+fn waveform_dots(wave: &[f32], width: usize, height: usize) -> Vec<u8> {
+    let pixel_width = width * 2;
+    let pixel_height = height * 4;
+    let mut dots = vec![0_u8; width * height];
+    if wave.is_empty() || pixel_width == 0 || pixel_height == 0 {
+        return dots;
+    }
+    let mut previous = None;
+    for px in 0..pixel_width {
+        let start = px * wave.len() / pixel_width;
+        let end = ((px + 1) * wave.len() / pixel_width)
+            .max(start + 1)
+            .min(wave.len());
+        let mut low = pixel_height;
+        let mut high = 0;
+        for &sample in &wave[start..end] {
+            let py = ((1.0 - sample.clamp(-1.0, 1.0) * 0.9)
+                * (pixel_height.saturating_sub(1)) as f32
+                / 2.0)
+                .round() as usize;
+            low = low.min(py);
+            high = high.max(py);
+        }
+        let current = ((1.0 - wave[end - 1].clamp(-1.0, 1.0) * 0.9)
+            * (pixel_height.saturating_sub(1)) as f32
+            / 2.0)
+            .round() as usize;
+        if let Some(previous) = previous {
+            low = low.min(previous);
+            high = high.max(previous);
+        }
+        for py in low..=high {
+            braille_dot(&mut dots, width, px, py);
+        }
+        previous = Some(current);
+    }
+    dots
+}
+
+fn waveform_color(column: usize, width: usize) -> (u8, u8, u8) {
+    let t = column as f32 / width.saturating_sub(1).max(1) as f32;
+    (
+        (66.0 + 3.0 * t).round() as u8,
+        (223.0 - 37.0 * t).round() as u8,
+        (163.0 + 92.0 * t).round() as u8,
+    )
+}
+
+fn draw_inline_waveform(
+    screen: &mut String,
+    row: usize,
+    left: usize,
+    width: usize,
+    frame_json: Option<&str>,
+) {
+    paint(screen, row, left + 1, "Wave ", 5, Surface::Muted, false);
+    let plot_width = width.saturating_sub(5);
+    let frame = frame_json.and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok());
+    let wave: Vec<f32> = frame
+        .as_ref()
+        .and_then(|frame| frame["wave"].as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|value| value.as_f64().map(|sample| sample as f32))
+        .collect();
+    let dots = waveform_dots(&wave, plot_width, 1);
+    let (_, background) = surface_colors(Surface::Toolbar);
+    for (column, &mask) in dots.iter().enumerate() {
+        let (red, green, blue) = waveform_color(column, plot_width);
+        let glyph = if mask == 0 {
+            '⠤'
+        } else {
+            char::from_u32(0x2800 + u32::from(mask)).unwrap_or(' ')
+        };
+        screen.push_str(&format!(
+            "\x1b[{row};{}H\x1b[38;2;{red};{green};{blue};48;2;{background}m{glyph}\x1b[0m",
+            left + 6 + column,
+        ));
+    }
+}
+
 fn draw_visualizer_modal(
     screen: &mut String,
     size: (usize, usize),
@@ -11181,11 +11294,9 @@ fn draw_visualizer_modal(
 
     let plot_width = dialog.plot_width();
     let plot_height = dialog.plot_height();
-    let pixel_width = plot_width * 2;
     let pixel_height = plot_height * 4;
-    let mut dots = vec![0_u8; plot_width * plot_height];
     let frame: serde_json::Value = serde_json::from_str(frame_json).unwrap_or_default();
-    match mode {
+    let dots = match mode {
         VisualizerMode::Waveform => {
             let wave: Vec<f32> = frame["wave"]
                 .as_array()
@@ -11193,39 +11304,11 @@ fn draw_visualizer_modal(
                 .flatten()
                 .filter_map(|value| value.as_f64().map(|sample| sample as f32))
                 .collect();
-            if !wave.is_empty() {
-                let mut previous = None;
-                for px in 0..pixel_width {
-                    let start = px * wave.len() / pixel_width;
-                    let end = ((px + 1) * wave.len() / pixel_width)
-                        .max(start + 1)
-                        .min(wave.len());
-                    let mut low = pixel_height;
-                    let mut high = 0;
-                    for &sample in &wave[start..end] {
-                        let py = ((1.0 - sample.clamp(-1.0, 1.0) * 0.9)
-                            * (pixel_height.saturating_sub(1)) as f32
-                            / 2.0)
-                            .round() as usize;
-                        low = low.min(py);
-                        high = high.max(py);
-                    }
-                    let current = ((1.0 - wave[end - 1].clamp(-1.0, 1.0) * 0.9)
-                        * (pixel_height.saturating_sub(1)) as f32
-                        / 2.0)
-                        .round() as usize;
-                    if let Some(previous) = previous {
-                        low = low.min(previous);
-                        high = high.max(previous);
-                    }
-                    for py in low..=high {
-                        braille_dot(&mut dots, plot_width, px, py);
-                    }
-                    previous = Some(current);
-                }
-            }
+            waveform_dots(&wave, plot_width, plot_height)
         }
         VisualizerMode::Spectrum => {
+            let mut dots = vec![0_u8; plot_width * plot_height];
+            let pixel_width = plot_width * 2;
             let bands: Vec<f32> = frame["spectrum"]
                 .as_array()
                 .into_iter()
@@ -11245,8 +11328,9 @@ fn draw_visualizer_modal(
                     }
                 }
             }
+            dots
         }
-    }
+    };
 
     for row in 0..plot_height {
         screen.push_str(&format!(
@@ -11255,10 +11339,7 @@ fn draw_visualizer_modal(
             x + 3
         ));
         for column in 0..plot_width {
-            let t = column as f32 / plot_width.saturating_sub(1).max(1) as f32;
-            let red = (66.0 + 3.0 * t).round() as u8;
-            let green = (223.0 - 37.0 * t).round() as u8;
-            let blue = (163.0 + 92.0 * t).round() as u8;
+            let (red, green, blue) = waveform_color(column, plot_width);
             let mask = dots[row * plot_width + column];
             if mask == 0 && [plot_height / 4, plot_height / 2, plot_height * 3 / 4].contains(&row) {
                 screen.push_str("\x1b[38;2;36;50;59m⠤");
@@ -11902,7 +11983,10 @@ pub fn run() -> Result<(), String> {
             last_session_flush = Instant::now();
         }
         let size = terminal.size();
-        let frame_interval = if ui.visualizer_open { 66 } else { 150 };
+        let live_waveform = ui.player.state() == PlaybackState::Playing
+            && inline_waveform_geometry(size, ui.cover_preview.is_some()).is_some();
+        let animate = ui.visualizer_open || live_waveform;
+        let frame_interval = if animate { 66 } else { 150 };
         if size != last_size || last_draw.elapsed() >= Duration::from_millis(frame_interval) {
             let frame = ui.draw(size);
             if frame != last_frame {
@@ -11915,7 +11999,7 @@ pub fn run() -> Result<(), String> {
         if ui.player.finished() {
             ui.next(true);
         }
-        terminal.read(&mut input, if ui.visualizer_open { 50 } else { 100 });
+        terminal.read(&mut input, if animate { 50 } else { 100 });
         if input.as_slice() == [0x1b] {
             if escape_pending.is_some_and(|since| since.elapsed() >= Duration::from_millis(150)) {
                 input.clear();
@@ -11977,6 +12061,23 @@ mod tests {
     use super::*;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn waveform_is_visible_in_footer_and_full_visualizer() {
+        let wave: Vec<f32> = (0..256)
+            .map(|sample| (sample as f32 * std::f32::consts::TAU / 32.0).sin())
+            .collect();
+        let frame = serde_json::json!({"wave": wave, "spectrum": vec![0.0_f32; 40]}).to_string();
+        let mut footer = String::new();
+        draw_inline_waveform(&mut footer, 22, 2, 32, Some(&frame));
+        assert!(footer.contains("Wave "));
+        assert!(footer.chars().any(|glyph| ('\u{2801}'..='\u{28ff}').contains(&glyph)));
+
+        let mut modal = String::new();
+        draw_visualizer_modal(&mut modal, (80, 24), VisualizerMode::Waveform, &frame);
+        assert!(modal.contains("[1 Waveform]"));
+        assert!(modal.chars().any(|glyph| ('\u{2801}'..='\u{28ff}').contains(&glyph)));
+    }
 
     #[test]
     fn folder_chooser_browses_directories_and_edits_path_components() {
