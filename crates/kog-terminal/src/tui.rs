@@ -1855,7 +1855,7 @@ impl Ui {
                 layout.first = width.clamp(18, size.0.saturating_sub(30).max(18));
             }
         }
-        let track_width = size.0.saturating_sub(layout.first + 1);
+        let track_width = size.0.saturating_sub(layout.playlist_left());
         let vertical = track_count > layout.track_page;
         if self.columns.total_width() > track_width.saturating_sub(usize::from(vertical))
             && track_width >= 5
@@ -1878,8 +1878,8 @@ impl Ui {
         (!self.compact_mode && (layout.show_sidebar || self.focus == Focus::Tracks))
             .then(|| {
                 HorizontalScrollbar::new(
-                    layout.first + 1,
-                    size.0.saturating_sub(layout.first + 1 + usize::from(
+                    layout.playlist_left(),
+                    size.0.saturating_sub(layout.playlist_left() + usize::from(
                         self.track_scrollbar_for_count(layout, size, track_count)
                             .is_some(),
                     )),
@@ -5539,7 +5539,7 @@ impl Ui {
         let layout = self.layout(size);
         if let Some(column) = self.keyboard_column {
             self.context_column = Some(column);
-            self.open_context(MenuPage::Columns, layout.first + 2, 1, size);
+            self.open_context(MenuPage::Columns, layout.playlist_left() + 1, 1, size);
             return;
         }
         match self.focus {
@@ -5576,10 +5576,10 @@ impl Ui {
             ),
             Focus::Tracks if !self.tracks.is_empty() => (
                 MenuPage::Tracks,
-                layout.first + 2,
+                layout.playlist_left() + 1,
                 2 + self.selected[2].saturating_sub(self.offsets[2]),
             ),
-            Focus::Tracks => (MenuPage::Playlist, layout.first + 2, 2),
+            Focus::Tracks => (MenuPage::Playlist, layout.playlist_left() + 1, 2),
         };
         self.open_context(page, x, y, size);
     }
@@ -6178,7 +6178,7 @@ impl Ui {
             Key::Left | Key::Right if self.focus == Focus::Tracks && !self.compact_mode => {
                 self.columns.scroll_by(
                     if key == Key::Left { -8 } else { 8 },
-                    size.0.saturating_sub(layout.first + 1),
+                    size.0.saturating_sub(layout.playlist_left()),
                 );
             }
             Key::Enter if self.focus == Focus::Playlists => self.enqueue_list(self.selected[0]),
@@ -6232,11 +6232,11 @@ impl Ui {
             Key::Char('S') => self.cycle_shuffle(),
             Key::Char('[') if self.focus == Focus::Tracks => {
                 self.columns
-                    .scroll_by(-12, size.0.saturating_sub(layout.first + 1));
+                    .scroll_by(-12, size.0.saturating_sub(layout.playlist_left()));
             }
             Key::Char(']') if self.focus == Focus::Tracks => {
                 self.columns
-                    .scroll_by(12, size.0.saturating_sub(layout.first + 1));
+                    .scroll_by(12, size.0.saturating_sub(layout.playlist_left()));
             }
             Key::Char('Q') if self.focus == Focus::Tracks => self.toggle_selected_queue(),
             Key::Char('X') if self.focus == Focus::Tracks => self.toggle_selected_stop_after(),
@@ -6342,7 +6342,7 @@ impl Ui {
                 .find(|(index, ..)| *index == column)
                 .map(|(_, start, _)| start);
             if let Some(start) = start {
-                let relative = x.saturating_sub(layout.first + 1) + self.columns.scroll;
+                let relative = x.saturating_sub(layout.playlist_left()) + self.columns.scroll;
                 self.columns.entries[column].width = relative.saturating_sub(start).clamp(3, 160);
             }
             return;
@@ -6357,7 +6357,11 @@ impl Ui {
             let right_edge = size.0.saturating_sub(usize::from(
                 self.track_scrollbar(&layout, size).is_some(),
             ));
-            if x > layout.first && x < right_edge && y >= 2 && y < 2 + layout.track_page {
+            if x >= layout.playlist_left()
+                && x < right_edge
+                && y >= 2
+                && y < 2 + layout.track_page
+            {
                 let visible = self.visible_tracks();
                 if let Some(&to) = visible.get(self.offsets[2] + y - 2) {
                     self.move_track(from, to);
@@ -6368,13 +6372,13 @@ impl Ui {
         }
         if (button & 0b1100_0000) == 64 {
             let wheel = button & 3;
-            if x > layout.first
+            if x >= layout.playlist_left()
                 && self.scrollbar(&layout, size).is_some()
                 && (wheel >= 2 || button & (4 | 16) != 0)
             {
                 self.columns.scroll_by(
                     if wheel == 0 || wheel == 2 { -8 } else { 8 },
-                    size.0.saturating_sub(layout.first + 1),
+                    size.0.saturating_sub(layout.playlist_left()),
                 );
                 return;
             }
@@ -6533,10 +6537,10 @@ impl Ui {
                     self.open_context(MenuPage::Saved, x, y, size);
                 }
             } else if (layout.show_sidebar || self.focus == Focus::Tracks)
-                && x > layout.first
+                && x >= layout.playlist_left()
                 && y == 1
             {
-                let relative = x.saturating_sub(layout.first + 1) + self.columns.scroll;
+                let relative = x.saturating_sub(layout.playlist_left()) + self.columns.scroll;
                 self.context_column = self
                     .columns
                     .positions()
@@ -6544,7 +6548,7 @@ impl Ui {
                     .map(|(index, _, _)| index);
                 self.open_context(MenuPage::Columns, x, y, size);
             } else if (layout.show_sidebar || self.focus == Focus::Tracks)
-                && x > layout.first
+                && x >= layout.playlist_left()
                 && y >= 2
                 && y < layout.footer_top
             {
@@ -6966,8 +6970,8 @@ impl Ui {
             }
             return;
         }
-        if y == 1 && x >= layout.first {
-            let relative = x.saturating_sub(layout.first + 1) + self.columns.scroll;
+        if y == 1 && x >= layout.playlist_left() {
+            let relative = x.saturating_sub(layout.playlist_left()) + self.columns.scroll;
             let boundary_column = self
                 .columns
                 .positions()
@@ -7000,7 +7004,7 @@ impl Ui {
             }
             return;
         }
-        if y >= 2 && x >= layout.first {
+        if y >= 2 && x >= layout.playlist_left() {
             self.focus = Focus::Tracks;
             let visible = self.visible_tracks();
             let Some(&index) = visible.get(self.offsets[2] + y - 2) else {
@@ -7012,7 +7016,7 @@ impl Ui {
             if ranged {
                 self.status = format!("Selected {} tracks", self.selected_tracks.len());
             }
-            let relative = x.saturating_sub(layout.first + 1) + self.columns.scroll;
+            let relative = x.saturating_sub(layout.playlist_left()) + self.columns.scroll;
             let starred_cell = self
                 .columns
                 .positions()
@@ -7465,9 +7469,9 @@ impl Ui {
             }
         }
 
-        let right_x = layout.first + 2;
+        let right_x = layout.playlist_left() + 1;
         let track_scrollbar = self.track_scrollbar_for_count(&layout, size, visible_tracks.len());
-        let right_width = width.saturating_sub(layout.first + 1);
+        let right_width = width.saturating_sub(layout.playlist_left());
         let content_width = right_width.saturating_sub(usize::from(track_scrollbar.is_some()));
         self.column_viewport_width = content_width;
         self.columns.scroll_by(0, content_width);
@@ -9343,6 +9347,14 @@ struct Layout {
     track_page: usize,
 }
 impl Layout {
+    fn playlist_left(&self) -> usize {
+        if self.show_sidebar {
+            self.first + 1
+        } else {
+            0
+        }
+    }
+
     fn new(
         width: usize,
         height: usize,
