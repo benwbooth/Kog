@@ -7031,7 +7031,11 @@ impl Ui {
                 Some((now, 2, index))
             };
             if double {
-                self.play_selected();
+                if self.playing == Some(index) && self.player.state() != PlaybackState::Stopped {
+                    self.play_pause();
+                } else {
+                    self.play_selected();
+                }
                 self.last_click = None;
             }
         }
