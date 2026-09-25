@@ -1,14 +1,154 @@
 //! Album cover resolution: embedded tags, then a disk cache, then download
 //! providers (Deezer, iTunes, MusicBrainz/Cover Art Archive, DuckDuckGo).
-//! All network access goes through the worker in app_controller; everything
-//! here is synchronous and side-effect free except the cache helpers.
+//! Network requests stay in each frontend's worker. Provider order, matching,
+//! image validation, and MusicBrainz throttling are shared here.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 pub const MAX_COVER_BYTES: u32 = 8 * 1024 * 1024;
 pub const MAX_SEARCH_BYTES: u32 = 512 * 1024;
 pub const MAX_CACHE_BYTES: u64 = 200 * 1024 * 1024;
 const CACHE_SUBDIRECTORY: &str = "covers";
+
+fn musicbrainz_rate_limit() {
+    static LAST_REQUEST: OnceLock<Mutex<Instant>> = OnceLock::new();
+    let guard = LAST_REQUEST.get_or_init(|| Mutex::new(Instant::now() - Duration::from_secs(2)));
+    if let Ok(mut last) = guard.lock() {
+        let elapsed = last.elapsed();
+        if elapsed < Duration::from_millis(1100) {
+            std::thread::sleep(Duration::from_millis(1100) - elapsed);
+        }
+        *last = Instant::now();
+    }
+}
+
+/// Search and validate a cover with the same provider policy in native UIs.
+/// The caller supplies its network transport and cache/preview adapter. A
+/// rejected or unstorable candidate falls through to the next provider.
+pub fn download_cover<T>(
+    artist: &str,
+    album: &str,
+    mut fetch: impl FnMut(&str, u32) -> Option<Vec<u8>>,
+    cancelled: impl Fn() -> bool,
+    mut store: impl FnMut(Vec<u8>) -> Option<T>,
+) -> Option<T> {
+    macro_rules! fetch_image {
+        ($url:expr) => {{
+            fetch(&$url, MAX_COVER_BYTES)
+                .filter(|bytes| sniff_image_kind(bytes).is_some())
+                .and_then(&mut store)
+        }};
+    }
+    if cancelled() {
+        return None;
+    }
+    if let Some(json) = fetch(&deezer_search_url(artist, album), MAX_SEARCH_BYTES)
+        && let Ok(text) = String::from_utf8(json)
+        && let Some((title, match_artist, cover)) = parse_deezer_cover(&text)
+        && !cover.is_empty()
+        && titles_match(artist, album, &title, &match_artist)
+        && let Some(result) = fetch_image!(cover)
+    {
+        return Some(result);
+    }
+    if cancelled() {
+        return None;
+    }
+    if let Some(json) = fetch(&itunes_search_url(artist, album), MAX_SEARCH_BYTES)
+        && let Ok(text) = String::from_utf8(json)
+        && let Some((title, match_artist, cover)) = parse_itunes_cover(&text)
+        && !cover.is_empty()
+        && titles_match(artist, album, &title, &match_artist)
+        && let Some(result) = fetch_image!(cover)
+    {
+        return Some(result);
+    }
+    let lookup_album = album_lookup_name(album);
+    if cancelled() {
+        return None;
+    }
+    musicbrainz_rate_limit();
+    if cancelled() {
+        return None;
+    }
+    if let Some(json) = fetch(
+        &mb_release_group_url(artist, lookup_album),
+        MAX_SEARCH_BYTES,
+    ) && let Ok(text) = String::from_utf8(json)
+    {
+        for (title, match_artist, mbid) in parse_mb_release_groups(&text) {
+            if cancelled() {
+                return None;
+            }
+            if !mbid.is_empty()
+                && titles_match(artist, lookup_album, &title, &match_artist)
+                && let Some(result) = fetch_image!(caa_front_url(&mbid))
+            {
+                return Some(result);
+            }
+        }
+    }
+    let artist_queries = if artist.trim().is_empty() {
+        vec![""]
+    } else {
+        vec![artist, ""]
+    };
+    for query_artist in artist_queries {
+        if cancelled() {
+            return None;
+        }
+        musicbrainz_rate_limit();
+        if cancelled() {
+            return None;
+        }
+        if let Some(json) = fetch(
+            &mb_release_url(query_artist, lookup_album),
+            MAX_SEARCH_BYTES,
+        ) && let Ok(text) = String::from_utf8(json)
+        {
+            let releases = parse_mb_releases(&text);
+            if query_artist.is_empty() && !consistent_exact_releases(&releases, lookup_album) {
+                continue;
+            }
+            for (title, match_artist, mbid) in releases {
+                if cancelled() {
+                    return None;
+                }
+                let matches = if query_artist.is_empty() {
+                    album_title_exact(lookup_album, &title)
+                } else {
+                    titles_match(query_artist, lookup_album, &title, &match_artist)
+                };
+                if matches
+                    && !mbid.is_empty()
+                    && let Some(result) = fetch_image!(caa_release_front_url(&mbid))
+                {
+                    return Some(result);
+                }
+            }
+        }
+    }
+    if cancelled() {
+        return None;
+    }
+    let query = format!("{artist} {album} cover art")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if let Some(page) = fetch(&ddg_page_url(&query), MAX_SEARCH_BYTES)
+        && let Ok(html) = String::from_utf8(page)
+        && let Some(token) = ddg_token(&html)
+        && let Some(results) = fetch(&ddg_image_url(&query, &token), MAX_SEARCH_BYTES)
+        && let Ok(text) = String::from_utf8(results)
+        && let Some((title, thumbnail)) = parse_ddg_thumbnail(&text)
+        && titles_match(artist, album, &title, "")
+    {
+        return fetch_image!(thumbnail);
+    }
+    None
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ImageKind {
@@ -29,9 +169,7 @@ impl ImageKind {
 pub fn sniff_image_kind(bytes: &[u8]) -> Option<ImageKind> {
     if bytes.len() >= 3 && bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF {
         Some(ImageKind::Jpeg)
-    } else if bytes.len() >= 8
-        && bytes[..8] == [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]
-    {
+    } else if bytes.len() >= 8 && bytes[..8] == [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A] {
         Some(ImageKind::Png)
     } else {
         None
@@ -70,16 +208,28 @@ pub fn cache_key(artist: &str, album: &str) -> String {
     fingerprint.push_str(album.trim());
     fingerprint.push('\0');
     let hash = fnv1a64(fingerprint.as_bytes());
-    let mut stem = sanitize_component(&format!(
-        "{} - {}",
-        artist.trim(),
-        album.trim()
-    ));
+    let mut stem = sanitize_component(&format!("{} - {}", artist.trim(), album.trim()));
     if stem.is_empty() {
         stem.push_str("untitled");
     }
     let truncated: String = stem.chars().take(60).collect();
     format!("{truncated}-{hash:016x}")
+}
+
+/// Give wholly untagged files their own embedded-art cache entry and avoid
+/// downloading one guessed folder cover for every file in that folder.
+pub fn track_cache_key(
+    artist: &str,
+    tagged_album: &str,
+    lookup_album: &str,
+    file: &Path,
+) -> (String, bool) {
+    if artist.trim().is_empty() && tagged_album.trim().is_empty() {
+        let scoped = format!("{} \0 {}", lookup_album, file.display());
+        (cache_key("", &scoped), false)
+    } else {
+        (cache_key(artist, lookup_album), true)
+    }
 }
 
 pub fn cache_directory(base: &Path) -> PathBuf {
@@ -89,8 +239,14 @@ pub fn cache_directory(base: &Path) -> PathBuf {
 /// Directory names that commonly hold scanned artwork next to music.
 const ART_SUBDIRECTORIES: [&str; 5] = ["covers", "cover", "artwork", "scans", "scan"];
 /// File stems preferred as the primary artwork, most specific first.
-const PREFERRED_ART_STEMS: [&str; 6] =
-    ["front", "frontcover", "cover", "folder", "album", "coverart"];
+const PREFERRED_ART_STEMS: [&str; 6] = [
+    "front",
+    "frontcover",
+    "cover",
+    "folder",
+    "album",
+    "coverart",
+];
 /// Substrings marking booklet/back/disc scans: never promoted when any
 /// other image exists, so a back cover never becomes the artwork.
 const REJECTED_ART_SUBSTRINGS: [&str; 10] = [
@@ -265,7 +421,9 @@ fn encode(value: &str) -> String {
 }
 
 fn query_text(artist: &str, album: &str) -> String {
-    format!("{} {}", artist.trim(), album.trim()).trim().to_owned()
+    format!("{} {}", artist.trim(), album.trim())
+        .trim()
+        .to_owned()
 }
 
 pub fn deezer_search_url(artist: &str, album: &str) -> String {
@@ -397,7 +555,11 @@ fn parse_mb_candidates(json: &str, key: &str) -> Vec<(String, String, String)> {
                 .and_then(|credit| credit.first())
                 .map(|credit| json_string(credit, "name"))
                 .unwrap_or_default();
-            (json_string(entry, "title"), artist, json_string(entry, "id"))
+            (
+                json_string(entry, "title"),
+                artist,
+                json_string(entry, "id"),
+            )
         })
         .collect()
 }
@@ -529,7 +691,9 @@ pub fn album_lookup_name(album: &str) -> &str {
             let label = label.trim().to_ascii_lowercase();
             if ["disc", "cd"].iter().any(|prefix| {
                 label.strip_prefix(prefix).is_some_and(|number| {
-                    number.trim().starts_with(|character: char| character.is_ascii_digit())
+                    number
+                        .trim()
+                        .starts_with(|character: char| character.is_ascii_digit())
                 })
             }) {
                 return title.trim_end();
@@ -542,6 +706,68 @@ pub fn album_lookup_name(album: &str) -> &str {
 #[cfg(any(test, feature = "test-util"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_download_rejects_bad_image_and_uses_next_provider() {
+        let mut requested = Vec::new();
+        let cover = download_cover(
+            "Artist",
+            "Album",
+            |url, limit| {
+                requested.push((url.to_owned(), limit));
+                if url.starts_with("https://api.deezer.com/") {
+                    Some(br#"{"data":[{"title":"Album","artist":{"name":"Artist"},"cover_xl":"https://example.test/deezer.jpg"}]}"#.to_vec())
+                } else if url.ends_with("/deezer.jpg") {
+                    Some(b"not an image".to_vec())
+                } else if url.starts_with("https://itunes.apple.com/") {
+                    Some(br#"{"results":[{"collectionName":"Album","artistName":"Artist","artworkUrl100":"https://example.test/100x100bb.jpg"}]}"#.to_vec())
+                } else if url.ends_with("/600x600bb.jpg") {
+                    Some(vec![0xff, 0xd8, 0xff, 0xe0])
+                } else {
+                    None
+                }
+            },
+            || false,
+            Some,
+        );
+        assert_eq!(cover, Some(vec![0xff, 0xd8, 0xff, 0xe0]));
+        assert_eq!(requested.len(), 4);
+        assert_eq!(requested[0].1, MAX_SEARCH_BYTES);
+        assert_eq!(requested[1].1, MAX_COVER_BYTES);
+        assert!(requested[2].0.starts_with("https://itunes.apple.com/"));
+    }
+
+    #[test]
+    fn shared_download_can_use_album_only_release_fallback() {
+        let mut requested = Vec::new();
+        let cover = download_cover(
+            "Track Composer",
+            "Soundtrack Album",
+            |url, _| {
+                requested.push(url.to_owned());
+                if url.starts_with("https://musicbrainz.org/ws/2/release/?query=")
+                    && !url.contains("artist%3A")
+                {
+                    Some(br#"{"releases":[{"id":"release-1","title":"Soundtrack Album","artist-credit":[{"name":"Album Orchestra"}]}]}"#.to_vec())
+                } else if url.ends_with("/release-1/front-500") {
+                    Some(vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a])
+                } else {
+                    None
+                }
+            },
+            || false,
+            Some,
+        );
+        assert_eq!(
+            cover,
+            Some(vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a])
+        );
+        assert!(
+            requested
+                .iter()
+                .any(|url| url.ends_with("/release-1/front-500"))
+        );
+    }
 
     #[test]
     fn sniff_rejects_non_images() {

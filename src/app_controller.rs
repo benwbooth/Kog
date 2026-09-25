@@ -916,159 +916,15 @@ fn fetch_cover(url: &str, max_bytes: u32) -> Result<Vec<u8>, String> {
         .map_err(|error| error.to_string())
 }
 
-fn fetch_validated_cover(url: &str) -> Option<Vec<u8>> {
-    let bytes = fetch_cover(url, kog_audio::cover_art::MAX_COVER_BYTES).ok()?;
-    if kog_audio::cover_art::sniff_image_kind(&bytes).is_some() {
-        Some(bytes)
-    } else {
-        None
-    }
-}
-
-fn musicbrainz_rate_limit() {
-    use std::sync::OnceLock;
-    static LAST_REQUEST: OnceLock<std::sync::Mutex<std::time::Instant>> = OnceLock::new();
-    let guard = LAST_REQUEST.get_or_init(|| {
-        std::sync::Mutex::new(std::time::Instant::now() - Duration::from_secs(2))
-    });
-    if let Ok(mut last) = guard.lock() {
-        let elapsed = last.elapsed();
-        if elapsed < Duration::from_millis(1100) {
-            std::thread::sleep(Duration::from_millis(1100) - elapsed);
-        }
-        *last = std::time::Instant::now();
-    }
-}
-
 fn resolve_cover_art(request: &CoverArtRequest, cancel: &AtomicBool) -> Option<PathBuf> {
-    let cancelled = || cancel.load(AtomicOrdering::Relaxed);
     let key = kog_audio::cover_art::cache_key(&request.artist, &request.album);
-    let store = |bytes: Vec<u8>| kog_audio::cover_art::store_cache(&request.cache_dir, &key, &bytes);
-    let lookup_album = kog_audio::cover_art::album_lookup_name(&request.album);
-
-    if !cancelled() {
-        let url = kog_audio::cover_art::deezer_search_url(&request.artist, &request.album);
-        if let Ok(json) = fetch_cover(&url, kog_audio::cover_art::MAX_SEARCH_BYTES)
-            && let Ok(text) = String::from_utf8(json)
-            && let Some((title, artist, cover)) = kog_audio::cover_art::parse_deezer_cover(&text)
-            && !cover.is_empty()
-            && kog_audio::cover_art::titles_match(&request.artist, &request.album, &title, &artist)
-            && let Some(bytes) = fetch_validated_cover(&cover)
-            && let Some(path) = store(bytes)
-        {
-            return Some(path);
-        }
-    }
-    if !cancelled() {
-        let url = kog_audio::cover_art::itunes_search_url(&request.artist, &request.album);
-        if let Ok(json) = fetch_cover(&url, kog_audio::cover_art::MAX_SEARCH_BYTES)
-            && let Ok(text) = String::from_utf8(json)
-            && let Some((title, artist, artwork)) = kog_audio::cover_art::parse_itunes_cover(&text)
-            && !artwork.is_empty()
-            && kog_audio::cover_art::titles_match(&request.artist, &request.album, &title, &artist)
-            && let Some(bytes) = fetch_validated_cover(&artwork)
-            && let Some(path) = store(bytes)
-        {
-            return Some(path);
-        }
-    }
-    if !cancelled() {
-        musicbrainz_rate_limit();
-        if !cancelled() {
-            let url = kog_audio::cover_art::mb_release_group_url(&request.artist, lookup_album);
-            if let Ok(json) = fetch_cover(&url, kog_audio::cover_art::MAX_SEARCH_BYTES)
-                && let Ok(text) = String::from_utf8(json)
-            {
-                for (title, artist, mbid) in kog_audio::cover_art::parse_mb_release_groups(&text) {
-                    if cancelled() {
-                        return None;
-                    }
-                    if !mbid.is_empty()
-                        && kog_audio::cover_art::titles_match(&request.artist, lookup_album, &title, &artist)
-                        && let Some(bytes) =
-                            fetch_validated_cover(&kog_audio::cover_art::caa_front_url(&mbid))
-                        && let Some(path) = store(bytes)
-                    {
-                        return Some(path);
-                    }
-                }
-            }
-        }
-    }
-    // A release can have a specific edition cover even when its release group
-    // has none. Try the track artist first, then an exact album-title match:
-    // soundtrack tracks often name their composer rather than the album artist.
-    let artist_queries = if request.artist.trim().is_empty() {
-        vec![""]
-    } else {
-        vec![request.artist.as_str(), ""]
-    };
-    for artist_query in artist_queries {
-        if cancelled() {
-            return None;
-        }
-        musicbrainz_rate_limit();
-        if cancelled() {
-            return None;
-        }
-        let url = kog_audio::cover_art::mb_release_url(artist_query, lookup_album);
-        if let Ok(json) = fetch_cover(&url, kog_audio::cover_art::MAX_SEARCH_BYTES)
-            && let Ok(text) = String::from_utf8(json)
-        {
-            let releases = kog_audio::cover_art::parse_mb_releases(&text);
-            // Several editions of the same album can share an exact title.
-            // Try them when their album artist is consistent, so a missing
-            // cover on one edition does not hide another edition's art.
-            if artist_query.is_empty()
-                && !kog_audio::cover_art::consistent_exact_releases(&releases, lookup_album)
-            {
-                continue;
-            }
-            for (title, artist, mbid) in releases {
-                if cancelled() {
-                    return None;
-                }
-                let matches = if artist_query.is_empty() {
-                    kog_audio::cover_art::album_title_exact(lookup_album, &title)
-                } else {
-                    kog_audio::cover_art::titles_match(artist_query, lookup_album, &title, &artist)
-                };
-                if matches
-                    && !mbid.is_empty()
-                    && let Some(bytes) =
-                        fetch_validated_cover(&kog_audio::cover_art::caa_release_front_url(&mbid))
-                    && let Some(path) = store(bytes)
-                {
-                    return Some(path);
-                }
-            }
-        }
-    }
-    if !cancelled() {
-        let query = format!("{} {} cover art", request.artist, request.album)
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
-        if let Ok(page) = fetch_cover(
-            &kog_audio::cover_art::ddg_page_url(&query),
-            kog_audio::cover_art::MAX_SEARCH_BYTES,
-        )
-        && let Ok(html) = String::from_utf8(page)
-        && let Some(token) = kog_audio::cover_art::ddg_token(&html)
-        && let Ok(results) = fetch_cover(
-            &kog_audio::cover_art::ddg_image_url(&query, &token),
-            kog_audio::cover_art::MAX_SEARCH_BYTES,
-        )
-        && let Ok(text) = String::from_utf8(results)
-        && let Some((title, thumbnail)) = kog_audio::cover_art::parse_ddg_thumbnail(&text)
-        && kog_audio::cover_art::titles_match(&request.artist, &request.album, &title, "")
-        && let Some(bytes) = fetch_validated_cover(&thumbnail)
-        && let Some(path) = store(bytes)
-        {
-            return Some(path);
-        }
-    }
-    None
+    kog_audio::cover_art::download_cover(
+        &request.artist,
+        &request.album,
+        |url, max_bytes| fetch_cover(url, max_bytes).ok(),
+        || cancel.load(AtomicOrdering::Relaxed),
+        |bytes| kog_audio::cover_art::store_cache(&request.cache_dir, &key, &bytes),
+    )
 }
 
 fn run_cover_art_job(
@@ -1392,13 +1248,7 @@ fn parse_row_indices(value: &str, row_count: usize) -> Vec<usize> {
 /// glued one irrelevant download onto every MIDI in a folder like "new",
 /// and embedded art must not leak across files via a shared key either.
 fn cover_art_key(artist: &str, tagged_album: &str, album: &str, file: &Path) -> (String, bool) {
-    let untagged = artist.trim().is_empty() && tagged_album.trim().is_empty();
-    if untagged {
-        let scoped = format!("{} \0 {}", album, file.display());
-        (kog_audio::cover_art::cache_key("", &scoped), false)
-    } else {
-        (kog_audio::cover_art::cache_key(artist, album), true)
-    }
+    kog_audio::cover_art::track_cache_key(artist, tagged_album, album, file)
 }
 
 fn playlist_entry_for_track(track: &Track) -> Result<PlaylistEntry, String> {

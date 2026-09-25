@@ -38,6 +38,10 @@ the TUI calls the same library collector directly. Qt keeps a parallel scan
 worker for progress and cancellation, then uses the same archive decoder and
 folder-add policy to prepare tracks. Browser audio output and native device
 output remain platform adapters; neither decides which files are playable.
+Cover-art keying, provider order, result matching, image validation, and
+MusicBrainz pacing also live in `kog-audio::cover_art`. Qt and TUI supply their
+own network transports and display adapters to that shared policy. The Web
+server uses the same embedded and sibling-art readers for its artwork endpoint.
 
 New decoders integrate maintained libraries in-process by default. A companion
 process is reserved for a proven license incompatibility or a narrowly audited

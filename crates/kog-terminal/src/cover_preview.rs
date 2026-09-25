@@ -3,8 +3,7 @@
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use directories::ProjectDirs;
 use image::imageops::FilterType;
@@ -82,23 +81,6 @@ fn fetch(url: &str, max_bytes: u32) -> Option<Vec<u8>> {
     (bytes.len() <= max_bytes as usize).then_some(bytes)
 }
 
-fn fetched_image(url: &str) -> Option<Vec<u8>> {
-    let bytes = fetch(url, cover_art::MAX_COVER_BYTES)?;
-    cover_art::sniff_image_kind(&bytes).map(|_| bytes)
-}
-
-fn musicbrainz_rate_limit() {
-    static LAST_REQUEST: OnceLock<Mutex<Instant>> = OnceLock::new();
-    let last = LAST_REQUEST.get_or_init(|| Mutex::new(Instant::now() - Duration::from_secs(2)));
-    if let Ok(mut last) = last.lock() {
-        let elapsed = last.elapsed();
-        if elapsed < Duration::from_millis(1100) {
-            std::thread::sleep(Duration::from_millis(1100) - elapsed);
-        }
-        *last = Instant::now();
-    }
-}
-
 fn download(
     cache_dir: &Path,
     key: &str,
@@ -106,128 +88,9 @@ fn download(
     album: &str,
     cancelled: &impl Fn() -> bool,
 ) -> Option<CoverPreview> {
-    let store = |bytes: Vec<u8>| stored(cache_dir, key, &bytes);
-    if cancelled() {
-        return None;
-    }
-    if let Some(json) = fetch(
-        &cover_art::deezer_search_url(artist, album),
-        cover_art::MAX_SEARCH_BYTES,
-    ) && let Ok(text) = String::from_utf8(json)
-        && let Some((title, match_artist, cover)) = cover_art::parse_deezer_cover(&text)
-        && cover_art::titles_match(artist, album, &title, &match_artist)
-        && let Some(bytes) = fetched_image(&cover)
-        && let Some(preview) = store(bytes)
-    {
-        return Some(preview);
-    }
-    if cancelled() {
-        return None;
-    }
-    if let Some(json) = fetch(
-        &cover_art::itunes_search_url(artist, album),
-        cover_art::MAX_SEARCH_BYTES,
-    ) && let Ok(text) = String::from_utf8(json)
-        && let Some((title, match_artist, cover)) = cover_art::parse_itunes_cover(&text)
-        && cover_art::titles_match(artist, album, &title, &match_artist)
-        && let Some(bytes) = fetched_image(&cover)
-        && let Some(preview) = store(bytes)
-    {
-        return Some(preview);
-    }
-    let lookup_album = cover_art::album_lookup_name(album);
-    if cancelled() {
-        return None;
-    }
-    musicbrainz_rate_limit();
-    if cancelled() {
-        return None;
-    }
-    if let Some(json) = fetch(
-        &cover_art::mb_release_group_url(artist, lookup_album),
-        cover_art::MAX_SEARCH_BYTES,
-    ) && let Ok(text) = String::from_utf8(json)
-    {
-        for (title, match_artist, mbid) in cover_art::parse_mb_release_groups(&text) {
-            if cancelled() {
-                return None;
-            }
-            if !mbid.is_empty()
-                && cover_art::titles_match(artist, lookup_album, &title, &match_artist)
-                && let Some(bytes) = fetched_image(&cover_art::caa_front_url(&mbid))
-                && let Some(preview) = store(bytes)
-            {
-                return Some(preview);
-            }
-        }
-    }
-    let artist_queries = if artist.trim().is_empty() {
-        vec![""]
-    } else {
-        vec![artist, ""]
-    };
-    for query_artist in artist_queries {
-        if cancelled() {
-            return None;
-        }
-        musicbrainz_rate_limit();
-        if cancelled() {
-            return None;
-        }
-        if let Some(json) = fetch(
-            &cover_art::mb_release_url(query_artist, lookup_album),
-            cover_art::MAX_SEARCH_BYTES,
-        ) && let Ok(text) = String::from_utf8(json)
-        {
-            let releases = cover_art::parse_mb_releases(&text);
-            if query_artist.is_empty()
-                && !cover_art::consistent_exact_releases(&releases, lookup_album)
-            {
-                continue;
-            }
-            for (title, match_artist, mbid) in releases {
-                if cancelled() {
-                    return None;
-                }
-                let matches = if query_artist.is_empty() {
-                    cover_art::album_title_exact(lookup_album, &title)
-                } else {
-                    cover_art::titles_match(query_artist, lookup_album, &title, &match_artist)
-                };
-                if matches
-                    && !mbid.is_empty()
-                    && let Some(bytes) = fetched_image(&cover_art::caa_release_front_url(&mbid))
-                    && let Some(preview) = store(bytes)
-                {
-                    return Some(preview);
-                }
-            }
-        }
-    }
-    if cancelled() {
-        return None;
-    }
-    let query = format!("{artist} {album} cover art")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-    if let Some(page) = fetch(
-        &cover_art::ddg_page_url(&query),
-        cover_art::MAX_SEARCH_BYTES,
-    ) && let Ok(html) = String::from_utf8(page)
-        && let Some(token) = cover_art::ddg_token(&html)
-        && let Some(results) = fetch(
-            &cover_art::ddg_image_url(&query, &token),
-            cover_art::MAX_SEARCH_BYTES,
-        )
-        && let Ok(text) = String::from_utf8(results)
-        && let Some((title, thumbnail)) = cover_art::parse_ddg_thumbnail(&text)
-        && cover_art::titles_match(artist, album, &title, "")
-        && let Some(bytes) = fetched_image(&thumbnail)
-    {
-        return store(bytes);
-    }
-    None
+    cover_art::download_cover(artist, album, fetch, cancelled, |bytes| {
+        stored(cache_dir, key, &bytes)
+    })
 }
 
 pub fn resolve(
@@ -246,13 +109,10 @@ pub fn resolve(
     if album.is_empty() {
         return None;
     }
-    let key = if let Some(file) =
-        file.filter(|_| artist.trim().is_empty() && tagged_album.trim().is_empty())
-    {
-        cover_art::cache_key("", &format!("{} \0 {}", album, file.display()))
-    } else {
-        cover_art::cache_key(artist, &album)
-    };
+    let (key, may_download) = file.map_or_else(
+        || (cover_art::cache_key(artist, &album), true),
+        |file| cover_art::track_cache_key(artist, tagged_album, &album, file),
+    );
     if let Some(preview) = cached(&cache_dir, &key) {
         return Some(preview);
     }
@@ -274,7 +134,7 @@ pub fn resolve(
             }
         }
     }
-    if allow_download && !(artist.trim().is_empty() && tagged_album.trim().is_empty()) {
+    if allow_download && may_download {
         download(&cache_dir, &key, artist, &album, &cancelled)
     } else {
         None
