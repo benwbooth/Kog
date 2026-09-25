@@ -49,8 +49,11 @@ struct AutoFitCache {
 
 const SESSION_FILE: &str = "tui-session.json";
 const SIDEBAR_WIDTH_FILE: &str = "tui-sidebar-width";
+const TREE_STATE_FILE: &str = "tui-tree-state.json";
 const SESSION_MAX_BYTES: usize = 64 * 1024 * 1024;
 const SESSION_MAX_TRACKS: usize = 100_000;
+const TREE_STATE_MAX_BYTES: usize = 1024 * 1024;
+const TREE_STATE_MAX_EXPANDED: usize = 10_000;
 const RADIO_READY_TARGET: usize = 10;
 const FOLDER_ICON: &str = "🗀";
 const MEDIA_PLAY: &str = "▶️";
@@ -83,6 +86,90 @@ fn save_sidebar_width(width: usize) -> Result<(), String> {
         .map_err(|error| format!("creating {}: {error}", parent.display()))?;
     std::fs::write(&path, width.to_string())
         .map_err(|error| format!("writing {}: {error}", path.display()))
+}
+
+struct SavedTreeState {
+    browse_path: Option<PathBuf>,
+    expanded: HashSet<PathBuf>,
+}
+
+fn load_tree_state(library_root: Option<&Path>) -> Option<SavedTreeState> {
+    let path = kog_audio::settings::setting_path(TREE_STATE_FILE)?;
+    let contents = std::fs::read(path).ok()?;
+    if contents.len() > TREE_STATE_MAX_BYTES {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_slice(&contents).ok()?;
+    let expected_root = library_root.map(|root| root.to_string_lossy());
+    if value["libraryRoot"].as_str() != expected_root.as_deref() {
+        return None;
+    }
+    let browse_path = value["browsePath"].as_str().map(PathBuf::from);
+    if browse_path.as_ref().is_some_and(|path| {
+        !path.is_absolute() || library_root.is_some_and(|root| !path.starts_with(root))
+    }) {
+        return None;
+    }
+    let paths = value["expanded"].as_array()?;
+    if paths.len() > TREE_STATE_MAX_EXPANDED {
+        return None;
+    }
+    let expanded = paths
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .map(PathBuf::from)
+        .filter(|path| {
+            path.is_absolute()
+                && browse_path
+                    .as_deref()
+                    .or(library_root)
+                    .is_none_or(|root| path.starts_with(root))
+        })
+        .collect();
+    Some(SavedTreeState {
+        browse_path,
+        expanded,
+    })
+}
+
+fn save_tree_state(
+    library_root: Option<&Path>,
+    browse_path: Option<&Path>,
+    expanded: &HashSet<PathBuf>,
+) -> Result<(), String> {
+    let path = kog_audio::settings::setting_path(TREE_STATE_FILE)
+        .ok_or("Cannot find the terminal settings directory")?;
+    let parent = path.parent().ok_or("Invalid terminal settings path")?;
+    std::fs::create_dir_all(parent)
+        .map_err(|error| format!("creating {}: {error}", parent.display()))?;
+    let mut paths: Vec<_> = expanded
+        .iter()
+        .filter(|item| browse_path.or(library_root).is_none_or(|root| item.starts_with(root)))
+        .map(|item| item.to_string_lossy().into_owned())
+        .collect();
+    if paths.len() > TREE_STATE_MAX_EXPANDED {
+        return Err("too many expanded folders to save".to_owned());
+    }
+    paths.sort();
+    let contents = serde_json::to_vec(&serde_json::json!({
+        "libraryRoot": library_root.map(|root| root.to_string_lossy()),
+        "browsePath": browse_path.map(|root| root.to_string_lossy()),
+        "expanded": paths,
+    }))
+    .map_err(|error| format!("serializing terminal tree state: {error}"))?;
+    if contents.len() > TREE_STATE_MAX_BYTES {
+        return Err("the expanded tree is too large to save".to_owned());
+    }
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|error| format!("creating terminal tree state: {error}"))?;
+    temporary
+        .write_all(&contents)
+        .and_then(|()| temporary.flush())
+        .map_err(|error| format!("writing terminal tree state: {error}"))?;
+    temporary
+        .persist(&path)
+        .map_err(|error| format!("saving {}: {}", path.display(), error.error))?;
+    Ok(())
 }
 
 struct RestoredPlaylist {
@@ -1428,7 +1515,12 @@ impl Ui {
             ui.session_dirty = false;
         }
         ui.reload_lists();
-        ui.browse(None);
+        let browse_path = load_tree_state(ui.library.root().as_deref())
+            .and_then(|saved| saved.browse_path);
+        ui.browse(browse_path.clone());
+        if browse_path.is_some() && ui.browse_path != browse_path {
+            ui.browse(None);
+        }
         if kog_server::config::load_config().enabled {
             ui.start_api_server();
         }
@@ -2268,6 +2360,19 @@ impl Ui {
             && let Err(error) = save_sidebar_width(width)
         {
             self.status = format!("Saving sidebar width: {error}");
+        }
+    }
+
+    fn persist_tree_state(&mut self) {
+        if self.remote_active || !self.search_query.is_empty() || self.search_root.is_some() {
+            return;
+        }
+        if let Err(error) = save_tree_state(
+            self.library.root().as_deref(),
+            self.browse_path.as_deref(),
+            &self.expanded,
+        ) {
+            self.status = format!("Saving tree view: {error}");
         }
     }
 
@@ -3336,6 +3441,7 @@ impl Ui {
     }
 
     fn browse(&mut self, path: Option<PathBuf>) {
+        let saved_state = load_tree_state(self.library.root().as_deref());
         self.search = None;
         self.search_query.clear();
         self.clear_search_tree();
@@ -3355,10 +3461,16 @@ impl Ui {
                 self.children.clear();
                 self.selected_tree.clear();
                 self.tree_anchor = None;
+                if let Some(saved) = saved_state
+                    && saved.browse_path == self.browse_path
+                {
+                    self.restore_expanded_directories(&saved.expanded);
+                }
                 self.rebuild_tree();
                 self.selected[1] = 0;
                 self.offsets[1] = 0;
                 self.status.clear();
+                self.persist_tree_state();
             }
             Err(error) => self.status = error,
         }
@@ -3390,6 +3502,17 @@ impl Ui {
             }
         }
         Ok((value["path"].as_str().map(PathBuf::from), items))
+    }
+
+    fn restore_expanded_directories(&mut self, saved: &HashSet<PathBuf>) {
+        let mut paths: Vec<_> = saved.iter().cloned().collect();
+        paths.sort_by_key(|path| path.components().count());
+        for path in paths {
+            if let Ok((_, items)) = self.read_directory(Some(&path)) {
+                self.children.insert(path.clone(), items);
+                self.expanded.insert(path);
+            }
+        }
     }
 
     fn connect_remote(&mut self, path: Option<String>) {
@@ -3778,6 +3901,7 @@ impl Ui {
                 self.search_user_collapsed.insert(path.clone());
             }
             self.rebuild_tree();
+            self.persist_tree_state();
             return;
         }
         if self.search_root.is_some() {
@@ -3862,6 +3986,7 @@ impl Ui {
         }
         self.expanded.insert(path);
         self.rebuild_tree();
+        self.persist_tree_state();
     }
 
     fn up_directory(&mut self) {
@@ -4883,6 +5008,7 @@ impl Ui {
                     self.children.retain(|item, _| !item.starts_with(&path));
                     self.expanded.retain(|item| !item.starts_with(&path));
                     self.rebuild_tree();
+                    self.persist_tree_state();
                     let doomed: Vec<_> = self
                         .tracks
                         .iter()
@@ -9410,6 +9536,13 @@ impl Drop for Ui {
         let _ = AppSettings::save_output_volume(f64::from(self.volume));
         if let Some(width) = self.sidebar_width {
             let _ = save_sidebar_width(width);
+        }
+        if !self.remote_active && self.search_query.is_empty() && self.search_root.is_none() {
+            let _ = save_tree_state(
+                self.library.root().as_deref(),
+                self.browse_path.as_deref(),
+                &self.expanded,
+            );
         }
     }
 }
