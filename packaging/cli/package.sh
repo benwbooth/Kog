@@ -36,8 +36,17 @@ for target in tui server; do
   install -m755 "$root/target/release/kog-$target" "$directory/kog-$target"
   install -m755 "$ffmpeg" "$directory/ffmpeg"
   for helper in "${helpers[@]}"; do
-    helper_path="$(find "$root/target/release/build" -type f \
-      -path "*/bin/$helper" -print -quit)"
+    helper_path="$(python3 - "$root/target/release/build" "$helper" <<'PY'
+from pathlib import Path
+import sys
+
+build = Path(sys.argv[1])
+name = sys.argv[2]
+matches = [path for path in build.glob(f"kog-audio-*/out/**/bin/{name}") if path.is_file()]
+if matches:
+    print(max(matches, key=lambda path: path.stat().st_mtime))
+PY
+)"
     if [[ -z "$helper_path" ]]; then
       echo "missing release helper: $helper" >&2
       exit 1
