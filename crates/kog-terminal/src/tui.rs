@@ -11063,7 +11063,7 @@ fn surface_colors(surface: Surface) -> (&'static str, &'static str) {
         Surface::MenuSelected => ("255;255;255", "38;88;166"),
         Surface::MenuSeparator => ("103;120;151", "212;221;236"),
         Surface::MenuShadow => ("10;14;23", "10;14;23"),
-        Surface::Tooltip => ("18;20;23", "190;194;198"),
+        Surface::Tooltip => ("255;255;255", "18;20;23"),
         Surface::TooltipShadow => ("8;9;11", "8;9;11"),
     }
 }
