@@ -221,6 +221,12 @@ enum Focus {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+enum VisualizerMode {
+    Waveform,
+    Spectrum,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum MenuPage {
     Main,
     View,
@@ -432,6 +438,35 @@ struct ExitDialog {
     x: usize,
     y: usize,
     width: usize,
+}
+
+#[derive(Clone, Copy)]
+struct VisualizerGeometry {
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+}
+
+impl VisualizerGeometry {
+    fn new(size: (usize, usize)) -> Self {
+        let width = size.0.saturating_sub(4).min(100);
+        let height = size.1.saturating_sub(4).min(32);
+        Self {
+            x: size.0.saturating_sub(width) / 2,
+            y: size.1.saturating_sub(height) / 2,
+            width,
+            height,
+        }
+    }
+
+    fn plot_width(self) -> usize {
+        self.width.saturating_sub(4)
+    }
+
+    fn plot_height(self) -> usize {
+        self.height.saturating_sub(5)
+    }
 }
 
 impl ExitDialog {
@@ -874,6 +909,7 @@ struct Ui {
     info_modal: bool,
     artwork_modal: bool,
     visualizer_open: bool,
+    visualizer_mode: VisualizerMode,
     modal_scroll: usize,
     sidebar_visible: bool,
     compact_mode: bool,
@@ -1264,6 +1300,7 @@ impl Ui {
             info_modal: false,
             artwork_modal: false,
             visualizer_open: false,
+            visualizer_mode: VisualizerMode::Waveform,
             modal_scroll: 0,
             sidebar_visible: true,
             compact_mode: false,
@@ -3111,37 +3148,9 @@ impl Ui {
         self.info_modal = false;
         self.artwork_modal = false;
         self.visualizer_open = true;
+        self.visualizer_mode = VisualizerMode::Waveform;
+        self.modal = Some("Visualizer".to_owned());
         self.modal_scroll = 0;
-    }
-
-    fn visualizer_text(&self) -> String {
-        let frame: serde_json::Value = serde_json::from_str(&self.player.visualizer_frame())
-            .unwrap_or(serde_json::Value::Null);
-        let bands: Vec<_> = frame["spectrum"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .take(40)
-            .map(|value| value.as_f64().unwrap_or(0.0).clamp(0.0, 1.0))
-            .collect();
-        let mut rows = vec!["Visualizer · Spectrum".to_owned()];
-        for height in (1..=8).rev() {
-            rows.push(
-                bands
-                    .iter()
-                    .map(|level| {
-                        if level * 8.0 >= f64::from(height) {
-                            '█'
-                        } else {
-                            ' '
-                        }
-                    })
-                    .collect(),
-            );
-        }
-        rows.push("▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁".to_owned());
-        rows.push("Esc closes".to_owned());
-        rows.join("\n")
     }
 
     fn show_lyrics(&mut self) {
@@ -5592,6 +5601,8 @@ impl Ui {
                 row("+ / -", "Volume up / down"),
                 row("R", "Cycle repeat mode"),
                 row("S", "Cycle shuffle mode"),
+                row("View → Visualizer", "Open live audio view"),
+                row("1 / 2 / ← →", "Switch waveform / spectrum"),
                 String::new(),
                 "COLUMNS AND LAYOUT".to_owned(),
                 row("H", "Focus playlist columns"),
@@ -5791,6 +5802,24 @@ impl Ui {
             return true;
         }
         if self.modal.is_some() {
+            if self.visualizer_open {
+                match key {
+                    Key::Esc | Key::Enter | Key::Char(' ') => {
+                        self.modal = None;
+                        self.visualizer_open = false;
+                    }
+                    Key::Char('1') => self.visualizer_mode = VisualizerMode::Waveform,
+                    Key::Char('2') => self.visualizer_mode = VisualizerMode::Spectrum,
+                    Key::Left | Key::Right | Key::Tab | Key::BackTab => {
+                        self.visualizer_mode = match self.visualizer_mode {
+                            VisualizerMode::Waveform => VisualizerMode::Spectrum,
+                            VisualizerMode::Spectrum => VisualizerMode::Waveform,
+                        };
+                    }
+                    _ => {}
+                }
+                return true;
+            }
             let max = self
                 .modal
                 .as_ref()
@@ -6411,6 +6440,28 @@ impl Ui {
         }
         let layout = self.layout(size);
         if self.modal.is_some() {
+            if self.visualizer_open {
+                if button & 32 == 0 && (button & 0b1100_0000) != 64 && button & 3 == 0 {
+                    let dialog = VisualizerGeometry::new(size);
+                    let compact_tabs = dialog.width < 33;
+                    let wave_tab = dialog.x + 2..dialog.x + if compact_tabs { 6 } else { 14 };
+                    let spectrum_tab = dialog.x + if compact_tabs { 8 } else { 17 }
+                        ..dialog.x + if compact_tabs { 12 } else { 29 };
+                    if y == dialog.y + 2 && wave_tab.contains(&x) {
+                        self.visualizer_mode = VisualizerMode::Waveform;
+                    } else if y == dialog.y + 2 && spectrum_tab.contains(&x) {
+                        self.visualizer_mode = VisualizerMode::Spectrum;
+                    } else if x < dialog.x
+                        || x >= dialog.x + dialog.width
+                        || y < dialog.y
+                        || y >= dialog.y + dialog.height
+                    {
+                        self.modal = None;
+                        self.visualizer_open = false;
+                    }
+                }
+                return;
+            }
             if (button & 0b1100_0000) == 64 {
                 let max = self
                     .modal
@@ -8404,9 +8455,13 @@ impl Ui {
             }
         }
         if self.visualizer_open {
-            self.modal = Some(self.visualizer_text());
-        }
-        if self.artwork_modal && self.modal.is_some() && width >= 24 && height >= 18 {
+            draw_visualizer_modal(
+                &mut screen,
+                size,
+                self.visualizer_mode,
+                &self.player.visualizer_frame(),
+            );
+        } else if self.artwork_modal && self.modal.is_some() && width >= 24 && height >= 18 {
             let labeled = width >= 56 && height >= 29;
             let extra_rows = if labeled { 5 } else { 2 };
             let art_size = COVER_WIDTH
@@ -10038,6 +10093,235 @@ fn paint(
     ));
 }
 
+fn braille_dot(dots: &mut [u8], width: usize, x: usize, y: usize) {
+    if width == 0 || x >= width * 2 || y >= dots.len() / width * 4 {
+        return;
+    }
+    const BITS: [[u8; 4]; 2] = [[0, 1, 2, 6], [3, 4, 5, 7]];
+    dots[(y / 4) * width + x / 2] |= 1 << BITS[x % 2][y % 4];
+}
+
+fn draw_visualizer_modal(
+    screen: &mut String,
+    size: (usize, usize),
+    mode: VisualizerMode,
+    frame_json: &str,
+) {
+    let dialog = VisualizerGeometry::new(size);
+    let (x, y, width, height) = (dialog.x, dialog.y, dialog.width, dialog.height);
+    for row in 0..height {
+        paint(
+            screen,
+            y + row + 1,
+            x + 1,
+            &" ".repeat(width),
+            width,
+            Surface::Toolbar,
+            false,
+        );
+        if row > 0 && row + 1 < height {
+            paint(screen, y + row + 1, x + 1, "│", 1, Surface::Header, false);
+            paint(
+                screen,
+                y + row + 1,
+                x + width,
+                "│",
+                1,
+                Surface::Header,
+                false,
+            );
+        }
+    }
+    paint(
+        screen,
+        y + 1,
+        x + 1,
+        &format!("╭{}╮", "─".repeat(width.saturating_sub(2))),
+        width,
+        Surface::Header,
+        false,
+    );
+    paint(
+        screen,
+        y + height,
+        x + 1,
+        &format!("╰{}╯", "─".repeat(width.saturating_sub(2))),
+        width,
+        Surface::Header,
+        false,
+    );
+    paint(
+        screen,
+        y + 2,
+        x + 3,
+        "Audio visualizer",
+        width.saturating_sub(4),
+        Surface::Header,
+        true,
+    );
+    if width >= 33 {
+        paint(
+            screen,
+            y + 3,
+            x + 3,
+            "[1 Waveform]",
+            12,
+            if mode == VisualizerMode::Waveform {
+                Surface::Accent
+            } else {
+                Surface::Muted
+            },
+            mode == VisualizerMode::Waveform,
+        );
+        paint(
+            screen,
+            y + 3,
+            x + 18,
+            "[2 Spectrum]",
+            12,
+            if mode == VisualizerMode::Spectrum {
+                Surface::Accent
+            } else {
+                Surface::Muted
+            },
+            mode == VisualizerMode::Spectrum,
+        );
+    } else {
+        paint(
+            screen,
+            y + 3,
+            x + 3,
+            "[1W]",
+            4,
+            if mode == VisualizerMode::Waveform {
+                Surface::Accent
+            } else {
+                Surface::Muted
+            },
+            mode == VisualizerMode::Waveform,
+        );
+        paint(
+            screen,
+            y + 3,
+            x + 9,
+            "[2S]",
+            4,
+            if mode == VisualizerMode::Spectrum {
+                Surface::Accent
+            } else {
+                Surface::Muted
+            },
+            mode == VisualizerMode::Spectrum,
+        );
+    }
+
+    let plot_width = dialog.plot_width();
+    let plot_height = dialog.plot_height();
+    let pixel_width = plot_width * 2;
+    let pixel_height = plot_height * 4;
+    let mut dots = vec![0_u8; plot_width * plot_height];
+    let frame: serde_json::Value = serde_json::from_str(frame_json).unwrap_or_default();
+    match mode {
+        VisualizerMode::Waveform => {
+            let wave: Vec<f32> = frame["wave"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|value| value.as_f64().map(|sample| sample as f32))
+                .collect();
+            if !wave.is_empty() {
+                let mut previous = None;
+                for px in 0..pixel_width {
+                    let start = px * wave.len() / pixel_width;
+                    let end = ((px + 1) * wave.len() / pixel_width)
+                        .max(start + 1)
+                        .min(wave.len());
+                    let mut low = pixel_height;
+                    let mut high = 0;
+                    for &sample in &wave[start..end] {
+                        let py = ((1.0 - sample.clamp(-1.0, 1.0) * 0.9)
+                            * (pixel_height.saturating_sub(1)) as f32
+                            / 2.0)
+                            .round() as usize;
+                        low = low.min(py);
+                        high = high.max(py);
+                    }
+                    let current = ((1.0 - wave[end - 1].clamp(-1.0, 1.0) * 0.9)
+                        * (pixel_height.saturating_sub(1)) as f32
+                        / 2.0)
+                        .round() as usize;
+                    if let Some(previous) = previous {
+                        low = low.min(previous);
+                        high = high.max(previous);
+                    }
+                    for py in low..=high {
+                        braille_dot(&mut dots, plot_width, px, py);
+                    }
+                    previous = Some(current);
+                }
+            }
+        }
+        VisualizerMode::Spectrum => {
+            let bands: Vec<f32> = frame["spectrum"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|value| value.as_f64().map(|level| level as f32))
+                .collect();
+            if !bands.is_empty() {
+                for px in 0..pixel_width {
+                    let band = px * bands.len() / pixel_width;
+                    let next_band = (px + 1) * bands.len() / pixel_width;
+                    if pixel_width >= bands.len() * 2 && next_band > band && px > 0 {
+                        continue;
+                    }
+                    let bar = (bands[band].clamp(0.0, 1.0) * pixel_height as f32).round() as usize;
+                    for py in pixel_height.saturating_sub(bar)..pixel_height {
+                        braille_dot(&mut dots, plot_width, px, py);
+                    }
+                }
+            }
+        }
+    }
+
+    for row in 0..plot_height {
+        screen.push_str(&format!(
+            "\x1b[{};{}H\x1b[48;2;16;25;31m",
+            y + row + 4,
+            x + 3
+        ));
+        for column in 0..plot_width {
+            let t = column as f32 / plot_width.saturating_sub(1).max(1) as f32;
+            let red = (66.0 + 3.0 * t).round() as u8;
+            let green = (223.0 - 37.0 * t).round() as u8;
+            let blue = (163.0 + 92.0 * t).round() as u8;
+            let mask = dots[row * plot_width + column];
+            if mask == 0 && [plot_height / 4, plot_height / 2, plot_height * 3 / 4].contains(&row) {
+                screen.push_str("\x1b[38;2;36;50;59m⠤");
+            } else {
+                screen.push_str(&format!(
+                    "\x1b[38;2;{red};{green};{blue}m{}",
+                    char::from_u32(0x2800 + u32::from(mask)).unwrap_or(' ')
+                ));
+            }
+        }
+        screen.push_str("\x1b[0m");
+    }
+    paint(
+        screen,
+        y + height - 1,
+        x + 3,
+        if width >= 44 {
+            "1/2 or ←/→ switch · Esc closes"
+        } else {
+            "1/2 switch · Esc closes"
+        },
+        width.saturating_sub(4),
+        Surface::Muted,
+        false,
+    );
+}
+
 fn draw_folder_chooser(
     screen: &mut String,
     chooser: &mut FolderChooser,
@@ -10577,13 +10861,13 @@ impl Terminal {
         }
     }
 
-    fn read(&self, buffer: &mut Vec<u8>) {
+    fn read(&self, buffer: &mut Vec<u8>, timeout_ms: i32) {
         let mut poll = libc::pollfd {
             fd: libc::STDIN_FILENO,
             events: libc::POLLIN,
             revents: 0,
         };
-        if unsafe { libc::poll(&mut poll, 1, 100) } > 0 {
+        if unsafe { libc::poll(&mut poll, 1, timeout_ms) } > 0 {
             let mut bytes = [0_u8; 4096];
             let count =
                 unsafe { libc::read(libc::STDIN_FILENO, bytes.as_mut_ptr().cast(), bytes.len()) };
@@ -10636,7 +10920,8 @@ pub fn run() -> Result<(), String> {
             last_session_flush = Instant::now();
         }
         let size = terminal.size();
-        if size != last_size || last_draw.elapsed() >= Duration::from_millis(150) {
+        let frame_interval = if ui.visualizer_open { 66 } else { 150 };
+        if size != last_size || last_draw.elapsed() >= Duration::from_millis(frame_interval) {
             let frame = ui.draw(size);
             if frame != last_frame {
                 terminal.write(&frame)?;
@@ -10648,7 +10933,7 @@ pub fn run() -> Result<(), String> {
         if ui.player.finished() {
             ui.next(true);
         }
-        terminal.read(&mut input);
+        terminal.read(&mut input, if ui.visualizer_open { 50 } else { 100 });
         if input.as_slice() == [0x1b] {
             if escape_pending.is_some_and(|since| since.elapsed() >= Duration::from_millis(150)) {
                 input.clear();
