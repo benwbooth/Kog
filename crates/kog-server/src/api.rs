@@ -1678,6 +1678,29 @@ fn archive_listing(
     subpath: &str,
 ) -> Result<serde_json::Value, String> {
     let members = kog_audio::archive::list_archive_names(archive_path)?;
+    let decoders = kog_audio::decoder::DecoderRegistry::new(
+        kog_audio::settings::AppSettings::load().decoder_settings(),
+    );
+    let mut playable_extensions = decoders.audio_extensions();
+    playable_extensions.extend(
+        Playlist::supported_extensions()
+            .iter()
+            .map(|extension| extension.to_ascii_lowercase()),
+    );
+    Ok(archive_listing_from_names(
+        archive_path,
+        subpath,
+        members,
+        &playable_extensions,
+    ))
+}
+
+fn archive_listing_from_names(
+    archive_path: &std::path::Path,
+    subpath: &str,
+    members: Vec<String>,
+    playable_extensions: &HashSet<String>,
+) -> serde_json::Value {
     let prefix = if subpath.is_empty() {
         String::new()
     } else {
@@ -1692,11 +1715,35 @@ fn archive_listing(
     let mut directory_names: Vec<String> = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let mut files: Vec<serde_json::Value> = Vec::new();
+    // libarchive may report a directory as a bare member without a trailing
+    // slash. Derive directories from descendants so such entries can never
+    // become bogus playlist tracks.
+    let mut member_directories = HashSet::new();
+    for member in &members {
+        let normalized = member.replace('\\', "/");
+        for (index, _) in normalized.match_indices('/') {
+            member_directories.insert(normalized[..index].to_owned());
+        }
+        if normalized.ends_with('/') {
+            member_directories.insert(normalized.trim_end_matches('/').to_owned());
+        }
+    }
     for member in members {
-        let Some(relative) = member.strip_prefix(&prefix) else {
+        let normalized = member.replace('\\', "/");
+        if member_directories.contains(normalized.trim_end_matches('/')) {
+            continue;
+        }
+        let Some(relative) = normalized.strip_prefix(&prefix) else {
             continue;
         };
         if relative.is_empty() {
+            continue;
+        }
+        let playable = std::path::Path::new(relative)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| playable_extensions.contains(&extension.to_ascii_lowercase()));
+        if !playable || crate::media_filter::is_hidden(std::path::Path::new(relative)) {
             continue;
         }
         // Members below this level are virtual directories; browsing one
@@ -1706,9 +1753,6 @@ fn archive_listing(
             if seen.insert(folder.clone()) {
                 directory_names.push(folder);
             }
-            continue;
-        }
-        if crate::media_filter::is_hidden(std::path::Path::new(&relative)) {
             continue;
         }
         files.push(serde_json::json!({
@@ -1730,11 +1774,11 @@ fn archive_listing(
             })
         })
         .collect();
-    Ok(serde_json::json!({
+    serde_json::json!({
         "path": current_path,
         "directories": directories,
         "files": files,
-    }))
+    })
 }
 
 #[derive(Default)]
@@ -2197,6 +2241,32 @@ pub fn router() -> axum::Router<AppState> {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn archive_browse_omits_images_and_explicit_directory_members() {
+        let archive = Path::new("/music/album.rar");
+        let members = vec![
+            "Disc".to_owned(),
+            "Disc/01 Theme.MP3".to_owned(),
+            "Disc/cover.jpg".to_owned(),
+            "Disc/BK".to_owned(),
+            "Disc/BK/page.jpg".to_owned(),
+            "Disc\\02 End.flac".to_owned(),
+        ];
+        let extensions = HashSet::from(["mp3".to_owned(), "flac".to_owned()]);
+
+        let root = archive_listing_from_names(archive, "", members.clone(), &extensions);
+        assert_eq!(root["directories"].as_array().unwrap().len(), 1);
+        assert_eq!(root["directories"][0]["name"], "Disc");
+        assert!(root["files"].as_array().unwrap().is_empty());
+
+        let disc = archive_listing_from_names(archive, "Disc", members, &extensions);
+        let files = disc["files"].as_array().unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0]["name"], "01 Theme.MP3");
+        assert_eq!(files[1]["entry"], "Disc\\02 End.flac");
+        assert!(disc["directories"].as_array().unwrap().is_empty());
+    }
 
     #[test]
     fn terminal_can_browse_above_music_root_without_exposing_it_over_http() {

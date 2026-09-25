@@ -5,9 +5,9 @@ use std::io::{self, Write};
 use std::net::IpAddr;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use kog_audio::decoder::{DecoderRegistry, DecoderSettings, PlaybackSource, validate_soundfont};
@@ -1117,55 +1117,73 @@ impl Ui {
         let decoder_settings = settings.decoder_settings();
         let (metadata_requests, worker_requests) = mpsc::channel::<(u64, String, StoredEntry)>();
         let (worker_results, metadata_results) = mpsc::channel();
-        let metadata_settings = decoder_settings.clone();
-        std::thread::spawn(move || {
-            let decoders = DecoderRegistry::new(metadata_settings);
-            while let Ok((generation, key, entry)) = worker_requests.recv() {
-                let resolved = kog_audio::streaming::resolve_entry(
-                    &playlist_entry(&entry),
-                    &decoders,
-                    &kog_server::service::scratch_root().join("tui-metadata"),
-                );
-                let metadata = resolved.ok().map(|source| {
-                    let track = AudioTrack::from_source(source, &decoders);
-                    let title = if (entry.kind == "archive" || entry.kind == "remote")
-                        && track.title
-                            == track
-                                .source
-                                .path
-                                .file_stem()
-                                .unwrap_or_default()
-                                .to_string_lossy()
-                    {
-                        String::new()
-                    } else {
-                        track.title
+        let worker_requests = Arc::new(Mutex::new(worker_requests));
+        // Metadata for a slow file must not hold every newly added row blank.
+        // Each worker needs its own scratch playlist: resolve_entry writes a
+        // temporary M3U there before expanding an archive or local source.
+        for worker_index in 0..3 {
+            let requests = Arc::clone(&worker_requests);
+            let results = worker_results.clone();
+            let metadata_settings = decoder_settings.clone();
+            std::thread::spawn(move || {
+                let decoders = DecoderRegistry::new(metadata_settings);
+                let scratch = kog_server::service::scratch_root()
+                    .join(format!("tui-metadata-{worker_index}"));
+                loop {
+                    let request = {
+                        let receiver = requests.lock().unwrap();
+                        receiver.recv()
                     };
-                    TrackMetadata {
-                        title,
-                        artist: track.artist,
-                        album: track.album,
-                        album_artist: track.album_artist,
-                        composer: track.composer,
-                        year: track.year,
-                        sample_rate: track.sample_rate,
-                        channels: track.channels,
-                        bits_per_sample: track.bits_per_sample,
-                        bitrate: track.bitrate,
-                        disc_number: track.disc_number,
-                        track_number: track.track_number,
-                        duration: track.duration,
-                        file_size_bytes: track.file_size_bytes,
-                        lyrics: track.lyrics,
-                        codec: track.codec,
-                        genre: track.genre,
+                    let Ok((generation, key, entry)) = request else {
+                        break;
+                    };
+                    let resolved = kog_audio::streaming::resolve_entry(
+                        &playlist_entry(&entry),
+                        &decoders,
+                        &scratch,
+                    );
+                    let metadata = resolved.ok().map(|source| {
+                        let track = AudioTrack::from_source(source, &decoders);
+                        let title = if (entry.kind == "archive" || entry.kind == "remote")
+                            && track.title
+                                == track
+                                    .source
+                                    .path
+                                    .file_stem()
+                                    .unwrap_or_default()
+                                    .to_string_lossy()
+                        {
+                            String::new()
+                        } else {
+                            track.title
+                        };
+                        TrackMetadata {
+                            title,
+                            artist: track.artist,
+                            album: track.album,
+                            album_artist: track.album_artist,
+                            composer: track.composer,
+                            year: track.year,
+                            sample_rate: track.sample_rate,
+                            channels: track.channels,
+                            bits_per_sample: track.bits_per_sample,
+                            bitrate: track.bitrate,
+                            disc_number: track.disc_number,
+                            track_number: track.track_number,
+                            duration: track.duration,
+                            file_size_bytes: track.file_size_bytes,
+                            lyrics: track.lyrics,
+                            codec: track.codec,
+                            genre: track.genre,
+                        }
+                    });
+                    if results.send((generation, key, metadata)).is_err() {
+                        break;
                     }
-                });
-                if worker_results.send((generation, key, metadata)).is_err() {
-                    break;
                 }
-            }
-        });
+            });
+        }
+        drop(worker_results);
         let (cover_requests, cover_jobs) =
             mpsc::channel::<(u64, Option<PathBuf>, String, String, bool)>();
         let (cover_done, cover_results) = mpsc::channel();
@@ -4211,11 +4229,18 @@ impl Ui {
                 self.tracks.extend(tracks);
                 self.order_tracks_changed();
                 self.status = format!("Added {count} tracks from folder");
-                if play_when_loaded && count > 0 {
-                    self.folder_play_pending.clear();
-                    self.selected[2] = first;
+                if count > 0 {
+                    // The folder scan finishes after the tree action returns.
+                    // Reveal its first new row instead of leaving the pane
+                    // parked on the old selection above the appended tracks.
+                    self.playlist_query.clear();
+                    self.offsets[2] = first;
+                    self.manual_scroll_selection[2] = None;
                     self.select_track(first, false, false);
-                    self.play_selected();
+                    if play_when_loaded {
+                        self.folder_play_pending.clear();
+                        self.play_selected();
+                    }
                 }
             }
             Err(error) => self.status = error,
