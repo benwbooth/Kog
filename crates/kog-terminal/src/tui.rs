@@ -367,6 +367,7 @@ enum MenuPage {
     Saved,
     Playlist,
     Columns,
+    ColumnContext,
     ColumnVisibility,
     TagEditor,
     Remote,
@@ -394,7 +395,7 @@ impl MenuPage {
             Self::Tracks => "Playlist Row",
             Self::Saved => "Saved Playlist",
             Self::Playlist => "Playlist",
-            Self::Columns => "Columns",
+            Self::Columns | Self::ColumnContext => "Columns",
             Self::ColumnVisibility => "Visible Columns",
             Self::TagEditor => "Edit Tags",
             Self::Remote => "Remote Server",
@@ -412,7 +413,8 @@ impl MenuPage {
             Self::Tracks => &TRACKS_MENU,
             Self::Saved => &SAVED_MENU,
             Self::Playlist => &PLAYLIST_MENU,
-            Self::Columns => &COLUMNS_MENU,
+            Self::Columns => &COLUMNS_MENU[..12],
+            Self::ColumnContext => &COLUMNS_MENU,
             Self::ColumnVisibility => &COLUMN_VISIBILITY_MENU,
             Self::TagEditor => &TAG_EDITOR_MENU,
             Self::Remote => &REMOTE_MENU,
@@ -509,7 +511,12 @@ fn menu_shortcuts(page: MenuPage) -> Vec<Option<char>> {
     for (index, keys) in candidates.iter().enumerate() {
         if !keys.is_empty() {
             let assigned = assign(index, &candidates, &mut owners, &mut HashSet::new());
-            debug_assert!(assigned, "menu item needs a unique visible shortcut");
+            debug_assert!(
+                assigned,
+                "menu item needs a unique visible shortcut: {}: {}",
+                page.title(),
+                page.labels()[index]
+            );
         }
     }
     let mut shortcuts = vec![None; candidates.len()];
@@ -2415,7 +2422,20 @@ impl Ui {
         }
         let page = self.menu_page;
         self.menu_open = false;
-        match (page, index) {
+        if page == MenuPage::ColumnContext && index == 12 {
+            if let Some(column) = self.context_column
+                && self.columns.entries.get(column).is_some_and(|entry| entry.visible)
+            {
+                self.toggle_column(column);
+            }
+            return;
+        }
+        let action_page = if page == MenuPage::ColumnContext {
+            MenuPage::Columns
+        } else {
+            page
+        };
+        match (action_page, index) {
             (MenuPage::Main, 0) => self.begin_prompt(PromptKind::AddFile, String::new()),
             (MenuPage::Main, 1) => self.begin_prompt(PromptKind::AddUrl, String::new()),
             (MenuPage::Main, 2) | (MenuPage::Preferences, 0) => self.begin_prompt(
@@ -2766,10 +2786,7 @@ impl Ui {
                 self.status = "Column layout reset".to_owned();
             }
             (MenuPage::ColumnVisibility, index) => {
-                if let Some(id) = Columns::default()
-                    .entries
-                    .get(index)
-                    .map(|column| column.id)
+                if let Some(id) = Columns::default_id(index)
                     && let Some(column) = self.columns.index(id)
                 {
                     self.toggle_column(column);
@@ -3028,8 +3045,33 @@ impl Ui {
                 column.label,
                 if column.visible { "shown" } else { "hidden" }
             );
+            if !column.visible && self.keyboard_column == Some(index) {
+                self.keyboard_column = self
+                    .columns
+                    .positions()
+                    .map(|(other, _, _)| other)
+                    .min_by_key(|other| other.abs_diff(index));
+            }
+            self.columns.scroll_by(0, self.column_viewport_width);
             self.persist_columns();
+        } else {
+            self.status = "At least one column must remain visible".to_owned();
         }
+    }
+
+    fn menu_column_check(&self, page: MenuPage, index: usize) -> Option<bool> {
+        let id = match page {
+            MenuPage::Columns | MenuPage::ColumnContext => match index {
+                3 => "artist",
+                4 => "album",
+                _ => return None,
+            },
+            MenuPage::ColumnVisibility => Columns::default_id(index)?,
+            _ => return None,
+        };
+        self.columns
+            .index(id)
+            .map(|column| self.columns.entries[column].visible)
     }
 
     fn open_submenu(&mut self, page: MenuPage) {
@@ -6266,7 +6308,7 @@ impl Ui {
         let layout = self.layout(size);
         if let Some(column) = self.keyboard_column {
             self.context_column = Some(column);
-            self.open_context(MenuPage::Columns, layout.playlist_left() + 1, 1, size);
+            self.open_context(MenuPage::ColumnContext, layout.playlist_left() + 1, 1, size);
             return;
         }
         match self.focus {
@@ -7424,7 +7466,12 @@ impl Ui {
                     .positions()
                     .find(|(_, start, width)| (*start..start + width).contains(&relative))
                     .map(|(index, _, _)| index);
-                self.open_context(MenuPage::Columns, x, y, size);
+                let page = if self.context_column.is_some() {
+                    MenuPage::ColumnContext
+                } else {
+                    MenuPage::Columns
+                };
+                self.open_context(page, x, y, size);
             } else if (layout.show_sidebar || self.focus == Focus::Tracks)
                 && x >= layout.playlist_left()
                 && y >= 2
@@ -9448,7 +9495,11 @@ impl Ui {
                     } else {
                         Surface::MenuBody
                     };
-                    let shown = menu_row(label, panel_width);
+                    let shown = if let Some(checked) = self.menu_column_check(layer.page, index) {
+                        menu_row_checked(label, panel_width, checked)
+                    } else {
+                        menu_row(label, panel_width)
+                    };
                     paint(
                         &mut screen,
                         layer.y + row + 2,
@@ -10594,43 +10645,44 @@ const PLAYLIST_MENU: [&str; 6] = [
     "Clear Playlist",
     "Columns ▶",
 ];
-const COLUMNS_MENU: [&str; 12] = [
+const COLUMNS_MENU: [&str; 13] = [
     "Sort by Title",
     "Sort by Artist",
     "Sort by Album",
-    "Show/Hide Artist",
-    "Show/Hide Album",
+    "Artist",
+    "Album",
     "Auto Fit Columns",
-    "Show/Hide Columns ▶",
+    "Visible Columns ▶",
     "Move This Column Left",
     "Move This Column Right",
     "Scroll Columns Left",
     "Scroll Columns Right",
     "Reset Column Layout",
+    "Hide This Column",
 ];
 const COLUMN_VISIBILITY_MENU: [&str; 22] = [
-    "Toggle #",
-    "Toggle Star",
-    "Toggle Status",
-    "Toggle Rating",
-    "Toggle Title",
-    "Toggle Album Artist",
-    "Toggle Artist",
-    "Toggle Composer",
-    "Toggle Album",
-    "Toggle Length",
-    "Toggle Size (bytes)",
-    "Toggle Size",
-    "Toggle Year",
-    "Toggle Genre",
-    "Toggle Track Number",
-    "Toggle Plays",
-    "Toggle Path",
-    "Toggle Filename",
-    "Toggle Codec",
-    "Toggle Sample Rate",
-    "Toggle Bits",
-    "Toggle Bitrate",
+    "#",
+    "Star",
+    "Status",
+    "Rating",
+    "Title",
+    "Album Artist",
+    "Artist",
+    "Composer",
+    "Album",
+    "Length",
+    "Size (bytes)",
+    "Size",
+    "Year",
+    "Genre",
+    "Track Number",
+    "Plays",
+    "Path",
+    "Filename",
+    "Codec",
+    "Sample Rate",
+    "Bit Depth",
+    "Bitrate",
 ];
 
 #[derive(Clone, Copy)]
@@ -10974,6 +11026,12 @@ fn menu_row(label: &str, width: usize) -> String {
         .saturating_sub(3)
         .saturating_sub(cell_width(&shown) + cell_width(right));
     format!("│ {shown}{}{right}", " ".repeat(spaces))
+}
+
+fn menu_row_checked(label: &str, width: usize, checked: bool) -> String {
+    let row = menu_row(label, width.saturating_sub(2));
+    let content = row.strip_prefix("│ ").unwrap_or(&row);
+    format!("│ {} {content}", if checked { '✓' } else { ' ' })
 }
 
 fn menu_mnemonic(row: &str, shortcut: char) -> Option<(usize, char)> {
@@ -12570,6 +12628,7 @@ mod tests {
             MenuPage::Saved,
             MenuPage::Playlist,
             MenuPage::Columns,
+            MenuPage::ColumnContext,
             MenuPage::ColumnVisibility,
             MenuPage::TagEditor,
             MenuPage::Remote,
@@ -12597,6 +12656,16 @@ mod tests {
         }
         assert_eq!(menu_shortcut_index(MenuPage::Main, 'v'), Some(9));
         assert_eq!(menu_shortcut_index(MenuPage::Main, 'p'), Some(11));
+        assert_eq!(MenuPage::Columns.labels().len(), 12);
+        assert_eq!(MenuPage::ColumnContext.labels()[12], "Hide This Column");
+        assert_eq!(menu_row_checked("Artist", 18, true).chars().nth(2), Some('✓'));
+        assert_eq!(menu_row_checked("Artist", 18, false).chars().nth(2), Some(' '));
+        let visibility_shortcuts = menu_shortcuts(MenuPage::ColumnVisibility);
+        for (index, &label) in COLUMN_VISIBILITY_MENU.iter().enumerate() {
+            assert!(Columns::default_id(index).is_some());
+            let shortcut = visibility_shortcuts[index].unwrap();
+            assert!(menu_mnemonic(&menu_row_checked(label, 18, false), shortcut).is_some());
+        }
     }
     #[test]
     fn seek_time_accepts_long_tracks_and_rejects_invalid_fields() {

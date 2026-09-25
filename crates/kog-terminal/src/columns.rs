@@ -44,6 +44,10 @@ const DEFAULTS: [(&str, &str, usize, bool); 22] = [
 ];
 
 impl Columns {
+    pub fn default_id(index: usize) -> Option<&'static str> {
+        DEFAULTS.get(index).map(|(id, ..)| *id)
+    }
+
     pub fn load(settings: &AppSettings) -> Self {
         let tui = setting_path(TUI_LAYOUT_FILE).and_then(|path| fs::read_to_string(path).ok());
         if let Some(layout) = tui.as_deref().and_then(|value| Self::parse(value, false)) {

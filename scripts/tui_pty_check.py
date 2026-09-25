@@ -282,10 +282,12 @@ try:
     with sqlite3.connect(db_files[0]) as db:
         assert db.execute("SELECT count(*) FROM playlist_entries").fetchone()[0]==6
     click(95,1,2)
-    assert 'Show/Hide Artist' in '\n'.join(screen.display)
+    assert '✓ Artist' in '\n'.join(screen.display)
     menu_item('Columns',3)
     assert 'Artist' not in screen.display[1]
-    click(95,1,2);menu_item('Columns',3)
+    click(95,1,2)
+    assert '✓ Artist' not in '\n'.join(screen.display)
+    menu_item('Columns',3)
     assert 'Artist' in screen.display[1]
     artist_at=screen.display[1].find('Artist')
     send(f'\x1b[<0;{artist_at+1};2M')
