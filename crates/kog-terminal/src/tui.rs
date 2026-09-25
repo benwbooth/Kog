@@ -10811,7 +10811,7 @@ fn draw_hover_tooltip(
         return;
     }
     let panel_width = lines.iter().map(|line| cell_width(line)).max().unwrap_or(0) + 2;
-    let panel_height = lines.len() + 2;
+    let panel_height = lines.len();
     let x = if pointer.0 + panel_width + 3 <= size.0 {
         pointer.0 + 1
     } else {
@@ -10833,17 +10833,12 @@ fn draw_hover_tooltip(
             false,
         );
     }
-    for row in 0..panel_height {
-        let content = if row > 0 && row <= lines.len() {
-            format!(" {}", lines[row - 1])
-        } else {
-            String::new()
-        };
+    for (row, line) in lines.iter().enumerate() {
         paint(
             screen,
             y + row + 1,
             x + 1,
-            &content,
+            &format!(" {line}"),
             panel_width,
             Surface::Tooltip,
             false,
