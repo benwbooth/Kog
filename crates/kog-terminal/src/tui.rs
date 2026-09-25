@@ -65,6 +65,7 @@ const MEDIA_SHUFFLE: &str = "🔀";
 const MEDIA_REPEAT: &str = "🔁";
 const MEDIA_REPEAT_ONE: &str = "🔂";
 const MEDIA_RADIO: &str = "⚄";
+const CLEAR_PLAYLIST_ICON: &str = "≡×";
 const PLAYLIST_PLAY: &str = "▶ ";
 const PLAYLIST_PAUSE: &str = "❚❚";
 const STATUS_WAVEFORM_WIDTH: usize = 4;
@@ -9129,12 +9130,19 @@ impl Ui {
         let (volume_row, icon_x, bar_x, volume_width) = volume_geometry(width, layout.footer_top);
         let (clear_row, clear_range) = clear_playlist_geometry(width, layout.footer_top);
         if !clear_range.is_empty() {
+            let icon = if clear_range.len() >= cell_width(CLEAR_PLAYLIST_ICON) {
+                CLEAR_PLAYLIST_ICON
+            } else {
+                "×"
+            };
+            let icon_width = cell_width(icon).min(clear_range.len());
+            let icon_x = clear_range.start + (clear_range.len() - icon_width) / 2;
             paint(
                 &mut screen,
                 clear_row + 1,
-                clear_range.start + 1,
-                if clear_range.len() >= 8 { "[Clear] " } else { "×" },
-                clear_range.len(),
+                icon_x + 1,
+                icon,
+                icon_width,
                 if self.tracks.is_empty() { Surface::Muted } else { Surface::Accent },
                 true,
             );
@@ -10675,7 +10683,7 @@ fn volume_geometry(width: usize, footer_top: usize) -> (usize, usize, usize, usi
     let icon_x = width.saturating_sub(bar_width + 8);
     let (transport_left, transport_slot_width) = footer_transport_layout(width);
     let transport_right = transport_left + transport_slot_width * FOOTER_TRANSPORT.len();
-    let row = if icon_x >= transport_right + 8 {
+    let row = if icon_x >= transport_right + 4 {
         footer_top
     } else {
         footer_top + 2
@@ -10685,7 +10693,7 @@ fn volume_geometry(width: usize, footer_top: usize) -> (usize, usize, usize, usi
 
 fn clear_playlist_geometry(width: usize, footer_top: usize) -> (usize, Range<usize>) {
     let (row, icon_x, _, _) = volume_geometry(width, footer_top);
-    (row, icon_x.saturating_sub(8)..icon_x)
+    (row, icon_x.saturating_sub(4)..icon_x)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -12485,6 +12493,7 @@ mod tests {
     }
     #[test]
     fn transport_hitboxes_follow_drawn_controls() {
+        assert_eq!(cell_width(CLEAR_PLAYLIST_ICON), 2);
         for width in [20, 30, 48, 70, 72, 80, 120] {
             for action in FOOTER_TRANSPORT {
                 let slot = footer_transport_slot(width, action);
@@ -12496,7 +12505,7 @@ mod tests {
             let (clear_row, clear_range) = clear_playlist_geometry(width, 36);
             assert_eq!(clear_row, volume_row);
             assert_eq!(clear_range.end, icon_x);
-            assert!(!clear_range.is_empty());
+            assert_eq!(clear_range.len(), 4);
             if volume_row == 36 {
                 assert!(footer_transport_slot(width, TransportAction::Radio).end <= clear_range.start);
             }
