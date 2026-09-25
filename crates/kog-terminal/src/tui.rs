@@ -28,7 +28,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::columns::Columns;
-use crate::cover_preview::{self, COVER_WIDTH, CoverPreview};
+use crate::cover_preview::{self, COVER_HEIGHT, COVER_WIDTH, CoverPreview};
 use crate::remote::{RemoteFile, RemoteListing, RemoteSettings};
 use crate::rom_import::{RomKind, import_rom_archive};
 use crate::server_control::RunningServer;
@@ -6657,7 +6657,11 @@ impl Ui {
             return;
         }
         if y >= layout.footer_top {
-            if y <= layout.footer_top + 1 && x < 8 && self.cover_preview.is_some() {
+            if (layout.footer_top..layout.footer_top + 4).contains(&y)
+                && x < 10
+                && size.0 >= 80
+                && self.cover_preview.is_some()
+            {
                 self.show_artwork();
                 return;
             }
@@ -7682,7 +7686,11 @@ impl Ui {
             .and_then(|index| self.tracks.get(index))
             .map(|track| self.title_for(track))
             .unwrap_or_else(|| "Kog".to_owned());
-        let cover_space = if width >= 80 { 3 } else { 0 };
+        let cover_space = if width >= 80 {
+            if self.cover_preview.is_some() { 6 } else { 3 }
+        } else {
+            0
+        };
         if cover_space > 0 {
             if let Some(cover) = &self.cover_preview {
                 paint_cover_preview(&mut screen, layout.footer_top + 1, 2, cover);
@@ -7937,7 +7945,7 @@ impl Ui {
                     true,
                 );
                 if let Some(cover) = &self.cover_preview {
-                    paint_cover_preview(&mut screen, card_y + 1, card_x, cover);
+                    paint_cover_at_size(&mut screen, card_y + 1, card_x, cover, 4);
                 } else {
                     paint(
                         &mut screen,
@@ -8257,9 +8265,14 @@ impl Ui {
             self.modal = Some(self.visualizer_text());
         }
         if self.artwork_modal && self.modal.is_some() && width >= 24 && height >= 18 {
-            let art_size = if width >= 40 && height >= 25 { 24 } else { 12 };
+            let labeled = width >= 56 && height >= 29;
+            let extra_rows = if labeled { 5 } else { 2 };
+            let art_size = COVER_WIDTH
+                .min(width.saturating_sub(8))
+                .min(height.saturating_sub(extra_rows).saturating_mul(2))
+                & !1;
             let box_width = art_size + 8;
-            let box_height = art_size / 2 + 5;
+            let box_height = art_size / 2 + extra_rows;
             let x = width.saturating_sub(box_width) / 2 + 1;
             let y = height.saturating_sub(box_height) / 2 + 1;
             for row in 0..box_height {
@@ -8303,21 +8316,24 @@ impl Ui {
                     false,
                 );
             }
-            paint(
-                &mut screen,
-                y + 1,
-                x + 2,
-                &current,
-                box_width - 4,
-                Surface::Toolbar,
-                true,
-            );
+            if labeled {
+                paint(
+                    &mut screen,
+                    y + 1,
+                    x + 2,
+                    &current,
+                    box_width - 4,
+                    Surface::Toolbar,
+                    true,
+                );
+            }
+            let art_row = y + if labeled { 2 } else { 1 };
             if let Some(cover) = &self.cover_preview {
-                paint_cover_at_size(&mut screen, y + 2, x + 4, cover, art_size);
+                paint_cover_at_size(&mut screen, art_row, x + 4, cover, art_size);
             } else {
                 paint(
                     &mut screen,
-                    y + 2 + art_size / 4,
+                    art_row + art_size / 4,
                     x + 4,
                     "◈ KOG",
                     art_size,
@@ -8325,24 +8341,26 @@ impl Ui {
                     true,
                 );
             }
-            paint(
-                &mut screen,
-                y + 2 + art_size / 2,
-                x + 2,
-                &subtitle,
-                box_width - 4,
-                Surface::Muted,
-                false,
-            );
-            paint(
-                &mut screen,
-                y + 3 + art_size / 2,
-                x + 2,
-                "Click or Esc to close",
-                box_width - 4,
-                Surface::Muted,
-                false,
-            );
+            if labeled {
+                paint(
+                    &mut screen,
+                    art_row + art_size / 2,
+                    x + 2,
+                    &subtitle,
+                    box_width - 4,
+                    Surface::Muted,
+                    false,
+                );
+                paint(
+                    &mut screen,
+                    art_row + 1 + art_size / 2,
+                    x + 2,
+                    "Click or Esc to close",
+                    box_width - 4,
+                    Surface::Muted,
+                    false,
+                );
+            }
         } else if let Some(modal) = &self.modal {
             let lines = modal_lines(modal, width.saturating_sub(12));
             let page = lines.len().min(height.saturating_sub(8)).max(1);
@@ -9920,7 +9938,7 @@ fn draw_folder_chooser(
 }
 
 fn paint_cover_preview(out: &mut String, row: usize, col: usize, cover: &CoverPreview) {
-    paint_cover_at_size(out, row, col, cover, 4);
+    paint_cover_at_size(out, row, col, cover, 8);
 }
 
 fn paint_cover_at_size(
@@ -9933,9 +9951,8 @@ fn paint_cover_at_size(
     let width = width.min(COVER_WIDTH);
     for y in 0..width / 2 {
         for x in 0..width {
-            let source_x = x * COVER_WIDTH / width;
-            let upper = cover.pixels[(y * 2 * COVER_WIDTH / width) * COVER_WIDTH + source_x];
-            let lower = cover.pixels[((y * 2 + 1) * COVER_WIDTH / width) * COVER_WIDTH + source_x];
+            let upper = cover_pixel_at_size(cover, x, y * 2, width);
+            let lower = cover_pixel_at_size(cover, x, y * 2 + 1, width);
             out.push_str(&format!(
                 "\x1b[{};{}H\x1b[38;2;{};{};{};48;2;{};{};{}m▀\x1b[0m",
                 row + y,
@@ -9949,6 +9966,24 @@ fn paint_cover_at_size(
             ));
         }
     }
+}
+
+fn cover_pixel_at_size(cover: &CoverPreview, x: usize, y: usize, width: usize) -> [u8; 3] {
+    let left = x * COVER_WIDTH / width;
+    let right = ((x + 1) * COVER_WIDTH / width).max(left + 1);
+    let top = y * COVER_HEIGHT / width;
+    let bottom = ((y + 1) * COVER_HEIGHT / width).max(top + 1);
+    let mut sum = [0_u32; 3];
+    for source_y in top..bottom {
+        for source_x in left..right {
+            let pixel = cover.pixels[source_y * COVER_WIDTH + source_x];
+            for channel in 0..3 {
+                sum[channel] += u32::from(pixel[channel]);
+            }
+        }
+    }
+    let count = ((right - left) * (bottom - top)) as u32;
+    sum.map(|channel| (channel / count) as u8)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
