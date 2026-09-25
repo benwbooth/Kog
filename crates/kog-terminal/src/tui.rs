@@ -4892,6 +4892,7 @@ impl Ui {
             PromptKind::Search => {
                 if value.trim().is_empty() {
                     self.search_due = None;
+                    self.search_query.clear();
                     if self.remote_active {
                         self.connect_remote(Some(self.remote_path.clone()));
                     } else {
@@ -6838,6 +6839,20 @@ impl Ui {
                 } else {
                     (0, search_x - 1, search_width)
                 };
+                if button & 3 == 0
+                    && !value.is_empty()
+                    && width >= 6
+                    && y == row
+                    && x == col + width - 1
+                {
+                    let (kind, mut value) = self.prompt.take().unwrap();
+                    value.clear();
+                    self.input_cursor = 0;
+                    self.input_select_all = false;
+                    self.update_search_draft(kind, &value);
+                    self.prompt = Some((kind, value));
+                    return;
+                }
                 if y == row && (col..col + width).contains(&x) {
                     self.input_cursor = (x.saturating_sub(col + 4)).min(value.chars().count());
                     self.input_select_all = false;
@@ -7003,6 +7018,27 @@ impl Ui {
             return;
         }
         if y == 0 {
+            let search_x = (size.0 / 2).saturating_sub(17).max(14);
+            let search_width = size.0.saturating_sub(search_x + 7).min(36);
+            if button & 3 == 0
+                && search_width >= 6
+                && x == search_x + search_width - 2
+            {
+                let kind = if !layout.show_sidebar && self.focus == Focus::Library {
+                    PromptKind::Search
+                } else {
+                    PromptKind::PlaylistSearch
+                };
+                let populated = match kind {
+                    PromptKind::Search => !self.search_query.is_empty(),
+                    PromptKind::PlaylistSearch => !self.playlist_query.is_empty(),
+                    _ => false,
+                };
+                if populated {
+                    self.update_search_draft(kind, "");
+                    return;
+                }
+            }
             if x < 4 {
                 self.begin_prompt(
                     PromptKind::MusicFolder,
@@ -7164,6 +7200,14 @@ impl Ui {
                 return;
             }
             if y == 3 && self.files_expanded {
+                if button & 3 == 0
+                    && layout.first >= 6
+                    && x == layout.first - 1
+                    && !self.search_query.is_empty()
+                {
+                    self.update_search_draft(PromptKind::Search, "");
+                    return;
+                }
                 self.begin_prompt(PromptKind::Search, self.search_query.clone());
                 return;
             }
@@ -7631,45 +7675,51 @@ impl Ui {
             .as_ref()
             .filter(|(kind, _)| *kind == PromptKind::Search)
             .map(|(_, value)| value.as_str());
-        let playlist_search = if let Some(draft) = playlist_draft {
-            format!(
-                " ⌕  {}",
-                input_window(draft, self.input_cursor, search_width.saturating_sub(5)).0
-            )
-        } else if !layout.show_sidebar && file_draft.is_some() {
-            format!(
-                " ⌕  {}",
-                input_window(
-                    file_draft.unwrap_or_default(),
-                    self.input_cursor,
-                    search_width.saturating_sub(5)
-                )
-                .0
-            )
-        } else if !layout.show_sidebar && self.focus == Focus::Library {
-            if self.search_query.is_empty() {
-                " ⌕  Search files".to_owned()
-            } else {
-                format!(" ⌕  {}", self.search_query)
-            }
-        } else if self.playlist_query.is_empty() {
-            " ⌕  Search playlist".to_owned()
+        let top_file_search = playlist_draft.is_none()
+            && !layout.show_sidebar
+            && (file_draft.is_some() || self.focus == Focus::Library);
+        let top_draft = playlist_draft.or(if top_file_search { file_draft } else { None });
+        let top_query = if let Some(draft) = top_draft {
+            draft
+        } else if top_file_search {
+            &self.search_query
         } else {
-            format!(" ⌕  {}", self.playlist_query)
+            &self.playlist_query
         };
+        let playlist_search = search_box_label(
+            top_query,
+            top_draft.map(|_| self.input_cursor),
+            search_width,
+            if top_file_search { "Search files" } else { "Search playlist" },
+        );
         paint(
             &mut screen,
             1,
             search_x,
             &playlist_search,
             search_width,
-            if playlist_draft.is_some() || (!layout.show_sidebar && file_draft.is_some()) {
+            if top_draft.is_some() {
                 Surface::Input
             } else {
                 Surface::Main
             },
             false,
         );
+        if !top_query.is_empty() && search_width >= 6 {
+            paint(
+                &mut screen,
+                1,
+                search_x + search_width - 1,
+                "×",
+                1,
+                if top_draft.is_some() {
+                    Surface::Input
+                } else {
+                    Surface::Main
+                },
+                true,
+            );
+        }
         paint(
             &mut screen,
             1,
@@ -7728,16 +7778,13 @@ impl Ui {
                     true,
                 );
             }
-            let tree_search = if let Some(draft) = file_draft {
-                format!(
-                    " ⌕  {}",
-                    input_window(draft, self.input_cursor, sidebar.saturating_sub(5)).0
-                )
-            } else if self.search.is_some() {
-                format!(" ⌕  {}", self.search_query)
-            } else {
-                " ⌕  Search files and folders…".to_owned()
-            };
+            let tree_query = file_draft.unwrap_or(&self.search_query);
+            let tree_search = search_box_label(
+                tree_query,
+                file_draft.map(|_| self.input_cursor),
+                sidebar,
+                "Search files and folders…",
+            );
             if self.files_expanded {
                 paint(
                     &mut screen,
@@ -7752,6 +7799,21 @@ impl Ui {
                     },
                     false,
                 );
+                if !tree_query.is_empty() && sidebar >= 6 {
+                    paint(
+                        &mut screen,
+                        4,
+                        sidebar,
+                        "×",
+                        1,
+                        if file_draft.is_some() {
+                            Surface::Input
+                        } else {
+                            Surface::Main
+                        },
+                        true,
+                    );
+                }
             }
             let tree_scrollbar = self.tree_scrollbar(&layout, size);
             let tree_width = sidebar.saturating_sub(usize::from(tree_scrollbar.is_some()));
@@ -8862,9 +8924,12 @@ impl Ui {
                 } else {
                     (1, search_x, search_width)
                 };
-                let cursor =
-                    input_window(value, self.input_cursor, field_width.saturating_sub(5)).1;
-                let column = (col + 4 + cursor).min(col + field_width.saturating_sub(1));
+                let clear_visible = !value.is_empty() && field_width >= 6;
+                let text_width = field_width.saturating_sub(if clear_visible { 6 } else { 5 });
+                let cursor = input_window(value, self.input_cursor, text_width).1;
+                let last_text_column =
+                    col + field_width.saturating_sub(if clear_visible { 2 } else { 1 });
+                let column = (col + 4 + cursor).min(last_text_column);
                 screen.push_str(&format!("\x1b[{row};{column}H\x1b[?25h"));
             } else {
                 let box_width = width.saturating_sub(8).min(72).max(12);
@@ -9528,6 +9593,25 @@ fn input_window(text: &str, cursor: usize, width: usize) -> (String, usize) {
         used += cells;
     }
     (shown, before.min(width.saturating_sub(1)))
+}
+
+fn search_box_label(value: &str, cursor: Option<usize>, width: usize, placeholder: &str) -> String {
+    let text = if value.is_empty() && cursor.is_none() {
+        placeholder.to_owned()
+    } else {
+        let reserved = if !value.is_empty() && width >= 6 {
+            6
+        } else {
+            5
+        };
+        let available = width.saturating_sub(reserved);
+        if let Some(cursor) = cursor {
+            input_window(value, cursor, available).0
+        } else {
+            truncate(value, available)
+        }
+    };
+    format!(" ⌕  {text}")
 }
 
 fn playlist_entry(entry: &StoredEntry) -> PlaylistEntry {
