@@ -33,6 +33,8 @@ policy, playlist expansion, metadata/stream locators, and radio-round rules.
 The queue, shuffle, and repeat policy lives in the platform-neutral
 `kog-playback-policy` crate; native players call it through `kog-audio`, and
 the browser compiles it to WebAssembly.
+Playlist text and star comparisons also compile from that crate, so numbered
+titles and favorite-first sorting behave alike across all three panes.
 Saved and streamed track locators are validated by `PlaylistEntry::from_locator`
 in `kog-audio`, so a malformed archive member or unknown kind cannot be
 silently interpreted as a local file by one frontend.

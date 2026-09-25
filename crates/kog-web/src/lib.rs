@@ -27,6 +27,7 @@ use std::rc::Rc;
 
 use gloo_net::http::Request;
 use kog_playback_policy::{OrderTrack, PlaybackOrder, RepeatMode, ShuffleMode};
+use kog_playback_policy::sort::{favorites_first, natural_compare};
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::closure::Closure;
@@ -4698,17 +4699,12 @@ fn App() -> impl IntoView {
             })
             .collect();
         if key != SortKey::Index {
+            let starred = (key == SortKey::Star).then(|| stars.get());
             let value = |entry: &Entry| -> String {
                 let meta = meta_for(&cache, entry);
                 match key {
                     SortKey::Index => String::new(),
-                    SortKey::Star => {
-                        if stars.get().contains(&entry_star_locator(entry)) {
-                            "1".to_owned()
-                        } else {
-                            "0".to_owned()
-                        }
-                    }
+                    SortKey::Star => String::new(),
                     // No server-side rating/status value to order by; keeps the
                     // header toggle from reordering the pane.
                     SortKey::Status | SortKey::Rating | SortKey::PlayCount => String::new(),
@@ -4755,10 +4751,22 @@ fn App() -> impl IntoView {
                         .unwrap_or_default(),
                 }
             };
-            rows.sort_by_key(|(_, entry)| value(entry).to_lowercase());
-            if !sort_asc.get() {
-                rows.reverse();
-            }
+            rows.sort_by(|(_, left), (_, right)| {
+                let comparison = if key == SortKey::Star {
+                    let starred = starred.as_ref().expect("star set for star sort");
+                    favorites_first(
+                        starred.contains(&entry_star_locator(left)),
+                        starred.contains(&entry_star_locator(right)),
+                    )
+                } else {
+                    natural_compare(&value(left), &value(right))
+                };
+                if sort_asc.get() {
+                    comparison
+                } else {
+                    comparison.reverse()
+                }
+            });
         }
         rows
     };

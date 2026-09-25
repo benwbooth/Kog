@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use kog_audio::decoder::{DecoderRegistry, DecoderSettings, PlaybackSource, validate_soundfont};
 use kog_audio::playback::{PlaybackEngine, PlaybackState, available_output_devices};
 use kog_audio::playback_order::PlaybackOrder;
+use kog_audio::playback_order::sort::{favorites_first, natural_compare};
 use kog_audio::playlist::{Playlist, PlaylistEntry};
 use kog_audio::settings::{
     AppSettings, MidiEngine, OpeningFilesBehavior, OutputDevicePreference, RepeatMode, ShuffleMode,
@@ -3165,7 +3166,7 @@ impl Ui {
         self.sort_column = Some(column);
         let mut order: Vec<_> = (0..self.tracks.len()).collect();
         let id = self.columns.entries[column].id;
-        order.sort_by_key(|&index| {
+        let value = |index: usize| {
             if id == "index" {
                 format!("{index:012}")
             } else if id == "filesizebytes" || id == "filesize" {
@@ -3181,10 +3182,22 @@ impl Ui {
                 self.column_value(index, &self.tracks[index], id)
                     .to_lowercase()
             }
+        };
+        order.sort_by(|&left, &right| {
+            let comparison = if id == "star" {
+                favorites_first(
+                    self.starred_keys.contains(&metadata_key(&self.tracks[left].entry)),
+                    self.starred_keys.contains(&metadata_key(&self.tracks[right].entry)),
+                )
+            } else {
+                natural_compare(&value(left), &value(right))
+            };
+            if self.sort_ascending {
+                comparison
+            } else {
+                comparison.reverse()
+            }
         });
-        if !self.sort_ascending {
-            order.reverse();
-        }
         let mut mapping = vec![0; order.len()];
         for (new, &old) in order.iter().enumerate() {
             mapping[old] = new;

@@ -2,6 +2,8 @@
 
 use std::collections::HashSet;
 
+pub mod sort;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ShuffleMode {
     #[default]

@@ -416,6 +416,7 @@ use kog_core::mpris::{
 };
 use kog_audio::playback::{OutputDevice, PlaybackEngine, PlaybackState, available_output_devices};
 use kog_audio::playback_order::{PlaybackOrder, SelectionState};
+use kog_audio::playback_order::sort::{favorites_first, natural_compare};
 use kog_audio::playlist::{Playlist, PlaylistEntry, PlaylistLocation};
 use crate::rom_import::{ImportedRomSet, RomKind, import_rom_archive};
 use kog_audio::settings::{
@@ -1463,59 +1464,6 @@ impl PlaylistSortColumn {
     }
 }
 
-fn natural_compare(left: &str, right: &str) -> Ordering {
-    let left = left.to_lowercase().chars().collect::<Vec<_>>();
-    let right = right.to_lowercase().chars().collect::<Vec<_>>();
-    let mut left_index = 0;
-    let mut right_index = 0;
-
-    while left_index < left.len() && right_index < right.len() {
-        if left[left_index].is_ascii_digit() && right[right_index].is_ascii_digit() {
-            let left_end = left[left_index..]
-                .iter()
-                .position(|character| !character.is_ascii_digit())
-                .map_or(left.len(), |offset| left_index + offset);
-            let right_end = right[right_index..]
-                .iter()
-                .position(|character| !character.is_ascii_digit())
-                .map_or(right.len(), |offset| right_index + offset);
-            let left_significant = left_index
-                + left[left_index..left_end]
-                    .iter()
-                    .take_while(|character| **character == '0')
-                    .count();
-            let right_significant = right_index
-                + right[right_index..right_end]
-                    .iter()
-                    .take_while(|character| **character == '0')
-                    .count();
-            let left_digits = &left[left_significant..left_end];
-            let right_digits = &right[right_significant..right_end];
-
-            match left_digits.len().cmp(&right_digits.len()) {
-                Ordering::Equal => match left_digits.cmp(right_digits) {
-                    Ordering::Equal => {}
-                    ordering => return ordering,
-                },
-                ordering => return ordering,
-            }
-            left_index = left_end;
-            right_index = right_end;
-            continue;
-        }
-
-        match left[left_index].cmp(&right[right_index]) {
-            Ordering::Equal => {
-                left_index += 1;
-                right_index += 1;
-            }
-            ordering => return ordering,
-        }
-    }
-
-    (left.len() - left_index).cmp(&(right.len() - right_index))
-}
-
 /// Full path of a track for the path column: the file itself, or the outer
 /// archive with nested members appended as folders. The outer join uses the
 /// OS separator; member separators inside archives are always `/`.
@@ -1575,9 +1523,10 @@ fn compare_tracks(
         | PlaylistSortColumn::Status => Ordering::Equal,
         // Starred first when ascending: reversed boolean order so a click
         // on the star header groups favorites on top.
-        PlaylistSortColumn::Star => starred
-            .contains(&star_key_for_track(right))
-            .cmp(&starred.contains(&star_key_for_track(left))),
+        PlaylistSortColumn::Star => favorites_first(
+            starred.contains(&star_key_for_track(left)),
+            starred.contains(&star_key_for_track(right)),
+        ),
         PlaylistSortColumn::Title => natural_compare(&left.title, &right.title),
         PlaylistSortColumn::AlbumArtist => natural_compare(&left.album_artist, &right.album_artist),
         PlaylistSortColumn::Artist => natural_compare(&left.artist, &right.artist),
