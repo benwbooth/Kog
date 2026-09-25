@@ -2486,7 +2486,7 @@ body.touch .track .index-cell {
     display: flex;
     align-items: center;
     min-width: 0;
-    min-height: 76px;
+    min-height: 60px;
     height: auto;
     padding: 0 8px 0 44px;
     border-bottom: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
@@ -2494,21 +2494,21 @@ body.touch .track .index-cell {
 
   .mobile-track-card {
     display: grid;
-    grid-template-columns: 22px minmax(0, 1fr) 44px 44px;
-    grid-template-rows: auto 18px;
+    grid-template-columns: 20px minmax(0, 1fr) 44px 44px;
+    grid-template-rows: auto auto;
     align-items: center;
-    gap: 6px;
+    gap: 2px 4px;
     width: 100%;
     min-width: 0;
-    min-height: 72px;
+    min-height: 56px;
   }
 
   .mobile-track-icon {
     grid-column: 1;
     grid-row: 1 / 3;
     position: relative;
-    width: 22px;
-    height: 22px;
+    width: 20px;
+    height: 20px;
     color: var(--muted);
   }
 
@@ -2538,7 +2538,7 @@ body.touch .track .index-cell {
     display: flex;
     flex-direction: column;
     justify-content: center;
-    gap: 3px;
+    gap: 2px;
   }
 
   .mobile-track-head {
@@ -2578,21 +2578,28 @@ body.touch .track .index-cell {
     overflow-wrap: anywhere;
     font-size: 14px;
     font-weight: 600;
+    line-height: 1.2;
   }
 
   .mobile-track-detail {
     white-space: nowrap;
     font-size: 12px;
+    line-height: 1.2;
     color: var(--muted);
+  }
+
+  .mobile-track-detail:empty,
+  .mobile-track-duration:empty {
+    display: none;
   }
 
   .mobile-track-duration {
     grid-column: 2;
     grid-row: 2;
     justify-self: start;
-    align-self: end;
-    margin-bottom: 7px;
+    align-self: center;
     font-size: 11px;
+    line-height: 1.2;
     font-variant-numeric: tabular-nums;
     color: var(--muted);
   }
@@ -3029,7 +3036,7 @@ body.touch .track .index-cell {
   }
 
   .tree-root {
-    height: 54px;
+    height: 48px;
     padding: 0 10px;
     background: var(--surface);
   }
@@ -3041,14 +3048,14 @@ body.touch .track .index-cell {
   }
 
   .tree-search {
-    margin: 12px 14px;
+    margin: 8px 14px;
     background: var(--alternate);
     border-color: transparent;
   }
 
   .tree-row {
-    min-height: 54px;
-    height: 54px;
+    min-height: 46px;
+    height: 46px;
     padding-left: min(var(--tree-indent, 0px), 68px);
     padding-right: 10px;
     border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
@@ -3173,7 +3180,7 @@ body.touch .track .index-cell {
   }
 
   .track {
-    min-height: 80px;
+    min-height: 60px;
     padding-right: 8px;
     border-bottom-color: color-mix(in srgb, var(--border) 55%, transparent);
   }
