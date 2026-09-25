@@ -60,7 +60,7 @@ const MEDIA_NEXT: &str = "⏭️";
 const MEDIA_SHUFFLE: &str = "🔀";
 const MEDIA_REPEAT: &str = "🔁";
 const MEDIA_REPEAT_ONE: &str = "🔂";
-const MEDIA_RADIO: &str = "📻";
+const MEDIA_RADIO: &str = "⚄";
 
 struct RestoredPlaylist {
     tracks: Vec<Track>,
@@ -8096,7 +8096,7 @@ impl Ui {
                 TransportAction::Radio => (
                     MEDIA_RADIO,
                     if self.radio_enabled {
-                        Surface::Accent
+                        Surface::RadioOn
                     } else {
                         Surface::Muted
                     },
@@ -9810,6 +9810,7 @@ enum Surface {
     Header,
     Accent,
     AccentSidebar,
+    RadioOn,
     Selected,
     Muted,
 }
@@ -9836,6 +9837,7 @@ fn paint(
         Surface::Header => ("225;230;235", "29;32;34"),
         Surface::Accent => ("103;179;233", "29;32;34"),
         Surface::AccentSidebar => ("103;179;233", "34;37;39"),
+        Surface::RadioOn => ("255;169;68", "29;32;34"),
         Surface::Selected => ("245;248;251", "49;84;106"),
         Surface::Muted => ("151;160;168", "29;32;34"),
     };
@@ -10769,11 +10771,11 @@ mod tests {
             MEDIA_SHUFFLE,
             MEDIA_REPEAT,
             MEDIA_REPEAT_ONE,
-            MEDIA_RADIO,
         ] {
             assert_eq!(cell_width(icon), 2, "{icon}");
             assert_eq!(truncate(icon, 2), icon);
         }
+        assert_eq!(cell_width(MEDIA_RADIO), 1);
         assert_eq!(cell_slice("▶️ Song", 0, 2), MEDIA_PLAY);
         assert_eq!(cell_slice("▶️ Song", 1, 2), "  ");
         assert_eq!(truncate("▶️ Song", 3), "▶️…");
