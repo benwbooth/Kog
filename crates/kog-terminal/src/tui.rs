@@ -7879,6 +7879,13 @@ impl Ui {
             .and_then(|index| self.tracks.get(index))
             .map(|track| self.title_for(track))
             .unwrap_or_else(|| "Kog".to_owned());
+        let progress = self.player.position();
+        let clock = format!(
+            "{:01}:{:02}",
+            progress.as_secs() / 60,
+            progress.as_secs() % 60
+        );
+        let (progress_x, _, bar_width) = progress_bar_geometry(width, &clock);
         let cover_space = if width >= 80 {
             if self.cover_preview.is_some() { 6 } else { 3 }
         } else {
@@ -7909,7 +7916,10 @@ impl Ui {
                 true,
             );
         }
-        let title_width = width.saturating_div(2).saturating_sub(17 + cover_space);
+        let title_width = width
+            .saturating_div(2)
+            .saturating_sub(17 + cover_space)
+            .min(progress_x.saturating_sub(5 + cover_space));
         paint(
             &mut screen,
             layout.footer_top + 1,
@@ -8250,12 +8260,6 @@ impl Ui {
                 true,
             );
         }
-        let progress = self.player.position();
-        let clock = format!(
-            "{:01}:{:02}",
-            progress.as_secs() / 60,
-            progress.as_secs() % 60
-        );
         let duration = self
             .playing
             .and_then(|index| self.tracks.get(index))
@@ -8264,7 +8268,6 @@ impl Ui {
         let duration_label = duration
             .map(|time| format!("{}:{:02}", time.as_secs() / 60, time.as_secs() % 60))
             .unwrap_or_else(|| "--:--".to_owned());
-        let (progress_x, _, bar_width) = progress_bar_geometry(width, &clock);
         let filled = duration
             .filter(|time| !time.is_zero())
             .map(|time| {
@@ -9745,12 +9748,14 @@ impl Layout {
 
 fn volume_geometry(width: usize, footer_top: usize) -> (usize, usize, usize, usize) {
     let bar_width = if width >= 70 { 12 } else { 8 };
-    let row = if width >= 80 {
+    let icon_x = width.saturating_sub(bar_width + 8);
+    let (transport_left, transport_slot_width) = footer_transport_layout(width);
+    let transport_right = transport_left + transport_slot_width * FOOTER_TRANSPORT.len();
+    let row = if icon_x >= transport_right {
         footer_top
     } else {
         footer_top + 2
     };
-    let icon_x = width.saturating_sub(bar_width + 8);
     (row, icon_x, icon_x + 3, bar_width)
 }
 
@@ -9778,7 +9783,9 @@ const FOOTER_TRANSPORT: [TransportAction; 7] = [
 fn footer_transport_layout(width: usize) -> (usize, usize) {
     let slot_width = (width / FOOTER_TRANSPORT.len()).clamp(1, 5);
     let total = slot_width * FOOTER_TRANSPORT.len();
-    (width.saturating_sub(total) / 2, slot_width)
+    let (_, bar_start, bar_width) = progress_bar_geometry(width, "0:00");
+    let left = (bar_start * 2 + bar_width).saturating_sub(total) / 2;
+    (left.min(width.saturating_sub(total)), slot_width)
 }
 
 fn footer_transport_slot(width: usize, action: TransportAction) -> Range<usize> {
@@ -9799,9 +9806,12 @@ fn footer_transport_at(width: usize, x: usize) -> Option<TransportAction> {
 }
 
 fn progress_bar_geometry(width: usize, clock: &str) -> (usize, usize, usize) {
-    let (left, slot_width) = footer_transport_layout(width);
-    let text_start = (left + slot_width).saturating_sub(3);
-    let bar_start = text_start + cell_width(clock).max(5) + 2;
+    let slot_width = (width / FOOTER_TRANSPORT.len()).clamp(1, 5);
+    let total = slot_width * FOOTER_TRANSPORT.len();
+    let nominal_controls_left = width.saturating_sub(total) / 2;
+    // Keep the seek bar fixed when the elapsed clock grows beyond five cells.
+    let bar_start = (nominal_controls_left + slot_width).saturating_sub(3) + 5 + 2;
+    let text_start = bar_start.saturating_sub(cell_width(clock).max(5) + 2);
     let bar_width = (width / 2).clamp(4, 32);
     (text_start, bar_start, bar_width)
 }
