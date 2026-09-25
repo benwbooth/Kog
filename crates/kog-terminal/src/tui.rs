@@ -8219,6 +8219,7 @@ impl Ui {
         let content_width = right_width.saturating_sub(usize::from(track_scrollbar.is_some()));
         self.column_viewport_width = content_width;
         self.columns.scroll_by(0, content_width);
+        let column_positions: Vec<_> = self.columns.positions().collect();
         let scrollbar = self.scrollbar_for_track_count(&layout, size, visible_tracks.len());
         let show_tree = !layout.show_sidebar && self.focus == Focus::Library;
         let show_lists = !layout.show_sidebar && self.focus == Focus::Playlists;
@@ -8365,7 +8366,7 @@ impl Ui {
             if track_scrollbar.is_some() {
                 paint(&mut screen, 2, width, "", 1, Surface::Header, false);
             }
-            for (column_index, start, column_width) in self.columns.positions() {
+            for &(column_index, start, column_width) in &column_positions {
                 let selected = self.keyboard_column == Some(column_index);
                 paint_playlist_cell(
                     &mut screen,
@@ -8386,6 +8387,16 @@ impl Ui {
                     true,
                 );
             }
+            paint_playlist_separators(
+                &mut screen,
+                2,
+                right_x,
+                content_width,
+                self.columns.scroll,
+                &column_positions,
+                Surface::Header,
+                self.keyboard_column,
+            );
             for y in 2..layout
                 .footer_top
                 .saturating_sub(usize::from(scrollbar.is_some()))
@@ -8404,28 +8415,40 @@ impl Ui {
                 if let Some((index, track)) =
                     index.and_then(|index| self.tracks.get(index).map(|track| (index, track)))
                 {
-                    if !self.metadata_ready(track) {
-                        continue;
-                    }
-                    for (column_index, start, column_width) in self.columns.positions() {
-                        let value =
-                            self.column_value(index, track, self.columns.entries[column_index].id);
-                        paint_playlist_cell(
-                            &mut screen,
-                            &mut hover_labels,
-                            y + 1,
-                            right_x,
-                            content_width,
-                            start,
-                            column_width,
-                            self.columns.scroll,
-                            &value,
-                            marquee_tick,
-                            surface,
-                            false,
-                        );
+                    if self.metadata_ready(track) {
+                        for &(column_index, start, column_width) in &column_positions {
+                            let value = self.column_value(
+                                index,
+                                track,
+                                self.columns.entries[column_index].id,
+                            );
+                            paint_playlist_cell(
+                                &mut screen,
+                                &mut hover_labels,
+                                y + 1,
+                                right_x,
+                                content_width,
+                                start,
+                                column_width,
+                                self.columns.scroll,
+                                &value,
+                                marquee_tick,
+                                surface,
+                                false,
+                            );
+                        }
                     }
                 }
+                paint_playlist_separators(
+                    &mut screen,
+                    y + 1,
+                    right_x,
+                    content_width,
+                    self.columns.scroll,
+                    &column_positions,
+                    surface,
+                    None,
+                );
             }
             if let Some(bar) = scrollbar {
                 let row = layout.footer_top;
@@ -10888,6 +10911,43 @@ fn paint_playlist_cell(
         surface,
         bold,
     );
+}
+
+fn paint_playlist_separators(
+    out: &mut String,
+    row: usize,
+    viewport_x: usize,
+    viewport_width: usize,
+    scroll: usize,
+    positions: &[(usize, usize, usize)],
+    surface: Surface,
+    selected_header_column: Option<usize>,
+) {
+    for pair in positions.windows(2) {
+        let (index, start, width) = pair[0];
+        let boundary = start.saturating_add(width).saturating_sub(1);
+        let Some(visible_x) = boundary.checked_sub(scroll) else {
+            continue;
+        };
+        if visible_x >= viewport_width {
+            continue;
+        }
+        let surface = if selected_header_column == Some(index) {
+            Surface::Selected
+        } else {
+            surface
+        };
+        let (_, background) = surface_colors(surface);
+        let foreground = match surface {
+            Surface::Header => "91;101;111",
+            Surface::Selected => "116;151;170",
+            _ => "67;74;80",
+        };
+        out.push_str(&format!(
+            "\x1b[{row};{}H\x1b[38;2;{foreground};48;2;{background}m│\x1b[0m",
+            viewport_x + visible_x,
+        ));
+    }
 }
 
 #[derive(Clone, Copy)]
