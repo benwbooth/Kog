@@ -320,35 +320,78 @@ fn menu_shortcuts(page: MenuPage) -> Vec<Option<char>> {
     if page == MenuPage::Main {
         return MAIN_MENU_SHORTCUTS.to_vec();
     }
-    let mut used = HashSet::new();
-    page.labels()
+    let candidates: Vec<Vec<char>> = page
+        .labels()
         .iter()
         .map(|label| {
             if label.is_empty() {
-                return None;
+                return Vec::new();
             }
             let mut candidates = Vec::new();
             let mut word_start = true;
-            for character in label.chars() {
+            let visible = menu_row(label, 18);
+            if visible.contains('#') {
+                candidates.push('#');
+            }
+            for character in visible.chars() {
                 if character.is_ascii_alphabetic() {
                     if word_start {
-                        candidates.push(character.to_ascii_uppercase());
+                        let key = character.to_ascii_uppercase();
+                        if !candidates.contains(&key) {
+                            candidates.push(key);
+                        }
                     }
                     word_start = false;
                 } else {
                     word_start = true;
                 }
             }
-            candidates.extend(
-                label
-                    .chars()
-                    .filter(|character| character.is_ascii_alphabetic())
-                    .map(|character| character.to_ascii_uppercase()),
-            );
-            candidates.extend('A'..='Z');
-            candidates.into_iter().find(|key| used.insert(*key))
+            for character in visible.chars().filter(|character| character.is_ascii_alphabetic()) {
+                let key = character.to_ascii_uppercase();
+                if !candidates.contains(&key) {
+                    candidates.push(key);
+                }
+            }
+            candidates
         })
-        .collect()
+        .collect();
+    fn assign(
+        index: usize,
+        candidates: &[Vec<char>],
+        owners: &mut HashMap<char, usize>,
+        visited: &mut HashSet<char>,
+    ) -> bool {
+        for &key in &candidates[index] {
+            if !visited.contains(&key) && !owners.contains_key(&key) {
+                owners.insert(key, index);
+                return true;
+            }
+        }
+        for &key in &candidates[index] {
+            if !visited.insert(key) {
+                continue;
+            }
+            if let Some(&previous) = owners.get(&key)
+                && assign(previous, candidates, owners, visited)
+            {
+                owners.insert(key, index);
+                return true;
+            }
+        }
+        false
+    }
+    let mut owners = HashMap::new();
+    for (index, keys) in candidates.iter().enumerate() {
+        if !keys.is_empty() {
+            let assigned = assign(index, &candidates, &mut owners, &mut HashSet::new());
+            debug_assert!(assigned, "menu item needs a unique visible shortcut");
+        }
+    }
+    let mut shortcuts = vec![None; candidates.len()];
+    for (key, index) in owners {
+        shortcuts[index] = Some(key);
+    }
+    shortcuts
 }
 
 fn menu_shortcut_index(page: MenuPage, key: char) -> Option<usize> {
@@ -5819,7 +5862,7 @@ impl Ui {
                 "MENUS AND TEXT".to_owned(),
                 row("m", "Application menu"),
                 row("M / Shift+F10", "Selected item menu"),
-                row("Alt+letter", "Menu shortcut"),
+                row("Alt+underlined key", "Menu shortcut"),
                 row("Arrows / Enter", "Navigate / activate menu"),
                 row("Ctrl+A", "Select all prompt text"),
                 row("Ctrl+W", "Erase previous word"),
@@ -8694,7 +8737,7 @@ impl Ui {
                     } else {
                         Surface::MenuBody
                     };
-                    let shown = menu_row(label, shortcuts[index], panel_width);
+                    let shown = menu_row(label, panel_width);
                     paint(
                         &mut screen,
                         layer.y + row + 2,
@@ -8704,6 +8747,18 @@ impl Ui {
                         surface,
                         selected,
                     );
+                    if let Some(shortcut) = shortcuts[index]
+                        && let Some((offset, character)) = menu_mnemonic(&shown, shortcut)
+                    {
+                        paint_menu_mnemonic(
+                            &mut screen,
+                            layer.y + row + 2,
+                            layer.x + offset + 1,
+                            character,
+                            surface,
+                            selected,
+                        );
+                    }
                 }
                 paint(
                     &mut screen,
@@ -10188,11 +10243,10 @@ fn menu_width(terminal_width: usize) -> usize {
     }
 }
 
-fn menu_row(label: &str, shortcut: Option<char>, width: usize) -> String {
+fn menu_row(label: &str, width: usize) -> String {
     if label.is_empty() {
         return format!("│{}", "─".repeat(width.saturating_sub(2)));
     }
-    let hint = shortcut.map_or_else(String::new, |key| format!("Alt+{key}"));
     let normalized = label.split_whitespace().collect::<Vec<_>>().join(" ");
     let (name, arrow) = if let Some(name) = normalized
         .strip_suffix('›')
@@ -10202,21 +10256,21 @@ fn menu_row(label: &str, shortcut: Option<char>, width: usize) -> String {
     } else {
         (normalized.as_str(), "")
     };
-    let right = if hint.is_empty() {
-        arrow.trim().to_owned()
-    } else if arrow.is_empty() {
-        hint
-    } else {
-        format!("{}  {hint}", arrow.trim())
-    };
+    let right = arrow.trim();
     let label_width = width
         .saturating_sub(3)
-        .saturating_sub(cell_width(&right) + usize::from(!right.is_empty()));
+        .saturating_sub(cell_width(right) + usize::from(!right.is_empty()));
     let shown = truncate(name, label_width);
     let spaces = width
         .saturating_sub(3)
-        .saturating_sub(cell_width(&shown) + cell_width(&right));
+        .saturating_sub(cell_width(&shown) + cell_width(right));
     format!("│ {shown}{}{right}", " ".repeat(spaces))
+}
+
+fn menu_mnemonic(row: &str, shortcut: char) -> Option<(usize, char)> {
+    row.char_indices()
+        .find(|(_, character)| character.to_ascii_uppercase() == shortcut)
+        .map(|(byte, character)| (cell_width(&row[..byte]), character))
 }
 
 fn truncate(text: &str, width: usize) -> String {
@@ -10401,7 +10455,31 @@ fn paint(
     if width == 0 {
         return;
     }
-    let (foreground, background) = match surface {
+    let (foreground, background) = surface_colors(surface);
+    out.push_str(&format!(
+        "\x1b[{row};{col}H\x1b[{};38;2;{foreground};48;2;{background}m{}\x1b[0m",
+        if bold { "1" } else { "22" },
+        truncate(text, width)
+    ));
+}
+
+fn paint_menu_mnemonic(
+    out: &mut String,
+    row: usize,
+    col: usize,
+    character: char,
+    surface: Surface,
+    bold: bool,
+) {
+    let (foreground, background) = surface_colors(surface);
+    out.push_str(&format!(
+        "\x1b[{row};{col}H\x1b[{};4;38;2;{foreground};48;2;{background}m{character}\x1b[0m",
+        if bold { "1" } else { "22" },
+    ));
+}
+
+fn surface_colors(surface: Surface) -> (&'static str, &'static str) {
+    match surface {
         Surface::Toolbar => ("226;231;235", "29;32;34"),
         Surface::Sidebar => ("222;226;230", "34;37;39"),
         Surface::SidebarAlt => ("222;226;230", "30;33;35"),
@@ -10419,12 +10497,7 @@ fn paint(
         Surface::MenuSelected => ("255;255;255", "38;88;166"),
         Surface::MenuSeparator => ("103;120;151", "212;221;236"),
         Surface::MenuShadow => ("10;14;23", "10;14;23"),
-    };
-    out.push_str(&format!(
-        "\x1b[{row};{col}H\x1b[{};38;2;{foreground};48;2;{background}m{}\x1b[0m",
-        if bold { "1" } else { "22" },
-        truncate(text, width)
-    ));
+    }
 }
 
 fn paint_menu_shadow(
@@ -11510,7 +11583,7 @@ mod tests {
         ));
     }
     #[test]
-    fn every_menu_item_has_a_unique_visible_alt_shortcut() {
+    fn every_menu_item_has_a_unique_visible_mnemonic() {
         for page in [
             MenuPage::Main,
             MenuPage::View,
@@ -11539,8 +11612,9 @@ mod tests {
                 assert!(seen.insert(shortcut));
                 assert_eq!(menu_shortcut_index(page, shortcut), Some(index));
                 for width in [18, 33] {
-                    let row = menu_row(label, Some(shortcut), width);
-                    assert!(row.contains(&format!("Alt+{shortcut}")));
+                    let row = menu_row(label, width);
+                    assert!(menu_mnemonic(&row, shortcut).is_some(), "{label}: {shortcut}");
+                    assert!(!row.contains("Alt+"));
                     assert!(cell_width(&row) <= width - 1);
                 }
             }
