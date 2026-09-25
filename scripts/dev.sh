@@ -15,6 +15,7 @@
 #   scripts/dev.sh --check             # cargo check only (no link, no app)
 #   scripts/dev.sh --test              # rerun the workspace tests on change
 #   scripts/dev.sh --web               # also rebuild the wasm frontend
+#   scripts/dev.sh --step              # one build-and-restart pass
 #   scripts/dev.sh -- <app args...>    # pass arguments through to the app
 #
 # The app's own output goes to target/dev-app.log.
@@ -59,20 +60,40 @@ profile_args=()
 binary="target/$profile/kog"
 pidfile="target/dev-app.pid"
 app_log="target/dev-app.log"
+web_source="crates/kog-web"
+web_output="crates/kog-server/web"
+
+# A one-shot step has no watchexec event paths. Compare the source assets with
+# the embedded copies too, so starting the watcher after a web edit still
+# rebuilds the frontend before restarting Kog.
+web_assets_stale() {
+  local asset source_file
+  for source_file in "$web_source"/index.html "$web_source"/style.css \
+    "$web_source"/manifest.webmanifest "$web_source"/icons/*; do
+    [[ -f "$source_file" ]] || continue
+    asset="${source_file#"$web_source"/}"
+    cmp -s "$source_file" "$web_output/$asset" || return 0
+  done
+
+  [[ -f "$web_output/kog_web.js" && -f "$web_output/kog_web_bg.wasm" ]] || return 0
+  while IFS= read -r -d '' source_file; do
+    [[ "$source_file" -nt "$web_output/kog_web_bg.wasm" ]] && return 0
+  done < <(find "$web_source/src" "$web_source/Cargo.toml" "$web_source/Cargo.lock" "$web_source/build.sh" -type f -print0)
+  return 1
+}
 
 # --------------------------------------------------------------------- step
 #
 # One build-and-swap pass. This is what watchexec runs on every settled change.
 if (( step )); then
-  # watchexec passes the changed paths in the environment, so a frontend edit
-  # rebuilds the wasm without needing --web on every run. The generated assets
-  # land under crates/kog-server/web, which is a different path, so running the
-  # frontend build again cannot retrigger itself.
+  # watchexec passes changed paths in the environment. The stale-asset check
+  # also covers the initial run and explicit --step calls without an event.
   rebuild_web=$web
   if [[ "$mode" != "test" ]]; then
     case "${WATCHEXEC_WRITTEN_PATH:-}${WATCHEXEC_CREATED_PATH:-}${WATCHEXEC_RENAMED_PATH:-}${WATCHEXEC_META_CHANGED_PATH:-}" in
       *crates/kog-web/*) rebuild_web=1 ;;
     esac
+    web_assets_stale && rebuild_web=1
   fi
   if (( rebuild_web )); then
     if ! crates/kog-web/build.sh; then
@@ -144,8 +165,9 @@ watch_args=(
   --watch Cargo.toml
   --ignore target
   --ignore crates/kog-web/target
+  --ignore crates/kog-server/web
   --ignore "**/*.tmp"
-  --exts rs,qml,toml,json,svg,css,html
+  --exts rs,qml,toml,json,svg,css,html,png,webmanifest,lock,sh
   # Let the filesystem settle before acting, so a build's output bursts do not
   # trigger another pass.
   --debounce 3s

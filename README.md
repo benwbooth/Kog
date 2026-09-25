@@ -237,7 +237,12 @@ scripts/dev.sh --check      # type-check only: fastest feedback, no linking
 scripts/dev.sh --test       # rerun the workspace tests on change
 scripts/dev.sh --release    # release profile
 scripts/dev.sh --web        # also rebuild the wasm frontend each restart
+scripts/dev.sh --step       # rebuild stale web assets and restart once
 ```
+
+Keep `scripts/dev.sh` running for automatic restarts. Edits under
+`crates/kog-web`, including CSS, rebuild the embedded frontend automatically;
+`--web` forces that rebuild even when its sources have not changed.
 
 `bacon` and `cargo-watch` are in the shell too if you prefer them.
 
