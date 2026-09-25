@@ -1,9 +1,11 @@
 //! Safe temporary extraction for Cog-compatible audio archives.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::SystemTime;
 
 use compress_tools::{ArchiveContents, ArchiveIteratorBuilder};
 use tempfile::TempDir;
@@ -19,6 +21,28 @@ const FILE_TYPE_DIRECTORY: u32 = 0o040_000;
 const FILE_TYPE_REGULAR: u32 = 0o100_000;
 const GENERAL_ARCHIVE_EXTENSIONS: &[&str] = &["zip", "rar", "7z", "rsn", "vgm7z", "gz"];
 pub const COG_OPENMPT_ARCHIVE_EXTENSIONS: &[&str] = &["mdz", "mdr", "s3z", "xmz", "itz", "mptmz"];
+const ARCHIVE_NAME_CACHE_BYTES: usize = 256 * 1024 * 1024;
+
+struct CachedNames {
+    size: u64,
+    modified: SystemTime,
+    names: Arc<Vec<String>>,
+    bytes: usize,
+    sequence: u64,
+}
+
+#[derive(Default)]
+struct ArchiveNameCache {
+    entries: HashMap<PathBuf, CachedNames>,
+    order: VecDeque<(PathBuf, u64)>,
+    bytes: usize,
+    sequence: u64,
+}
+
+fn archive_name_cache() -> &'static Mutex<ArchiveNameCache> {
+    static CACHE: OnceLock<Mutex<ArchiveNameCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(ArchiveNameCache::default()))
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArchiveEntry {
@@ -345,10 +369,113 @@ pub fn member_url(archive: &Path, entry: &str, directory: bool) -> PathBuf {
 /// Uses the same name decoder as extraction so listings match extracted
 /// entry names byte-for-byte.
 pub fn list_archive_names(path: &Path) -> Result<Vec<String>, String> {
+    list_archive_names_shared(path).map(|names| names.as_ref().clone())
+}
+
+/// Share a bounded name index across searches and archive browsing. The
+/// archive's size and modification time invalidate stale entries.
+pub fn list_archive_names_shared(path: &Path) -> Result<Arc<Vec<String>>, String> {
+    let metadata = std::fs::metadata(path)
+        .map_err(|error| format!("reading archive {}: {error}", path.display()))?;
+    let modified = metadata.modified().ok();
+    if let Some(modified) = modified {
+        let mut cache = archive_name_cache().lock().unwrap();
+        if let Some(hit) = cache.entries.get(path) {
+            if hit.size == metadata.len() && hit.modified == modified {
+                return Ok(hit.names.clone());
+            }
+        }
+        if let Some(stale) = cache.entries.remove(path) {
+            cache.bytes = cache.bytes.saturating_sub(stale.bytes);
+            cache.order.retain(|(cached_path, _)| cached_path != path);
+        }
+    }
+
+    // Archive I/O must run outside the cache lock: multiple search workers
+    // can list unrelated archives in parallel.
+    let names = Arc::new(list_archive_names_uncached(path)?);
+    let bytes = path.as_os_str().len()
+        + names.iter().map(|name| name.len() + size_of::<String>()).sum::<usize>();
+    if bytes > ARCHIVE_NAME_CACHE_BYTES {
+        return Ok(names);
+    }
+    if let Some(modified) = modified
+        && std::fs::metadata(path)
+            .ok()
+            .is_some_and(|current| current.len() == metadata.len()
+                && current.modified().ok() == Some(modified))
+    {
+        let mut cache = archive_name_cache().lock().unwrap();
+        if let Some(hit) = cache.entries.get(path)
+            && hit.size == metadata.len()
+            && hit.modified == modified
+        {
+            return Ok(hit.names.clone());
+        }
+        if let Some(old) = cache.entries.remove(path) {
+            cache.bytes = cache.bytes.saturating_sub(old.bytes);
+            cache.order.retain(|(cached_path, _)| cached_path != path);
+        }
+        while cache.bytes.saturating_add(bytes) > ARCHIVE_NAME_CACHE_BYTES {
+            let Some((old_path, sequence)) = cache.order.pop_front() else {
+                break;
+            };
+            if cache.entries.get(&old_path).is_some_and(|entry| entry.sequence == sequence)
+                && let Some(old) = cache.entries.remove(&old_path)
+            {
+                cache.bytes = cache.bytes.saturating_sub(old.bytes);
+            }
+        }
+        cache.sequence = cache.sequence.wrapping_add(1);
+        let sequence = cache.sequence;
+        cache.bytes += bytes;
+        cache.entries.insert(path.to_path_buf(), CachedNames {
+            size: metadata.len(),
+            modified,
+            names: names.clone(),
+            bytes,
+            sequence,
+        });
+        cache.order.push_back((path.to_path_buf(), sequence));
+    }
+    Ok(names)
+}
+
+fn list_archive_names_uncached(path: &Path) -> Result<Vec<String>, String> {
+    // ZIP keeps its complete name index at the end of the file. Reading that
+    // index avoids streaming every compressed member through libarchive for
+    // each library search. Keep libarchive as the compatibility path for
+    // malformed or unusual ZIP variants and every other archive format.
+    if path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("zip"))
+        && let Ok(file) = File::open(path)
+        && let Ok(names) = list_zip_central_directory_names(file)
+    {
+        return Ok(names);
+    }
     let file =
         File::open(path).map_err(|error| format!("opening archive {}: {error}", path.display()))?;
     compress_tools::list_archive_files_with_encoding(file, decode_archive_name)
         .map_err(|error| format!("listing archive {}: {error}", path.display()))
+}
+
+fn list_zip_central_directory_names(file: File) -> Result<Vec<String>, zip::result::ZipError> {
+    let mut archive = zip::ZipArchive::new(file)?;
+    let mut names = Vec::new();
+    for index in 0..archive.len() {
+        // The central directory exposes ASCII names without a seek to each
+        // member's local header. Decode raw bytes only for non-ASCII names so
+        // legacy filename encodings keep Kog's existing heuristic behavior.
+        if let Some(name) = archive.name_for_index(index).filter(|name| name.is_ascii()) {
+            names.push(name.to_owned());
+        } else {
+            let member = archive.by_index_raw(index)?;
+            names.push(kog_core::text_encoding::decode(member.name_raw()));
+        }
+    }
+    Ok(names)
 }
 
 /// Directory names inferred from member paths, including explicit records
@@ -1597,6 +1724,40 @@ pub mod tests {
         let path = dir.path().join("pack.zip");
         write_stored_zip(&path, entries);
         std::fs::read(&path).unwrap()
+    }
+
+    #[test]
+    fn zip_central_directory_names_match_archive_reader() {
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path().join("music.zip");
+        write_stored_zip(
+            &path,
+            &[
+                ("Disc/Opening.mid", b"one"),
+                ("Disc/Café.mid", b"two"),
+                ("Other/", b""),
+            ],
+        );
+        let old_names = compress_tools::list_archive_files_with_encoding(
+            File::open(&path).unwrap(),
+            decode_archive_name,
+        )
+        .unwrap();
+        assert_eq!(list_archive_names(&path).unwrap(), old_names);
+    }
+
+    #[test]
+    fn archive_name_cache_reuses_and_invalidates_listings() {
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path().join("changing.zip");
+        write_stored_zip(&path, &[("first.mid", b"one")]);
+        let first = list_archive_names_shared(&path).unwrap();
+        let again = list_archive_names_shared(&path).unwrap();
+        assert!(Arc::ptr_eq(&first, &again));
+        write_stored_zip(&path, &[("different-title.mid", b"two")]);
+        let changed = list_archive_names_shared(&path).unwrap();
+        assert_eq!(changed.as_slice(), &["different-title.mid"]);
+        assert!(!Arc::ptr_eq(&first, &changed));
     }
 
     #[test]

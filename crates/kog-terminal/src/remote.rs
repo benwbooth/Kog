@@ -58,6 +58,16 @@ pub struct RemoteSearchHit {
     pub is_dir: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RemoteSearchProgress {
+    pub matches: usize,
+    pub scanned: u64,
+    pub archive_count: u64,
+    pub archives_scanned: u64,
+    pub unreadable_archives: u64,
+    pub scanning_archives: bool,
+}
+
 fn local_kind() -> String {
     "local".to_owned()
 }
@@ -232,6 +242,7 @@ impl RemoteSettings {
         &self,
         query: &str,
         cancelled: impl Fn() -> bool,
+        mut progress: impl FnMut(RemoteSearchProgress),
     ) -> Result<(String, Vec<RemoteSearchHit>), String> {
         let root = self.browse(None)?.path;
         let mut url = self.endpoint("/api/library/search")?;
@@ -253,6 +264,14 @@ impl RemoteSettings {
                     is_dir: item["is_dir"].as_bool().unwrap_or(false),
                 });
             }
+            progress(RemoteSearchProgress {
+                matches: page["total"].as_u64().unwrap_or(results.len() as u64) as usize,
+                scanned: page["scanned"].as_u64().unwrap_or_default(),
+                archive_count: page["archive_count"].as_u64().unwrap_or_default(),
+                archives_scanned: page["archives_scanned"].as_u64().unwrap_or_default(),
+                unreadable_archives: page["unreadable_archives"].as_u64().unwrap_or_default(),
+                scanning_archives: page["scanning_archives"].as_bool().unwrap_or(false),
+            });
             if page["done"].as_bool().unwrap_or(false) || results.len() >= 2_000 {
                 return Ok((root, results));
             }

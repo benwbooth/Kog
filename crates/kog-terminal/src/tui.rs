@@ -30,7 +30,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::columns::Columns;
 use crate::cover_preview::{self, COVER_HEIGHT, COVER_WIDTH, CoverPreview};
-use crate::remote::{RemoteFile, RemoteListing, RemoteSearchHit, RemoteSettings};
+use crate::remote::{RemoteFile, RemoteListing, RemoteSearchHit, RemoteSearchProgress, RemoteSettings};
 use crate::rom_import::{RomKind, import_rom_archive};
 use crate::server_control::RunningServer;
 use crate::tag_editor::{parse_edits, snapshot_json, write_tags};
@@ -965,6 +965,7 @@ enum RemoteResponse {
         RemoteSettings,
         Result<Vec<RemoteFile>, String>,
     ),
+    SearchProgress(u64, u64, RemoteSearchProgress),
     Search(u64, u64, RemoteSettings, Result<(String, Vec<RemoteSearchHit>), String>),
     AddTracks(
         u64,
@@ -1073,6 +1074,7 @@ struct Ui {
     remote_requests: Sender<RemoteCommand>,
     remote_results: Receiver<RemoteResponse>,
     remote_search_generation: Arc<AtomicU64>,
+    remote_search_progress: Option<RemoteSearchProgress>,
     search_done: bool,
     exit_requested: bool,
     exit_confirm_open: bool,
@@ -1311,8 +1313,13 @@ impl Ui {
                         )
                     }
                     RemoteCommand::Search(generation, search_generation, settings, query) => {
+                        let updates = remote_done.clone();
                         let result = settings.search(&query, || {
                             worker_search_generation.load(Ordering::Relaxed) != search_generation
+                        }, |progress| {
+                            let _ = updates.send(RemoteResponse::SearchProgress(
+                                generation, search_generation, progress,
+                            ));
                         });
                         RemoteResponse::Search(generation, search_generation, settings, result)
                     }
@@ -1487,6 +1494,7 @@ impl Ui {
             remote_requests,
             remote_results,
             remote_search_generation,
+            remote_search_progress: None,
             search_done: false,
             exit_requested: false,
             exit_confirm_open: false,
@@ -3647,6 +3655,14 @@ impl Ui {
                     });
                     self.accept_folder_result(path, tracks);
                 }
+                RemoteResponse::SearchProgress(generation, search_generation, progress) => {
+                    if generation == self.remote_generation
+                        && search_generation
+                            == self.remote_search_generation.load(Ordering::Relaxed)
+                    {
+                        self.remote_search_progress = Some(progress);
+                    }
+                }
                 RemoteResponse::Search(generation, search_generation, settings, result) => {
                     if generation != self.remote_generation
                         || search_generation
@@ -3692,7 +3708,10 @@ impl Ui {
                             );
                         }
                         Err(error) if error == "Search superseded" => {}
-                        Err(error) => self.status = error,
+                        Err(error) => {
+                            self.search_done = true;
+                            self.status = error;
+                        }
                     }
                 }
                 RemoteResponse::AddTracks(
@@ -5255,6 +5274,7 @@ impl Ui {
             };
             self.search_query = value.to_owned();
             self.search_done = false;
+            self.remote_search_progress = None;
             self.clear_search_tree();
             self.remote_pending.clear();
             self.items.clear();
@@ -5282,6 +5302,7 @@ impl Ui {
             {
                 self.status = format!("Searching server for {value}…");
             } else {
+                self.search_done = true;
                 self.status = "Remote browser worker is unavailable".to_owned();
             }
             return;
@@ -5307,7 +5328,10 @@ impl Ui {
                 self.focus = Focus::Library;
                 self.status = format!("Searching for {value}…");
             }
-            Err(error) => self.status = error,
+            Err(error) => {
+                self.search_done = true;
+                self.status = error;
+            }
         }
     }
 
@@ -5964,6 +5988,32 @@ impl Ui {
         }
     }
 
+    fn search_activity(&self) -> Option<String> {
+        if self.search_query.is_empty() || self.search_done {
+            return None;
+        }
+        if self.remote_active {
+            let progress = self.remote_search_progress.unwrap_or_default();
+            return Some(format_search_activity(
+                progress.matches,
+                progress.scanned,
+                progress.archive_count,
+                progress.archives_scanned,
+                progress.scanning_archives,
+                progress.unreadable_archives,
+            ));
+        }
+        let progress = self.search.as_ref()?.progress();
+        Some(format_search_activity(
+            self.search_seen,
+            progress.scanned,
+            progress.archive_count,
+            progress.archives_scanned,
+            progress.scanning_archives,
+            progress.unreadable_archives,
+        ))
+    }
+
     fn poll_search(&mut self) {
         let Some(search) = self.search.as_ref() else {
             return;
@@ -5972,6 +6022,7 @@ impl Ui {
             return;
         }
         let (hits, done) = search.results_since(self.search_seen);
+        let progress = search.progress();
         self.search_seen += hits.len();
         let changed = !hits.is_empty();
         for hit in hits {
@@ -6000,13 +6051,17 @@ impl Ui {
         }
         if done {
             self.search_done = true;
-            self.status = format!("{} matches for {}", self.search_seen, self.search_query);
-        } else if self.search_seen > 0 {
-            self.status = format!(
-                "{} matches so far for {}…",
-                self.search_seen,
-                self.search_query
-            );
+            self.status = if progress.limited {
+                format!("{} matches for {} · narrow your search for more", self.search_seen, self.search_query)
+            } else {
+                format!("{} matches for {}", self.search_seen, self.search_query)
+            };
+            if progress.unreadable_archives > 0 {
+                self.status.push_str(&format!(
+                    " · {} unreadable archives",
+                    progress.unreadable_archives
+                ));
+            }
         }
     }
 
@@ -8043,6 +8098,7 @@ impl Ui {
             self.modal = Some(self.info_content());
         }
         let (width, height) = size;
+        let search_busy = self.search_activity().is_some();
         if width < 20 || height < 14 {
             let mut screen = String::from("\x1b[H\x1b[2J\x1b[?25l");
             paint(
@@ -8194,6 +8250,17 @@ impl Ui {
                 true,
             );
         }
+        if search_busy && search_width >= 8 {
+            paint(
+                &mut screen,
+                1,
+                search_x + search_width - 2,
+                "⚙",
+                1,
+                Surface::Accent,
+                true,
+            );
+        }
         paint(
             &mut screen,
             1,
@@ -8289,6 +8356,17 @@ impl Ui {
                         } else {
                             Surface::Main
                         },
+                        true,
+                    );
+                }
+                if search_busy && sidebar >= 8 {
+                    paint(
+                        &mut screen,
+                        4,
+                        sidebar - 1,
+                        "⚙",
+                        1,
+                        Surface::Accent,
                         true,
                     );
                 }
@@ -9288,19 +9366,27 @@ impl Ui {
             Surface::Toolbar,
             false,
         );
+        let search_activity = self.search_activity();
         let message = self.prompt.as_ref().map(|(kind, value)| {
             if matches!(kind, PromptKind::Search | PromptKind::PlaylistSearch) {
-                if *kind == PromptKind::Search && !self.status.is_empty() {
-                    return format!("{} · Enter finish · Esc clear", self.status);
+                if *kind == PromptKind::Search {
+                    if let Some(activity) = &search_activity {
+                        return format!("{activity} · Enter finish · Esc clear");
+                    }
+                    if !self.status.is_empty() {
+                        return format!("{} · Enter finish · Esc clear", self.status);
+                    }
                 }
                 return "Search updates as you type · Enter finish · Esc clear".to_owned();
             }
             let _ = value;
             "Enter confirm · Esc cancel · ←/→ move caret".to_owned()
         }).unwrap_or_else(|| {
-            if self.status.is_empty() {
-                "V waveform · Tab pane · M actions · H columns · x mark · ? keys · Enter open/play · Space pause".to_owned()
-            } else { self.status.clone() }
+            search_activity.unwrap_or_else(|| {
+                if self.status.is_empty() {
+                    "V waveform · Tab pane · M actions · H columns · x mark · ? keys · Enter open/play · Space pause".to_owned()
+                } else { self.status.clone() }
+            })
         });
         let message = if let Some(column) = self
             .keyboard_column
@@ -10261,6 +10347,26 @@ fn input_window(text: &str, cursor: usize, width: usize) -> (String, usize) {
         used += cells;
     }
     (shown, before.min(width.saturating_sub(1)))
+}
+
+fn format_search_activity(
+    matches: usize,
+    scanned: u64,
+    archive_count: u64,
+    archives_scanned: u64,
+    scanning_archives: bool,
+    unreadable_archives: u64,
+) -> String {
+    let stage = if scanning_archives {
+        format!("Archives {archives_scanned}/{archive_count}")
+    } else {
+        format!("Searching folders ({scanned} items)")
+    };
+    let mut label = format!("⚙ {matches} matches · {stage}");
+    if unreadable_archives > 0 {
+        label.push_str(&format!(" · {unreadable_archives} unreadable"));
+    }
+    label
 }
 
 fn search_box_label(value: &str, cursor: Option<usize>, width: usize, placeholder: &str) -> String {

@@ -11,7 +11,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use axum::extract::{Path as AxumPath, Query, State};
@@ -1483,6 +1483,18 @@ pub struct LocalSearchHit {
     pub is_dir: bool,
 }
 
+/// A cheap snapshot of the same counters sent to Web search clients.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LocalSearchProgress {
+    pub scanned: u64,
+    pub archive_count: u64,
+    pub archives_scanned: u64,
+    pub unreadable_archives: u64,
+    pub scanning_archives: bool,
+    pub limited: bool,
+    pub done: bool,
+}
+
 impl LocalSearch {
     pub fn start(library: Arc<Library>, query: &str) -> Result<Self, String> {
         let tokens: Vec<String> = query
@@ -1519,6 +1531,18 @@ impl LocalSearch {
             .collect();
         let done = self.shared.done.load(Ordering::Relaxed);
         (results, done)
+    }
+
+    pub fn progress(&self) -> LocalSearchProgress {
+        LocalSearchProgress {
+            scanned: self.shared.scanned.load(Ordering::Relaxed),
+            archive_count: self.shared.archive_count.load(Ordering::Relaxed),
+            archives_scanned: self.shared.archives_scanned.load(Ordering::Relaxed),
+            unreadable_archives: self.shared.unreadable_archives.load(Ordering::Relaxed),
+            scanning_archives: self.shared.scanning_archives.load(Ordering::Relaxed),
+            limited: self.shared.limited.load(Ordering::Relaxed),
+            done: self.shared.done.load(Ordering::Relaxed),
+        }
     }
 }
 
@@ -1616,13 +1640,20 @@ fn walk_library_for_search(
         kog_audio::settings::AppSettings::load().decoder_settings(),
     );
     let extensions = decoders.audio_extensions();
+    let ascii_query = tokens.iter().all(|token| token.is_ascii());
     let matched = |name: &str| {
-        tokens
-            .iter()
-            .all(|token| name.to_lowercase().contains(token.as_str()))
+        if ascii_query && name.is_ascii() {
+            tokens.iter().all(|token| {
+                name.as_bytes()
+                    .windows(token.len())
+                    .any(|window| window.eq_ignore_ascii_case(token.as_bytes()))
+            })
+        } else {
+            let folded = name.to_lowercase();
+            tokens.iter().all(|token| folded.contains(token))
+        }
     };
     let mut matches: Vec<SearchMatch> = Vec::new();
-    let mut matched_dirs: Vec<std::path::PathBuf> = Vec::new();
     let mut archives: Vec<std::path::PathBuf> = Vec::new();
     let mut limited = false;
     let mut published = 0_usize;
@@ -1649,10 +1680,10 @@ fn walk_library_for_search(
         while shared.paused.load(Ordering::Relaxed) && !cancel() {
             std::thread::sleep(std::time::Duration::from_millis(40));
         }
-        let under_matched = inherited
-            || matched_dirs
-                .iter()
-                .any(|matched| directory.starts_with(matched));
+        // The flag is inherited by every child when a directory matches.
+        // Rechecking all previously matched directories here made a broad
+        // search increasingly expensive as the walk progressed.
+        let under_matched = inherited;
         let dir_is_metadata = kog_core::media_path::is_metadata(&directory);
         let Ok(entries) = std::fs::read_dir(&directory) else {
             continue;
@@ -1673,7 +1704,6 @@ fn walk_library_for_search(
             if file_type.is_dir() {
                 let name_match = matched(&name);
                 if name_match {
-                    matched_dirs.push(path.clone());
                     matches.push(SearchMatch {
                         name: name.clone(),
                         path: path.to_string_lossy().into_owned(),
@@ -1734,68 +1764,102 @@ fn walk_library_for_search(
         .archive_count
         .store(archives.len() as u64, Ordering::Relaxed);
     shared.scanning_archives.store(true, Ordering::Relaxed);
-    for archive in &archives {
-        while shared.paused.load(Ordering::Relaxed) && !cancel() {
-            std::thread::sleep(std::time::Duration::from_millis(40));
-        }
-        if cancel() || limited {
-            break;
-        }
-        let Ok(members) = kog_audio::archive::list_archive_names(archive) else {
-            shared.archives_scanned.fetch_add(1, Ordering::Relaxed);
-            shared.unreadable_archives.fetch_add(1, Ordering::Relaxed);
-            continue;
-        };
-        shared.archives_scanned.fetch_add(1, Ordering::Relaxed);
-        for member in members {
-            if cancel() {
-                return;
-            }
-            if member.is_empty()
-                || kog_core::media_path::is_metadata(std::path::Path::new(
-                    member.trim_end_matches('/'),
-                ))
-            {
-                continue;
-            }
-            let base = member
-                .trim_end_matches('/')
-                .rsplit('/')
-                .next()
-                .unwrap_or(&member)
-                .to_owned();
-            let container = member.ends_with('/');
-            if !container {
-                let Some(extension) = std::path::Path::new(&member)
-                    .extension()
-                    .and_then(|extension| extension.to_str())
-                    .map(|extension| extension.to_ascii_lowercase())
-                else {
-                    continue;
-                };
-                if !extensions.contains(&extension) {
-                    continue;
-                }
-            }
-            if matched(&base) {
-                matches.push(SearchMatch {
-                    name: base.clone(),
-                    path: archive.to_string_lossy().into_owned(),
-                    entry: member.trim_end_matches('/').to_owned(),
-                    kind: "archive",
-                    is_dir: container,
+    if !limited && !archives.is_empty() {
+        // libarchive can spend noticeable time opening an individual solid
+        // archive. A small fixed number of workers keeps the search moving
+        // without opening thousands of files or saturating the disk at once.
+        let next_archive = AtomicUsize::new(0);
+        let workers = std::thread::available_parallelism()
+            .map_or(2, |count| count.get())
+            .min(4)
+            .min(archives.len());
+        std::thread::scope(|scope| {
+            for _ in 0..workers {
+                let shared = &shared;
+                let archives = &archives;
+                let extensions = &extensions;
+                let matched = &matched;
+                let next_archive = &next_archive;
+                scope.spawn(move || {
+                    loop {
+                        if shared.cancel.load(Ordering::Relaxed)
+                            || shared.limited.load(Ordering::Relaxed)
+                        {
+                            break;
+                        }
+                        while shared.paused.load(Ordering::Relaxed)
+                            && !shared.cancel.load(Ordering::Relaxed)
+                        {
+                            std::thread::sleep(std::time::Duration::from_millis(40));
+                        }
+                        if shared.cancel.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        let index = next_archive.fetch_add(1, Ordering::Relaxed);
+                        let Some(archive) = archives.get(index) else {
+                            break;
+                        };
+                        let members = match kog_audio::archive::list_archive_names_shared(archive) {
+                            Ok(members) => members,
+                            Err(_) => {
+                                shared.unreadable_archives.fetch_add(1, Ordering::Relaxed);
+                                shared.archives_scanned.fetch_add(1, Ordering::Relaxed);
+                                continue;
+                            }
+                        };
+                        let mut found = Vec::new();
+                        for member in members.iter() {
+                            if shared.cancel.load(Ordering::Relaxed) {
+                                break;
+                            }
+                            let entry = member.trim_end_matches('/');
+                            if entry.is_empty()
+                                || kog_core::media_path::is_metadata(std::path::Path::new(entry))
+                            {
+                                continue;
+                            }
+                            let container = member.ends_with('/');
+                            if !container {
+                                let Some(extension) = std::path::Path::new(entry)
+                                    .extension()
+                                    .and_then(|extension| extension.to_str())
+                                    .map(str::to_ascii_lowercase)
+                                else {
+                                    continue;
+                                };
+                                if !extensions.contains(&extension) {
+                                    continue;
+                                }
+                            }
+                            let base = entry.rsplit('/').next().unwrap_or(entry);
+                            if matched(base) {
+                                found.push(SearchMatch {
+                                    name: base.to_owned(),
+                                    path: archive.to_string_lossy().into_owned(),
+                                    entry: entry.to_owned(),
+                                    kind: "archive",
+                                    is_dir: container,
+                                });
+                                if found.len() >= SEARCH_MATCH_LIMIT {
+                                    break;
+                                }
+                            }
+                        }
+                        if !found.is_empty() {
+                            let mut all = shared.matches.lock().unwrap();
+                            let remaining = SEARCH_MATCH_LIMIT.saturating_sub(all.len());
+                            all.extend(found.into_iter().take(remaining));
+                            if all.len() >= SEARCH_MATCH_LIMIT {
+                                shared.limited.store(true, Ordering::Relaxed);
+                            }
+                        }
+                        shared.archives_scanned.fetch_add(1, Ordering::Relaxed);
+                    }
                 });
-                publish(&shared, &mut matches, &mut limited, &mut published);
-                if limited {
-                    break;
-                }
             }
-        }
-        if !matches.is_empty() {
-            shared.matches.lock().unwrap().extend(matches.drain(..));
-        }
+        });
     }
-    finish(&mut matches, limited, &shared);
+    finish(&mut matches, limited || shared.limited.load(Ordering::Relaxed), &shared);
 }
 
 /// The longest existing ancestor of `path` that is an archive file, with the
