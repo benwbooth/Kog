@@ -7,8 +7,8 @@
 //! The layout mirrors the desktop window: a 48px toolbar, a sidebar holding the
 //! file tree and the playlists, the playlist pane with a column header, and a
 //! 92px transport bar. The shell is a fixed-height grid, so only the pane
-//! scrolls, never the page. Below 820px the sidebar becomes a drawer and the
-//! rows go compact for phones.
+//! scrolls, never the page. Phones use full-width Library, Queue, and Playlists
+//! views with a mini player above the bottom navigation.
 //!
 //! The toolbar carries the desktop's two separate controls: `☰` opens an
 //! application menu mirroring `qml/Main.qml`'s `hamburgerMenu`, and a checkable
@@ -24,8 +24,6 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicI32, Ordering};
 
 use gloo_net::http::Request;
 use leptos::prelude::*;
@@ -218,6 +216,13 @@ struct Entry {
     name: String,
     /// Location as shown in the subtitle (relative where known).
     location: String,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MobileView {
+    Library,
+    Queue,
+    Playlists,
 }
 
 impl Entry {
@@ -2083,6 +2088,8 @@ fn App() -> impl IntoView {
     // The application (`☰`) menu, the separate About dialog, and the version
     // the server reports, shown in About.
     let (menu_open, set_menu_open) = signal(false);
+    let (add_url_open, set_add_url_open) = signal(false);
+    let (add_url_text, set_add_url_text) = signal(String::new());
     let (about_open, set_about_open) = signal(false);
     // The server-side folder picker opened by the tree toolbar's folder
     // button: `picker_open` shows it, `picker_dir` is the directory it is
@@ -2109,9 +2116,10 @@ fn App() -> impl IntoView {
     // playing) force-applies after a grace period, or a tab with hours of
     // playing never reaches the new build at all.
     let (update_since, set_update_since) = signal(Option::<f64>::None);
-    // Desktop shows the sidebar inline; phones open it as a drawer. The
-    // desktop choice is persisted, the drawer state is not.
+    // Desktop shows the sidebar inline. Phones use full-width views with a
+    // persistent bottom tab bar; their navigation state is local to the tab.
     let (sidebar_open, set_sidebar_open) = signal(false);
+    let (mobile_view, set_mobile_view) = signal(MobileView::Queue);
     // Draggable tree-pane width (the splitter between the tree and the pane).
     let (sidebar_width, set_sidebar_width) = signal(
         load("kog.sidebar-width")
@@ -2207,6 +2215,8 @@ fn App() -> impl IntoView {
     // (x, y, the column the menu acts on). The target drives Move Left/Right
     // and Auto-Fit Column, matching the Qt header menu.
     let (column_menu, set_column_menu) = signal(Option::<(f64, f64, ColumnId)>::None);
+    let (mobile_sort_open, set_mobile_sort_open) = signal(false);
+    let (track_details, set_track_details) = signal(Option::<(usize, Entry)>::None);
     // (column, pointer start x, width at pointer-down) while a divider drags.
     let (resizing, set_resizing) = signal(Option::<(ColumnId, f64, f64)>::None);
 
@@ -2253,10 +2263,7 @@ fn App() -> impl IntoView {
     let (stopped, set_stopped) = signal(true);
     // Browsing down on a phone leaves a small now-playing strip; scrolling
     // back up or tapping its expand button restores seeking and volume.
-    let (transport_compact, set_transport_compact) = signal(false);
-    let tree_scroll_anchor = Arc::new(AtomicI32::new(0));
-    let playlists_scroll_anchor = Arc::new(AtomicI32::new(0));
-    let tracks_scroll_anchor = Arc::new(AtomicI32::new(0));
+    let (transport_compact, set_transport_compact) = signal(true);
     // Touch mode: coarse-pointer devices (phones, tablets) get single-tap
     // activation — taps play and enqueue, so nothing requires a double
     // click, a hold, or a drag. Holds still open the context menus.
@@ -3636,6 +3643,8 @@ fn App() -> impl IntoView {
             && !ev.alt_key()
             && !settings_open.get_untracked()
             && !picker_open.get_untracked()
+            && !add_url_open.get_untracked()
+            && track_details.get_untracked().is_none()
             && playlist_dialog.get_untracked().is_none()
             && !selected.get_untracked().is_empty()
         {
@@ -3647,6 +3656,9 @@ fn App() -> impl IntoView {
             set_visualizer_open.set(false);
             set_cover_open.set(false);
             set_menu_open.set(false);
+            set_mobile_sort_open.set(false);
+            set_track_details.set(None);
+            set_add_url_open.set(false);
             set_column_menu.set(None);
             set_tree_menu.set(None);
             set_about_open.set(false);
@@ -5318,14 +5330,8 @@ fn App() -> impl IntoView {
     // The application (`☰`) menu's playlist/queue actions. The web pane is the
     // queue, so Clear Playlist and Clear Queue both empty it: the desktop's
     // separate up-next queue has no web counterpart.
-    let open_add_url = move || {
-        let Some(window) = web_sys::window() else {
-            return;
-        };
-        let Ok(Some(url)) = window.prompt_with_message("Stream URL") else {
-            return;
-        };
-        let url = url.trim().to_owned();
+    let add_url = move || {
+        let url = add_url_text.get_untracked().trim().to_owned();
         if url.is_empty() {
             return;
         }
@@ -5338,6 +5344,14 @@ fn App() -> impl IntoView {
             location: url,
         };
         set_queue.update(|items| items.push(entry));
+        set_add_url_open.set(false);
+        if touch_mode {
+            set_mobile_view.set(MobileView::Queue);
+        }
+    };
+    let open_add_url = move || {
+        set_add_url_text.set(String::new());
+        set_add_url_open.set(true);
         set_menu_open.set(false);
     };
 
@@ -5425,20 +5439,22 @@ fn App() -> impl IntoView {
         set_about_open.set(true);
     };
 
-    // The dedicated sidebar toggle: on the desktop it hides the inline tree, on
-    // a phone it drives the drawer.
+    // The dedicated sidebar toggle: on the desktop it hides the inline tree;
+    // on a phone it switches to the Library view.
     let toggle_sidebar = move || {
         let mobile = web_sys::window()
-            .map(|window| {
-                window.inner_width().ok().and_then(|width| width.as_f64()).unwrap_or(1024.0)
-                    <= 820.0
-            })
+            .and_then(|window| window.match_media("(max-width: 820px), (pointer: coarse) and (max-width: 1200px)").ok().flatten())
+            .map(|media| media.matches())
             .unwrap_or(false);
-        let open = if mobile {
-            sidebar_open.get_untracked()
-        } else {
-            sidebar_visible.get_untracked()
-        };
+        if mobile {
+            set_mobile_view.set(if mobile_view.get_untracked() == MobileView::Library {
+                MobileView::Queue
+            } else {
+                MobileView::Library
+            });
+            return;
+        }
+        let open = sidebar_visible.get_untracked();
         let next = !open;
         set_sidebar_visible.set(next);
         set_sidebar_open.set(next);
@@ -5446,13 +5462,11 @@ fn App() -> impl IntoView {
     };
     let sidebar_shown = move || {
         let mobile = web_sys::window()
-            .map(|window| {
-                window.inner_width().ok().and_then(|width| width.as_f64()).unwrap_or(1024.0)
-                    <= 820.0
-            })
+            .and_then(|window| window.match_media("(max-width: 820px), (pointer: coarse) and (max-width: 1200px)").ok().flatten())
+            .map(|media| media.matches())
             .unwrap_or(false);
         if mobile {
-            sidebar_open.get()
+            mobile_view.get() == MobileView::Library
         } else {
             sidebar_visible.get()
         }
@@ -5964,6 +5978,9 @@ fn App() -> impl IntoView {
         <div
             class="app"
             class:transport-compact=move || transport_compact.get()
+            class:mobile-library=move || mobile_view.get() == MobileView::Library
+            class:mobile-queue=move || mobile_view.get() == MobileView::Queue
+            class:mobile-playlists=move || mobile_view.get() == MobileView::Playlists
             on:pointermove=move |ev: web_sys::PointerEvent| {
                 if let Some((id, start_x, start_width)) = resizing.get_untracked() {
                     apply_width(id, start_width + (ev.client_x() as f64 - start_x));
@@ -5993,11 +6010,19 @@ fn App() -> impl IntoView {
                     on:click=move |_| toggle_sidebar()
                     inner_html=icons::VIEW_LIST_TREE
                 ></button>
+                <span class="mobile-title">
+                    {move || match mobile_view.get() {
+                        MobileView::Library => "Library",
+                        MobileView::Queue => "Queue",
+                        MobileView::Playlists => "Playlists",
+                    }}
+                </span>
                 <div class="search">
                     <span class="pill-icon" aria-hidden="true" inner_html=icons::FIND></span>
                     <input
                         type="search"
-                        placeholder="Search playlist"
+                        placeholder="Search"
+                        aria-label="Search playlist"
                         prop:value=move || filter.get()
                         on:input=move |event| set_filter.set(event_target_value(&event))
                     />
@@ -6009,6 +6034,13 @@ fn App() -> impl IntoView {
                         >"×"</button>
                     </Show>
                 </div>
+                <button
+                    class="flat icon-button mobile-sort"
+                    type="button"
+                    title="Sort queue"
+                    aria-label="Sort queue"
+                    on:click=move |_| set_mobile_sort_open.set(true)
+                >"↕"</button>
                 <select
                     class="codec"
                     title="Stream format"
@@ -6087,25 +6119,7 @@ fn App() -> impl IntoView {
                             <span class="section-title">"Files"</span>
                         </div>
                         <Show when=move || files_expanded.get() fallback=|| ()>
-                            <div
-                                class="section-body"
-                                on:scroll={
-                                    let anchor = Arc::clone(&tree_scroll_anchor);
-                                    move |event: web_sys::Event| {
-                                        if !touch_mode { return; }
-                                        let element = event.current_target().unwrap().unchecked_into::<web_sys::Element>();
-                                        let top = element.scroll_top();
-                                        let delta = top - anchor.load(Ordering::Relaxed);
-                                        if top <= 2 {
-                                            set_transport_compact.set(false);
-                                            anchor.store(top, Ordering::Relaxed);
-                                        } else if delta.abs() >= 14 {
-                                            set_transport_compact.set(delta > 0);
-                                            anchor.store(top, Ordering::Relaxed);
-                                        }
-                                    }
-                                }
-                            >
+                            <div class="section-body">
                                 <Show
                                     when=move || connected.get()
                                     fallback=|| view! {
@@ -6365,6 +6379,7 @@ fn App() -> impl IntoView {
                                                                 // desktop's double click.
                                                                 add_row_to_playlist(row_click.clone());
                                                                 set_sidebar_open.set(false);
+                                                                set_mobile_view.set(MobileView::Queue);
                                                             }
                                                         }
                                                         on:contextmenu=move |ev: web_sys::MouseEvent| {
@@ -6427,6 +6442,7 @@ fn App() -> impl IntoView {
                                                                         row_add.clone(),
                                                                     );
                                                                     set_sidebar_open.set(false);
+                                                                    if touch_mode { set_mobile_view.set(MobileView::Queue); }
                                                                 }
                                                             }
                                                         >"+"
@@ -6493,22 +6509,6 @@ fn App() -> impl IntoView {
                         <Show when=move || playlists_expanded.get() fallback=|| ()>
                             <div
                                 class="section-body"
-                                on:scroll={
-                                    let anchor = Arc::clone(&playlists_scroll_anchor);
-                                    move |event: web_sys::Event| {
-                                        if !touch_mode { return; }
-                                        let element = event.current_target().unwrap().unchecked_into::<web_sys::Element>();
-                                        let top = element.scroll_top();
-                                        let delta = top - anchor.load(Ordering::Relaxed);
-                                        if top <= 2 {
-                                            set_transport_compact.set(false);
-                                            anchor.store(top, Ordering::Relaxed);
-                                        } else if delta.abs() >= 14 {
-                                            set_transport_compact.set(delta > 0);
-                                            anchor.store(top, Ordering::Relaxed);
-                                        }
-                                    }
-                                }
                                 on:dragover=move |ev: web_sys::DragEvent| {
                                     ev.prevent_default();
                                     if dragging_playlist.get_untracked().is_none() {
@@ -6561,6 +6561,7 @@ fn App() -> impl IntoView {
                                                         "Favorites".to_owned(),
                                                     );
                                                     set_sidebar_open.set(false);
+                                                    set_mobile_view.set(MobileView::Queue);
                                                 }
                                             }
                                             on:dragstart=move |ev: web_sys::DragEvent| {
@@ -6589,6 +6590,7 @@ fn App() -> impl IntoView {
                                                         ev.stop_propagation();
                                                         append_playlist(0);
                                                         set_sidebar_open.set(false);
+                                                        if touch_mode { set_mobile_view.set(MobileView::Queue); }
                                                     }
                                                 }
                                             >"+"
@@ -6622,6 +6624,7 @@ fn App() -> impl IntoView {
                                                                 open_label.clone(),
                                                             );
                                                             set_sidebar_open.set(false);
+                                                            set_mobile_view.set(MobileView::Queue);
                                                         }
                                                     }
                                                     on:dragstart=move |ev: web_sys::DragEvent| {
@@ -6681,6 +6684,7 @@ fn App() -> impl IntoView {
                                                                 ev.stop_propagation();
                                                                 append_playlist(drag_id);
                                                                 set_sidebar_open.set(false);
+                                                                if touch_mode { set_mobile_view.set(MobileView::Queue); }
                                                             }
                                                         }
                                                     >"+"
@@ -6703,23 +6707,10 @@ fn App() -> impl IntoView {
                         class="rows"
                         id="playlist-rows"
                         class:drop-active=move || playlist_drop_active.get()
-                        on:scroll={
-                            let anchor = Arc::clone(&tracks_scroll_anchor);
-                            move |event: web_sys::Event| {
-                                if !touch_mode { return; }
-                                let element = event.current_target().unwrap().unchecked_into::<web_sys::Element>();
-                                let top = element.scroll_top();
-                                let delta = top - anchor.load(Ordering::Relaxed);
-                                if top <= 2 {
-                                    set_transport_compact.set(false);
-                                    anchor.store(top, Ordering::Relaxed);
-                                } else if delta.abs() >= 14 {
-                                    set_transport_compact.set(delta > 0);
-                                    anchor.store(top, Ordering::Relaxed);
-                                }
-                            }
-                        }
                         on:wheel=move |event: web_sys::WheelEvent| {
+                            if touch_mode {
+                                return;
+                            }
                             // The wide column set must be reachable with the
                             // plain wheel: when the rows cannot scroll
                             // vertically, or the wheel hits the top/bottom of
@@ -6858,6 +6849,22 @@ fn App() -> impl IntoView {
                                             "Open the server settings to connect."
                                         }}
                                     </p>
+                                    <div class="mobile-queue-empty">
+                                        <span class="mobile-empty-icon" inner_html=icons::FMT_PLAYLIST></span>
+                                        <h2>{move || if connected.get() { "Your queue is empty" } else { "Connect to Kog" }}</h2>
+                                        <p>{move || if connected.get() { "Choose music from your Library or Playlists." } else { "Connect to your Kog server to browse and play music." }}</p>
+                                        <button
+                                            type="button"
+                                            class="primary"
+                                            on:click=move |_| {
+                                                if connected.get_untracked() {
+                                                    set_mobile_view.set(MobileView::Library);
+                                                } else {
+                                                    set_settings_open.set(true);
+                                                }
+                                            }
+                                        >{move || if connected.get() { "Browse Library" } else { "Connect to Server" }}</button>
+                                    </div>
                                 </Show>
                             }
                         >
@@ -6869,6 +6876,7 @@ fn App() -> impl IntoView {
                                 {
                                     let (index, entry) = row;
                                     let menu_entry = entry.clone();
+                                    let mobile_entry = entry.clone();
                                     view! {
                                         <button
                                             class="track"
@@ -7176,6 +7184,114 @@ fn App() -> impl IntoView {
                                                     }
                                                 }
                                             </For>
+                                            {
+                                                let mobile_title_entry = mobile_entry.clone();
+                                                let mobile_detail_entry = mobile_entry.clone();
+                                                let mobile_duration_entry = mobile_entry.clone();
+                                                let mobile_star_label_entry = mobile_entry.clone();
+                                                let mobile_icon = match file_icon(&mobile_entry.path, &mobile_entry.entry) {
+                                                    FileIcon::Svg(svg) => svg.to_owned(),
+                                                    FileIcon::Badge(ext) => format!("{}<span class=\"ext\">{ext}</span>", icons::FMT_PAPER),
+                                                    FileIcon::None => icons::FMT_AUDIO.to_owned(),
+                                                };
+                                                let mobile_star_entry = mobile_entry.clone();
+                                                let mobile_star_toggle = toggle_star.clone();
+                                                let mobile_star_key_entry = mobile_entry.clone();
+                                                let mobile_star_key_toggle = toggle_star.clone();
+                                                let mobile_menu_entry = mobile_entry.clone();
+                                                let mobile_menu_key_entry = mobile_entry.clone();
+                                                view! {
+                                                    <span class="mobile-track-card">
+                                                        <span class="mobile-track-icon" inner_html=mobile_icon></span>
+                                                        <span class="mobile-track-copy">
+                                                            <span class="mobile-track-head">
+                                                                <span
+                                                                    class="mobile-track-status"
+                                                                    role="button"
+                                                                    tabindex="0"
+                                                                    aria-label="Open audio visualizer"
+                                                                    on:click=move |ev: web_sys::MouseEvent| {
+                                                                        if current.get_untracked() == index && !stopped.get_untracked() {
+                                                                            ev.stop_propagation();
+                                                                            set_visualizer_spectrum_mode.set(false);
+                                                                            set_visualizer_open.set(true);
+                                                                        }
+                                                                    }
+                                                                    on:keydown=move |ev: web_sys::KeyboardEvent| {
+                                                                        if ev.key() == "Enter" || ev.key() == " " {
+                                                                            ev.prevent_default();
+                                                                            ev.stop_propagation();
+                                                                            if current.get_untracked() == index && !stopped.get_untracked() {
+                                                                                set_visualizer_spectrum_mode.set(false);
+                                                                                set_visualizer_open.set(true);
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                >{move || if current.get() == index && !stopped.get() { if playing.get() { "▶" } else { "Ⅱ" } } else { "" }}</span>
+                                                                <span class="mobile-track-title">
+                                                                    {move || display_title(&metadata.get(), &metadata_failed.get(), &mobile_title_entry).unwrap_or_default()}
+                                                                </span>
+                                                            </span>
+                                                            <span class="mobile-track-detail">
+                                                                {move || {
+                                                                    let cache = metadata.get();
+                                                                    let meta = meta_for(&cache, &mobile_detail_entry);
+                                                                    let artist = meta.as_ref().and_then(|row| row.artist.as_ref().or(row.album_artist.as_ref())).cloned().unwrap_or_default();
+                                                                    let album = meta.as_ref().and_then(|row| row.album.as_ref()).cloned().unwrap_or_default();
+                                                                    if artist.is_empty() { album }
+                                                                    else if album.is_empty() { artist }
+                                                                    else { format!("{artist} · {album}") }
+                                                                }}
+                                                            </span>
+                                                        </span>
+                                                        <span class="mobile-track-duration">
+                                                            {move || meta_for(&metadata.get(), &mobile_duration_entry).and_then(|row| row.duration).map(clock).unwrap_or_default()}
+                                                        </span>
+                                                        <span
+                                                            class="mobile-track-star"
+                                                            role="button"
+                                                            tabindex="0"
+                                                            aria-label="Toggle favorite"
+                                                            on:click=move |ev: web_sys::MouseEvent| {
+                                                                ev.stop_propagation();
+                                                                let item = mobile_star_entry.clone();
+                                                                let starred = stars.get_untracked().contains(&entry_star_locator(&item));
+                                                                mobile_star_toggle(item, starred);
+                                                            }
+                                                            on:keydown=move |ev: web_sys::KeyboardEvent| {
+                                                                if ev.key() == "Enter" || ev.key() == " " {
+                                                                    ev.prevent_default();
+                                                                    ev.stop_propagation();
+                                                                    let item = mobile_star_key_entry.clone();
+                                                                    let starred = stars.get_untracked().contains(&entry_star_locator(&item));
+                                                                    mobile_star_key_toggle(item, starred);
+                                                                }
+                                                            }
+                                                        >{move || if stars.get().contains(&entry_star_locator(&mobile_star_label_entry)) { "★" } else { "☆" }}</span>
+                                                        <span
+                                                            class="mobile-track-more"
+                                                            role="button"
+                                                            tabindex="0"
+                                                            aria-label="Track actions"
+                                                            on:click=move |ev: web_sys::MouseEvent| {
+                                                                ev.stop_propagation();
+                                                                set_selected.set(HashSet::from([index]));
+                                                                set_selection_anchor.set(Some(index));
+                                                                set_song_menu.set(Some((ev.client_x() as f64, ev.client_y() as f64, index, mobile_menu_entry.clone())));
+                                                            }
+                                                            on:keydown=move |ev: web_sys::KeyboardEvent| {
+                                                                if ev.key() == "Enter" || ev.key() == " " {
+                                                                    ev.prevent_default();
+                                                                    ev.stop_propagation();
+                                                                    set_selected.set(HashSet::from([index]));
+                                                                    set_selection_anchor.set(Some(index));
+                                                                    set_song_menu.set(Some((0.0, 0.0, index, mobile_menu_key_entry.clone())));
+                                                                }
+                                                            }
+                                                        >"⋯"</span>
+                                                    </span>
+                                                }
+                                            }
                                         <span
                                             class="drag-grip"
                                             title="Drag to reorder"
@@ -7221,12 +7337,57 @@ fn App() -> impl IntoView {
                 </main>
             </div>
 
+            <nav class="mobile-tabs" aria-label="Main navigation">
+                <button
+                    type="button"
+                    class:active=move || mobile_view.get() == MobileView::Library
+                    aria-current=move || if mobile_view.get() == MobileView::Library { "page" } else { "false" }
+                    on:click=move |_| set_mobile_view.set(MobileView::Library)
+                >
+                    <span class="mobile-tab-icon" inner_html=icons::VIEW_LIST_TREE></span>
+                    <span>"Library"</span>
+                </button>
+                <button
+                    type="button"
+                    class:active=move || mobile_view.get() == MobileView::Queue
+                    aria-current=move || if mobile_view.get() == MobileView::Queue { "page" } else { "false" }
+                    on:click=move |_| set_mobile_view.set(MobileView::Queue)
+                >
+                    <span class="mobile-tab-icon" inner_html=icons::FMT_PLAYLIST></span>
+                    <span>"Queue"</span>
+                </button>
+                <button
+                    type="button"
+                    class:active=move || mobile_view.get() == MobileView::Playlists
+                    aria-current=move || if mobile_view.get() == MobileView::Playlists { "page" } else { "false" }
+                    on:click=move |_| set_mobile_view.set(MobileView::Playlists)
+                >
+                    <span class="mobile-tab-icon">"♫"</span>
+                    <span>"Playlists"</span>
+                </button>
+            </nav>
+
+            <div class="player-scrim" on:click=move |_| set_transport_compact.set(true)></div>
+
             <footer class="transport">
-                <div class="now">
+                <div
+                    class="now"
+                    on:click=move |_| {
+                        if touch_mode && transport_compact.get_untracked() {
+                            set_transport_compact.set(false);
+                        }
+                    }
+                >
                     <div
                         class="art"
                         title="Show album cover enlarged"
-                        on:click=move |_| set_cover_open.set(true)
+                        on:click=move |_| {
+                            if touch_mode && transport_compact.get_untracked() {
+                                set_transport_compact.set(false);
+                            } else {
+                                set_cover_open.set(true);
+                            }
+                        }
                     >
                         <img
                             src=move || art_src()
@@ -7465,6 +7626,14 @@ fn App() -> impl IntoView {
                     on:click=move |_| set_transport_compact.set(false)
                 >"⌃"</button>
 
+                <button
+                    class="transport-collapse"
+                    type="button"
+                    title="Minimize player"
+                    aria-label="Minimize player"
+                    on:click=move |_| set_transport_compact.set(true)
+                >"⌄"</button>
+
                 <audio
                     class="audio"
                     node_ref=audio_ref
@@ -7556,10 +7725,55 @@ fn App() -> impl IntoView {
                 </section>
             </Show>
 
+            <Show when=move || add_url_open.get() fallback=|| ()>
+                <div class="scrim" on:click=move |_| set_add_url_open.set(false)></div>
+                <div class="settings add-url-dialog" role="dialog" aria-label="Add stream URL">
+                    <h2>"Add Stream URL"</h2>
+                    <label>
+                        "URL"
+                        <input
+                            type="url"
+                            placeholder="https://example.com/stream"
+                            prop:value=move || add_url_text.get()
+                            on:input=move |event| set_add_url_text.set(event_target_value(&event))
+                            on:keydown=move |event: web_sys::KeyboardEvent| {
+                                if event.key() == "Enter" {
+                                    event.prevent_default();
+                                    add_url();
+                                }
+                            }
+                        />
+                    </label>
+                    <div class="settings-actions">
+                        <button on:click=move |_| set_add_url_open.set(false)>"Cancel"</button>
+                        <button
+                            class="primary"
+                            disabled=move || add_url_text.get().trim().is_empty()
+                            on:click=move |_| add_url()
+                        >"Add to Queue"</button>
+                    </div>
+                </div>
+            </Show>
+
             <Show when=move || settings_open.get() fallback=|| ()>
                 <div class="scrim" on:click=move |_| set_settings_open.set(false)></div>
                 <div class="settings" role="dialog">
                     <h2>"Server"</h2>
+                    <label class="mobile-stream-format">
+                        "Stream format"
+                        <select
+                            prop:value=move || codec.get()
+                            on:change=move |event| {
+                                let value = event_target_value(&event);
+                                store("kog.codec", &value);
+                                set_codec.set(value);
+                            }
+                        >
+                            <option value="aac">"AAC"</option>
+                            <option value="opus">"Opus"</option>
+                            <option value="flac">"FLAC"</option>
+                        </select>
+                    </label>
                     <label>
                         "Address"
                         <input
@@ -7822,6 +8036,7 @@ fn App() -> impl IntoView {
                                     move |_| {
                                         if let Some((_, _, row)) = tree_menu.get() {
                                             add_row_to_playlist(row);
+                                            if touch_mode { set_mobile_view.set(MobileView::Queue); }
                                         }
                                         set_tree_menu.set(None);
                                     }
@@ -7886,6 +8101,15 @@ fn App() -> impl IntoView {
                     >
                         "Play"
                     </button>
+                    <button
+                        class="menu-item"
+                        on:click=move |_| {
+                            if let Some((_, _, index, entry)) = song_menu.get_untracked() {
+                                set_track_details.set(Some((index, entry)));
+                                set_song_menu.set(None);
+                            }
+                        }
+                    >"Track Details"</button>
                     <div class="menu-separator"></div>
                     <Show when=move || radio_on.get() fallback=|| ()>
                         <button
@@ -7943,6 +8167,9 @@ fn App() -> impl IntoView {
                                 if let Some((_, _, _, entry)) = song_menu.get_untracked() {
                                     set_song_menu.set(None);
                                     reveal_in_tree(entry);
+                                    if touch_mode {
+                                        set_mobile_view.set(MobileView::Library);
+                                    }
                                 }
                             }
                         }
@@ -8002,6 +8229,7 @@ fn App() -> impl IntoView {
                             if let Some((_, _, id, _)) = playlist_menu.get_untracked() {
                                 set_playlist_menu.set(None);
                                 append_playlist(id);
+                                if touch_mode { set_mobile_view.set(MobileView::Queue); }
                             }
                         }
                     >
@@ -8013,6 +8241,7 @@ fn App() -> impl IntoView {
                             if let Some((_, _, id, _)) = playlist_menu.get_untracked() {
                                 set_playlist_menu.set(None);
                                 play_playlist(id);
+                                if touch_mode { set_mobile_view.set(MobileView::Queue); }
                             }
                         }
                     >
@@ -8024,6 +8253,7 @@ fn App() -> impl IntoView {
                             if let Some((_, _, id, name)) = playlist_menu.get_untracked() {
                                 set_playlist_menu.set(None);
                                 replace_pane_with_playlist(id, name);
+                                if touch_mode { set_mobile_view.set(MobileView::Queue); }
                             }
                         }
                     >
@@ -8311,6 +8541,74 @@ fn App() -> impl IntoView {
                     >
                         "Reset Columns"
                     </button>
+                </div>
+            </Show>
+
+            <Show when=move || mobile_sort_open.get() fallback=|| ()>
+                <div class="menu-scrim" on:click=move |_| set_mobile_sort_open.set(false)></div>
+                <div class="context-menu mobile-sort-menu" role="menu" aria-label="Sort queue">
+                    <div class="menu-group">"Sort queue"</div>
+                    <For
+                        each=|| [
+                            ColumnId::Index, ColumnId::Title, ColumnId::Artist,
+                            ColumnId::AlbumArtist, ColumnId::Album, ColumnId::Composer,
+                            ColumnId::Length, ColumnId::Year, ColumnId::Genre,
+                            ColumnId::Track, ColumnId::FileSize, ColumnId::Path,
+                            ColumnId::Filename, ColumnId::Codec, ColumnId::SampleRate,
+                            ColumnId::BitsPerSample, ColumnId::Bitrate, ColumnId::Star,
+                        ]
+                        key=|id| id.key()
+                        let:id
+                    >
+                        <button
+                            class="menu-item"
+                            on:click=move |_| {
+                                toggle_sort(id.sort_key());
+                                set_mobile_sort_open.set(false);
+                            }
+                        >
+                            <span class="menu-check">{move || if sort_key.get() == id.sort_key() { "✓" } else { "" }}</span>
+                            {id.menu_label()}
+                            <span class="mobile-sort-direction">{move || sort_arrow(id.sort_key())}</span>
+                        </button>
+                    </For>
+                </div>
+            </Show>
+
+            <Show when=move || track_details.get().is_some() fallback=|| ()>
+                <div class="scrim" on:click=move |_| set_track_details.set(None)></div>
+                <div class="settings track-details" role="dialog" aria-label="Track details">
+                    <h2>"Track Details"</h2>
+                    <dl class="track-details-list">
+                        <For
+                            each=move || {
+                                let Some((index, entry)) = track_details.get() else { return Vec::new(); };
+                                let cache = metadata.get();
+                                let meta = meta_for(&cache, &entry);
+                                ColumnId::MENU_ORDER.into_iter().filter_map(|id| {
+                                    if matches!(id, ColumnId::Status | ColumnId::Rating | ColumnId::PlayCount) {
+                                        return None;
+                                    }
+                                    let value = if id == ColumnId::Title {
+                                        display_title(&cache, &metadata_failed.get(), &entry).unwrap_or_default()
+                                    } else {
+                                        column_text(id, index, &entry, meta.as_ref(), None, false, "")
+                                    };
+                                    (!value.trim().is_empty()).then(|| (id.menu_label().to_owned(), value))
+                                }).collect::<Vec<_>>()
+                            }
+                            key=|field| field.0.clone()
+                            let:field
+                        >
+                            <div class="track-detail">
+                                <dt>{field.0}</dt>
+                                <dd>{field.1}</dd>
+                            </div>
+                        </For>
+                    </dl>
+                    <div class="settings-actions">
+                        <button class="primary" on:click=move |_| set_track_details.set(None)>"Done"</button>
+                    </div>
                 </div>
             </Show>
 
