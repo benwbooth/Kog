@@ -35,7 +35,7 @@ internal object NativeAudio {
         if (!track.isDevice) return false
         val extension = track.name.substringAfterLast('.', "").lowercase()
         return extension !in setOf("mp3", "mp2", "aac", "m4a", "m4b", "mp4", "flac", "wav",
-            "wave", "ogg", "oga", "opus", "webm", "mka", "mkv", "aif", "aiff", "aifc")
+            "wave", "ogg", "oga", "opus", "webm", "mka", "mkv")
     }
 
     fun uri(track: Track): Uri = Uri.Builder().scheme("kog-native").authority("device")
