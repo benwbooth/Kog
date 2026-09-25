@@ -1407,6 +1407,16 @@ impl Ui {
             self.cover_preview = None;
             return;
         };
+        if !self.metadata_ready(track) {
+            if !self.cover_key.is_empty() {
+                self.cover_generation = self.cover_generation.wrapping_add(1);
+                self.cover_live_generation
+                    .store(self.cover_generation, Ordering::Relaxed);
+            }
+            self.cover_key.clear();
+            self.cover_preview = None;
+            return;
+        }
         let (artist, album) = self.metadata_for(track).map_or_else(
             || (String::new(), String::new()),
             |meta| (meta.artist.clone(), meta.album.clone()),
@@ -1647,7 +1657,14 @@ impl Ui {
             .and_then(Option::as_ref)
     }
 
+    fn metadata_ready(&self, track: &Track) -> bool {
+        self.metadata.contains_key(&metadata_key(&track.entry))
+    }
+
     fn title_for(&self, track: &Track) -> String {
+        if !self.metadata_ready(track) {
+            return String::new();
+        }
         let mut title = self
             .metadata_for(track)
             .map(|meta| meta.title.clone())
@@ -3895,7 +3912,7 @@ impl Ui {
                         self.playing,
                     );
                 }
-                self.status = format!("Playing {}", track.name);
+                self.status = "Playing".to_owned();
                 true
             }
             Err(error) => {
@@ -5508,6 +5525,9 @@ impl Ui {
             .iter()
             .enumerate()
             .filter_map(|(index, track)| {
+                if !self.metadata_ready(track) {
+                    return None;
+                }
                 let metadata = self.metadata_for(track);
                 let matches = [
                     self.title_for(track),
@@ -7319,22 +7339,6 @@ impl Ui {
         let marquee_tick = (self.marquee_started.elapsed().as_millis() / 180) as usize;
         let visible_tracks = self.visible_tracks();
         let layout = self.layout_for_track_count(size, visible_tracks.len());
-        let probe_range = if self.playlist_query.is_empty() {
-            self.offsets[2].min(self.tracks.len())
-                ..self
-                    .tracks
-                    .len()
-                    .min(self.offsets[2] + layout.track_page + 1)
-        } else {
-            0..self.tracks.len()
-        };
-        let to_probe: Vec<_> = self.tracks[probe_range]
-            .iter()
-            .map(|track| track.entry.clone())
-            .collect();
-        for entry in &to_probe {
-            self.request_metadata(entry);
-        }
         let tree_page = self.tree_page(&layout);
         let pages = [layout.list_page, tree_page, layout.track_page];
         for (pane, len) in [self.lists.len(), self.items.len(), visible_tracks.len()]
@@ -7367,6 +7371,26 @@ impl Ui {
             } else if selected_position >= self.offsets[pane] + page {
                 self.offsets[pane] = selected_position + 1 - page;
             }
+        }
+
+        let probe_range = if self.playlist_query.is_empty() {
+            self.offsets[2].min(self.tracks.len())
+                ..self
+                    .tracks
+                    .len()
+                    .min(self.offsets[2] + layout.track_page + 1)
+        } else {
+            0..self.tracks.len()
+        };
+        let mut to_probe: Vec<_> = [self.playing, Some(self.selected[2])]
+            .into_iter()
+            .flatten()
+            .filter_map(|index| self.tracks.get(index))
+            .map(|track| track.entry.clone())
+            .collect();
+        to_probe.extend(self.tracks[probe_range].iter().map(|track| track.entry.clone()));
+        for entry in &to_probe {
+            self.request_metadata(entry);
         }
 
         let mut screen = String::from("\x1b[H\x1b[?25l");
@@ -7788,6 +7812,9 @@ impl Ui {
                 if let Some((index, track)) =
                     index.and_then(|index| self.tracks.get(index).map(|track| (index, track)))
                 {
+                    if !self.metadata_ready(track) {
+                        continue;
+                    }
                     for (column_index, start, column_width) in self.columns.positions() {
                         let value =
                             self.column_value(index, track, self.columns.entries[column_index].id);
@@ -7904,23 +7931,30 @@ impl Ui {
             Surface::Toolbar,
             true,
         );
-        let subtitle = self
+        let current_metadata_pending = self
             .playing
             .and_then(|index| self.tracks.get(index))
-            .and_then(|track| self.metadata_for(track))
-            .map(|meta| {
-                [meta.artist.as_str(), meta.album.as_str()]
-                    .into_iter()
-                    .filter(|part| !part.is_empty())
-                    .collect::<Vec<_>>()
-                    .join(" • ")
-            })
-            .filter(|text| !text.is_empty())
-            .unwrap_or_else(|| match self.player.state() {
-                PlaybackState::Playing => "Playing".to_owned(),
-                PlaybackState::Paused => "Paused".to_owned(),
-                PlaybackState::Stopped => "Ready to play".to_owned(),
-            });
+            .is_some_and(|track| !self.metadata_ready(track));
+        let subtitle = if current_metadata_pending {
+            String::new()
+        } else {
+            self.playing
+                .and_then(|index| self.tracks.get(index))
+                .and_then(|track| self.metadata_for(track))
+                .map(|meta| {
+                    [meta.artist.as_str(), meta.album.as_str()]
+                        .into_iter()
+                        .filter(|part| !part.is_empty())
+                        .collect::<Vec<_>>()
+                        .join(" • ")
+                })
+                .filter(|text| !text.is_empty())
+                .unwrap_or_else(|| match self.player.state() {
+                    PlaybackState::Playing => "Playing".to_owned(),
+                    PlaybackState::Paused => "Paused".to_owned(),
+                    PlaybackState::Stopped => "Ready to play".to_owned(),
+                })
+        };
         paint(
             &mut screen,
             layout.footer_top + 2,
