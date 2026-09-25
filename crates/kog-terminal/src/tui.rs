@@ -6050,6 +6050,7 @@ impl Ui {
                 row("↑ ↓ / j k", "Move selection"),
                 row("PgUp / PgDn", "Move one page"),
                 row("Home / End", "First / last item"),
+                row("→ tree / ← edge", "Switch tree and playlist"),
                 row("Enter", "Open folder, list, or track"),
                 row("Enter on ..", "Go to parent folder"),
                 row("J / K", "Move cursor only"),
@@ -6830,12 +6831,23 @@ impl Ui {
             Key::Home => self.move_selection(-(isize::MAX / 2), page),
             Key::End => self.move_selection(isize::MAX / 2, page),
             Key::Left | Key::Backspace if self.focus == Focus::Library => self.up_directory(),
-            Key::Right | Key::Enter if self.focus == Focus::Library => self.open_selected(),
-            Key::Left | Key::Right if self.focus == Focus::Tracks && !self.compact_mode => {
-                self.columns.scroll_by(
-                    if key == Key::Left { -8 } else { 8 },
-                    size.0.saturating_sub(layout.playlist_left()),
-                );
+            Key::Right if self.focus == Focus::Library => {
+                self.range_click_pending = None;
+                self.focus = Focus::Tracks;
+            }
+            Key::Enter if self.focus == Focus::Library => self.open_selected(),
+            Key::Left if self.focus == Focus::Tracks && !self.compact_mode => {
+                if self.columns.scroll == 0 {
+                    self.range_click_pending = None;
+                    self.focus = Focus::Library;
+                } else {
+                    self.columns
+                        .scroll_by(-8, size.0.saturating_sub(layout.playlist_left()));
+                }
+            }
+            Key::Right if self.focus == Focus::Tracks && !self.compact_mode => {
+                self.columns
+                    .scroll_by(8, size.0.saturating_sub(layout.playlist_left()));
             }
             Key::Enter if self.focus == Focus::Playlists => self.enqueue_list(self.selected[0]),
             Key::Enter if self.focus == Focus::Tracks => self.play_selected(),
