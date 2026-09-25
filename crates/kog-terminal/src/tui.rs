@@ -11438,6 +11438,7 @@ fn waveform_dots(wave: &[f32], width: usize, height: usize) -> Vec<u8> {
     if wave.is_empty() || pixel_width == 0 || pixel_height == 0 {
         return dots;
     }
+    let center = pixel_height / 2;
     let mut previous = None;
     for px in 0..pixel_width {
         let start = px * wave.len() / pixel_width;
@@ -11462,8 +11463,10 @@ fn waveform_dots(wave: &[f32], width: usize, height: usize) -> Vec<u8> {
             low = low.min(previous);
             high = high.max(previous);
         }
-        for py in low..=high {
-            braille_dot(&mut dots, width, px, py);
+        if low != center || high != center {
+            for py in low..=high {
+                braille_dot(&mut dots, width, px, py);
+            }
         }
         previous = Some(current);
     }
@@ -11691,7 +11694,10 @@ fn draw_visualizer_modal(
         for column in 0..plot_width {
             let (red, green, blue) = waveform_color(column, plot_width);
             let mask = dots[row * plot_width + column];
-            if mask == 0 && [plot_height / 4, plot_height / 2, plot_height * 3 / 4].contains(&row) {
+            let guide = row == plot_height / 4
+                || row == plot_height * 3 / 4
+                || (mode == VisualizerMode::Spectrum && row == plot_height / 2);
+            if mask == 0 && guide {
                 screen.push_str("\x1b[38;2;36;50;59m⠤");
             } else {
                 screen.push_str(&format!(
@@ -12449,6 +12455,43 @@ mod tests {
         draw_visualizer_modal(&mut modal, (80, 24), VisualizerMode::Waveform, &frame);
         assert!(modal.contains("[1 Waveform]"));
         assert!(modal.chars().any(|glyph| ('\u{2801}'..='\u{28ff}').contains(&glyph)));
+    }
+
+    #[test]
+    fn silent_waveform_has_no_center_bar() {
+        assert!(waveform_dots(&[0.0; 256], 20, 10)
+            .iter()
+            .all(|&mask| mask == 0));
+        let size = (80, 24);
+        let dialog = VisualizerGeometry::new(size);
+        let frame = serde_json::json!({"wave": vec![0.0_f32; 256], "spectrum": vec![0.0_f32; 40]})
+            .to_string();
+        let center_start = format!(
+            "\x1b[{};{}H\x1b[48;2;16;25;31m",
+            dialog.y + dialog.plot_height() / 2 + 4,
+            dialog.x + 3
+        );
+        let mut waveform = String::new();
+        draw_visualizer_modal(&mut waveform, size, VisualizerMode::Waveform, &frame);
+        let waveform_center = waveform
+            .split(&center_start)
+            .nth(1)
+            .unwrap()
+            .split("\x1b[0m")
+            .next()
+            .unwrap();
+        assert!(!waveform_center.contains('⠤'));
+
+        let mut spectrum = String::new();
+        draw_visualizer_modal(&mut spectrum, size, VisualizerMode::Spectrum, &frame);
+        let spectrum_center = spectrum
+            .split(&center_start)
+            .nth(1)
+            .unwrap()
+            .split("\x1b[0m")
+            .next()
+            .unwrap();
+        assert!(spectrum_center.contains('⠤'));
     }
 
     #[test]
