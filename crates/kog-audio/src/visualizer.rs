@@ -51,9 +51,9 @@ impl AudioTap {
         }
     }
 
-    pub fn frame(&self, playing: bool) -> String {
+    fn samples(&self, playing: bool) -> [f32; SIZE] {
         let cursor = self.0.cursor.load(Ordering::Acquire);
-        let samples: [f32; SIZE] = std::array::from_fn(|i| {
+        std::array::from_fn(|i| {
             if playing {
                 f32::from_bits(
                     self.0.samples[(cursor.wrapping_add(i)) % SIZE].load(Ordering::Relaxed),
@@ -61,7 +61,23 @@ impl AudioTap {
             } else {
                 0.0
             }
-        });
+        })
+    }
+
+    /// Eight chronological RMS windows across the most recent audio samples.
+    /// The small status display uses these measurements instead of squeezing
+    /// a full oscilloscope trace into eight terminal dots.
+    pub fn envelope(&self, playing: bool) -> [f32; 8] {
+        let samples = self.samples(playing);
+        std::array::from_fn(|bin| {
+            let window = &samples[bin * SIZE / 8..(bin + 1) * SIZE / 8];
+            (window.iter().map(|sample| sample * sample).sum::<f32>() / window.len() as f32)
+                .sqrt()
+        })
+    }
+
+    pub fn frame(&self, playing: bool) -> String {
+        let samples = self.samples(playing);
         // A short oscilloscope window retains detail instead of averaging it away.
         let wave = &samples[SIZE - 256..];
         let spectrum = spectrum(&samples, self.0.rate.load(Ordering::Relaxed));
@@ -151,5 +167,20 @@ mod tests {
         let frame: serde_json::Value = serde_json::from_str(&tap.frame(true)).unwrap();
         assert_eq!(frame["wave"][254], 0.5);
         assert_eq!(frame["wave"][255], 0.0);
+    }
+
+    #[test]
+    fn envelope_tracks_chronological_signal_strength() {
+        let tap = AudioTap::default();
+        for bin in 0..8 {
+            for _ in 0..SIZE / 8 {
+                tap.push(bin as f32 / 8.0);
+            }
+        }
+        let envelope = tap.envelope(true);
+        for (bin, value) in envelope.iter().enumerate() {
+            assert!((value - bin as f32 / 8.0).abs() < 0.0001);
+        }
+        assert_eq!(tap.envelope(false), [0.0; 8]);
     }
 }

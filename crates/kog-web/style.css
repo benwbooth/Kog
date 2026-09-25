@@ -1057,6 +1057,10 @@ body.touch .track .index-cell {
   font-variant-numeric: tabular-nums;
 }
 
+.track .status-cell.visualizer-trigger {
+  cursor: pointer;
+}
+
 /* A selected row (the menu's Remove Selected acts on these). */
 .track.selected,
 .track.selected:hover {
@@ -1484,6 +1488,78 @@ body.touch .track .index-cell {
 .settings h2 {
   margin: 0;
   font-size: 15px;
+}
+
+.audio-visualizer {
+  position: fixed;
+  z-index: 31;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(94vw, 800px);
+  max-height: 90dvh;
+  overflow: auto;
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+}
+
+.audio-visualizer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.audio-visualizer h2,
+.audio-visualizer-title {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.audio-visualizer h2 {
+  font-size: 16px;
+}
+
+.audio-visualizer-header button,
+.audio-visualizer-modes button {
+  min-height: 44px;
+  min-width: 44px;
+}
+
+.audio-visualizer-header button {
+  font-size: 22px;
+  line-height: 1;
+}
+
+.audio-visualizer-modes {
+  display: flex;
+  gap: 8px;
+}
+
+.audio-visualizer-modes button.active {
+  color: var(--highlight-text);
+  background: var(--highlight);
+  border-color: var(--highlight);
+}
+
+.audio-visualizer canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 58dvh;
+  background: #10191f;
+  border-radius: 6px;
+}
+
+.audio-visualizer-title {
+  color: var(--muted);
 }
 
 /* The playlist name/confirm dialog (the desktop's playlist dialogs). */

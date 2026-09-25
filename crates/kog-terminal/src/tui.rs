@@ -8458,7 +8458,7 @@ impl Ui {
                                 && self.player.state() == PlaybackState::Playing
                             {
                                 let glyphs = status_waveform.get_or_insert_with(|| {
-                                    status_waveform_glyphs(&self.player.visualizer_frame())
+                                    status_waveform_glyphs(self.player.visualizer_envelope())
                                 });
                                 paint_playlist_waveform(
                                     &mut screen,
@@ -11144,16 +11144,18 @@ fn waveform_color(column: usize, width: usize) -> (u8, u8, u8) {
     )
 }
 
-fn status_waveform_glyphs(frame_json: &str) -> Vec<char> {
-    let frame = serde_json::from_str::<serde_json::Value>(frame_json).unwrap_or_default();
-    let wave: Vec<f32> = frame["wave"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|value| value.as_f64().map(|sample| sample as f32))
-        .collect();
-    waveform_dots(&wave, STATUS_WAVEFORM_WIDTH, 1)
-        .into_iter()
+fn status_waveform_glyphs(envelope: [f32; 8]) -> Vec<char> {
+    let mut dots = vec![0_u8; STATUS_WAVEFORM_WIDTH];
+    for (x, amplitude) in envelope.into_iter().enumerate() {
+        // RMS is measured linearly; a square-root display scale preserves
+        // quieter passages in this four-step indicator without inventing
+        // movement when the signal is silent.
+        let height = (amplitude.clamp(0.0, 1.0).sqrt() * 4.0).ceil() as usize;
+        for y in 4 - height..4 {
+            braille_dot(&mut dots, STATUS_WAVEFORM_WIDTH, x, y);
+        }
+    }
+    dots.into_iter()
         .map(|mask| char::from_u32(0x2800 + u32::from(mask)).unwrap_or(' '))
         .collect()
 }
@@ -12082,9 +12084,10 @@ mod tests {
             .map(|sample| (sample as f32 * std::f32::consts::TAU / 32.0).sin())
             .collect();
         let frame = serde_json::json!({"wave": wave, "spectrum": vec![0.0_f32; 40]}).to_string();
-        let glyphs = status_waveform_glyphs(&frame);
+        let glyphs = status_waveform_glyphs([0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 0.5, 0.1]);
         assert_eq!(glyphs.len(), STATUS_WAVEFORM_WIDTH);
         assert!(glyphs.iter().any(|glyph| ('\u{2801}'..='\u{28ff}').contains(glyph)));
+        assert_eq!(status_waveform_glyphs([0.0; 8]), vec!['\u{2800}'; 4]);
         let mut status = String::new();
         paint(&mut status, 12, 10, PLAYLIST_PLAY, 6, Surface::Main, false);
         paint_playlist_waveform(&mut status, 12, 10, 20, 0, 7, 0, &glyphs, Surface::Main);

@@ -1975,6 +1975,90 @@ fn library_files(value: &serde_json::Value) -> Vec<Entry> {
         .collect()
 }
 
+fn visualizer_spectrum_bins(frequencies: &[u8], sample_rate: f32, fft_size: usize) -> Vec<f32> {
+    if frequencies.is_empty() || sample_rate <= 0.0 {
+        return vec![0.0; 40];
+    }
+    let top = (sample_rate / 2.0).min(20_000.0).max(40.0);
+    (0..40)
+        .map(|band| {
+            let edge = |step: usize| {
+                ((30.0 * (top / 30.0).powf(step as f32 / 40.0) * fft_size as f32
+                    / sample_rate)
+                    .round() as usize)
+                    .min(frequencies.len() - 1)
+            };
+            let low = edge(band);
+            let high = edge(band + 1).max(low + 1).min(frequencies.len());
+            f32::from(*frequencies[low..high].iter().max().unwrap_or(&0)) / 255.0
+        })
+        .collect()
+}
+
+fn draw_web_visualizer(
+    canvas: &web_sys::HtmlCanvasElement,
+    wave: &[f32],
+    spectrum: &[f32],
+    spectrum_mode: bool,
+) {
+    let Ok(Some(context)) = canvas.get_context("2d") else {
+        return;
+    };
+    let Ok(context) = context.dyn_into::<web_sys::CanvasRenderingContext2d>() else {
+        return;
+    };
+    let width = f64::from(canvas.width());
+    let height = f64::from(canvas.height());
+    let padding = 24.0;
+    let plot_width = width - padding * 2.0;
+    let plot_height = height - padding * 2.0;
+    context.set_fill_style_str("#10191f");
+    context.fill_rect(0.0, 0.0, width, height);
+    context.set_stroke_style_str("#263944");
+    context.set_line_width(1.0);
+    for line in 1..4 {
+        let y = padding + plot_height * f64::from(line) / 4.0;
+        context.begin_path();
+        context.move_to(padding, y);
+        context.line_to(width - padding, y);
+        context.stroke();
+    }
+    if spectrum_mode {
+        if spectrum.is_empty() {
+            return;
+        }
+        let stride = plot_width / spectrum.len() as f64;
+        for (index, &level) in spectrum.iter().enumerate() {
+            let fraction = index as f64 / spectrum.len() as f64;
+            let red = (66.0 + 3.0 * fraction).round() as u8;
+            let green = (223.0 - 37.0 * fraction).round() as u8;
+            let blue = (163.0 + 92.0 * fraction).round() as u8;
+            context.set_fill_style_str(&format!("rgb({red},{green},{blue})"));
+            let bar = f64::from(level.clamp(0.0, 1.0)) * plot_height;
+            context.fill_rect(
+                padding + index as f64 * stride,
+                height - padding - bar,
+                (stride - 2.0).max(1.0),
+                bar,
+            );
+        }
+    } else if wave.len() > 1 {
+        context.set_stroke_style_str("#42dfa3");
+        context.set_line_width(2.0);
+        context.begin_path();
+        for (index, &sample) in wave.iter().enumerate() {
+            let x = padding + plot_width * index as f64 / (wave.len() - 1) as f64;
+            let y = height / 2.0 - f64::from(sample.clamp(-1.0, 1.0)) * plot_height * 0.48;
+            if index == 0 {
+                context.move_to(x, y);
+            } else {
+                context.line_to(x, y);
+            }
+        }
+        context.stroke();
+    }
+}
+
 #[wasm_bindgen(start)]
 pub fn start() {
     console_error_panic_hook::set_once();
@@ -2147,6 +2231,22 @@ fn App() -> impl IntoView {
     // Band levels of the currently streaming track, for the playing row's
     // meter: five 0..1 values polled from the server while it decodes.
     let (audio_levels, set_audio_levels) = signal([0.0_f32; 5]);
+    let (visualizer_open, set_visualizer_open) = signal(false);
+    let (visualizer_spectrum_mode, set_visualizer_spectrum_mode) = signal(false);
+    let (visualizer_wave, set_visualizer_wave) = signal(Vec::<f32>::new());
+    let (visualizer_spectrum, set_visualizer_spectrum) = signal(Vec::<f32>::new());
+    let visualizer_canvas = NodeRef::<leptos::html::Canvas>::new();
+    Effect::new(move |_| {
+        if !visualizer_open.get() {
+            return;
+        }
+        let wave = visualizer_wave.get();
+        let spectrum = visualizer_spectrum.get();
+        let mode = visualizer_spectrum_mode.get();
+        if let Some(canvas) = visualizer_canvas.get() {
+            draw_web_visualizer(&canvas, &wave, &spectrum, mode);
+        }
+    });
     // Stopped is stricter than paused: nothing was played and nothing is held
     // mid-song. A fresh page load starts stopped, and Stop returns here, so
     // the current row shows no playing or paused glyph.
@@ -3544,6 +3644,7 @@ fn App() -> impl IntoView {
             return;
         }
         if ev.key() == "Escape" {
+            set_visualizer_open.set(false);
             set_cover_open.set(false);
             set_menu_open.set(false);
             set_column_menu.set(None);
@@ -3911,6 +4012,10 @@ fn App() -> impl IntoView {
         let levels_poll = Closure::<dyn FnMut()>::new(move || {
             if !playing.get_untracked() {
                 set_audio_levels.set([0.0; 5]);
+                if visualizer_open.get_untracked() {
+                    set_visualizer_wave.set(Vec::new());
+                    set_visualizer_spectrum.set(Vec::new());
+                }
                 return;
             }
             let Some(audio) = audio_ref.get() else {
@@ -3918,6 +4023,10 @@ fn App() -> impl IntoView {
             };
             if audio.paused() || audio.muted() || audio.volume() <= 0.0 {
                 set_audio_levels.set([0.0; 5]);
+                if visualizer_open.get_untracked() {
+                    set_visualizer_wave.set(Vec::new());
+                    set_visualizer_spectrum.set(Vec::new());
+                }
                 return;
             }
             if graph.borrow().is_none() {
@@ -3933,6 +4042,16 @@ fn App() -> impl IntoView {
             let _ = context.resume();
             let mut samples = vec![0.0_f32; analyser.fft_size() as usize];
             analyser.get_float_time_domain_data(&mut samples);
+            if visualizer_open.get_untracked() {
+                set_visualizer_wave.set(samples.iter().step_by(4).copied().collect());
+                let mut frequencies = vec![0_u8; analyser.frequency_bin_count() as usize];
+                analyser.get_byte_frequency_data(&mut frequencies);
+                set_visualizer_spectrum.set(visualizer_spectrum_bins(
+                    &frequencies,
+                    context.sample_rate(),
+                    analyser.fft_size() as usize,
+                ));
+            }
             let live = samples.iter().any(|sample| sample.abs() > 0.00001);
             if !live {
                 // Audibly playing but silent reads: the tap went stale
@@ -6940,8 +7059,31 @@ fn App() -> impl IntoView {
                                                     view! {
                                                         <span
                                                             class=format!("cell {}", id.class())
-                                                            title=move || tip()
+                                                            class:visualizer-trigger=move || {
+                                                                id == ColumnId::Status
+                                                                    && current.get() == index
+                                                                    && !stopped.get()
+                                                            }
+                                                            title=move || {
+                                                                if id == ColumnId::Status
+                                                                    && current.get() == index
+                                                                    && !stopped.get()
+                                                                {
+                                                                    "Open audio visualizer".to_owned()
+                                                                } else {
+                                                                    tip()
+                                                                }
+                                                            }
                                                             on:click=move |ev: web_sys::MouseEvent| {
+                                                                if id == ColumnId::Status
+                                                                    && current.get_untracked() == index
+                                                                    && !stopped.get_untracked()
+                                                                {
+                                                                    ev.stop_propagation();
+                                                                    set_visualizer_spectrum_mode.set(false);
+                                                                    set_visualizer_open.set(true);
+                                                                    return;
+                                                                }
                                                                 // The star cell toggles without
                                                                 // selecting or playing the row.
                                                                 if id == ColumnId::Star {
@@ -6951,6 +7093,14 @@ fn App() -> impl IntoView {
                                                                         .get_untracked()
                                                                         .contains(&entry_star_locator(&entry));
                                                                     toggle_star(entry, starred);
+                                                                }
+                                                            }
+                                                            on:dblclick=move |ev: web_sys::MouseEvent| {
+                                                                if id == ColumnId::Status
+                                                                    && current.get_untracked() == index
+                                                                    && !stopped.get_untracked()
+                                                                {
+                                                                    ev.stop_propagation();
                                                                 }
                                                             }
                                                         >
@@ -7373,6 +7523,38 @@ fn App() -> impl IntoView {
                     }
                 ></audio>
             </footer>
+
+            <Show when=move || visualizer_open.get() fallback=|| ()>
+                <div class="scrim" on:click=move |_| set_visualizer_open.set(false)></div>
+                <section class="audio-visualizer" role="dialog" aria-modal="true" aria-label="Audio visualizer">
+                    <header class="audio-visualizer-header">
+                        <h2>"Audio visualizer"</h2>
+                        <button type="button" aria-label="Close visualizer" on:click=move |_| set_visualizer_open.set(false)>"×"</button>
+                    </header>
+                    <div class="audio-visualizer-modes" role="group" aria-label="Visualization mode">
+                        <button
+                            type="button"
+                            class:active=move || !visualizer_spectrum_mode.get()
+                            aria-pressed=move || (!visualizer_spectrum_mode.get()).to_string()
+                            on:click=move |_| set_visualizer_spectrum_mode.set(false)
+                        >"Waveform"</button>
+                        <button
+                            type="button"
+                            class:active=move || visualizer_spectrum_mode.get()
+                            aria-pressed=move || visualizer_spectrum_mode.get().to_string()
+                            on:click=move |_| set_visualizer_spectrum_mode.set(true)
+                        >"Spectrum"</button>
+                    </div>
+                    <canvas
+                        node_ref=visualizer_canvas
+                        width="720"
+                        height="360"
+                        role="img"
+                        aria-label="Live audio visualization"
+                    ></canvas>
+                    <p class="audio-visualizer-title">{move || now_title()}</p>
+                </section>
+            </Show>
 
             <Show when=move || settings_open.get() fallback=|| ()>
                 <div class="scrim" on:click=move |_| set_settings_open.set(false)></div>

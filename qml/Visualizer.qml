@@ -22,6 +22,12 @@ ApplicationWindow {
         qsTr("Mirrored spectrum • frequency bands with a reflected display"),
         qsTr("Waveform trails • ten recent PCM traces")
     ]
+    function openWaveform() {
+        mode.currentIndex = 1
+        show()
+        raise()
+        requestActivate()
+    }
     Settings {
         category: "Visualizer"
         fileName: root.settingsFile

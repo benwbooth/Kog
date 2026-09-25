@@ -3479,6 +3479,7 @@ ApplicationWindow {
                         theme: root.palette
                         rowIndex: index
                         selected: root.isPlaylistRowSelected(index)
+                        onOpenVisualizer: visualizerWindow.openWaveform()
                         onPressed: (row, modifiers, button) => {
                             if (button !== Qt.RightButton
                                     || !root.isPlaylistRowSelected(row))

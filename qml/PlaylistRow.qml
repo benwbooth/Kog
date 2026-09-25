@@ -29,6 +29,7 @@ Item {
 
     signal pressed(int rowIndex, int modifiers, int button)
     signal activated(int rowIndex)
+    signal openVisualizer()
     signal dragStarted(int rowIndex)
     signal dragMoved(real viewX, real viewY)
     signal dragFinished(real viewX, real viewY)
@@ -81,6 +82,8 @@ Item {
             return root.statusMessage
         if (column.id === "star")
             return root.rowStarred ? qsTr("Unstar") : qsTr("Star")
+        if (column.id === "status" && root.isPlaying)
+            return qsTr("Open audio visualizer")
         const value = String(root.app.track_value_at(root.rowIndex, column.id))
         return value.length > 0 ? value : root.statusMessage
     }
@@ -395,6 +398,12 @@ Item {
                 suppressNextClick = false
                 return
             }
+            const column = root.columnAt(mouse.x)
+            if (mouse.button === Qt.LeftButton && root.isPlaying
+                    && column && column.id === "status") {
+                root.openVisualizer()
+                return
+            }
             // Star column toggles the star without touching selection:
             // rowPointer sits above the star cell, so this is the only
             // click path that reliably reaches it.
@@ -405,6 +414,11 @@ Item {
             root.pressed(root.rowIndex, mouse.modifiers, mouse.button)
         }
         onDoubleClicked: mouse => {
+            const column = root.columnAt(mouse.x)
+            if (root.isPlaying && column && column.id === "status") {
+                root.openVisualizer()
+                return
+            }
             if (root.starColumnHit(mouse.x))
                 return
             root.activated(root.rowIndex)

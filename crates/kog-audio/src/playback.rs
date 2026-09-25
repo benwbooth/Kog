@@ -291,6 +291,10 @@ impl PlaybackEngine {
         self.meter.tap.frame(self.state() == PlaybackState::Playing)
     }
 
+    pub fn visualizer_envelope(&self) -> [f32; 8] {
+        self.meter.tap.envelope(self.state() == PlaybackState::Playing)
+    }
+
     fn ensure_output(&mut self) -> Result<(), String> {
         if self.output.is_some() {
             return Ok(());
