@@ -359,18 +359,19 @@ subsong identities.
 The Syntrax adapter pins losnoco's canonical `syntrax-c` revision `1184fb9`,
 which is byte-for-byte identical to the plain-C renderer embedded by the Cog
 reference. Kog does not translate Cog's Objective-C container, metadata, or
-decoder classes. Cargo builds the upstream C files only into a separate
-`kog-syntrax-helper`; before the legacy parser runs, the helper scans the
+decoder classes. Cargo links the upstream C files and a private-stream adapter
+into Kog on desktop and mobile. Before the legacy parser runs, the adapter scans the
 packed JXS structure with checked arithmetic and limits file size, object and
 name counts, song/order ranges, synthesis indices, embedded sample ranges, and
 note/arpeggio table access. The Rust owner expands zero-based subsongs, maps
 the native title and track number, converts 44.1 kHz signed-16 stereo to the
 shared float stream, applies Cog's two-loop/eight-second-fade behavior, and
-seeks through a fresh deterministic helper. A generated two-subsong song with
+seeks through a fresh deterministic renderer. A generated two-subsong song with
 an original synthetic wavetable gates routing, metadata, audible PCM, seek,
 fade/EOS, malformed counts, and invalid subsong selection. A broad corpus and
 direct Cog PCM comparison remain. A ZIP-contained JXS fixture additionally
-gates archive identity and subsong expansion through the same helper.
+gates archive identity and subsong expansion through the same renderer. A
+separate `kog-syntrax-helper` remains a desktop protocol regression target.
 
 The Organya adapter owns the song, normalized wavetable/drum samples, and the
 self-referential `orgorg` player as one safe Rust source. It discovers either
@@ -545,9 +546,9 @@ missing dependencies, mini-library resolution, and a ZIP-contained pair. A
 broad redistributable corpus, Cog's leading-silence scan, configurable timing,
 Windows/macOS runtime gates, and direct Cog comparison remain parity work.
 
-PSF2 and miniPSF2 reuse Play! revision `04bde0d` through a second executable,
-`kog-psf2-helper`. Play!'s IOP HLE BIOS, MIPS execution, PSF filesystem, and
-SPU2 emulation stay in that process; Kog links no Play! objects. The helper
+PSF2 and miniPSF2 reuse Play! revision `04bde0d`. Linux, macOS, Android, and
+iOS link its IOP HLE BIOS, MIPS execution, PSF filesystem, and SPU2 emulator
+through a private PCM stream. Windows still uses `kog-psf2-helper`. The adapter
 prevalidates every root and dependency file, bounds aggregate filesystem data
 and compressed blocks, rejects absolute/cyclic or more-than-sixteen-level
 library chains, verifies zlib output, requires a root `psf2.irx`, and validates
@@ -566,17 +567,20 @@ leading-silence comparison, Windows/macOS runtime gates, and direct comparison
 with Cog remain.
 
 2SF and mini2SF reuse the official melonDS 1.1 core at revision `b86390e`
-through `kog-2sf-helper`. The build disables melonDS's Qt/SDL frontend, JIT,
-OpenGL renderer, and debugger; only its portable interpreter-based Nintendo DS
-core is used. psflib loads relative xSF dependencies into bounded ROM and save
-mappings. Before melonDS sees the result, the helper validates compressed SAVE
-streams and CRCs, aggregate mapping limits, the complete 4 KiB cartridge
+through an in-process renderer on Linux, macOS, Android, and iOS. The separate
+`kog-2sf-helper` remains a desktop protocol regression target; the pinned core
+does not build with MSVC, so Windows 2SF remains unsupported. The build
+disables melonDS's Qt/SDL frontend, JIT, OpenGL renderer, and debugger; only its
+portable interpreter-based Nintendo DS core is used. psflib loads relative xSF
+dependencies into bounded ROM and save mappings. Before melonDS sees the result,
+the adapter validates compressed SAVE streams and CRCs, aggregate mapping limits,
+the complete 4 KiB cartridge
 header, and both ARM9 and ARM7 ROM, RAM, entry-point, size, and alignment
 ranges. melonDS supplies generated free BIOS and firmware data, CPU, memory,
 and SPU emulation, so Kog ships no Nintendo BIOS, firmware, game program, or ROM
 asset.
 
-The helper uses the same fixed stream family as the PSF helpers, documented in
+The renderer uses the same fixed stream family as the PSF helpers, documented in
 `native/twosf-helper/PROTOCOL.md`, with xSF version `0x24` and 32,728 Hz stereo
 signed-16 PCM. Rust retains common metadata, duration/fade, EOS, and
 restart/discard seeking policy. Tests construct an original ARM7 program and

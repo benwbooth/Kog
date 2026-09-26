@@ -44,26 +44,23 @@ source trees and are summarized in `THIRD_PARTY_NOTICES.md`.
   links none of its objects. Binary distributions must install the helper
   beside Kog and provide its retained source, LGPL-2.1 and GPL-2.0 notices, and
   Kog adapter source under the helper's own terms.
-- PSF2 playback uses the BSD-licensed Play! emulator and its permissively
-  licensed dependencies in a separate `kog-psf2-helper`. That boundary keeps
-  the large emulator and legacy container parsers out of Kog's address space;
-  it is an engineering and fault-containment choice, not a license workaround.
-  The GPL-3.0-or-later Kog adapter, Play! notices, and dependency notices must
-  accompany binary distributions. Play! is not relicensed by Kog, and no root
-  license change is required to use its BSD-licensed code.
-- 2SF playback uses the official GPL-3.0-or-later melonDS core plus psflib and
-  system zlib in a separate `kog-2sf-helper`. These terms are compatible with
-  Kog's GPL-3.0-or-later license. The executable boundary keeps a full emulator
-  and untrusted xSF parsing out of Kog's address space; it is a fault-isolation
-  decision, not a license workaround. Binary distributions must install the
-  helper beside Kog and carry the complete corresponding source and upstream
+- PSF2 playback statically links the BSD-licensed Play! emulator and its
+  permissively licensed dependencies on Linux, macOS, Android, and iOS. Windows
+  still uses a separate `kog-psf2-helper`. The helper executable is also kept
+  as a protocol regression target on desktop builds. The GPL-3.0-or-later Kog
+  adapter, Play! notices, and dependency notices must accompany binary
+  distributions. Play! is not relicensed by Kog.
+- 2SF playback statically links the official GPL-3.0-or-later melonDS core,
+  psflib, and zlib on Linux, macOS, Android, and iOS. The separate
+  `kog-2sf-helper` remains a desktop regression target. The pinned melonDS
+  revision does not build with MSVC, so Windows 2SF remains unsupported. Binary
+  distributions must carry the complete corresponding source and upstream
   copyright/license notices. melonDS is not relicensed by Kog.
-- Syntrax playback uses the GPL-3.0-only `syntrax-c` renderer in a separate
-  `kog-syntrax-helper`. GPL-3.0-only is compatible with Kog's GPL-3.0-or-later
-  source, while the combined helper executable is distributed under GPL
-  version 3 only. The boundary contains faults from the legacy trusted-input
-  parser and renderer; it is not a license workaround. Binary distributions
-  must install the helper and retain the pinned source and notices.
+- Syntrax playback statically links the GPL-3.0-only `syntrax-c` renderer on
+  desktop and mobile. The separate `kog-syntrax-helper` remains a desktop
+  protocol regression target. GPL-3.0-only is compatible with distribution of
+  the combined executable under GPL version 3; binary distributions must
+  retain the pinned source and notices.
 - SNSF playback uses the pinned libsnsf9x library in the optional,
   independently identified `kog-snsf-helper` program. Its Snes9x-derived core
   permits personal/non-commercial use and adds terms incompatible with the
