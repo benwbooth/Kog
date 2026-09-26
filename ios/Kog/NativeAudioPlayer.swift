@@ -16,6 +16,29 @@ private func decoderSeek(_ handle: UnsafeMutableRawPointer, _ milliseconds: UInt
 @_silgen_name("kog_audio_close")
 private func decoderClose(_ handle: UnsafeMutableRawPointer)
 
+/// Opening some emulators takes time. This owns the Rust decoder while it
+/// crosses from a worker to the main actor before the audio engine is set up.
+final class NativeAudioSource: @unchecked Sendable {
+    private var handle: UnsafeMutableRawPointer?
+    let duration: Double
+
+    init(path: String, subsong: Int32 = -1) throws {
+        var message = [CChar](repeating: 0, count: 1024)
+        let opened = path.withCString { decoderOpen($0, subsong, &message, message.count) }
+        guard let opened else { throw KogError.response(String(cString: message)) }
+        handle = opened
+        let milliseconds = decoderDuration(opened)
+        duration = milliseconds < 0 ? 0 : Double(milliseconds) / 1000
+    }
+
+    func takeHandle() -> UnsafeMutableRawPointer? {
+        defer { handle = nil }
+        return handle
+    }
+
+    deinit { if let handle { decoderClose(handle) } }
+}
+
 /// Kog's pull decoder connected to Core Audio. All decoder calls share one queue.
 /// The output is the same 48 kHz stereo mix used by the server and Android.
 final class NativeAudioPlayer {
@@ -36,14 +59,13 @@ final class NativeAudioPlayer {
 
     static func useFor(_ track: Track) -> Bool { track.isDevice }
 
-    init(path: String, subsong: Int32 = -1, onEnd: @escaping () -> Void, onError: @escaping (String) -> Void) throws {
+    init(source: NativeAudioSource, onEnd: @escaping () -> Void, onError: @escaping (String) -> Void) throws {
         self.onEnd = onEnd; self.onError = onError
-        var message = [CChar](repeating: 0, count: 1024)
-        let opened = path.withCString { decoderOpen($0, subsong, &message, message.count) }
-        guard let opened else { throw KogError.response(String(cString: message)) }
+        guard let opened = source.takeHandle() else {
+            throw KogError.response("Audio source has already been opened")
+        }
         handle = opened
-        let milliseconds = decoderDuration(opened)
-        duration = milliseconds < 0 ? 0 : Double(milliseconds) / 1000
+        duration = source.duration
         engine.attach(node)
         engine.connect(node, to: engine.mainMixerNode, format: format)
         engine.prepare()

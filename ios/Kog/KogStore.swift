@@ -46,6 +46,8 @@ final class KogStore: ObservableObject {
     #if KOG_NATIVE_AUDIO
     private var nativePlayer: NativeAudioPlayer?
     private var nativeTimer: Timer?
+    private var nativeStartTask: Task<Void, Never>?
+    private var nativeGeneration = 0
     #endif
     private var timeObserver: Any?
     private var finishObserver: NSObjectProtocol?
@@ -203,29 +205,55 @@ final class KogStore: ObservableObject {
             player = nil
             assetLoader = nil
             #if KOG_NATIVE_AUDIO
+            nativeGeneration += 1
+            nativeStartTask?.cancel()
             nativePlayer?.stop()
             nativePlayer = nil
             if NativeAudioPlayer.useFor(track) {
-                let decoder = try NativeAudioPlayer(path: track.path,
-                    subsong: Int32(track.fragment) ?? -1, onEnd: { [weak self] in
-                    Task { @MainActor [weak self] in self?.next() }
-                }, onError: { [weak self] message in
-                    Task { @MainActor [weak self] in self?.error = message; self?.playing = false }
-                })
-                nativePlayer = decoder
-                duration = decoder.duration
-                position = 0
-                decoder.play()
-                playing = true
-                nativeTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-                    Task { @MainActor [weak self] in
-                        guard let self, let decoder = self.nativePlayer else { return }
-                        self.position = decoder.position
+                let generation = nativeGeneration
+                let path = track.path
+                let subsong = Int32(track.fragment) ?? -1
+                playing = false; position = 0; duration = 0
+                updateNowPlaying()
+                nativeStartTask = Task { [weak self] in
+                    do {
+                        let source = try await Task.detached(priority: .userInitiated) {
+                            try NativeAudioSource(path: path, subsong: subsong)
+                        }.value
+                        guard let self, !Task.isCancelled,
+                              self.nativeGeneration == generation else { return }
+                        let decoder = try NativeAudioPlayer(source: source, onEnd: { [weak self] in
+                            Task { @MainActor [weak self] in
+                                guard let self, self.nativeGeneration == generation else { return }
+                                self.next()
+                            }
+                        }, onError: { [weak self] message in
+                            Task { @MainActor [weak self] in
+                                guard let self, self.nativeGeneration == generation else { return }
+                                self.error = message; self.playing = false
+                            }
+                        })
+                        self.nativePlayer = decoder
+                        self.duration = decoder.duration
+                        decoder.play()
+                        self.playing = true
+                        self.nativeTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+                            Task { @MainActor [weak self] in
+                                guard let self, self.nativeGeneration == generation,
+                                      let decoder = self.nativePlayer else { return }
+                                self.position = decoder.position
+                                self.updateNowPlaying()
+                            }
+                        }
+                        self.loadNowPlayingArt(for: track)
                         self.updateNowPlaying()
+                    } catch {
+                        guard let self, !Task.isCancelled,
+                              self.nativeGeneration == generation else { return }
+                        self.playing = false
+                        self.report(error)
                     }
                 }
-                loadNowPlayingArt(for: track)
-                updateNowPlaying()
                 return
             }
             #endif
@@ -267,7 +295,7 @@ final class KogStore: ObservableObject {
             position = 0
             loadNowPlayingArt(for: track)
             updateNowPlaying()
-        } catch { report(error) }
+        } catch { playing = false; report(error) }
     }
 
     private func removePlayerObservers() {
@@ -300,6 +328,10 @@ final class KogStore: ObservableObject {
     func stop() {
         player?.pause()
         #if KOG_NATIVE_AUDIO
+        if nativePlayer == nil {
+            nativeGeneration += 1
+            nativeStartTask?.cancel()
+        }
         nativePlayer?.pause()
         #endif
         playing = false; seek(0); updateNowPlaying()
@@ -339,6 +371,7 @@ final class KogStore: ObservableObject {
         if queue.isEmpty {
             removePlayerObservers(); player?.pause(); player = nil; assetLoader = nil
             #if KOG_NATIVE_AUDIO
+            nativeGeneration += 1; nativeStartTask?.cancel()
             nativePlayer?.stop(); nativePlayer = nil
             #endif
             currentIndex = -1; playing = false; position = 0; duration = 0
@@ -361,6 +394,7 @@ final class KogStore: ObservableObject {
     func clearQueue() {
         removePlayerObservers(); player?.pause(); player = nil; assetLoader = nil
         #if KOG_NATIVE_AUDIO
+        nativeGeneration += 1; nativeStartTask?.cancel()
         nativePlayer?.stop(); nativePlayer = nil
         #endif
         queue = []; currentIndex = -1; playing = false; position = 0; duration = 0
