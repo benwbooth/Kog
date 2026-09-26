@@ -37,6 +37,7 @@ fn watch_native(relative: &str) {
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=../../native/embedded_stream.h");
     build_spessasynth_midi();
     build_mt32emu();
     build_game_music_emu();
@@ -53,16 +54,13 @@ fn main() {
         for name in ["kog_sc55_embedded", "kog_sc55_core"] {
             println!("cargo:rustc-link-lib=static={name}");
         }
-        // These three upstream licenses still require separate helpers.
-        for name in ["SFM", "PSF", "SNSF"] {
-            println!("cargo:rustc-env=KOG_BUILD_{name}_HELPER=unsupported-on-ios");
-        }
+        link_sfm_archives(Path::new(&native_libs));
+        link_snsf_archives(Path::new(&native_libs));
     } else {
-        build_sfm_helper();
-        build_psf_helper();
+        build_sfm_embedded();
         build_psf2_helper();
         build_twosf_helper();
-        build_snsf_helper();
+        build_snsf_embedded();
         build_syntrax_helper();
         if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("android") {
             let native_libs = std::env::var("KOG_ANDROID_NATIVE_LIB_DIR")
@@ -364,44 +362,21 @@ fn build_game_music_emu() {
     watch_native("../../native/game-music-emu");
 }
 
-fn build_sfm_helper() {
-    let helper = Path::new("../../native/sfm-helper");
-    let source = Path::new("../../native/cog-gme-sfm");
-    if !helper.join("CMakeLists.txt").is_file() || !source.join("gme/Spc_Sfm.cpp").is_file() {
-        panic!("Cog GME SFM helper sources are missing from the Kog checkout");
-    }
-
-    let source = plain_absolute(
-        source
-            .canonicalize()
-            .expect("canonicalize the Cog GME SFM source directory"),
-    );
-    let output_directory =
-        PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR")).join("sfm-helper");
-    let output = cmake::Config::new(helper)
-        .out_dir(output_directory)
+fn build_sfm_embedded() {
+    let output = cmake::Config::new("../../native/sfm-embedded")
+        .out_dir(PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("sfm-embedded"))
         .profile("Release")
-        .define("COG_GME_SFM_SOURCE", &source)
         .build();
-    let executable_name = if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
-        "kog-sfm-helper.exe"
-    } else {
-        "kog-sfm-helper"
-    };
-    let executable = output.join("bin").join(executable_name);
-    if !executable.is_file() {
-        panic!(
-            "Cog GME SFM helper build did not install {}",
-            executable.display()
-        );
-    }
-
-    println!(
-        "cargo:rustc-env=KOG_BUILD_SFM_HELPER={}",
-        executable.display()
-    );
-    watch_native("../../native/sfm-helper");
+    link_sfm_archives(&output.join("lib"));
+    watch_native("../../native/sfm-embedded");
     watch_native("../../native/cog-gme-sfm");
+}
+
+fn link_sfm_archives(root: &Path) {
+    println!("cargo:rustc-link-search=native={}", root.display());
+    for name in ["kog_sfm_embedded", "kog_sfm_core"] {
+        println!("cargo:rustc-link-lib=static={name}");
+    }
 }
 
 fn build_libvgm() -> std::path::PathBuf {
@@ -1399,45 +1374,6 @@ fn build_ncsf(mgba_output: &Path) {
     println!("cargo:rerun-if-changed=../../native/usf_bridge.h");
 }
 
-fn build_psf_helper() {
-    let helper = Path::new("../../native/psf-helper");
-    let libupse = Path::new("../../native/libupse");
-    if !helper.join("CMakeLists.txt").is_file() || !libupse.join("upse.h").is_file() {
-        panic!(
-            "libupse PSF helper sources are missing; run `git submodule update --init --recursive`"
-        );
-    }
-
-    let libupse = plain_absolute(
-        libupse
-            .canonicalize()
-            .expect("canonicalize the libupse source directory"),
-    );
-    let output = cmake::Config::new(helper)
-        .profile("Release")
-        .define("UPSE_SOURCE", &libupse)
-        .build();
-    let executable_name = if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
-        "kog-psf-helper.exe"
-    } else {
-        "kog-psf-helper"
-    };
-    let executable = output.join("bin").join(executable_name);
-    if !executable.is_file() {
-        panic!(
-            "libupse PSF helper build did not install {}",
-            executable.display()
-        );
-    }
-
-    println!(
-        "cargo:rustc-env=KOG_BUILD_PSF_HELPER={}",
-        executable.display()
-    );
-    watch_native("../../native/psf-helper");
-    watch_native("../../native/libupse");
-}
-
 fn build_psf2_helper() {
     let helper = Path::new("../../native/psf2-helper");
     let play = Path::new("../../native/play");
@@ -1695,56 +1631,25 @@ fn build_twosf_helper() {
     watch_native("../../native/melonds");
 }
 
-fn build_snsf_helper() {
-    let helper = Path::new("../../native/snsf-helper");
-    let libsnsf9x = Path::new("../../native/libsnsf9x");
-    let psflib = Path::new("../../native/psflib");
-    if !helper.join("CMakeLists.txt").is_file()
-        || !libsnsf9x.join("snsf9x.h").is_file()
-        || !psflib.join("psflib.h").is_file()
-    {
-        panic!(
-            "libsnsf9x SNSF helper sources are missing; run `git submodule update --init --recursive`"
-        );
-    }
-
-    let libsnsf9x = plain_absolute(
-        libsnsf9x
-            .canonicalize()
-            .expect("canonicalize the libsnsf9x source directory"),
-    );
-    let psflib = plain_absolute(
-        psflib
-            .canonicalize()
-            .expect("canonicalize the psflib source directory"),
-    );
-    let output_directory =
-        PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR")).join("snsf-helper");
-    let output = cmake::Config::new(helper)
-        .out_dir(output_directory)
+fn build_snsf_embedded() {
+    let psflib = plain_absolute(Path::new("../../native/psflib").canonicalize().unwrap());
+    let output = cmake::Config::new("../../native/snsf-ares")
+        .out_dir(PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("snsf-ares"))
         .profile("Release")
-        .define("LIBSNSF9X_SOURCE", &libsnsf9x)
-        .define("PSFLIB_SOURCE", &psflib)
+        .define("PSFLIB_SOURCE", psflib)
         .build();
-    let executable_name = if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
-        "kog-snsf-helper.exe"
-    } else {
-        "kog-snsf-helper"
-    };
-    let executable = output.join("bin").join(executable_name);
-    if !executable.is_file() {
-        panic!(
-            "libsnsf9x SNSF helper build did not install {}",
-            executable.display()
-        );
-    }
+    link_snsf_archives(&output.join("lib"));
+    watch_native("../../native/snsf-ares");
+    watch_native("../../native/ares-snsf");
+    watch_native("../../native/psflib");
+}
 
-    println!(
-        "cargo:rustc-env=KOG_BUILD_SNSF_HELPER={}",
-        executable.display()
-    );
-    watch_native("../../native/snsf-helper");
-    watch_native("../../native/libsnsf9x");
+fn link_snsf_archives(root: &Path) {
+    println!("cargo:rustc-link-search=native={}", root.display());
+    for name in ["kog_snsf_embedded", "kog_ares_snsf", "kog_snsf_psflib"] {
+        println!("cargo:rustc-link-lib=static={name}");
+    }
+    println!("cargo:rustc-link-lib=z");
 }
 
 fn build_syntrax_helper() {

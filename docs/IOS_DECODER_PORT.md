@@ -1,7 +1,10 @@
 # iOS decoder replacement investigation
 
-Investigated with GPT-6 Astra on 2026-09-26. Status: source review and a Linux
-SFM CPU prototype; the replacement decoders are not yet implemented in Kog.
+Historical investigation with GPT-6 Astra on 2026-09-26, before implementation.
+The replacement paths are now implemented; see [current implementation and
+validation](DECODER_LIBRARIES.md). The sections below preserve the evidence,
+prototype results and limitations known at investigation time. References to
+"current" code below describe that pre-implementation snapshot.
 
 ## Recommended direction
 

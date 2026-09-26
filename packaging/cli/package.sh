@@ -19,33 +19,11 @@ mkdir -p "$dist"
 stage="$(mktemp -d "$dist/.stage.XXXXXX")"
 trap 'rm -rf "$stage"' EXIT
 
-helpers=(
-  kog-sfm-helper kog-psf-helper
-  kog-snsf-helper
-)
 for target in tui server; do
   bundle="Kog-$version-$platform-$architecture-$target"
   directory="$stage/$bundle"
   mkdir -p "$directory"
   install -m755 "$root/target/release/kog-$target" "$directory/kog-$target"
-  for helper in "${helpers[@]}"; do
-    helper_path="$(python3 - "$root/target/release/build" "$helper" <<'PY'
-from pathlib import Path
-import sys
-
-build = Path(sys.argv[1])
-name = sys.argv[2]
-matches = [path for path in build.glob(f"kog-audio-*/out/**/bin/{name}") if path.is_file()]
-if matches:
-    print(max(matches, key=lambda path: path.stat().st_mtime))
-PY
-)"
-    if [[ -z "$helper_path" ]]; then
-      echo "missing release helper: $helper" >&2
-      exit 1
-    fi
-    install -m755 "$helper_path" "$directory/$helper"
-  done
 
   if [[ "$platform" == linux ]]; then
     python3 "$root/packaging/cli/bundle-linux.py" "$directory"
@@ -57,8 +35,7 @@ PY
 Kog $target for $platform $architecture
 
 Run ./kog-$target from this directory. Encoding uses linked FFmpeg libraries.
-Optional Kog decoder helpers are included beside it; non-system shared
-libraries are in ./lib.
+Decoders run in-process. Non-system shared libraries are in ./lib.
 Keep the whole directory together when moving it to another machine.
 
 Linux still needs a compatible glibc, the kernel, and an audio device for TUI

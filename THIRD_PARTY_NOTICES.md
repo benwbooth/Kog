@@ -172,23 +172,20 @@ upstream project. It is distributed under the GNU Lesser General Public
 License, version 2.1. The complete upstream source and license are retained in
 the submodule, and a copy of the license is also in `LICENSES/LGPL-2.1.txt`.
 
-## Cog GME SFM helper
+## Cog SFM, higan SPC700 and Kog's embedded renderer
 
-The `native/cog-gme-sfm` directory is the minimal portable SFM source subset
-copied from `Frameworks/GME` in
-[Cog](https://github.com/losnoco/Cog) commit
-`c17be85654a64170c86bb8bbb4b59fd7b6795722`. Kog builds it only into the
-separately identified `kog-sfm-helper` process and communicates through a
-versioned PCM stream; none of this GPL-2.0-only code is linked into Kog's
-GPL-3.0-or-later executable.
-
-The GME SFM/BML code is Copyright 2013-2026 Christopher Snowhill. The SPC DSP
-code is Copyright 2007 Shay Green. Those files and the supporting GME files
-are distributed under LGPL-2.1-or-later terms; the imported higan SPC700/SMP
-integration and Kog helper adapter are distributed under GPL-2.0-only terms.
-The exact source, provenance record, and license texts are retained in
-`native/cog-gme-sfm`. The generated SFM regression state contains original
-Kog test code and synthetic BRR data, not third-party music or game data.
+`native/cog-gme-sfm` retains the LGPL-2.1-or-later GME SFM/BML/DSP
+subset from [Cog](https://github.com/losnoco/Cog) commit
+`c17be85654a64170c86bb8bbb4b59fd7b6795722`. The SFM/BML implementation
+is Copyright 2013-2026 Christopher Snowhill; SPC DSP is Copyright 2007
+Shay Green. The former GPL2-only CPU/SMP code is replaced with
+[higan v095](https://github.com/higan-emu/higan/tree/b0e862613b3c6cfaf3d8088403e144d5da98cd43),
+whose release declares GPLv3. Kog's adaptations and the exact donor paths
+are recorded in `native/cog-gme-sfm/PROVENANCE.md`; GPLv3 and LGPL2.1
+texts are retained there. `native/sfm-embedded` is a newly written
+GPL-3.0-or-later renderer, linked into the shared backend. The old
+GPL2-only `native/sfm-helper` wrapper is historical source, not part
+of the build or binary packages. No third-party capture or music is bundled.
 
 ## libvgm
 
@@ -419,37 +416,20 @@ Kog's tests generate a sparse Project64 save state containing an original
 MIPS program and synthetic stereo waveform. They include no Nintendo firmware,
 ROM image, proprietary program, game data, or recorded audio.
 
-## libupse and kog-psf-helper
+## Historical libupse adapter
 
-The `native/libupse` submodule is kode54's cross-platform
-[libupse](https://github.com/kode54/libupse) repository at commit
-`e3f1192e55e3eb5e1a22b84ed2c4f5a0e0786d85`. It supplies PlayStation PSF and
-miniPSF emulation with a high-level BIOS implementation, so Kog does not copy
-Cog's Objective-C decoder or its embedded Sony BIOS data.
-
-libupse's source headers identify the project under GNU General Public License
-version 2. Kog conservatively treats the revision as GPL-2.0-only. It is not
-linked into Kog's GPL-3.0-or-later executable: the build creates the separate
-`kog-psf-helper` program, combining libupse only with the adapter sources under
-`native/psf-helper`, which are also GPL-2.0-only. A copy of the license is in
-`LICENSES/GPL-2.0.txt`; the complete corresponding libupse source and its
-individual notices remain in the pinned submodule. Binary distributions must
-install the helper beside Kog and provide its corresponding source and notices
-under those terms.
-
-The Rust application and helper communicate through the independently
-documented metadata/PCM stream in `native/psf-helper/PROTOCOL.md`. The helper
-prevalidates bounded xSF structure and contains legacy-core process failures;
-it is not an operating-system sandbox. Kog's tests generate original MIPS code,
-SPU register writes, an ADPCM waveform, and PSF wrappers. They include no Sony
-firmware, game program, game data, or recorded audio.
+`native/libupse` at `e3f1192e55e3eb5e1a22b84ed2c4f5a0e0786d85` and
+`native/psf-helper` are retained as historical comparison sources under
+their GPL-2.0-only terms, with the license in `LICENSES/GPL-2.0.txt`.
+They are no longer built, linked, or included in binary packages.
+PSF1 playback now uses the Play! HLE libraries and Kog interpreter below.
 
 ## Play! and kog-psf2-helper
 
 The `native/play` submodule is Jean-Philip Desjardins' cross-platform
 [Play!](https://github.com/jpd002/Play-) emulator at commit
 `04bde0df87ee7c0e2f0151b51bb2cc22c88541da`. Kog reuses Play!'s PSF player,
-IOP high-level BIOS, CPU, and SPU2 implementation for PSF2 and miniPSF2 instead
+PS1/IOP high-level BIOS, SPU and SPU2 implementation for PSF1/PSF2 and their mini variants instead
 of translating Cog's Objective-C plugin or redistributing Sony firmware.
 
 Play!, Framework (`587f278917acc0026bf5fc34b39f995fc26bd015`), and CodeGen
@@ -464,18 +444,16 @@ bundled dependency notices are under `LICENSES/Play-libchdr-BSD.txt`,
 `LICENSES/Play-xxHash-BSD.txt`, `LICENSES/Play-zstd-BSD.txt`, and
 `LICENSES/Play-LZMA-public-domain.txt` so release bundles carry them.
 
-Kog's GPL-3.0-or-later adapter under `native/psf2-helper` and Play! are also
-built as static libraries for the shared Rust audio backend on Unix and iOS.
-The `kog-psf2-helper` executable remains available for protocol regression
-checks and for Windows. Both paths use the versioned metadata/PCM protocol in
-`native/psf2-helper/PROTOCOL.md` and validate PSF2 containers, dependency
-chains, filesystem blocks, and IRX/ELF bounds before Play! sees them. The
-in-process path does not provide fault isolation.
-
-Tests construct an original MIPS IOP module that writes a synthetic ADPCM
-waveform to emulated SPU2 registers, then wrap it in generated PSF2/miniPSF2
-filesystems. They contain no Sony BIOS, firmware, game code, game data, or
-recorded audio.
+Kog's GPL-3.0-or-later adapter and integer/CP0 interpreter under
+`native/psf2-helper` are static libraries used by every frontend. Generated
+source patches select the interpreter before CPU construction and adapt HLE
+trampolines to architectural load delays. The submodule is unchanged. This
+path does not execute generated native code or need a Sony BIOS. The optional
+standalone executable remains a protocol regression tool. Containers,
+dependency chains, PS-X EXE uploads, PSF2 filesystem blocks and IRX/ELF
+bounds are validated before emulation. In-process decoding does not provide
+process fault isolation. Fixtures generate original MIPS/SPU programs and
+ADPCM data; no Sony firmware, music or game data is bundled.
 
 ## melonDS and kog-2sf-helper
 
@@ -504,42 +482,24 @@ synthetic PCM waveform, minimal Nintendo DS ROM, and 2SF wrappers. They include
 no Nintendo BIOS, firmware, copyrighted game program, game data, recorded
 audio, or commercial ROM image.
 
-## libsnsf9x and kog-snsf-helper
+## ares SNSF renderer and historical Snes9x adapter
 
-The `native/libsnsf9x` submodule is Deewiant's dedicated Linux
-[libsnsf9x](https://github.com/Deewiant/libsnsf9x) library at commit
-`e53bff56fbb7c29d5222c60b81a54b762ad9cec7`. It is a stripped and
-Linux-portable SNSF player based on snsf9x 0.04.10 and Snes9x 1.53. Kog calls
-its published `IXSFDRV` C interface from the separately identified optional
-`kog-snsf-helper`; no libsnsf9x object is linked into the main Kog executable.
-The CMake build retains the pinned sources unchanged and creates one generated
-copy of `xsfc/xsfdrv.c` whose `const LPVOID` parameter is spelled
-`const void *`, fixing a current-compiler function-pointer diagnostic without
-changing behavior.
+`native/ares-snsf` is a headless subset of
+[ares](https://github.com/ares-emulator/ares) revision
+`4cb8d92b441557cb6bcaf133c4cbc7f6819b1122`. Its ISC notice and component
+notices are retained in that directory and copied into `LICENSES` for binary
+packages. Kog builds the Super Famicom CPU/SMP/DSP/PPU and cartridge support,
+nall and statically compiled libco coroutine support. Thread-local adaptations
+isolate simultaneous player instances. The new GPL-3.0-or-later adapter in
+`native/snsf-ares` uses MIT psflib and zlib for bounded container/library
+loading, then supplies ROM/SRAM directly to ares. No Snes9x objects or adapter
+code are linked. External enhancement-chip firmware is not redistributed.
 
-The Snes9x-derived source is Copyright the Snes9x contributors identified in
-its retained headers and permits source and binary use for non-commercial
-purposes while describing Snes9x as freeware for personal use. Its complete
-notice remains at
-`native/libsnsf9x/snsf9x/snes9x/docs/snes9x-license.txt` and is copied to
-`LICENSES/Snes9x.txt`. The S-SMP/S-DSP APU
-source additionally retains GNU Lesser General Public License version 2.1
-terms at `native/libsnsf9x/snsf9x/snes9x/apu/license.txt`; Kog's copy of that
-license is in `LICENSES/LGPL-2.1.txt`. The upstream repository has no single
-top-level license declaration, so Kog conservatively distributes the entire
-optional helper only under the Snes9x non-commercial terms plus every retained
-component notice. The adapter sources under `native/snsf-helper` are marked
-`LicenseRef-Snes9x` for that combined program. Kog's non-commercial project
-intent does not relicense these components or make them GPL-compatible.
-
-Before libsnsf9x runs, the MIT-licensed psflib resolves and verifies a bounded
-SNSF dependency tree. Kog assembles the validated ROM/SRAM state into one
-dependency-free SNSF image, so libsnsf9x's older file loader never receives
-user-controlled companion paths. The helper uses the metadata/PCM protocol in
-`native/snsf-helper/PROTOCOL.md`; its process boundary is fault and license
-isolation, not an operating-system sandbox. Tests generate original 65C816 and
-SPC700 programs plus a synthetic BRR waveform. They include no Nintendo
-firmware, game program, commercial ROM, game data, or recorded audio.
+The old `native/libsnsf9x` submodule at
+`e53bff56fbb7c29d5222c60b81a54b762ad9cec7` and `native/snsf-helper`
+remain historical comparison sources with their original Snes9x
+personal/non-commercial and LGPL2.1 notices. They are no longer built or
+packaged. Their retained source grants are not changed by this migration.
 
 ## SSEQPlayer and psflib
 

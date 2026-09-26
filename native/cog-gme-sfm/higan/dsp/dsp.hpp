@@ -1,39 +1,26 @@
-#ifndef _higan_dsp_h_
-#define _higan_dsp_h_
-
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Kog's per-stream bridge to the LGPL SPC_DSP snapshot implementation.
+#pragma once
 #include "SPC_DSP.h"
-
-#include "../../gme/blargg_common.h"
-
+#include <cstdint>
 namespace SuperFamicom {
-
+struct SMP;
 struct DSP {
-  int64_t clock;
-  unsigned long removed_samples;
-
-  inline void step(uint64_t clocks);
-
-  bool mute();
-  uint8_t read(uint8_t addr);
-  void write(uint8_t addr, uint8_t data);
-
+  explicit DSP(SMP& owner);
+  int64_t clock = 0;
+  SPC_DSP spc_dsp;
   void enter();
   void power();
   void reset();
-
-  void channel_enable(unsigned channel, bool enable);
-  void disable_surround(bool disable = true);
-
-  DSP(struct SMP&);
-
-  SPC_DSP spc_dsp;
-
+  bool mute();
+  uint8_t read(uint8_t address);
+  void write(uint8_t address, uint8_t value);
+  void channel_enable(unsigned channel, bool enabled);
+  void disable_surround(bool disabled = true);
 private:
-  struct SMP & smp;
-  int16_t samplebuffer[8192];
-  bool channel_enabled[8];
+  SMP& owner;
+  int16_t buffer[8192] {};
+  unsigned consumed = 0;
+  unsigned mute_mask = 0;
 };
-
-};
-
-#endif
+}

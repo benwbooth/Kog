@@ -177,11 +177,6 @@
                   cp -r ${kogWeb}/. crates/kog-server/web/
                 '';
                 postInstall = ''
-                  for helper in kog-sfm-helper kog-psf-helper kog-snsf-helper; do
-                    helperPath=$(find target -type f -path "*/bin/$helper" -print -quit)
-                    test -n "$helperPath" || { echo "Missing decoder helper: $helper" >&2; exit 1; }
-                    install -m755 "$helperPath" "$out/bin/$helper"
-                  done
                   install -Dm644 packaging/linux/org.kog.player.desktop "$out/share/applications/org.kog.player.desktop"
                   install -Dm644 qml/icons/kog.svg "$out/share/icons/hicolor/scalable/apps/org.kog.player.svg"
                   install -Dm644 packaging/linux/org.kog.player.metainfo.xml "$out/share/metainfo/org.kog.player.metainfo.xml"

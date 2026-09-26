@@ -305,16 +305,12 @@ unreadable companions remain non-fatal but are surfaced as warnings. The
 current fixed defaults match Cog: 150 seconds when no duration exists, two
 loops when loop metadata exists, and an eight-second fade when none is given.
 
-Cog's SFM extension is absent from upstream libGME 0.6.5, so `cog-gme-sfm`
-uses the minimal portable `Spc_Sfm`, BML, SPC700, SMP, and DSP source subset
-from Cog commit `c17be856`. Its higan integration is GPL-2.0-only and therefore
-builds only into `kog-sfm-helper`, never into the main GPL-3.0-or-later Kog
-executable. The helper validates the SFM container, metadata sizes, state
-offsets, loop-log bounds, DSP indices, and duration before invoking the legacy
-core. It returns native tags and 32 kHz signed-16 stereo PCM through a bounded,
-versioned stream. Rust converts that stream to float PCM and seeks by restarting
-the helper at a requested frame. Cargo builds and locates the helper, so users
-do not install or launch an external renderer.
+SFM uses the LGPL Cog snapshot/BML/DSP code plus a GPLv3 higan v095
+SPC700/SMP rebase. The new `native/sfm-embedded` adapter validates metadata,
+state indices and durations, then produces 32 kHz stereo PCM on a worker
+thread. All emulator state is per stream. SLEEP/STOP and TEST clock stop
+continue DSP rendering and cannot trap a worker in an infinite CPU loop.
+GME symbols are prefixed to keep this ABI separate from ordinary libgme.
 
 The libvgm adapter registers its VGM, S98, DRO, and GYM player engines and owns
 the native player plus input memory for the lifetime of one Rust `Source`. It
@@ -513,37 +509,14 @@ miniUSF pair without Nintendo firmware, ROM data, or game code. Cog's initial
 leading-silence stripping, a broad redistributable corpus, configurable
 timing, and direct Cog behavior comparison remain parity work.
 
-The PSF adapter pins kode54's libupse revision `e3f1192`. Kog reuses that
-portable PS1/PS2 emulator rather than translating Cog's Objective-C Highly
-Experimental plugin, and it does not copy Cog's embedded BIOS data. The
-libupse source is treated conservatively as GPL-2.0-only, so it is compiled
-only into the separately licensed `kog-psf-helper` executable; no libupse
-object is linked into the GPL-3.0-or-later Kog process. The parent and helper
-exchange a fixed little-endian header followed by signed-16 stereo PCM, as
-specified in `native/psf-helper/PROTOCOL.md`.
-
-Before libupse runs, the helper bounds each PSF and dependency to 256 MiB,
-checks section arithmetic and compressed CRCs, caps decompression at 32 MiB,
-requires PS-X executable uploads to fit aligned within 2 MiB of emulated RAM,
-bounds libupse's fixed tag fields, limits dependency nesting to sixteen, and
-rejects missing or empty library chains. `_lib9` is rejected because the pinned
-libupse revision advances beyond its auxiliary-library array after loading it;
-blank tag lines are also rejected because that parser does not reset its fixed
-name buffer for them. The helper process also contains a
-legacy-core crash to that child process, although it is a process boundary and
-not an operating-system sandbox. Rust validates the protocol header, converts
-44.1 kHz stereo PCM to float, parses timing independently of libupse's legacy
-fractional-time parser, and applies PSF `length`/`fade` or Cog's 150-second plus
-eight-second defaults exactly once. Seeking replaces the child and has the new
-emulator instance discard to the exact requested frame, including backward
-seeks.
-
-Tests generate an original MIPS program that writes a synthetic ADPCM waveform
-to the emulated SPU and wrap it as PSF/miniPSF. They gate routing, metadata,
-audible PCM, exact seek, fade/EOS, default timing, malformed executable bounds,
-missing dependencies, mini-library resolution, and a ZIP-contained pair. A
-broad redistributable corpus, Cog's leading-silence scan, configurable timing,
-Windows/macOS runtime gates, and direct Cog comparison remain parity work.
+PSF1 and miniPSF use Play!'s HLE PS1 BIOS and SPU through the same embedded
+adapter as PSF2. A bounded loader resolves `_lib` and numbered overlays,
+checks CRCs and decompression, and validates PS-X EXE ranges before uploading
+to emulated RAM. No Sony BIOS is included. Kog's R3000/IOP interpreter
+executes integer and CP0 instructions with branch/load delays, instead of
+Play!'s native-code generator. Generated HLE source patches schedule the
+loads that the upstream JIT historically made immediately visible. The
+original Play! checkout remains unchanged.
 
 PSF2 and miniPSF2 reuse Play! revision `04bde0d`. Linux, macOS, Windows,
 Android, and iOS link its IOP HLE BIOS, MIPS execution, PSF filesystem, and
@@ -556,7 +529,7 @@ its little-endian MIPS ELF tables, single load segment, IOP module section, and
 emulated-RAM range. The fixed stream protocol is documented separately in
 `native/psf2-helper/PROTOCOL.md`.
 
-Rust dispatches PSF version 1 to libupse and version 2 to Play!, while exposing
+Rust dispatches both PSF versions 1 and 2 to the interpreter/Play! libraries, while exposing
 one `psf-family` registry backend. It owns common metadata, exact duration and
 fade policy, EOS, and restart/discard seeking. Tests generate an original IOP
 module that drives an SPU2 ADPCM loop and wrap it as PSF2/miniPSF2. They gate
@@ -592,39 +565,23 @@ redistributable corpus, fractional sample-rate and leading-silence comparison,
 performance measurement, Windows/macOS runtime gates, and direct comparison
 with Cog remain.
 
-SNSF and miniSNSF reuse libsnsf9x revision `e53bff5` through the optional
-`kog-snsf-helper`. Kog does not copy or translate Cog's Objective-C++ decoder.
-The helper statically builds the upstream library source list and calls its
-published `IXSFDRV` C interface. One generated compatibility copy changes the
-old framework's `const LPVOID` spelling to `const void *` for current C
-compilers; the pinned submodule remains immutable.
+SNSF and miniSNSF use a headless ares Super Famicom core at `4cb8d92`.
+The new `native/snsf-ares` adapter validates PSF containers and ROM/SRAM
+mapping bounds, resolves relative libraries with psflib, and supplies the
+merged cartridge to ares. CPU/APU/PPU timing continues even though no video
+is displayed. Thread-local core and coroutine state isolate simultaneous
+renderers. Firmware-dependent cartridge families fail explicitly instead
+of silently playing incorrectly. No external enhancement-chip firmware is
+included.
 
-Untrusted xSF parsing is kept out of libsnsf9x's older dependency loader.
-Instead, psflib verifies compressed CRCs and bounded nesting while helper file
-callbacks canonicalize every path under the root file's directory tree and cap
-the unique file set. The adapter merges checked relative ROM mappings up to the
-Snes9x core's 8 MiB maximum, maps at most 128 KiB of SRAM, validates tag and
-duration bounds, and creates one dependency-free SNSF image. Only that
-sanitized image enters libsnsf9x. The helper process is both a legacy-core
-fault boundary and a license boundary; it is not an operating-system sandbox.
-
-The common helper protocol identifies xSF version `0x23` and streams 32 kHz
-stereo signed-16 PCM. Gaussian SPC interpolation matches Cog's setting, while
-libsnsf9x's Hermite rate converter retains its native playback path. Rust owns
-metadata, tagged/default duration and fade, exact EOS, and restart/discard
-seeking. Tests generate an original LoROM whose 65C816 code uploads an original
-SPC700 program through the SNES IPL protocol; that program installs a synthetic
-BRR loop and configures DSP voice zero. Full, mini, and ZIP-contained fixtures
-gate routing, metadata precedence, audible playback after seek, timing/EOS,
-malformed mappings, missing/cyclic dependencies, and companion path
-containment without Nintendo firmware, game code, ROMs, or recorded audio.
-
-The helper retains Snes9x's personal/non-commercial terms and its APU's
-LGPL-2.1 terms. Its Kog adapter is identified as `LicenseRef-Snes9x`, rather
-than GPL, and no libsnsf9x object is linked into Kog's GPL-3.0-or-later
-executable. A broad independently redistributable corpus, newer-core review,
-leading-silence comparison, configurable timing, Windows/macOS runtime gates,
-and direct Cog comparison remain.
+These renderers share `kog-audio`'s metadata, tagged/default timing, fade,
+EOS and restart/discard seeking rules. `EmbeddedHelper` owns private PCM
+socket/pipe transports and cancellation flags; native workers can observe
+cancellation during seeks before they produce PCM. Qt, TUI, server/web,
+Android and iOS use these same implementations with separate queues. The
+old SFM/libupse/Snes9x executables are no longer runtime dependencies.
+See [decoder implementation and validation](DECODER_LIBRARIES.md) for the
+platform and corpus limits.
 
 ## Decoder contract
 

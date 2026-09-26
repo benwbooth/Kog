@@ -46,16 +46,15 @@ The app does not need a server to play imported local files.
 
 ## Current format limits
 
-The local decoder uses the same `kog-audio` registry as desktop Kog. Syntrax,
-PSF2, 2SF, and Nuked SC-55 use static renderer libraries through the shared
-Rust backend. PSF2's current Play! CPU engine still generates executable code
-at runtime, and the iOS build does not enable its ahead-of-time cache. Linking
-the library does not establish playback on a normal iPhone: a CPU interpreter
-and a device test without a debugger are still needed for arbitrary imported
-PSF2 files. SFM, PSF1, and SNSF still use separate desktop helpers, so their
-local iOS playback remains unavailable. See the
-[decoder investigation](../docs/IOS_DECODER_PORT.md) for replacement candidates
-and the remaining implementation work.
+The local decoder uses the same `kog-audio` registry as desktop Kog. SFM,
+PSF1/PSF2, SNSF, 2SF, Syntrax and Nuked SC-55 are embedded native libraries.
+PSF1/PSF2 use an interpreter and HLE BIOS, without JIT privileges, a fixed AOT
+cache, or Sony firmware. SNSF uses ares; external coprocessor firmware is not
+bundled, and firmware-dependent boards fail explicitly. The build scripts
+link these same implementations on device and simulator. Linux playback
+verification does not establish iPhone runtime behavior; a signed app launched
+without the debugger must still be tested on the device. See
+[decoder implementation and validation](../docs/DECODER_LIBRARIES.md).
 The MIDI settings expose the server's four synths separately from device-local
 MIDI. Device-local MIDI can use OPL3, an imported SF2 SoundFont, imported
 SC-55 ROMs, or imported MT-32 ROMs. The SC-55 renderer runs on the iPhone

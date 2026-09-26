@@ -112,7 +112,21 @@ cmake -S "$repo/native/sc55-helper" -B "$build/sc55-build" -G Ninja \
 cmake --build "$build/sc55-build" --parallel "$jobs"
 cmake --install "$build/sc55-build"
 
-# PSF2's permissively licensed Play! core is linked into every supported
+# SFM and SNSF use the same embedded libraries as desktop/Android.
+cmake -S "$repo/native/sfm-embedded" -B "$build/sfm-build" -G Ninja \
+  -DCMAKE_TOOLCHAIN_FILE="$build/ios.toolchain.cmake" \
+  -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$prefix"
+cmake --build "$build/sfm-build" --parallel "$jobs"
+cmake --install "$build/sfm-build"
+
+cmake -S "$repo/native/snsf-ares" -B "$build/snsf-build" -G Ninja \
+  -DCMAKE_TOOLCHAIN_FILE="$build/ios.toolchain.cmake" \
+  -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$prefix" \
+  -DPSFLIB_SOURCE="$repo/native/psflib"
+cmake --build "$build/snsf-build" --target kog_snsf_embedded --parallel "$jobs"
+cmake --install "$build/snsf-build"
+
+# PSF1/PSF2's interpreter and Play! HLE core is linked into every supported
 # in-process target; package its transitive static archives for Rust and Swift.
 cmake -S "$repo/native/psf2-helper" -B "$build/psf2-build" -G Ninja \
   -DCMAKE_TOOLCHAIN_FILE="$build/ios.toolchain.cmake" \

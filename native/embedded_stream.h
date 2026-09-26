@@ -6,6 +6,28 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <stdbool.h>
+
+#ifdef KOG_EMBEDDED
+#ifdef __cplusplus
+extern "C" {
+#endif
+bool kog_decoder_cancelled(void);
+#ifdef __cplusplus
+}
+#endif
+#endif
+
+// Also works during a long seek, before the next PCM write can return EPIPE.
+static inline bool kog_embedded_stream_cancelled(FILE* output)
+{
+    (void)output;
+#ifdef KOG_EMBEDDED
+    return kog_decoder_cancelled();
+#else
+    return false;
+#endif
+}
 
 #ifdef _WIN32
 #include <fcntl.h>

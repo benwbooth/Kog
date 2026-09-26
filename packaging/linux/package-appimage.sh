@@ -20,22 +20,6 @@ install -Dm644 "$root_dir/packaging/linux/org.kog.player.metainfo.xml" \
 desktop_icon="$tool_dir/org.kog.player.svg"
 install -m644 "$root_dir/qml/icons/kog.svg" "$desktop_icon"
 
-helpers=(
-  kog-sfm-helper kog-psf-helper
-  kog-snsf-helper
-)
-helper_args=()
-for helper in "${helpers[@]}"; do
-  helper_path="$(find "$root_dir/target/release/build" -type f \
-    -path "*/bin/$helper" -print -quit)"
-  if [[ -z "$helper_path" ]]; then
-    echo "missing release helper: $helper" >&2
-    exit 1
-  fi
-  install -m755 "$helper_path" "$app_dir/usr/bin/$helper"
-  helper_args+=(--executable "$app_dir/usr/bin/$helper")
-done
-
 linuxdeploy="$tool_dir/linuxdeploy-x86_64.AppImage"
 qt_plugin="$tool_dir/linuxdeploy-plugin-qt-x86_64.AppImage"
 curl --fail --location --retry 3 \
@@ -56,7 +40,6 @@ export LDAI_OUTPUT="$output_dir/Kog-$version-linux-x86_64.AppImage"
 "$linuxdeploy" \
   --appdir "$app_dir" \
   --executable "$app_dir/usr/bin/kog" \
-  "${helper_args[@]}" \
   --desktop-file "$root_dir/packaging/linux/org.kog.player.desktop" \
   --icon-file "$desktop_icon"
 

@@ -1,8 +1,8 @@
-//! Process wrapper for Cog's portable GME SFM renderer.
+//! Shared in-process SFM renderer (Cog SFM snapshots and higan SPC700).
 
+use crate::embedded_helper::EmbeddedHelper;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdout, Command, Stdio};
 use std::time::Duration;
 
 const HELPER_MAGIC: [u8; 8] = *b"KOGSFM1\0";
@@ -27,8 +27,7 @@ pub struct Sfm {
 }
 
 struct SfmProcess {
-    child: Child,
-    stdout: ChildStdout,
+    stdout: EmbeddedHelper,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -131,11 +130,11 @@ impl Sfm {
         if let Err(error) = self
             .process
             .as_mut()
-            .ok_or_else(|| "SFM helper process is not running".to_owned())?
+            .ok_or_else(|| "SFM renderer is not running".to_owned())?
             .stdout
             .read_exact(&mut self.native_bytes)
         {
-            return Err(self.process_error(format!("reading PCM from the SFM helper: {error}")));
+            return Err(self.process_error(format!("reading PCM from the SFM renderer: {error}")));
         }
         for (sample, bytes) in output[..requested * channels]
             .iter_mut()
@@ -167,7 +166,7 @@ impl Sfm {
         {
             let mut process = process;
             stop_process(&mut process);
-            return Err("SFM helper reported different stream properties after seek".to_owned());
+            return Err("SFM renderer reported different stream properties after seek".to_owned());
         }
         if let Some(mut old_process) = self.process.replace(process) {
             stop_process(&mut old_process);
@@ -180,17 +179,10 @@ impl Sfm {
         let Some(mut process) = self.process.take() else {
             return context;
         };
-        drop(process.stdout);
-        let status = process.child.wait();
-        let stderr = read_stderr(&mut process.child);
-        match (status, stderr.is_empty()) {
-            (Ok(status), false) => format!("{context}; helper exited {status}: {stderr}"),
-            (Ok(status), true) => format!("{context}; helper exited {status}"),
-            (Err(error), false) => {
-                format!("{context}; waiting for helper failed: {error}: {stderr}")
-            }
-            (Err(error), true) => format!("{context}; waiting for helper failed: {error}"),
-        }
+        process
+            .stdout
+            .failure()
+            .map_or_else(|| context.clone(), |error| format!("{context}: {error}"))
     }
 }
 
@@ -209,14 +201,14 @@ impl HelperHeader {
         if magic != HELPER_MAGIC {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "invalid SFM helper protocol magic",
+                "invalid SFM renderer protocol magic",
             ));
         }
         let version = read_u32_le(reader)?;
         if version != HELPER_PROTOCOL_VERSION {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("unsupported SFM helper protocol {version}"),
+                format!("unsupported SFM renderer protocol {version}"),
             ));
         }
         Ok(Self {
@@ -243,105 +235,48 @@ fn validate_header(header: &HelperHeader, path: &Path) -> Result<(), String> {
         || header.main_frames > header.total_frames
     {
         return Err(format!(
-            "SFM helper reported invalid stream properties for {}",
+            "SFM renderer reported invalid stream properties for {}",
             path.display()
         ));
     }
     Ok(())
 }
 
+unsafe extern "C" {
+    fn kog_sfm_embedded_run(
+        path: *const std::ffi::c_char,
+        start_frame: u64,
+        default_length_ms: u32,
+        default_fade_ms: u32,
+        descriptor: isize,
+        error: *mut std::ffi::c_char,
+        error_capacity: usize,
+    ) -> i32;
+}
+
 fn spawn_helper(path: &Path, start_frame: u64) -> Result<(SfmProcess, HelperHeader), String> {
-    let helper = helper_path()?;
-    let mut child = Command::new(&helper)
-        .arg(path)
-        .arg(start_frame.to_string())
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("launching {}: {error}", helper.display()))?;
-    let mut stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "SFM helper stdout was not captured".to_owned())?;
-    let header = match HelperHeader::read(&mut stdout) {
-        Ok(header) => header,
-        Err(error) => {
-            drop(stdout);
-            let _ = child.kill();
-            let status = child.wait();
-            let stderr = read_stderr(&mut child);
-            let detail = if stderr.is_empty() {
-                String::new()
-            } else {
-                format!(": {stderr}")
-            };
-            return Err(match status {
-                Ok(status) => format!(
-                    "opening {} with the SFM helper failed ({status}): {error}{detail}",
-                    path.display()
-                ),
-                Err(wait_error) => format!(
-                    "opening {} with the SFM helper failed: {error}; waiting failed: {wait_error}{detail}",
-                    path.display()
-                ),
-            });
-        }
-    };
-    Ok((SfmProcess { child, stdout }, header))
-}
-
-#[cfg(target_os = "ios")]
-fn helper_path() -> Result<PathBuf, String> {
-    Err("SFM helper decoder needs an in-process iOS port".to_owned())
-}
-
-#[cfg(not(target_os = "ios"))]
-fn helper_path() -> Result<PathBuf, String> {
-    if let Some(path) = std::env::var_os("KOG_SFM_HELPER") {
-        let path = PathBuf::from(path);
-        if path.is_file() {
-            return Ok(path);
-        }
-        return Err(format!(
-            "KOG_SFM_HELPER does not name a file: {}",
-            path.display()
-        ));
-    }
-    let executable_name = if cfg!(windows) {
-        "kog-sfm-helper.exe"
-    } else {
-        "kog-sfm-helper"
-    };
-    #[cfg(target_os = "android")]
-    return crate::android_helpers::helper_path(executable_name);
-    if let Ok(executable) = std::env::current_exe() {
-        let sibling = executable.with_file_name(executable_name);
-        if sibling.is_file() {
-            return Ok(sibling);
-        }
-    }
-    let build_helper = PathBuf::from(env!("KOG_BUILD_SFM_HELPER"));
-    if build_helper.is_file() {
-        return Ok(build_helper);
-    }
-    Err(format!(
-        "SFM helper is not installed beside Kog and the build copy is missing: {}",
-        build_helper.display()
-    ))
+    let path = std::ffi::CString::new(path.to_string_lossy().as_bytes())
+        .map_err(|_| "SFM path contains a NUL byte".to_owned())?;
+    let mut stdout = EmbeddedHelper::spawn(move |descriptor, error| unsafe {
+        kog_sfm_embedded_run(
+            path.as_ptr(),
+            start_frame,
+            150_000,
+            8_000,
+            descriptor,
+            error.as_mut_ptr(),
+            error.len(),
+        )
+    })?;
+    let header = HelperHeader::read(&mut stdout).map_err(|error| {
+        let detail = stdout.failure().unwrap_or_default();
+        format!("Opening SFM stream failed: {error}: {detail}")
+    })?;
+    Ok((SfmProcess { stdout }, header))
 }
 
 fn stop_process(process: &mut SfmProcess) {
-    let _ = process.child.kill();
-    let _ = process.child.wait();
-}
-
-fn read_stderr(child: &mut Child) -> String {
-    let mut bytes = Vec::new();
-    if let Some(mut stderr) = child.stderr.take() {
-        let _ = stderr.read_to_end(&mut bytes);
-    }
-    kog_core::text_encoding::decode(&bytes).trim().to_owned()
+    process.stdout.cancel();
 }
 
 fn read_u32_le(reader: &mut impl Read) -> io::Result<u32> {
@@ -362,7 +297,7 @@ fn read_string(reader: &mut impl Read) -> io::Result<String> {
     if length > HELPER_MAX_STRING_BYTES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "SFM helper metadata string exceeds Kog's limit",
+            "SFM renderer metadata string exceeds Kog's limit",
         ));
     }
     let mut bytes = vec![0_u8; length];

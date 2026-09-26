@@ -19,7 +19,7 @@ impl DecoderBackend for SfmBackend {
     }
 
     fn display_name(&self) -> &'static str {
-        "Cog GME SFM core (isolated helper)"
+        "Cog SFM + higan (embedded)"
     }
 
     fn extensions(&self) -> &'static [&'static str] {
@@ -226,6 +226,34 @@ mod tests {
         let error = Sfm::open(&path).err().expect("malformed SFM must fail");
         assert!(error.contains("metadata exceeds"), "{error}");
         std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn embedded_streams_are_independent_during_seek() {
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path().join("parallel.sfm");
+        std::fs::write(&path, crate::sfm::test_sfm_bytes()).unwrap();
+        let reference = SfmSource::new(Sfm::open(&path).unwrap()).collect::<Vec<_>>();
+        std::thread::scope(|scope| {
+            let first =
+                scope.spawn(|| SfmSource::new(Sfm::open(&path).unwrap()).collect::<Vec<_>>());
+            let second = scope.spawn(|| {
+                let mut source = SfmSource::new(Sfm::open(&path).unwrap());
+                source.try_seek(Duration::from_millis(100)).unwrap();
+                source.collect::<Vec<_>>()
+            });
+            for (rendered, expected) in [
+                (first.join().unwrap(), reference.as_slice()),
+                (second.join().unwrap(), &reference[3_200 * 2..]),
+            ] {
+                assert_eq!(rendered.len(), expected.len());
+                assert_eq!(
+                    rendered.iter().zip(expected).position(|(a, b)| a != b),
+                    None,
+                    "concurrent playback differed at this sample"
+                );
+            }
+        });
     }
 
     #[test]

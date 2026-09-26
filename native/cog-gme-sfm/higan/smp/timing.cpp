@@ -1,8 +1,11 @@
+// higan v095 timer implementation (GPLv3).
 #ifdef SMP_CPP
 
 void SMP::add_clocks(unsigned clocks) {
   step(clocks);
   synchronize_dsp();
+
+
 }
 
 void SMP::cycle_edge() {
@@ -15,7 +18,7 @@ void SMP::cycle_edge() {
   switch(status.clock_speed) {
   case 0: break;                       //100% speed
   case 1: add_clocks(24); break;       // 50% speed
-  case 2: break;                       //  0% speed -- locks S-SMP -- handled in outer loop
+  case 2: break;                      // clock stop is handled by bounded render loop
   case 3: add_clocks(24 * 9); break;   // 10% speed
   }
 }

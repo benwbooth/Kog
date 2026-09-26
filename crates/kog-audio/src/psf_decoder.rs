@@ -29,7 +29,7 @@ impl DecoderBackend for PsfBackend {
     }
 
     fn display_name(&self) -> &'static str {
-        "libupse + Play! + libsnsf9x + melonDS / xSF family"
+        "Play! + ares + melonDS / xSF family"
     }
 
     fn extensions(&self) -> &'static [&'static str] {
@@ -57,10 +57,10 @@ impl DecoderBackend for PsfBackend {
             genre: metadata.genre.clone(),
             year: metadata.date.as_deref().and_then(tag_year),
             codec: Some(match decoder.format_version() {
-                2 => "PlayStation 2 Sound Format (PSF2) / Play! helper".to_owned(),
-                0x23 => "Super Nintendo Sound Format (SNSF) / libsnsf9x helper".to_owned(),
-                0x24 => "Nintendo DS Sound Format (2SF) / melonDS helper".to_owned(),
-                _ => "PlayStation Sound Format (PSF) / libupse helper".to_owned(),
+                2 => "PlayStation 2 Sound Format (PSF2) / Play!".to_owned(),
+                0x23 => "Super Nintendo Sound Format (SNSF) / ares".to_owned(),
+                0x24 => "Nintendo DS Sound Format (2SF) / melonDS".to_owned(),
+                _ => "PlayStation Sound Format (PSF) / Play!".to_owned(),
             }),
             bits_per_sample: Some(16),
             ..StreamProperties::default()
@@ -219,7 +219,7 @@ mod tests {
         assert_eq!(properties.year, Some(2026));
         assert_eq!(
             properties.codec.as_deref(),
-            Some("PlayStation Sound Format (PSF) / libupse helper")
+            Some("PlayStation Sound Format (PSF) / Play!")
         );
         assert_eq!(properties.bits_per_sample, Some(16));
     }
@@ -293,7 +293,7 @@ mod tests {
         assert_eq!(properties.title.as_deref(), Some("Synthetic PSF2"));
         assert_eq!(
             properties.codec.as_deref(),
-            Some("PlayStation 2 Sound Format (PSF2) / Play! helper")
+            Some("PlayStation 2 Sound Format (PSF2) / Play!")
         );
 
         let mut decoder =
@@ -380,7 +380,7 @@ mod tests {
         );
         assert_eq!(
             properties.codec.as_deref(),
-            Some("Super Nintendo Sound Format (SNSF) / libsnsf9x helper")
+            Some("Super Nintendo Sound Format (SNSF) / ares")
         );
 
         let mut decoder =
@@ -541,7 +541,7 @@ mod tests {
         );
         assert_eq!(
             properties.codec.as_deref(),
-            Some("Nintendo DS Sound Format (2SF) / melonDS helper")
+            Some("Nintendo DS Sound Format (2SF) / melonDS")
         );
 
         let mut decoder =

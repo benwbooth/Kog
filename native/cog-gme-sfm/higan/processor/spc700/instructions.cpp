@@ -1,3 +1,4 @@
+// higan v095, GPLv3. See PROVENANCE.md for pin and Kog adaptations.
 #define call (this->*op)
 
 template<uint8_t (SPC700::*op)(uint8_t)>
@@ -540,7 +541,7 @@ void SPC700::op_stw_dp() {
 void SPC700::op_wait() {
   op_io();
   op_io();
-  regs.pc--;
+  halted = true;
 }
 
 void SPC700::op_xcn() {

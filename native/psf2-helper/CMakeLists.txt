@@ -17,6 +17,7 @@ set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build static dependencies" FORCE)
 # out-of-tree build. The platform zlib is already a required PSF2 dependency.
 set(WITH_SYSTEM_ZLIB ON CACHE BOOL "Keep the pinned Play! source immutable" FORCE)
 add_subdirectory("${PLAY_SOURCE}/Source" "${CMAKE_CURRENT_BINARY_DIR}/PlayCore")
+include("${CMAKE_CURRENT_SOURCE_DIR}/patch_play.cmake")
 
 # PlayCore's raw-disk reader is unrelated to PSF2 playback. iOS has no
 # sys/disk.h or raw volume access; omit only that unused translation unit.
@@ -44,13 +45,14 @@ endif()
 
 set(PSFPLAYER_SOURCE "${PLAY_SOURCE}/tools/PsfPlayer/Source")
 add_library(kog_psf2_play_core STATIC
-    "${PSFPLAYER_SOURCE}/Iop_PsfSubSystem.cpp"
+    "${CMAKE_CURRENT_BINARY_DIR}/Kog_PsfSubSystem.cpp"
     "${PSFPLAYER_SOURCE}/PsfBase.cpp"
     "${PSFPLAYER_SOURCE}/PsfFs.cpp"
     "${PSFPLAYER_SOURCE}/ps2/Ps2_PsfDevice.cpp"
 )
 target_compile_features(kog_psf2_play_core PRIVATE cxx_std_17)
 target_include_directories(kog_psf2_play_core SYSTEM PUBLIC
+    "${CMAKE_CURRENT_BINARY_DIR}"
     "${PSFPLAYER_SOURCE}"
     "${PLAY_SOURCE}/Source"
 )
@@ -95,3 +97,17 @@ else()
 endif()
 
 install(TARGETS kog-psf2-helper RUNTIME DESTINATION bin)
+
+option(KOG_BUILD_INTERPRETER_TESTS "Build native R3000 interpreter tests" OFF)
+if(KOG_BUILD_INTERPRETER_TESTS)
+    enable_testing()
+    add_executable(kog-iop-interpreter-tests interpreter_tests.cpp)
+    target_compile_features(kog-iop-interpreter-tests PRIVATE cxx_std_17)
+    target_include_directories(kog-iop-interpreter-tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(kog-iop-interpreter-tests PRIVATE kog_psf2_play_core)
+    add_test(NAME kog-iop-interpreter-semantic COMMAND kog-iop-interpreter-tests)
+    if(UNIX AND NOT APPLE)
+        add_library(kog-noexec-guard SHARED test_noexec_guard.c)
+        target_link_libraries(kog-noexec-guard PRIVATE ${CMAKE_DL_LIBS})
+    endif()
+endif()

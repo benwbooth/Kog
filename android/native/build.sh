@@ -126,14 +126,6 @@ cp "$repo/target/$target/debug/libkog_android_audio.so" "$jni/"
 "$toolchain/llvm-strip" --strip-unneeded "$jni/libkog_android_audio.so"
 cp "$sysroot/usr/lib/$lib_triple/libc++_shared.so" "$jni/"
 "$toolchain/llvm-strip" --strip-unneeded "$jni/libc++_shared.so"
-for helper in kog-sfm-helper kog-psf-helper \
-              kog-snsf-helper; do
-  binary=$(find "$repo/target/$target/debug/build" -type f -path "*/bin/$helper" -print -quit)
-  if [[ -z "$binary" ]]; then
-    echo "Kog did not build $helper for $abi" >&2
-    exit 1
-  fi
-  cp "$binary" "$jni/lib$helper.so"
-  "$toolchain/llvm-strip" --strip-unneeded "$jni/lib$helper.so"
-done
-echo "Installed Kog's Rust decoder and helpers in $jni"
+# Remove executables from earlier builds; all three decoders are now linked.
+rm -f "$jni/libkog-sfm-helper.so" "$jni/libkog-psf-helper.so" "$jni/libkog-snsf-helper.so"
+echo "Installed Kog's Rust decoder libraries in $jni"

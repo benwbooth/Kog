@@ -1,9 +1,11 @@
-//! Safe process wrapper for the separately built PSF-family playback helpers.
+//! Shared native PSF-family renderers with bounded PCM streaming.
 
 use std::fs::File;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdout, Command, Stdio};
+use std::process::Child;
+#[cfg(windows)]
+use std::process::{ChildStdout, Command, Stdio};
 use std::time::Duration;
 
 const HELPER_MAGIC: [u8; 8] = *b"KOGPSF1\0";
@@ -41,7 +43,7 @@ struct PsfProcess {
 }
 
 enum PsfOutput {
-    #[cfg(not(target_os = "ios"))]
+    #[cfg(windows)]
     Process(ChildStdout),
     Embedded(crate::embedded_helper::EmbeddedHelper),
 }
@@ -49,7 +51,7 @@ enum PsfOutput {
 impl Read for PsfOutput {
     fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
         match self {
-            #[cfg(not(target_os = "ios"))]
+            #[cfg(windows)]
             Self::Process(stdout) => stdout.read(output),
             Self::Embedded(stdout) => stdout.read(output),
         }
@@ -203,28 +205,31 @@ impl Psf {
     }
 
     fn process_error(&mut self, context: String) -> String {
-        let Some(mut process) = self.process.take() else {
+        let Some(process) = self.process.take() else {
             return context;
         };
-        if let PsfOutput::Embedded(stdout) = &mut process.stdout {
-            return stdout.failure().map_or_else(
+        match process.stdout {
+            PsfOutput::Embedded(mut stdout) => stdout.failure().map_or_else(
                 || context.clone(),
                 |message| format!("{context}: {message}"),
-            );
-        }
-        drop(process.stdout);
-        let Some(mut child) = process.child else {
-            return context;
-        };
-        let status = child.wait();
-        let stderr = read_stderr(&mut child);
-        match (status, stderr.is_empty()) {
-            (Ok(status), false) => format!("{context}; helper exited {status}: {stderr}"),
-            (Ok(status), true) => format!("{context}; helper exited {status}"),
-            (Err(error), false) => {
-                format!("{context}; waiting for helper failed: {error}: {stderr}")
+            ),
+            #[cfg(windows)]
+            PsfOutput::Process(stdout) => {
+                drop(stdout);
+                let Some(mut child) = process.child else {
+                    return context;
+                };
+                let status = child.wait();
+                let stderr = read_stderr(&mut child);
+                match (status, stderr.is_empty()) {
+                    (Ok(status), false) => format!("{context}; helper exited {status}: {stderr}"),
+                    (Ok(status), true) => format!("{context}; helper exited {status}"),
+                    (Err(error), false) => {
+                        format!("{context}; waiting for helper failed: {error}: {stderr}")
+                    }
+                    (Err(error), true) => format!("{context}; waiting for helper failed: {error}"),
+                }
             }
-            (Err(error), true) => format!("{context}; waiting for helper failed: {error}"),
         }
     }
 }
@@ -308,14 +313,24 @@ fn spawn_helper(
     default_fade_milliseconds: u32,
 ) -> Result<(PsfProcess, HelperHeader), String> {
     let version = psf_format_version(path)?;
-    if version == 2 {
+    if version == 1 || version == 2 {
         return spawn_embedded_renderer(
             path,
             start_frame,
             default_length_milliseconds,
             default_fade_milliseconds,
-            "PSF2",
+            if version == 1 { "PSF1" } else { "PSF2" },
             kog_psf2_embedded_run,
+        );
+    }
+    if version == 0x23 {
+        return spawn_embedded_renderer(
+            path,
+            start_frame,
+            default_length_milliseconds,
+            default_fade_milliseconds,
+            "SNSF",
+            kog_snsf_embedded_run,
         );
     }
     #[cfg(not(windows))]
@@ -329,12 +344,9 @@ fn spawn_helper(
             kog_twosf_embedded_run,
         );
     }
-    #[cfg(target_os = "ios")]
-    return Err(
-        "PSF1 and SNSF require separate helper processes and cannot run inside an iOS app"
-            .to_owned(),
-    );
-    #[cfg(not(target_os = "ios"))]
+    #[cfg(not(windows))]
+    return Err(format!("Unsupported PSF version {version}"));
+    #[cfg(windows)]
     {
         let helper = helper_path(path)?;
         let mut child = Command::new(&helper)
@@ -387,6 +399,15 @@ fn spawn_helper(
 
 unsafe extern "C" {
     fn kog_psf2_embedded_run(
+        path: *const std::ffi::c_char,
+        start_frame: u64,
+        default_length_ms: u32,
+        default_fade_ms: u32,
+        descriptor: isize,
+        error: *mut std::ffi::c_char,
+        error_capacity: usize,
+    ) -> i32;
+    fn kog_snsf_embedded_run(
         path: *const std::ffi::c_char,
         start_frame: u64,
         default_length_ms: u32,
@@ -479,86 +500,26 @@ fn validate_header(header: &HelperHeader, path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(target_os = "ios")]
-fn helper_path(_source: &Path) -> Result<PathBuf, String> {
-    Err("PSF helper decoders need an in-process iOS port".to_owned())
-}
-
-#[cfg(not(target_os = "ios"))]
+#[cfg(windows)]
 fn helper_path(source: &Path) -> Result<PathBuf, String> {
     let version = psf_format_version(source)?;
-    let (override_name, executable_name, build_helper) = match version {
-        1 => (
-            "KOG_PSF_HELPER",
-            if cfg!(windows) {
-                "kog-psf-helper.exe"
-            } else {
-                "kog-psf-helper"
-            },
-            PathBuf::from(env!("KOG_BUILD_PSF_HELPER")),
-        ),
-        2 => (
-            "KOG_PSF2_HELPER",
-            if cfg!(windows) {
-                "kog-psf2-helper.exe"
-            } else {
-                "kog-psf2-helper"
-            },
-            PathBuf::from(env!("KOG_BUILD_PSF2_HELPER")),
-        ),
-        0x24 => (
-            "KOG_2SF_HELPER",
-            if cfg!(windows) {
-                "kog-2sf-helper.exe"
-            } else {
-                "kog-2sf-helper"
-            },
-            PathBuf::from(env!("KOG_BUILD_2SF_HELPER")),
-        ),
-        0x23 => (
-            "KOG_SNSF_HELPER",
-            if cfg!(windows) {
-                "kog-snsf-helper.exe"
-            } else {
-                "kog-snsf-helper"
-            },
-            PathBuf::from(env!("KOG_BUILD_SNSF_HELPER")),
-        ),
-        _ => {
-            return Err(format!(
-                "unsupported PSF format version {version} in {}",
-                source.display()
-            ));
-        }
-    };
-    if let Some(path) = std::env::var_os(override_name) {
-        let path = PathBuf::from(path);
-        if path.is_file() {
-            return Ok(path);
-        }
-        return Err(format!(
-            "{override_name} does not name a file: {}",
-            path.display()
-        ));
+    if version != 0x24 {
+        return Err(format!("Unsupported PSF version {version}"));
     }
-
-    #[cfg(target_os = "android")]
-    return crate::android_helpers::helper_path(executable_name);
-
+    if let Some(path) = std::env::var_os("KOG_2SF_HELPER") {
+        let path = PathBuf::from(path);
+        return path
+            .is_file()
+            .then_some(path)
+            .ok_or_else(|| "KOG_2SF_HELPER does not name a file".to_owned());
+    }
     if let Ok(executable) = std::env::current_exe() {
-        let sibling = executable.with_file_name(executable_name);
+        let sibling = executable.with_file_name("kog-2sf-helper.exe");
         if sibling.is_file() {
             return Ok(sibling);
         }
     }
-
-    if build_helper.is_file() {
-        return Ok(build_helper);
-    }
-    Err(format!(
-        "PSF format {version} helper is not installed beside Kog and the build copy is missing: {}",
-        build_helper.display()
-    ))
+    Err("2SF on Windows requires a kog-2sf-helper.exe or KOG_2SF_HELPER override".to_owned())
 }
 
 fn psf_format_version(path: &Path) -> Result<u8, String> {
@@ -574,8 +535,10 @@ fn psf_format_version(path: &Path) -> Result<u8, String> {
 }
 
 fn stop_process(process: &mut PsfProcess) {
-    if let PsfOutput::Embedded(stdout) = &mut process.stdout {
-        stdout.cancel();
+    match &mut process.stdout {
+        PsfOutput::Embedded(stdout) => stdout.cancel(),
+        #[cfg(windows)]
+        PsfOutput::Process(_) => {}
     }
     if let Some(child) = &mut process.child {
         let _ = child.kill();
@@ -583,6 +546,7 @@ fn stop_process(process: &mut PsfProcess) {
     }
 }
 
+#[cfg(windows)]
 fn read_stderr(child: &mut Child) -> String {
     let mut bytes = Vec::new();
     if let Some(mut stderr) = child.stderr.take() {

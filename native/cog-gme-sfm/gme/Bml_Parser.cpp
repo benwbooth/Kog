@@ -37,7 +37,7 @@ Bml_Node::Bml_Node(char const* name, size_t max_length)
 {
 	size_t length = 0;
 	char const* ptr = name;
-	while (*ptr && length < max_length) { ++ptr; ++length; }
+	while (length < max_length && *ptr) { ++ptr; ++length; }
 	this->name = new char[ length + 1 ];
 	memcpy( this->name, name, length );
 	this->name[ length ] = '\0';
@@ -90,13 +90,18 @@ void Bml_Node::setLine(const char *line, size_t max_length)
 	
 	size_t length = 0;
 	const char * end = line;
-	while (*end && length < max_length) ++end;
+	while (length < max_length && *end) { ++end; ++length; }
 	
 	const char * line_end = strchr_limited(line, end, '\n');
 	if ( !line_end ) line_end = end;
 	
 	const char * first_letter = line;
-	while ( first_letter < line_end && *first_letter <= 0x20 ) first_letter++;
+	while ( first_letter < line_end && static_cast<unsigned char>(*first_letter) <= 0x20 ) first_letter++;
+	if ( first_letter == line_end )
+	{
+		name = new char[1] { 0 };
+		return;
+	}
 	
 	const char * colon = strchr_limited(first_letter, line_end, ':');
 	const char * last_letter = line_end - 1;
@@ -104,18 +109,23 @@ void Bml_Node::setLine(const char *line, size_t max_length)
 	if (colon)
 	{
 		const char * first_value_letter = colon + 1;
-		while (first_value_letter < line_end && *first_value_letter <= 0x20) first_value_letter++;
+		while (first_value_letter < line_end && static_cast<unsigned char>(*first_value_letter) <= 0x20) first_value_letter++;
 		last_letter = line_end - 1;
-		while (last_letter > first_value_letter && *last_letter <= 0x20) last_letter--;
+		while (last_letter > first_value_letter && static_cast<unsigned char>(*last_letter) <= 0x20) last_letter--;
 		
 		value = new char[last_letter - first_value_letter + 2];
 		memcpy(value, first_value_letter, last_letter - first_value_letter + 1);
 		value[last_letter - first_value_letter + 1] = '\0';
 		
+		if ( colon == first_letter )
+		{
+			name = new char[1] { 0 };
+			return;
+		}
 		last_letter = colon - 1;
 	}
 	
-	while (last_letter > first_letter && *last_letter <= 0x20) last_letter--;
+	while (last_letter > first_letter && static_cast<unsigned char>(*last_letter) <= 0x20) last_letter--;
 	
 	name = new char[last_letter - first_letter + 2];
 	memcpy(name, first_letter, last_letter - first_letter + 1);
@@ -284,7 +294,7 @@ void Bml_Parser::parseDocument( const char * source, size_t max_length )
 	
 	size_t length = 0;
 	const char * end = source;
-	while ( *end && length < max_length ) { ++end; ++length; }
+	while ( length < max_length && *end ) { ++end; ++length; }
 	
 	while ( source < end )
 	{
@@ -296,7 +306,7 @@ void Bml_Parser::parseDocument( const char * source, size_t max_length )
 		node.setLine( source, line_end - source );
 		
 		size_t indent = 0;
-		while ( source < line_end && *source <= 0x20 )
+		while ( source < line_end && static_cast<unsigned char>(*source) <= 0x20 )
 		{
 			source++;
 			indent++;
@@ -327,7 +337,7 @@ void Bml_Parser::parseDocument( const char * source, size_t max_length )
 		document.walkToNode( current_path.c_str() ).addChild( node );
 
 		source = line_end;
-		while ( *source && *source == '\n' ) source++;
+		while ( source < end && *source == '\n' ) source++;
 	}
 }
 

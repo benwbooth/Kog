@@ -21,22 +21,6 @@ install -m644 "$root_dir/THIRD_PARTY_NOTICES.md" "$contents/Resources/THIRD_PART
 cp -R "$root_dir/LICENSES" "$contents/Resources/LICENSES"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" "$contents/Info.plist"
 
-helpers=(
-  kog-sfm-helper kog-psf-helper
-  kog-snsf-helper
-)
-extra_executables=()
-for helper in "${helpers[@]}"; do
-  helper_path="$(find "$root_dir/target/release/build" -type f \
-    -path "*/bin/$helper" -print -quit)"
-  if [[ -z "$helper_path" ]]; then
-    echo "missing release helper: $helper" >&2
-    exit 1
-  fi
-  install -m755 "$helper_path" "$contents/MacOS/$helper"
-  extra_executables+=("-executable=$contents/MacOS/$helper")
-done
-
 iconset="$output_dir/Kog.iconset"
 mkdir -p "$iconset"
 rsvg-convert -w 1024 -h 1024 "$root_dir/qml/icons/kog.svg" -o "$output_dir/Kog-1024.png"
@@ -54,7 +38,7 @@ brew_search=(
   -libpath="$(brew --prefix libarchive)/lib"
 )
 macdeployqt "$app" -qmldir="$root_dir/qml" -always-overwrite -verbose=2 \
-  "${extra_executables[@]}" "${brew_search[@]}"
+  "${brew_search[@]}"
 
 # macdeployqt is Qt's supported WebEngine deployment path. Keep the bundle
 # check explicit because the browser helper, Chromium resource packs, and

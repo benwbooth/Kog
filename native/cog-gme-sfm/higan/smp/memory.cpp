@@ -1,3 +1,4 @@
+// higan v095 memory bus, GPLv3; CPU ports supplied by the SFM event log.
 #ifdef SMP_CPP
 
 inline uint8_t SMP::ram_read(uint16_t addr) {
@@ -40,14 +41,7 @@ uint8_t SMP::op_busread(uint16_t addr) {
   case 0xf5:  //CPUIO1
   case 0xf6:  //CPUIO2
   case 0xf7:  //CPUIO3
-    if (sfm_queue && sfm_queue < sfm_queue_end) {
-      result = *sfm_queue;
-      if (++sfm_queue == sfm_queue_end)
-        sfm_queue = sfm_queue_repeat;
-      sfm_last[addr - 0xf4] = result;
-      return result;
-    }
-    return sfm_last[addr - 0xf4];
+    return read_logged_port(addr - 0xf4);
 
   case 0xf8:  //RAM0
     return status.ram00f8;
@@ -100,15 +94,9 @@ void SMP::op_buswrite(uint16_t addr, uint8_t data) {
 
   case 0xf1:  //CONTROL
     status.iplrom_enable = data & 0x80;
-          
-    if (data & 0x10) {
-      sfm_last[ 0 ] = 0;
-      sfm_last[ 1 ] = 0;
-    }
-    if (data & 0x20) {
-      sfm_last[ 2 ] = 0;
-      sfm_last[ 3 ] = 0;
-    }
+
+    if(data & 0x10) sfm_last[0] = sfm_last[1] = 0;
+    if(data & 0x20) sfm_last[2] = sfm_last[3] = 0;
 
     //0->1 transistion resets timers
     if(timer2.enable == false && (data & 0x04)) {
@@ -182,10 +170,10 @@ void SMP::op_io() {
 
 uint8_t SMP::op_read(uint16_t addr) {
   add_clocks(12);
-  uint8_t r = op_busread(addr);
+  uint8_t data = op_busread(addr);
   add_clocks(12);
   cycle_edge();
-  return r;
+  return data;
 }
 
 void SMP::op_write(uint16_t addr, uint8_t data) {
@@ -195,9 +183,9 @@ void SMP::op_write(uint16_t addr, uint8_t data) {
 }
 
 uint8_t SMP::disassembler_read(uint16_t addr) {
-    if((addr & 0xfff0) == 0x00f0) return 0x00;
-    if((addr & 0xffc0) == 0xffc0 && status.iplrom_enable) return iplrom[addr & 0x3f];
-    return apuram[addr];
+  if((addr & 0xfff0) == 0x00f0) return 0x00;
+  if((addr & 0xffc0) == 0xffc0 && status.iplrom_enable) return iplrom[addr & 0x3f];
+  return apuram[addr];
 }
 
 #endif

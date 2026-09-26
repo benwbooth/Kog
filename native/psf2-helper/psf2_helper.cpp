@@ -35,12 +35,13 @@
 
 #include <zstd_zlibwrapper.h>
 
-#include "Iop_PsfSubSystem.h"
+#include "Kog_PsfSubSystem.h"
 #include "PsfBase.h"
 #include "Ps2Const.h"
 #include "StdStreamUtils.h"
 #include "app_shared/AppConfig.h"
 #include "iop/IopBios.h"
+#include "psx/PsxBios.h"
 #include "ps2/Ps2_PsfDevice.h"
 
 #ifdef KOG_EMBEDDED
@@ -161,7 +162,7 @@ Bytes readFile(const fs::path& path)
     return bytes;
 }
 
-void validateCompressedProgram(const uint8_t* compressed, uint32_t compressedLength,
+Bytes inflateProgram(const uint8_t* compressed, uint32_t compressedLength,
                                uint32_t expectedCrc, const fs::path& path)
 {
     if(compressedLength == 0)
@@ -171,7 +172,7 @@ void validateCompressedProgram(const uint8_t* compressed, uint32_t compressedLen
             throw std::runtime_error("PSF2 has a CRC without a program section: " +
                                      displayPath(path));
         }
-        return;
+        return {};
     }
     if(static_cast<uint32_t>(crc32(0, compressed, compressedLength)) != expectedCrc)
     {
@@ -187,18 +188,21 @@ void validateCompressedProgram(const uint8_t* compressed, uint32_t compressedLen
     }
     std::array<uint8_t, 16384> output = {};
     uint64_t total = 0;
+    Bytes program;
     int result = Z_OK;
     while(result == Z_OK)
     {
         inflater.next_out = output.data();
         inflater.avail_out = static_cast<uInt>(output.size());
         result = inflate(&inflater, Z_NO_FLUSH);
-        total += output.size() - inflater.avail_out;
+        const size_t produced = output.size() - inflater.avail_out;
+        total += produced;
         if(total > MAX_PROGRAM_BYTES)
         {
             inflateEnd(&inflater);
-            throw std::runtime_error("PSF2 program exceeds Kog's decompression limit");
+            throw std::runtime_error("PSF program exceeds Kog's decompression limit");
         }
+        program.insert(program.end(), output.begin(), output.begin() + produced);
     }
     const bool valid = result == Z_STREAM_END && inflater.avail_in == 0;
     inflateEnd(&inflater);
@@ -206,6 +210,7 @@ void validateCompressedProgram(const uint8_t* compressed, uint32_t compressedLen
     {
         throw std::runtime_error("invalid compressed PSF2 program in " + displayPath(path));
     }
+    return program;
 }
 
 Tags parseTags(const Bytes& bytes, size_t offset, const fs::path& path)
@@ -467,7 +472,7 @@ ParsedPsf validatePsf(const fs::path& path, ValidationContext& context)
     {
         throw std::runtime_error("PSF2 section lengths are invalid in " + displayPath(path));
     }
-    validateCompressedProgram(bytes.data() + 16U + reservedLength, compressedLength, expectedCrc,
+    inflateProgram(bytes.data() + 16U + reservedLength, compressedLength, expectedCrc,
                               path);
 
     Bytes reserved(bytes.begin() + 16, bytes.begin() + 16 + reservedLength);
@@ -484,11 +489,9 @@ fs::path dependencyPath(const fs::path& parent, const std::string& name)
     {
         throw std::runtime_error("empty PSF2 library tag");
     }
-#ifdef _WIN32
-    const fs::path relative = fs::u8path(name);
-#else
-    const fs::path relative(name);
-#endif
+    std::string portableName = name;
+    std::replace(portableName.begin(), portableName.end(), '\\', '/');
+    const fs::path relative = fs::u8path(portableName);
     if(relative.is_absolute())
     {
         throw std::runtime_error("absolute PSF2 library paths are not accepted");
@@ -540,6 +543,81 @@ ParsedPsf validateLibraries(const fs::path& path, unsigned int depth, Validation
     }
     context.activeLibraries.erase(key);
     return parsed;
+}
+
+// Keep validated executable bytes until loading; no second filesystem read can
+// replace a validated PSF1 library with a different executable.
+struct Ps1Program { uint32_t address; Bytes text; };
+struct Ps1Image
+{
+    uint32_t pc = 0, gp = 0, sp = 0x801fff00U;
+    uint32_t refresh = 60;
+    Tags tags;
+    std::vector<Ps1Program> programs;
+    std::set<std::string> active;
+    uint64_t inputBytes = 0, outputBytes = 0;
+    unsigned files = 0;
+};
+
+Tags loadPs1Libraries(const fs::path& path, unsigned depth, Ps1Image& image)
+{
+    if(depth > MAX_LIBRARY_DEPTH || ++image.files > 1024)
+        throw std::runtime_error("PSF1 library nesting or count exceeds Kog's limit");
+    const auto key = canonicalKey(path);
+    if(!image.active.insert(key).second)
+        throw std::runtime_error("PSF1 library dependency cycle");
+    const Bytes file = readFile(path);
+    image.inputBytes += file.size();
+    if(image.inputBytes > MAX_FILE_BYTES) throw std::runtime_error("PSF1 dependency set is too large");
+    if(file.size() < 16 || std::memcmp(file.data(), "PSF\x01", 4))
+        throw std::runtime_error("unsupported or truncated PSF1 dependency");
+    const uint32_t reserved = readU32(file.data() + 4), compressed = readU32(file.data() + 8);
+    const uint64_t end = 16ULL + reserved + compressed;
+    if(end > file.size() || reserved > MAX_RESERVED_BYTES)
+        throw std::runtime_error("invalid PSF1 section lengths");
+    Bytes program = inflateProgram(file.data() + 16 + reserved, compressed,
+                                   readU32(file.data() + 12), path);
+    const Tags tags = parseTags(file, static_cast<size_t>(end), path);
+    if((!program.empty() && (program.size() < 2048 || std::memcmp(program.data(), "PS-X EXE", 8))) ||
+       (program.empty() && tags.find("_lib") == tags.end()))
+        throw std::runtime_error("PSF1 program has no complete PS-X EXE header");
+    image.outputBytes += program.size();
+    if(image.outputBytes > MAX_FILE_BYTES) throw std::runtime_error("PSF1 executable set is too large");
+    const bool hasProgram = !program.empty();
+    const uint32_t loadAddress = hasProgram ? readU32(program.data() + 0x18) & 0x1fffffffU : 0;
+    const uint32_t pc = hasProgram ? readU32(program.data() + 0x10) : 0;
+    const uint32_t sp = hasProgram ? readU32(program.data() + 0x30) : 0;
+    if(!checkedRange(loadAddress, hasProgram ? program.size() - 2048 : 0, PS2::IOP_BASE_RAM_SIZE) ||
+       ((pc & 0x1fffffffU) >= PS2::IOP_BASE_RAM_SIZE) || (pc & 3) ||
+       ((sp & 0x1fffffffU) > PS2::IOP_BASE_RAM_SIZE) || (sp & 3))
+        throw std::runtime_error("PSF1 executable address is outside PS1 RAM or misaligned");
+    const auto lib = tags.find("_lib");
+    if(lib != tags.end()) loadPs1Libraries(dependencyPath(path, lib->second), depth + 1, image);
+    // The base library supplies entry/stack for miniPSF overlays. The executable
+    // body length is authoritative, matching upstream's malformed-size repair.
+    if(lib == tags.end() || image.pc == 0) image.pc = pc;
+    if(lib == tags.end() || image.sp == 0) image.sp = sp ? sp : 0x801fff00U;
+    if(hasProgram) image.gp = readU32(program.data() + 0x14);
+    if(lib == tags.end() && hasProgram)
+    {
+        constexpr char europe[] = "Europe";
+        image.refresh = std::search(program.begin() + 0x4c, program.begin() + 2048,
+                                    europe, europe + sizeof(europe) - 1) != program.begin() + 2048 ? 50 : 60;
+    }
+    if(loadAddress) image.programs.push_back({loadAddress, Bytes(program.begin() + 2048, program.end())});
+    for(const auto& tag : tags) image.tags[tag.first] = tag.second;
+    const uint32_t entry = image.pc, stack = image.sp, refresh = image.refresh;
+    for(unsigned index = 2; index <= 128; ++index)
+    {
+        const auto auxiliary = tags.find("_lib" + std::to_string(index));
+        if(auxiliary != tags.end())
+        {
+            loadPs1Libraries(dependencyPath(path, auxiliary->second), depth + 1, image);
+            image.pc = entry; image.sp = stack; image.refresh = refresh;
+        }
+    }
+    image.active.erase(key);
+    return tags;
 }
 
 uint32_t parseMilliseconds(const std::string& text)
@@ -606,7 +684,7 @@ std::string metadata(const Tags& tags, const char* name)
     return value->second;
 }
 
-bool writeHeader(const Tags& tags, uint64_t mainFrames, uint64_t totalFrames)
+bool writeHeader(const Tags& tags, uint64_t mainFrames, uint64_t totalFrames, uint32_t format)
 {
     std::array<std::string, 5> fields = {
         metadata(tags, "title"), metadata(tags, "artist"), metadata(tags, "game"),
@@ -616,7 +694,7 @@ bool writeHeader(const Tags& tags, uint64_t mainFrames, uint64_t totalFrames)
     for(const auto& field : fields) metadataBytes += field.size();
     if(metadataBytes > 64U * 1024U) return false;
     if(std::fwrite(HELPER_MAGIC.data(), 1, HELPER_MAGIC.size(), stdout) != HELPER_MAGIC.size() ||
-       !writeU32(1) || !writeU32(2) || !writeU32(SAMPLE_RATE) || !writeU32(CHANNELS) ||
+       !writeU32(1) || !writeU32(format) || !writeU32(SAMPLE_RATE) || !writeU32(CHANNELS) ||
        !writeU64(totalFrames) || !writeU64(mainFrames))
     {
         return false;
@@ -742,13 +820,23 @@ int runHelper(const fs::path& path, const char* startText, const char* defaultLe
         throw std::runtime_error("PSF2 default duration exceeds Kog's limit");
     }
 
+    std::array<char, 4> signature{};
+    {
+        std::ifstream input(path, std::ios::binary);
+        if(!input.read(signature.data(), signature.size()) || std::memcmp(signature.data(), "PSF", 3))
+            throw std::runtime_error("unsupported or truncated PSF file");
+    }
+    const bool ps2 = signature[3] == 2;
     ValidationContext context;
-    ParsedPsf root = validateLibraries(path, 0, context);
-    if(!context.hasRootIrx)
+    Ps1Image ps1;
+    ParsedPsf root;
+    if(ps2) root = validateLibraries(path, 0, context);
+    else root.tags = loadPs1Libraries(path, 0, ps1);
+    if(ps2 && !context.hasRootIrx)
     {
         throw std::runtime_error("PSF2 library chain contains no root psf2.irx");
     }
-    Tags tags = context.fallbackTags;
+    Tags tags = ps2 ? context.fallbackTags : ps1.tags;
     for(const auto& tag : root.tags) tags[tag.first] = tag.second;
 
     uint32_t lengthMilliseconds = 0;
@@ -776,7 +864,21 @@ int runHelper(const fs::path& path, const char* startText, const char* defaultLe
     const uint64_t totalFrames = mainFrames + fadeFrames;
     startFrame = std::min(startFrame, totalFrames);
 
-    Iop::CPsfSubSystem subsystem(true);
+    Iop::CPsfSubSystem subsystem(ps2);
+    if(!ps2)
+    {
+        auto refresh = tags.find("_refresh");
+        if(refresh == tags.end()) refresh = tags.find("refresh");
+        if(refresh != tags.end())
+        {
+            if(refresh->second != "50" && refresh->second != "60")
+                throw std::runtime_error("PSF1 refresh must be 50 or 60 Hz");
+            ps1.refresh = refresh->second == "50" ? 50 : 60;
+        }
+        subsystem.SetFrameRate(PS2::IOP_CLOCK_BASE_FREQ, ps1.refresh);
+    }
+    if(ps2)
+    {
     auto* bios = dynamic_cast<CIopBios*>(subsystem.GetBios());
     if(bios == nullptr) throw std::runtime_error("Play! did not create its PS2 IOP HLE BIOS");
     bios->Reset(PS2::IOP_BASE_RAM_SIZE, std::shared_ptr<Iop::CSifMan>());
@@ -795,13 +897,32 @@ int runHelper(const fs::path& path, const char* startText, const char* defaultLe
     {
         throw std::runtime_error("Play! could not load psf2.irx");
     }
-    if(!writeHeader(tags, mainFrames, totalFrames))
+    }
+    else
+    {
+        auto* bios = dynamic_cast<CPsxBios*>(subsystem.GetBios());
+        if(!bios) throw std::runtime_error("Play! did not create its PS1 HLE BIOS");
+        bios->Reset();
+        for(const auto& program : ps1.programs)
+            std::memcpy(subsystem.GetRam() + program.address, program.text.data(), program.text.size());
+        auto& cpu = subsystem.GetCpu().m_State;
+        cpu.nPC = ps1.pc & 0x1fffffffU;
+        cpu.nGPR[CMIPS::GP].nD0 = static_cast<int32_t>(ps1.gp);
+        cpu.nGPR[CMIPS::SP].nD0 = static_cast<int32_t>(ps1.sp);
+    }
+    if(!writeHeader(tags, mainFrames, totalFrames, ps2 ? 2 : 1))
     {
         throw std::runtime_error("writing the PSF2 stream header failed");
     }
 
     StreamSoundHandler sound(startFrame, totalFrames);
-    while(!sound.done()) subsystem.Update(false, &sound);
+    while(!sound.done())
+    {
+#ifdef KOG_EMBEDDED
+        if(kog_embedded_stream_cancelled(stdout)) throw std::runtime_error("PSF decoding cancelled");
+#endif
+        subsystem.Update(false, &sound);
+    }
     if(sound.failed()) throw std::runtime_error("writing PSF2 PCM failed");
     return 0;
 }

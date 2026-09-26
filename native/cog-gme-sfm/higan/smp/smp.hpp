@@ -1,22 +1,12 @@
-#ifndef _higan_smp_h_
-#define _higan_smp_h_
-
+// higan v095 SMP interface adapted for independent SFM streams (GPLv3).
+#pragma once
 #include "../../gme/blargg_common.h"
-
 #include "../processor/spc700/spc700.hpp"
-
 #include "../dsp/dsp.hpp"
-
 namespace SuperFamicom {
-
 struct SMP : Processor::SPC700 {
-  long clock;
-    
   uint8_t iplrom[64];
   uint8_t apuram[64 * 1024];
-
-  int64_t dsp_clock_step;
-  SuperFamicom::DSP dsp;
 
   inline void step(unsigned clocks);
   inline void synchronize_dsp();
@@ -28,31 +18,30 @@ struct SMP : Processor::SPC700 {
   void power();
   void reset();
 
-  void set_tempo(double);
-
-  void render(int16_t * buffer, unsigned count);
-  void skip(unsigned count);
-  
-  uint8_t sfm_last[4];
+  int64_t clock = 0;
+  int64_t dsp_clock_step = 4096;
+  DSP dsp;
+  uint8_t sfm_last[4] {};
+  void render(int16_t* buffer, unsigned samples);
+  void skip(unsigned samples);
+  bool sample(int16_t left, int16_t right);
+  void set_tempo(double speed) { dsp_clock_step = static_cast<int64_t>(4096.0 / speed); }
+  void set_sfm_queue(const uint8_t* first, const uint8_t* end, const uint8_t* loop) {
+    queue = first; queue_end = end; queue_loop = loop;
+    for(auto& port : sfm_last) port = 0;
+  }
+  const uint8_t* get_sfm_queue() const { return queue; }
+  size_t get_sfm_queue_remain() const { return queue ? queue_end - queue : 0; }
+  uint8_t read_logged_port(unsigned port);
 private:
-  uint8_t const* sfm_queue;
-  uint8_t const* sfm_queue_end;
-  uint8_t const* sfm_queue_repeat;
+  const uint8_t *queue = nullptr, *queue_end = nullptr, *queue_loop = nullptr;
+  int16_t* output = nullptr;
+  unsigned remaining = 0;
 public:
-  void set_sfm_queue(const uint8_t* queue, const uint8_t* queue_end, const uint8_t* queue_repeat);
-
-  const uint8_t* get_sfm_queue() const;
-  size_t get_sfm_queue_remain() const;
-    
-private:
-  int16_t * sample_buffer;
-  int16_t const* sample_buffer_end;
-public:
-  bool sample( int16_t, int16_t );
-    
   SMP();
   ~SMP();
 
+public:
   struct {
     //timing
     unsigned clock_counter;
@@ -78,7 +67,9 @@ public:
     uint8_t ram00f9;
   } status;
 
+
   friend class SMPcore;
+
 
   //memory.cpp
   uint8_t ram_read(uint16_t addr);
@@ -90,13 +81,14 @@ public:
   void op_io();
   uint8_t op_read(uint16_t addr);
   void op_write(uint16_t addr, uint8_t data);
-    
+
   uint8_t disassembler_read(uint16_t addr);
 
   //timing.cpp
   template<unsigned frequency>
   struct Timer {
-    SMP &smp;
+    SMP& smp;
+    explicit Timer(SMP& owner) : smp(owner) {}
     uint8_t stage0_ticks;
     uint8_t stage1_ticks;
     uint8_t stage2_ticks;
@@ -104,8 +96,6 @@ public:
     bool current_line;
     bool enable;
     uint8_t target;
-      
-    Timer(SMP &p_smp) : smp( p_smp ) { }
 
     void tick();
     void synchronize_stage1();
@@ -119,13 +109,6 @@ public:
   inline void cycle_edge();
 };
 
-inline void SMP::set_tempo(double speed) { dsp_clock_step = (int64_t)(4096.0 / speed); }
 
-inline void SMP::set_sfm_queue(const uint8_t *queue, const uint8_t *queue_end, const uint8_t *queue_repeat) { sfm_queue = queue; sfm_queue_end = queue_end; sfm_queue_repeat = queue_repeat; sfm_last[0] = 0; sfm_last[1] = 0; sfm_last[2] = 0; sfm_last[3] = 0; }
 
-inline const uint8_t* SMP::get_sfm_queue() const { return sfm_queue; }
-inline size_t SMP::get_sfm_queue_remain() const { return sfm_queue_end - sfm_queue; }
-
-};
-
-#endif
+}

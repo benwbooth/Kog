@@ -2,9 +2,30 @@
 //! writes its existing PCM protocol to a private socket/pipe on a worker thread.
 //! Readers provide backpressure and cancellation without a child executable.
 
+use std::cell::RefCell;
 use std::ffi::{CStr, c_char};
 use std::io::{self, Read};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::thread::{self, JoinHandle};
+
+thread_local! {
+    static CANCELLED: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
+}
+
+/// Called by native renderers while seeking or waiting for the emulated
+/// driver to produce audio. A closed pipe alone cannot cancel those phases.
+#[unsafe(no_mangle)]
+pub extern "C" fn kog_decoder_cancelled() -> bool {
+    CANCELLED.with(|state| {
+        state
+            .borrow()
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Relaxed))
+    })
+}
 
 #[cfg(windows)]
 use std::fs::File;
@@ -20,6 +41,7 @@ use std::os::windows::io::{FromRawHandle, IntoRawHandle};
 pub struct EmbeddedHelper {
     reader: Option<Box<dyn Read + Send>>,
     worker: Option<JoinHandle<Result<(), String>>>,
+    cancelled: Arc<AtomicBool>,
     #[cfg(unix)]
     socket: Option<UnixStream>,
 }
@@ -63,7 +85,10 @@ impl EmbeddedHelper {
         };
         #[cfg(unix)]
         let socket = Some(reader.try_clone().map_err(|error| error.to_string())?);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let worker_cancelled = Arc::clone(&cancelled);
         let worker = thread::spawn(move || {
+            CANCELLED.with(|state| *state.borrow_mut() = Some(worker_cancelled));
             #[cfg(any(target_os = "linux", target_os = "android"))]
             unsafe {
                 // A cancelled read closes the peer. Keep EPIPE local to this
@@ -94,6 +119,7 @@ impl EmbeddedHelper {
         Ok(Self {
             reader: Some(Box::new(reader)),
             worker: Some(worker),
+            cancelled,
             #[cfg(unix)]
             socket,
         })
@@ -109,6 +135,7 @@ impl EmbeddedHelper {
     }
 
     fn close_reader(&mut self) {
+        self.cancelled.store(true, Ordering::Relaxed);
         #[cfg(unix)]
         if let Some(socket) = self.socket.take() {
             let _ = socket.shutdown(std::net::Shutdown::Both);
@@ -134,5 +161,33 @@ impl Read for EmbeddedHelper {
 impl Drop for EmbeddedHelper {
     fn drop(&mut self) {
         self.cancel();
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    #[test]
+    fn cancellation_reaches_native_worker_before_pcm_is_written() {
+        let (started, wait_started) = mpsc::channel();
+        let (finished, wait_finished) = mpsc::channel();
+        let mut stream = EmbeddedHelper::spawn(move |descriptor, _error| {
+            started.send(()).unwrap();
+            while !kog_decoder_cancelled() {
+                thread::park_timeout(Duration::from_millis(1));
+            }
+            unsafe { libc::close(descriptor as libc::c_int) };
+            finished.send(()).unwrap();
+            0
+        })
+        .unwrap();
+        wait_started.recv_timeout(Duration::from_secs(2)).unwrap();
+        stream.cancel();
+        wait_finished.recv_timeout(Duration::from_secs(2)).unwrap();
+        // A cancellation flag belongs to its renderer thread, not the caller.
+        assert!(!kog_decoder_cancelled());
     }
 }

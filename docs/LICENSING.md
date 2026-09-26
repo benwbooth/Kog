@@ -30,25 +30,16 @@ source trees and are summarized in `THIRD_PARTY_NOTICES.md`.
   relink a modified library, as required by the LGPL and GPL. Kog builds no
   Munt frontend and distributes no Roland ROM data.
 - GPL-2.0-only components are not linked into the main application. The
-  upstream libvgm tree contains one such YMF278B core; Kog explicitly disables
-  it while retaining all other configured libvgm chip families. PSF playback
-  instead compiles GPL-2.0-only libupse and its GPL-2.0-only Kog adapter into a
-  separate `kog-psf-helper` program with a documented PCM protocol. The helper
-  and its corresponding source must be distributed under their own terms and
-  installed beside Kog; changing Kog's root license would not make GPL-2.0-only
-  and GPL-3.0-only code link-compatible.
-- SFM playback similarly compiles Cog's fork-specific GME SFM/higan subset and
-  Kog's adapter only into the GPL-2.0-only `kog-sfm-helper`. The main
-  GPL-3.0-or-later executable launches it through a documented PCM protocol and
-  links none of its objects. Binary distributions must install the helper
-  beside Kog and provide its retained source, LGPL-2.1 and GPL-2.0 notices, and
-  Kog adapter source under the helper's own terms.
-- PSF2 playback statically links the BSD-licensed Play! emulator and its
-  permissively licensed dependencies on Linux, macOS, Windows, Android, and
-  iOS. The helper executable is kept as a protocol regression target on
-  desktop builds. The GPL-3.0-or-later Kog
-  adapter, Play! notices, and dependency notices must accompany binary
-  distributions. Play! is not relicensed by Kog.
+  upstream libvgm YMF278B core remains disabled. Historical libupse and the
+  former SFM/SNSF helper wrappers are retained as source only, with their own
+  notices, and are no longer built or packaged.
+- SFM links Cog's LGPL-2.1-or-later snapshot/DSP code with the GPLv3 higan
+  v095 CPU/SMP rebase and a newly written GPL3-or-later Kog adapter. This
+  combined executable is distributable under GPL version 3; preserve the
+  donor and adaptation provenance in `native/cog-gme-sfm/PROVENANCE.md`.
+- PSF1 and PSF2 link BSD-licensed Play! HLE and audio libraries with Kog's
+  GPL3-or-later interpreter and bounded loaders. No Sony BIOS is bundled.
+  The standalone executable is a regression tool, not a runtime dependency.
 - 2SF playback statically links the official GPL-3.0-or-later melonDS core,
   psflib, and zlib on Linux, macOS, Android, and iOS. The separate
   `kog-2sf-helper` remains a desktop regression target. The pinned melonDS
@@ -60,15 +51,11 @@ source trees and are summarized in `THIRD_PARTY_NOTICES.md`.
   protocol regression target. GPL-3.0-only is compatible with distribution of
   the combined executable under GPL version 3; binary distributions must
   retain the pinned source and notices.
-- SNSF playback uses the pinned libsnsf9x library in the optional,
-  independently identified `kog-snsf-helper` program. Its Snes9x-derived core
-  permits personal/non-commercial use and adds terms incompatible with the
-  main application's GPL-3.0-or-later license; its APU components also retain
-  LGPL-2.1 terms. The helper and its adapter therefore retain those upstream
-  terms, are not linked into Kog, and must be distributed with the complete
-  retained notices and source. psflib and zlib do not alter that boundary.
-  This matches Kog's non-commercial project intent but does not relicense
-  Snes9x or make the two licenses link-compatible.
+- SNSF links the ISC ares Super Famicom subset and nall/libco components,
+  retaining the notices of the actual vendored source set. Its new Kog
+  adapter is GPL3-or-later, with MIT psflib and zlib. Snes9x and the old
+  non-commercial helper adapter are not linked or included in binary
+  packages. No external enhancement-chip firmware is bundled.
 - SC-55 playback uses the pinned Nuked SC-55 0.7.0 backend. The upstream fork
   is now GPL-2.0-or-later, so Kog uses its GPL version 3 option for the combined
   audio library on all platforms. The pinned source, its GPL license,

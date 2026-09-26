@@ -1,71 +1,45 @@
-#include "../smp/smp.hpp"
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include "dsp.hpp"
-
+#include "../smp/smp.hpp"
+#include <algorithm>
 namespace SuperFamicom {
-
-void DSP::step(uint64_t clocks) {
-  clock += clocks;
-}
-
+DSP::DSP(SMP& source) : owner(source) {}
 void DSP::enter() {
-  int64_t dsp_clocks = (-clock) / (24 * 4096) + 1;
-  spc_dsp.run(dsp_clocks);
-  step(dsp_clocks * 24 * 4096);
-
-  signed count = spc_dsp.sample_count();
-  if(count > removed_samples) {
-    for(unsigned n = removed_samples; n < count; n += 2) {
-      if (!smp.sample(samplebuffer[n + 0], samplebuffer[n + 1])) {
-        removed_samples = n;
-        return;
-      }
-    }
-    spc_dsp.set_output(samplebuffer, 8192);
-    removed_samples = 0;
+  // Keep a partial final frame across render calls, and never overrun the
+  // DSP output array even when restoring a capture's negative clock phase.
+  const auto cycles = std::min<int64_t>(256, -clock / (24 * 4096) + 1);
+  spc_dsp.run(static_cast<int>(cycles));
+  clock += cycles * 24 * 4096;
+  const auto available = static_cast<unsigned>(spc_dsp.sample_count());
+  while(consumed < available) {
+    if(!owner.sample(buffer[consumed], buffer[consumed + 1])) return;
+    consumed += 2;
+  }
+  if(available) {
+    spc_dsp.set_output(buffer, 8192);
+    consumed = 0;
   }
 }
-
-bool DSP::mute() {
-  return spc_dsp.mute();
-}
-
-uint8_t DSP::read(uint8_t addr) {
-  return spc_dsp.read(addr);
-}
-
-void DSP::write(uint8_t addr, uint8_t data) {
-  spc_dsp.write(addr, data);
-}
-
 void DSP::power() {
-  spc_dsp.init(smp.apuram);
+  spc_dsp.init(owner.apuram);
   spc_dsp.reset();
-  spc_dsp.set_output(samplebuffer, 8192);
-  removed_samples = 0;
+  spc_dsp.set_output(buffer, 8192);
+  consumed = 0;
+  clock = 0;
 }
-
 void DSP::reset() {
   spc_dsp.soft_reset();
-  spc_dsp.set_output(samplebuffer, 8192);
-  removed_samples = 0;
+  spc_dsp.set_output(buffer, 8192);
+  consumed = 0;
+  clock = 0;
 }
-
-void DSP::channel_enable(unsigned channel, bool enable) {
-  channel_enabled[channel & 7] = enable;
-  unsigned mask = 0;
-  for(unsigned i = 0; i < 8; i++) {
-    if(channel_enabled[i] == false) mask |= 1 << i;
-  }
-  spc_dsp.mute_voices(mask);
+bool DSP::mute() { return spc_dsp.mute(); }
+uint8_t DSP::read(uint8_t address) { return spc_dsp.read(address); }
+void DSP::write(uint8_t address, uint8_t value) { spc_dsp.write(address, value); }
+void DSP::channel_enable(unsigned channel, bool enabled) {
+  const unsigned bit = 1u << (channel & 7);
+  mute_mask = enabled ? mute_mask & ~bit : mute_mask | bit;
+  spc_dsp.mute_voices(mute_mask);
 }
-    
-void DSP::disable_surround(bool disable) {
-  spc_dsp.disable_surround(disable);
-}
-
-DSP::DSP(struct SMP & p_smp)
-    : smp( p_smp ), clock( 0 ), removed_samples( 0 ) {
-  for(unsigned i = 0; i < 8; i++) channel_enabled[i] = true;
-}
-
+void DSP::disable_surround(bool disabled) { spc_dsp.disable_surround(disabled); }
 }

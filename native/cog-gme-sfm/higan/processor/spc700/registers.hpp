@@ -1,3 +1,9 @@
+// higan v095, GPLv3. See PROVENANCE.md for pin and Kog adaptations.
+#if BLARGG_BIG_ENDIAN
+#define order_lsb2(a, b) b, a
+#else
+#define order_lsb2(a, b) a, b
+#endif
 struct flag_t {
   bool n, v, p, b, h, i, z, c;
 
@@ -20,11 +26,7 @@ struct flag_t {
 struct word_t {
   union {
     uint16_t w;
-#ifdef BLARGG_BIG_ENDIAN
-    struct { uint8_t h, l; };
-#else
-    struct { uint8_t l, h; };
-#endif
+    struct { uint8_t order_lsb2(l, h); };
   };
 
   inline operator unsigned() const { return w; }
@@ -48,12 +50,10 @@ struct regs_t {
   word_t pc;
   union {
     uint16_t ya;
-#ifdef BLARGG_BIG_ENDIAN
-    struct { uint8_t y, a; };
-#else
-    struct { uint8_t a, y; };
-#endif
+    struct { uint8_t order_lsb2(a, y); };
   };
   uint8_t x, s;
   flag_t p;
 };
+
+#undef order_lsb2

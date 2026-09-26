@@ -1,3 +1,4 @@
+// higan v095, GPLv3. See PROVENANCE.md for pin and Kog adaptations.
 inline uint8_t op_readpc() {
   return op_read(regs.pc++);
 }

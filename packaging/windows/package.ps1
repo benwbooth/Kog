@@ -18,20 +18,6 @@ Copy-Item (Join-Path $root "LICENSES") $stage -Recurse
 # kog-2sf-helper.exe is not built on Windows: the pinned melonDS core needs
 # GCC-only constructs and is not patched; 2SF playback reports a clear error
 # unless KOG_2SF_HELPER points at a user-supplied helper.
-$helpers = @(
-    "kog-sfm-helper.exe", "kog-psf-helper.exe",
-    "kog-snsf-helper.exe"
-)
-foreach ($helper in $helpers) {
-    $candidate = Get-ChildItem (Join-Path $root "target/release/build") -Recurse -File -Filter $helper |
-        Where-Object { $_.DirectoryName -match '[\\/]bin$' } |
-        Select-Object -First 1
-    if (-not $candidate) {
-        throw "Missing release helper: $helper"
-    }
-    Copy-Item $candidate.FullName (Join-Path $stage $helper)
-}
-
 if ($env:VCPKG_ROOT) {
     $vcpkgBin = Join-Path $env:VCPKG_ROOT "installed/x64-windows/bin"
     if (Test-Path $vcpkgBin) {
