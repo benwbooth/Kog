@@ -84,9 +84,9 @@ emulator-authentic Roland MIDI synthesis. `libvgm` wraps Cog's exact pinned
 libvgm revision for VGM/VGZ, S98, DRO, and GYM. `libopenmpt` wraps Cog's exact
 0.8.7 release for the 68 extensions returned by that pinned native build.
 `hivelytracker` wraps the official portable 1.9 replayer for AHX and HVL.
-`syntrax` invokes the canonical GPL-3.0-only `syntrax-c` JXS renderer in a
-separate fault-containment helper, preserving native subsongs and synthesis
-without translating Cog's Objective-C wrapper.
+`syntrax` links the canonical GPL-3.0-only `syntrax-c` JXS renderer in-process,
+preserving native subsongs and synthesis without translating Cog's Objective-C
+wrapper.
 `orgorg` 0.2.1 renders Organya Org-02/Org-03 songs from a user-supplied
 soundbank. `vgmstream` is the final specialist fallback for its large runtime
 extension table, after every narrower backend and excluding its common-format
