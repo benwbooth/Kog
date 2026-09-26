@@ -24,6 +24,22 @@ prefix="$build/prefix"
 jobs=${NATIVE_JOBS:-8}
 mkdir -p "$build" "$prefix/lib/pkgconfig"
 
+# CMake caches Clang's implicit header paths. After an Xcode/SDK update those
+# paths can refer to the removed SDK and cause its replacement's C headers to
+# precede libc++ headers. Re-detect compilers without discarding source or .o/.a
+# caches, including CMake projects built by the Rust audio crate.
+toolchain_stamp="$build/toolchain-version.txt"
+toolchain_version=$(printf '%s\n' "$sdk" "$clang"; "$clang" --version)
+if [[ ! -f "$toolchain_stamp" ]] || [[ "$(cat "$toolchain_stamp")" != "$toolchain_version" ]]; then
+  for cache_root in "$build" "$repo/target/$target"; do
+    [[ -d "$cache_root" ]] || continue
+    find "$cache_root" -type f \( -name CMakeCache.txt \
+      -o -name CMakeCCompiler.cmake -o -name CMakeCXXCompiler.cmake \
+      -o -name CMakeASMCompiler.cmake -o -name CMakeSystem.cmake \) -delete
+  done
+  printf '%s\n' "$toolchain_version" > "$toolchain_stamp"
+fi
+
 cat > "$build/ios.toolchain.cmake" <<EOF
 set(CMAKE_SYSTEM_NAME iOS)
 set(CMAKE_OSX_SYSROOT $sdk_name CACHE STRING "Apple SDK" FORCE)
