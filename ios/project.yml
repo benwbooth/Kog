@@ -33,7 +33,7 @@ targets:
         ENABLE_USER_SCRIPT_SANDBOXING: NO
         SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) KOG_NATIVE_AUDIO"
         LIBRARY_SEARCH_PATHS: "$(inherited) $(SRCROOT)/.native-build/xcode"
-        OTHER_LDFLAGS: "$(inherited) -lkog_ios_audio -lkog_syntrax_embedded -lkog_syntrax_core -lkog_psf2_embedded -lkog_psf2_play_core -lPlayCore -lFramework_Http -lapp_shared -lCodeGen -lFramework -llibzstd_zlibwrapper_static -lxxhash -lchdr-static -lzstd -llzma -lbz2 -larchive -lavformat -lavcodec -lavutil -lswresample -lc++ -lz -liconv -framework AudioToolbox -framework CoreAudio -framework CoreFoundation -framework Security -framework VideoToolbox"
+        OTHER_LDFLAGS: "$(inherited) -lkog_ios_audio -lkog_syntrax_embedded -lkog_syntrax_core -lkog_psf2_embedded -lkog_psf2_play_core -lPlayCore -lFramework_Http -lapp_shared -lCodeGen -lFramework -llibzstd_zlibwrapper_static -lxxhash -lchdr-static -lzstd -llzma -lkog_twosf_embedded -lcore -lteakra -lkog_twosf_psflib -lkog_twosf_platform -lbz2 -larchive -lavformat -lavcodec -lavutil -lswresample -lc++ -lz -liconv -framework AudioToolbox -framework CoreAudio -framework CoreFoundation -framework Security -framework VideoToolbox"
     preBuildScripts:
       - name: Build shared Rust decoders
         basedOnDependencyAnalysis: false

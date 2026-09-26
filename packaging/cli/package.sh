@@ -20,7 +20,7 @@ stage="$(mktemp -d "$dist/.stage.XXXXXX")"
 trap 'rm -rf "$stage"' EXIT
 
 helpers=(
-  kog-sfm-helper kog-psf-helper kog-2sf-helper
+  kog-sfm-helper kog-psf-helper
   kog-snsf-helper kog-sc55-helper
 )
 ffmpeg="$(command -v ffmpeg || true)"

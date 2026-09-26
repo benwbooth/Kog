@@ -49,7 +49,7 @@ magick "$repo/ios/Kog/Assets.xcassets/AppIcon.appiconset/Kog-1024.png" \
 cd "$repo/ios"
 xcrun --sdk "$sdk_name" swiftc -O -D KOG_NATIVE_AUDIO -module-name Kog \
   -target "$triple" -sdk "$sdk" -L "$build/link" \
-  -lkog_ios_audio -lkog_syntrax_embedded -lkog_syntrax_core -lkog_psf2_embedded -lkog_psf2_play_core -lPlayCore -lFramework_Http -lapp_shared -lCodeGen -lFramework -llibzstd_zlibwrapper_static -lxxhash -lchdr-static -lzstd -llzma -lbz2 -larchive -lavformat -lavcodec -lavutil -lswresample \
+  -lkog_ios_audio -lkog_syntrax_embedded -lkog_syntrax_core -lkog_psf2_embedded -lkog_psf2_play_core -lPlayCore -lFramework_Http -lapp_shared -lCodeGen -lFramework -llibzstd_zlibwrapper_static -lxxhash -lchdr-static -lzstd -llzma -lkog_twosf_embedded -lcore -lteakra -lkog_twosf_psflib -lkog_twosf_platform -lbz2 -larchive -lavformat -lavcodec -lavutil -lswresample \
   -lc++ -lz -liconv \
   -framework AudioToolbox -framework CoreAudio -framework CoreFoundation \
   -framework Security -framework VideoToolbox Kog/*.swift -o "$app/Kog"

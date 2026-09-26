@@ -30,7 +30,7 @@ desktop_icon="$tool_dir/org.kog.player.svg"
 install -m644 "$root_dir/qml/icons/kog.svg" "$desktop_icon"
 
 helpers=(
-  kog-sfm-helper kog-psf-helper kog-2sf-helper
+  kog-sfm-helper kog-psf-helper
   kog-snsf-helper kog-sc55-helper
 )
 helper_args=()

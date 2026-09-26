@@ -498,11 +498,11 @@ melonDS is Copyright (c) 2016-2026 Arisotura and contributors and is licensed
 under GNU General Public License version 3 or later. The complete license and
 per-file copyright notices remain in the pinned submodule; its GPL text is
 identical to Kog's root `LICENSE`. Kog's GPL-3.0-or-later adapter under
-`native/twosf-helper`, melonDS, psflib, and system zlib are compiled into the
-separate `kog-2sf-helper` executable. This is a fault-containment boundary, not
-a license workaround. Binary distributors must install the helper beside Kog
-and provide the corresponding source and notices under their respective
-terms.
+`native/twosf-helper`, melonDS, psflib, and system zlib are linked into the
+shared Rust audio backend on Unix and iOS. The separate `kog-2sf-helper`
+executable remains a protocol regression target. This in-process path does not
+provide fault isolation; distributors must provide the corresponding source
+and notices under their respective terms.
 
 The helper uses the metadata/PCM protocol in
 `native/twosf-helper/PROTOCOL.md`, validates bounded 2SF ROM/save mappings and

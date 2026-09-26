@@ -5,7 +5,7 @@
  *
  * psflib supplies xSF dependency traversal and decompression. The maintained
  * melonDS core supplies the Nintendo DS implementation. This file is only the
- * bounded 2SF map adapter and Kog's process protocol.
+ * bounded 2SF map adapter and Kog's PCM protocol.
  */
 
 #include <algorithm>
@@ -39,6 +39,13 @@
 #include "SPI.h"
 #include "SPU.h"
 #include "psflib.h"
+
+#ifdef KOG_EMBEDDED
+#include "../embedded_stream.h"
+static thread_local FILE* kog_embedded_output = nullptr;
+#undef stdout
+#define stdout kog_embedded_output
+#endif
 
 namespace fs = std::filesystem;
 
@@ -548,6 +555,7 @@ int runHelper(const std::string& path, const char* startText, const char* defaul
 }
 }
 
+#ifndef KOG_EMBEDDED
 #ifdef _WIN32
 int wmain(int argc, wchar_t** argv)
 {
@@ -600,5 +608,41 @@ int main(int argc, char** argv)
         std::fprintf(stderr, "%s\n", error.what());
         return 3;
     }
+}
+#endif
+#endif // !KOG_EMBEDDED
+
+#ifdef KOG_EMBEDDED
+extern "C" int kog_twosf_embedded_run(const char* path, uint64_t start_frame,
+                                       uint32_t length_ms, uint32_t fade_ms,
+                                       intptr_t descriptor, char* error,
+                                       size_t error_capacity) noexcept
+{
+    FILE* output = kog_embedded_stream_open(descriptor);
+    if(!output)
+    {
+        if(error_capacity) std::snprintf(error, error_capacity, "Could not open 2SF PCM stream");
+        return -1;
+    }
+    kog_embedded_output = output;
+    int result = -1;
+    try
+    {
+        const std::string start = std::to_string(start_frame);
+        const std::string length = std::to_string(length_ms);
+        const std::string fade = std::to_string(fade_ms);
+        result = runHelper(path, start.c_str(), length.c_str(), fade.c_str());
+    }
+    catch(const std::exception& failure)
+    {
+        if(error_capacity) std::snprintf(error, error_capacity, "%s", failure.what());
+    }
+    if(std::fclose(output) != 0 && result == 0)
+    {
+        if(error_capacity) std::snprintf(error, error_capacity, "Writing 2SF PCM stream failed");
+        result = -1;
+    }
+    kog_embedded_output = nullptr;
+    return result;
 }
 #endif

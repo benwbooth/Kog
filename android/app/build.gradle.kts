@@ -32,6 +32,17 @@ android {
     }
 }
 
+val kogNotices = tasks.register<Copy>("copyKogNotices") {
+    val sourceRoot = rootProject.projectDir.parentFile
+    from(sourceRoot.resolve("LICENSE"))
+    from(sourceRoot.resolve("THIRD_PARTY_NOTICES.md"))
+    from(sourceRoot.resolve("LICENSES")) { into("LICENSES") }
+    into(layout.buildDirectory.dir("generated/kogNotices"))
+}
+android.sourceSets["main"].assets.srcDir(layout.buildDirectory.dir("generated/kogNotices"))
+tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Assets") }
+    .configureEach { dependsOn(kogNotices) }
+
 kotlin {
     compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) }
 }

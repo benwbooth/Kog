@@ -22,7 +22,7 @@ cp -R "$root_dir/LICENSES" "$contents/Resources/LICENSES"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" "$contents/Info.plist"
 
 helpers=(
-  kog-sfm-helper kog-psf-helper kog-2sf-helper
+  kog-sfm-helper kog-psf-helper
   kog-snsf-helper kog-sc55-helper
 )
 extra_executables=()

@@ -652,19 +652,6 @@
     {
         "type": "archive",
         "archive-type": "tar-gzip",
-        "url": "https://static.crates.io/crates/compress-tools/compress-tools-0.16.1.crate",
-        "sha256": "51fb07cbf6204adb9e71af7b689dc5caeca6147f9d9dd5c8f9ae3447147012c0",
-        "dest": "cargo/vendor/compress-tools-0.16.1"
-    },
-    {
-        "type": "inline",
-        "contents": "{\"package\": \"51fb07cbf6204adb9e71af7b689dc5caeca6147f9d9dd5c8f9ae3447147012c0\", \"files\": {}}",
-        "dest": "cargo/vendor/compress-tools-0.16.1",
-        "dest-filename": ".cargo-checksum.json"
-    },
-    {
-        "type": "archive",
-        "archive-type": "tar-gzip",
         "url": "https://static.crates.io/crates/concurrent-queue/concurrent-queue-2.5.0.crate",
         "sha256": "4ca0197aee26d1ae37445ee532fefce43251d24cc7c166799f4d46817f1d3973",
         "dest": "cargo/vendor/concurrent-queue-2.5.0"
@@ -4162,6 +4149,19 @@
     {
         "type": "archive",
         "archive-type": "tar-gzip",
+        "url": "https://static.crates.io/crates/typed-path/typed-path-0.12.3.crate",
+        "sha256": "8e28f89b80c87b8fb0cf04ab448d5dd0dd0ade2f8891bae878de66a75a28600e",
+        "dest": "cargo/vendor/typed-path-0.12.3"
+    },
+    {
+        "type": "inline",
+        "contents": "{\"package\": \"8e28f89b80c87b8fb0cf04ab448d5dd0dd0ade2f8891bae878de66a75a28600e\", \"files\": {}}",
+        "dest": "cargo/vendor/typed-path-0.12.3",
+        "dest-filename": ".cargo-checksum.json"
+    },
+    {
+        "type": "archive",
+        "archive-type": "tar-gzip",
         "url": "https://static.crates.io/crates/typenum/typenum-1.20.1.crate",
         "sha256": "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20",
         "dest": "cargo/vendor/typenum-1.20.1"
@@ -5236,6 +5236,19 @@
         "type": "inline",
         "contents": "{\"package\": \"34df6fc39dbd26ddc9c10e6a2984476e13acce22e64e4487636ef494369225da\", \"files\": {}}",
         "dest": "cargo/vendor/zerovec-derive-0.11.6",
+        "dest-filename": ".cargo-checksum.json"
+    },
+    {
+        "type": "archive",
+        "archive-type": "tar-gzip",
+        "url": "https://static.crates.io/crates/zip/zip-8.6.0.crate",
+        "sha256": "2d04a6b5381502aa6087c94c669499eb1602eb9c5e8198e534de571f7154809b",
+        "dest": "cargo/vendor/zip-8.6.0"
+    },
+    {
+        "type": "inline",
+        "contents": "{\"package\": \"2d04a6b5381502aa6087c94c669499eb1602eb9c5e8198e534de571f7154809b\", \"files\": {}}",
+        "dest": "cargo/vendor/zip-8.6.0",
         "dest-filename": ".cargo-checksum.json"
     },
     {

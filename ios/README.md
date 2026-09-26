@@ -23,9 +23,9 @@ xcodebuild -project Kog.xcodeproj -scheme Kog -configuration Release \
 ```
 
 The Xcode build phase runs `ios/native/build.sh` for the selected platform. It
-builds static FFmpeg, libarchive, Syntrax, and Play! PSF2 libraries, then links
-`kog-ios-audio`. The first
-build takes several minutes. Its downloads and intermediate output live under
+builds static FFmpeg, libarchive, Syntrax, Play! PSF2, and melonDS 2SF libraries,
+then links `kog-ios-audio`. The first build takes several minutes. Its downloads
+and intermediate output live under
 `ios/.native-build` and `target`, which Git ignores.
 
 For a toolchain whose Xcode first-launch setup is still pending, the standalone
@@ -46,12 +46,11 @@ The app does not need a server to play imported local files.
 
 ## Current format limits
 
-The local decoder uses the same `kog-audio` registry as desktop Kog. Syntrax
-and PSF2 use static renderer libraries through the shared Rust backend. SFM,
+The local decoder uses the same `kog-audio` registry as desktop Kog. Syntrax,
+PSF2, and 2SF use static renderer libraries through the shared Rust backend. SFM,
 PSF1, SNSF, and Nuked SC-55 remain separate executables on desktop because
 their upstream licenses cannot be linked into Kog's GPL-3.0-or-later binary.
-2SF still uses an executable while its in-process port is pending. iOS cannot
-run those five helper executables, so their local playback remains unavailable.
+iOS cannot run those four helper executables, so their local playback remains unavailable.
 Imported archives can be browsed by folder, including nested archives, and
 subsong selection uses the same backend as the other frontends.
 

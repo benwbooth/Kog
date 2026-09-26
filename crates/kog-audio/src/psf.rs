@@ -308,13 +308,28 @@ fn spawn_helper(
     default_fade_milliseconds: u32,
 ) -> Result<(PsfProcess, HelperHeader), String> {
     #[cfg(not(windows))]
-    if psf_format_version(path)? == 2 {
-        return spawn_embedded_psf2(
-            path,
-            start_frame,
-            default_length_milliseconds,
-            default_fade_milliseconds,
-        );
+    match psf_format_version(path)? {
+        2 => {
+            return spawn_embedded_renderer(
+                path,
+                start_frame,
+                default_length_milliseconds,
+                default_fade_milliseconds,
+                "PSF2",
+                kog_psf2_embedded_run,
+            );
+        }
+        0x24 => {
+            return spawn_embedded_renderer(
+                path,
+                start_frame,
+                default_length_milliseconds,
+                default_fade_milliseconds,
+                "2SF",
+                kog_twosf_embedded_run,
+            );
+        }
+        _ => {}
     }
     #[cfg(target_os = "ios")]
     return Err(
@@ -383,20 +398,42 @@ unsafe extern "C" {
         error: *mut std::ffi::c_char,
         error_capacity: usize,
     ) -> i32;
+    fn kog_twosf_embedded_run(
+        path: *const std::ffi::c_char,
+        start_frame: u64,
+        default_length_ms: u32,
+        default_fade_ms: u32,
+        descriptor: isize,
+        error: *mut std::ffi::c_char,
+        error_capacity: usize,
+    ) -> i32;
 }
 
 #[cfg(not(windows))]
-fn spawn_embedded_psf2(
+type EmbeddedPsfRunner = unsafe extern "C" fn(
+    *const std::ffi::c_char,
+    u64,
+    u32,
+    u32,
+    isize,
+    *mut std::ffi::c_char,
+    usize,
+) -> i32;
+
+#[cfg(not(windows))]
+fn spawn_embedded_renderer(
     path: &Path,
     start_frame: u64,
     default_length_milliseconds: u32,
     default_fade_milliseconds: u32,
+    name: &'static str,
+    run: EmbeddedPsfRunner,
 ) -> Result<(PsfProcess, HelperHeader), String> {
     let path = std::ffi::CString::new(path.to_string_lossy().as_bytes())
-        .map_err(|_| "PSF2 path contains a NUL byte".to_owned())?;
+        .map_err(|_| format!("{name} path contains a NUL byte"))?;
     let mut stdout =
         crate::embedded_helper::EmbeddedHelper::spawn(move |descriptor, error| unsafe {
-            kog_psf2_embedded_run(
+            run(
                 path.as_ptr(),
                 start_frame,
                 default_length_milliseconds,
@@ -409,7 +446,7 @@ fn spawn_embedded_psf2(
     let header = HelperHeader::read(&mut stdout).map_err(|error| {
         let detail = stdout.failure().unwrap_or_default();
         format!(
-            "Opening PSF2 stream failed: {error}{}",
+            "Opening {name} stream failed: {error}{}",
             if detail.is_empty() {
                 String::new()
             } else {

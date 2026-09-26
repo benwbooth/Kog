@@ -114,6 +114,13 @@ cmake -S "$repo/native/psf2-helper" -B "$build/psf2-build" -G Ninja \
 cmake --build "$build/psf2-build" --target kog_psf2_embedded --parallel "$jobs"
 find "$build/psf2-build" -name '*.a' -type f -exec cp -f {} "$prefix/lib/" \;
 
+cmake -S "$repo/native/twosf-helper" -B "$build/twosf-build" -G Ninja \
+  -DCMAKE_TOOLCHAIN_FILE="$build/ios.toolchain.cmake" \
+  -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$prefix" \
+  -DMELONDS_SOURCE="$repo/native/melonds" -DPSFLIB_SOURCE="$repo/native/psflib"
+cmake --build "$build/twosf-build" --target kog_twosf_embedded --parallel "$jobs"
+find "$build/twosf-build" -name '*.a' -type f -exec cp -f {} "$prefix/lib/" \;
+
 export KOG_IOS_NATIVE_LIB_DIR="$prefix/lib"
 export CMAKE_TOOLCHAIN_FILE="$build/ios.toolchain.cmake"
 export CMAKE_GENERATOR=Ninja

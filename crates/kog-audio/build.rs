@@ -49,8 +49,10 @@ fn main() {
             println!("cargo:rustc-link-lib=static={name}");
         }
         link_psf2_archives(Path::new(&native_libs), true);
-        // The remaining desktop helpers still need in-process adapters.
-        for name in ["SFM", "PSF", "2SF", "SNSF", "SC55"] {
+        link_twosf_archives(Path::new(&native_libs), true);
+        // The remaining helpers stay separate because their upstream licenses
+        // cannot be combined with Kog's GPL-3.0 binary.
+        for name in ["SFM", "PSF", "SNSF", "SC55"] {
             println!("cargo:rustc-env=KOG_BUILD_{name}_HELPER=unsupported-on-ios");
         }
     } else {
@@ -1524,6 +1526,42 @@ fn find_archive(root: &Path, filename: &str) -> Option<PathBuf> {
     None
 }
 
+fn link_twosf_archives(root: &Path, ios: bool) {
+    for name in [
+        "kog_twosf_embedded",
+        "core",
+        "teakra",
+        "kog_twosf_psflib",
+        "kog_twosf_platform",
+    ] {
+        let filename = format!("lib{name}.a");
+        let archive = if ios {
+            root.join(&filename)
+        } else {
+            find_archive(root, &filename).unwrap_or_else(|| {
+                panic!(
+                    "2SF build did not produce {filename} under {}",
+                    root.display()
+                )
+            })
+        };
+        if !archive.is_file() {
+            panic!("2SF archive is missing: {}", archive.display());
+        }
+        println!(
+            "cargo:rustc-link-search=native={}",
+            archive.parent().unwrap().display()
+        );
+        println!("cargo:rustc-link-lib=static={name}");
+    }
+    println!("cargo:rustc-link-lib=z");
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let target_env = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
+    if !ios && (target_os == "android" || target_os == "linux" && target_env != "musl") {
+        println!("cargo:rustc-link-lib=dl");
+    }
+}
+
 fn build_twosf_helper() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         // The pinned melonDS core leans on GCC-only constructs (inline asm,
@@ -1588,6 +1626,7 @@ fn build_twosf_helper() {
         "cargo:rustc-env=KOG_BUILD_2SF_HELPER={}",
         executable.display()
     );
+    link_twosf_archives(&output.join("build"), false);
     watch_native("../../native/twosf-helper");
     watch_native("../../native/melonds");
 }

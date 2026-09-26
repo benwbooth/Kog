@@ -228,12 +228,19 @@ u64 FileLength(FileHandle* file)
 
 void Log(LogLevel level, const char* format, ...)
 {
+#ifdef KOG_EMBEDDED
+    // A renderer running inside Kog must not write emulator diagnostics into
+    // the TUI terminal. Fatal playback errors travel through the C ABI.
+    (void)level;
+    (void)format;
+#else
     if(level < LogLevel::Warn) return;
     std::fputs(level == LogLevel::Error ? "melonDS error: " : "melonDS warning: ", stderr);
     va_list arguments;
     va_start(arguments, format);
     std::vfprintf(stderr, format, arguments);
     va_end(arguments);
+#endif
 }
 
 Thread* Thread_Create(std::function<void()> function)
