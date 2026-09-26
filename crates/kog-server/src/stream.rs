@@ -460,8 +460,10 @@ mod tests {
                 .unwrap_or_else(|error| panic!("{codec:?} decode: {error}"));
             let mut output = [0.0_f32; 4096];
             let mut loud = false;
+            let mut decoded_frames = 0;
             for _ in 0..16 {
                 let frames = decoder.render(&mut output).unwrap();
+                decoded_frames += frames;
                 loud |= output[..frames * usize::from(decoder.channels())]
                     .iter()
                     .any(|sample| sample.abs() > 0.01);
@@ -470,6 +472,16 @@ mod tests {
                 }
             }
             assert!(loud, "{codec:?} decoded audio is silent");
+            if codec == StreamCodec::Flac {
+                loop {
+                    let frames = decoder.render(&mut output).unwrap();
+                    if frames == 0 {
+                        break;
+                    }
+                    decoded_frames += frames;
+                }
+                assert_eq!(decoded_frames, 44_100, "FLAC must not pad the final frame");
+            }
         }
     }
 

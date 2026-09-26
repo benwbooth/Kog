@@ -206,7 +206,10 @@ struct Encoder
     void emitFrame(int count, bool final)
     {
         const int frameSize = codec->frame_size > 0 ? codec->frame_size : 4096;
-        const int samples = final && codec->frame_size > 0 ? frameSize : count;
+        const bool needsPadding = final && codec->frame_size > 0 &&
+            !(codec->codec->capabilities & (AV_CODEC_CAP_SMALL_LAST_FRAME |
+                                            AV_CODEC_CAP_VARIABLE_FRAME_SIZE));
+        const int samples = needsPadding ? frameSize : count;
         AVFrame* frame = av_frame_alloc();
         if(!frame) throw std::runtime_error("allocating audio frame failed");
         frame->nb_samples = samples;
