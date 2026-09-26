@@ -129,6 +129,14 @@ struct Sc55Schedule {
 impl Sc55 {
     pub fn open(midi: &[u8], path: &Path, rom_directory: &Path) -> Result<Self, String> {
         let schedule = Sc55Schedule::parse(midi)?;
+        // Android's default /data/local/tmp is not writable by an app. ROMs
+        // imported by the mobile clients live under their private data area,
+        // so keep both the schedule and seek cache alongside that directory.
+        #[cfg(any(target_os = "ios", target_os = "android"))]
+        let mut schedule_file = NamedTempFile::new_in(
+            rom_directory.parent().ok_or("SC-55 ROM directory has no parent")?,
+        ).map_err(|error| format!("creating SC-55 schedule: {error}"))?;
+        #[cfg(not(any(target_os = "ios", target_os = "android")))]
         let mut schedule_file =
             NamedTempFile::new().map_err(|error| format!("creating SC-55 schedule: {error}"))?;
         schedule.write(&mut schedule_file)?;
@@ -236,6 +244,12 @@ impl Sc55 {
         child: Option<Child>,
         stream_shutdown: Option<StreamShutdown>,
     ) -> Result<Self, String> {
+        #[cfg(any(target_os = "ios", target_os = "android"))]
+        let cache = NamedTempFile::new_in(
+            schedule_file.path().parent().expect("SC-55 schedule has a parent"),
+        )
+            .map_err(|error| format!("creating SC-55 PCM seek cache: {error}"))?;
+        #[cfg(not(any(target_os = "ios", target_os = "android")))]
         let cache = NamedTempFile::new()
             .map_err(|error| format!("creating SC-55 PCM seek cache: {error}"))?;
         let cache_reader = cache
