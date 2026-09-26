@@ -40,6 +40,8 @@ final class KogStore: ObservableObject {
     @Published var devicePath = ""
     @Published var error: String?
     @Published var importing = false
+    @Published var downloading = Set<String>()
+    @Published var downloadNotice: String?
 
     private var player: AVPlayer?
     private var assetLoader: AuthenticatedAssetLoader?
@@ -56,6 +58,7 @@ final class KogStore: ObservableObject {
     private var importScanTask: Task<Void, Never>?
     private var shuffleHistory = [Int]()
     private var suppressSave = false
+    private var downloadNoticeTask: Task<Void, Never>?
     private var nowPlayingArtTask: Task<Void, Never>?
     private var nowPlayingArtwork: MPMediaItemArtwork?
 
@@ -492,6 +495,35 @@ final class KogStore: ObservableObject {
             }.value
             scanImports()
         } catch { importing = false; report(error) }
+    }
+
+    func saveFromServer(_ track: Track) async {
+        guard !downloading.contains(track.id) else { return }
+        downloading.insert(track.id)
+        defer { downloading.remove(track.id) }
+        do {
+            let (temporary, filename) = try await api.download(track)
+            let root = importsURL
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            let stem = (filename as NSString).deletingPathExtension
+            let ext = (filename as NSString).pathExtension
+            var destination = root.appendingPathComponent(filename)
+            var suffix = 2
+            while FileManager.default.fileExists(atPath: destination.path) {
+                let uniqueName = "\(stem) (\(suffix))" + (ext.isEmpty ? "" : ".\(ext)")
+                destination = root.appendingPathComponent(uniqueName)
+                suffix += 1
+            }
+            try FileManager.default.moveItem(at: temporary, to: destination)
+            if devicePath.isEmpty || devicePath == root.path { scanImports() }
+            let notice = "Saved \(destination.lastPathComponent) on this iPhone"
+            downloadNotice = notice
+            downloadNoticeTask?.cancel()
+            downloadNoticeTask = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(3))
+                if !Task.isCancelled, self?.downloadNotice == notice { self?.downloadNotice = nil }
+            }
+        } catch { report(error) }
     }
 
     func deleteDeviceFile(_ track: Track) {

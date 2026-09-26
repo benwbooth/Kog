@@ -43,6 +43,15 @@ struct ContentView: View {
         }
         .background(Palette.window.ignoresSafeArea())
         .tint(Palette.accent)
+        .overlay(alignment: .top) {
+            if let notice = store.downloadNotice {
+                Label(notice, systemImage: "checkmark.circle.fill")
+                    .font(.subheadline).lineLimit(2)
+                    .padding(.horizontal, 14).padding(.vertical, 10)
+                    .background(Palette.raised, in: RoundedRectangle(cornerRadius: 12))
+                    .padding(.horizontal, 16).padding(.top, 60)
+            }
+        }
         .sheet(isPresented: $showSettings) { settings }
         .sheet(isPresented: $showPlayer) { fullPlayer }
         .fileImporter(isPresented: $showFilePicker, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
@@ -215,6 +224,7 @@ struct ContentView: View {
                         TrackRow(track: track, action: { Task { await store.addFile(track, play: true) }; tab = .queue }, add: {
                             Task { await store.addFile(track) }
                         })
+                        .contextMenu { downloadMenuItem(track) }
                     }
                 }.listStyle(.plain).scrollContentBackground(.hidden)
             }
@@ -327,6 +337,7 @@ struct ContentView: View {
     @ViewBuilder private func queueMenu(_ track: Track, at index: Int) -> some View {
         if !track.isDevice {
             Button(store.stars.contains(track.id) ? "Unstar" : "Star", systemImage: "star") { Task { await store.toggleStar(track) } }
+            downloadMenuItem(track)
             Menu("Add to playlist", systemImage: "text.badge.plus") {
                 ForEach(store.playlists) { playlist in
                     Button(playlist.name) { Task { await store.appendToPlaylist(playlist, tracks: [track]) } }
@@ -335,6 +346,14 @@ struct ContentView: View {
         }
         Button("Remove from queue", systemImage: "trash", role: .destructive) {
             if store.queue.indices.contains(index) { store.remove(IndexSet(integer: index)) }
+        }
+    }
+
+    @ViewBuilder private func downloadMenuItem(_ track: Track) -> some View {
+        if track.kind == "local" || track.kind == "archive" {
+            Button("Save to iPhone", systemImage: "square.and.arrow.down") {
+                Task { await store.saveFromServer(track) }
+            }.disabled(store.downloading.contains(track.id))
         }
     }
 
@@ -352,6 +371,7 @@ struct ContentView: View {
                 List {
                     ForEach(store.playlistTracks) { track in
                         TrackRow(track: track, action: { store.add([track], play: true); tab = .queue }, add: { store.add([track]) })
+                            .contextMenu { downloadMenuItem(track) }
                     }
                 }.listStyle(.plain).scrollContentBackground(.hidden)
                 .contextMenu {
@@ -472,6 +492,14 @@ struct ContentView: View {
                 }.frame(minHeight: 44)
                 Spacer()
                 if let track = store.current, !track.isDevice {
+                    if track.kind == "local" || track.kind == "archive" {
+                        Button { Task { await store.saveFromServer(track) } } label: {
+                            if store.downloading.contains(track.id) { ProgressView().frame(width: 44, height: 44) }
+                            else { Image(systemName: "square.and.arrow.down").frame(width: 44, height: 44) }
+                        }
+                        .disabled(store.downloading.contains(track.id))
+                        .accessibilityLabel("Save to iPhone")
+                    }
                     Button { Task { await store.toggleStar(track) } } label: {
                         Image(systemName: store.stars.contains(track.id) ? "star.fill" : "star")
                             .foregroundStyle(store.stars.contains(track.id) ? .yellow : Palette.muted)

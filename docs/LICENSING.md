@@ -45,9 +45,9 @@ source trees and are summarized in `THIRD_PARTY_NOTICES.md`.
   beside Kog and provide its retained source, LGPL-2.1 and GPL-2.0 notices, and
   Kog adapter source under the helper's own terms.
 - PSF2 playback statically links the BSD-licensed Play! emulator and its
-  permissively licensed dependencies on Linux, macOS, Android, and iOS. Windows
-  still uses a separate `kog-psf2-helper`. The helper executable is also kept
-  as a protocol regression target on desktop builds. The GPL-3.0-or-later Kog
+  permissively licensed dependencies on Linux, macOS, Windows, Android, and
+  iOS. The helper executable is kept as a protocol regression target on
+  desktop builds. The GPL-3.0-or-later Kog
   adapter, Play! notices, and dependency notices must accompany binary
   distributions. Play! is not relicensed by Kog.
 - 2SF playback statically links the official GPL-3.0-or-later melonDS core,

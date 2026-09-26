@@ -546,10 +546,11 @@ missing dependencies, mini-library resolution, and a ZIP-contained pair. A
 broad redistributable corpus, Cog's leading-silence scan, configurable timing,
 Windows/macOS runtime gates, and direct Cog comparison remain parity work.
 
-PSF2 and miniPSF2 reuse Play! revision `04bde0d`. Linux, macOS, Android, and
-iOS link its IOP HLE BIOS, MIPS execution, PSF filesystem, and SPU2 emulator
-through a private PCM stream. Windows still uses `kog-psf2-helper`. The adapter
-prevalidates every root and dependency file, bounds aggregate filesystem data
+PSF2 and miniPSF2 reuse Play! revision `04bde0d`. Linux, macOS, Windows,
+Android, and iOS link its IOP HLE BIOS, MIPS execution, PSF filesystem, and
+SPU2 emulator through a private PCM stream. The separate `kog-psf2-helper`
+remains a desktop protocol regression target. The adapter prevalidates every
+root and dependency file, bounds aggregate filesystem data
 and compressed blocks, rejects absolute/cyclic or more-than-sixteen-level
 library chains, verifies zlib output, requires a root `psf2.irx`, and validates
 its little-endian MIPS ELF tables, single load segment, IOP module section, and

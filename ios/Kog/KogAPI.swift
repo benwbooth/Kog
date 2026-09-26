@@ -58,10 +58,8 @@ struct KogAPI {
         try await request("/api/art", query: ["kind": track.kind, "path": track.path])
     }
 
-    private func request(_ endpoint: String, query: [String: String] = [:],
-                         method: String = "GET", body: Any? = nil) async throws -> Data {
+    private func authenticatedRequest(_ endpoint: String, query: [String: String] = [:]) throws -> URLRequest {
         var request = URLRequest(url: try url(endpoint, query))
-        request.httpMethod = method
         request.timeoutInterval = 45
         if !token.isEmpty {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -69,6 +67,36 @@ struct KogAPI {
             let raw = Data("\(username):\(password)".utf8).base64EncodedString()
             request.setValue("Basic \(raw)", forHTTPHeaderField: "Authorization")
         }
+        return request
+    }
+
+    func download(_ track: Track) async throws -> (URL, String) {
+        guard track.kind == "local" || track.kind == "archive" else {
+            throw KogError.response("Only server files and archive members can be saved on this iPhone")
+        }
+        var request = try authenticatedRequest("/api/media/download", query: [
+            "kind": track.kind, "path": track.path, "entry": track.entry,
+        ])
+        request.timeoutInterval = 3600
+        let (temporary, response) = try await URLSession.shared.download(for: request)
+        guard let response = response as? HTTPURLResponse else {
+            throw KogError.response("No server response")
+        }
+        guard (200..<300).contains(response.statusCode) else {
+            throw KogError.response("Download failed (HTTP \(response.statusCode))")
+        }
+        let sourceName = track.kind == "archive" ? track.entry : track.path
+        let filename = URL(fileURLWithPath: sourceName).lastPathComponent
+        guard !filename.isEmpty && filename != "." && filename != ".." else {
+            throw KogError.response("The server file has no usable name")
+        }
+        return (temporary, filename)
+    }
+
+    private func request(_ endpoint: String, query: [String: String] = [:],
+                         method: String = "GET", body: Any? = nil) async throws -> Data {
+        var request = try authenticatedRequest(endpoint, query: query)
+        request.httpMethod = method
         if let body {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
