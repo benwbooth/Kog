@@ -29,7 +29,8 @@ Local changes:
 - Video presentation uses the calling worker; all PPU, CPU, interrupt, DMA,
   APU and cartridge timing remains active.
 - The unused SLJIT include and executable fixed allocator implementation are
-  excluded. `LIBCO_MP` is enabled; `LIBCO_MPROTECT` is rejected at compile time.
+  excluded, along with nall's unused macOS-only JIT protection helper.
+  `LIBCO_MP` is enabled; `LIBCO_MPROTECT` is rejected at compile time.
   Coroutine switching uses statically linked machine instructions.
 - Debug notices go to stderr, keeping the PCM protocol uncorrupted.
 - Only nall's unchanged `Path::temporary()` is compiled from its path utility;

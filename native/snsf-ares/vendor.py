@@ -39,6 +39,15 @@ for name,replacements in {
     p.write_text(t)
 # The renderer doesn't use JIT allocation. Keep it out of the source tree entirely.
 for p in (dst/'ares/ares/memory').glob('fixed-allocator.cpp'): p.unlink()
+# The unused inline helper references a macOS-only API even when compiling for
+# iPhone. Remove its declaration and definition: this core never uses JIT, and
+# an accidental future call should fail to compile rather than become a no-op.
+p=dst/'nall/nall/memory.hpp';t=p.read_text()
+assert '  auto jitprotect(bool executable) -> void;\n' in t
+t=t.replace('  auto jitprotect(bool executable) -> void;\n','')
+begin=t.index('inline auto jitprotect(bool executable) -> void {')
+end=t.index('\n}\n\n',begin)+4
+p.write_text(t[:begin]+t[end:])
 # No UI artwork other than the core's controller crosshairs is required.
 r=dst/'ares/ares/resource'; shutil.rmtree(r);r.mkdir()
 t='#pragma once\nnamespace Resource::Sprite::SuperFamicom {\n'
