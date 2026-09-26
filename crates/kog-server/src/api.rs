@@ -1265,9 +1265,17 @@ pub async fn media_download(
     .unwrap_or_else(|error| Err(error.to_string()));
 
     match job {
-        Ok((file, name)) => match tokio::fs::read(&file).await {
-            Ok(bytes) => {
-                let mut response = Response::new(axum::body::Body::from(bytes));
+        Ok((file, name)) => match tokio::fs::File::open(&file).await {
+            Ok(source) => {
+                let size = match source.metadata().await {
+                    Ok(metadata) if metadata.is_file() => metadata.len(),
+                    Ok(_) => return bad_request("the download source is not a file"),
+                    Err(error) => {
+                        return bad_request(&format!("reading {}: {error}", file.display()));
+                    }
+                };
+                let body = axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(source));
+                let mut response = Response::new(body);
                 *response.status_mut() = StatusCode::OK;
                 let ascii: String = name
                     .chars()
@@ -1300,9 +1308,13 @@ pub async fn media_download(
                     axum::http::header::CONTENT_TYPE,
                     axum::http::HeaderValue::from_static("application/octet-stream"),
                 );
+                response.headers_mut().insert(
+                    axum::http::header::CONTENT_LENGTH,
+                    axum::http::HeaderValue::from(size),
+                );
                 response
             }
-            Err(error) => bad_request(&format!("reading {}: {error}", file.display())),
+            Err(error) => bad_request(&format!("opening {}: {error}", file.display())),
         },
         Err(error) => bad_request(&error),
     }

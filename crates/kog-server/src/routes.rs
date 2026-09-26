@@ -876,6 +876,30 @@ mod tests {
         AppState::new(config, "9.9.9", streams(), library)
     }
 
+    #[tokio::test]
+    async fn media_download_streams_original_bytes_with_length() {
+        let (library, root) = library_with(&["large.wav"]);
+        let source = root.join("large.wav");
+        let bytes = vec![0x5a; 2 * 1024 * 1024];
+        std::fs::write(&source, &bytes).unwrap();
+        let response = router(state_with(AuthMode::None, "", library))
+            .oneshot(
+                HttpRequest::builder()
+                    .uri(format!("/api/media/download?kind=local&path={}", source.display()))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CONTENT_LENGTH).unwrap(),
+            bytes.len().to_string().as_str()
+        );
+        let received = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(received.as_ref(), bytes);
+    }
+
     #[test]
     fn range_requests_cover_the_usual_shapes() {
         // Whole-file prefix, suffix, explicit window, and clamping.
