@@ -1,5 +1,5 @@
 /*
- * Kog Syntrax helper process.
+ * Kog Syntrax renderer adapter.
  * Copyright (C) 2026 Kog contributors.
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
@@ -31,7 +31,16 @@
 #endif
 
 #include "jaytrax.h"
+
 #include "jxs.h"
+
+#ifdef KOG_EMBEDDED
+#include "../embedded_stream.h"
+static thread_local FILE* kog_embedded_output = nullptr;
+#undef stdout
+#define stdout kog_embedded_output
+#endif
+
 
 namespace fs = std::filesystem;
 
@@ -443,6 +452,8 @@ int run(int argc, char** argv)
 }
 }
 
+#ifndef KOG_EMBEDDED
+
 int main(int argc, char** argv)
 {
     try
@@ -455,3 +466,38 @@ int main(int argc, char** argv)
         return 1;
     }
 }
+
+#endif
+
+#ifdef KOG_EMBEDDED
+extern "C" int kog_syntrax_embedded_run(const char* path, uint32_t subsong, uint64_t start_frame, intptr_t descriptor,
+                                    char* error, size_t error_capacity) noexcept
+{
+    FILE* output = kog_embedded_stream_open(descriptor);
+    if(!output)
+    {
+        if(error_capacity) std::snprintf(error, error_capacity, "Could not open PCM stream");
+        return -1;
+    }
+    kog_embedded_output = output;
+    int result = -1;
+    try
+    {
+        std::string selected = std::to_string(subsong);
+        std::string start = std::to_string(start_frame);
+        char* arguments[] = {const_cast<char*>("kog-syntrax-helper"), const_cast<char*>(path), selected.data(), start.data()};
+        result = run(4, arguments);
+    }
+    catch(const std::exception& failure)
+    {
+        if(error_capacity) std::snprintf(error, error_capacity, "%s", failure.what());
+    }
+    if(std::fclose(output) != 0 && result == 0)
+    {
+        if(error_capacity) std::snprintf(error, error_capacity, "Writing PCM stream failed");
+        result = -1;
+    }
+    kog_embedded_output = nullptr;
+    return result;
+}
+#endif

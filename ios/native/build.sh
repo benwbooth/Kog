@@ -94,6 +94,27 @@ if [[ ! -f "$prefix/lib/libavcodec.a" ]]; then
   )
 fi
 
+# The iOS app runs the portable helper renderers on threads in-process.
+# Build their existing emulator cores and the embedded PCM-protocol adapters.
+if [[ ! -f "$prefix/lib/libkog_syntrax_embedded.a" ]]; then
+  cmake -S "$repo/native/syntrax-helper" -B "$build/syntrax-build" -G Ninja \
+    -DCMAKE_TOOLCHAIN_FILE="$build/ios.toolchain.cmake" \
+    -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$prefix" \
+    -DSYNTRAX_SOURCE="$repo/native/syntrax-c"
+  cmake --build "$build/syntrax-build" --parallel "$jobs"
+  cmake --install "$build/syntrax-build"
+fi
+
+# PSF2's permissively licensed Play! core is linked into every supported
+# in-process target; package its transitive static archives for Rust and Swift.
+cmake -S "$repo/native/psf2-helper" -B "$build/psf2-build" -G Ninja \
+  -DCMAKE_TOOLCHAIN_FILE="$build/ios.toolchain.cmake" \
+  -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$prefix" \
+  -DPLAY_SOURCE="$repo/native/play"
+cmake --build "$build/psf2-build" --target kog_psf2_embedded --parallel "$jobs"
+find "$build/psf2-build" -name '*.a' -type f -exec cp -f {} "$prefix/lib/" \;
+
+export KOG_IOS_NATIVE_LIB_DIR="$prefix/lib"
 export CMAKE_TOOLCHAIN_FILE="$build/ios.toolchain.cmake"
 export CMAKE_GENERATOR=Ninja
 export PKG_CONFIG_LIBDIR="$prefix/lib/pkgconfig"

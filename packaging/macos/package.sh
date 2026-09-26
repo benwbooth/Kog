@@ -17,11 +17,13 @@ mkdir -p "$contents/MacOS" "$contents/Resources" "$contents/Frameworks"
 install -m755 "$root_dir/target/release/kog" "$contents/MacOS/kog"
 install -m644 "$root_dir/packaging/macos/Info.plist" "$contents/Info.plist"
 install -m644 "$root_dir/LICENSE" "$contents/Resources/LICENSE"
+install -m644 "$root_dir/THIRD_PARTY_NOTICES.md" "$contents/Resources/THIRD_PARTY_NOTICES.md"
+cp -R "$root_dir/LICENSES" "$contents/Resources/LICENSES"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" "$contents/Info.plist"
 
 helpers=(
-  kog-sfm-helper kog-psf-helper kog-psf2-helper kog-2sf-helper
-  kog-snsf-helper kog-syntrax-helper kog-sc55-helper
+  kog-sfm-helper kog-psf-helper kog-2sf-helper
+  kog-snsf-helper kog-sc55-helper
 )
 extra_executables=()
 for helper in "${helpers[@]}"; do

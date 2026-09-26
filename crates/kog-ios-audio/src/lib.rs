@@ -5,14 +5,16 @@ use std::ptr;
 use std::slice;
 use std::time::Duration;
 
-use kog_audio::decoder::{DecoderSettings, PlaybackSource};
+use kog_audio::decoder::DecoderSettings;
 use kog_audio::streaming::PcmReader;
+
+mod catalog;
 
 pub struct KogAudioHandle {
     reader: PcmReader,
 }
 
-unsafe fn error_to_buffer(message: &str, output: *mut c_char, capacity: usize) {
+pub(crate) unsafe fn error_to_buffer(message: &str, output: *mut c_char, capacity: usize) {
     if output.is_null() || capacity == 0 {
         return;
     }
@@ -44,13 +46,11 @@ pub unsafe extern "C" fn kog_audio_open(
             return ptr::null_mut();
         }
     };
-    let reader = if subsong >= 0 {
-        let mut source = PlaybackSource::from_path(path);
-        source.subsong = Some(subsong as u32);
-        PcmReader::open(source, DecoderSettings::default())
-    } else {
-        PcmReader::open_path(path, DecoderSettings::default())
-    };
+    let reader = PcmReader::open_path_subsong(
+        path,
+        (subsong >= 0).then_some(subsong as u32),
+        DecoderSettings::default(),
+    );
     match reader {
         Ok(reader) => Box::into_raw(Box::new(KogAudioHandle { reader })),
         Err(message) => {

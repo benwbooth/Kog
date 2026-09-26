@@ -36,8 +36,24 @@ pub struct Psf {
 }
 
 struct PsfProcess {
-    child: Child,
-    stdout: ChildStdout,
+    child: Option<Child>,
+    stdout: PsfOutput,
+}
+
+enum PsfOutput {
+    #[cfg(not(target_os = "ios"))]
+    Process(ChildStdout),
+    Embedded(crate::embedded_helper::EmbeddedHelper),
+}
+
+impl Read for PsfOutput {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        match self {
+            #[cfg(not(target_os = "ios"))]
+            Self::Process(stdout) => stdout.read(output),
+            Self::Embedded(stdout) => stdout.read(output),
+        }
+    }
 }
 
 struct HelperHeader {
@@ -190,9 +206,18 @@ impl Psf {
         let Some(mut process) = self.process.take() else {
             return context;
         };
+        if let PsfOutput::Embedded(stdout) = &mut process.stdout {
+            return stdout.failure().map_or_else(
+                || context.clone(),
+                |message| format!("{context}: {message}"),
+            );
+        }
         drop(process.stdout);
-        let status = process.child.wait();
-        let stderr = read_stderr(&mut process.child);
+        let Some(mut child) = process.child else {
+            return context;
+        };
+        let status = child.wait();
+        let stderr = read_stderr(&mut child);
         match (status, stderr.is_empty()) {
             (Ok(status), false) => format!("{context}; helper exited {status}: {stderr}"),
             (Ok(status), true) => format!("{context}; helper exited {status}"),
@@ -282,46 +307,123 @@ fn spawn_helper(
     default_length_milliseconds: u32,
     default_fade_milliseconds: u32,
 ) -> Result<(PsfProcess, HelperHeader), String> {
-    let helper = helper_path(path)?;
-    let mut child = Command::new(&helper)
-        .arg(path)
-        .arg(start_frame.to_string())
-        .arg(default_length_milliseconds.to_string())
-        .arg(default_fade_milliseconds.to_string())
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("launching {}: {error}", helper.display()))?;
-    let mut stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "PSF helper stdout was not captured".to_owned())?;
-    let header = match HelperHeader::read(&mut stdout) {
-        Ok(header) => header,
-        Err(error) => {
-            drop(stdout);
-            let _ = child.kill();
-            let status = child.wait();
-            let stderr = read_stderr(&mut child);
-            let detail = if stderr.is_empty() {
+    #[cfg(not(windows))]
+    if psf_format_version(path)? == 2 {
+        return spawn_embedded_psf2(
+            path,
+            start_frame,
+            default_length_milliseconds,
+            default_fade_milliseconds,
+        );
+    }
+    #[cfg(target_os = "ios")]
+    return Err(
+        "PSF1 and SNSF require separate helper processes and cannot run inside an iOS app"
+            .to_owned(),
+    );
+    #[cfg(not(target_os = "ios"))]
+    {
+        let helper = helper_path(path)?;
+        let mut child = Command::new(&helper)
+            .arg(path)
+            .arg(start_frame.to_string())
+            .arg(default_length_milliseconds.to_string())
+            .arg(default_fade_milliseconds.to_string())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("launching {}: {error}", helper.display()))?;
+        let mut stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "PSF helper stdout was not captured".to_owned())?;
+        let header = match HelperHeader::read(&mut stdout) {
+            Ok(header) => header,
+            Err(error) => {
+                drop(stdout);
+                let _ = child.kill();
+                let status = child.wait();
+                let stderr = read_stderr(&mut child);
+                let detail = if stderr.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {stderr}")
+                };
+                return Err(match status {
+                    Ok(status) => format!(
+                        "opening {} with the PSF helper failed ({status}): {error}{detail}",
+                        path.display()
+                    ),
+                    Err(wait_error) => format!(
+                        "opening {} with the PSF helper failed: {error}; waiting failed: {wait_error}{detail}",
+                        path.display()
+                    ),
+                });
+            }
+        };
+        Ok((
+            PsfProcess {
+                child: Some(child),
+                stdout: PsfOutput::Process(stdout),
+            },
+            header,
+        ))
+    }
+}
+
+#[cfg(not(windows))]
+unsafe extern "C" {
+    fn kog_psf2_embedded_run(
+        path: *const std::ffi::c_char,
+        start_frame: u64,
+        default_length_ms: u32,
+        default_fade_ms: u32,
+        descriptor: isize,
+        error: *mut std::ffi::c_char,
+        error_capacity: usize,
+    ) -> i32;
+}
+
+#[cfg(not(windows))]
+fn spawn_embedded_psf2(
+    path: &Path,
+    start_frame: u64,
+    default_length_milliseconds: u32,
+    default_fade_milliseconds: u32,
+) -> Result<(PsfProcess, HelperHeader), String> {
+    let path = std::ffi::CString::new(path.to_string_lossy().as_bytes())
+        .map_err(|_| "PSF2 path contains a NUL byte".to_owned())?;
+    let mut stdout =
+        crate::embedded_helper::EmbeddedHelper::spawn(move |descriptor, error| unsafe {
+            kog_psf2_embedded_run(
+                path.as_ptr(),
+                start_frame,
+                default_length_milliseconds,
+                default_fade_milliseconds,
+                descriptor,
+                error.as_mut_ptr(),
+                error.len(),
+            )
+        })?;
+    let header = HelperHeader::read(&mut stdout).map_err(|error| {
+        let detail = stdout.failure().unwrap_or_default();
+        format!(
+            "Opening PSF2 stream failed: {error}{}",
+            if detail.is_empty() {
                 String::new()
             } else {
-                format!(": {stderr}")
-            };
-            return Err(match status {
-                Ok(status) => format!(
-                    "opening {} with the PSF helper failed ({status}): {error}{detail}",
-                    path.display()
-                ),
-                Err(wait_error) => format!(
-                    "opening {} with the PSF helper failed: {error}; waiting failed: {wait_error}{detail}",
-                    path.display()
-                ),
-            });
-        }
-    };
-    Ok((PsfProcess { child, stdout }, header))
+                format!(": {detail}")
+            }
+        )
+    })?;
+    Ok((
+        PsfProcess {
+            child: None,
+            stdout: PsfOutput::Embedded(stdout),
+        },
+        header,
+    ))
 }
 
 fn validate_header(header: &HelperHeader, path: &Path) -> Result<(), String> {
@@ -436,8 +538,13 @@ fn psf_format_version(path: &Path) -> Result<u8, String> {
 }
 
 fn stop_process(process: &mut PsfProcess) {
-    let _ = process.child.kill();
-    let _ = process.child.wait();
+    if let PsfOutput::Embedded(stdout) = &mut process.stdout {
+        stdout.cancel();
+    }
+    if let Some(child) = &mut process.child {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
 }
 
 fn read_stderr(child: &mut Child) -> String {

@@ -10,6 +10,10 @@ tool_dir="$output_dir/tools"
 rm -rf "$app_dir" "$tool_dir"
 mkdir -p "$app_dir/usr/bin" "$tool_dir" "$output_dir"
 install -m755 "$root_dir/target/release/kog" "$app_dir/usr/bin/kog"
+install -Dm644 "$root_dir/LICENSE" "$app_dir/usr/share/licenses/org.kog.player/LICENSE"
+install -Dm644 "$root_dir/THIRD_PARTY_NOTICES.md" \
+  "$app_dir/usr/share/licenses/org.kog.player/THIRD_PARTY_NOTICES.md"
+cp -R "$root_dir/LICENSES" "$app_dir/usr/share/licenses/org.kog.player/LICENSES"
 
 # Streaming transcodes with the ffmpeg CLI. Bundle it (and its libraries,
 # via linuxdeploy below) so the AppImage does not need a host ffmpeg.
@@ -26,8 +30,8 @@ desktop_icon="$tool_dir/org.kog.player.svg"
 install -m644 "$root_dir/qml/icons/kog.svg" "$desktop_icon"
 
 helpers=(
-  kog-sfm-helper kog-psf-helper kog-psf2-helper kog-2sf-helper
-  kog-snsf-helper kog-syntrax-helper kog-sc55-helper
+  kog-sfm-helper kog-psf-helper kog-2sf-helper
+  kog-snsf-helper kog-sc55-helper
 )
 helper_args=()
 for helper in "${helpers[@]}"; do

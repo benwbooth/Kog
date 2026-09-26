@@ -1649,6 +1649,7 @@ dependencies = [
  "futures-lite",
  "kog-core",
  "kog-playback-policy",
+ "libc",
  "lofty",
  "midly",
  "orgorg",
@@ -1660,6 +1661,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "url",
+ "windows-sys 0.61.2",
  "zip",
 ]
 
@@ -1684,7 +1686,10 @@ name = "kog-ios-audio"
 version = "0.9.41"
 dependencies = [
  "kog-audio",
+ "kog-core",
+ "serde_json",
  "tempfile",
+ "zip",
 ]
 
 [[package]]

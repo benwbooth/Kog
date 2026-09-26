@@ -120,14 +120,16 @@ modules:
         cargo build --release --locked --offline
       - install -Dm755 target/release/kog /app/bin/kog
       - >-
-        for helper in kog-sfm-helper kog-psf-helper kog-psf2-helper
-        kog-2sf-helper kog-snsf-helper kog-syntrax-helper kog-sc55-helper;
+        for helper in kog-sfm-helper kog-psf-helper
+        kog-2sf-helper kog-snsf-helper kog-sc55-helper;
         do path="$(find target/release/build -type f -path "*/bin/$helper" -print -quit)";
         test -n "$path"; install -Dm755 "$path" "/app/bin/$helper"; done
       - install -Dm644 packaging/linux/org.kog.player.desktop /app/share/applications/org.kog.player.desktop
       - install -Dm644 packaging/linux/org.kog.player.metainfo.xml /app/share/metainfo/org.kog.player.metainfo.xml
       - install -Dm644 qml/icons/kog.svg /app/share/icons/hicolor/scalable/apps/org.kog.player.svg
       - install -Dm644 LICENSE /app/share/licenses/org.kog.player/LICENSE
+      - install -Dm644 THIRD_PARTY_NOTICES.md /app/share/licenses/org.kog.player/THIRD_PARTY_NOTICES.md
+      - cp -R LICENSES /app/share/licenses/org.kog.player/LICENSES
     sources:
       - type: dir
         path: ../..

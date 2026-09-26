@@ -20,8 +20,8 @@ stage="$(mktemp -d "$dist/.stage.XXXXXX")"
 trap 'rm -rf "$stage"' EXIT
 
 helpers=(
-  kog-sfm-helper kog-psf-helper kog-psf2-helper kog-2sf-helper
-  kog-snsf-helper kog-syntrax-helper kog-sc55-helper
+  kog-sfm-helper kog-psf-helper kog-2sf-helper
+  kog-snsf-helper kog-sc55-helper
 )
 ffmpeg="$(command -v ffmpeg || true)"
 if [[ -z "$ffmpeg" ]]; then
@@ -72,5 +72,7 @@ playback. macOS uses its built-in system libraries and frameworks. No Qt or
 Homebrew installation is needed for these command-line packages.
 EOF
   install -m644 "$root/LICENSE" "$directory/LICENSE"
+  install -m644 "$root/THIRD_PARTY_NOTICES.md" "$directory/THIRD_PARTY_NOTICES.md"
+  cp -R "$root/LICENSES" "$directory/LICENSES"
   tar -C "$stage" -czf "$dist/$bundle.tar.gz" "$bundle"
 done

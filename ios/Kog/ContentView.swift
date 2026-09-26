@@ -221,23 +221,64 @@ struct ContentView: View {
         }
     }
 
+    private var deviceTitle: String {
+        let path = store.devicePath
+        if path.isEmpty || path == store.importsURL.path { return "Files on this iPhone" }
+        if path.hasPrefix("kog-archive:") {
+            let parameters = URLComponents(string: path)?.queryItems ?? []
+            let entry = parameters.first { $0.name == "entry" }?.value ?? ""
+            let archive = parameters.first { $0.name == "archive" }?.value ?? ""
+            return URL(fileURLWithPath: entry.isEmpty ? archive : entry).lastPathComponent
+        }
+        return URL(fileURLWithPath: path).lastPathComponent
+    }
+
     private var deviceLibrary: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text("Files on this iPhone").font(.caption.weight(.semibold)).foregroundStyle(Palette.muted)
+            HStack(spacing: 4) {
+                if let parent = store.deviceListing?.parent, !parent.isEmpty {
+                    Button { store.browseDevice(parent) } label: {
+                        Image(systemName: "chevron.left").frame(width: 40, height: 44)
+                    }.accessibilityLabel("Parent folder")
+                }
+                Text(deviceTitle).lineLimit(1).font(.caption.weight(.semibold)).foregroundStyle(Palette.muted)
                 Spacer()
                 Button { showFolderPicker = true } label: { Image(systemName: "folder.badge.plus").frame(width: 44, height: 44) }
                     .accessibilityLabel("Import folder")
                 Button { showFilePicker = true } label: { Image(systemName: "plus").frame(width: 44, height: 44) }
                     .accessibilityLabel("Import files")
-            }.padding(.horizontal, 12).frame(height: 46).background(Palette.panel)
-            if store.deviceFiles.isEmpty {
+            }.padding(.horizontal, 10).frame(height: 46).background(Palette.panel)
+            let folders = store.deviceListing?.directories ?? []
+            if folders.isEmpty && store.deviceFiles.isEmpty && !store.importing {
                 emptyView("No imported music", detail: "Import files or a folder from Files to play offline.") { showFilePicker = true }
             } else {
                 List {
+                    ForEach(folders) { folder in
+                        HStack(spacing: 10) {
+                            Button { store.browseDevice(folder.path) } label: {
+                                if ["zip", "7z", "rar", "rsn"].contains(URL(fileURLWithPath: folder.name).pathExtension.lowercased()) {
+                                    FormatIcon(track: Track(kind: "device", path: folder.path, name: folder.name))
+                                } else {
+                                    Image("kog_folder").resizable().scaledToFit().frame(width: 23, height: 23)
+                                }
+                                Text(folder.name).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                            }.buttonStyle(.plain)
+                            Button { Task { await store.addDeviceFolder(folder) } } label: {
+                                Image(systemName: "plus").frame(width: 44, height: 44)
+                            }.accessibilityLabel("Add folder to queue")
+                        }.frame(minHeight: 46).listRowBackground(Palette.window)
+                    }
                     ForEach(store.deviceFiles) { track in
-                        TrackRow(track: track, action: { store.add([track], play: true); tab = .queue }, add: { store.add([track]) })
-                            .contextMenu { Button("Delete imported file", systemImage: "trash", role: .destructive) { store.deleteDeviceFile(track) } }
+                        TrackRow(track: track, action: {
+                            Task { await store.addFile(track, play: true); tab = .queue }
+                        }, add: { Task { await store.addFile(track) } })
+                        .contextMenu {
+                            if !track.path.hasPrefix("kog-archive:") {
+                                Button("Delete imported file", systemImage: "trash", role: .destructive) {
+                                    store.deleteDeviceFile(track)
+                                }
+                            }
+                        }
                     }
                 }.listStyle(.plain).scrollContentBackground(.hidden)
             }

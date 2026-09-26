@@ -1909,67 +1909,30 @@ fn archive_listing_from_names(
     members: Vec<String>,
     playable_extensions: &HashSet<String>,
 ) -> serde_json::Value {
-    let prefix = if subpath.is_empty() {
-        String::new()
-    } else {
-        format!("{}/", subpath.trim_matches('/'))
-    };
     let archive = archive_path.to_string_lossy().into_owned();
-    let current_path = if prefix.is_empty() {
+    let subpath = subpath.trim_matches('/');
+    let current_path = if subpath.is_empty() {
         archive.clone()
     } else {
-        format!("{archive}/{}", prefix.trim_end_matches('/'))
+        format!("{archive}/{subpath}")
     };
-    let mut directory_names: Vec<String> = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    let mut files: Vec<serde_json::Value> = Vec::new();
-    // libarchive may report a directory as a bare member without a trailing
-    // slash. Derive directories from descendants so such entries can never
-    // become bogus playlist tracks.
-    let member_directories = kog_audio::archive::member_directory_names(&members);
-    for member in members {
-        let normalized = member.replace('\\', "/");
-        if member_directories.contains(normalized.trim_end_matches('/')) {
-            continue;
-        }
-        let Some(relative) = normalized.strip_prefix(&prefix) else {
-            continue;
-        };
-        if relative.is_empty() {
-            continue;
-        }
-        let playable = std::path::Path::new(relative)
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .is_some_and(|extension| playable_extensions.contains(&extension.to_ascii_lowercase()));
-        if !playable || crate::media_filter::is_hidden(std::path::Path::new(relative)) {
-            continue;
-        }
-        // Members below this level are virtual directories; browsing one
-        // lists its own members.
-        if let Some(split) = relative.find('/') {
-            let folder = relative[..split].to_owned();
-            if seen.insert(folder.clone()) {
-                directory_names.push(folder);
-            }
-            continue;
-        }
-        files.push(serde_json::json!({
-            "name": relative,
-            "path": archive,
-            "relative": member,
-            "kind": "archive",
-            "entry": member,
-            "fragment": serde_json::Value::Null,
-        }));
-    }
-    directory_names.sort();
-    let directories: Vec<serde_json::Value> = directory_names
+    let browsed = kog_audio::archive::browse_members(&members, subpath, playable_extensions);
+    let directories: Vec<_> = browsed
+        .directories
         .into_iter()
-        .map(|name| {
+        .map(|name| serde_json::json!({ "path": format!("{current_path}/{name}"), "name": name }))
+        .collect();
+    let files: Vec<_> = browsed
+        .files
+        .into_iter()
+        .map(|file| {
             serde_json::json!({
-                "name": name,
-                "path": format!("{current_path}/{name}"),
+                "name": file.name,
+                "path": archive,
+                "relative": file.entry,
+                "kind": "archive",
+                "entry": file.entry,
+                "fragment": serde_json::Value::Null,
             })
         })
         .collect();

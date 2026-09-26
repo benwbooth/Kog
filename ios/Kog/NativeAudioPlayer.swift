@@ -36,10 +36,10 @@ final class NativeAudioPlayer {
 
     static func useFor(_ track: Track) -> Bool { track.isDevice }
 
-    init(path: String, onEnd: @escaping () -> Void, onError: @escaping (String) -> Void) throws {
+    init(path: String, subsong: Int32 = -1, onEnd: @escaping () -> Void, onError: @escaping (String) -> Void) throws {
         self.onEnd = onEnd; self.onError = onError
         var message = [CChar](repeating: 0, count: 1024)
-        let opened = path.withCString { decoderOpen($0, -1, &message, message.count) }
+        let opened = path.withCString { decoderOpen($0, subsong, &message, message.count) }
         guard let opened else { throw KogError.response(String(cString: message)) }
         handle = opened
         let milliseconds = decoderDuration(opened)

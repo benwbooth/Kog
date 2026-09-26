@@ -112,8 +112,8 @@ cp "$repo/target/$target/debug/libkog_android_audio.so" "$jni/"
 "$toolchain/llvm-strip" --strip-unneeded "$jni/libkog_android_audio.so"
 cp "$sysroot/usr/lib/$lib_triple/libc++_shared.so" "$jni/"
 "$toolchain/llvm-strip" --strip-unneeded "$jni/libc++_shared.so"
-for helper in kog-sfm-helper kog-psf-helper kog-psf2-helper kog-2sf-helper \
-              kog-snsf-helper kog-syntrax-helper kog-sc55-helper; do
+for helper in kog-sfm-helper kog-psf-helper kog-2sf-helper \
+              kog-snsf-helper kog-sc55-helper; do
   binary=$(find "$repo/target/$target/debug/build" -type f -path "*/bin/$helper" -print -quit)
   if [[ -z "$binary" ]]; then
     echo "Kog did not build $helper for $abi" >&2

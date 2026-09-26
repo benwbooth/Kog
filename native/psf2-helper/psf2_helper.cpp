@@ -3,8 +3,9 @@
  * Copyright (C) 2026 Kog contributors.
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * Play! is reused as a separate process. Kog validates the legacy container
- * parsers' inputs here before constructing Play!'s PSF2 filesystem and IOP.
+ * Kog validates the legacy container parsers' inputs before constructing
+ * Play!'s PSF2 filesystem and IOP. This source builds both the protocol
+ * executable and the in-process library adapter.
  */
 
 #include <algorithm>
@@ -41,6 +42,13 @@
 #include "app_shared/AppConfig.h"
 #include "iop/IopBios.h"
 #include "ps2/Ps2_PsfDevice.h"
+
+#ifdef KOG_EMBEDDED
+#include "../embedded_stream.h"
+static thread_local FILE* kog_embedded_output = nullptr;
+#undef stdout
+#define stdout kog_embedded_output
+#endif
 
 fs::path CAppConfig::GetBasePath() const
 {
@@ -799,6 +807,7 @@ int runHelper(const fs::path& path, const char* startText, const char* defaultLe
 }
 } // namespace
 
+#ifndef KOG_EMBEDDED
 #ifdef _WIN32
 int wmain(int argc, wchar_t** argv)
 {
@@ -850,5 +859,42 @@ int main(int argc, char** argv)
         std::fprintf(stderr, "%s\n", error.what());
         return 3;
     }
+}
+#endif
+
+#endif // !KOG_EMBEDDED
+
+#ifdef KOG_EMBEDDED
+extern "C" int kog_psf2_embedded_run(const char* path, uint64_t start_frame,
+                                      uint32_t length_ms, uint32_t fade_ms,
+                                      intptr_t descriptor, char* error,
+                                      size_t error_capacity) noexcept
+{
+    FILE* output = kog_embedded_stream_open(descriptor);
+    if(!output)
+    {
+        if(error_capacity) std::snprintf(error, error_capacity, "Could not open PSF2 PCM stream");
+        return -1;
+    }
+    kog_embedded_output = output;
+    int result = -1;
+    try
+    {
+        const std::string start = std::to_string(start_frame);
+        const std::string length = std::to_string(length_ms);
+        const std::string fade = std::to_string(fade_ms);
+        result = runHelper(fs::u8path(path), start.c_str(), length.c_str(), fade.c_str());
+    }
+    catch(const std::exception& failure)
+    {
+        if(error_capacity) std::snprintf(error, error_capacity, "%s", failure.what());
+    }
+    if(std::fclose(output) != 0 && result == 0)
+    {
+        if(error_capacity) std::snprintf(error, error_capacity, "Writing PSF2 PCM stream failed");
+        result = -1;
+    }
+    kog_embedded_output = nullptr;
+    return result;
 }
 #endif

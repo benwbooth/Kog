@@ -372,6 +372,72 @@ pub fn list_archive_names(path: &Path) -> Result<Vec<String>, String> {
     list_archive_names_shared(path).map(|names| names.as_ref().clone())
 }
 
+/// One level of playable members, shared by the HTTP browser and native clients.
+/// Archive names are indexed without extracting their contents.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrowsedArchiveMembers {
+    pub directories: Vec<String>,
+    pub files: Vec<BrowsedArchiveFile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrowsedArchiveFile {
+    pub name: String,
+    pub entry: String,
+}
+
+pub fn browse_members(
+    members: &[String],
+    subpath: &str,
+    playable_extensions: &HashSet<String>,
+) -> BrowsedArchiveMembers {
+    let prefix = if subpath.is_empty() {
+        String::new()
+    } else {
+        format!("{}/", subpath.trim_matches('/'))
+    };
+    let member_directories = member_directory_names(members);
+    let mut directories = HashSet::new();
+    let mut files = Vec::new();
+    for member in members {
+        let normalized = member.replace('\\', "/");
+        if member_directories.contains(normalized.trim_end_matches('/')) {
+            continue;
+        }
+        let Some(relative) = normalized.strip_prefix(&prefix) else {
+            continue;
+        };
+        if relative.is_empty()
+            || relative.split('/').any(|part| {
+                part.starts_with('.')
+                    || part == "__MACOSX"
+                    || kog_core::media_path::is_metadata_name(std::ffi::OsStr::new(part))
+            })
+        {
+            continue;
+        }
+        let playable = Path::new(relative)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| playable_extensions.contains(&extension.to_ascii_lowercase()));
+        if !playable {
+            continue;
+        }
+        if let Some((folder, _)) = relative.split_once('/') {
+            directories.insert(folder.to_owned());
+        } else {
+            files.push(BrowsedArchiveFile {
+                name: relative.to_owned(),
+                entry: normalized,
+            });
+        }
+    }
+    let mut directories: Vec<_> = directories.into_iter().collect();
+    directories.sort();
+    files.sort_by(|a, b| a.name.cmp(&b.name));
+    BrowsedArchiveMembers { directories, files }
+}
+
 /// Share a bounded name index across searches and archive browsing. The
 /// archive's size and modification time invalidate stale entries.
 pub fn list_archive_names_shared(path: &Path) -> Result<Arc<Vec<String>>, String> {
@@ -758,6 +824,36 @@ fn decode_archive_name(bytes: &[u8]) -> compress_tools::Result<String> {
 
 #[cfg(any(test, feature = "test-util"))]
 pub mod tests {
+    #[test]
+    fn shared_archive_browser_preserves_nested_folders_and_filters_hidden_members() {
+        let names = vec![
+            "Disc/song.wav",
+            "Disc/Sub/track.mid",
+            "Disc/inner.zip",
+            "__MACOSX/._x.wav",
+            "Disc/.hidden.wav",
+            "Other/song.wav",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+        let extensions = ["wav", "mid", "zip"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        let root = super::browse_members(&names, "", &extensions);
+        assert_eq!(root.directories, ["Disc", "Other"]);
+        assert!(root.files.is_empty());
+        let disc = super::browse_members(&names, "Disc", &extensions);
+        assert_eq!(disc.directories, ["Sub"]);
+        assert_eq!(
+            disc.files
+                .iter()
+                .map(|file| file.entry.as_str())
+                .collect::<Vec<_>>(),
+            ["Disc/inner.zip", "Disc/song.wav"]
+        );
+    }
     use super::*;
     use crate::decoder::{ArchiveOrigin, DecoderRegistry, DecoderSettings, PlaybackSource};
     use crate::gsf::{test_gba_rom, test_gsf_bytes};

@@ -65,13 +65,24 @@ impl PcmReader {
     /// the desktop library. The registry stays alive with the PCM reader so
     /// extracted archive members remain available while playback runs.
     pub fn open_path(path: PathBuf, settings: DecoderSettings) -> Result<Self, String> {
+        Self::open_path_subsong(path, None, settings)
+    }
+
+    /// Select an expanded subsong while keeping its archive extraction alive.
+    pub fn open_path_subsong(
+        path: PathBuf,
+        subsong: Option<u32>,
+        settings: DecoderSettings,
+    ) -> Result<Self, String> {
         let registry = DecoderRegistry::new(settings);
-        let source = registry
-            .expand_detailed(path)?
-            .sources
-            .into_iter()
-            .next()
-            .ok_or_else(|| "No playable track was found in this file".to_owned())?;
+        let sources = registry.expand_detailed(path)?.sources;
+        let source = match subsong {
+            Some(index) => sources
+                .into_iter()
+                .find(|source| source.subsong == Some(index)),
+            None => sources.into_iter().next(),
+        }
+        .ok_or_else(|| "No matching playable track was found in this file".to_owned())?;
         Self::open_with_registry(source, registry)
     }
 

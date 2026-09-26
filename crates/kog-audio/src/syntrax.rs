@@ -1,8 +1,7 @@
-//! Process wrapper for the pinned syntrax-c JXS renderer.
+//! In-process wrapper for the pinned syntrax-c JXS renderer.
 
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdout, Command, Stdio};
 use std::time::Duration;
 
 const HELPER_MAGIC: [u8; 8] = *b"KOGJXS1\0";
@@ -24,8 +23,7 @@ pub struct Syntrax {
 }
 
 struct SyntraxProcess {
-    child: Child,
-    stdout: ChildStdout,
+    stdout: crate::embedded_helper::EmbeddedHelper,
 }
 
 #[derive(Debug)]
@@ -175,17 +173,10 @@ impl Syntrax {
         let Some(mut process) = self.process.take() else {
             return context;
         };
-        drop(process.stdout);
-        let status = process.child.wait();
-        let stderr = read_stderr(&mut process.child);
-        match (status, stderr.is_empty()) {
-            (Ok(status), false) => format!("{context}; helper exited {status}: {stderr}"),
-            (Ok(status), true) => format!("{context}; helper exited {status}"),
-            (Err(error), false) => {
-                format!("{context}; waiting for helper failed: {error}: {stderr}")
-            }
-            (Err(error), true) => format!("{context}; waiting for helper failed: {error}"),
-        }
+        process.stdout.failure().map_or_else(
+            || context.clone(),
+            |message| format!("{context}: {message}"),
+        )
     }
 }
 
@@ -262,103 +253,51 @@ fn validate_header(header: &HelperHeader, subsong: u32, path: &Path) -> Result<(
     Ok(())
 }
 
+unsafe extern "C" {
+    fn kog_syntrax_embedded_run(
+        path: *const std::ffi::c_char,
+        subsong: u32,
+        start_frame: u64,
+        descriptor: isize,
+        error: *mut std::ffi::c_char,
+        capacity: usize,
+    ) -> i32;
+}
+
 fn spawn_helper(
     path: &Path,
     subsong: u32,
     start_frame: u64,
 ) -> Result<(SyntraxProcess, HelperHeader), String> {
-    let helper = helper_path()?;
-    let mut child = Command::new(&helper)
-        .arg(path)
-        .arg(subsong.to_string())
-        .arg(start_frame.to_string())
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("launching {}: {error}", helper.display()))?;
-    let mut stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "Syntrax helper stdout was not captured".to_owned())?;
-    let header = match HelperHeader::read(&mut stdout) {
-        Ok(header) => header,
-        Err(error) => {
-            drop(stdout);
-            let _ = child.kill();
-            let status = child.wait();
-            let stderr = read_stderr(&mut child);
-            let detail = if stderr.is_empty() {
+    let path = std::ffi::CString::new(path.to_string_lossy().as_bytes())
+        .map_err(|_| "Syntrax path contains a NUL byte".to_owned())?;
+    let mut stdout =
+        crate::embedded_helper::EmbeddedHelper::spawn(move |descriptor, error| unsafe {
+            kog_syntrax_embedded_run(
+                path.as_ptr(),
+                subsong,
+                start_frame,
+                descriptor,
+                error.as_mut_ptr(),
+                error.len(),
+            )
+        })?;
+    let header = HelperHeader::read(&mut stdout).map_err(|error| {
+        let detail = stdout.failure().unwrap_or_default();
+        format!(
+            "Opening Syntrax stream failed: {error}{}",
+            if detail.is_empty() {
                 String::new()
             } else {
-                format!(": {stderr}")
-            };
-            return Err(match status {
-                Ok(status) => format!(
-                    "opening {} with the Syntrax helper failed ({status}): {error}{detail}",
-                    path.display()
-                ),
-                Err(wait_error) => format!(
-                    "opening {} with the Syntrax helper failed: {error}; waiting failed: {wait_error}{detail}",
-                    path.display()
-                ),
-            });
-        }
-    };
-    Ok((SyntraxProcess { child, stdout }, header))
-}
-
-#[cfg(target_os = "ios")]
-fn helper_path() -> Result<PathBuf, String> {
-    Err("Syntrax helper decoder needs an in-process iOS port".to_owned())
-}
-
-#[cfg(not(target_os = "ios"))]
-fn helper_path() -> Result<PathBuf, String> {
-    if let Some(path) = std::env::var_os("KOG_SYNTRAX_HELPER") {
-        let path = PathBuf::from(path);
-        if path.is_file() {
-            return Ok(path);
-        }
-        return Err(format!(
-            "KOG_SYNTRAX_HELPER does not name a file: {}",
-            path.display()
-        ));
-    }
-    let executable_name = if cfg!(windows) {
-        "kog-syntrax-helper.exe"
-    } else {
-        "kog-syntrax-helper"
-    };
-    #[cfg(target_os = "android")]
-    return crate::android_helpers::helper_path(executable_name);
-    if let Ok(executable) = std::env::current_exe() {
-        let sibling = executable.with_file_name(executable_name);
-        if sibling.is_file() {
-            return Ok(sibling);
-        }
-    }
-    let build_helper = PathBuf::from(env!("KOG_BUILD_SYNTRAX_HELPER"));
-    if build_helper.is_file() {
-        return Ok(build_helper);
-    }
-    Err(format!(
-        "Syntrax helper is not installed beside Kog and the build copy is missing: {}",
-        build_helper.display()
-    ))
+                format!(": {detail}")
+            }
+        )
+    })?;
+    Ok((SyntraxProcess { stdout }, header))
 }
 
 fn stop_process(process: &mut SyntraxProcess) {
-    let _ = process.child.kill();
-    let _ = process.child.wait();
-}
-
-fn read_stderr(child: &mut Child) -> String {
-    let mut bytes = Vec::new();
-    if let Some(mut stderr) = child.stderr.take() {
-        let _ = stderr.read_to_end(&mut bytes);
-    }
-    kog_core::text_encoding::decode(&bytes).trim().to_owned()
+    process.stdout.cancel();
 }
 
 fn read_u32_le(reader: &mut impl Read) -> io::Result<u32> {

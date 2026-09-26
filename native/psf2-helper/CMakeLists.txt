@@ -18,6 +18,14 @@ set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build static dependencies" FORCE)
 set(WITH_SYSTEM_ZLIB ON CACHE BOOL "Keep the pinned Play! source immutable" FORCE)
 add_subdirectory("${PLAY_SOURCE}/Source" "${CMAKE_CURRENT_BINARY_DIR}/PlayCore")
 
+# PlayCore's raw-disk reader is unrelated to PSF2 playback. iOS has no
+# sys/disk.h or raw volume access; omit only that unused translation unit.
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    get_target_property(PLAY_CORE_SOURCES PlayCore SOURCES)
+    list(REMOVE_ITEM PLAY_CORE_SOURCES Posix_VolumeStream.cpp)
+    set_property(TARGET PlayCore PROPERTY SOURCES "${PLAY_CORE_SOURCES}")
+endif()
+
 # vcpkg's dynamic zlib marks consumers with ZLIB_DLL, which turns zlib.h's
 # ZEXTERN declarations into dllimport. zstd's wrapper defines those z_* entry
 # points itself, so it must compile as the zlib-internal side of the DLL.
@@ -50,6 +58,24 @@ target_link_libraries(kog_psf2_play_core PUBLIC PlayCore)
 if(MSVC)
     # MSVC only implements C++ exception unwinding with /EHsc.
     target_compile_options(kog_psf2_play_core PRIVATE /EHsc)
+endif()
+
+add_library(kog_psf2_embedded STATIC psf2_helper.cpp)
+target_compile_features(kog_psf2_embedded PRIVATE cxx_std_17)
+target_compile_definitions(kog_psf2_embedded PRIVATE KOG_EMBEDDED=1)
+target_include_directories(kog_psf2_embedded SYSTEM PRIVATE
+    "${PSFPLAYER_SOURCE}"
+    "${PLAY_SOURCE}/Source"
+    "${PLAY_SOURCE}/deps/Dependencies/zstd/zlibWrapper"
+)
+target_link_libraries(kog_psf2_embedded PRIVATE kog_psf2_play_core)
+if(MSVC)
+    target_compile_definitions(kog_psf2_embedded PRIVATE NOMINMAX)
+    target_compile_options(kog_psf2_embedded PRIVATE /EHsc)
+endif()
+install(TARGETS kog_psf2_embedded ARCHIVE DESTINATION lib)
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    return()
 endif()
 
 add_executable(kog-psf2-helper psf2_helper.cpp)

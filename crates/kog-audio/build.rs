@@ -42,9 +42,15 @@ fn main() {
     build_game_music_emu();
     let ios = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("ios");
     if ios {
-        // iOS cannot launch bundled helper executables. Keep their decoder
-        // modules compilable, but report unsupported playback at runtime.
-        for name in ["SFM", "PSF", "PSF2", "2SF", "SNSF", "SYNTRAX", "SC55"] {
+        let native_libs = std::env::var("KOG_IOS_NATIVE_LIB_DIR")
+            .expect("ios/native/build.sh supplies the embedded renderer archives");
+        println!("cargo:rustc-link-search=native={native_libs}");
+        for name in ["kog_syntrax_embedded", "kog_syntrax_core"] {
+            println!("cargo:rustc-link-lib=static={name}");
+        }
+        link_psf2_archives(Path::new(&native_libs), true);
+        // The remaining desktop helpers still need in-process adapters.
+        for name in ["SFM", "PSF", "2SF", "SNSF", "SC55"] {
             println!("cargo:rustc-env=KOG_BUILD_{name}_HELPER=unsupported-on-ios");
         }
     } else {
@@ -99,9 +105,7 @@ fn main() {
     link_libvgm(&libvgm_output);
 
     watch_native("../../native/opl3w");
-
 }
-
 
 fn build_spessasynth_midi() {
     let source = Path::new("../../native/spessasynth-core/spessasynth_core");
@@ -317,9 +321,11 @@ fn build_sfm_helper() {
         panic!("Cog GME SFM helper sources are missing from the Kog checkout");
     }
 
-    let source = plain_absolute(source
-        .canonicalize()
-        .expect("canonicalize the Cog GME SFM source directory"));
+    let source = plain_absolute(
+        source
+            .canonicalize()
+            .expect("canonicalize the Cog GME SFM source directory"),
+    );
     let output_directory =
         PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR")).join("sfm-helper");
     let output = cmake::Config::new(helper)
@@ -1352,9 +1358,11 @@ fn build_psf_helper() {
         );
     }
 
-    let libupse = plain_absolute(libupse
-        .canonicalize()
-        .expect("canonicalize the libupse source directory"));
+    let libupse = plain_absolute(
+        libupse
+            .canonicalize()
+            .expect("canonicalize the libupse source directory"),
+    );
     let output = cmake::Config::new(helper)
         .profile("Release")
         .define("UPSE_SOURCE", &libupse)
@@ -1398,9 +1406,10 @@ fn build_psf2_helper() {
         );
     }
 
-    let play = plain_absolute(play
-        .canonicalize()
-        .expect("canonicalize the Play! source directory"));
+    let play = plain_absolute(
+        play.canonicalize()
+            .expect("canonicalize the Play! source directory"),
+    );
     let output_directory =
         PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR")).join("psf2-helper");
     let mut config = cmake::Config::new(helper);
@@ -1431,8 +1440,88 @@ fn build_psf2_helper() {
         "cargo:rustc-env=KOG_BUILD_PSF2_HELPER={}",
         executable.display()
     );
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        link_psf2_archives(&output.join("build"), false);
+    }
     watch_native("../../native/psf2-helper");
     watch_native("../../native/play");
+}
+
+/// Link the same Play! static core on all supported in-process targets.
+/// The helper executable remains a protocol regression target; Windows keeps
+/// that route until the MSVC dependency set has been validated in CI.
+fn link_psf2_archives(root: &Path, ios: bool) {
+    let archives = [
+        "kog_psf2_embedded",
+        "kog_psf2_play_core",
+        "PlayCore",
+        "Framework_Http",
+        "app_shared",
+        "CodeGen",
+        "Framework",
+        "libzstd_zlibwrapper_static",
+        "xxhash",
+        "chdr-static",
+        "zstd",
+        "lzma",
+    ];
+    for name in archives {
+        let filename = format!("lib{name}.a");
+        let archive = if ios {
+            root.join(&filename)
+        } else {
+            find_archive(root, &filename).unwrap_or_else(|| {
+                panic!(
+                    "PSF2 build did not produce {filename} under {}",
+                    root.display()
+                )
+            })
+        };
+        if !archive.is_file() {
+            panic!("PSF2 archive is missing: {}", archive.display());
+        }
+        println!(
+            "cargo:rustc-link-search=native={}",
+            archive.parent().unwrap().display()
+        );
+        println!("cargo:rustc-link-lib=static={name}");
+    }
+    // CMake either finds the system bzip2, or builds its bundled copy.
+    if !ios {
+        if let Some(archive) = find_archive(root, "libbz2.a") {
+            println!(
+                "cargo:rustc-link-search=native={}",
+                archive.parent().unwrap().display()
+            );
+            println!("cargo:rustc-link-lib=static=bz2");
+        } else {
+            println!("cargo:rustc-link-lib=bz2");
+        }
+    } else {
+        println!("cargo:rustc-link-lib=bz2");
+    }
+    println!("cargo:rustc-link-lib=z");
+    if !ios {
+        // These are optional in Play!'s CMake build. Probe in the same build
+        // environment so the linker sees only the dependencies it selected.
+        let _ = pkg_config::Config::new().probe("openssl");
+        let _ = pkg_config::Config::new().probe("icu-uc");
+    }
+}
+
+fn find_archive(root: &Path, filename: &str) -> Option<PathBuf> {
+    let mut directories = vec![root.to_path_buf()];
+    while let Some(directory) = directories.pop() {
+        for entry in std::fs::read_dir(directory).ok()?.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                directories.push(path);
+            } else if path.file_name().is_some_and(|name| name == filename) {
+                return Some(path);
+            }
+        }
+    }
+    None
 }
 
 fn build_twosf_helper() {
@@ -1446,10 +1535,7 @@ fn build_twosf_helper() {
             .join("twosf-helper")
             .join("bin")
             .join("kog-2sf-helper.exe");
-        println!(
-            "cargo:rustc-env=KOG_BUILD_2SF_HELPER={}",
-            unbuilt.display()
-        );
+        println!("cargo:rustc-env=KOG_BUILD_2SF_HELPER={}", unbuilt.display());
         watch_native("../../native/twosf-helper");
         watch_native("../../native/melonds");
         return;
@@ -1467,12 +1553,16 @@ fn build_twosf_helper() {
         );
     }
 
-    let melonds = plain_absolute(melonds
-        .canonicalize()
-        .expect("canonicalize the melonDS source directory"));
-    let psflib = plain_absolute(psflib
-        .canonicalize()
-        .expect("canonicalize the psflib source directory"));
+    let melonds = plain_absolute(
+        melonds
+            .canonicalize()
+            .expect("canonicalize the melonDS source directory"),
+    );
+    let psflib = plain_absolute(
+        psflib
+            .canonicalize()
+            .expect("canonicalize the psflib source directory"),
+    );
     let output_directory = PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR"))
         .join("twosf-helper");
     let output = cmake::Config::new(helper)
@@ -1515,12 +1605,16 @@ fn build_snsf_helper() {
         );
     }
 
-    let libsnsf9x = plain_absolute(libsnsf9x
-        .canonicalize()
-        .expect("canonicalize the libsnsf9x source directory"));
-    let psflib = plain_absolute(psflib
-        .canonicalize()
-        .expect("canonicalize the psflib source directory"));
+    let libsnsf9x = plain_absolute(
+        libsnsf9x
+            .canonicalize()
+            .expect("canonicalize the libsnsf9x source directory"),
+    );
+    let psflib = plain_absolute(
+        psflib
+            .canonicalize()
+            .expect("canonicalize the psflib source directory"),
+    );
     let output_directory =
         PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR")).join("snsf-helper");
     let output = cmake::Config::new(helper)
@@ -1559,9 +1653,11 @@ fn build_syntrax_helper() {
         );
     }
 
-    let syntrax = plain_absolute(syntrax
-        .canonicalize()
-        .expect("canonicalize the syntrax-c source directory"));
+    let syntrax = plain_absolute(
+        syntrax
+            .canonicalize()
+            .expect("canonicalize the syntrax-c source directory"),
+    );
     let output_directory = PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR"))
         .join("syntrax-helper");
     let output = cmake::Config::new(helper)
@@ -1586,6 +1682,9 @@ fn build_syntrax_helper() {
         "cargo:rustc-env=KOG_BUILD_SYNTRAX_HELPER={}",
         executable.display()
     );
+    println!("cargo:rustc-link-search=native={}/lib", output.display());
+    println!("cargo:rustc-link-lib=static=kog_syntrax_embedded");
+    println!("cargo:rustc-link-lib=static=kog_syntrax_core");
     watch_native("../../native/syntrax-helper");
     watch_native("../../native/syntrax-c");
 }
@@ -1599,9 +1698,11 @@ fn build_sc55_helper() {
         );
     }
 
-    let nuked_sc55 = plain_absolute(nuked_sc55
-        .canonicalize()
-        .expect("canonicalize the Nuked SC-55 source directory"));
+    let nuked_sc55 = plain_absolute(
+        nuked_sc55
+            .canonicalize()
+            .expect("canonicalize the Nuked SC-55 source directory"),
+    );
     let output_directory =
         PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR")).join("sc55-helper");
     let output = cmake::Config::new(helper)

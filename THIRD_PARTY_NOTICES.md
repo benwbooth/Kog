@@ -257,15 +257,16 @@ The `native/syntrax-c` Git submodule is losnoco's canonical
 `1184fb9ef562d20dab26e419052982d1c3329b76`. Its seven source and header files
 are byte-for-byte identical to the plain-C renderer in Cog commit
 `c17be85654a64170c86bb8bbb4b59fd7b6795722`. Kog compiles that portable library
-into the separate `kog-syntrax-helper` and does not copy or translate Cog's
-Objective-C plugin classes.
+into both the shared audio backend and the `kog-syntrax-helper` regression
+executable. It does not copy or translate Cog's Objective-C plugin classes.
 
 syntrax-c is Copyright (c) Reinier van Vliet and Christopher Snowhill and each
 upstream file identifies itself as GPL-3.0-only. The GPL version 3 text is in
 Kog's root `LICENSE`. Kog's adapter under `native/syntrax-helper` is
-GPL-3.0-or-later; the combined helper executable is distributed under GPL
-version 3 only. Its process boundary contains faults from the legacy parser
-and renderer and is not a license workaround. The protocol is documented in
+GPL-3.0-or-later. The shared Rust audio backend now links the GPL-3.0-only
+renderer as a static library and uses its private in-process PCM stream on all
+frontends. The combined binary is distributed under GPL version 3. The helper
+executable remains a protocol regression target. The protocol is documented in
 `native/syntrax-helper/PROTOCOL.md`.
 
 Kog's tests construct a packed two-subsong JXS song with an original synthetic
@@ -462,19 +463,22 @@ of translating Cog's Objective-C plugin or redistributing Sony firmware.
 Play!, Framework (`587f278917acc0026bf5fc34b39f995fc26bd015`), and CodeGen
 (`a5009f7dca062695b8e5aebbd71e67b4ddfa9251`) use permissive BSD two-clause
 terms; their complete notices remain in the pinned recursive submodules. The
-exact Play! notice is copied to `LICENSES/Play-BSD-2-Clause.txt`. The helper's
+exact notices are copied to `LICENSES/Play-BSD-2-Clause.txt`,
+`LICENSES/Play-Framework-BSD.txt`, and `LICENSES/Play-CodeGen-BSD.txt`. The helper's
 reachable dependency set also includes BSD-licensed libchdr, xxHash, and zstd;
 the public-domain LZMA SDK; system zlib; and platform-provided OpenSSL, bzip2,
-and ICU libraries where selected by Play!'s CMake build. Their license files
-and copyright notices remain in `native/play/deps`, and binary packagers must
-carry the corresponding notices for the libraries they distribute.
+and ICU libraries where selected by Play!'s CMake build. Copies of the four
+bundled dependency notices are under `LICENSES/Play-libchdr-BSD.txt`,
+`LICENSES/Play-xxHash-BSD.txt`, `LICENSES/Play-zstd-BSD.txt`, and
+`LICENSES/Play-LZMA-public-domain.txt` so release bundles carry them.
 
-Kog's GPL-3.0-or-later adapter under `native/psf2-helper` and Play! are compiled
-only into the separate `kog-psf2-helper` executable; no Play! object is linked
-into the Kog executable. The helper uses the versioned metadata/PCM protocol in
-`native/psf2-helper/PROTOCOL.md`. It validates PSF2 containers, dependency
-chains, filesystem blocks, and IRX/ELF bounds before Play! sees them. This is a
-process boundary, not an operating-system sandbox.
+Kog's GPL-3.0-or-later adapter under `native/psf2-helper` and Play! are also
+built as static libraries for the shared Rust audio backend on Unix and iOS.
+The `kog-psf2-helper` executable remains available for protocol regression
+checks and for Windows. Both paths use the versioned metadata/PCM protocol in
+`native/psf2-helper/PROTOCOL.md` and validate PSF2 containers, dependency
+chains, filesystem blocks, and IRX/ELF bounds before Play! sees them. The
+in-process path does not provide fault isolation.
 
 Tests construct an original MIPS IOP module that writes a synthetic ADPCM
 waveform to emulated SPU2 registers, then wrap it in generated PSF2/miniPSF2

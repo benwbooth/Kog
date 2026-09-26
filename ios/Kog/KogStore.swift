@@ -36,6 +36,8 @@ final class KogStore: ObservableObject {
     @Published var selectedPlaylist: SavedPlaylist?
     @Published var playlistTracks = [Track]()
     @Published var deviceFiles = [Track]()
+    @Published var deviceListing: Listing?
+    @Published var devicePath = ""
     @Published var error: String?
     @Published var importing = false
 
@@ -146,9 +148,31 @@ final class KogStore: ObservableObject {
 
     func addFile(_ track: Track, play: Bool = false) async {
         do {
-            let tracks = track.isDevice ? [track] : try await api.expand(track)
-            add(tracks, play: play)
+            if track.isDevice {
+                #if KOG_NATIVE_AUDIO
+                var tracks = try await Task.detached(priority: .userInitiated) {
+                    try NativeAudioCatalog.expand(path: track.path)
+                }.value
+                if tracks.count == 1 {
+                    if tracks[0].title.isEmpty { tracks[0].title = track.title }
+                    if tracks[0].artist.isEmpty { tracks[0].artist = track.artist }
+                    if tracks[0].album.isEmpty { tracks[0].album = track.album }
+                }
+                add(tracks, play: play)
+                #endif
+            } else { add(try await api.expand(track), play: play) }
         } catch { report(error) }
+    }
+
+    func addDeviceFolder(_ folder: Folder) async {
+        #if KOG_NATIVE_AUDIO
+        do {
+            let tracks = try await Task.detached(priority: .userInitiated) {
+                try NativeAudioCatalog.expand(path: folder.path)
+            }.value
+            add(tracks)
+        } catch { report(error) }
+        #endif
     }
 
     func addFolder(_ folder: Folder, play: Bool = false) async {
@@ -180,7 +204,8 @@ final class KogStore: ObservableObject {
             nativePlayer?.stop()
             nativePlayer = nil
             if NativeAudioPlayer.useFor(track) {
-                let decoder = try NativeAudioPlayer(path: track.path, onEnd: { [weak self] in
+                let decoder = try NativeAudioPlayer(path: track.path,
+                    subsong: Int32(track.fragment) ?? -1, onEnd: { [weak self] in
                     Task { @MainActor [weak self] in self?.next() }
                 }, onError: { [weak self] message in
                     Task { @MainActor [weak self] in self?.error = message; self?.playing = false }
@@ -439,45 +464,54 @@ final class KogStore: ObservableObject {
     }
 
     func scanImports() {
+        browseDevice(devicePath.isEmpty ? importsURL.path : devicePath)
+    }
+
+    func browseDevice(_ path: String) {
+        #if KOG_NATIVE_AUDIO
         importScanTask?.cancel()
         importing = true
         let root = importsURL
         importScanTask = Task {
-            let files = await Task.detached(priority: .userInitiated) {
-                let extensions = Set("mp3 mp2 aac m4a m4b mp4 flac wav wave aiff aif ogg oga opus webm mka mkv mid midi rmi nsf nsfe spc gbs vgm vgz gym hes kss sap ay mod xm s3m it sid psf psf2 minipsf minipsf2 usf miniusf 2sf mini2sf ncsf minincsf gsf minigsf zip 7z rar cue".split(separator: " ").map(String.init))
-                let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles])
-                var files = [Track]()
-                while let file = enumerator?.nextObject() as? URL {
-                    guard extensions.contains(file.pathExtension.lowercased()),
-                          (try? file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
-                    files.append(Track(kind: "device", path: file.path, name: file.lastPathComponent))
-                }
-                return files
-            }.value
-            var resolved = [Track]()
-            for var track in files {
-                if Task.isCancelled { return }
-                let asset = AVURLAsset(url: URL(fileURLWithPath: track.path))
-                if let items = try? await asset.load(.commonMetadata) {
-                    for item in items {
-                        switch item.commonKey {
-                        case .commonKeyTitle: track.title = (try? await item.load(.stringValue)) ?? ""
-                        case .commonKeyArtist: track.artist = (try? await item.load(.stringValue)) ?? ""
-                        case .commonKeyAlbumName: track.album = (try? await item.load(.stringValue)) ?? ""
-                        default: break
+            do {
+                let listing = try await Task.detached(priority: .userInitiated) {
+                    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+                    return try NativeAudioCatalog.browse(root: root.path, path: path)
+                }.value
+                guard !Task.isCancelled else { return }
+                var resolved = [Track]()
+                for var track in listing.files {
+                    if Task.isCancelled { return }
+                    // AVFoundation handles common local tags. An archive member
+                    // is probed through Rust only when selected for the queue.
+                    if !track.path.hasPrefix("kog-archive:") {
+                        let asset = AVURLAsset(url: URL(fileURLWithPath: track.path))
+                        if let items = try? await asset.load(.commonMetadata) {
+                            for item in items {
+                                switch item.commonKey {
+                                case .commonKeyTitle: track.title = (try? await item.load(.stringValue)) ?? ""
+                                case .commonKeyArtist: track.artist = (try? await item.load(.stringValue)) ?? ""
+                                case .commonKeyAlbumName: track.album = (try? await item.load(.stringValue)) ?? ""
+                                default: break
+                                }
+                            }
+                        }
+                        if let length = try? await asset.load(.duration), length.seconds.isFinite {
+                            track.duration = Int64(max(0, length.seconds) * 1000)
                         }
                     }
+                    resolved.append(track)
                 }
-                if let length = try? await asset.load(.duration), length.seconds.isFinite {
-                    track.duration = Int64(max(0, length.seconds) * 1000)
-                }
-                resolved.append(track)
-            }
-            if !Task.isCancelled {
-                deviceFiles = resolved.sorted { $0.label.localizedStandardCompare($1.label) == .orderedAscending }
+                guard !Task.isCancelled else { return }
+                deviceListing = listing
+                devicePath = path
+                deviceFiles = resolved
                 importing = false
+            } catch {
+                if !Task.isCancelled { importing = false; report(error) }
             }
         }
+        #endif
     }
 
     private func updateNowPlaying() {
