@@ -70,16 +70,12 @@ source trees and are summarized in `THIRD_PARTY_NOTICES.md`.
   retained notices and source. psflib and zlib do not alter that boundary.
   This matches Kog's non-commercial project intent but does not relicense
   Snes9x or make the two licenses link-compatible.
-- SC-55 playback uses the pinned Nuked SC-55 0.6.1 backend and Kog's
-  `LicenseRef-Nuked-SC55` adapter only in the optional `kog-sc55-helper`.
-  Nuked SC-55's original MAME terms prohibit commercial products or activity
-  and require complete source for modified redistributions. Those terms are
-  incompatible with linking the backend into the GPL-3.0-or-later Kog
-  executable, so no emulator object is linked into Kog. The optional helper,
-  its adapter, complete corresponding source, and notices retain the upstream
-  terms. Kog's noncommercial intent does not relicense the emulator or remove
-  its conditions. Distributors remain responsible for reviewing whether and
-  how they may ship this independently identified optional program.
+- SC-55 playback uses the pinned Nuked SC-55 0.7.0 backend. The upstream fork
+  is now GPL-2.0-or-later, so Kog uses its GPL version 3 option for the combined
+  mobile audio library. Desktop continues to build `kog-sc55-helper`; iOS and
+  Android build the same renderer in-process. The pinned source, its GPL license,
+  and Kog's adapter source accompany distributions. Roland ROMs are supplied by
+  the user and are never included in Kog.
 - A decoder whose license adds non-commercial or other GPL-incompatible terms
   does not become link-compatible merely because Kog is intended as a
   non-commercial project. Such a component requires an independently reviewed,

@@ -23,7 +23,7 @@ xcodebuild -project Kog.xcodeproj -scheme Kog -configuration Release \
 ```
 
 The Xcode build phase runs `ios/native/build.sh` for the selected platform. It
-builds static FFmpeg, libarchive, Syntrax, Play! PSF2, and melonDS 2SF libraries,
+builds static FFmpeg, libarchive, Nuked SC-55, Syntrax, Play! PSF2, and melonDS 2SF libraries,
 then links `kog-ios-audio`. The first build takes several minutes. Its downloads
 and intermediate output live under
 `ios/.native-build` and `target`, which Git ignores.

@@ -36,6 +36,8 @@ Separate MIDI synth selectors control server streams and device files. OPL3
 works locally without extra assets; SoundFont, SC-55, and MT-32 need an SF2 file or
 ROM folder imported in Settings. Assets imported on the phone are separate
 from the files configured on the Kog server.
+SC-55 now runs in the app's native audio library from the pinned GPL-compatible
+backend; it does not need a helper executable or a server for imported MIDI.
 
 ## Current playback coverage
 
