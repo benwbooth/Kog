@@ -102,6 +102,12 @@ export "CC_${target_variable}=$toolchain/${target}28-clang"
 export "CXX_${target_variable}=$toolchain/${target}28-clang++"
 export "AR_${target_variable}=$toolchain/llvm-ar"
 export "CARGO_TARGET_${target_variable^^}_LINKER=$toolchain/${target}28-clang"
+compiler_rt=$("$toolchain/${target}28-clang" --rtlib=compiler-rt --print-libgcc-file-name)
+if [[ ! -f "$compiler_rt" ]]; then
+  echo "Android compiler runtime archive is missing: $compiler_rt" >&2
+  exit 1
+fi
+export KOG_ANDROID_COMPILER_RT="$compiler_rt"
 rustup target add "$target"
 cd "$repo"
 cargo build --locked -p kog-android-audio --target "$target"

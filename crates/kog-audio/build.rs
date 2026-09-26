@@ -105,8 +105,42 @@ fn main() {
         .warnings(false)
         .compile("kog_libvgm");
     link_libvgm(&libvgm_output);
+    link_android_compiler_rt();
 
     watch_native("../../native/opl3w");
+}
+
+fn link_android_compiler_rt() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("android") {
+        return;
+    }
+    // Play!'s ARM JIT cache flush references __clear_cache. rustc links
+    // cdylibs with -nodefaultlibs, so Clang's compiler-rt must be explicit.
+    println!("cargo:rerun-if-env-changed=KOG_ANDROID_COMPILER_RT");
+    let archive = PathBuf::from(
+        std::env::var_os("KOG_ANDROID_COMPILER_RT")
+            .expect("android/native/build.sh supplies the Android compiler runtime"),
+    );
+    if !archive.is_file() {
+        panic!(
+            "Android compiler runtime archive is missing: {}",
+            archive.display()
+        );
+    }
+    let name = archive
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_prefix("lib"))
+        .and_then(|name| name.strip_suffix(".a"))
+        .expect("Android compiler runtime must be a lib*.a archive");
+    println!(
+        "cargo:rustc-link-search=native={}",
+        archive
+            .parent()
+            .expect("compiler runtime has a directory")
+            .display()
+    );
+    println!("cargo:rustc-link-lib=static={name}");
 }
 
 fn build_spessasynth_midi() {
