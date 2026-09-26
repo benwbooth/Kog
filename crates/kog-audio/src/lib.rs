@@ -18,6 +18,7 @@ pub mod cuesheet;
 pub mod cuesheet_decoder;
 pub mod decoder;
 pub mod ffmpeg;
+pub mod ffmpeg_encoder;
 pub mod ffmpeg_decoder;
 pub mod gme;
 pub mod gme_decoder;

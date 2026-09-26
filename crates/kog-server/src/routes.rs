@@ -77,7 +77,6 @@ impl AppState {
                 config.cache_bytes,
             ),
             decoder_settings,
-            crate::service::StreamService::default_encoder(),
             crate::service::scratch_root(),
         )
     }
@@ -797,7 +796,6 @@ mod tests {
         crate::service::StreamService::new(
             crate::stream::StreamCache::new(directory.path().join("streams"), 1 << 20),
             kog_audio::decoder::DecoderSettings::default(),
-            std::path::PathBuf::from("ffmpeg"),
             directory.path().join("scratch"),
         )
     }

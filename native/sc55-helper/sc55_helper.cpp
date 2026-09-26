@@ -1,5 +1,5 @@
 /*
- * Kog Nuked SC-55 helper process.
+ * Kog Nuked SC-55 renderer and optional protocol test helper.
  * Copyright (C) 2026 Kog contributors.
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
@@ -17,6 +17,7 @@
 #include <deque>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <mutex>
 #include <thread>
 #include <memory>
@@ -297,6 +298,33 @@ BootedEmulator bootEmulator(const fs::path& romDirectory,
     return BootedEmulator {std::move(emulator), RomsetName(loaded.romset), sampleRate};
 }
 
+#if defined(KOG_SC55_EMBEDDED)
+struct EmbeddedContext
+{
+    std::mutex mutex;
+    std::atomic<uint64_t> epoch {0};
+    std::unique_ptr<BootedEmulator> booted;
+    bool renderedBefore = false;
+};
+
+std::mutex embeddedPoolMutex;
+std::map<fs::path, std::shared_ptr<EmbeddedContext>> embeddedPool;
+
+std::shared_ptr<EmbeddedContext> embeddedContext(const fs::path& romDirectory)
+{
+    std::lock_guard<std::mutex> guard(embeddedPoolMutex);
+    auto& context = embeddedPool[romDirectory];
+    if(!context) context = std::make_shared<EmbeddedContext>();
+    return context;
+}
+
+void bootEmbedded(EmbeddedContext& context, const fs::path& romDirectory)
+{
+    if(!context.booted)
+        context.booted = std::make_unique<BootedEmulator>(bootEmulator(romDirectory, ""));
+}
+#endif
+
 void renderJob(BootedEmulator& booted,
                const Schedule& schedule,
                uint64_t startFrame,
@@ -322,6 +350,11 @@ void renderJob(BootedEmulator& booted,
                         .epoch = epoch,
                         .expectedEpoch = expectedEpoch};
     emulator.SetSampleCallback(receiveSample, &output);
+    struct ResetCallback
+    {
+        Emulator& emulator;
+        ~ResetCallback() { emulator.SetSampleCallback(nullptr, nullptr); }
+    } resetCallback {emulator};
     const uint64_t nanosecondsPerStep = emulator.GetMCU().is_mk1 ? 600U : 500U;
     uint64_t simulatedNs = 0;
     for(const Event& event : schedule.events)
@@ -360,6 +393,7 @@ void run(const fs::path& schedulePath,
 
 } // namespace
 
+#ifndef KOG_SC55_EMBEDDED
 // ---- persistent server (protocol 2): boot once, then render one job
 // per stdin line over loopback TCP so each job has clean EOF-delimited
 // framing. A new JOB line supersedes the in-flight render: writes to the
@@ -568,10 +602,46 @@ void runServer(const fs::path& romDirectory, std::string_view requestedRomset)
 #endif
 }
 
+#endif
+
 #if defined(KOG_SC55_EMBEDDED)
+extern "C" const char* kog_sc55_version()
+{
+    return "Nuked SC-55 0.7.0 (e8a6bdc)";
+}
+
+extern "C" int kog_sc55_warm(const char* romDirectory,
+                              char* errorBuffer, size_t errorCapacity)
+{
+    try
+    {
+#ifdef _WIN32
+        const fs::path romPath = fs::u8path(romDirectory);
+#else
+        const fs::path romPath(romDirectory);
+#endif
+        auto context = embeddedContext(romPath);
+        std::lock_guard<std::mutex> guard(context->mutex);
+        bootEmbedded(*context, romPath);
+        return 0;
+    }
+    catch(const std::exception& error)
+    {
+        if(errorCapacity > 0)
+            std::snprintf(errorBuffer, errorCapacity, "%s", error.what());
+        return -1;
+    }
+}
+
+extern "C" void kog_sc55_shutdown()
+{
+    std::lock_guard<std::mutex> guard(embeddedPoolMutex);
+    embeddedPool.clear();
+}
+
 extern "C" int kog_sc55_render(const char* schedulePath,
                                 const char* romDirectory,
-                                int outputFd,
+                                intptr_t outputDescriptor,
                                 char* errorBuffer,
                                 size_t errorCapacity)
 {
@@ -584,20 +654,52 @@ extern "C" int kog_sc55_render(const char* schedulePath,
     pthread_sigmask(SIG_BLOCK, &blocked, nullptr);
 #elif defined(__APPLE__)
     int enabled = 1;
-    setsockopt(outputFd, SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof(enabled));
+    setsockopt(static_cast<int>(outputDescriptor), SOL_SOCKET, SO_NOSIGPIPE,
+               &enabled, sizeof(enabled));
 #endif
+#ifdef _WIN32
+    const int outputFd = ::_open_osfhandle(outputDescriptor, _O_BINARY);
+    FILE* output = outputFd < 0 ? nullptr : ::_fdopen(outputFd, "wb");
+#else
+    const int outputFd = static_cast<int>(outputDescriptor);
     FILE* output = fdopen(outputFd, "wb");
+#endif
     if(output == nullptr)
     {
+#ifdef _WIN32
+        if(outputFd >= 0) ::_close(outputFd);
+        else ::CloseHandle(reinterpret_cast<HANDLE>(outputDescriptor));
+#else
         ::close(outputFd);
+#endif
         if(errorCapacity > 0) std::snprintf(errorBuffer, errorCapacity, "opening SC-55 output failed");
         return -1;
     }
     try
     {
+#ifdef _WIN32
+        const Schedule schedule = readSchedule(fs::u8path(schedulePath));
+        const fs::path romPath = fs::u8path(romDirectory);
+#else
         const Schedule schedule = readSchedule(schedulePath);
-        BootedEmulator booted = bootEmulator(romDirectory, "");
-        renderJob(booted, schedule, 0, output, nullptr, 0);
+        const fs::path romPath(romDirectory);
+#endif
+        auto context = embeddedContext(romPath);
+        const uint64_t epoch = context->epoch.fetch_add(1) + 1;
+        {
+            std::lock_guard<std::mutex> guard(context->mutex);
+            if(context->epoch.load() != epoch)
+                throw std::runtime_error("SC-55 render superseded by a newer job");
+            bootEmbedded(*context, romPath);
+            if(context->renderedBefore)
+            {
+                context->booted->emulator->PostSystemReset(EMU_SystemReset::GS_RESET);
+                for(uint32_t step = 0; step < POST_RESET_SETTLE_STEPS; ++step)
+                    context->booted->emulator->Step();
+            }
+            context->renderedBefore = true;
+            renderJob(*context->booted, schedule, 0, output, &context->epoch, epoch);
+        }
         const int closeResult = std::fclose(output);
         output = nullptr;
         if(closeResult != 0)

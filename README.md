@@ -35,8 +35,9 @@ Download the latest packages from [GitHub Releases](https://github.com/benwbooth
 | Linux | AppImage, portable AppDir archive, Flatpak bundle, or Flatpak repository archive |
 
 Linux and Apple Silicon release builds also offer separate archives for
-`kog-tui` and the headless `kog-server`. Each includes the decoder helpers,
-FFmpeg encoder, and required third-party libraries; keep the extracted
+`kog-tui` and the headless `kog-server`. Each includes the optional decoder
+helpers and required third-party libraries, including linked FFmpeg encoding;
+keep the extracted
 directory together. Linux needs a compatible glibc and host audio stack, and
 macOS needs its system libraries and frameworks.
 

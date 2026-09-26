@@ -20,8 +20,7 @@ Copy-Item (Join-Path $root "LICENSES") $stage -Recurse
 # unless KOG_2SF_HELPER points at a user-supplied helper.
 $helpers = @(
     "kog-sfm-helper.exe", "kog-psf-helper.exe",
-    "kog-snsf-helper.exe",
-    "kog-sc55-helper.exe"
+    "kog-snsf-helper.exe"
 )
 foreach ($helper in $helpers) {
     $candidate = Get-ChildItem (Join-Path $root "target/release/build") -Recurse -File -Filter $helper |

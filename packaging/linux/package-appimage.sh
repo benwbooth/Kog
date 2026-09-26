@@ -15,15 +15,6 @@ install -Dm644 "$root_dir/THIRD_PARTY_NOTICES.md" \
   "$app_dir/usr/share/licenses/org.kog.player/THIRD_PARTY_NOTICES.md"
 cp -R "$root_dir/LICENSES" "$app_dir/usr/share/licenses/org.kog.player/LICENSES"
 
-# Streaming transcodes with the ffmpeg CLI. Bundle it (and its libraries,
-# via linuxdeploy below) so the AppImage does not need a host ffmpeg.
-ffmpeg_bin="$(command -v ffmpeg || true)"
-if [[ -z "$ffmpeg_bin" ]]; then
-  echo "ffmpeg is required to package the streaming encoder" >&2
-  exit 1
-fi
-install -m755 "$ffmpeg_bin" "$app_dir/usr/bin/ffmpeg"
-
 install -Dm644 "$root_dir/packaging/linux/org.kog.player.metainfo.xml" \
   "$app_dir/usr/share/metainfo/org.kog.player.metainfo.xml"
 desktop_icon="$tool_dir/org.kog.player.svg"
@@ -31,7 +22,7 @@ install -m644 "$root_dir/qml/icons/kog.svg" "$desktop_icon"
 
 helpers=(
   kog-sfm-helper kog-psf-helper
-  kog-snsf-helper kog-sc55-helper
+  kog-snsf-helper
 )
 helper_args=()
 for helper in "${helpers[@]}"; do
@@ -65,7 +56,6 @@ export LDAI_OUTPUT="$output_dir/Kog-$version-linux-x86_64.AppImage"
 "$linuxdeploy" \
   --appdir "$app_dir" \
   --executable "$app_dir/usr/bin/kog" \
-  --executable "$app_dir/usr/bin/ffmpeg" \
   "${helper_args[@]}" \
   --desktop-file "$root_dir/packaging/linux/org.kog.player.desktop" \
   --icon-file "$desktop_icon"

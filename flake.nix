@@ -142,9 +142,6 @@
               buildInputs = qtModules ++ [ kogFfmpeg pkgs.libarchive pkgs.alsa-lib pkgs.zlib pkgs.libxcb-cursor ];
               QMAKE = "${qtEnv}/bin/qmake";
               LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
-              # Streaming encodes through the ffmpeg CLI; name the store path
-              # so the app does not depend on the user's PATH.
-              qtWrapperArgs = [ "--set" "KOG_FFMPEG" "${kogFfmpeg}/bin/ffmpeg" ];
               preBuild = ''
                 export PATH="${qtEnv}/bin:${qtEnv}/libexec:$PATH"
                 # Qt's setup hook can replace QMAKE with qtbase's split output.
@@ -180,7 +177,7 @@
                   cp -r ${kogWeb}/. crates/kog-server/web/
                 '';
                 postInstall = ''
-                  for helper in kog-sfm-helper kog-psf-helper kog-psf2-helper kog-2sf-helper kog-snsf-helper kog-syntrax-helper kog-sc55-helper; do
+                  for helper in kog-sfm-helper kog-psf-helper kog-snsf-helper; do
                     helperPath=$(find target -type f -path "*/bin/$helper" -print -quit)
                     test -n "$helperPath" || { echo "Missing decoder helper: $helper" >&2; exit 1; }
                     install -m755 "$helperPath" "$out/bin/$helper"

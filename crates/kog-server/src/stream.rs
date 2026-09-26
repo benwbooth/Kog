@@ -7,14 +7,10 @@
 //! first play streams progressively as it encodes, and every later play or
 //! seek is a plain file read with `Range` support.
 //!
-//! Encoding shell out to the pinned `ffmpeg` binary rather than linking an
-//! encoder in-process. That keeps Kog's only libav usage on the decode path
-//! and avoids a second ABI surface; the tradeoff is a runtime dependency on
-//! the ffmpeg executable.
+//! Encoding uses the same linked FFmpeg libraries as the audio decoder.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 
 use crate::StreamCodec;
 
@@ -22,10 +18,6 @@ use crate::StreamCodec;
 pub const DEFAULT_BITRATE_KBPS: u16 = 192;
 const MIN_BITRATE_KBPS: u16 = 48;
 const MAX_BITRATE_KBPS: u16 = 320;
-
-/// Opus is defined at 48 kHz; asking ffmpeg for another rate fails, so the
-/// arg builder forces it for that codec.
-const OPUS_SAMPLE_RATE: u32 = 48_000;
 
 /// Stable identity for a cached encode: the track's locator plus what was
 /// encoded. Any change to codec or bitrate is a different cache entry.
@@ -165,17 +157,16 @@ impl StreamCache {
         }
         std::fs::rename(partial, &entry)
             .map_err(|error| format!("finalizing {}: {error}", entry.display()))?;
-        let size = std::fs::metadata(&entry).map(|metadata| metadata.len()).unwrap_or(0);
+        let size = std::fs::metadata(&entry)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
         self.evict_to_fit(size);
         Ok(entry)
     }
 
     /// Total bytes currently cached.
     pub fn total_bytes(&self) -> u64 {
-        self.entries()
-            .iter()
-            .map(|(_, size, _)| *size)
-            .sum()
+        self.entries().iter().map(|(_, size, _)| *size).sum()
     }
 
     /// Entries as `(path, size, modified)`.
@@ -214,7 +205,10 @@ impl StreamCache {
         let mut total: u64 = entries.iter().map(|(_, size, _)| *size).sum();
         let mut partials = Vec::new();
         entries.retain(|(path, _, _)| {
-            if path.extension().is_some_and(|extension| extension == "part") {
+            if path
+                .extension()
+                .is_some_and(|extension| extension == "part")
+            {
                 partials.push(path.clone());
                 false
             } else {
@@ -261,138 +255,29 @@ impl StreamCache {
     }
 }
 
-/// The ffmpeg invocation for one codec. Separate from running it so the flags
-/// can be asserted in tests without an encoder installed.
-pub fn encoder_args(
+/// Encode decoded PCM through the linked FFmpeg libraries. The writer can
+/// stream bytes to the listener and the cache as the encoder produces them.
+pub fn encode_to_writer(
     codec: StreamCodec,
     bitrate_kbps: u16,
     sample_rate: u32,
     channels: u16,
-) -> Vec<String> {
-    let bitrate = clamp_bitrate(bitrate_kbps);
-    let input_rate = sample_rate.to_string();
-    let channels = channels.to_string();
-    // Raw little-endian f32 from Kog's decoder pipeline, streamed on stdin;
-    // the encoded container goes to stdout so the caller can tee it into the
-    // cache and the response at once.
-    let mut args = vec![
-        "-hide_banner".to_owned(),
-        "-loglevel".to_owned(),
-        "error".to_owned(),
-        "-nostdin".to_owned(),
-        "-f".to_owned(),
-        "f32le".to_owned(),
-        "-ar".to_owned(),
-        input_rate,
-        "-ac".to_owned(),
-        channels,
-        "-i".to_owned(),
-        "pipe:0".to_owned(),
-    ];
-    match codec {
-        StreamCodec::Aac => {
-            args.extend([
-                "-c:a".to_owned(),
-                "aac".to_owned(),
-                "-b:a".to_owned(),
-                format!("{bitrate}k"),
-                // Raw ADTS, not a container: each frame is self-describing, so
-                // a client can start playing as soon as the first frame lands
-                // and never needs a finalized moov. The tradeoff is that ADTS
-                // carries no duration; the web UI reads that from
-                // `/api/metadata` instead.
-                "-f".to_owned(),
-                "adts".to_owned(),
-            ]);
-        }
-        StreamCodec::Opus => {
-            args.extend([
-                "-c:a".to_owned(),
-                "libopus".to_owned(),
-                "-b:a".to_owned(),
-                format!("{bitrate}k"),
-                // libopus only accepts 48 kHz.
-                "-ar".to_owned(),
-                OPUS_SAMPLE_RATE.to_string(),
-                "-f".to_owned(),
-                "ogg".to_owned(),
-            ]);
-        }
-        StreamCodec::Flac => {
-            args.extend([
-                "-c:a".to_owned(),
-                "flac".to_owned(),
-                "-f".to_owned(),
-                "flac".to_owned(),
-            ]);
-        }
-    }
-    args.extend(["-y".to_owned(), "pipe:1".to_owned()]);
-    args
-}
-
-/// Encode raw f32le PCM from `input` into `output` with the given program.
-/// `program` is a parameter so tests can substitute a fake encoder.
-pub fn encode_to_writer(
-    program: &Path,
-    args: &[String],
-    mut input: impl Read,
-    mut output: impl Write + Send,
+    input: impl Read,
+    output: impl Write,
 ) -> Result<(), String> {
-    let mut child = Command::new(program)
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("launching {}: {error}", program.display()))?;
-
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "encoder stdout was not captured".to_owned())?;
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| "encoder stdin was not captured".to_owned())?;
-
-    // Pump stdout on a scoped second thread: an encoder can fill its output
-    // pipe before it finishes reading input, which would deadlock a single
-    // thread. Scoped so callers can pass borrowed writers.
-    let (write_result, pump_result) = std::thread::scope(|scope| {
-        let pump = scope.spawn(|| -> Result<(), String> {
-            let mut stdout = stdout;
-            std::io::copy(&mut stdout, &mut output)
-                .map(|_| ())
-                .map_err(|error| format!("reading encoded audio: {error}"))
-        });
-        let write_result = std::io::copy(&mut input, &mut stdin)
-            .map_err(|error| format!("writing PCM to the encoder: {error}"));
-        drop(stdin);
-        let pump_result = pump
-            .join()
-            .unwrap_or_else(|_| Err("the encoder pump panicked".to_owned()));
-        (write_result, pump_result)
-    });
-
-    let status = child
-        .wait()
-        .map_err(|error| format!("waiting for the encoder: {error}"))?;
-    write_result?;
-    pump_result?;
-    if !status.success() {
-        let mut message = String::new();
-        if let Some(mut stderr) = child.stderr.take() {
-            let _ = stderr.read_to_string(&mut message);
-        }
-        let message = message.trim();
-        return Err(if message.is_empty() {
-            format!("encoder exited {status}")
-        } else {
-            format!("encoder exited {status}: {message}")
-        });
-    }
-    Ok(())
+    let encoding = match codec {
+        StreamCodec::Aac => kog_audio::ffmpeg_encoder::AudioEncoding::Aac,
+        StreamCodec::Opus => kog_audio::ffmpeg_encoder::AudioEncoding::Opus,
+        StreamCodec::Flac => kog_audio::ffmpeg_encoder::AudioEncoding::Flac,
+    };
+    kog_audio::ffmpeg_encoder::encode_to_writer(
+        encoding,
+        clamp_bitrate(bitrate_kbps),
+        sample_rate,
+        channels,
+        input,
+        output,
+    )
 }
 
 fn fnv1a64(bytes: &[u8]) -> u64 {
@@ -470,12 +355,20 @@ mod tests {
         let (_dir, cache) = cache();
         let stream = key("/music/a.flac", StreamCodec::Aac, 192);
         assert_eq!(cache.lookup(&stream), None);
-        cache.create_partial(&stream).unwrap().write_all(b"partial").unwrap();
+        cache
+            .create_partial(&stream)
+            .unwrap()
+            .write_all(b"partial")
+            .unwrap();
         assert_eq!(cache.lookup(&stream), None, "a .part file is not an entry");
         let entry = cache.entry_path(&stream);
         std::fs::create_dir_all(entry.parent().unwrap()).unwrap();
         std::fs::write(&entry, b"").unwrap();
-        assert_eq!(cache.lookup(&stream), None, "an empty encode is not an entry");
+        assert_eq!(
+            cache.lookup(&stream),
+            None,
+            "an empty encode is not an entry"
+        );
         std::fs::write(&entry, b"encoded").unwrap();
         assert_eq!(cache.lookup(&stream), Some(entry));
     }
@@ -496,8 +389,15 @@ mod tests {
             cache.commit(&stream, &partial).unwrap();
         }
         assert!(cache.total_bytes() <= cache.capacity_bytes());
-        assert_eq!(cache.lookup(&key("a", StreamCodec::Aac, 192)), None, "oldest evicted");
-        assert!(cache.lookup(&key("c", StreamCodec::Aac, 192)).is_some(), "newest kept");
+        assert_eq!(
+            cache.lookup(&key("a", StreamCodec::Aac, 192)),
+            None,
+            "oldest evicted"
+        );
+        assert!(
+            cache.lookup(&key("c", StreamCodec::Aac, 192)).is_some(),
+            "newest kept"
+        );
     }
 
     /// Set a file's mtime without a dependency on `filetime`.
@@ -524,64 +424,66 @@ mod tests {
     }
 
     #[test]
-    fn encoder_args_select_the_right_codec_and_container() {
-        let aac = encoder_args(StreamCodec::Aac, 192, 44_100, 2);
-        assert!(aac.windows(2).any(|pair| pair == ["-c:a", "aac"]));
-        assert!(
-            aac.windows(2).any(|pair| pair == ["-f", "adts"]),
-            "ADTS is the progressive, self-describing stream browsers can play"
-        );
-        assert!(
-            !aac.iter().any(|arg| arg.contains("moov")),
-            "ADTS has no container/moov"
-        );
-        assert!(aac.windows(2).any(|pair| pair == ["-b:a", "192k"]));
-        assert_eq!(aac.last().unwrap(), "pipe:1");
-
-        let opus = encoder_args(StreamCodec::Opus, 128, 44_100, 2);
-        assert!(opus.windows(2).any(|pair| pair == ["-c:a", "libopus"]));
-        assert!(opus.windows(2).any(|pair| pair == ["-f", "ogg"]));
-        assert!(
-            opus
-                .windows(2)
-                .any(|pair| pair == ["-ar", "48000"]),
-            "libopus requires 48 kHz"
-        );
-
-        let flac = encoder_args(StreamCodec::Flac, 999, 44_100, 2);
-        assert!(flac.windows(2).any(|pair| pair == ["-c:a", "flac"]));
-        assert!(
-            !flac.iter().any(|arg| arg.ends_with('k')),
-            "lossless ignores a bitrate"
-        );
+    fn linked_encoder_produces_playable_aac_opus_and_flac() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut pcm = Vec::new();
+        for frame in 0..44_100 {
+            let sample = ((frame as f32 * 440.0 / 44_100.0) * std::f32::consts::TAU).sin() * 0.4;
+            for _ in 0..2 {
+                pcm.extend_from_slice(&sample.to_le_bytes());
+            }
+        }
+        for (codec, extension, magic) in [
+            (StreamCodec::Aac, "aac", &b"\xff\xf0"[..]),
+            (StreamCodec::Opus, "ogg", &b"OggS"[..]),
+            (StreamCodec::Flac, "flac", &b"fLaC"[..]),
+        ] {
+            let mut encoded = Vec::new();
+            encode_to_writer(
+                codec,
+                128,
+                44_100,
+                2,
+                std::io::Cursor::new(&pcm),
+                &mut encoded,
+            )
+            .unwrap_or_else(|error| panic!("{codec:?} encode: {error}"));
+            if codec == StreamCodec::Aac {
+                assert_eq!(encoded[0], 0xff, "AAC ADTS sync");
+                assert_eq!(encoded[1] & 0xf0, 0xf0, "AAC ADTS sync");
+            } else {
+                assert!(encoded.starts_with(magic), "{codec:?} container header");
+            }
+            let path = directory.path().join(format!("tone.{extension}"));
+            std::fs::write(&path, encoded).unwrap();
+            let mut decoder = kog_audio::ffmpeg::Ffmpeg::open(&path)
+                .unwrap_or_else(|error| panic!("{codec:?} decode: {error}"));
+            let mut output = [0.0_f32; 4096];
+            let mut loud = false;
+            for _ in 0..16 {
+                let frames = decoder.render(&mut output).unwrap();
+                loud |= output[..frames * usize::from(decoder.channels())]
+                    .iter()
+                    .any(|sample| sample.abs() > 0.01);
+                if loud || frames == 0 {
+                    break;
+                }
+            }
+            assert!(loud, "{codec:?} decoded audio is silent");
+        }
     }
 
     #[test]
-    #[cfg(unix)]
-    fn encoding_pipes_pcm_through_the_encoder() {
-        // `cat` stands in for ffmpeg: it proves the stdin→stdout plumbing,
-        // including the pump thread, without needing an encoder installed.
-        let mut output = Vec::new();
-        encode_to_writer(
-            Path::new("cat"),
-            &[],
-            std::io::Cursor::new(vec![7_u8; 64]),
-            &mut output,
-        )
-        .expect("encode through cat");
-        assert_eq!(output, vec![7_u8; 64]);
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn a_failing_encoder_reports_its_stderr() {
+    fn linked_encoder_rejects_partial_pcm_frame() {
         let error = encode_to_writer(
-            Path::new("sh"),
-            &["-c".to_owned(), "echo boom >&2; exit 3".to_owned()],
-            std::io::Cursor::new(Vec::new()),
-            &mut Vec::new(),
+            StreamCodec::Aac,
+            192,
+            44_100,
+            2,
+            std::io::Cursor::new([0_u8; 3]),
+            Vec::new(),
         )
-        .expect_err("encoder failed");
-        assert!(error.contains("boom"), "stderr should reach the caller: {error}");
+        .unwrap_err();
+        assert!(error.contains("partial frame"), "{error}");
     }
 }

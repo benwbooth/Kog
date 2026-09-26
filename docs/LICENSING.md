@@ -1,11 +1,10 @@
 # Kog license policy
 
 Kog-authored source code is licensed under the GNU General Public License,
-version 3 or (at your option) any later version (`GPL-3.0-or-later`), except the
-small `native/snsf-helper` and `native/sc55-helper` adapters identified as
-`LicenseRef-Snes9x` and `LicenseRef-Nuked-SC55`. Those adapters are distributed
-only with their respective separately licensed noncommercial helpers. The GPL text for the main application is in the repository root
-`LICENSE` file.
+version 3 or (at your option) any later version (`GPL-3.0-or-later`), except
+adapters identified in their source and notices for GPL-2.0-only or
+Snes9x-licensed helper programs. The GPL text for the main application is in
+the repository root `LICENSE` file.
 
 Third-party libraries, emulator cores, test fixtures, and user-supplied assets
 are not relicensed. Their copyright notices and license terms remain in their
@@ -72,8 +71,7 @@ source trees and are summarized in `THIRD_PARTY_NOTICES.md`.
   Snes9x or make the two licenses link-compatible.
 - SC-55 playback uses the pinned Nuked SC-55 0.7.0 backend. The upstream fork
   is now GPL-2.0-or-later, so Kog uses its GPL version 3 option for the combined
-  mobile audio library. Desktop continues to build `kog-sc55-helper`; iOS and
-  Android build the same renderer in-process. The pinned source, its GPL license,
+  audio library on all platforms. The pinned source, its GPL license,
   and Kog's adapter source accompany distributions. Roland ROMs are supplied by
   the user and are never included in Kog.
 - A decoder whose license adds non-commercial or other GPL-incompatible terms

@@ -24,8 +24,10 @@ library, not translated or statically incorporated into Kog.
 ## FFmpeg
 
 Kog dynamically links the system FFmpeg libraries `libavformat`, `libavcodec`,
-`libavutil`, and `libswresample` through the bridge in
-`native/ffmpeg_bridge.cpp`. FFmpeg source is not vendored in this repository.
+`libavutil`, and `libswresample` through the decoder and streaming encoder
+bridges in `native/ffmpeg_bridge.cpp` and
+`native/ffmpeg_encoder_bridge.cpp`. FFmpeg source is not vendored in this
+repository.
 The pinned Nix development shell currently resolves FFmpeg 9.0.1 and overrides
 the package with `withGPL = false` and `withVersion3 = false`. The resulting
 binary's own license output identifies it as GNU Lesser General Public License
@@ -92,7 +94,7 @@ sample ROM data; users must supply files obtained from hardware they own.
 Roland product names are used only to identify compatibility and do not imply
 affiliation or endorsement.
 
-## Nuked SC-55 and kog-sc55-helper
+## Nuked SC-55
 
 The `native/nuked-sc55` Git submodule is J.C. Moyer's reusable backend fork of
 [Nuked SC-55](https://github.com/jcmoyer/Nuked-SC55), pinned to release 0.7.0
@@ -103,9 +105,8 @@ retained in `native/nuked-sc55/LICENSE` and copied to
 when combining this backend with its GPL-3.0-or-later code.
 
 Kog compiles the emulator backend and ROM loader, without the SDL, RtMidi,
-standard frontend, renderer frontend, or GUI. Desktop runs its adapter in the
-`kog-sc55-helper` process; iOS and Android link the same core into their local
-audio library through `kog_sc55_render`. The adapter source in
+standard frontend, renderer frontend, or GUI. All frontends link the same core
+into their audio backend through `kog_sc55_render`. The adapter source in
 `native/sc55-helper` is GPL-3.0-or-later. Firmware and waveform ROMs are
 user-provided and are never bundled.
 

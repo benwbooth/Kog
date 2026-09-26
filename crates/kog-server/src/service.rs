@@ -19,13 +19,10 @@ use kog_audio::decoder::{DecoderRegistry, DecoderSettings, PlaybackSource, Strea
 use kog_audio::playlist::PlaylistEntry;
 use kog_audio::streaming::{PcmReader, resolve_entry};
 
-use crate::stream::{StreamCache, StreamKey, encode_to_writer, encoder_args};
+use crate::stream::{StreamCache, StreamKey, encode_to_writer};
 use crate::StreamCodec;
 
-/// Bytes buffered between the encoder thread and the HTTP body. Small enough
-/// that a slow client does not stall the encode for long, large enough to keep
-/// the encoder fed.
-const CHUNK_BYTES: usize = 64 * 1024;
+/// Maximum encoded chunks waiting for the HTTP body to consume them.
 const CHANNEL_DEPTH: usize = 16;
 
 /// Where a stream's bytes come from.
@@ -42,8 +39,6 @@ pub enum StreamSource {
 pub struct StreamService {
     cache: StreamCache,
     decoder_settings: DecoderSettings,
-    /// Encoder executable; `ffmpeg` by default.
-    encoder: PathBuf,
     scratch: PathBuf,
     /// Serializes `probe_entry`, whose scratch playlist path is fixed.
     probe_lock: Arc<Mutex<()>>,
@@ -53,7 +48,6 @@ impl StreamService {
     pub fn new(
         cache: StreamCache,
         decoder_settings: DecoderSettings,
-        encoder: PathBuf,
         scratch: PathBuf,
     ) -> Self {
         // The scratch playlist the decoder expansion needs lives here; create
@@ -63,7 +57,6 @@ impl StreamService {
         Self {
             cache,
             decoder_settings,
-            encoder,
             scratch,
             probe_lock: Arc::new(Mutex::new(())),
         }
@@ -73,25 +66,10 @@ impl StreamService {
         &self.cache
     }
 
-    /// Resolve the encoder: `KOG_FFMPEG`, a bundled sibling, then `PATH`.
-    pub fn default_encoder() -> PathBuf {
-        if let Some(path) = std::env::var_os("KOG_FFMPEG") {
-            return PathBuf::from(path);
-        }
-        let name = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
-        if let Ok(executable) = std::env::current_exe() {
-            let sibling = executable.with_file_name(name);
-            if sibling.is_file() {
-                return sibling;
-            }
-        }
-        PathBuf::from(name)
-    }
-
     /// Open a stream for one entry, encoding on a miss.
     ///
     /// Everything that can fail is done here, before any bytes are promised to
-    /// the client: a cache hit, a missing encoder, or an entry that will not
+    /// the client: a cache hit or an entry that will not
     /// resolve all have to become an HTTP error rather than a silent empty
     /// body.
     pub fn open(
@@ -102,7 +80,6 @@ impl StreamService {
         if let Some(path) = self.cache.lookup(&key) {
             return Ok(StreamSource::Cached(path));
         }
-        self.check_encoder()?;
         let decoders = kog_audio::decoder::DecoderRegistry::new(self.decoder_settings.clone());
         let source = resolve_entry(&entry, &decoders, &self.scratch)?;
         // The resolved source of an archive member lives in the registry's
@@ -196,26 +173,6 @@ impl StreamService {
         self.decoder_settings.set_midi_engine(engine);
     }
 
-    /// The encoder runs as a subprocess; a missing one is a configuration
-    /// problem the listener should hear about immediately.
-    fn check_encoder(&self) -> Result<(), String> {
-        let found = if self.encoder.is_absolute() {
-            self.encoder.is_file()
-        } else {
-            std::env::var_os("PATH").is_some_and(|path| {
-                std::env::split_paths(&path).any(|dir| dir.join(&self.encoder).is_file())
-            })
-        };
-        if found {
-            Ok(())
-        } else {
-            Err(format!(
-                "the encoder {} was not found; install ffmpeg or point KOG_FFMPEG at it",
-                self.encoder.display()
-            ))
-        }
-    }
-
     fn start_encode(
         &self,
         source: PlaybackSource,
@@ -251,17 +208,13 @@ impl StreamService {
         sender: tokio::sync::mpsc::Sender<Result<Bytes, std::io::Error>>,
     ) -> Result<(), String> {
         let pcm = PcmReader::open(source, self.decoder_settings.clone())?;
-        let args = encoder_args(
-            key.codec,
-            key.bitrate_kbps,
-            pcm.sample_rate(),
-            pcm.channels(),
-        );
+        let sample_rate = pcm.sample_rate();
+        let channels = pcm.channels();
         let tee = TeeWriter {
             file: partial,
             sender,
         };
-        encode_to_writer(&self.encoder, &args, pcm, tee)?;
+        encode_to_writer(key.codec, key.bitrate_kbps, sample_rate, channels, pcm, tee)?;
         self.cache.commit(
             key,
             &self
@@ -339,7 +292,6 @@ mod tests {
         let service = StreamService::new(
             cache,
             DecoderSettings::default(),
-            PathBuf::from("ffmpeg"),
             PathBuf::from("/tmp"),
         );
         let entry = PlaylistEntry {
@@ -405,7 +357,6 @@ mod tests {
         let service = StreamService::new(
             cache,
             DecoderSettings::default(),
-            PathBuf::from("ffmpeg"),
             directory.path().join("scratch"),
         );
         let (_, file_size_bytes) = service
@@ -431,7 +382,6 @@ mod tests {
         let service = StreamService::new(
             cache,
             DecoderSettings::default(),
-            PathBuf::from("ffmpeg"),
             directory.path().join("scratch"),
         );
         let properties = service

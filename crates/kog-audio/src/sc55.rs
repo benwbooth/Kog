@@ -1,19 +1,12 @@
-//! Nuked SC-55 PCM stream and seek cache. Desktop uses a helper process;
-//! mobile renders the same schedule in-process from GPL-compatible source.
+//! Nuked SC-55 PCM stream and seek cache. Every frontend runs the pinned
+//! emulator library in-process through the shared native renderer.
 
-use std::fs::File;
-use std::collections::{HashMap, VecDeque};
-use std::io::{self, Read, Seek, SeekFrom, Write};
-use std::net::{TcpListener, TcpStream};
-use std::path::{Path, PathBuf};
-#[cfg(any(target_os = "ios", target_os = "android"))]
+use std::collections::HashSet;
 use std::ffi::{CString, c_char, c_int};
-#[cfg(any(target_os = "ios", target_os = "android"))]
-use std::os::fd::IntoRawFd;
-#[cfg(any(target_os = "ios", target_os = "android"))]
-use std::os::unix::net::UnixStream;
-use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::fs::File;
+use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -40,8 +33,6 @@ pub struct Sc55 {
     cache_reader: File,
     cache_state: Arc<Sc55CacheState>,
     cache_worker: Option<JoinHandle<()>>,
-    stream_shutdown: Option<StreamShutdown>,
-    embedded_worker: Option<JoinHandle<()>>,
     sample_rate: u32,
     total_frames: u64,
     rendered_frames: u64,
@@ -50,37 +41,22 @@ pub struct Sc55 {
     native_bytes: Vec<u8>,
 }
 
-struct Sc55Process {
-    child: Child,
-    stdout: ChildStdout,
-}
-
-enum StreamShutdown {
-    Tcp(TcpStream),
-    #[cfg(any(target_os = "ios", target_os = "android"))]
-    Unix(UnixStream),
-}
-
-impl StreamShutdown {
-    fn shutdown(self) {
-        match self {
-            Self::Tcp(stream) => { let _ = stream.shutdown(std::net::Shutdown::Both); }
-            #[cfg(any(target_os = "ios", target_os = "android"))]
-            Self::Unix(stream) => { let _ = stream.shutdown(std::net::Shutdown::Both); }
-        }
-    }
-}
-
-#[cfg(any(target_os = "ios", target_os = "android"))]
 unsafe extern "C" {
-    fn kog_sc55_render(schedule: *const c_char, roms: *const c_char,
-                       output_fd: c_int, error: *mut c_char, error_capacity: usize) -> c_int;
+    fn kog_sc55_version() -> *const c_char;
+    fn kog_sc55_warm(roms: *const c_char, error: *mut c_char, error_capacity: usize) -> c_int;
+    fn kog_sc55_shutdown();
+    fn kog_sc55_render(
+        schedule: *const c_char,
+        roms: *const c_char,
+        output_descriptor: isize,
+        error: *mut c_char,
+        error_capacity: usize,
+    ) -> c_int;
 }
 
 struct Sc55CacheState {
     progress: Mutex<Sc55CacheProgress>,
     ready: Condvar,
-    child: Mutex<Option<Child>>,
     stopping: AtomicBool,
 }
 
@@ -134,8 +110,11 @@ impl Sc55 {
         // so keep both the schedule and seek cache alongside that directory.
         #[cfg(any(target_os = "ios", target_os = "android"))]
         let mut schedule_file = NamedTempFile::new_in(
-            rom_directory.parent().ok_or("SC-55 ROM directory has no parent")?,
-        ).map_err(|error| format!("creating SC-55 schedule: {error}"))?;
+            rom_directory
+                .parent()
+                .ok_or("SC-55 ROM directory has no parent")?,
+        )
+        .map_err(|error| format!("creating SC-55 schedule: {error}"))?;
         #[cfg(not(any(target_os = "ios", target_os = "android")))]
         let mut schedule_file =
             NamedTempFile::new().map_err(|error| format!("creating SC-55 schedule: {error}"))?;
@@ -143,112 +122,33 @@ impl Sc55 {
         schedule_file
             .flush()
             .map_err(|error| format!("flushing SC-55 schedule: {error}"))?;
-        #[cfg(any(target_os = "ios", target_os = "android"))]
-        return Self::open_embedded(schedule_file, rom_directory, path);
-
-        #[cfg(not(any(target_os = "ios", target_os = "android")))]
-        {
-        // Fast path first: a booted persistent server renders without the
-        // per-file emulator startup. Silent fallback keeps today's
-        // one-shot behavior whenever servers are unavailable.
-        // Escape hatch: KOG_SC55_SERVER=0 forces the one-shot helper, which
-        // is slower per track but has no long-lived process.
-        let server_disabled = std::env::var("KOG_SC55_SERVER")
-            .is_ok_and(|value| matches!(value.trim(), "0" | "off" | "false"));
-        match if server_disabled {
-            Err("disabled by KOG_SC55_SERVER".to_owned())
-        } else {
-            acquire_sc55_server(rom_directory)
-        } {
-            Ok(server) => match Self::open_via_server(&server, schedule_file, path) {
-                Ok(source) => Ok(source),
-                Err(error) => {
-                    eprintln!("kog: SC-55 server job failed ({error}); using one-shot helper");
-                    Self::open_oneshot(midi, rom_directory, path)
-                }
-            },
-            Err(error) => {
-                eprintln!("kog: SC-55 server unavailable ({error}); using one-shot helper");
-                Self::open_oneshot(midi, rom_directory, path)
-            }
-        }
-        }
+        Self::open_embedded(schedule_file, rom_directory, path)
     }
 
-    #[cfg(any(target_os = "ios", target_os = "android"))]
-    fn open_embedded(schedule_file: NamedTempFile, rom_directory: &Path,
-                     path: &Path) -> Result<Self, String> {
-        let (mut reader, writer) = UnixStream::pair()
-            .map_err(|error| format!("creating SC-55 PCM channel: {error}"))?;
-        let shutdown = reader.try_clone()
-            .map_err(|error| format!("cloning SC-55 PCM channel: {error}"))?;
-        let schedule_path = CString::new(schedule_file.path().as_os_str().as_encoded_bytes())
-            .map_err(|_| "SC-55 schedule path contains a null byte".to_owned())?;
-        let rom_path = CString::new(rom_directory.as_os_str().as_encoded_bytes())
-            .map_err(|_| "SC-55 ROM path contains a null byte".to_owned())?;
-        let error = Arc::new(Mutex::new(None::<String>));
-        let worker_error = error.clone();
-        let worker = std::thread::Builder::new()
-            .name("kog-sc55-render".to_owned())
-            .spawn(move || {
-                let mut message = [0 as c_char; 1024];
-                let fd = writer.into_raw_fd();
-                let result = unsafe { kog_sc55_render(schedule_path.as_ptr(), rom_path.as_ptr(),
-                                                       fd, message.as_mut_ptr(), message.len()) };
-                if result != 0 {
-                    let end = message.iter().position(|&byte| byte == 0).unwrap_or(message.len());
-                    let bytes: Vec<u8> = message[..end].iter().map(|&byte| byte as u8).collect();
-                    *lock_unpoisoned(&worker_error) = Some(String::from_utf8_lossy(&bytes).into_owned());
-                }
-            })
-            .map_err(|error| format!("starting SC-55 renderer: {error}"))?;
-        let header = match HelperHeader::read(&mut reader) {
-            Ok(header) => header,
-            Err(io_error) => {
-                let _ = worker.join();
-                return Err(lock_unpoisoned(&error).clone().unwrap_or_else(||
-                    format!("starting on-device SC-55: {io_error}")));
-            }
-        };
-        validate_header(&header, 0, path)?;
-        let mut source = Self::from_stream(schedule_file, header, reader, None,
-                                           Some(StreamShutdown::Unix(shutdown)))?;
-        source.embedded_worker = Some(worker);
-        Ok(source)
-    }
-
-    fn open_via_server(
-        server: &Arc<Sc55Server>,
+    fn open_embedded(
         schedule_file: NamedTempFile,
+        rom_directory: &Path,
         path: &Path,
     ) -> Result<Self, String> {
-        let job = server.start_job(schedule_file.path(), 0)?;
-        if let Err(error) = validate_header(&job.header, 0, path) {
-            return Err(error);
-        }
-        let ServerJobStream {
-            header,
-            pcm,
-            shutdown,
-        } = job;
-        Self::from_stream(schedule_file, header, pcm, None, Some(StreamShutdown::Tcp(shutdown)))
+        let (reader, header) = spawn_embedded(schedule_file.path(), rom_directory)?;
+        validate_header(&header, 0, path)?;
+        Self::from_stream(schedule_file, header, reader)
     }
 
     /// Shared tail: cache tempfiles, background PCM copy, and struct.
-    /// One-shot jobs own their helper child; server jobs own a stream
-    /// shutdown handle that aborts the render on drop instead.
     fn from_stream(
         schedule_file: NamedTempFile,
         header: HelperHeader,
         pcm: impl Read + Send + 'static,
-        child: Option<Child>,
-        stream_shutdown: Option<StreamShutdown>,
     ) -> Result<Self, String> {
         #[cfg(any(target_os = "ios", target_os = "android"))]
         let cache = NamedTempFile::new_in(
-            schedule_file.path().parent().expect("SC-55 schedule has a parent"),
+            schedule_file
+                .path()
+                .parent()
+                .expect("SC-55 schedule has a parent"),
         )
-            .map_err(|error| format!("creating SC-55 PCM seek cache: {error}"))?;
+        .map_err(|error| format!("creating SC-55 PCM seek cache: {error}"))?;
         #[cfg(not(any(target_os = "ios", target_os = "android")))]
         let cache = NamedTempFile::new()
             .map_err(|error| format!("creating SC-55 PCM seek cache: {error}"))?;
@@ -265,7 +165,6 @@ impl Sc55 {
         let cache_state = Arc::new(Sc55CacheState {
             progress: Mutex::new(Sc55CacheProgress::default()),
             ready: Condvar::new(),
-            child: Mutex::new(child),
             stopping: AtomicBool::new(false),
         });
         let worker_state = cache_state.clone();
@@ -275,8 +174,6 @@ impl Sc55 {
         {
             Ok(worker) => worker,
             Err(error) => {
-                stop_cache_child(&cache_state);
-                let _ = reap_cache_child(&cache_state);
                 return Err(format!("starting SC-55 PCM cache worker: {error}"));
             }
         };
@@ -286,8 +183,6 @@ impl Sc55 {
             cache_reader,
             cache_state,
             cache_worker: Some(cache_worker),
-            stream_shutdown,
-            embedded_worker: None,
             sample_rate: header.sample_rate,
             total_frames: header.total_frames,
             rendered_frames: 0,
@@ -295,24 +190,6 @@ impl Sc55 {
             model: header.model,
             native_bytes: Vec::new(),
         })
-    }
-
-    fn open_oneshot(midi: &[u8], rom_directory: &Path, path: &Path) -> Result<Self, String> {
-        let schedule = Sc55Schedule::parse(midi)?;
-        let mut schedule_file =
-            NamedTempFile::new().map_err(|error| format!("creating SC-55 schedule: {error}"))?;
-        schedule.write(&mut schedule_file)?;
-        schedule_file
-            .flush()
-            .map_err(|error| format!("flushing SC-55 schedule: {error}"))?;
-        let (process, header) = spawn_helper(schedule_file.path(), rom_directory, 0)?;
-        if let Err(error) = validate_header(&header, 0, path) {
-            let mut process = process;
-            stop_process(&mut process);
-            return Err(error);
-        }
-        let Sc55Process { child, stdout } = process;
-        Self::from_stream(schedule_file, header, stdout, Some(child), None)
     }
 
     pub fn duration(&self) -> Duration {
@@ -370,7 +247,7 @@ impl Sc55 {
         if progress.available_bytes < byte_end {
             return Err(progress.error.clone().unwrap_or_else(|| {
                 format!(
-                    "Nuked SC-55 helper ended after {} of {byte_end} required PCM bytes",
+                    "Nuked SC-55 renderer ended after {} of {byte_end} required PCM bytes",
                     progress.available_bytes
                 )
             }));
@@ -408,8 +285,8 @@ impl Sc55 {
 }
 
 /// Read the duration needed for playlist metadata without starting the
-/// expensive Nuked SC-55 process. Emulator initialization belongs to playback,
-/// not library scanning: starting one helper per MIDI file makes archive and
+/// expensive Nuked SC-55 emulator. Initialization belongs to playback,
+/// not library scanning: starting the core per MIDI file makes archive and
 /// folder imports appear to hang.
 pub fn midi_duration(midi: &[u8]) -> Result<Duration, String> {
     Sc55Schedule::parse(midi).map(|schedule| schedule.duration)
@@ -419,14 +296,7 @@ impl Drop for Sc55 {
     fn drop(&mut self) {
         self.cache_state.stopping.store(true, Ordering::Release);
         self.cache_state.ready.notify_all();
-        if let Some(shutdown) = self.stream_shutdown.take() {
-            shutdown.shutdown();
-        }
-        stop_cache_child(&self.cache_state);
         if let Some(worker) = self.cache_worker.take() {
-            let _ = worker.join();
-        }
-        if let Some(worker) = self.embedded_worker.take() {
             let _ = worker.join();
         }
     }
@@ -443,9 +313,38 @@ pub fn validate_rom_directory(path: &Path) -> Result<String, String> {
     schedule_file
         .flush()
         .map_err(|error| format!("flushing SC-55 validation schedule: {error}"))?;
-    let (mut process, header) = spawn_helper(schedule_file.path(), path, 0)?;
-    stop_process(&mut process);
+    let (mut renderer, header) = spawn_embedded(schedule_file.path(), path)?;
+    renderer.cancel();
     Ok(header.model)
+}
+
+fn spawn_embedded(
+    schedule_path: &Path,
+    rom_directory: &Path,
+) -> Result<(crate::embedded_helper::EmbeddedHelper, HelperHeader), String> {
+    let schedule = CString::new(schedule_path.to_string_lossy().as_bytes())
+        .map_err(|_| "SC-55 schedule path contains a null byte".to_owned())?;
+    let roms = CString::new(rom_directory.to_string_lossy().as_bytes())
+        .map_err(|_| "SC-55 ROM path contains a null byte".to_owned())?;
+    let mut stream =
+        crate::embedded_helper::EmbeddedHelper::spawn(move |descriptor, error| unsafe {
+            kog_sc55_render(
+                schedule.as_ptr(),
+                roms.as_ptr(),
+                descriptor,
+                error.as_mut_ptr(),
+                error.len(),
+            )
+        })?;
+    let header = HelperHeader::read(&mut stream).map_err(|read_error| {
+        let detail = stream.failure().unwrap_or_default();
+        if detail.is_empty() {
+            format!("starting SC-55 renderer: {read_error}")
+        } else {
+            format!("starting SC-55 renderer: {detail}")
+        }
+    })?;
+    Ok((stream, header))
 }
 
 impl Sc55Schedule {
@@ -747,50 +646,6 @@ fn validate_header(header: &HelperHeader, start_frame: u64, path: &Path) -> Resu
     Ok(())
 }
 
-fn spawn_helper(
-    schedule: &Path,
-    rom_directory: &Path,
-    start_frame: u64,
-) -> Result<(Sc55Process, HelperHeader), String> {
-    let helper = helper_path()?;
-    let mut child = Command::new(&helper)
-        .arg(schedule)
-        .arg(rom_directory)
-        .arg(start_frame.to_string())
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("launching {}: {error}", helper.display()))?;
-    let mut stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "Nuked SC-55 helper stdout was not captured".to_owned())?;
-    let header = match HelperHeader::read(&mut stdout) {
-        Ok(header) => header,
-        Err(error) => {
-            drop(stdout);
-            let _ = child.kill();
-            let status = child.wait();
-            let stderr = read_stderr(&mut child);
-            let detail = if stderr.is_empty() {
-                String::new()
-            } else {
-                format!(": {stderr}")
-            };
-            return Err(match status {
-                Ok(status) => {
-                    format!("starting the Nuked SC-55 helper failed ({status}): {error}{detail}")
-                }
-                Err(wait_error) => format!(
-                    "starting the Nuked SC-55 helper failed: {error}; waiting failed: {wait_error}{detail}"
-                ),
-            });
-        }
-    };
-    Ok((Sc55Process { child, stdout }, header))
-}
-
 fn cache_helper_pcm(
     mut input: impl Read + Send,
     mut cache: File,
@@ -806,7 +661,7 @@ fn cache_helper_pcm(
             }
             let count = input
                 .read(&mut buffer)
-                .map_err(|error| format!("reading PCM from the Nuked SC-55 helper: {error}"))?;
+                .map_err(|error| format!("reading PCM from the Nuked SC-55 renderer: {error}"))?;
             if count == 0 {
                 break;
             }
@@ -814,7 +669,7 @@ fn cache_helper_pcm(
                 .checked_add(count as u64)
                 .ok_or_else(|| "Nuked SC-55 PCM cache length overflowed".to_owned())?;
             if next > expected_bytes {
-                return Err("Nuked SC-55 helper produced more PCM than expected".to_owned());
+                return Err("Nuked SC-55 renderer produced more PCM than expected".to_owned());
             }
             cache
                 .write_all(&buffer[..count])
@@ -825,55 +680,22 @@ fn cache_helper_pcm(
         }
         if copied != expected_bytes {
             return Err(format!(
-                "Nuked SC-55 helper produced {copied} of {expected_bytes} expected PCM bytes"
+                "Nuked SC-55 renderer produced {copied} of {expected_bytes} expected PCM bytes"
             ));
         }
         Ok(())
     })();
 
-    if stream_result.is_err() {
-        stop_cache_child(&state);
-    }
-    let process_result = reap_cache_child(&state);
     if state.stopping.load(Ordering::Acquire) {
         return;
     }
 
-    let error = match (stream_result, process_result) {
-        (Ok(()), Ok(())) => None,
-        (Err(stream), Ok(())) => Some(stream),
-        (Ok(()), Err(process)) => Some(process),
-        (Err(stream), Err(process)) => Some(format!("{stream}; {process}")),
-    };
+    let error = stream_result.err();
     let mut progress = lock_unpoisoned(&state.progress);
     progress.finished = true;
     progress.error = error;
     drop(progress);
     state.ready.notify_all();
-}
-
-fn stop_cache_child(state: &Sc55CacheState) {
-    if let Some(child) = lock_unpoisoned(&state.child).as_mut() {
-        let _ = child.kill();
-    }
-}
-
-fn reap_cache_child(state: &Sc55CacheState) -> Result<(), String> {
-    let Some(mut child) = lock_unpoisoned(&state.child).take() else {
-        return Ok(());
-    };
-    let status = child
-        .wait()
-        .map_err(|error| format!("waiting for the Nuked SC-55 helper: {error}"))?;
-    let stderr = read_stderr(&mut child);
-    if status.success() {
-        return Ok(());
-    }
-    if stderr.is_empty() {
-        Err(format!("Nuked SC-55 helper exited {status}"))
-    } else {
-        Err(format!("Nuked SC-55 helper exited {status}: {stderr}"))
-    }
 }
 
 fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -882,356 +704,46 @@ fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-#[cfg(target_os = "ios")]
-fn helper_path() -> Result<PathBuf, String> {
-    Err("SC-55 helper decoder needs an in-process iOS port".to_owned())
+fn warming_pool() -> &'static Mutex<HashSet<PathBuf>> {
+    static POOL: std::sync::OnceLock<Mutex<HashSet<PathBuf>>> = std::sync::OnceLock::new();
+    POOL.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
-#[cfg(not(target_os = "ios"))]
-fn helper_path() -> Result<PathBuf, String> {
-    if let Some(path) = std::env::var_os("KOG_SC55_HELPER") {
-        let path = PathBuf::from(path);
-        if path.is_file() {
-            return Ok(path);
-        }
-        return Err(format!(
-            "KOG_SC55_HELPER does not name a file: {}",
-            path.display()
-        ));
-    }
-    let executable_name = if cfg!(windows) {
-        "kog-sc55-helper.exe"
-    } else {
-        "kog-sc55-helper"
-    };
-    #[cfg(target_os = "android")]
-    return crate::android_helpers::helper_path(executable_name);
-    if let Ok(executable) = std::env::current_exe() {
-        let sibling = executable.with_file_name(executable_name);
-        if sibling.is_file() {
-            return Ok(sibling);
-        }
-    }
-    let build_helper = PathBuf::from(env!("KOG_BUILD_SC55_HELPER"));
-    if build_helper.is_file() {
-        return Ok(build_helper);
-    }
-    Err(format!(
-        "Nuked SC-55 helper is not installed beside Kog and the build copy is missing: {}",
-        build_helper.display()
-    ))
-}
-
-fn stop_process(process: &mut Sc55Process) {
-    let _ = process.child.kill();
-    let _ = process.child.wait();
-}
-
-/// A booted persistent helper: one 24M-step startup per ROM directory,
-/// then one render job after another with only a fast GS reset between
-/// songs. Render targets arrive per job over loopback TCP so every job
-/// has clean EOF-delimited framing; a new job supersedes the in-flight
-/// render, whose writes then fail fast instead of wedging.
-pub struct Sc55Server {
-    child: Mutex<Option<Child>>,
-    stdin: Mutex<Option<ChildStdin>>,
-    stderr_log: Arc<Mutex<VecDeque<String>>>,
-    rom_dir: PathBuf,
-    next_job: AtomicU64,
-    ops: Mutex<()>,
-}
-
-/// One ROM directory's server slot. Booting happens on a helper thread:
-/// the UI thread only ever observes an already-ready server, so emulator
-/// startup can never freeze playback.
-#[derive(Default)]
-struct ServerSlot {
-    server: Mutex<Option<Arc<Sc55Server>>>,
-    booting: AtomicBool,
-}
-
-type ServerPool = Mutex<HashMap<PathBuf, Arc<ServerSlot>>>;
-
-fn server_pool() -> &'static ServerPool {
-    use std::sync::OnceLock;
-    static POOL: OnceLock<ServerPool> = OnceLock::new();
-    POOL.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn server_supports_protocol_two(helper: &Path) -> bool {
-    let output = Command::new(helper).arg("--version").output();
-    let Ok(output) = output else {
-        return false;
-    };
-    String::from_utf8_lossy(&output.stdout).contains("protocol 2")
-}
-
-/// Kick off the background server boot for a ROM directory so the first
-/// MIDI track starts without the emulator startup cost. Never blocks and
-/// is a no-op when a server is already booted or booting.
+/// Preload the linked emulator on a background thread. The first render waits
+/// for that same instance if boot is still in progress; later tracks reuse it.
 pub fn warm_sc55_server(rom_dir: &Path) {
-    let _ = acquire_sc55_server(rom_dir);
-}
-
-/// A ready server for a ROM directory, or an error while one is still
-/// warming up. Never blocks: the first MIDI play kicks off a background
-/// boot and falls back to the one-shot helper, and later plays use the
-/// booted server with no startup cost.
-fn acquire_sc55_server(rom_dir: &Path) -> Result<Arc<Sc55Server>, String> {
-    let helper = helper_path()?;
-    let slot = {
-        let mut pool = lock_unpoisoned(server_pool());
-        Arc::clone(
-            pool.entry(rom_dir.to_path_buf())
-                .or_insert_with(|| Arc::new(ServerSlot::default())),
-        )
-    };
-    let ready = lock_unpoisoned(&slot.server).clone();
-    if let Some(server) = ready {
-        if server_child_alive(&server) {
-            return Ok(server);
-        }
-        *lock_unpoisoned(&slot.server) = None;
+    let rom_dir = rom_dir.to_path_buf();
+    if !lock_unpoisoned(warming_pool()).insert(rom_dir.clone()) {
+        return;
     }
-    if !slot.booting.swap(true, Ordering::SeqCst) {
-        let slot = Arc::clone(&slot);
-        let rom_dir = rom_dir.to_path_buf();
-        let spawned = std::thread::Builder::new()
-            .name("kog-sc55-boot".to_owned())
-            .spawn(move || {
-                let started = std::time::Instant::now();
-                let booted = if server_supports_protocol_two(&helper) {
-                    Sc55Server::boot(&helper, &rom_dir).map_err(|error| error)
-                } else {
-                    Err(format!(
-                        "{} predates protocol 2; rebuild the helper",
-                        helper.display()
-                    ))
-                };
-                match booted {
-                    Ok(server) => {
-                        eprintln!(
-                            "kog: SC-55 server ready in {:.1}s",
-                            started.elapsed().as_secs_f32()
-                        );
-                        *lock_unpoisoned(&slot.server) = Some(Arc::new(server));
+    let _ = std::thread::Builder::new()
+        .name("kog-sc55-boot".to_owned())
+        .spawn(move || {
+            let result = CString::new(rom_dir.to_string_lossy().as_bytes())
+                .map_err(|_| "SC-55 ROM path contains a null byte".to_owned())
+                .and_then(|path| {
+                    let mut error = [0 as c_char; 1024];
+                    let status =
+                        unsafe { kog_sc55_warm(path.as_ptr(), error.as_mut_ptr(), error.len()) };
+                    if status == 0 {
+                        return Ok(());
                     }
-                    Err(error) => {
-                        eprintln!("kog: SC-55 server failed to boot: {error}");
-                    }
-                }
-                slot.booting.store(false, Ordering::SeqCst);
-            })
-            .ok();
-        if spawned.is_none() {
-            eprintln!("kog: could not start the SC-55 boot thread");
-        }
-    }
-    Err("Nuked SC-55 server is warming up".to_owned())
+                    let detail = unsafe { std::ffi::CStr::from_ptr(error.as_ptr()) };
+                    Err(detail.to_string_lossy().into_owned())
+                });
+            if let Err(error) = result {
+                lock_unpoisoned(warming_pool()).remove(&rom_dir);
+                eprintln!("kog: SC-55 preload failed: {error}");
+            }
+        });
 }
 
-fn server_child_alive(server: &Sc55Server) -> bool {
-    let mut guard = lock_unpoisoned(&server.child);
-    let Some(child) = guard.as_mut() else {
-        return false;
-    };
-    matches!(child.try_wait(), Ok(None))
-}
-
-/// Drop every pooled server (helper processes exit on stdin EOF).
-/// Best-effort shutdown hook for application quit; an idle server only
-/// blocks on stdin and burns no CPU if one ever outlives us.
+/// Release pooled emulator instances when the application exits.
 pub fn shutdown_sc55_servers() {
-    let mut pool = server_pool()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    for slot in pool.values() {
-        lock_unpoisoned(&slot.server).take();
+    lock_unpoisoned(warming_pool()).clear();
+    unsafe {
+        kog_sc55_shutdown();
     }
-    pool.clear();
-}
-
-/// One render job against a persistent server: header plus a PCM stream
-/// that ends at exactly total_frames bytes, then EOF.
-pub struct ServerJobStream {
-    pub header: HelperHeader,
-    pub pcm: TcpStream,
-    shutdown: TcpStream,
-}
-
-impl Sc55Server {
-    fn boot(helper: &Path, rom_dir: &Path) -> Result<Self, String> {
-        let mut child = Command::new(helper)
-            .arg("--server")
-            .arg(rom_dir)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|error| format!("launching {}: {error}", helper.display()))?;
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| "Nuked SC-55 server stdin was not captured".to_owned())?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| "Nuked SC-55 server diagnostics were not captured".to_owned())?;
-        let log = Arc::new(Mutex::new(VecDeque::<String>::new()));
-        let worker_log = Arc::clone(&log);
-        std::thread::Builder::new()
-            .name("kog-sc55-server-log".to_owned())
-            .spawn(move || drain_server_log(stderr, worker_log))
-            .map_err(|error| format!("starting SC-55 server log drain: {error}"))?;
-        // Block for READY: boot takes seconds (the whole point is doing it
-        // once), while an old helper exits immediately with usage text.
-        let deadline = std::time::Instant::now() + Duration::from_secs(180);
-        loop {
-            if log_ready(&log) {
-                break;
-            }
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    let _ = child.wait();
-                    return Err(format!(
-                        "Nuked SC-55 server exited during boot ({status}): {}",
-                        last_log_lines(&log)
-                    ));
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    let _ = child.kill();
-                    return Err(format!("watching the Nuked SC-55 server: {error}"));
-                }
-            }
-            if std::time::Instant::now() > deadline {
-                let _ = child.kill();
-                return Err("Nuked SC-55 server did not become ready".to_owned());
-            }
-            std::thread::sleep(Duration::from_millis(25));
-        }
-        Ok(Self {
-            child: Mutex::new(Some(child)),
-            stdin: Mutex::new(Some(stdin)),
-            stderr_log: log,
-            rom_dir: rom_dir.to_path_buf(),
-            next_job: AtomicU64::new(1),
-            ops: Mutex::new(()),
-        })
-    }
-
-    /// Render one schedule through the booted server. Abandoning a stream
-    /// mid-render is safe: dropping it closes the socket, the server fails
-    /// that write fast, and the next job starts clean.
-    fn start_job(
-        &self,
-        schedule_path: &Path,
-        start_frame: u64,
-    ) -> Result<ServerJobStream, String> {
-        let _op = lock_unpoisoned(&self.ops);
-        let schedule = schedule_path.to_string_lossy();
-        if schedule.contains(['\n', '\t', '\r']) {
-            return Err("SC-55 schedule path is not transmittable".to_owned());
-        }
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .map_err(|error| format!("binding SC-55 render target: {error}"))?;
-        let port = listener
-            .local_addr()
-            .map_err(|error| format!("reading SC-55 render target: {error}"))?
-            .port();
-        let id = self.next_job.fetch_add(1, Ordering::Relaxed);
-        {
-            let mut stdin = lock_unpoisoned(&self.stdin);
-            let Some(stdin) = stdin.as_mut() else {
-                return Err("Nuked SC-55 server is shut down".to_owned());
-            };
-            writeln!(stdin, "JOB\t{id}\t{start_frame}\t{port}\t{schedule}")
-                .and_then(|()| stdin.flush())
-                .map_err(|error| format!("sending SC-55 render job: {error}"))?;
-        }
-        // Bounded handshake: a helper still finishing an abandoned render
-        // must not stall the caller. Timing out falls back to the one-shot
-        // path rather than freezing playback.
-        listener
-            .set_nonblocking(true)
-            .map_err(|error| format!("configuring SC-55 render target: {error}"))?;
-        let deadline = std::time::Instant::now() + Duration::from_secs(3);
-        let stream = loop {
-            match listener.accept() {
-                Ok((stream, _)) => break stream,
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    if std::time::Instant::now() > deadline {
-                        return Err("Nuked SC-55 server is busy".to_owned());
-                    }
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                Err(error) => {
-                    return Err(format!("accepting SC-55 render stream: {error}"));
-                }
-            }
-        };
-        let shutdown = stream
-            .try_clone()
-            .map_err(|error| format!("duplicating SC-55 render stream: {error}"))?;
-        stream
-            .set_read_timeout(Some(Duration::from_secs(10)))
-            .map_err(|error| format!("configuring SC-55 render stream: {error}"))?;
-        let mut stream = stream;
-        let header =
-            HelperHeader::read(&mut stream).map_err(|error| format!("reading Nuked SC-55 render header: {error}"))?;
-        Ok(ServerJobStream {
-            header,
-            pcm: stream,
-            shutdown,
-        })
-    }
-}
-
-impl Drop for Sc55Server {
-    fn drop(&mut self) {
-        if let Ok(mut stdin) = self.stdin.lock() {
-            stdin.take();
-        }
-        if let Ok(mut child) = self.child.lock() {
-            if let Some(mut child) = child.take() {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
-        }
-    }
-}
-
-fn log_ready(log: &Arc<Mutex<VecDeque<String>>>) -> bool {
-    lock_unpoisoned(log).iter().any(|line| line == "READY")
-}
-
-fn last_log_lines(log: &Arc<Mutex<VecDeque<String>>>) -> String {
-    lock_unpoisoned(log).iter().cloned().collect::<Vec<_>>().join(" | ")
-}
-
-fn drain_server_log(stderr: ChildStderr, log: Arc<Mutex<VecDeque<String>>>) {
-    use std::io::BufRead;
-    // KOG_SC55_DEBUG=1 mirrors the helper's diagnostics for troubleshooting.
-    let debug = std::env::var("KOG_SC55_DEBUG").is_ok();
-    let reader = std::io::BufReader::new(stderr);
-    for line in reader.lines().map_while(Result::ok) {
-        if debug {
-            eprintln!("sc55-helper: {line}");
-        }
-        let mut guard = lock_unpoisoned(&log);
-        guard.push_back(line);
-        while guard.len() > 64 {
-            guard.pop_front();
-        }
-    }
-}
-
-fn read_stderr(child: &mut Child) -> String {
-    let mut stderr = String::new();
-    if let Some(mut stream) = child.stderr.take() {
-        let _ = stream.read_to_string(&mut stderr);
-    }
-    stderr.trim().to_owned()
 }
 
 fn read_u32_le(reader: &mut impl Read) -> io::Result<u32> {
@@ -1317,19 +829,13 @@ mod tests {
         assert_eq!(schedule.events[1].bytes, [0x80, 67, 0]);
     }
 
-    // NOTE: The persistent-server ergonomics (boot once, fall back when
-    // the helper cannot serve) were validated by hand. Automated coverage
-    // is deferred: it needs a test-only helper injection hook, because the
-    // KOG_SC55_HELPER environment override is process-global and races
-    // with the other sc55 tests under the harness's parallel runner.
-
-    /// Real-helper timing probe: needs user ROMs and a real MIDI file.
+    /// Linked-renderer timing probe: needs user ROMs and a real MIDI file.
     ///   KOG_SC55_ROMS=<rom dir> KOG_SC55_PROBE_MIDI=<file.mid>
-    ///   cargo test -p kog-audio -- --ignored sc55_server_startup_probe --nocapture
-    /// Proves the booted server serves later tracks without re-booting.
+    ///   cargo test -p kog-audio -- --ignored sc55_reuse_probe --nocapture
+    /// Proves the pooled renderer serves later tracks without re-booting.
     #[test]
-    #[ignore = "needs KOG_SC55_ROMS and KOG_SC55_PROBE_MIDI on a machine with the built helper"]
-    fn sc55_server_startup_probe() {
+    #[ignore = "needs KOG_SC55_ROMS and KOG_SC55_PROBE_MIDI"]
+    fn sc55_reuse_probe() {
         use std::time::Instant;
         let (Ok(roms), Ok(midi_path)) = (
             std::env::var("KOG_SC55_ROMS"),
@@ -1341,25 +847,12 @@ mod tests {
         let bytes = std::fs::read(&midi_path).expect("read probe MIDI");
         let cold = Instant::now();
         warm_sc55_server(&roms);
-        let deadline = Instant::now() + Duration::from_secs(120);
-        loop {
-            if acquire_sc55_server(&roms).is_ok() {
-                break;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "SC-55 server never became ready"
-            );
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        println!("server ready after {:?}", cold.elapsed());
-
         // Render real audio from consecutive tracks: this is what playback
         // does, and it catches a server that opens fast but yields no PCM.
         let mut probe = |label: &str| {
             let started = Instant::now();
             let mut source =
-                Sc55::open(&bytes, Path::new("probe.mid"), &roms).expect("server job");
+                Sc55::open(&bytes, Path::new("probe.mid"), &roms).expect("linked render");
             let opened = started.elapsed();
             let mut pcm = vec![0.0_f32; 4_096];
             let mut frames = 0_usize;
@@ -1375,26 +868,21 @@ mod tests {
                     .filter(|sample| sample.abs() > 0.000_1)
                     .count();
             }
-            println!(
-                "{label}: open {opened:?}, {frames} frames, {loud} loud samples"
-            );
+            println!("{label}: open {opened:?}, {frames} frames, {loud} loud samples");
         };
         probe("job1");
+        println!("first render ready after {:?}", cold.elapsed());
         probe("job2");
         probe("job3");
         shutdown_sc55_servers();
     }
 
     #[test]
-    fn built_helper_reports_its_pinned_protocol_version() {
-        let output = Command::new(helper_path().expect("build helper path"))
-            .arg("--version")
-            .output()
-            .expect("run SC-55 helper version");
-        assert!(output.status.success());
+    fn linked_core_reports_its_pinned_version() {
+        let version = unsafe { std::ffi::CStr::from_ptr(kog_sc55_version()) };
         assert_eq!(
-            String::from_utf8_lossy(&output.stdout).trim(),
-            "kog-sc55-helper protocol 2; Nuked SC-55 0.7.0 (e8a6bdc)"
+            version.to_str().expect("version is UTF-8"),
+            "Nuked SC-55 0.7.0 (e8a6bdc)"
         );
     }
 

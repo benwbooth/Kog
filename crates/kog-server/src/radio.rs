@@ -1150,7 +1150,6 @@ mod tests {
         let streams = crate::service::StreamService::new(
             crate::stream::StreamCache::new(directory.path().join("streams"), 1 << 20),
             kog_audio::decoder::DecoderSettings::default(),
-            PathBuf::from("ffmpeg"),
             directory.path().join("scratch"),
         );
         let config = crate::ServerConfig {

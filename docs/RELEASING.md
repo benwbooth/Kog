@@ -58,10 +58,9 @@ placeholder page. A release therefore still needs a runner with the wasm32
 target and a matching `wasm-bindgen-cli`; the packaged binary rather than the
 source tree is what carries the player.
 
-Streaming transcodes through the `ffmpeg` **CLI**, not just the libraries:
-the AppImage bundles it, the Flatpak builds ffmpeg with `--enable-ffmpeg`, and
-the nix wrapper sets `KOG_FFMPEG` to the store path. Windows and macOS rely on
-`ffmpeg` being on `PATH`.
+Streaming transcodes through linked FFmpeg libraries. Desktop packages include
+the required shared libraries; they do not require an `ffmpeg` executable on
+`PATH`.
 
 ## 5. Commit, tag, dispatch
 

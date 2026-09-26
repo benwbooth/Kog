@@ -47,8 +47,8 @@ target_include_directories(kog_sc55_core SYSTEM PUBLIC
     "${CMAKE_CURRENT_BINARY_DIR}"
 )
 
-option(KOG_SC55_MOBILE "Build the in-process mobile renderer" OFF)
-if(KOG_SC55_MOBILE)
+option(KOG_SC55_EMBEDDED "Build the in-process renderer" ON)
+if(KOG_SC55_EMBEDDED)
     add_library(kog_sc55_embedded STATIC sc55_helper.cpp)
     target_compile_definitions(kog_sc55_embedded PRIVATE KOG_SC55_EMBEDDED=1)
     set(SC55_TARGET kog_sc55_embedded)
@@ -70,7 +70,7 @@ else()
         -Wall -Wextra -Wpedantic -Werror)
 endif()
 
-if(KOG_SC55_MOBILE)
+if(KOG_SC55_EMBEDDED)
     install(TARGETS kog_sc55_core kog_sc55_embedded ARCHIVE DESTINATION lib)
 else()
     install(TARGETS kog-sc55-helper RUNTIME DESTINATION bin)

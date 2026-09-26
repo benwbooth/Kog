@@ -46,7 +46,7 @@ jobs:
             qml6-module-qtwebchannel qml6-module-qtwebengine \
             qml6-module-qtquick qml6-module-qtquick-controls \
             qml6-module-qtquick-layouts qml6-module-qtquick-templates \
-            qml6-module-qtquick-window zlib1g-dev mold ffmpeg
+            qml6-module-qtquick-window zlib1g-dev mold
 
       - name: Install Rust
         run: |

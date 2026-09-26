@@ -31,8 +31,9 @@ audio stack. Both the AppImage and the AppDir tarball bundle the required shared
 libraries while preserving the dynamic plugin model Qt requires.
 
 The standalone TUI and headless server are published as separate archives on
-Linux and Apple Silicon macOS. Each archive includes its executable, decoder
-helpers, FFmpeg, and non-system shared libraries, without Qt. Linux still needs
+Linux and Apple Silicon macOS. Each archive includes its executable, the
+optional license-separated decoder helpers, and non-system shared libraries,
+including FFmpeg libraries, without Qt. Linux still needs
 a compatible glibc and host audio stack. macOS requires dynamic linking to its
 system libraries and frameworks, so a fully static macOS executable is not
 supported. The packaging scripts check that no third-party library points

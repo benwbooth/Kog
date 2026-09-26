@@ -70,8 +70,7 @@ XMF/MXMF rendering through a user-selected SF2 SoundFont, and
 `midi-opl3windows` for the same MIDI containers
 through Cog's OPL3Windows General MIDI engine and Nuked OPL3 1.7.1 core.
 `midi-nuked-sc55` renders through Nuked SC-55 0.7.0 using a user-supplied
-Roland ROM directory. Desktop uses a helper process; mobile uses an in-process
-renderer from the same source.
+Roland ROM directory. Every frontend uses the same linked renderer.
 `midi-munt-mt32` renders them in-process through the official Munt 2.8.2
 libmt32emu library using a user-supplied MT-32 or CM-32L ROM directory.
 `adlmidi` links the maintained libADLMIDI revision `d114c31` for HMI, HMP/HMQ,
@@ -238,9 +237,9 @@ their container-specific write semantics can be defined safely.
 
 The SC-55 path pins J.C. Moyer's reusable-backend fork at release 0.7.0
 (`e8a6bdc`). Kog compiles its emulator backend and ROM hash loader, without
-SDL, RtMidi, the standard frontend, renderer frontend, or GUI. Desktop bundles
-`kog-sc55-helper`; iOS and Android link the same GPL-compatible core and render
-in-process. A common bounded SMF/RMID layer first
+SDL, RtMidi, the standard frontend, renderer frontend, or GUI. Every frontend
+links the same GPL-compatible core and renders in-process. A common bounded
+SMF/RMID layer first
 exposes each track of a multi-track format-2 SMF as an independent zero-based
 subsong and re-encodes only the selected track as format 0. Rust then stably merges
 format-0/1 tracks, applies tempo or SMPTE timing, preserves channel voice, SysEx, and

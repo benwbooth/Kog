@@ -108,7 +108,7 @@ fi
 cmake -S "$repo/native/sc55-helper" -B "$build/sc55-build" -G Ninja \
   -DCMAKE_TOOLCHAIN_FILE="$build/ios.toolchain.cmake" \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$prefix" \
-  -DKOG_SC55_MOBILE=ON -DNUKED_SC55_SOURCE="$repo/native/nuked-sc55"
+  -DKOG_SC55_EMBEDDED=ON -DNUKED_SC55_SOURCE="$repo/native/nuked-sc55"
 cmake --build "$build/sc55-build" --parallel "$jobs"
 cmake --install "$build/sc55-build"
 

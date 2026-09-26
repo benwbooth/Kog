@@ -23,7 +23,7 @@ cp -R "$root_dir/LICENSES" "$contents/Resources/LICENSES"
 
 helpers=(
   kog-sfm-helper kog-psf-helper
-  kog-snsf-helper kog-sc55-helper
+  kog-snsf-helper
 )
 extra_executables=()
 for helper in "${helpers[@]}"; do

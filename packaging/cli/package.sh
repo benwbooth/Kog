@@ -21,20 +21,13 @@ trap 'rm -rf "$stage"' EXIT
 
 helpers=(
   kog-sfm-helper kog-psf-helper
-  kog-snsf-helper kog-sc55-helper
+  kog-snsf-helper
 )
-ffmpeg="$(command -v ffmpeg || true)"
-if [[ -z "$ffmpeg" ]]; then
-  echo "ffmpeg is required for the self-contained server and TUI packages" >&2
-  exit 1
-fi
-
 for target in tui server; do
   bundle="Kog-$version-$platform-$architecture-$target"
   directory="$stage/$bundle"
   mkdir -p "$directory"
   install -m755 "$root/target/release/kog-$target" "$directory/kog-$target"
-  install -m755 "$ffmpeg" "$directory/ffmpeg"
   for helper in "${helpers[@]}"; do
     helper_path="$(python3 - "$root/target/release/build" "$helper" <<'PY'
 from pathlib import Path
@@ -63,8 +56,9 @@ PY
   cat > "$directory/README.txt" <<EOF
 Kog $target for $platform $architecture
 
-Run ./kog-$target from this directory. The ffmpeg encoder and Kog decoder
-helpers are included beside it; non-system shared libraries are in ./lib.
+Run ./kog-$target from this directory. Encoding uses linked FFmpeg libraries.
+Optional Kog decoder helpers are included beside it; non-system shared
+libraries are in ./lib.
 Keep the whole directory together when moving it to another machine.
 
 Linux still needs a compatible glibc, the kernel, and an audio device for TUI

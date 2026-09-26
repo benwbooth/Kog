@@ -53,7 +53,6 @@ fn main() {
         for name in ["kog_sc55_embedded", "kog_sc55_core"] {
             println!("cargo:rustc-link-lib=static={name}");
         }
-        println!("cargo:rustc-env=KOG_BUILD_SC55_HELPER=in-process");
         // These three upstream licenses still require separate helpers.
         for name in ["SFM", "PSF", "SNSF"] {
             println!("cargo:rustc-env=KOG_BUILD_{name}_HELPER=unsupported-on-ios");
@@ -72,9 +71,8 @@ fn main() {
             for name in ["kog_sc55_embedded", "kog_sc55_core"] {
                 println!("cargo:rustc-link-lib=static={name}");
             }
-            println!("cargo:rustc-env=KOG_BUILD_SC55_HELPER=in-process");
         } else {
-            build_sc55_helper();
+            build_sc55_embedded();
         }
     }
     let libvgm_output = build_libvgm();
@@ -317,6 +315,7 @@ fn build_ffmpeg() {
         .cpp(true)
         .std("c++17")
         .file("../../native/ffmpeg_bridge.cpp")
+        .file("../../native/ffmpeg_encoder_bridge.cpp")
         .warnings(true)
         .extra_warnings(true);
     for include in includes {
@@ -326,6 +325,8 @@ fn build_ffmpeg() {
 
     println!("cargo:rerun-if-changed=../../native/ffmpeg_bridge.cpp");
     println!("cargo:rerun-if-changed=../../native/ffmpeg_bridge.h");
+    println!("cargo:rerun-if-changed=../../native/ffmpeg_encoder_bridge.cpp");
+    println!("cargo:rerun-if-changed=../../native/ffmpeg_encoder_bridge.h");
 }
 
 fn build_game_music_emu() {
@@ -1794,12 +1795,12 @@ fn build_syntrax_helper() {
     watch_native("../../native/syntrax-c");
 }
 
-fn build_sc55_helper() {
+fn build_sc55_embedded() {
     let helper = Path::new("../../native/sc55-helper");
     let nuked_sc55 = Path::new("../../native/nuked-sc55");
     if !helper.join("CMakeLists.txt").is_file() || !nuked_sc55.join("src/backend/emu.h").is_file() {
         panic!(
-            "Nuked SC-55 helper sources are missing; run `git submodule update --init --recursive`"
+            "Nuked SC-55 renderer sources are missing; run `git submodule update --init --recursive`"
         );
     }
 
@@ -1813,25 +1814,12 @@ fn build_sc55_helper() {
     let output = cmake::Config::new(helper)
         .out_dir(output_directory)
         .profile("Release")
+        .define("KOG_SC55_EMBEDDED", "ON")
         .define("NUKED_SC55_SOURCE", &nuked_sc55)
         .build();
-    let executable_name = if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
-        "kog-sc55-helper.exe"
-    } else {
-        "kog-sc55-helper"
-    };
-    let executable = output.join("bin").join(executable_name);
-    if !executable.is_file() {
-        panic!(
-            "Nuked SC-55 helper build did not install {}",
-            executable.display()
-        );
-    }
-
-    println!(
-        "cargo:rustc-env=KOG_BUILD_SC55_HELPER={}",
-        executable.display()
-    );
+    println!("cargo:rustc-link-search=native={}/lib", output.display());
+    println!("cargo:rustc-link-lib=static=kog_sc55_embedded");
+    println!("cargo:rustc-link-lib=static=kog_sc55_core");
     watch_native("../../native/sc55-helper");
     watch_native("../../native/nuked-sc55");
 }

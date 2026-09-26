@@ -90,8 +90,8 @@ streams all agree on identity:
 - `kog-audio::streaming` — pulls decoded audio out of the engine through
   rodio's mixer as uniform 48 kHz stereo f32, rather than refactoring ~25
   decoders into a pull API.
-- `ffmpeg` — runs as a subprocess for encoding (`KOG_FFMPEG` overrides the
-  path). It is a runtime dependency; doing encoding in-process would mean
-  bundling libavcodec and its licensing surface.
+- Linked FFmpeg libraries — encode AAC, Ogg Opus, and FLAC streams in-process.
+  The packages bundle the required shared libraries without an `ffmpeg`
+  executable.
 - `crates/kog-web` (Leptos) — the browser client, built with
   `crates/kog-web/build.sh` and embedded into the server.

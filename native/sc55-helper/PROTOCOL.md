@@ -1,8 +1,8 @@
-# Kog Nuked SC-55 helper protocol
+# Kog Nuked SC-55 renderer protocol
 
-`kog-sc55-helper <schedule> <ROM-directory> <start-frame> [ROM-set]` reads a
-Kog-generated MIDI schedule and writes one little-endian header followed by
-interleaved signed 16-bit stereo PCM.
+The in-process `kog_sc55_render` call reads a Kog-generated MIDI schedule and
+writes one little-endian header followed by interleaved signed 16-bit stereo
+PCM to a private stream.
 
 The schedule format is:
 
@@ -32,33 +32,17 @@ The response format is:
 
 Rust parses Standard MIDI and RIFF RMID with Midly, merges tracks in stable
 source order, schedules tempo or SMPTE timing in nanoseconds, and serializes
-channel messages and SysEx. The helper bounds the schedule to 256 MiB, two
+channel messages and SysEx. The renderer bounds the schedule to 256 MiB, two
 million events, one MiB per UART event, and 24 hours. It uses upstream's ROM
 hash detector, sends a GS reset, performs the same 24-million-step startup used
 by the upstream renderer, then streams deterministic native-rate PCM. Seeking
-starts a fresh helper and suppresses frames before the requested position.
+reads from the progressive PCM cache.
 
-The desktop helper remains a separate executable. The pinned Nuked SC-55 fork
-is now GPL-2.0-or-later, so iOS and Android build the same renderer in-process
-through `kog_sc55_render`. Roland firmware and waveform ROMs are never bundled.
+The pinned Nuked SC-55 fork is GPL-2.0-or-later, so all frontends build the
+renderer in-process through `kog_sc55_render`. The protocol remains the
+transport between the native renderer and Rust, without a child executable.
+Roland firmware and waveform ROMs are never bundled.
 
-## Persistent server mode (protocol 2)
-
-`kog-sc55-helper --server <ROM-directory> [ROM-set]` boots the emulator once
-(the same 24-million-step startup) and then renders one job per stdin line,
-so switching songs costs a fast GS reset instead of another full boot:
-
-```
-JOB<TAB><id><TAB><start-frame><TAB><tcp-port><TAB><schedule-path>\n
-```
-
-Each job GS-resets the live emulator, settles briefly, connects back to
-`127.0.0.1:<tcp-port>`, and streams the usual header followed by PCM before
-closing the connection. A new `JOB` line supersedes the in-flight render:
-writes to the abandoned socket fail fast and the loop picks the new job up.
-End of stdin exits cleanly. The server prints `READY` on stderr once booted
-and `JOB ERROR <message>` per failed job; anything else on stderr is
-diagnostic noise. Schedule paths must not contain tabs or newlines.
-
-One-shot mode (`<schedule> <ROM-directory> <start-frame>`) is unchanged
-and remains the fallback whenever the server is unavailable.
+The native backend keeps one booted emulator per ROM directory in the process.
+Each new render performs a GS reset and a short settle. Starting a newer job
+supersedes the previous render, and closing the private stream cancels it.
