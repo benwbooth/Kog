@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::ptr;
 
 use kog_audio::archive;
+use kog_audio::cover_art;
 use kog_audio::decoder::{DecoderRegistry, DecoderSettings};
 use serde_json::{Value, json};
 
@@ -230,6 +231,28 @@ fn expand(path: &Path) -> Result<Value, String> {
     Ok(json!(tracks))
 }
 
+fn artwork(path: &Path) -> Option<Vec<u8>> {
+    let file = if archive::is_tree_location(path) {
+        // Keep the registry's extraction workspace alive until the image has
+        // been read. The queue itself continues to hold the logical URL.
+        let registry = DecoderRegistry::new(DecoderSettings::default());
+        let source = registry
+            .expand_detailed(path.to_path_buf())
+            .ok()?
+            .sources
+            .into_iter()
+            .next()?;
+        let bytes = cover_art::embedded_cover_bytes(&source.path)
+            .or_else(|| cover_art::sibling_cover_bytes(&source.path))?;
+        return (bytes.len() <= cover_art::MAX_COVER_BYTES as usize).then_some(bytes);
+    } else {
+        path.to_path_buf()
+    };
+    let bytes =
+        cover_art::embedded_cover_bytes(&file).or_else(|| cover_art::sibling_cover_bytes(&file))?;
+    (bytes.len() <= cover_art::MAX_COVER_BYTES as usize).then_some(bytes)
+}
+
 unsafe fn output_json(
     result: Result<Value, String>,
     error: *mut c_char,
@@ -278,6 +301,29 @@ pub unsafe extern "C" fn kog_audio_expand(
 pub unsafe extern "C" fn kog_audio_string_free(value: *mut c_char) {
     if !value.is_null() {
         drop(unsafe { CString::from_raw(value) });
+    }
+}
+
+/// Returns owned JPEG/PNG bytes, or null when no local artwork exists.
+/// The caller must release them with `kog_audio_bytes_free` and the returned length.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kog_audio_artwork(path: *const c_char, length: *mut usize) -> *mut u8 {
+    if length.is_null() {
+        return ptr::null_mut();
+    }
+    unsafe { *length = 0 };
+    let Some(bytes) = input_path(path).ok().and_then(|path| artwork(&path)) else {
+        return ptr::null_mut();
+    };
+    let boxed = bytes.into_boxed_slice();
+    unsafe { *length = boxed.len() };
+    Box::into_raw(boxed) as *mut u8
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kog_audio_bytes_free(bytes: *mut u8, length: usize) {
+    if !bytes.is_null() {
+        drop(unsafe { Box::from_raw(ptr::slice_from_raw_parts_mut(bytes, length)) });
     }
 }
 
@@ -331,5 +377,20 @@ mod tests {
         assert_eq!(listing["files"].as_array().unwrap().len(), 1);
         assert_eq!(listing["directories"].as_array().unwrap().len(), 1);
         assert_eq!(listing["files"][0]["name"], "song.wav");
+    }
+
+    #[test]
+    fn returns_sibling_artwork_through_owned_c_buffer() {
+        let directory = tempfile::tempdir().unwrap();
+        let song = directory.path().join("song.wav");
+        std::fs::write(&song, b"RIFF").unwrap();
+        let art = b"\x89PNG\r\n\x1a\ncover";
+        std::fs::write(directory.path().join("cover.png"), art).unwrap();
+        let path = CString::new(song.to_str().unwrap()).unwrap();
+        let mut length = 0;
+        let pointer = unsafe { kog_audio_artwork(path.as_ptr(), &mut length) };
+        assert!(!pointer.is_null());
+        assert_eq!(unsafe { std::slice::from_raw_parts(pointer, length) }, art);
+        unsafe { kog_audio_bytes_free(pointer, length) };
     }
 }

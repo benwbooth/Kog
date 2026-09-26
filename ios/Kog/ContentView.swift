@@ -577,7 +577,16 @@ private struct KogArtwork: View {
         }
         .task(id: track.id) {
             image = nil
-            guard !track.isDevice else { return }
+            if track.isDevice {
+                #if KOG_NATIVE_AUDIO
+                let path = track.path
+                let data = await Task.detached(priority: .utility) {
+                    NativeAudioCatalog.artwork(path: path)
+                }.value
+                if !Task.isCancelled, let data { image = UIImage(data: data) }
+                #endif
+                return
+            }
             let client = store.api
             if let data = try? await client.artData(track), !Task.isCancelled {
                 image = UIImage(data: data)

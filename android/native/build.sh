@@ -95,7 +95,7 @@ export ANDROID_NDK_HOME="$ndk"
 export CMAKE_TOOLCHAIN_FILE="$build/android.toolchain.cmake"
 export CMAKE_GENERATOR=Ninja
 export ANDROID_ABI="$abi" ANDROID_PLATFORM=android-28
-export PKG_CONFIG_PATH="$prefix/lib/pkgconfig" PKG_CONFIG_ALLOW_CROSS=1
+export PKG_CONFIG_PATH="$prefix/lib/pkgconfig" PKG_CONFIG_LIBDIR="$prefix/lib/pkgconfig" PKG_CONFIG_ALLOW_CROSS=1
 export CARGO_BUILD_JOBS="${NATIVE_JOBS:-8}"
 target_variable=${target//-/_}
 export "CC_${target_variable}=$toolchain/${target}28-clang"

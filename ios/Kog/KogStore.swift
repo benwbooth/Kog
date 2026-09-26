@@ -54,6 +54,8 @@ final class KogStore: ObservableObject {
     private var importScanTask: Task<Void, Never>?
     private var shuffleHistory = [Int]()
     private var suppressSave = false
+    private var nowPlayingArtTask: Task<Void, Never>?
+    private var nowPlayingArtwork: MPMediaItemArtwork?
 
     var current: Track? { queue.indices.contains(currentIndex) ? queue[currentIndex] : nil }
     var api: KogAPI { KogAPI(server: server, token: token, username: username, password: password, codec: codec) }
@@ -222,6 +224,7 @@ final class KogStore: ObservableObject {
                         self.updateNowPlaying()
                     }
                 }
+                loadNowPlayingArt(for: track)
                 updateNowPlaying()
                 return
             }
@@ -262,6 +265,7 @@ final class KogStore: ObservableObject {
             player?.play()
             playing = true
             position = 0
+            loadNowPlayingArt(for: track)
             updateNowPlaying()
         } catch { report(error) }
     }
@@ -339,6 +343,7 @@ final class KogStore: ObservableObject {
             #endif
             currentIndex = -1; playing = false; position = 0; duration = 0
             shuffleHistory = []
+            nowPlayingArtTask?.cancel(); nowPlayingArtwork = nil
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
         }
         else if removedCurrent { playIndex(min(max(0, currentIndex - removedBefore), queue.count - 1)) }
@@ -360,6 +365,7 @@ final class KogStore: ObservableObject {
         #endif
         queue = []; currentIndex = -1; playing = false; position = 0; duration = 0
         shuffleHistory = []
+        nowPlayingArtTask?.cancel(); nowPlayingArtwork = nil
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
     }
 
@@ -514,9 +520,33 @@ final class KogStore: ObservableObject {
         #endif
     }
 
+    private func loadNowPlayingArt(for track: Track) {
+        nowPlayingArtTask?.cancel()
+        nowPlayingArtwork = nil
+        nowPlayingArtTask = Task { [weak self] in
+            let data: Data?
+            if track.isDevice {
+                #if KOG_NATIVE_AUDIO
+                let path = track.path
+                data = await Task.detached(priority: .utility) {
+                    NativeAudioCatalog.artwork(path: path)
+                }.value
+                #else
+                data = nil
+                #endif
+            } else {
+                data = try? await self?.api.artData(track)
+            }
+            guard !Task.isCancelled, self?.current?.id == track.id,
+                  let data, let image = UIImage(data: data) else { return }
+            self?.nowPlayingArtwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+            self?.updateNowPlaying()
+        }
+    }
+
     private func updateNowPlaying() {
         guard let track = current else { return }
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = [
+        var info: [String: Any] = [
             MPMediaItemPropertyTitle: track.label,
             MPMediaItemPropertyArtist: track.artist,
             MPMediaItemPropertyAlbumTitle: track.album,
@@ -524,6 +554,8 @@ final class KogStore: ObservableObject {
             MPNowPlayingInfoPropertyElapsedPlaybackTime: position,
             MPNowPlayingInfoPropertyPlaybackRate: playing ? 1.0 : 0.0,
         ]
+        if let nowPlayingArtwork { info[MPMediaItemPropertyArtwork] = nowPlayingArtwork }
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }
 
     private func registerRemoteCommands() {

@@ -17,5 +17,7 @@ void kog_audio_close(KogAudioHandle *handle);
 char *kog_audio_browse(const char *root, const char *path, char *error, size_t error_capacity);
 char *kog_audio_expand(const char *path, char *error, size_t error_capacity);
 void kog_audio_string_free(char *json);
+uint8_t *kog_audio_artwork(const char *path, size_t *length);
+void kog_audio_bytes_free(uint8_t *bytes, size_t length);
 
 #endif

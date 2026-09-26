@@ -1503,9 +1503,10 @@ fn link_psf2_archives(root: &Path, ios: bool) {
         println!("cargo:rustc-link-lib=bz2");
     }
     println!("cargo:rustc-link-lib=z");
-    if !ios {
+    if !ios && std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("android") {
         // These are optional in Play!'s CMake build. Probe in the same build
         // environment so the linker sees only the dependencies it selected.
+        // Android cross builds must never discover the host's x86_64 copies.
         let _ = pkg_config::Config::new().probe("openssl");
         let _ = pkg_config::Config::new().probe("icu-uc");
     }
