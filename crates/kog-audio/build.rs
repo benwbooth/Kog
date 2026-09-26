@@ -1442,17 +1442,15 @@ fn build_psf2_helper() {
         "cargo:rustc-env=KOG_BUILD_PSF2_HELPER={}",
         executable.display()
     );
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
-        link_psf2_archives(&output.join("build"), false);
-    }
+    link_psf2_archives(&output.join("build"), false);
     watch_native("../../native/psf2-helper");
     watch_native("../../native/play");
 }
 
-/// Link the same Play! static core on all supported in-process targets.
-/// The helper executable remains a protocol regression target; Windows keeps
-/// that route until the MSVC dependency set has been validated in CI.
+/// Link the same Play! static core on all in-process targets. The helper
+/// executable remains a protocol regression target.
 fn link_psf2_archives(root: &Path, ios: bool) {
+    let windows = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows");
     let archives = [
         "kog_psf2_embedded",
         "kog_psf2_play_core",
@@ -1468,7 +1466,11 @@ fn link_psf2_archives(root: &Path, ios: bool) {
         "lzma",
     ];
     for name in archives {
-        let filename = format!("lib{name}.a");
+        let filename = if windows {
+            format!("{name}.lib")
+        } else {
+            format!("lib{name}.a")
+        };
         let archive = if ios {
             root.join(&filename)
         } else {
@@ -1490,7 +1492,8 @@ fn link_psf2_archives(root: &Path, ios: bool) {
     }
     // CMake either finds the system bzip2, or builds its bundled copy.
     if !ios {
-        if let Some(archive) = find_archive(root, "libbz2.a") {
+        let bz2_name = if windows { "bz2.lib" } else { "libbz2.a" };
+        if let Some(archive) = find_archive(root, bz2_name) {
             println!(
                 "cargo:rustc-link-search=native={}",
                 archive.parent().unwrap().display()
@@ -1502,7 +1505,15 @@ fn link_psf2_archives(root: &Path, ios: bool) {
     } else {
         println!("cargo:rustc-link-lib=bz2");
     }
-    println!("cargo:rustc-link-lib=z");
+    println!(
+        "cargo:rustc-link-lib={}",
+        if windows { "zlib" } else { "z" }
+    );
+    if windows {
+        for name in ["winmm", "wininet", "ws2_32"] {
+            println!("cargo:rustc-link-lib={name}");
+        }
+    }
     if !ios && std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("android") {
         // These are optional in Play!'s CMake build. Probe in the same build
         // environment so the linker sees only the dependencies it selected.

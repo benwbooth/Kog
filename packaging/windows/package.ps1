@@ -19,7 +19,7 @@ Copy-Item (Join-Path $root "LICENSES") $stage -Recurse
 # GCC-only constructs and is not patched; 2SF playback reports a clear error
 # unless KOG_2SF_HELPER points at a user-supplied helper.
 $helpers = @(
-    "kog-sfm-helper.exe", "kog-psf-helper.exe", "kog-psf2-helper.exe",
+    "kog-sfm-helper.exe", "kog-psf-helper.exe",
     "kog-snsf-helper.exe",
     "kog-sc55-helper.exe"
 )

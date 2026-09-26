@@ -307,29 +307,27 @@ fn spawn_helper(
     default_length_milliseconds: u32,
     default_fade_milliseconds: u32,
 ) -> Result<(PsfProcess, HelperHeader), String> {
+    let version = psf_format_version(path)?;
+    if version == 2 {
+        return spawn_embedded_renderer(
+            path,
+            start_frame,
+            default_length_milliseconds,
+            default_fade_milliseconds,
+            "PSF2",
+            kog_psf2_embedded_run,
+        );
+    }
     #[cfg(not(windows))]
-    match psf_format_version(path)? {
-        2 => {
-            return spawn_embedded_renderer(
-                path,
-                start_frame,
-                default_length_milliseconds,
-                default_fade_milliseconds,
-                "PSF2",
-                kog_psf2_embedded_run,
-            );
-        }
-        0x24 => {
-            return spawn_embedded_renderer(
-                path,
-                start_frame,
-                default_length_milliseconds,
-                default_fade_milliseconds,
-                "2SF",
-                kog_twosf_embedded_run,
-            );
-        }
-        _ => {}
+    if version == 0x24 {
+        return spawn_embedded_renderer(
+            path,
+            start_frame,
+            default_length_milliseconds,
+            default_fade_milliseconds,
+            "2SF",
+            kog_twosf_embedded_run,
+        );
     }
     #[cfg(target_os = "ios")]
     return Err(
@@ -387,18 +385,8 @@ fn spawn_helper(
     }
 }
 
-#[cfg(not(windows))]
 unsafe extern "C" {
     fn kog_psf2_embedded_run(
-        path: *const std::ffi::c_char,
-        start_frame: u64,
-        default_length_ms: u32,
-        default_fade_ms: u32,
-        descriptor: isize,
-        error: *mut std::ffi::c_char,
-        error_capacity: usize,
-    ) -> i32;
-    fn kog_twosf_embedded_run(
         path: *const std::ffi::c_char,
         start_frame: u64,
         default_length_ms: u32,
@@ -410,6 +398,18 @@ unsafe extern "C" {
 }
 
 #[cfg(not(windows))]
+unsafe extern "C" {
+    fn kog_twosf_embedded_run(
+        path: *const std::ffi::c_char,
+        start_frame: u64,
+        default_length_ms: u32,
+        default_fade_ms: u32,
+        descriptor: isize,
+        error: *mut std::ffi::c_char,
+        error_capacity: usize,
+    ) -> i32;
+}
+
 type EmbeddedPsfRunner = unsafe extern "C" fn(
     *const std::ffi::c_char,
     u64,
@@ -420,7 +420,6 @@ type EmbeddedPsfRunner = unsafe extern "C" fn(
     usize,
 ) -> i32;
 
-#[cfg(not(windows))]
 fn spawn_embedded_renderer(
     path: &Path,
     start_frame: u64,
