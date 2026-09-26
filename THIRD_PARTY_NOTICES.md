@@ -94,29 +94,20 @@ affiliation or endorsement.
 
 ## Nuked SC-55 and kog-sc55-helper
 
-The `native/nuked-sc55` Git submodule is J.C. Moyer's maintained reusable
-backend fork of [Nuked SC-55](https://github.com/jcmoyer/Nuked-SC55), pinned to
-release 0.6.1 at commit
-`50dcddeacfdf6fcfbcc948ca08cf4ad5fac08980`. The fork attributes the original
-implementation to nukeykt and identifies additional contributors in its
-README and source history.
+The `native/nuked-sc55` Git submodule is J.C. Moyer's reusable backend fork of
+[Nuked SC-55](https://github.com/jcmoyer/Nuked-SC55), pinned to release 0.7.0
+at commit `e8a6bdc7149dae2f849a8bad8ac790e21e77b2f7`. That source is now
+GPL-2.0-or-later, as stated in its README and source headers. Its license is
+retained in `native/nuked-sc55/LICENSE` and copied to
+`LICENSES/Nuked-SC55-GPL-2.0-or-later.txt`. Kog uses the GPL version 3 option
+when combining this backend with its GPL-3.0-or-later code.
 
-Nuked SC-55 is distributed under the original MAME license. Its terms prohibit
-selling redistributions and use in commercial products or activity, require
-complete source for modified redistributions subject to the stated system
-component exception, and require preservation of its copyright, conditions,
-and disclaimer. The exact terms are retained in `native/nuked-sc55/LICENSE`
-and copied to `LICENSES/Nuked-SC55-original-MAME.txt`.
-
-Kog compiles only the fork's emulator backend and hash-based ROM loader into
-the separately identified optional `kog-sc55-helper`; it does not build the
-SDL, RtMidi, standard frontend, renderer frontend, or GUI. No Nuked SC-55
-object is linked into the GPL-3.0-or-later Kog executable. Kog's adapter in
-`native/sc55-helper` is marked `LicenseRef-Nuked-SC55` and distributed under
-the same terms as that combined helper. The process boundary and protocol in
-`native/sc55-helper/PROTOCOL.md` do not relicense the emulator. Binary/source
-distributors must retain the complete pinned corresponding source and notices
-and independently review the noncommercial restriction.
+Kog compiles the emulator backend and ROM loader, without the SDL, RtMidi,
+standard frontend, renderer frontend, or GUI. Desktop runs its adapter in the
+`kog-sc55-helper` process; iOS and Android link the same core into their local
+audio library through `kog_sc55_render`. The adapter source in
+`native/sc55-helper` is GPL-3.0-or-later. Firmware and waveform ROMs are
+user-provided and are never bundled.
 
 The helper locates supported model ROMs by their upstream-known hashes. Kog
 does not contain, download, or redistribute Roland firmware, wave ROMs, or

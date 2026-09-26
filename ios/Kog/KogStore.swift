@@ -14,6 +14,7 @@ final class KogStore: ObservableObject {
     @Published var midiEngine = UserDefaults.standard.string(forKey: "midi_engine") ?? "opl3windows"
     @Published var localMidiEngine = UserDefaults.standard.string(forKey: "local_midi_engine") ?? "opl3windows"
     @Published var soundfontPath = UserDefaults.standard.string(forKey: "midi_soundfont") ?? ""
+    @Published var sc55RomPath = UserDefaults.standard.string(forKey: "midi_sc55_roms") ?? ""
     @Published var mt32RomPath = UserDefaults.standard.string(forKey: "midi_mt32_roms") ?? ""
     @Published var connected = false
     @Published var listing: Listing?
@@ -68,6 +69,7 @@ final class KogStore: ObservableObject {
 
     var current: Track? { queue.indices.contains(currentIndex) ? queue[currentIndex] : nil }
     var soundfontReady: Bool { !soundfontPath.isEmpty && FileManager.default.fileExists(atPath: soundfontPath) }
+    var sc55RomsReady: Bool { !sc55RomPath.isEmpty && FileManager.default.fileExists(atPath: sc55RomPath) }
     var mt32RomsReady: Bool { !mt32RomPath.isEmpty && FileManager.default.fileExists(atPath: mt32RomPath) }
     var api: KogAPI { KogAPI(server: server, token: token, username: username,
                             password: password, codec: codec, midiEngine: midiEngine) }
@@ -126,7 +128,7 @@ final class KogStore: ObservableObject {
     }
 
     func selectLocalMidiEngine(_ engine: String) {
-        guard ["opl3windows", "rustysynth-sf2", "munt-mt32"].contains(engine) else { return }
+        guard ["opl3windows", "rustysynth-sf2", "nuked-sc55", "munt-mt32"].contains(engine) else { return }
         guard engine != localMidiEngine else { return }
         localMidiEngine = engine
         UserDefaults.standard.set(engine, forKey: "local_midi_engine")
@@ -134,7 +136,7 @@ final class KogStore: ObservableObject {
     }
 
     func importMidiAsset(_ source: URL, kind: String) async {
-        guard ["soundfont", "mt32"].contains(kind) else { return }
+        guard ["soundfont", "sc55", "mt32"].contains(kind) else { return }
         if kind == "soundfont" && source.pathExtension.lowercased() != "sf2" {
             error = "Choose an .sf2 SoundFont file"
             return
@@ -159,6 +161,7 @@ final class KogStore: ObservableObject {
             }.value
             switch kind {
             case "soundfont": soundfontPath = destination.path
+            case "sc55": sc55RomPath = destination.path
             default: mt32RomPath = destination.path
             }
             UserDefaults.standard.set(destination.path, forKey: "midi_\(kind == "soundfont" ? "soundfont" : kind + "_roms")")
@@ -295,6 +298,7 @@ final class KogStore: ObservableObject {
                 let subsong = Int32(track.fragment) ?? -1
                 let engine = localMidiEngine
                 let soundfont = soundfontPath
+                let sc55 = sc55RomPath
                 let mt32 = mt32RomPath
                 playing = false; position = resumeAt; duration = 0
                 updateNowPlaying()
@@ -302,7 +306,7 @@ final class KogStore: ObservableObject {
                     do {
                         let source = try await Task.detached(priority: .userInitiated) {
                             try NativeAudioSource(path: path, subsong: subsong, midiEngine: engine,
-                                                  soundfontPath: soundfont, sc55RomPath: "",
+                                                  soundfontPath: soundfont, sc55RomPath: sc55,
                                                   mt32RomPath: mt32)
                         }.value
                         guard let self, !Task.isCancelled,

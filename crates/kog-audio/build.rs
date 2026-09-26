@@ -50,9 +50,11 @@ fn main() {
         }
         link_psf2_archives(Path::new(&native_libs), true);
         link_twosf_archives(Path::new(&native_libs), true);
-        // The remaining helpers stay separate because their upstream licenses
-        // cannot be combined with Kog's GPL-3.0 binary.
-        for name in ["SFM", "PSF", "SNSF", "SC55"] {
+        for name in ["kog_sc55_embedded", "kog_sc55_core"] {
+            println!("cargo:rustc-link-lib=static={name}");
+        }
+        // These three upstream licenses still require separate helpers.
+        for name in ["SFM", "PSF", "SNSF"] {
             println!("cargo:rustc-env=KOG_BUILD_{name}_HELPER=unsupported-on-ios");
         }
     } else {
@@ -62,7 +64,16 @@ fn main() {
         build_twosf_helper();
         build_snsf_helper();
         build_syntrax_helper();
-        build_sc55_helper();
+        if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("android") {
+            let native_libs = std::env::var("KOG_ANDROID_NATIVE_LIB_DIR")
+                .expect("android/native/build.sh supplies the embedded SC-55 archives");
+            println!("cargo:rustc-link-search=native={native_libs}");
+            for name in ["kog_sc55_embedded", "kog_sc55_core"] {
+                println!("cargo:rustc-link-lib=static={name}");
+            }
+        } else {
+            build_sc55_helper();
+        }
     }
     let libvgm_output = build_libvgm();
     build_adlmidi();

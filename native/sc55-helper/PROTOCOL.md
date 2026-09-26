@@ -38,9 +38,9 @@ hash detector, sends a GS reset, performs the same 24-million-step startup used
 by the upstream renderer, then streams deterministic native-rate PCM. Seeking
 starts a fresh helper and suppresses frames before the requested position.
 
-The helper is a separate optional program because Nuked SC-55's original MAME
-license includes non-commercial restrictions incompatible with Kog's GPL main
-executable. Roland firmware and waveform ROMs are never bundled.
+The desktop helper remains a separate executable. The pinned Nuked SC-55 fork
+is now GPL-2.0-or-later, so iOS and Android build the same renderer in-process
+through `kog_sc55_render`. Roland firmware and waveform ROMs are never bundled.
 
 ## Persistent server mode (protocol 2)
 

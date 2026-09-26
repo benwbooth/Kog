@@ -1338,7 +1338,7 @@ impl DecoderBackend for MidiBackend {
         match self.settings.midi_engine() {
             MidiEngine::RustySynth => "RustySynth SoundFont",
             MidiEngine::Opl3Windows => "OPL3Windows (Nuked OPL3)",
-            MidiEngine::Sc55 => "Nuked SC-55 0.6.1",
+            MidiEngine::Sc55 => "Nuked SC-55 0.7.0",
             MidiEngine::Mt32 => "Munt MT-32/CM-32L",
         }
     }

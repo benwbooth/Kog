@@ -21,6 +21,7 @@ struct ContentView: View {
     @State private var showFilePicker = false
     @State private var showFolderPicker = false
     @State private var showSoundfontPicker = false
+    @State private var showSc55Picker = false
     @State private var showMt32Picker = false
     @State private var showCreatePlaylist = false
     @State private var newPlaylistName = ""
@@ -66,6 +67,10 @@ struct ContentView: View {
         }
         .fileImporter(isPresented: $showSoundfontPicker, allowedContentTypes: [.item]) { result in
             if case .success(let url) = result { Task { await store.importMidiAsset(url, kind: "soundfont") } }
+            else if case .failure(let error) = result { store.error = error.localizedDescription }
+        }
+        .fileImporter(isPresented: $showSc55Picker, allowedContentTypes: [.folder]) { result in
+            if case .success(let url) = result { Task { await store.importMidiAsset(url, kind: "sc55") } }
             else if case .failure(let error) = result { store.error = error.localizedDescription }
         }
         .fileImporter(isPresented: $showMt32Picker, allowedContentTypes: [.folder]) { result in
@@ -578,13 +583,16 @@ struct ContentView: View {
                                                                set: { store.selectLocalMidiEngine($0) })) {
                         Text("OPL3").tag("opl3windows")
                         Text("SoundFont").tag("rustysynth-sf2")
+                        Text("SC-55").tag("nuked-sc55")
                         Text("MT-32").tag("munt-mt32")
                     }
                     Button("Import SF2 SoundFont") { showSettings = false; showSoundfontPicker = true }
+                    Button("Import SC-55 ROM folder") { showSettings = false; showSc55Picker = true }
                     Button("Import MT-32 ROM folder") { showSettings = false; showMt32Picker = true }
                     if store.soundfontReady { Text("SF2 ready").font(.caption).foregroundStyle(Palette.muted) }
+                    if store.sc55RomsReady { Text("SC-55 ROMs ready").font(.caption).foregroundStyle(Palette.muted) }
                     if store.mt32RomsReady { Text("MT-32 ROMs ready").font(.caption).foregroundStyle(Palette.muted) }
-                    Text("Device files use imported assets. SC-55 needs the Kog server; iOS cannot run its helper locally.")
+                    Text("Device files use imported assets. SC-55 and MT-32 need their own ROM folders.")
                         .font(.caption).foregroundStyle(Palette.muted)
                 }
             }

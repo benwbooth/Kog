@@ -1,10 +1,17 @@
-//! Process owner for the optional, separately licensed Nuked SC-55 helper.
+//! Nuked SC-55 PCM stream and seek cache. Desktop uses a helper process;
+//! mobile renders the same schedule in-process from GPL-compatible source.
 
 use std::fs::File;
 use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
+#[cfg(any(target_os = "ios", target_os = "android"))]
+use std::ffi::{CString, c_char, c_int};
+#[cfg(any(target_os = "ios", target_os = "android"))]
+use std::os::fd::IntoRawFd;
+#[cfg(any(target_os = "ios", target_os = "android"))]
+use std::os::unix::net::UnixStream;
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
@@ -33,7 +40,8 @@ pub struct Sc55 {
     cache_reader: File,
     cache_state: Arc<Sc55CacheState>,
     cache_worker: Option<JoinHandle<()>>,
-    stream_shutdown: Option<TcpStream>,
+    stream_shutdown: Option<StreamShutdown>,
+    embedded_worker: Option<JoinHandle<()>>,
     sample_rate: u32,
     total_frames: u64,
     rendered_frames: u64,
@@ -45,6 +53,28 @@ pub struct Sc55 {
 struct Sc55Process {
     child: Child,
     stdout: ChildStdout,
+}
+
+enum StreamShutdown {
+    Tcp(TcpStream),
+    #[cfg(any(target_os = "ios", target_os = "android"))]
+    Unix(UnixStream),
+}
+
+impl StreamShutdown {
+    fn shutdown(self) {
+        match self {
+            Self::Tcp(stream) => { let _ = stream.shutdown(std::net::Shutdown::Both); }
+            #[cfg(any(target_os = "ios", target_os = "android"))]
+            Self::Unix(stream) => { let _ = stream.shutdown(std::net::Shutdown::Both); }
+        }
+    }
+}
+
+#[cfg(any(target_os = "ios", target_os = "android"))]
+unsafe extern "C" {
+    fn kog_sc55_render(schedule: *const c_char, roms: *const c_char,
+                       output_fd: c_int, error: *mut c_char, error_capacity: usize) -> c_int;
 }
 
 struct Sc55CacheState {
@@ -105,6 +135,11 @@ impl Sc55 {
         schedule_file
             .flush()
             .map_err(|error| format!("flushing SC-55 schedule: {error}"))?;
+        #[cfg(any(target_os = "ios", target_os = "android"))]
+        return Self::open_embedded(schedule_file, rom_directory, path);
+
+        #[cfg(not(any(target_os = "ios", target_os = "android")))]
+        {
         // Fast path first: a booted persistent server renders without the
         // per-file emulator startup. Silent fallback keeps today's
         // one-shot behavior whenever servers are unavailable.
@@ -129,6 +164,49 @@ impl Sc55 {
                 Self::open_oneshot(midi, rom_directory, path)
             }
         }
+        }
+    }
+
+    #[cfg(any(target_os = "ios", target_os = "android"))]
+    fn open_embedded(schedule_file: NamedTempFile, rom_directory: &Path,
+                     path: &Path) -> Result<Self, String> {
+        let (mut reader, writer) = UnixStream::pair()
+            .map_err(|error| format!("creating SC-55 PCM channel: {error}"))?;
+        let shutdown = reader.try_clone()
+            .map_err(|error| format!("cloning SC-55 PCM channel: {error}"))?;
+        let schedule_path = CString::new(schedule_file.path().as_os_str().as_encoded_bytes())
+            .map_err(|_| "SC-55 schedule path contains a null byte".to_owned())?;
+        let rom_path = CString::new(rom_directory.as_os_str().as_encoded_bytes())
+            .map_err(|_| "SC-55 ROM path contains a null byte".to_owned())?;
+        let error = Arc::new(Mutex::new(None::<String>));
+        let worker_error = error.clone();
+        let worker = std::thread::Builder::new()
+            .name("kog-sc55-render".to_owned())
+            .spawn(move || {
+                let mut message = [0_i8; 1024];
+                let fd = writer.into_raw_fd();
+                let result = unsafe { kog_sc55_render(schedule_path.as_ptr(), rom_path.as_ptr(),
+                                                       fd, message.as_mut_ptr(), message.len()) };
+                if result != 0 {
+                    let end = message.iter().position(|&byte| byte == 0).unwrap_or(message.len());
+                    let bytes: Vec<u8> = message[..end].iter().map(|&byte| byte as u8).collect();
+                    *lock_unpoisoned(&worker_error) = Some(String::from_utf8_lossy(&bytes).into_owned());
+                }
+            })
+            .map_err(|error| format!("starting SC-55 renderer: {error}"))?;
+        let header = match HelperHeader::read(&mut reader) {
+            Ok(header) => header,
+            Err(io_error) => {
+                let _ = worker.join();
+                return Err(lock_unpoisoned(&error).clone().unwrap_or_else(||
+                    format!("starting on-device SC-55: {io_error}")));
+            }
+        };
+        validate_header(&header, 0, path)?;
+        let mut source = Self::from_stream(schedule_file, header, reader, None,
+                                           Some(StreamShutdown::Unix(shutdown)))?;
+        source.embedded_worker = Some(worker);
+        Ok(source)
     }
 
     fn open_via_server(
@@ -145,7 +223,7 @@ impl Sc55 {
             pcm,
             shutdown,
         } = job;
-        Self::from_stream(schedule_file, header, pcm, None, Some(shutdown))
+        Self::from_stream(schedule_file, header, pcm, None, Some(StreamShutdown::Tcp(shutdown)))
     }
 
     /// Shared tail: cache tempfiles, background PCM copy, and struct.
@@ -156,7 +234,7 @@ impl Sc55 {
         header: HelperHeader,
         pcm: impl Read + Send + 'static,
         child: Option<Child>,
-        stream_shutdown: Option<TcpStream>,
+        stream_shutdown: Option<StreamShutdown>,
     ) -> Result<Self, String> {
         let cache = NamedTempFile::new()
             .map_err(|error| format!("creating SC-55 PCM seek cache: {error}"))?;
@@ -195,6 +273,7 @@ impl Sc55 {
             cache_state,
             cache_worker: Some(cache_worker),
             stream_shutdown,
+            embedded_worker: None,
             sample_rate: header.sample_rate,
             total_frames: header.total_frames,
             rendered_frames: 0,
@@ -327,10 +406,13 @@ impl Drop for Sc55 {
         self.cache_state.stopping.store(true, Ordering::Release);
         self.cache_state.ready.notify_all();
         if let Some(shutdown) = self.stream_shutdown.take() {
-            let _ = shutdown.shutdown(std::net::Shutdown::Both);
+            shutdown.shutdown();
         }
         stop_cache_child(&self.cache_state);
         if let Some(worker) = self.cache_worker.take() {
+            let _ = worker.join();
+        }
+        if let Some(worker) = self.embedded_worker.take() {
             let _ = worker.join();
         }
     }
@@ -1298,7 +1380,7 @@ mod tests {
         assert!(output.status.success());
         assert_eq!(
             String::from_utf8_lossy(&output.stdout).trim(),
-            "kog-sc55-helper protocol 2; Nuked SC-55 0.6.1 (50dcdde)"
+            "kog-sc55-helper protocol 2; Nuked SC-55 0.7.0 (e8a6bdc)"
         );
     }
 

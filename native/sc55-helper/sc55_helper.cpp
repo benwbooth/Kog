@@ -1,11 +1,7 @@
 /*
  * Kog Nuked SC-55 helper process.
  * Copyright (C) 2026 Kog contributors.
- * LicenseRef-Nuked-SC55
- *
- * This adapter is distributed under the same original non-commercial MAME
- * terms as the separately pinned Nuked SC-55 backend. See that checkout's
- * LICENSE file and Kog's THIRD_PARTY_NOTICES.md.
+ * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
 #include <algorithm>
@@ -41,6 +37,9 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#ifdef __ANDROID__
+#include <pthread.h>
+#endif
 #endif
 
 #include "audio.h"
@@ -271,14 +270,13 @@ BootedEmulator bootEmulator(const fs::path& romDirectory,
     if(!fs::is_directory(romDirectory))
         throw std::runtime_error("SC-55 ROM path is not a directory");
 
-    AllRomsetInfo romsetInfo;
     common::LoadRomsetResult loaded;
     const common::RomOverrides overrides {};
     const common::LoadRomsetError loadError = common::LoadRomset(
-        romsetInfo, romDirectory, requestedRomset, false, overrides, loaded);
+        romDirectory, requestedRomset, common::RomLoader::Hashing, overrides, loaded);
     if(loadError != common::LoadRomsetError {})
     {
-        common::PrintLoadRomsetDiagnostics(stderr, loadError, loaded, romsetInfo);
+        common::PrintLoadRomsetDiagnostics(loadError, loaded);
         throw std::runtime_error(
             std::string("loading SC-55 ROM set failed: ") + common::ToCString(loadError));
     }
@@ -286,9 +284,9 @@ BootedEmulator bootEmulator(const fs::path& romDirectory,
     auto emulator = std::make_unique<Emulator>();
     if(!emulator->Init({.lcd_backend = nullptr, .nvram_filename = {}}))
         throw std::runtime_error("initializing Nuked SC-55 failed");
-    if(!emulator->LoadRoms(loaded.romset, romsetInfo))
+    if(!emulator->LoadRoms(loaded.romset, loaded.romset_info))
         throw std::runtime_error("installing the detected SC-55 ROM set failed");
-    romsetInfo.PurgeRomData();
+    loaded.Purge();
     emulator->Reset();
     emulator->PostSystemReset(EMU_SystemReset::GS_RESET);
     for(uint32_t step = 0; step < 24'000'000U; ++step) emulator->Step();
@@ -344,6 +342,7 @@ void renderJob(BootedEmulator& booted,
         throw std::runtime_error("SC-55 render superseded by a newer job");
 }
 
+#ifndef KOG_SC55_EMBEDDED
 void run(const fs::path& schedulePath,
          const fs::path& romDirectory,
          uint64_t startFrame,
@@ -357,6 +356,7 @@ void run(const fs::path& schedulePath,
     if(std::fflush(stdout) != 0)
         throw std::runtime_error("flushing SC-55 PCM failed");
 }
+#endif
 
 } // namespace
 
@@ -568,13 +568,58 @@ void runServer(const fs::path& romDirectory, std::string_view requestedRomset)
 #endif
 }
 
+#if defined(KOG_SC55_EMBEDDED)
+extern "C" int kog_sc55_render(const char* schedulePath,
+                                const char* romDirectory,
+                                int outputFd,
+                                char* errorBuffer,
+                                size_t errorCapacity)
+{
+#ifdef __ANDROID__
+    // Closing a playback socket must stop the render, not raise SIGPIPE in
+    // the host app. This worker thread exits after the render call.
+    sigset_t blocked;
+    sigemptyset(&blocked);
+    sigaddset(&blocked, SIGPIPE);
+    pthread_sigmask(SIG_BLOCK, &blocked, nullptr);
+#elif defined(__APPLE__)
+    int enabled = 1;
+    setsockopt(outputFd, SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof(enabled));
+#endif
+    FILE* output = fdopen(outputFd, "wb");
+    if(output == nullptr)
+    {
+        ::close(outputFd);
+        if(errorCapacity > 0) std::snprintf(errorBuffer, errorCapacity, "opening SC-55 output failed");
+        return -1;
+    }
+    try
+    {
+        const Schedule schedule = readSchedule(schedulePath);
+        BootedEmulator booted = bootEmulator(romDirectory, "");
+        renderJob(booted, schedule, 0, output, nullptr, 0);
+        const int closeResult = std::fclose(output);
+        output = nullptr;
+        if(closeResult != 0)
+            throw std::runtime_error("closing SC-55 output failed");
+        return 0;
+    }
+    catch(const std::exception& error)
+    {
+        if(output != nullptr) std::fclose(output);
+        if(errorCapacity > 0)
+            std::snprintf(errorBuffer, errorCapacity, "%s", error.what());
+        return -1;
+    }
+}
+#else
 int main(int argc, char** argv)
 {
     try
     {
         if(argc == 2 && std::strcmp(argv[1], "--version") == 0)
         {
-            std::puts("kog-sc55-helper protocol 2; Nuked SC-55 0.6.1 (50dcdde)");
+            std::puts("kog-sc55-helper protocol 2; Nuked SC-55 0.7.0 (e8a6bdc)");
             return 0;
         }
         if((argc == 3 || argc == 4) && std::strcmp(argv[1], "--server") == 0)
@@ -598,3 +643,4 @@ int main(int argc, char** argv)
         return 1;
     }
 }
+#endif

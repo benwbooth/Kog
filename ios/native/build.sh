@@ -105,6 +105,13 @@ if [[ ! -f "$prefix/lib/libkog_syntrax_embedded.a" ]]; then
   cmake --install "$build/syntrax-build"
 fi
 
+cmake -S "$repo/native/sc55-helper" -B "$build/sc55-build" -G Ninja \
+  -DCMAKE_TOOLCHAIN_FILE="$build/ios.toolchain.cmake" \
+  -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$prefix" \
+  -DKOG_SC55_MOBILE=ON -DNUKED_SC55_SOURCE="$repo/native/nuked-sc55"
+cmake --build "$build/sc55-build" --parallel "$jobs"
+cmake --install "$build/sc55-build"
+
 # PSF2's permissively licensed Play! core is linked into every supported
 # in-process target; package its transitive static archives for Rust and Swift.
 cmake -S "$repo/native/psf2-helper" -B "$build/psf2-build" -G Ninja \

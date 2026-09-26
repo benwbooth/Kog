@@ -108,18 +108,26 @@ if [[ ! -f "$compiler_rt" ]]; then
   exit 1
 fi
 export KOG_ANDROID_COMPILER_RT="$compiler_rt"
+cmake -S "$repo/native/sc55-helper" -B "$build/sc55-build" -G Ninja \
+  -DCMAKE_TOOLCHAIN_FILE="$build/android.toolchain.cmake" \
+  -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$prefix" \
+  -DKOG_SC55_MOBILE=ON -DNUKED_SC55_SOURCE="$repo/native/nuked-sc55"
+cmake --build "$build/sc55-build" --parallel "${NATIVE_JOBS:-8}"
+cmake --install "$build/sc55-build"
+export KOG_ANDROID_NATIVE_LIB_DIR="$prefix/lib"
 rustup target add "$target"
 cd "$repo"
 cargo build --locked -p kog-android-audio --target "$target"
 
 jni="$repo/android/app/src/main/jniLibs/$abi"
 mkdir -p "$jni"
+rm -f "$jni/libkog-sc55-helper.so"
 cp "$repo/target/$target/debug/libkog_android_audio.so" "$jni/"
 "$toolchain/llvm-strip" --strip-unneeded "$jni/libkog_android_audio.so"
 cp "$sysroot/usr/lib/$lib_triple/libc++_shared.so" "$jni/"
 "$toolchain/llvm-strip" --strip-unneeded "$jni/libc++_shared.so"
 for helper in kog-sfm-helper kog-psf-helper \
-              kog-snsf-helper kog-sc55-helper; do
+              kog-snsf-helper; do
   binary=$(find "$repo/target/$target/debug/build" -type f -path "*/bin/$helper" -print -quit)
   if [[ -z "$binary" ]]; then
     echo "Kog did not build $helper for $abi" >&2
