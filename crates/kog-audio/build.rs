@@ -1560,10 +1560,7 @@ fn link_psf2_archives(root: &Path, ios: bool) {
     } else {
         println!("cargo:rustc-link-lib=bz2");
     }
-    println!(
-        "cargo:rustc-link-lib={}",
-        if windows { "zlib" } else { "z" }
-    );
+    println!("cargo:rustc-link-lib=z");
     if windows {
         for name in ["winmm", "wininet", "ws2_32"] {
             println!("cargo:rustc-link-lib={name}");
