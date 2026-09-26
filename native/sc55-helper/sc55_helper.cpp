@@ -64,6 +64,16 @@ constexpr std::array<uint8_t, 8> RESPONSE_MAGIC = {'K', 'O', 'G', 'S', 'C', '5',
 
 using Bytes = std::vector<uint8_t>;
 
+#ifdef _WIN32
+fs::path utf8Path(const char* text)
+{
+    std::u8string utf8;
+    for(size_t index = 0; text[index] != '\0'; ++index)
+        utf8.push_back(static_cast<char8_t>(static_cast<unsigned char>(text[index])));
+    return fs::path(utf8);
+}
+#endif
+
 uint32_t readU32(const uint8_t* bytes)
 {
     return static_cast<uint32_t>(bytes[0]) |
@@ -616,7 +626,7 @@ extern "C" int kog_sc55_warm(const char* romDirectory,
     try
     {
 #ifdef _WIN32
-        const fs::path romPath = fs::u8path(romDirectory);
+        const fs::path romPath = utf8Path(romDirectory);
 #else
         const fs::path romPath(romDirectory);
 #endif
@@ -678,8 +688,8 @@ extern "C" int kog_sc55_render(const char* schedulePath,
     try
     {
 #ifdef _WIN32
-        const Schedule schedule = readSchedule(fs::u8path(schedulePath));
-        const fs::path romPath = fs::u8path(romDirectory);
+        const Schedule schedule = readSchedule(utf8Path(schedulePath));
+        const fs::path romPath = utf8Path(romDirectory);
 #else
         const Schedule schedule = readSchedule(schedulePath);
         const fs::path romPath(romDirectory);
