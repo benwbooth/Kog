@@ -129,6 +129,7 @@ pub struct BrowseQuery {
 #[derive(Debug, Deserialize)]
 pub struct SearchQuery {
     pub q: String,
+    pub root: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1164,6 +1165,7 @@ fn browse_blocking(
                 serde_json::json!({
                     "name": path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default(),
                     "path": path.to_string_lossy(),
+                    "isArchive": path.is_file() && kog_audio::archive::is_path(&path),
                     "relative": root
                         .and_then(|root| path.strip_prefix(root).ok())
                         .map(|relative| relative.to_string_lossy().into_owned())
@@ -1203,12 +1205,17 @@ pub async fn search(State(state): State<AppState>, Query(query): Query<SearchQue
         *state.search.job.lock().unwrap() = None;
         return search_snapshot(&state, generation, 0);
     }
+    let root = match state.library.resolve(query.root.as_deref()) {
+        Ok(root) if root.is_dir() => root,
+        Ok(_) => return bad_request("the search root must be a directory"),
+        Err(error) => return bad_request(&error),
+    };
     let shared = Arc::new(SearchShared::default());
     let library = state.library.clone();
     let worker_shared = shared.clone();
     let worker = std::thread::Builder::new()
         .name(format!("library-search-{generation}"))
-        .spawn(move || walk_library_for_search(library, tokens, worker_shared));
+        .spawn(move || walk_library_for_search(library, Some(root), tokens, worker_shared));
     if let Err(error) = worker {
         return bad_request(&format!("starting the search failed: {error}"));
     }
@@ -1522,7 +1529,7 @@ impl LocalSearch {
         let worker_shared = shared.clone();
         std::thread::Builder::new()
             .name("kog-terminal-search".to_owned())
-            .spawn(move || walk_library_for_search(library, tokens, worker_shared))
+            .spawn(move || walk_library_for_search(library, None, tokens, worker_shared))
             .map_err(|error| format!("starting search: {error}"))?;
         Ok(Self { shared })
     }
@@ -1634,6 +1641,7 @@ fn search_snapshot(state: &AppState, generation: u64, offset: usize) -> Response
 /// this thread quits at the next directory.
 fn walk_library_for_search(
     library: Arc<Library>,
+    root: Option<PathBuf>,
     tokens: Vec<String>,
     shared: Arc<SearchShared>,
 ) {
@@ -1644,7 +1652,7 @@ fn walk_library_for_search(
         shared.limited.store(limited, Ordering::Relaxed);
         shared.done.store(true, Ordering::Relaxed);
     };
-    let Ok(root) = library.resolve(None) else {
+    let Ok(root) = root.map(Ok).unwrap_or_else(|| library.resolve(None)) else {
         shared.done.store(true, Ordering::Relaxed);
         return;
     };
@@ -1932,7 +1940,7 @@ fn archive_listing_from_names(
     let directories: Vec<_> = browsed
         .directories
         .into_iter()
-        .map(|name| serde_json::json!({ "path": format!("{current_path}/{name}"), "name": name }))
+        .map(|name| serde_json::json!({ "path": format!("{current_path}/{name}"), "name": name, "isArchive": true }))
         .collect();
     let files: Vec<_> = browsed
         .files
@@ -1950,6 +1958,8 @@ fn archive_listing_from_names(
         .collect();
     serde_json::json!({
         "path": current_path,
+        "parent": std::path::Path::new(&current_path).parent().map(|path| path.to_string_lossy().into_owned()),
+        "isArchive": true,
         "directories": directories,
         "files": files,
     })
@@ -2077,9 +2087,6 @@ pub async fn replace_playlist_entries(
 ) -> Response {
     if id == 0 {
         return bad_request("Favorites are managed through /api/stars");
-    }
-    if request.entries.is_empty() {
-        return bad_request("no entries were supplied");
     }
     let library = state.library.clone();
     let result = tokio::task::spawn_blocking(move || {
@@ -2228,6 +2235,26 @@ pub async fn duplicate_playlist(
     .unwrap_or_else(|error| Err(format!("duplicating the playlist failed: {error}")));
     match result {
         Ok(value) => (StatusCode::CREATED, axum::Json(value)).into_response(),
+        Err(error) => bad_request(&error),
+    }
+}
+
+/// JSON wrapper for the shared portable playlist writer. File locators and
+/// archive subsongs survive export exactly as they do in the desktop app.
+pub async fn export_playlist(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<i64>,
+) -> Response {
+    let library = state.library.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let entries = library.db().playlist_entries(id)?;
+        let entries = entries.iter().map(kog_audio::playlist::PlaylistEntry::try_from)
+            .collect::<Result<Vec<_>, _>>()?;
+        let text = kog_audio::playlist::Playlist::portable_text(std::path::Path::new("Kog.m3u8"), &entries)?;
+        Ok::<_, String>(serde_json::json!({ "text": text }))
+    }).await.unwrap_or_else(|error| Err(format!("exporting the playlist failed: {error}")));
+    match result {
+        Ok(value) => axum::Json(value).into_response(),
         Err(error) => bad_request(&error),
     }
 }
@@ -2403,6 +2430,7 @@ pub fn router() -> axum::Router<AppState> {
             post(append_playlist_entries).put(replace_playlist_entries),
         )
         .route("/api/playlists/{id}/duplicate", post(duplicate_playlist))
+        .route("/api/playlists/{id}/export", get(export_playlist))
         .route(
             "/api/playlists/{id}/prune-missing",
             post(prune_missing_playlist_entries),

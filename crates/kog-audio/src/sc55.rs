@@ -869,6 +869,8 @@ mod tests {
                     .count();
             }
             println!("{label}: open {opened:?}, {frames} frames, {loud} loud samples");
+            assert!(frames > 0, "{label}: the linked renderer returned no PCM");
+            assert!(loud > 0, "{label}: the linked renderer returned only silence");
         };
         probe("job1");
         println!("first render ready after {:?}", cold.elapsed());

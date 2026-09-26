@@ -1559,6 +1559,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn search_respects_selected_tree_root_and_rejects_escape() {
+        let (library, root) = library_with(&["Album/one.wav", "Other/one.wav"]);
+        let state = state_with(AuthMode::None, "", library);
+        let selected = root.join("Album");
+        let (status, mut body) = get_json(
+            state.clone(),
+            &format!("/api/library/search?q=one&root={}", selected.display()),
+            None,
+        ).await;
+        assert_eq!(status, StatusCode::OK);
+        let generation = body["generation"].as_u64().unwrap();
+        let mut results = body["results"].as_array().unwrap().clone();
+        while body["done"].as_bool() != Some(true) {
+            let (_, page) = get_json(
+                state.clone(),
+                &format!("/api/library/search/more?g={generation}&offset={}", results.len()),
+                None,
+            ).await;
+            results.extend(page["results"].as_array().unwrap().clone());
+            body = page;
+        }
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["path"], selected.join("one.wav").to_string_lossy().as_ref());
+        let outside = tempfile::tempdir().unwrap();
+        let (status, _) = get_json(
+            state,
+            &format!("/api/library/search?q=one&root={}", outside.path().display()),
+            None,
+        ).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
     async fn searching_finds_files_by_name() {
         let (library, _root) = library_with(&["Album/one.wav", "Other/two.wav"]);
         let state = state_with(AuthMode::None, "", library);

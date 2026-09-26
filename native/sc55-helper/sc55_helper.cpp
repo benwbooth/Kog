@@ -275,6 +275,10 @@ struct BootedEmulator
 // (tens of milliseconds emulated) rather than the full cold-boot below.
 constexpr uint32_t POST_RESET_SETTLE_STEPS = 48000U;
 
+// The core invokes its sample callback even while booting or settling a reset.
+// Those samples precede the requested track and must be drained, not written.
+void discardSample(void*, const AudioFrame<int32_t>&) {}
+
 BootedEmulator bootEmulator(const fs::path& romDirectory,
                             std::string_view requestedRomset)
 {
@@ -295,6 +299,7 @@ BootedEmulator bootEmulator(const fs::path& romDirectory,
     auto emulator = std::make_unique<Emulator>();
     if(!emulator->Init({.lcd_backend = nullptr, .nvram_filename = {}}))
         throw std::runtime_error("initializing Nuked SC-55 failed");
+    emulator->SetSampleCallback(discardSample, nullptr);
     if(!emulator->LoadRoms(loaded.romset, loaded.romset_info))
         throw std::runtime_error("installing the detected SC-55 ROM set failed");
     loaded.Purge();
@@ -363,7 +368,7 @@ void renderJob(BootedEmulator& booted,
     struct ResetCallback
     {
         Emulator& emulator;
-        ~ResetCallback() { emulator.SetSampleCallback(nullptr, nullptr); }
+        ~ResetCallback() { emulator.SetSampleCallback(discardSample, nullptr); }
     } resetCallback {emulator};
     const uint64_t nanosecondsPerStep = emulator.GetMCU().is_mk1 ? 600U : 500U;
     uint64_t simulatedNs = 0;

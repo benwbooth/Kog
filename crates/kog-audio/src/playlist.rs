@@ -137,12 +137,18 @@ impl Playlist {
     /// [`resolve_entry`]); other players get plain files plus whatever
     /// lines they understand. Not fully interchangeable by design.
     pub fn save_portable(path: &Path, entries: &[PlaylistEntry]) -> Result<(), String> {
+        Self::write_atomic(path, &Self::portable_text(path, entries)?)
+    }
+
+    /// The native and HTTP export surfaces share archive, path, and subsong
+    /// serialization with file export instead of assembling locator strings.
+    pub fn portable_text(path: &Path, entries: &[PlaylistEntry]) -> Result<String, String> {
         let mut body = String::from("#\n");
         for entry in entries {
             body.push_str(&export_line(path, entry)?);
             body.push('\n');
         }
-        Self::write_atomic(path, &body)
+        Ok(body)
     }
 
     pub fn save(path: &Path, entries: &[PlaylistEntry]) -> Result<(), String> {
