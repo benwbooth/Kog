@@ -1,6 +1,6 @@
 //! Safe ownership wrapper for Kog's FFmpeg decoder bridge.
 
-use std::ffi::{CStr, CString, c_char};
+use std::ffi::{CStr, CString, c_char, c_void};
 use std::path::Path;
 use std::ptr::NonNull;
 use std::time::Duration;
@@ -11,7 +11,8 @@ struct NativeFfmpeg {
 }
 
 unsafe extern "C" {
-    fn kog_ffmpeg_open(path: *const c_char) -> *mut NativeFfmpeg;
+    fn kog_ffmpeg_open_headers(path: *const c_char, headers: *const c_char) -> *mut NativeFfmpeg;
+    fn kog_ffmpeg_open_reader(read: StreamRead, close: StreamClose, context: *mut c_void) -> *mut NativeFfmpeg;
     fn kog_ffmpeg_close(decoder: *mut NativeFfmpeg);
     fn kog_ffmpeg_error(decoder: *const NativeFfmpeg) -> *const c_char;
     #[cfg(any(test, feature = "test-util"))]
@@ -44,6 +45,9 @@ pub struct FfmpegMetadata {
     pub cuesheet: Option<String>,
 }
 
+pub type StreamRead = unsafe extern "C" fn(*mut c_void, *mut u8, i32) -> i32;
+pub type StreamClose = unsafe extern "C" fn(*mut c_void);
+
 pub struct Ffmpeg {
     handle: NonNull<NativeFfmpeg>,
     sample_rate: u32,
@@ -61,19 +65,37 @@ impl Ffmpeg {
     }
 
     pub fn open_location(location: &str) -> Result<Self, String> {
+        Self::open_location_with_headers(location, "")
+    }
+
+    pub fn open_location_with_headers(location: &str, headers: &str) -> Result<Self, String> {
+        let headers = CString::new(headers).map_err(|_| "HTTP headers contain NUL".to_owned())?;
+        let safe_location = url::Url::parse(location).ok().filter(|url| matches!(url.scheme(), "http" | "https"))
+            .map(|url| format!("{}://{}{}", url.scheme(), url.host_str().unwrap_or("server"), url.path()))
+            .unwrap_or_else(|| location.to_owned());
         let encoded_path = CString::new(location.as_bytes())
             .map_err(|_| "FFmpeg cannot open a location containing NUL".to_owned())?;
-        let handle = NonNull::new(unsafe { kog_ffmpeg_open(encoded_path.as_ptr()) })
-            .ok_or_else(|| format!("opening {} with FFmpeg: {}", location, native_error(None)))?;
+        let handle = NonNull::new(unsafe { kog_ffmpeg_open_headers(encoded_path.as_ptr(), headers.as_ptr()) })
+            .ok_or_else(|| format!("opening {} with FFmpeg: {}", safe_location, native_error(None)))?;
 
+        Self::from_handle(handle)
+    }
+
+    /// Takes ownership of the caller's input context even if opening fails.
+    /// The callbacks must remain valid until close is called, and support calls
+    /// from the decoder's worker thread. Reads must not exceed capacity.
+    pub unsafe fn open_reader(read: StreamRead, close: StreamClose, context: *mut c_void) -> Result<Self, String> {
+        let handle = NonNull::new(unsafe { kog_ffmpeg_open_reader(read, close, context) })
+            .ok_or_else(|| native_error(None))?;
+        Self::from_handle(handle)
+    }
+
+    fn from_handle(handle: NonNull<NativeFfmpeg>) -> Result<Self, String> {
         let sample_rate = unsafe { kog_ffmpeg_sample_rate(handle.as_ptr()) };
         let channels = unsafe { kog_ffmpeg_channels(handle.as_ptr()) };
         if sample_rate == 0 || channels == 0 {
             unsafe { kog_ffmpeg_close(handle.as_ptr()) };
-            return Err(format!(
-                "FFmpeg reported invalid stream properties for {}",
-                location
-            ));
+            return Err("FFmpeg reported invalid stream properties".to_owned());
         }
         let duration_seconds = unsafe { kog_ffmpeg_duration(handle.as_ptr()) };
         let duration = (duration_seconds.is_finite() && duration_seconds > 0.0)
@@ -303,6 +325,8 @@ mod tests {
                     );
                     let (status, content_type, body) = match path {
                         "/audio.ac3" => ("200 OK", "audio/ac3", audio.as_slice()),
+                        "/protected.ac3" if request.contains("Authorization: Bearer fixture-secret") => ("200 OK", "audio/ac3", audio.as_slice()),
+                        "/protected.ac3" => ("401 Unauthorized", "text/plain", b"unauthorized".as_slice()),
                         "/stream.m3u8" => (
                             "200 OK",
                             "application/vnd.apple.mpegurl",
@@ -373,6 +397,52 @@ mod tests {
             }
             assert!(frames <= 32_000, "AC-3 decoder did not reach EOS");
         }
+    }
+
+    #[test]
+    fn callback_stream_decodes_and_closes_on_success_and_failure() {
+        struct Input { bytes: std::io::Cursor<Vec<u8>>, closed: Arc<AtomicU64> }
+        unsafe extern "C" fn read(context: *mut c_void, output: *mut u8, capacity: i32) -> i32 {
+            let input = unsafe { &mut *context.cast::<Input>() };
+            let output = unsafe { std::slice::from_raw_parts_mut(output, capacity as usize) };
+            input.bytes.read(output).unwrap() as i32
+        }
+        unsafe extern "C" fn close(context: *mut c_void) {
+            let input = unsafe { Box::from_raw(context.cast::<Input>()) };
+            input.closed.fetch_add(1, Ordering::SeqCst);
+        }
+        for valid in [true, false] {
+            let closed = Arc::new(AtomicU64::new(0));
+            let context = Box::into_raw(Box::new(Input {
+                bytes: std::io::Cursor::new(if valid { test_ac3_bytes() } else { b"not audio".to_vec() }),
+                closed: closed.clone(),
+            })).cast();
+            let result = unsafe { Ffmpeg::open_reader(read, close, context) };
+            assert_eq!(result.is_ok(), valid);
+            if let Ok(decoder) = result {
+                let pcm = crate::streaming::PcmReader::from_stream_decoder(decoder, None);
+                let mut bytes = Vec::new();
+                pcm.take(48_000 * 8).read_to_end(&mut bytes).unwrap();
+                assert!(!bytes.is_empty() && bytes.len() < 48_000 * 8);
+                assert!(bytes.chunks_exact(4).any(|s| f32::from_le_bytes(s.try_into().unwrap()).abs() > 0.001));
+            }
+            assert_eq!(closed.load(Ordering::SeqCst), 1, "input must close exactly once");
+        }
+    }
+
+    #[test]
+    fn authenticated_pcm_stream_renders_seeks_and_reaches_eof() {
+        let fixture = HttpFixture::new();
+        let mut pcm = crate::streaming::PcmReader::open_stream(
+            &fixture.url("/protected.ac3"), "Authorization: Bearer fixture-secret\r\n", None,
+        ).expect("open authenticated PCM stream");
+        let mut head = [0u8; 8192];
+        assert_eq!(pcm.read(&mut head).unwrap(), head.len());
+        assert!(head.chunks_exact(4).any(|sample| f32::from_le_bytes(sample.try_into().unwrap()).abs() > 0.00001));
+        pcm.seek(Duration::from_millis(48)).expect("seek authenticated stream");
+        let mut tail = Vec::new();
+        pcm.take(48_000 * 8).read_to_end(&mut tail).unwrap();
+        assert!(!tail.is_empty() && tail.len() < 48_000 * 8, "stream must reach EOF");
     }
 
     #[test]

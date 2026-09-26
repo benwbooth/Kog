@@ -40,7 +40,7 @@ pub struct StreamService {
     cache: StreamCache,
     decoder_settings: DecoderSettings,
     scratch: PathBuf,
-    /// Serializes `probe_entry`, whose scratch playlist path is fixed.
+    /// Bounds concurrent metadata expansion and native decoder probes.
     probe_lock: Arc<Mutex<()>>,
 }
 
@@ -93,10 +93,8 @@ impl StreamService {
     /// addressed identically. Probing is blocking; callers run it on a
     /// blocking thread.
     ///
-    /// Serialized: `resolve_entry` writes a fixed one-line playlist into its
-    /// scratch directory, so two probes at once would read each other's file.
-    /// A dedicated `metadata` subdirectory keeps that file clear of the
-    /// streaming path's.
+    /// Serialized to bound native probe work. Each entry resolves in a unique
+    /// temporary directory so metadata and playback requests cannot mix.
     pub fn probe_entry(&self, entry: PlaylistEntry) -> Result<StreamProperties, String> {
         self.probe_entry_with_size(entry).map(|(properties, _)| properties)
     }
@@ -180,7 +178,7 @@ impl StreamService {
         decoders: kog_audio::decoder::DecoderRegistry,
     ) -> Result<StreamSource, String> {
         let (sender, receiver) = tokio::sync::mpsc::channel(CHANNEL_DEPTH);
-        let partial = self.cache.create_partial(&key)?;
+        let (partial_path, partial) = self.cache.create_unique_partial(&key)?;
         let service = self.clone();
         // Decoding and encoding are blocking, CPU-bound work: keep them off
         // the async runtime's worker threads.
@@ -190,8 +188,9 @@ impl StreamService {
                 // Holding the registry here keeps any archive extraction
                 // workspace alive for as long as the source needs it.
                 let _decoders = decoders;
-                let result = service.encode_into(source, &key, partial, sender.clone());
+                let result = service.encode_into(source, &key, partial, &partial_path, sender.clone());
                 if let Err(error) = &result {
+                    let _ = std::fs::remove_file(&partial_path);
                     eprintln!("kog-server: streaming {}: {error}", key.locator);
                     let _ = sender.blocking_send(Err(std::io::Error::other(error.clone())));
                 }
@@ -205,9 +204,13 @@ impl StreamService {
         source: PlaybackSource,
         key: &StreamKey,
         partial: std::fs::File,
+        partial_path: &Path,
         sender: tokio::sync::mpsc::Sender<Result<Bytes, std::io::Error>>,
     ) -> Result<(), String> {
-        let pcm = PcmReader::open(source, self.decoder_settings.clone())?;
+        let mut pcm = PcmReader::open(source, self.decoder_settings.clone())?;
+        if key.start_ms > 0 {
+            pcm.seek(std::time::Duration::from_millis(key.start_ms))?;
+        }
         let sample_rate = pcm.sample_rate();
         let channels = pcm.channels();
         let tee = TeeWriter {
@@ -215,13 +218,7 @@ impl StreamService {
             sender,
         };
         encode_to_writer(key.codec, key.bitrate_kbps, sample_rate, channels, pcm, tee)?;
-        self.cache.commit(
-            key,
-            &self
-                .cache
-                .partial_path(key)
-                .to_path_buf(),
-        )?;
+        self.cache.commit(key, partial_path)?;
         Ok(())
     }
 }
@@ -302,6 +299,57 @@ mod tests {
             StreamSource::Cached(path) => assert_eq!(path, entry_path),
             StreamSource::Encoding { .. } => panic!("a cached entry must not re-encode"),
         }
+    }
+
+    #[test]
+    fn uncached_seek_encodes_from_the_requested_audio_position() {
+        use std::io::Read;
+        let (directory, cache) = cache();
+        // Two seconds: silence followed by a tone. A seek must return the
+        // tone immediately and only the remaining half-second of audio.
+        let path = directory.path().join("seek.wav");
+        let frames = 16_000_u32;
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + frames * 2).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16_u32.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&8_000_u32.to_le_bytes());
+        wav.extend_from_slice(&16_000_u32.to_le_bytes());
+        wav.extend_from_slice(&2_u16.to_le_bytes());
+        wav.extend_from_slice(&16_u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&(frames * 2).to_le_bytes());
+        for frame in 0..frames {
+            let sample = if frame < 8_000 { 0 } else {
+                ((f64::from(frame) * std::f64::consts::TAU * 440.0 / 8_000.0).sin() * 8192.0) as i16
+            };
+            wav.extend_from_slice(&sample.to_le_bytes());
+        }
+        std::fs::write(&path, wav).unwrap();
+        let full_key = StreamKey::new(path.to_string_lossy(), StreamCodec::Flac, 192);
+        let key = full_key.clone().with_start_ms(1_500);
+        assert_ne!(key.stem(), full_key.stem());
+        let service = StreamService::new(cache.clone(), DecoderSettings::default(), directory.path().join("scratch"));
+        let opened = service.open(PlaylistEntry {
+            location: PlaylistLocation::Local(path), fragment: None,
+        }, key.clone()).unwrap();
+        let StreamSource::Encoding { mut receiver } = opened else { panic!("expected an uncached encode") };
+        let mut encoded = Vec::new();
+        while let Some(chunk) = receiver.blocking_recv() { encoded.extend_from_slice(&chunk.unwrap()); }
+        assert!(!encoded.is_empty());
+        assert!(cache.lookup(&key).is_some());
+        assert!(cache.lookup(&full_key).is_none());
+        let output = directory.path().join("result.flac");
+        std::fs::write(&output, encoded).unwrap();
+        let mut pcm = PcmReader::open_stream(output.to_str().unwrap(), "", None).unwrap();
+        let mut samples = Vec::new();
+        (&mut pcm).take(48_000 * 8 * 2).read_to_end(&mut samples).unwrap();
+        assert!(samples.len() >= 48_000 * 8 * 4 / 10, "missing audio after seek");
+        assert!(samples.len() < 48_000 * 8 * 6 / 10, "seek streamed the whole track");
+        assert!(samples[..4096].chunks_exact(4).any(|s| f32::from_le_bytes(s.try_into().unwrap()).abs() > 0.05), "seek began at the initial silence");
     }
 
     #[test]

@@ -67,6 +67,10 @@ uint32_t leading_number(const std::string &value) {
 
 struct KogFfmpeg {
     AVFormatContext *format = nullptr;
+    AVIOContext *custom_io = nullptr;
+    KogFfmpegRead input_read = nullptr;
+    KogFfmpegClose input_close = nullptr;
+    void *input_context = nullptr;
     AVCodecContext *codec_context = nullptr;
     SwrContext *resampler = nullptr;
     AVPacket *packet = nullptr;
@@ -110,6 +114,11 @@ struct KogFfmpeg {
         av_packet_free(&packet);
         avcodec_free_context(&codec_context);
         avformat_close_input(&format);
+        if (custom_io != nullptr) {
+            av_freep(&custom_io->buffer);
+            avio_context_free(&custom_io);
+        }
+        if (input_close != nullptr) input_close(input_context);
     }
 
     bool configure_resampler(const AVFrame *decoded) {
@@ -274,49 +283,8 @@ struct KogFfmpeg {
     }
 };
 
-extern "C" KogFfmpeg *kog_ffmpeg_open(const char *path) {
-    last_open_error.clear();
-    if (path == nullptr || *path == '\0') {
-        last_open_error = "FFmpeg path is empty";
-        return nullptr;
-    }
-
-    auto decoder = std::make_unique<KogFfmpeg>();
-    const bool remote = is_http_location(path);
-    if (remote) {
-        std::call_once(network_init_once, []() {
-            network_init_result = avformat_network_init();
-        });
-        if (network_init_result < 0) {
-            last_open_error = "initializing FFmpeg network support: " +
-                              ffmpeg_error(network_init_result);
-            return nullptr;
-        }
-    }
-
-    AVDictionary *open_options = nullptr;
-    if (remote) {
-        // Bound stalled servers while retaining streamed/radio inputs. Limit
-        // nested HLS access to network and crypto transports so a remote
-        // manifest cannot redirect FFmpeg to a local file URL.
-        av_dict_set(&open_options, "rw_timeout", "15000000", 0);
-        av_dict_set(&open_options, "timeout", "15000000", 0);
-        av_dict_set(&open_options, "reconnect", "1", 0);
-        av_dict_set(&open_options, "reconnect_streamed", "1", 0);
-        av_dict_set(&open_options, "reconnect_delay_max", "2", 0);
-        av_dict_set(
-            &open_options,
-            "protocol_whitelist",
-            "http,https,tcp,tls,crypto",
-            0);
-    }
-    int result = avformat_open_input(&decoder->format, path, nullptr, &open_options);
-    av_dict_free(&open_options);
-    if (result < 0) {
-        last_open_error = "opening with FFmpeg: " + ffmpeg_error(result);
-        return nullptr;
-    }
-    result = avformat_find_stream_info(decoder->format, nullptr);
+static KogFfmpeg *finish_open(std::unique_ptr<KogFfmpeg> decoder) {
+    int result = avformat_find_stream_info(decoder->format, nullptr);
     if (result < 0) {
         last_open_error = "reading FFmpeg stream information: " + ffmpeg_error(result);
         return nullptr;
@@ -407,6 +375,90 @@ extern "C" KogFfmpeg *kog_ffmpeg_open(const char *path) {
     decoder->track = leading_number(
         dictionary_value(stream->metadata, decoder->format->metadata, "track"));
     return decoder.release();
+}
+
+static int read_custom_input(void *opaque, uint8_t *buffer, int size) {
+    auto *decoder = static_cast<KogFfmpeg *>(opaque);
+    const int result = decoder->input_read(decoder->input_context, buffer, size);
+    return result > 0 ? result : (result == 0 ? AVERROR_EOF : AVERROR(EIO));
+}
+
+extern "C" KogFfmpeg *kog_ffmpeg_open_reader(
+    KogFfmpegRead read, KogFfmpegClose close, void *context) {
+    last_open_error.clear();
+    auto decoder = std::make_unique<KogFfmpeg>();
+    decoder->input_read = read;
+    decoder->input_close = close;
+    decoder->input_context = context;
+    auto *buffer = static_cast<uint8_t *>(av_malloc(32768));
+    if (buffer == nullptr) { last_open_error = "Allocating stream buffer"; return nullptr; }
+    decoder->custom_io = avio_alloc_context(buffer, 32768, 0, decoder.get(), read_custom_input, nullptr, nullptr);
+    if (decoder->custom_io == nullptr) {
+        av_free(buffer); last_open_error = "Allocating stream reader"; return nullptr;
+    }
+    decoder->format = avformat_alloc_context();
+    if (decoder->format == nullptr) { last_open_error = "Allocating stream format"; return nullptr; }
+    decoder->format->pb = decoder->custom_io;
+    decoder->format->flags |= AVFMT_FLAG_CUSTOM_IO;
+    const int result = avformat_open_input(&decoder->format, nullptr, nullptr, nullptr);
+    if (result < 0) {
+        last_open_error = "Opening streamed audio: " + ffmpeg_error(result);
+        return nullptr;
+    }
+    return finish_open(std::move(decoder));
+}
+
+extern "C" KogFfmpeg *kog_ffmpeg_open(const char *path) {
+    return kog_ffmpeg_open_headers(path, nullptr);
+}
+
+extern "C" KogFfmpeg *kog_ffmpeg_open_headers(const char *path, const char *headers) {
+    last_open_error.clear();
+    if (path == nullptr || *path == '\0') {
+        last_open_error = "FFmpeg path is empty";
+        return nullptr;
+    }
+
+    auto decoder = std::make_unique<KogFfmpeg>();
+    const bool remote = is_http_location(path);
+    if (remote) {
+        std::call_once(network_init_once, []() {
+            network_init_result = avformat_network_init();
+        });
+        if (network_init_result < 0) {
+            last_open_error = "initializing FFmpeg network support: " +
+                              ffmpeg_error(network_init_result);
+            return nullptr;
+        }
+    }
+
+    AVDictionary *open_options = nullptr;
+    if (remote) {
+        // Bound stalled servers while retaining streamed/radio inputs. Limit
+        // nested HLS access to network and crypto transports so a remote
+        // manifest cannot redirect FFmpeg to a local file URL.
+        if (headers != nullptr && *headers != '\0') {
+            av_dict_set(&open_options, "headers", headers, 0);
+        }
+        av_dict_set(&open_options, "tls_verify", "1", 0);
+        av_dict_set(&open_options, "rw_timeout", "15000000", 0);
+        av_dict_set(&open_options, "timeout", "15000000", 0);
+        av_dict_set(&open_options, "reconnect", "1", 0);
+        av_dict_set(&open_options, "reconnect_streamed", "1", 0);
+        av_dict_set(&open_options, "reconnect_delay_max", "2", 0);
+        av_dict_set(
+            &open_options,
+            "protocol_whitelist",
+            "http,https,tcp,tls,crypto",
+            0);
+    }
+    int result = avformat_open_input(&decoder->format, path, nullptr, &open_options);
+    av_dict_free(&open_options);
+    if (result < 0) {
+        last_open_error = "opening with FFmpeg: " + ffmpeg_error(result);
+        return nullptr;
+    }
+    return finish_open(std::move(decoder));
 }
 
 extern "C" void kog_ffmpeg_close(KogFfmpeg *decoder) {

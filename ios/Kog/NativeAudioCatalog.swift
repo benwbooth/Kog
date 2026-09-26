@@ -1,6 +1,8 @@
 import Foundation
 
 #if KOG_NATIVE_AUDIO
+@_silgen_name("kog_library_request")
+private func libraryRequest(_ input: UnsafePointer<CChar>, _ error: UnsafeMutablePointer<CChar>, _ capacity: Int) -> UnsafeMutablePointer<CChar>?
 @_silgen_name("kog_audio_browse")
 private func catalogBrowse(_ root: UnsafePointer<CChar>, _ path: UnsafePointer<CChar>,
                            _ error: UnsafeMutablePointer<CChar>, _ capacity: Int) -> UnsafeMutablePointer<CChar>?
@@ -28,6 +30,23 @@ enum NativeAudioCatalog {
         guard let pointer else { throw KogError.response(String(cString: error)) }
         defer { catalogFree(pointer) }
         return try JSONDecoder().decode(T.self, from: Data(String(cString: pointer).utf8))
+    }
+
+    static func request(root: String, storage: String, uri: String, method: String, body: Data?) throws -> Data {
+        var input: [String: Any] = ["root": root, "storage": storage, "uri": uri, "method": method]
+        if let body { input["body"] = try JSONSerialization.jsonObject(with: body) }
+        let encoded = String(decoding: try JSONSerialization.data(withJSONObject: input), as: UTF8.self)
+        var message = [CChar](repeating: 0, count: 2048)
+        guard let pointer = encoded.withCString({ libraryRequest($0, &message, message.count) }) else {
+            throw KogError.response(String(cString: message))
+        }
+        defer { catalogFree(pointer) }
+        let reply = try JSONSerialization.jsonObject(with: Data(String(cString: pointer).utf8)) as? [String: Any] ?? [:]
+        let result = reply["body"] ?? [:]
+        guard let status = reply["status"] as? Int, (200..<300).contains(status) else {
+            throw KogError.response((result as? [String: Any])?["error"] as? String ?? "Device library request failed")
+        }
+        return try JSONSerialization.data(withJSONObject: result)
     }
 
     static func browse(root: String, path: String) throws -> Listing {

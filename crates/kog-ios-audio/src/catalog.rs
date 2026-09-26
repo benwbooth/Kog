@@ -111,6 +111,7 @@ fn archive_listing(
     };
     Ok(json!({
         "path": path.to_string_lossy(),
+        "isArchive": true,
         "parent": parent,
         "directories": directories,
         "files": files,
@@ -142,7 +143,7 @@ fn browse(root: &Path, path: &Path) -> Result<Value, String> {
         }
         let name = entry.file_name().to_string_lossy().into_owned();
         if path.is_dir() || archive::is_path(&path) {
-            directories.push(json!({ "name": name, "path": path.to_string_lossy() }));
+            directories.push(json!({ "name": name, "path": path.to_string_lossy(), "isArchive": path.is_file() }));
         } else if path.is_file()
             && path
                 .extension()

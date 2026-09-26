@@ -91,7 +91,7 @@ if [[ ! -d "$build/ffmpeg-8.1.2" ]]; then
     -o "$build/ffmpeg-8.1.2.tar.xz"
   tar -xf "$build/ffmpeg-8.1.2.tar.xz" -C "$build"
 fi
-if [[ ! -f "$prefix/lib/libavcodec.a" ]]; then
+if [[ ! -f "$prefix/lib/libavcodec.a" || ! -f "$prefix/lib/kog-ffmpeg-securetransport-v1" ]]; then
   mkdir -p "$build/ffmpeg-build"
   (
     cd "$build/ffmpeg-build"
@@ -99,7 +99,7 @@ if [[ ! -f "$prefix/lib/libavcodec.a" ]]; then
       --target-os=darwin --arch=arm64 --enable-cross-compile \
       --enable-static --disable-shared --disable-programs --disable-doc \
       --disable-avdevice --disable-avfilter --disable-swscale \
-      --disable-autodetect --disable-symver --disable-x86asm --enable-pic \
+      --disable-autodetect --enable-securetransport --disable-symver --disable-x86asm --enable-pic \
       --cc="$clang -target $deployment -isysroot $sdk" \
       --cxx="$clangxx -target $deployment -isysroot $sdk" \
       --ld="$clang -target $deployment -isysroot $sdk" \
@@ -107,6 +107,7 @@ if [[ ! -f "$prefix/lib/libavcodec.a" ]]; then
       --extra-cflags="-miphoneos-version-min=17.0" \
       --extra-ldflags="-miphoneos-version-min=17.0"
     make -j"$jobs" install
+    touch "$prefix/lib/kog-ffmpeg-securetransport-v1"
   )
 fi
 

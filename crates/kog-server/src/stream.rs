@@ -28,6 +28,8 @@ pub struct StreamKey {
     pub bitrate_kbps: u16,
     /// Render settings that change the PCM, such as the selected MIDI synth.
     pub render_profile: Option<String>,
+    /// Start decoding at this position, including on the first uncached play.
+    pub start_ms: u64,
 }
 
 impl StreamKey {
@@ -37,11 +39,17 @@ impl StreamKey {
             codec,
             bitrate_kbps: clamp_bitrate(bitrate_kbps),
             render_profile: None,
+            start_ms: 0,
         }
     }
 
     pub fn with_render_profile(mut self, profile: &str) -> Self {
         self.render_profile = Some(profile.to_owned());
+        self
+    }
+
+    pub fn with_start_ms(mut self, start_ms: u64) -> Self {
+        self.start_ms = start_ms;
         self
     }
 
@@ -57,6 +65,11 @@ impl StreamKey {
         if let Some(profile) = &self.render_profile {
             fingerprint.push('\0');
             fingerprint.push_str(profile);
+        }
+        // Preserve the existing full-track cache identity at position zero.
+        if self.start_ms != 0 {
+            fingerprint.push_str("\0start_ms=");
+            fingerprint.push_str(&self.start_ms.to_string());
         }
         let hash = fnv1a64(fingerprint.as_bytes());
         let readable: String = self
@@ -147,6 +160,26 @@ impl StreamCache {
             .map_err(|error| format!("creating {}: {error}", path.display()))
     }
 
+    /// Each simultaneous client owns its partial file. A second request must
+    /// never truncate a stream that another encoder is still writing.
+    pub fn create_unique_partial(&self, key: &StreamKey) -> Result<(PathBuf, std::fs::File), String> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SERIAL: AtomicU64 = AtomicU64::new(0);
+        let base = self.partial_path(key);
+        if let Some(parent) = base.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
+        loop {
+            let serial = SERIAL.fetch_add(1, Ordering::Relaxed);
+            let path = base.with_extension(format!("{}-{serial}.part", std::process::id()));
+            match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(file) => return Ok((path, file)),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(format!("creating stream: {error}")),
+            }
+        }
+    }
+
     /// Move a finished encode into place and trim the cache. Best-effort
     /// eviction: never fails the caller for a full disk.
     pub fn commit(&self, key: &StreamKey, partial: &Path) -> Result<PathBuf, String> {
@@ -155,8 +188,16 @@ impl StreamCache {
             std::fs::create_dir_all(parent)
                 .map_err(|error| format!("creating {}: {error}", parent.display()))?;
         }
-        std::fs::rename(partial, &entry)
-            .map_err(|error| format!("finalizing {}: {error}", entry.display()))?;
+        if self.lookup(key).is_some() {
+            let _ = std::fs::remove_file(partial);
+            return Ok(entry);
+        }
+        if let Err(error) = std::fs::rename(partial, &entry) {
+            // Windows does not replace an existing destination. Another
+            // encoder may have completed between the lookup and rename.
+            if self.lookup(key).is_some() { let _ = std::fs::remove_file(partial); return Ok(entry); }
+            return Err(format!("finalizing {}: {error}", entry.display()));
+        }
         let size = std::fs::metadata(&entry)
             .map(|metadata| metadata.len())
             .unwrap_or(0);
@@ -301,6 +342,23 @@ mod tests {
 
     fn key(name: &str, codec: StreamCodec, bitrate: u16) -> StreamKey {
         StreamKey::new(name, codec, bitrate)
+    }
+
+    #[test]
+    fn simultaneous_streams_do_not_truncate_or_steal_each_others_partial() {
+        let directory = tempfile::tempdir().unwrap();
+        let cache = StreamCache::new(directory.path().to_owned(), 1024);
+        let key = StreamKey::new("shared.wav", StreamCodec::Aac, 192);
+        let (first_path, mut first) = cache.create_unique_partial(&key).unwrap();
+        first.write_all(b"first stream").unwrap();
+        let (second_path, mut second) = cache.create_unique_partial(&key).unwrap();
+        second.write_all(b"second stream").unwrap();
+        assert_ne!(first_path, second_path);
+        assert_eq!(std::fs::read(&first_path).unwrap(), b"first stream");
+        drop(first); drop(second);
+        let finished = cache.commit(&key, &first_path).unwrap();
+        cache.commit(&key, &second_path).unwrap();
+        assert_eq!(std::fs::read(finished).unwrap(), b"first stream");
     }
 
     #[test]

@@ -685,6 +685,8 @@ pub struct RootQuery {
     /// root. An invalid explicit root is rejected instead of silently
     /// falling back to a wider directory.
     pub root: Option<String>,
+    #[serde(default)]
+    pub incremental: bool,
 }
 
 /// The requested scope as a real directory. The tree picker can root outside
@@ -732,7 +734,7 @@ pub async fn set_enabled(
     };
     let root = scope.clone().or_else(|| state.library.root());
     let enabled = request.enabled;
-    blocking(move || radio.set_enabled(enabled, root.as_deref(), scope.as_deref())).await
+    blocking(move || if query.incremental { radio.set_enabled_incremental(enabled, root.as_deref(), scope.as_deref()) } else { radio.set_enabled(enabled, root.as_deref(), scope.as_deref()) }).await
 }
 
 /// `POST /api/radio/reshuffle` — fresh shuffle under the requested scope.
@@ -743,7 +745,7 @@ pub async fn reshuffle(State(state): State<AppState>, query: Query<RootQuery>) -
         Err(error) => return bad_request(&error),
     };
     let root = scope.clone().or_else(|| state.library.root());
-    blocking(move || radio.reshuffle(root.as_deref(), scope.as_deref())).await
+    blocking(move || if query.incremental { radio.reshuffle_incremental(root.as_deref(), scope.as_deref()) } else { radio.reshuffle(root.as_deref(), scope.as_deref()) }).await
 }
 
 /// `POST /api/radio/advance` — the next window of the running round.
@@ -754,7 +756,7 @@ pub async fn advance(State(state): State<AppState>, query: Query<RootQuery>) -> 
         Err(error) => return bad_request(&error),
     };
     let root = scope.clone().or_else(|| state.library.root());
-    blocking(move || radio.advance(root.as_deref(), scope.as_deref())).await
+    blocking(move || if query.incremental { radio.advance_incremental(root.as_deref(), scope.as_deref()) } else { radio.advance(root.as_deref(), scope.as_deref()) }).await
 }
 
 async fn blocking<T, F>(work: F) -> Response
@@ -1198,6 +1200,26 @@ mod tests {
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
         (status, json)
+    }
+
+    #[tokio::test]
+    async fn incremental_radio_endpoints_return_single_scoped_picks() {
+        let (library, root, save) = fixture(30);
+        let state = state_with_radio(library, root.clone(), save);
+        let scope = root.join("One");
+        let query = format!("?incremental=true&root={}", scope.display());
+        for endpoint in ["enabled", "advance", "reshuffle"] {
+            let body = (endpoint == "enabled").then(|| serde_json::json!({"enabled": true}));
+            let (status, reply) = request(state.clone(), "POST", &format!("/api/radio/{endpoint}{query}"), body).await;
+            assert_eq!(status, StatusCode::OK);
+            let entries = reply["entries"].as_array().unwrap();
+            assert_eq!(entries.len(), 1);
+            assert!(entries[0]["path"].as_str().unwrap().starts_with(scope.to_str().unwrap()));
+        }
+        let (status, reply) = request(state, "POST", &format!("/api/radio/enabled{query}"), Some(serde_json::json!({"enabled": false}))).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(reply["enabled"], false);
+        assert!(reply["entries"].as_array().unwrap().is_empty());
     }
 
     #[tokio::test]

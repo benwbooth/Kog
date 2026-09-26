@@ -121,6 +121,26 @@ impl PcmReader {
         })
     }
 
+    /// Open a server's encoded audio once, retaining the same seekable PCM
+    /// pipeline as local playback. Headers stay separate from the URL.
+    pub fn open_stream(location: &str, headers: &str, duration_hint: Option<Duration>) -> Result<Self, String> {
+        let decoder = crate::ffmpeg::Ffmpeg::open_location_with_headers(location, headers)?;
+        Ok(Self::from_stream_decoder(decoder, duration_hint))
+    }
+
+    pub fn from_stream_decoder(decoder: crate::ffmpeg::Ffmpeg, duration_hint: Option<Duration>) -> Self {
+        let duration = duration_hint.or(decoder.duration());
+        let total_frames = Some(stream_frame_limit(duration));
+        let (mixer_input, mixer_output) = stream_mixer();
+        let player = Player::connect_new(&mixer_input);
+        player.append(crate::ffmpeg_decoder::FfmpegSource::new(decoder));
+        Self {
+            source: mixer_output, _player: Some(player), _registry: None,
+            pending: Vec::with_capacity(PULL_BATCH * 4), position: 0, finished: false,
+            duration, total_frames, remaining_frames: total_frames,
+        }
+    }
+
     /// Wrap an already-decoded rodio source. Used by tests, and by callers that
     /// obtained a source from somewhere other than the registry.
     pub fn from_rodio_source<S>(source: S) -> Self
@@ -192,7 +212,9 @@ impl PcmReader {
     fn refill(&mut self) {
         self.pending.clear();
         self.position = 0;
-        if self.remaining_frames == Some(0) {
+        if self.remaining_frames == Some(0)
+            || (self._registry.is_none() && self._player.as_ref().is_some_and(|player| player.empty()))
+        {
             self.finished = true;
             return;
         }
@@ -266,7 +288,11 @@ pub fn resolve_entry(
     // the caller may be a fresh server whose scratch dir is still missing.
     std::fs::create_dir_all(scratch)
         .map_err(|error| format!("preparing {}: {error}", scratch.display()))?;
-    let scratch_path = scratch.join("stream-entry.m3u");
+    // A new play/seek can overlap another request. Each expansion needs its
+    // own playlist or it can resolve the other client's track instead.
+    let workspace = tempfile::Builder::new().prefix("stream-entry-").tempdir_in(scratch)
+        .map_err(|error| format!("preparing stream entry: {error}"))?;
+    let scratch_path = workspace.path().join("entry.m3u");
     crate::playlist::Playlist::save(&scratch_path, std::slice::from_ref(entry))?;
     let expansion = decoders.expand_detailed(scratch_path)?;
     expansion

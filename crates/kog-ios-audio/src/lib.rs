@@ -10,6 +10,7 @@ use kog_audio::settings::MidiEngine;
 use kog_audio::streaming::PcmReader;
 
 mod catalog;
+mod library;
 
 pub struct KogAudioHandle {
     reader: PcmReader,
@@ -88,6 +89,42 @@ pub unsafe extern "C" fn kog_audio_open(
             unsafe { error_to_buffer(&message, error, error_capacity) };
             ptr::null_mut()
         }
+    }
+}
+
+/// HTTP streaming through the same linked decoder and PCM output as local
+/// files. This gives the native UI real audio samples even when AVPlayer's
+/// audio tap is unavailable for a progressive network asset.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kog_audio_open_stream(
+    location: *const c_char, headers: *const c_char, duration_ms: u64,
+    error: *mut c_char, error_capacity: usize,
+) -> *mut KogAudioHandle {
+    let result = (|| {
+        if location.is_null() || headers.is_null() { return Err("Missing stream location".to_owned()); }
+        let location = unsafe { CStr::from_ptr(location) }.to_str().map_err(|e| e.to_string())?;
+        let headers = unsafe { CStr::from_ptr(headers) }.to_str().map_err(|e| e.to_string())?;
+        PcmReader::open_stream(location, headers, (duration_ms > 0).then(|| Duration::from_millis(duration_ms)))
+    })();
+    match result {
+        Ok(reader) => Box::into_raw(Box::new(KogAudioHandle { reader })),
+        Err(message) => { unsafe { error_to_buffer(&message, error, error_capacity) }; ptr::null_mut() }
+    }
+}
+
+/// Decode a platform-provided stream (URLSession on iOS) with the shared codec.
+/// Ownership of context always transfers to the decoder's close callback.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kog_audio_open_reader(
+    read: kog_audio::ffmpeg::StreamRead, close: kog_audio::ffmpeg::StreamClose,
+    context: *mut std::ffi::c_void, duration_ms: u64,
+    error: *mut c_char, error_capacity: usize,
+) -> *mut KogAudioHandle {
+    match unsafe { kog_audio::ffmpeg::Ffmpeg::open_reader(read, close, context) } {
+        Ok(decoder) => Box::into_raw(Box::new(KogAudioHandle {
+            reader: PcmReader::from_stream_decoder(decoder, (duration_ms > 0).then(|| Duration::from_millis(duration_ms)))
+        })),
+        Err(message) => { unsafe { error_to_buffer(&message, error, error_capacity) }; ptr::null_mut() }
     }
 }
 

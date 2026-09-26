@@ -3,6 +3,7 @@ import Combine
 import MediaPlayer
 import SwiftUI
 import UniformTypeIdentifiers
+import UserNotifications
 
 @MainActor
 final class KogStore: ObservableObject {
@@ -19,6 +20,7 @@ final class KogStore: ObservableObject {
     @Published var connected = false
     @Published var listing: Listing?
     @Published var libraryRoot = ""
+    @Published private(set) var treeRoot = ""
     @Published var searchText = ""
     @Published var searchFolders = [Folder]()
     @Published var searchTracks = [Track]()
@@ -32,9 +34,31 @@ final class KogStore: ObservableObject {
     @Published var shuffle = UserDefaults.standard.bool(forKey: "shuffle") {
         didSet { UserDefaults.standard.set(shuffle, forKey: "shuffle") }
     }
-    @Published var repeatQueue = UserDefaults.standard.bool(forKey: "repeat") {
-        didSet { UserDefaults.standard.set(repeatQueue, forKey: "repeat") }
+    @Published var repeatMode = RepeatMode(rawValue: UserDefaults.standard.string(forKey: "repeat_mode") ?? "") ?? (UserDefaults.standard.bool(forKey: "repeat") ? .all : .off) {
+        didSet { UserDefaults.standard.set(repeatMode.rawValue, forKey: "repeat_mode") }
     }
+    @Published var volume = UserDefaults.standard.object(forKey: "player_volume") as? Double ?? 1.0 {
+        didSet { UserDefaults.standard.set(volume, forKey: "player_volume"); applyVolume() }
+    }
+    @Published var muted = false { didSet { applyVolume() } }
+    @Published var libraryOnDevice = false { didSet { search("") } }
+    @Published var playlistOnDevice = (UserDefaults.standard.string(forKey: "server") ?? "").isEmpty { didSet { selectedPlaylist = nil; Task { await loadPlaylists() } } }
+    @Published var localStars = Set<String>()
+    @Published var searchPaused = false
+    @Published var radioBusy = false
+    @Published var notifyTracks = UserDefaults.standard.bool(forKey: "track_notifications")
+    @Published var queueFilter = ""
+    @Published var sortKey = "title"
+    @Published var sortDescending = false
+    @Published var deviceTreeRoot = UserDefaults.standard.string(forKey: "device_tree_root") ?? ""
+    private var radioOnDevice = false
+    private var radioGeneration = 0
+    private var radioTask: Task<Void, Never>?
+    private var radioRefillTask: Task<Void, Never>?
+    private var radioCache = [Track]()
+    private var interruptedPlayback = false
+    private var audioObservers = [NSObjectProtocol]()
+    private var exportURL: URL?
     @Published var radio = false
     @Published var stars = Set<String>()
     @Published var playlists = [SavedPlaylist]()
@@ -45,9 +69,12 @@ final class KogStore: ObservableObject {
     @Published var devicePath = ""
     @Published var error: String?
     @Published var importing = false
+    @Published var pendingAdds = 0
     @Published var downloading = Set<String>()
     @Published var downloadNotice: String?
 
+    let visualization = AudioVisualization()
+    private var visualizationTask: Task<Void, Never>?
     private var player: AVPlayer?
     private var assetLoader: AuthenticatedAssetLoader?
     #if KOG_NATIVE_AUDIO
@@ -68,6 +95,16 @@ final class KogStore: ObservableObject {
     private var nowPlayingArtwork: MPMediaItemArtwork?
 
     var current: Track? { queue.indices.contains(currentIndex) ? queue[currentIndex] : nil }
+    var deviceAPI: KogAPI {
+        KogAPI(server: "", token: "", username: "", password: "", codec: codec,
+               deviceRoot: importsURL.path,
+               deviceStorage: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Kog").path)
+    }
+    var playlistAPI: KogAPI { playlistOnDevice ? deviceAPI : api }
+    var searchAPI: KogAPI { libraryOnDevice ? deviceAPI : api }
+    var activeDeviceRoot: String { deviceTreeRoot.isEmpty ? importsURL.path : importsURL.appendingPathComponent(deviceTreeRoot).path }
+    var activeTreeRoot: String { treeRoot.isEmpty ? libraryRoot : treeRoot }
+    private var serverKey: String { (try? api.url("/").absoluteString) ?? server }
     var soundfontReady: Bool { !soundfontPath.isEmpty && FileManager.default.fileExists(atPath: soundfontPath) }
     var sc55RomsReady: Bool { !sc55RomPath.isEmpty && FileManager.default.fileExists(atPath: sc55RomPath) }
     var mt32RomsReady: Bool { !mt32RomPath.isEmpty && FileManager.default.fileExists(atPath: mt32RomPath) }
@@ -84,12 +121,20 @@ final class KogStore: ObservableObject {
         currentIndex = UserDefaults.standard.integer(forKey: "index")
         if queue.isEmpty { currentIndex = -1 }
         else { currentIndex = min(max(0, currentIndex), queue.count - 1) }
+        // iOS may move an app container during installation. Persisted local
+        // paths must follow Documents, including archive and synth paths.
+        queue = queue.enumerated().map { index, track in var copy = rebaseDeviceTrack(track); if copy.queueOrder == nil { copy.queueOrder = Int64(index) }; return copy }
+        soundfontPath = rebaseDevicePath(soundfontPath)
+        sc55RomPath = rebaseDevicePath(sc55RomPath)
+        mt32RomPath = rebaseDevicePath(mt32RomPath)
         scanImports()
+        Task { if let saved = try? await deviceAPI.stars() { localStars = saved } }
         do {
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
             try AVAudioSession.sharedInstance().setActive(true)
         } catch { self.error = "Audio session: \(error.localizedDescription)" }
         registerRemoteCommands()
+        observeAudioSession()
         if !server.isEmpty { Task { await refresh() } }
     }
 
@@ -104,7 +149,7 @@ final class KogStore: ObservableObject {
     }
 
     private func isMidi(_ track: Track) -> Bool {
-        let name = track.kind == "archive" ? track.entry : track.path
+        let name = track.entry.isEmpty ? track.path : track.entry
         return ["kar", "mid", "midi", "rmi", "mids", "mds", "lds", "xmf", "mxmf"]
             .contains(URL(fileURLWithPath: name).pathExtension.lowercased())
     }
@@ -174,19 +219,72 @@ final class KogStore: ObservableObject {
         UserDefaults.standard.set(try? JSONEncoder().encode(queue), forKey: "queue")
         UserDefaults.standard.set(currentIndex, forKey: "index")
         UserDefaults.standard.set(shuffle, forKey: "shuffle")
-        UserDefaults.standard.set(repeatQueue, forKey: "repeat")
+        UserDefaults.standard.set(repeatMode.rawValue, forKey: "repeat_mode")
     }
 
-    private func report(_ failure: Error) { error = failure.localizedDescription }
+    private func report(_ failure: Error) {
+        if let failure = failure as? URLError, failure.code != .cancelled {
+            connected = false
+        }
+        error = failure.localizedDescription
+    }
+
+    // Health is checked while the app is active; a successful browse from earlier
+    // must not leave the connection indicator green after the server exits.
+    func checkConnection() async {
+        guard !server.isEmpty else { connected = false; return }
+        let client = api
+        let reachable = (try? await client.connection()) != nil
+        guard client.server == server, !Task.isCancelled else { return }
+        connected = reachable
+    }
+
+    private func rememberTreeRoot() {
+        var roots = UserDefaults.standard.dictionary(forKey: "server_tree_roots") as? [String: String] ?? [:]
+        roots[serverKey] = treeRoot.isEmpty ? nil : treeRoot
+        UserDefaults.standard.set(roots, forKey: "server_tree_roots")
+    }
+
+    @discardableResult
+    func setTreeRoot(_ path: String) async -> Bool {
+        do {
+            guard !path.hasPrefix("kog-archive:") else {
+                throw KogError.response("Choose a folder as the library tree root.")
+            }
+            let client = api
+            let directory = try await client.browse(path)
+            guard !directory.isArchive else { throw KogError.response("Choose a folder rather than an archive.") }
+            guard client.server == server else { return false }
+            treeRoot = directory.path == libraryRoot ? "" : directory.path
+            rememberTreeRoot()
+            if radio && !radioOnDevice { prepareRadio() }
+            search("")
+            listing = directory
+            connected = true
+            return true
+        } catch { report(error); return false }
+    }
 
     func refresh() async {
         guard !server.isEmpty else { connected = false; return }
+        error = nil
         do {
             let client = api
             try await client.health()
             let listing = try await client.browse()
+            guard client.server == server else { return }
             self.listing = listing
             libraryRoot = listing.path
+            let roots = UserDefaults.standard.dictionary(forKey: "server_tree_roots") as? [String: String] ?? [:]
+            treeRoot = roots[serverKey] ?? ""
+            if !treeRoot.isEmpty {
+                do { self.listing = try await client.browse(treeRoot) }
+                catch let failure as KogError {
+                    treeRoot = ""; rememberTreeRoot()
+                    error = "The saved tree root is unavailable: \(failure.localizedDescription)"
+                }
+            }
+            search("")
             playlists = try await client.playlists()
             stars = try await client.stars()
             if let serverEngine = try? await client.serverMidiEngine(), serverEngine != midiEngine {
@@ -195,37 +293,39 @@ final class KogStore: ObservableObject {
                 if current?.isDevice == false { restartCurrentMidi() }
             }
             connected = true
-            error = nil
         } catch { connected = false; report(error) }
     }
 
     func browse(_ path: String) async {
         do {
             listing = try await api.browse(path)
-            searchText = ""; searchTracks = []; searchFolders = []
+            search("")
+            connected = true
         } catch { report(error) }
     }
 
     func search(_ text: String) {
         searchText = text
         searchTask?.cancel()
+        searchPaused = false
         if text.isEmpty { searchTracks = []; searchFolders = []; searching = false; return }
         searchTask = Task {
             do {
                 try await Task.sleep(for: .milliseconds(250))
                 searching = true
-                let client = api
-                var page = try await client.search(text)
+                let client = searchAPI
+                let device = libraryOnDevice
+                var page = try await client.search(text, root: device ? activeDeviceRoot : activeTreeRoot)
                 guard !Task.isCancelled else { return }
                 searchFolders = page.results.filter { $0.is_dir == true }.map(\.folder)
-                searchTracks = page.results.filter { $0.is_dir != true }.map(\.track)
+                searchTracks = page.results.filter { $0.is_dir != true }.map { device ? $0.track.onDevice() : $0.track }
                 searchScanned = page.scanned
                 while !page.done && !Task.isCancelled {
                     try await Task.sleep(for: .milliseconds(180))
                     page = try await client.more(page.generation, offset: searchFolders.count + searchTracks.count)
                     guard !Task.isCancelled else { break }
                     searchFolders += page.results.filter { $0.is_dir == true }.map(\.folder)
-                    searchTracks += page.results.filter { $0.is_dir != true }.map(\.track)
+                    searchTracks += page.results.filter { $0.is_dir != true }.map { device ? $0.track.onDevice() : $0.track }
                     searchScanned = page.scanned
                 }
             } catch is CancellationError {} catch { report(error) }
@@ -234,35 +334,20 @@ final class KogStore: ObservableObject {
     }
 
     func addFile(_ track: Track, play: Bool = false) async {
+        pendingAdds += 1; defer { pendingAdds -= 1 }
         do {
-            if track.isDevice {
-                #if KOG_NATIVE_AUDIO
-                var tracks = try await Task.detached(priority: .userInitiated) {
-                    try NativeAudioCatalog.expand(path: track.path)
-                }.value
-                if tracks.count == 1 {
-                    if tracks[0].title.isEmpty { tracks[0].title = track.title }
-                    if tracks[0].artist.isEmpty { tracks[0].artist = track.artist }
-                    if tracks[0].album.isEmpty { tracks[0].album = track.album }
-                }
-                add(tracks, play: play)
-                #endif
-            } else { add(try await api.expand(track), play: play) }
+            add(try await (track.isDevice ? deviceAPI : api).expand(track), play: play)
         } catch { report(error) }
     }
 
     func addDeviceFolder(_ folder: Folder) async {
-        #if KOG_NATIVE_AUDIO
-        do {
-            let tracks = try await Task.detached(priority: .userInitiated) {
-                try NativeAudioCatalog.expand(path: folder.path)
-            }.value
-            add(tracks)
-        } catch { report(error) }
-        #endif
+        pendingAdds += 1; defer { pendingAdds -= 1 }
+        do { add(try await deviceAPI.collect(folder.path)) }
+        catch { report(error) }
     }
 
     func addFolder(_ folder: Folder, play: Bool = false) async {
+        pendingAdds += 1; defer { pendingAdds -= 1 }
         do { add(try await api.collect(folder.path), play: play) }
         catch { report(error) }
     }
@@ -270,7 +355,8 @@ final class KogStore: ObservableObject {
     func add(_ tracks: [Track], play: Bool = false) {
         guard !tracks.isEmpty else { return }
         let start = queue.count
-        queue += tracks
+        let order = (queue.compactMap(\.queueOrder).max() ?? -1) + 1
+        queue += tracks.enumerated().map { offset, track in var copy = track; copy.queueOrder = order + Int64(offset); return copy }
         if play { playIndex(start) }
     }
 
@@ -295,26 +381,29 @@ final class KogStore: ObservableObject {
             if NativeAudioPlayer.useFor(track) {
                 let generation = nativeGeneration
                 let path = track.path
+                let streamOffset = track.isDevice ? 0 : resumeAt
+                let stream = track.isDevice ? nil : try api.nativeStream(track, start: streamOffset).absoluteString
+                let headers = api.audioHeaders
                 let subsong = Int32(track.fragment) ?? -1
                 let engine = localMidiEngine
                 let soundfont = soundfontPath
                 let sc55 = sc55RomPath
                 let mt32 = mt32RomPath
-                playing = false; position = resumeAt; duration = 0
+                playing = shouldPlay; position = resumeAt; duration = Double(track.duration) / 1000
                 updateNowPlaying()
                 nativeStartTask = Task { [weak self] in
                     do {
                         let source = try await Task.detached(priority: .userInitiated) {
-                            try NativeAudioSource(path: path, subsong: subsong, midiEngine: engine,
-                                                  soundfontPath: soundfont, sc55RomPath: sc55,
-                                                  mt32RomPath: mt32)
+                            if let stream { return try NativeAudioSource(stream: stream, headers: headers, durationMilliseconds: max(0, track.duration - Int64(streamOffset * 1000))) }
+                            return try NativeAudioSource(path: path, subsong: subsong, midiEngine: engine,
+                                                         soundfontPath: soundfont, sc55RomPath: sc55, mt32RomPath: mt32)
                         }.value
                         guard let self, !Task.isCancelled,
                               self.nativeGeneration == generation else { return }
-                        let decoder = try NativeAudioPlayer(source: source, onEnd: { [weak self] in
+                        let decoder = try NativeAudioPlayer(source: source, visualization: self.visualization, onEnd: { [weak self] in
                             Task { @MainActor [weak self] in
                                 guard let self, self.nativeGeneration == generation else { return }
-                                self.next()
+                                self.finishedTrack()
                             }
                         }, onError: { [weak self] message in
                             Task { @MainActor [weak self] in
@@ -323,18 +412,19 @@ final class KogStore: ObservableObject {
                             }
                         })
                         self.nativePlayer = decoder
-                        self.duration = decoder.duration
-                        if resumeAt > 0 { decoder.seek(resumeAt) }
-                        if shouldPlay { decoder.play() }
-                        self.playing = shouldPlay
+                        self.applyVolume()
+                        self.duration = streamOffset + decoder.duration
+                        if track.isDevice && resumeAt > 0 { decoder.seek(resumeAt) }
+                        if self.playing { decoder.play() }
                         self.nativeTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
                             Task { @MainActor [weak self] in
                                 guard let self, self.nativeGeneration == generation,
                                       let decoder = self.nativePlayer else { return }
-                                self.position = decoder.position
+                                self.position = streamOffset + decoder.position
                                 self.updateNowPlaying()
                             }
                         }
+                        self.postTrackNotification(track)
                         self.loadNowPlayingArt(for: track)
                         self.updateNowPlaying()
                     } catch {
@@ -358,12 +448,23 @@ final class KogStore: ObservableObject {
             } else {
                 item = AVPlayerItem(url: stream)
             }
+            visualizationTask = Task { await visualization.attach(to: item) }
             player = AVPlayer(playerItem: item)
-            statusObserver = item.observe(\.status, options: [.new]) { [weak self] item, _ in
+            applyVolume()
+            statusObserver = item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
                 if item.status == .failed {
                     Task { @MainActor [weak self] in
-                        self?.error = item.error?.localizedDescription ?? "Cannot play this file"
-                        self?.playing = false
+                        guard let self, self.player?.currentItem === item else { return }
+                        self.playing = false
+                        let failure = item.error?.localizedDescription ?? "Cannot play this file"
+                        if !track.isDevice {
+                            await self.checkConnection()
+                            guard self.player?.currentItem === item else { return }
+                        }
+                        self.error = !track.isDevice && !self.connected
+                            ? "The Kog server is no longer reachable. Check that Kog is running on the server, then tap Play to retry."
+                            : failure
+                        self.updateNowPlaying()
                     }
                 }
             }
@@ -378,7 +479,7 @@ final class KogStore: ObservableObject {
             }
             finishObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime,
                 object: item, queue: .main) { [weak self] _ in
-                Task { @MainActor [weak self] in self?.next() }
+                Task { @MainActor [weak self] in self?.finishedTrack() }
             }
             if resumeAt > 0 { player?.seek(to: CMTime(seconds: resumeAt, preferredTimescale: 600)) }
             if shouldPlay { player?.play() }
@@ -386,10 +487,12 @@ final class KogStore: ObservableObject {
             position = resumeAt
             loadNowPlayingArt(for: track)
             updateNowPlaying()
+            postTrackNotification(track)
         } catch { playing = false; report(error) }
     }
 
     private func removePlayerObservers() {
+        visualizationTask?.cancel(); visualization.reset()
         if let observer = timeObserver { player?.removeTimeObserver(observer); timeObserver = nil }
         if let observer = finishObserver { NotificationCenter.default.removeObserver(observer); finishObserver = nil }
         statusObserver = nil
@@ -407,6 +510,10 @@ final class KogStore: ObservableObject {
             playing = false
         }
         else {
+            if player?.currentItem?.status == .failed {
+                startPlayer(resumeAt: position)
+                return
+            }
             if player != nil { player?.play(); playing = true }
             #if KOG_NATIVE_AUDIO
             if nativePlayer != nil { nativePlayer?.play(); playing = true }
@@ -417,23 +524,29 @@ final class KogStore: ObservableObject {
     }
 
     func stop() {
-        player?.pause()
+        removePlayerObservers()
+        player?.pause(); player = nil; assetLoader = nil
         #if KOG_NATIVE_AUDIO
-        if nativePlayer == nil {
-            nativeGeneration += 1
-            nativeStartTask?.cancel()
-        }
-        nativePlayer?.pause()
+        nativeGeneration += 1; nativeStartTask?.cancel()
+        nativePlayer?.stop(); nativePlayer = nil
         #endif
-        playing = false; seek(0); updateNowPlaying()
+        playing = false; position = 0; updateNowPlaying()
+    }
+    private func finishedTrack() {
+        if repeatMode == .one { startPlayer() } else { next() }
     }
     func seek(_ seconds: Double) {
         guard seconds.isFinite else { return }
-        player?.seek(to: CMTime(seconds: max(0, seconds), preferredTimescale: 600))
+        let target = min(max(0, seconds), duration > 0 ? max(0, duration - 0.01) : max(0, seconds))
         #if KOG_NATIVE_AUDIO
-        nativePlayer?.seek(seconds)
+        if let track = current, !track.isDevice {
+            startPlayer(resumeAt: target, shouldPlay: playing)
+            return
+        }
+        nativePlayer?.seek(target)
         #endif
-        position = max(0, seconds)
+        player?.seek(to: CMTime(seconds: target, preferredTimescale: 600))
+        position = target
         updateNowPlaying()
     }
 
@@ -444,7 +557,7 @@ final class KogStore: ObservableObject {
             let candidates = queue.indices.filter { $0 != currentIndex }
             playIndex(candidates.randomElement() ?? 0)
         } else if currentIndex + 1 < queue.count { playIndex(currentIndex + 1) }
-        else if repeatQueue { playIndex(0) }
+        else if repeatMode == .all { playIndex(0) }
         else if radio { Task { await advanceRadio() } }
         else { stop() }
     }
@@ -458,6 +571,7 @@ final class KogStore: ObservableObject {
     func remove(_ offsets: IndexSet) {
         let removedCurrent = offsets.contains(currentIndex)
         let removedBefore = offsets.filter { $0 < currentIndex }.count
+        shuffleHistory = []
         queue.remove(atOffsets: offsets)
         if queue.isEmpty {
             removePlayerObservers(); player?.pause(); player = nil; assetLoader = nil
@@ -475,6 +589,7 @@ final class KogStore: ObservableObject {
     }
 
     func move(_ source: IndexSet, to destination: Int) {
+        shuffleHistory = []
         var ordering = Array(queue.indices)
         ordering.move(fromOffsets: source, toOffset: destination)
         let nextIndex = ordering.firstIndex(of: currentIndex) ?? currentIndex
@@ -495,68 +610,186 @@ final class KogStore: ObservableObject {
     }
 
     func sortQueue(_ key: String) {
+        if sortKey == key { sortDescending.toggle() } else { sortKey = key; sortDescending = false }
         let selectedIndex = currentIndex
-        let ordered = queue.enumerated().sorted {
-            let lhs: String; let rhs: String
+        let numeric = TrackSort.all.first { $0.key == key }?.numeric ?? false
+        func value(_ track: Track) -> String {
             switch key {
-            case "Artist": lhs = $0.element.artist; rhs = $1.element.artist
-            case "Album": lhs = $0.element.album; rhs = $1.element.album
-            default: lhs = $0.element.label; rhs = $1.element.label
+            case "original": return String(track.queueOrder ?? 0)
+            case "title": return track.label
+            case "artist": return track.artist
+            case "album": return track.album
+            case "duration": return String(track.duration)
+            case "path": return track.displayPath
+            case "filename": return track.filename
+            case "star": return isStarred(track) ? "1" : "0"
+            default: return track.metadata[key] ?? ""
             }
-            let comparison = lhs.localizedStandardCompare(rhs)
-            return comparison == .orderedSame ? $0.offset < $1.offset : comparison == .orderedAscending
+        }
+        let ordered = queue.enumerated().sorted {
+            let lhs = value($0.element), rhs = value($1.element)
+            let comparison: ComparisonResult
+            if numeric {
+                let l = Double(lhs) ?? 0, r = Double(rhs) ?? 0
+                comparison = l == r ? .orderedSame : (l < r ? .orderedAscending : .orderedDescending)
+            } else { comparison = lhs.localizedStandardCompare(rhs) }
+            return comparison == .orderedSame ? $0.offset < $1.offset : comparison == (sortDescending ? .orderedDescending : .orderedAscending)
         }
         queue = ordered.map(\.element)
         if selectedIndex >= 0 { currentIndex = ordered.firstIndex { $0.offset == selectedIndex } ?? selectedIndex }
+        shuffleHistory = []
     }
 
+    func isStarred(_ track: Track) -> Bool { (track.isDevice ? localStars : stars).contains(track.id) }
     func toggleStar(_ track: Track) async {
-        guard !track.isDevice else { return }
         do {
-            let enabled = !stars.contains(track.id)
-            try await api.star(track, enabled: enabled)
-            if enabled { stars.insert(track.id) } else { stars.remove(track.id) }
+            let enabled = !isStarred(track)
+            try await (track.isDevice ? deviceAPI : api).star(track, enabled: enabled)
+            if track.isDevice {
+                if enabled { localStars.insert(track.id) } else { localStars.remove(track.id) }
+            } else {
+                if enabled { stars.insert(track.id) } else { stars.remove(track.id) }
+            }
+            if selectedPlaylist?.id == 0 { playlistTracks.removeAll { $0.id == track.id && !enabled } }
         } catch { report(error) }
     }
 
     func toggleRadio() async {
+        // Reflect the tap before network/probe work, and permit another tap
+        // while it runs. Only the newest request may populate this queue.
+        radio.toggle()
+        prepareRadio(selectSource: true)
+    }
+    private func prepareRadio(selectSource: Bool = false) {
+        radioGeneration += 1
+        let generation = radioGeneration, enabled = radio
+        radioTask?.cancel(); radioRefillTask?.cancel(); radioRefillTask = nil; radioCache = []
+        if enabled && selectSource { radioOnDevice = libraryOnDevice }
+        let client = radioOnDevice ? deviceAPI : api
+        let root = radioOnDevice ? activeDeviceRoot : activeTreeRoot
+        radioBusy = enabled
+        radioTask = Task {
+            defer { if radioGeneration == generation { radioBusy = false } }
+            do {
+                let tracks = try await client.radio(enabled, root: root)
+                guard !Task.isCancelled, radioGeneration == generation else { return }
+                if enabled {
+                    radioCache = tracks
+                    if queue.isEmpty, !radioCache.isEmpty { add([radioCache.removeFirst()], play: true) }
+                    refillRadio()
+                }
+            } catch {
+                guard !Task.isCancelled, radioGeneration == generation else { return }
+                radio = false; report(error)
+            }
+        }
+    }
+    private func refillRadio() {
+        guard radio, radioRefillTask == nil, radioCache.count < 10 else { return }
+        let generation = radioGeneration
+        let client = radioOnDevice ? deviceAPI : api
+        let root = radioOnDevice ? activeDeviceRoot : activeTreeRoot
+        radioRefillTask = Task {
+            defer { if radioGeneration == generation { radioRefillTask = nil } }
+            do {
+                while !Task.isCancelled, radioGeneration == generation, radio, radioCache.count < 10 {
+                    let tracks = try await client.radioAdvance(root: root)
+                    guard !Task.isCancelled, radioGeneration == generation else { return }
+                    if tracks.isEmpty { break }
+                    radioCache += tracks
+                }
+            } catch { if !Task.isCancelled && radioGeneration == generation { report(error) } }
+        }
+    }
+    func reshuffleRadio() async {
+        radioGeneration += 1; let generation = radioGeneration
+        radioTask?.cancel(); radioRefillTask?.cancel(); radioRefillTask = nil; radioCache = []
+        radio = true; radioBusy = true
+        let client = radioOnDevice ? deviceAPI : api
+        let root = radioOnDevice ? activeDeviceRoot : activeTreeRoot
+        radioTask = Task {
+            defer { if radioGeneration == generation { radioBusy = false } }
+            do {
+                let tracks = try await client.reshuffleRadio(root: root)
+                guard !Task.isCancelled, radioGeneration == generation else { return }
+                radioCache = tracks
+                if !radioCache.isEmpty { replaceQueue([radioCache.removeFirst()]) }
+                refillRadio()
+            } catch { if !Task.isCancelled && radioGeneration == generation { radio = false; report(error) } }
+        }
+    }
+    private func advanceRadio() async {
+        let generation = radioGeneration
+        if radioCache.isEmpty { await radioTask?.value }
+        if radioCache.isEmpty { await radioRefillTask?.value }
+        guard radio, radioGeneration == generation else { return }
+        if radioCache.isEmpty { stop() }
+        else { add([radioCache.removeFirst()], play: true); refillRadio() }
+    }
+    func loadPlaylists() async {
+        do { playlists = try await playlistAPI.playlists() } catch { report(error) }
+    }
+    @discardableResult func openPlaylist(_ playlist: SavedPlaylist) async -> Bool {
+        let device = playlistOnDevice
         do {
-            let enabled = !radio
-            let tracks = try await api.radio(enabled, root: libraryRoot)
-            radio = enabled
-            if enabled { add(tracks, play: queue.isEmpty) }
+            let tracks = try await playlistAPI.playlist(playlist.id)
+            guard device == playlistOnDevice else { return false }
+            playlistTracks = tracks; selectedPlaylist = playlist; return true
+        } catch { report(error); return false }
+    }
+    func createPlaylist(_ name: String, saveQueue: Bool = false) async {
+        do {
+            if saveQueue { try checkPlaylistSource(queue) }
+            let id = try await playlistAPI.createPlaylist(name)
+            if saveQueue && !queue.isEmpty { try await playlistAPI.appendPlaylist(id, tracks: queue) }
+            await loadPlaylists()
         } catch { report(error) }
     }
-
-    private func advanceRadio() async {
-        do {
-            let tracks = try await api.radioAdvance(root: libraryRoot)
-            if !tracks.isEmpty { add(tracks, play: true) }
-            else { stop() }
-        } catch { report(error); stop() }
-    }
-
-    func loadPlaylists() async {
-        guard connected else { return }
-        do { playlists = try await api.playlists() } catch { report(error) }
-    }
-    func openPlaylist(_ playlist: SavedPlaylist) async {
-        do { playlistTracks = try await api.playlist(playlist.id); selectedPlaylist = playlist }
-        catch { report(error) }
-    }
-    func createPlaylist(_ name: String) async {
-        do { try await api.createPlaylist(name); await loadPlaylists() } catch { report(error) }
-    }
     func renamePlaylist(_ playlist: SavedPlaylist, name: String) async {
-        do { try await api.renamePlaylist(playlist.id, name: name); await loadPlaylists() } catch { report(error) }
+        do { try await playlistAPI.renamePlaylist(playlist.id, name: name); await loadPlaylists()
+            if selectedPlaylist?.id == playlist.id { selectedPlaylist?.name = name }
+        } catch { report(error) }
     }
     func deletePlaylist(_ playlist: SavedPlaylist) async {
-        do { try await api.deletePlaylist(playlist.id); selectedPlaylist = nil; await loadPlaylists() }
+        do { try await playlistAPI.deletePlaylist(playlist.id); selectedPlaylist = nil; await loadPlaylists() }
         catch { report(error) }
     }
+    private func checkPlaylistSource(_ tracks: [Track]) throws {
+        guard tracks.allSatisfy({ $0.isDevice == playlistOnDevice }) else {
+            throw KogError.response(playlistOnDevice ? "Save server tracks to this iPhone before adding them to an offline playlist." : "Choose On this iPhone to save device tracks in a playlist.")
+        }
+    }
     func appendToPlaylist(_ playlist: SavedPlaylist, tracks: [Track]) async {
-        do { try await api.appendPlaylist(playlist.id, tracks: tracks); await loadPlaylists() }
+        do { try checkPlaylistSource(tracks); try await playlistAPI.appendPlaylist(playlist.id, tracks: tracks)
+            await loadPlaylists(); if selectedPlaylist?.id == playlist.id { await openPlaylist(playlist) }
+        } catch { report(error) }
+    }
+    func duplicatePlaylist(_ playlist: SavedPlaylist) async {
+        do {
+            let names = Set(try await playlistAPI.playlists().map(\.name))
+            var name = playlist.name + " copy", suffix = 2
+            while names.contains(name) { name = playlist.name + " copy \(suffix)"; suffix += 1 }
+            try await playlistAPI.duplicatePlaylist(playlist.id, name: name); await loadPlaylists()
+        } catch { report(error) }
+    }
+    func prunePlaylist(_ playlist: SavedPlaylist) async {
+        do { try await playlistAPI.prunePlaylist(playlist.id); await loadPlaylists(); await openPlaylist(playlist) }
         catch { report(error) }
+    }
+    func removePlaylistTracks(_ offsets: IndexSet) async {
+        guard let selected = selectedPlaylist else { return }
+        if selected.id == 0 { let tracks = offsets.map { playlistTracks[$0] }; for track in tracks { await toggleStar(track) }; await openPlaylist(selected); return }
+        var tracks = playlistTracks; tracks.remove(atOffsets: offsets)
+        do { try await playlistAPI.replacePlaylist(selected.id, tracks: tracks); playlistTracks = tracks; await loadPlaylists() }
+        catch { report(error) }
+    }
+    func replaceQueue(_ tracks: [Track], play: Bool = true) { clearQueue(); add(tracks, play: play) }
+    func exportPlaylist(_ playlist: SavedPlaylist) async -> URL? {
+        do {
+            let text = try await playlistAPI.exportPlaylist(playlist.id)
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent("Kog-\(playlist.id).m3u8")
+            try text.write(to: url, atomically: true, encoding: .utf8); return url
+        } catch { report(error); return nil }
     }
 
     func importFiles(_ urls: [URL]) async {
@@ -590,7 +823,9 @@ final class KogStore: ObservableObject {
         downloading.insert(track.id)
         defer { downloading.remove(track.id) }
         do {
-            let (temporary, filename) = try await api.download(track)
+            // Preserve companion sample banks and nested archives for offline playback.
+            let download = track.kind == "archive" ? Track(kind: "local", path: track.path) : track
+            let (temporary, filename) = try await api.download(download)
             let root = importsURL
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
             let stem = (filename as NSString).deletingPathExtension
@@ -624,20 +859,16 @@ final class KogStore: ObservableObject {
     }
 
     func scanImports() {
-        browseDevice(devicePath.isEmpty ? importsURL.path : devicePath)
+        browseDevice(devicePath.isEmpty ? activeDeviceRoot : devicePath)
     }
 
     func browseDevice(_ path: String) {
         #if KOG_NATIVE_AUDIO
         importScanTask?.cancel()
         importing = true
-        let root = importsURL
         importScanTask = Task {
             do {
-                let listing = try await Task.detached(priority: .userInitiated) {
-                    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-                    return try NativeAudioCatalog.browse(root: root.path, path: path)
-                }.value
+                let listing = try await deviceAPI.browse(path)
                 guard !Task.isCancelled else { return }
                 deviceListing = listing
                 devicePath = path
@@ -690,6 +921,9 @@ final class KogStore: ObservableObject {
 
     private func registerRemoteCommands() {
         let commands = MPRemoteCommandCenter.shared()
+        commands.stopCommand.addTarget { [weak self] _ in
+            Task { @MainActor [weak self] in self?.stop() }; return .success
+        }
         commands.playCommand.addTarget { [weak self] _ in
             Task { @MainActor [weak self] in if self?.playing == false { self?.togglePlayback() } }
             return .success
@@ -711,5 +945,105 @@ final class KogStore: ObservableObject {
             guard let event = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
             Task { @MainActor [weak self] in self?.seek(event.positionTime) }; return .success
         }
+    }
+}
+
+
+extension KogStore {
+    private func applyVolume() {
+        let value = Float(muted ? 0 : min(1, max(0, volume)))
+        player?.volume = value
+        #if KOG_NATIVE_AUDIO
+        nativePlayer?.volume = value
+        #endif
+    }
+    func selectCodec(_ value: String) {
+        guard value != codec else { return }
+        codec = value; UserDefaults.standard.set(value, forKey: "codec")
+        if current?.isDevice == false { startPlayer(resumeAt: position, shouldPlay: playing) }
+    }
+    func toggleSearchPause() async {
+        do { try await searchAPI.pauseSearch(!searchPaused); searchPaused.toggle() }
+        catch { report(error) }
+    }
+    func addURL(_ text: String) async {
+        guard let url = URL(string: text.trimmingCharacters(in: .whitespacesAndNewlines)),
+              ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
+            error = "Enter an HTTP or HTTPS music URL."; return
+        }
+        await addFile(Track(kind: "remote", path: url.absoluteString), play: true)
+    }
+    func setDeviceRoot(_ path: String) {
+        guard path == importsURL.path || path.hasPrefix(importsURL.path + "/") else { return }
+        deviceTreeRoot = path == importsURL.path ? "" : String(path.dropFirst(importsURL.path.count + 1))
+        UserDefaults.standard.set(deviceTreeRoot, forKey: "device_tree_root")
+        if radio && radioOnDevice { prepareRadio() }
+        search(""); browseDevice(path)
+    }
+    func reveal(_ track: Track) async {
+        libraryOnDevice = track.isDevice
+        let location = track.locator
+        let path = location["path"] ?? track.path
+        let parent = location["kind"] == "archive" ? path : URL(fileURLWithPath: path).deletingLastPathComponent().path
+        if track.isDevice { browseDevice(parent) } else { await browse(parent) }
+    }
+    func setNotifications(_ enabled: Bool) async {
+        if enabled {
+            do { notifyTracks = try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert]) }
+            catch { report(error); notifyTracks = false }
+        } else { notifyTracks = false }
+        UserDefaults.standard.set(notifyTracks, forKey: "track_notifications")
+    }
+    private func postTrackNotification(_ track: Track) {
+        guard notifyTracks, UIApplication.shared.applicationState != .active else { return }
+        let content = UNMutableNotificationContent(); content.title = track.label; content.body = track.detail
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "kog-track", content: content, trigger: nil))
+    }
+    private func observeAudioSession() {
+        audioObservers.append(NotificationCenter.default.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] note in
+            let type = (note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt) ?? 0
+            let options = (note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt) ?? 0
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if type == AVAudioSession.InterruptionType.began.rawValue {
+                    self.interruptedPlayback = self.playing
+                    if self.playing { self.togglePlayback() }
+                } else if self.interruptedPlayback {
+                    self.interruptedPlayback = false
+                    if options & AVAudioSession.InterruptionOptions.shouldResume.rawValue != 0 {
+                        try? AVAudioSession.sharedInstance().setActive(true)
+                        self.startPlayer(resumeAt: self.position)
+                    }
+                }
+            }
+        })
+        audioObservers.append(NotificationCenter.default.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { [weak self] note in
+            let reason = (note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt) ?? 0
+            if reason == AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue {
+                Task { @MainActor [weak self] in if self?.playing == true { self?.togglePlayback() } }
+            }
+        })
+        audioObservers.append(NotificationCenter.default.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                try? AVAudioSession.sharedInstance().setCategory(.playback)
+                try? AVAudioSession.sharedInstance().setActive(true)
+                if self.current != nil { self.startPlayer(resumeAt: self.position, shouldPlay: self.playing) }
+            }
+        })
+    }
+    private func rebaseDevicePath(_ path: String) -> String {
+        if path.hasPrefix("kog-archive:"), var url = URLComponents(string: path) {
+            url.queryItems = url.queryItems?.map { item in
+                item.name == "archive" ? URLQueryItem(name: item.name, value: rebaseDevicePath(item.value ?? "")) : item
+            }
+            return url.string ?? path
+        }
+        guard let range = path.range(of: "/Documents/"), path.hasPrefix("/var/mobile/") || path.hasPrefix("/private/var/mobile/") else { return path }
+        return importsURL.deletingLastPathComponent().appendingPathComponent(String(path[range.upperBound...])).path
+    }
+    private func rebaseDeviceTrack(_ track: Track) -> Track {
+        guard track.isDevice else { return track }
+        var copy = track; copy.path = rebaseDevicePath(copy.path); return copy
     }
 }

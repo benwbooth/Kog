@@ -2,7 +2,7 @@ import MediaPlayer
 import SwiftUI
 import UniformTypeIdentifiers
 
-private enum Palette {
+enum Palette {
     static let window = Color(red: 0.106, green: 0.118, blue: 0.125)
     static let panel = Color(red: 0.137, green: 0.153, blue: 0.165)
     static let raised = Color(red: 0.169, green: 0.188, blue: 0.204)
@@ -15,6 +15,7 @@ private enum Tab: String, CaseIterable { case library = "Library", queue = "Queu
 
 struct ContentView: View {
     @EnvironmentObject private var store: KogStore
+    @Environment(\.scenePhase) private var scenePhase
     @State private var tab: Tab = .queue
     @State private var showSettings = false
     @State private var showPlayer = false
@@ -27,7 +28,16 @@ struct ContentView: View {
     @State private var newPlaylistName = ""
     @State private var renameTarget: SavedPlaylist?
     @State private var renamedName = ""
-    @State private var deviceMode = false
+    private var deviceMode: Bool { get { store.libraryOnDevice } nonmutating set { store.libraryOnDevice = newValue } }
+    @State private var showTreeRootPicker = false
+    @State private var pickRootAfterSettings = false
+    @State private var pendingPicker = ""
+    @State private var detailsTrack: Track?
+    @State private var deletingPlaylist: SavedPlaylist?
+    @State private var shareURL: URL?
+    @State private var showURL = false
+    @State private var urlText = ""
+    @State private var showAbout = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -36,7 +46,7 @@ struct ContentView: View {
             Group {
                 switch tab {
                 case .library: library
-                case .queue: queue
+                case .queue: QueueView(openLibrary: { tab = .library }, showDetails: { detailsTrack = $0 })
                 case .playlists: playlists
                 }
             }
@@ -55,8 +65,49 @@ struct ContentView: View {
                     .padding(.horizontal, 16).padding(.top, 60)
             }
         }
-        .sheet(isPresented: $showSettings) { settings }
-        .sheet(isPresented: $showPlayer) { fullPlayer }
+        .task(id: scenePhase) {
+            guard scenePhase == .active else { return }
+            while !Task.isCancelled {
+                await store.checkConnection()
+                do { try await Task.sleep(for: .seconds(10)) }
+                catch { return }
+            }
+        }
+        .sheet(isPresented: $showSettings, onDismiss: {
+            if pickRootAfterSettings {
+                pickRootAfterSettings = false
+                showTreeRootPicker = true
+            }
+            switch pendingPicker {
+            case "files": showFilePicker = true
+            case "folder": showFolderPicker = true
+            case "soundfont": showSoundfontPicker = true
+            case "sc55": showSc55Picker = true
+            case "mt32": showMt32Picker = true
+            default: break
+            }
+            pendingPicker = ""
+        }) { settings }
+        .sheet(isPresented: $showTreeRootPicker) {
+            NavigationStack { ServerRootPicker(store: store) }
+        }
+        .sheet(isPresented: $showPlayer) { NowPlayingView() }
+        .sheet(item: $detailsTrack) { TrackDetailsView(track: $0) }
+        .sheet(isPresented: Binding(get: { shareURL != nil }, set: { if !$0 { shareURL = nil } })) {
+            if let url = shareURL { ShareSheet(items: [url]) }
+        }
+        .sheet(isPresented: $showAbout) { AboutView() }
+        .onOpenURL { url in if url.isFileURL { Task { await store.importFiles([url]); deviceMode = true; tab = .library } } }
+        .alert("Add music URL", isPresented: $showURL) {
+            TextField("https://…", text: $urlText).keyboardType(.URL).textInputAutocapitalization(.never)
+            Button("Add") { let text = urlText; Task { await store.addURL(text) }; urlText = "" }
+            Button("Cancel", role: .cancel) { urlText = "" }
+        }
+        .confirmationDialog("Delete this playlist?", isPresented: Binding(get: { deletingPlaylist != nil }, set: { if !$0 { deletingPlaylist = nil } }), titleVisibility: .visible) {
+            if let playlist = deletingPlaylist {
+                Button("Delete \(playlist.name)", role: .destructive) { Task { await store.deletePlaylist(playlist) }; deletingPlaylist = nil }
+            }
+        }
         .fileImporter(isPresented: $showFilePicker, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
             if case .success(let urls) = result { Task { await store.importFiles(urls) } }
             else if case .failure(let error) = result { store.error = error.localizedDescription }
@@ -110,32 +161,34 @@ struct ContentView: View {
             Text(tab == .playlists ? (store.selectedPlaylist?.name ?? "Playlists") : tab.rawValue)
                 .font(.title3.bold()).lineLimit(1)
             Spacer()
-            if tab == .queue {
-                Menu {
-                    ForEach(["Title", "Artist", "Album"], id: \.self) { key in
-                        Button("Sort by \(key)") { store.sortQueue(key) }
-                    }
-                    Divider()
-                    Button("Clear queue", systemImage: "trash", role: .destructive) { store.clearQueue() }
-                } label: { Image(systemName: "arrow.up.arrow.down").frame(width: 44, height: 44) }
-                .accessibilityLabel("Sort or clear queue")
-            }
+            if store.pendingAdds > 0 || store.radioBusy { ProgressView().accessibilityLabel("Preparing tracks") }
+            Menu {
+                Button("Add URL…", systemImage: "link") { showURL = true }
+                Button("Import files…", systemImage: "square.and.arrow.down") { showFilePicker = true }
+                Button("Import folder…", systemImage: "folder.badge.plus") { showFolderPicker = true }
+                Divider()
+                Button(store.playing ? "Pause" : "Play", systemImage: store.playing ? "pause.fill" : "play.fill") { store.togglePlayback() }
+                Button("Stop", systemImage: "stop.fill") { store.stop() }
+                Button("Previous", systemImage: "backward.end.fill") { store.previous() }
+                Button("Next", systemImage: "forward.end.fill") { store.next() }
+                Toggle("Shuffle", isOn: $store.shuffle)
+                Picker("Repeat", selection: $store.repeatMode) { ForEach(RepeatMode.allCases) { Text($0.label).tag($0) } }
+                Button { Task { await store.toggleRadio() } } label: {
+                    Label(store.radio ? "Turn Random Radio off" : "Random Radio", systemImage: store.radio ? "checkmark" : "die.face.5")
+                }
+                if store.radio { Button("Reshuffle radio", systemImage: "shuffle") { Task { await store.reshuffleRadio() } } }
+                Divider()
+                Button("About Kog", systemImage: "info.circle") { showAbout = true }
+            } label: { Image(systemName: "line.3.horizontal").frame(width: 44, height: 44) }.accessibilityLabel("Player menu")
             if tab == .playlists && store.selectedPlaylist == nil {
                 Button { showCreatePlaylist = true } label: { Image(systemName: "plus").frame(width: 44, height: 44) }
                     .accessibilityLabel("Create playlist")
             }
             if tab == .playlists, let playlist = store.selectedPlaylist, playlist.id != 0 {
-                Menu {
-                    Button("Rename", systemImage: "pencil") { beginRename(playlist) }
-                    Button("Add queue", systemImage: "text.badge.plus") {
-                        Task { await store.appendToPlaylist(playlist, tracks: store.queue) }
-                    }
-                    Button("Delete playlist", systemImage: "trash", role: .destructive) {
-                        Task { await store.deletePlaylist(playlist) }
-                    }
-                } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }
+                Menu { playlistActions(playlist) } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }
                     .accessibilityLabel("Playlist actions")
             }
+
             Button { showSettings = true } label: {
                 Image(systemName: "gearshape.fill")
                     .foregroundStyle(store.connected ? Palette.accent : Palette.muted)
@@ -204,7 +257,7 @@ struct ContentView: View {
             .padding(.horizontal, 12).padding(.vertical, 8)
             HStack(spacing: 6) {
                 if store.searchText.isEmpty, let listing = store.listing,
-                   !listing.parent.isEmpty && listing.path != store.libraryRoot {
+                   !listing.parent.isEmpty && listing.path != store.activeTreeRoot {
                     Button { Task { await store.browse(listing.parent) } } label: {
                         Image(systemName: "chevron.left").frame(width: 38, height: 40)
                     }.accessibilityLabel("Parent folder")
@@ -212,9 +265,28 @@ struct ContentView: View {
                 Text(store.searchText.isEmpty ? (store.listing?.path.components(separatedBy: "/").last ?? "Library") : "Search results")
                     .lineLimit(1).font(.caption.weight(.semibold)).foregroundStyle(Palette.muted)
                 Spacer()
-                if store.searching { Text("\(store.searchScanned) scanned").font(.caption2).foregroundStyle(Palette.muted) }
-                Button { showFilePicker = true } label: { Image(systemName: "plus").frame(width: 40, height: 40) }
-                    .accessibilityLabel("Import device files")
+                if store.searching {
+                    Button { Task { await store.toggleSearchPause() } } label: {
+                        Label("\(store.searchScanned) scanned", systemImage: store.searchPaused ? "play.fill" : "pause.fill").font(.caption2)
+                    }.frame(minHeight: 44).accessibilityLabel(store.searchPaused ? "Resume search" : "Pause search")
+                }
+                Menu {
+                    Button("Choose tree root…", systemImage: "folder.badge.gearshape") { showTreeRootPicker = true }
+                    if let listing = store.listing, !listing.isArchive {
+                        Button("Use this folder as tree root", systemImage: "folder.badge.checkmark") {
+                            Task { await store.setTreeRoot(listing.path) }
+                        }
+                    }
+                    if !store.treeRoot.isEmpty {
+                        Button("Reset to server library", systemImage: "arrow.uturn.backward") {
+                            Task { await store.setTreeRoot("") }
+                        }
+                    }
+                } label: { Image(systemName: "folder.badge.gearshape").frame(width: 44, height: 42) }
+                    .accessibilityLabel("Library tree root")
+                Button { Task { await store.browse(store.listing?.path ?? store.activeTreeRoot) } } label: {
+                    Image(systemName: "arrow.clockwise").frame(width: 44, height: 44)
+                }.accessibilityLabel("Refresh folder")
             }
             .padding(.horizontal, 10).frame(height: 42).background(Palette.panel)
             if store.server.isEmpty && store.listing == nil {
@@ -234,12 +306,22 @@ struct ContentView: View {
                             Button { Task { await store.addFolder(folder) } } label: { Image(systemName: "plus").frame(width: 44, height: 44) }
                                 .accessibilityLabel("Add folder to queue")
                         }.frame(minHeight: 46).listRowBackground(Palette.window)
+                        .contextMenu {
+                            if !folder.isArchive {
+                                Button("Use as tree root", systemImage: "folder.badge.checkmark") {
+                                    Task { await store.setTreeRoot(folder.path) }
+                                }
+                            }
+                        }
                     }
                     ForEach(files) { track in
                         TrackRow(track: track, action: { Task { await store.addFile(track, play: true) }; tab = .queue }, add: {
                             Task { await store.addFile(track) }
                         })
-                        .contextMenu { downloadMenuItem(track) }
+                        .contextMenu {
+                            Button("Track details", systemImage: "info.circle") { Task { detailsTrack = (try? await store.api.metadata([track]))?.first ?? track } }
+                            downloadMenuItem(track)
+                        }
                     }
                 }.listStyle(.plain).scrollContentBackground(.hidden)
             }
@@ -260,12 +342,29 @@ struct ContentView: View {
 
     private var deviceLibrary: some View {
         VStack(spacing: 0) {
+            HStack {
+                Image(systemName: "magnifyingglass").foregroundStyle(Palette.muted)
+                TextField("Search device files", text: Binding(get: { store.searchText }, set: store.search)).autocorrectionDisabled().textInputAutocapitalization(.never)
+                if !store.searchText.isEmpty { Button { store.search("") } label: { Image(systemName: "xmark.circle.fill").frame(width: 44, height: 44) }.accessibilityLabel("Clear search") }
+            }.padding(.horizontal, 12).frame(minHeight: 44).background(Palette.raised)
+            if store.searching {
+                Button { Task { await store.toggleSearchPause() } } label: {
+                    Label("\(store.searchScanned) items searched", systemImage: store.searchPaused ? "play.fill" : "pause.fill").font(.caption)
+                }.frame(minHeight: 44)
+            }
             HStack(spacing: 4) {
-                if let parent = store.deviceListing?.parent, !parent.isEmpty {
-                    Button { store.browseDevice(parent) } label: {
+                if let parent = store.deviceListing?.parent, !parent.isEmpty, store.devicePath != store.activeDeviceRoot {
+                    Button { store.search(""); store.browseDevice(parent) } label: {
                         Image(systemName: "chevron.left").frame(width: 40, height: 44)
                     }.accessibilityLabel("Parent folder")
                 }
+                Menu {
+                    if store.deviceListing?.isArchive == false {
+                        Button("Use this folder as tree root") { store.setDeviceRoot(store.devicePath) }
+                    }
+                    Button("Reset tree root") { store.setDeviceRoot(store.importsURL.path) }
+                    Button("Refresh folder") { store.browseDevice(store.devicePath) }
+                } label: { Image(systemName: "folder.badge.gearshape").frame(width: 44, height: 44) }.accessibilityLabel("Device tree root")
                 Text(deviceTitle).lineLimit(1).font(.caption.weight(.semibold)).foregroundStyle(Palette.muted)
                 Spacer()
                 Button { showFolderPicker = true } label: { Image(systemName: "folder.badge.plus").frame(width: 44, height: 44) }
@@ -273,14 +372,15 @@ struct ContentView: View {
                 Button { showFilePicker = true } label: { Image(systemName: "plus").frame(width: 44, height: 44) }
                     .accessibilityLabel("Import files")
             }.padding(.horizontal, 10).frame(height: 46).background(Palette.panel)
-            let folders = store.deviceListing?.directories ?? []
-            if folders.isEmpty && store.deviceFiles.isEmpty && !store.importing {
+            let folders = store.searchText.isEmpty ? (store.deviceListing?.directories ?? []) : store.searchFolders
+            let files = store.searchText.isEmpty ? store.deviceFiles : store.searchTracks
+            if folders.isEmpty && files.isEmpty && !store.importing {
                 emptyView("No imported music", detail: "Import files or a folder from Files to play offline.") { showFilePicker = true }
             } else {
                 List {
                     ForEach(folders) { folder in
                         HStack(spacing: 10) {
-                            Button { store.browseDevice(folder.path) } label: {
+                            Button { store.search(""); store.browseDevice(folder.path) } label: {
                                 if ["zip", "7z", "rar", "rsn"].contains(URL(fileURLWithPath: folder.name).pathExtension.lowercased()) {
                                     FormatIcon(track: Track(kind: "device", path: folder.path, name: folder.name))
                                 } else {
@@ -293,11 +393,13 @@ struct ContentView: View {
                             }.accessibilityLabel("Add folder to queue")
                         }.frame(minHeight: 46).listRowBackground(Palette.window)
                     }
-                    ForEach(store.deviceFiles) { track in
+                    ForEach(files) { track in
                         TrackRow(track: track, action: {
                             Task { await store.addFile(track, play: true); tab = .queue }
                         }, add: { Task { await store.addFile(track) } })
                         .contextMenu {
+                            Button("Track details", systemImage: "info.circle") { Task { detailsTrack = (try? await store.deviceAPI.metadata([track]))?.first ?? track } }
+                            Button(store.isStarred(track) ? "Unstar" : "Star", systemImage: "star") { Task { await store.toggleStar(track) } }
                             if !track.path.hasPrefix("kog-archive:") {
                                 Button("Delete imported file", systemImage: "trash", role: .destructive) {
                                     store.deleteDeviceFile(track)
@@ -307,60 +409,6 @@ struct ContentView: View {
                     }
                 }.listStyle(.plain).scrollContentBackground(.hidden)
             }
-        }
-    }
-
-    private var queue: some View {
-        VStack(spacing: 0) {
-            if store.queue.isEmpty {
-                emptyView("Ready to play", detail: "Add tracks from Library or import music from Files.") { tab = .library }
-            } else {
-                HStack {
-                    Text("\(store.queue.count) tracks").font(.caption).foregroundStyle(Palette.muted)
-                    Spacer()
-                    EditButton().font(.subheadline)
-                }.padding(.horizontal, 16).frame(height: 38).background(Palette.panel)
-                List {
-                    ForEach(Array(store.queue.enumerated()), id: \.offset) { index, track in
-                        HStack(spacing: 10) {
-                            Button { if index == store.currentIndex { store.togglePlayback() } else { store.playIndex(index) } } label: {
-                                Image(systemName: index == store.currentIndex ? (store.playing ? "waveform" : "pause.fill") : "music.note")
-                                    .font(.system(size: 14)).foregroundStyle(index == store.currentIndex ? Palette.accent : Palette.muted).frame(width: 20)
-                                FormatIcon(track: track)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(track.label).lineLimit(1).foregroundStyle(.white)
-                                    if !track.detail.isEmpty { Text(track.detail).font(.caption).foregroundStyle(Palette.muted).lineLimit(1) }
-                                }.frame(maxWidth: .infinity, alignment: .leading)
-                            }.buttonStyle(.plain)
-                            if !track.isDevice {
-                                Button { Task { await store.toggleStar(track) } } label: {
-                                    Image(systemName: store.stars.contains(track.id) ? "star.fill" : "star")
-                                        .foregroundStyle(store.stars.contains(track.id) ? .yellow : Palette.muted)
-                                        .frame(width: 40, height: 44)
-                                }.buttonStyle(.plain).accessibilityLabel("Star track")
-                            }
-                        }
-                        .frame(minHeight: 48).listRowBackground(index == store.currentIndex ? Palette.raised : Palette.window)
-                        .contextMenu { queueMenu(track, at: index) }
-                    }
-                    .onDelete(perform: store.remove).onMove(perform: store.move)
-                }.listStyle(.plain).scrollContentBackground(.hidden)
-            }
-        }
-    }
-
-    @ViewBuilder private func queueMenu(_ track: Track, at index: Int) -> some View {
-        if !track.isDevice {
-            Button(store.stars.contains(track.id) ? "Unstar" : "Star", systemImage: "star") { Task { await store.toggleStar(track) } }
-            downloadMenuItem(track)
-            Menu("Add to playlist", systemImage: "text.badge.plus") {
-                ForEach(store.playlists) { playlist in
-                    Button(playlist.name) { Task { await store.appendToPlaylist(playlist, tracks: [track]) } }
-                }
-            }
-        }
-        Button("Remove from queue", systemImage: "trash", role: .destructive) {
-            if store.queue.indices.contains(index) { store.remove(IndexSet(integer: index)) }
         }
     }
 
@@ -374,29 +422,31 @@ struct ContentView: View {
 
     private var playlists: some View {
         VStack(spacing: 0) {
+            Picker("Playlist location", selection: $store.playlistOnDevice) { Text("Server").tag(false); Text("On this iPhone").tag(true) }
+                .pickerStyle(.segmented).padding(10)
             if let selected = store.selectedPlaylist {
                 HStack {
                     Text("\(store.playlistTracks.count) tracks").font(.caption).foregroundStyle(Palette.muted)
                     Spacer()
-                    Button("Play") { store.add(store.playlistTracks, play: true); tab = .queue }
+                    Button("Play") { store.replaceQueue(store.playlistTracks); tab = .queue }
                         .font(.subheadline.weight(.semibold)).frame(minHeight: 40)
                     Button("Add all") { store.add(store.playlistTracks); tab = .queue }
                         .font(.subheadline.weight(.semibold)).frame(minHeight: 40)
                 }.padding(.horizontal, 16).background(Palette.panel)
                 List {
-                    ForEach(store.playlistTracks) { track in
+                    ForEach(Array(store.playlistTracks.enumerated()), id: \.offset) { _, track in
                         TrackRow(track: track, action: { store.add([track], play: true); tab = .queue }, add: { store.add([track]) })
-                            .contextMenu { downloadMenuItem(track) }
-                    }
+                            .contextMenu { Button("Track details", systemImage: "info.circle") { detailsTrack = track }; downloadMenuItem(track) }
+                    }.onDelete { offsets in Task { await store.removePlaylistTracks(offsets) } }
                 }.listStyle(.plain).scrollContentBackground(.hidden)
                 .contextMenu {
                     if selected.id != 0 {
                         Button("Rename") { beginRename(selected) }
-                        Button("Delete \(selected.name)", role: .destructive) { Task { await store.deletePlaylist(selected) } }
+                        Button("Delete \(selected.name)", role: .destructive) { deletingPlaylist = selected }
                     }
                 }
             } else if store.playlists.isEmpty {
-                emptyView("No playlists", detail: "Create a playlist to save tracks on your server.") { showCreatePlaylist = true }
+                emptyView("No playlists", detail: "Create a playlist on your server or on this iPhone.") { showCreatePlaylist = true }
             } else {
                 List {
                     ForEach(store.playlists) { playlist in
@@ -411,16 +461,23 @@ struct ContentView: View {
                                 Image(systemName: "chevron.right").foregroundStyle(Palette.muted)
                             }.frame(minHeight: 52)
                         }.listRowBackground(Palette.window)
-                        .contextMenu {
-                            if playlist.id != 0 {
-                                Button("Add queue to playlist") { Task { await store.appendToPlaylist(playlist, tracks: store.queue) } }
-                                Button("Rename", systemImage: "pencil") { beginRename(playlist) }
-                                Button("Delete", systemImage: "trash", role: .destructive) { Task { await store.deletePlaylist(playlist) } }
-                            }
-                        }
+                        .contextMenu { playlistActions(playlist) }
                     }
                 }.listStyle(.plain).scrollContentBackground(.hidden)
             }
+        }
+    }
+
+    @ViewBuilder private func playlistActions(_ playlist: SavedPlaylist) -> some View {
+        Button("Play", systemImage: "play.fill") { Task { guard await store.openPlaylist(playlist) else { return }; store.replaceQueue(store.playlistTracks); tab = .queue } }
+        Button("Add to queue", systemImage: "text.badge.plus") { Task { guard await store.openPlaylist(playlist) else { return }; store.add(store.playlistTracks) } }
+        Button("Export M3U…", systemImage: "square.and.arrow.up") { Task { shareURL = await store.exportPlaylist(playlist) } }
+        if playlist.id != 0 {
+            Button("Add queue to playlist", systemImage: "text.badge.plus") { Task { await store.appendToPlaylist(playlist, tracks: store.queue) } }
+            Button("Duplicate", systemImage: "doc.on.doc") { Task { await store.duplicatePlaylist(playlist) } }
+            Button("Remove missing files", systemImage: "doc.badge.ellipsis") { Task { await store.prunePlaylist(playlist) } }
+            Button("Rename", systemImage: "pencil") { beginRename(playlist) }
+            Button("Delete", systemImage: "trash", role: .destructive) { deletingPlaylist = playlist }
         }
     }
 
@@ -466,85 +523,6 @@ struct ContentView: View {
         }
     }
 
-    private var fullPlayer: some View {
-        VStack(spacing: 24) {
-            HStack {
-                Button { showPlayer = false } label: { Image(systemName: "chevron.down").frame(width: 44, height: 44) }
-                Spacer(); Text("NOW PLAYING").font(.caption.weight(.bold)).foregroundStyle(Palette.muted)
-                Spacer(); Color.clear.frame(width: 44, height: 44)
-            }
-            Spacer(minLength: 4)
-            Group {
-                if let track = store.current { KogArtwork(track: track) }
-                else { artworkPlaceholder }
-            }
-            .frame(maxWidth: 330).aspectRatio(1, contentMode: .fit)
-            .background(Palette.raised, in: RoundedRectangle(cornerRadius: 16))
-            .clipShape(RoundedRectangle(cornerRadius: 16))
-            Spacer(minLength: 4)
-            VStack(spacing: 5) {
-                Text(store.current?.label ?? "Ready to play").font(.title2.bold()).lineLimit(2).multilineTextAlignment(.center)
-                Text(store.current?.detail ?? "").font(.subheadline).foregroundStyle(Palette.muted).lineLimit(2).multilineTextAlignment(.center)
-            }
-            Slider(value: Binding(get: { min(store.position, max(store.duration, 0.01)) }, set: store.seek), in: 0...max(store.duration, 0.01))
-            HStack { Text(time(store.position)); Spacer(); Text(time(store.duration)) }
-                .font(.caption.monospacedDigit()).foregroundStyle(Palette.muted).padding(.top, -18)
-            HStack(spacing: 16) {
-                control("shuffle", active: store.shuffle, label: "Shuffle") { store.shuffle.toggle() }
-                control("backward.end.fill", label: "Previous") { store.previous() }
-                Button { store.togglePlayback() } label: {
-                    Image(systemName: store.playing ? "pause.fill" : "play.fill")
-                        .font(.system(size: 26)).foregroundStyle(Palette.window)
-                        .frame(width: 68, height: 68).background(.white, in: Circle())
-                }.accessibilityLabel(store.playing ? "Pause" : "Play")
-                control("forward.end.fill", label: "Next") { store.next() }
-                control("repeat", active: store.repeatQueue, label: "Repeat") { store.repeatQueue.toggle() }
-            }
-            HStack {
-                Button { Task { await store.toggleRadio() } } label: {
-                    Label("Random radio", systemImage: "die.face.5.fill")
-                        .foregroundStyle(store.radio ? Palette.accent : Palette.muted)
-                }.frame(minHeight: 44)
-                Spacer()
-                if let track = store.current, !track.isDevice {
-                    if track.kind == "local" || track.kind == "archive" {
-                        Button { Task { await store.saveFromServer(track) } } label: {
-                            if store.downloading.contains(track.id) { ProgressView().frame(width: 44, height: 44) }
-                            else { Image(systemName: "square.and.arrow.down").frame(width: 44, height: 44) }
-                        }
-                        .disabled(store.downloading.contains(track.id))
-                        .accessibilityLabel("Save to iPhone")
-                    }
-                    Button { Task { await store.toggleStar(track) } } label: {
-                        Image(systemName: store.stars.contains(track.id) ? "star.fill" : "star")
-                            .foregroundStyle(store.stars.contains(track.id) ? .yellow : Palette.muted)
-                            .frame(width: 44, height: 44)
-                    }.accessibilityLabel("Star track")
-                }
-            }
-            SystemVolumeView().frame(height: 38)
-        }
-        .padding(24).background(Palette.window.ignoresSafeArea()).presentationDragIndicator(.visible)
-    }
-
-    private var artworkPlaceholder: some View {
-        Image(systemName: "music.note").font(.system(size: 86)).foregroundStyle(Palette.muted)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private func control(_ symbol: String, active: Bool = false, label: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) { Image(systemName: symbol).font(.system(size: 21))
-            .foregroundStyle(active ? Palette.accent : .white).frame(width: 46, height: 52) }
-            .accessibilityLabel(label)
-    }
-
-    private func time(_ seconds: Double) -> String {
-        guard seconds.isFinite else { return "0:00" }
-        let whole = max(0, Int(seconds))
-        return whole >= 3600 ? String(format: "%d:%02d:%02d", whole / 3600, (whole / 60) % 60, whole % 60) :
-            String(format: "%d:%02d", whole / 60, whole % 60)
-    }
-
     private var settings: some View {
         NavigationStack {
             Form {
@@ -554,21 +532,35 @@ struct ContentView: View {
                     SecureField("Access token", text: $store.token)
                     TextField("Username (optional)", text: $store.username).textInputAutocapitalization(.never)
                     SecureField("Password (optional)", text: $store.password)
-                    Picker("Stream codec", selection: $store.codec) {
+                    Picker("Stream codec", selection: Binding(get: { store.codec }, set: store.selectCodec)) {
                         Text("AAC").tag("aac"); Text("Opus").tag("opus"); Text("FLAC").tag("flac")
                     }
                     Button("Connect") { store.saveSettings(); showSettings = false }
                     if store.connected { Label("Connected", systemImage: "checkmark.circle.fill").foregroundStyle(.green) }
                 }
                 Section("On this iPhone") {
-                    Button("Import files") { showSettings = false; showFilePicker = true }
-                    Button("Import folder") { showSettings = false; showFolderPicker = true }
+                    Button("Import files") { pendingPicker = "files"; showSettings = false }
+                    Button("Import folder") { pendingPicker = "folder"; showSettings = false }
                     Text("Imported music stays in Kog's Documents and can play without a server.")
+                        .font(.caption).foregroundStyle(Palette.muted)
+                }
+                Section("Library tree root") {
+                    Text(store.activeTreeRoot.isEmpty ? "Server library" : store.activeTreeRoot)
+                        .font(.caption).textSelection(.enabled)
+                    Button("Choose folder…") {
+                        pickRootAfterSettings = true
+                        showSettings = false
+                    }.disabled(store.server.isEmpty)
+                    if !store.treeRoot.isEmpty {
+                        Button("Reset to server library") { Task { await store.setTreeRoot("") } }
+                    }
+                    Text("Saved for this server. Search and Random Radio use this folder and its subfolders.")
                         .font(.caption).foregroundStyle(Palette.muted)
                 }
                 Section("Playback") {
                     Toggle("Shuffle", isOn: $store.shuffle)
-                    Toggle("Repeat queue", isOn: $store.repeatQueue)
+                    Picker("Repeat", selection: $store.repeatMode) { ForEach(RepeatMode.allCases) { Text($0.label).tag($0) } }
+                    Toggle("Track notifications", isOn: Binding(get: { store.notifyTracks }, set: { value in Task { await store.setNotifications(value) } }))
                 }
                 Section("MIDI synthesis") {
                     Picker("Server synth", selection: Binding(get: { store.midiEngine },
@@ -586,9 +578,9 @@ struct ContentView: View {
                         Text("SC-55").tag("nuked-sc55")
                         Text("MT-32").tag("munt-mt32")
                     }
-                    Button("Import SF2 SoundFont") { showSettings = false; showSoundfontPicker = true }
-                    Button("Import SC-55 ROM folder") { showSettings = false; showSc55Picker = true }
-                    Button("Import MT-32 ROM folder") { showSettings = false; showMt32Picker = true }
+                    Button("Import SF2 SoundFont") { pendingPicker = "soundfont"; showSettings = false }
+                    Button("Import SC-55 ROM folder") { pendingPicker = "sc55"; showSettings = false }
+                    Button("Import MT-32 ROM folder") { pendingPicker = "mt32"; showSettings = false }
                     if store.soundfontReady { Text("SF2 ready").font(.caption).foregroundStyle(Palette.muted) }
                     if store.sc55RomsReady { Text("SC-55 ROMs ready").font(.caption).foregroundStyle(Palette.muted) }
                     if store.mt32RomsReady { Text("MT-32 ROMs ready").font(.caption).foregroundStyle(Palette.muted) }
@@ -603,7 +595,89 @@ struct ContentView: View {
     }
 }
 
-private struct TrackRow: View {
+private struct ServerRootPicker: View {
+    @ObservedObject var store: KogStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var listing: Listing?
+    @State private var path = ""
+    @State private var loading = false
+    @State private var failure: String?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                TextField("Server folder path", text: $path)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .submitLabel(.go).onSubmit { Task { await load(path) } }
+                    .accessibilityLabel("Server folder path")
+                Button { Task { await load(path) } } label: {
+                    Image(systemName: "arrow.right.circle.fill").frame(width: 44, height: 44)
+                }.accessibilityLabel("Go to folder").disabled(loading)
+            }.padding(.horizontal, 16)
+            if let failure {
+                Text(failure).font(.callout).foregroundStyle(.red).padding(.horizontal, 16)
+            }
+            List {
+                Button { Task { await load("") } } label: {
+                    Label("Server library", systemImage: "house")
+                }
+                if let listing, listing.path != store.libraryRoot, !listing.parent.isEmpty {
+                    Button { Task { await load(listing.parent) } } label: {
+                        Label("Parent folder", systemImage: "arrow.up")
+                    }
+                }
+                if let listing {
+                    ForEach(listing.directories.filter { !$0.isArchive }) { folder in
+                        Button { Task { await load(folder.path) } } label: {
+                            HStack {
+                                Label(folder.name, systemImage: "folder")
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                if folder.path == store.activeTreeRoot {
+                                    Image(systemName: "checkmark").foregroundStyle(Palette.accent)
+                                }
+                                Image(systemName: "chevron.right").foregroundStyle(Palette.muted)
+                            }.frame(minHeight: 32)
+                        }
+                    }
+                }
+            }.disabled(loading).scrollContentBackground(.hidden)
+            Button {
+                guard let listing else { return }
+                loading = true
+                Task {
+                    if await store.setTreeRoot(listing.path) { dismiss() }
+                    else { failure = store.error; store.error = nil }
+                    loading = false
+                }
+            } label: {
+                Text("Use this folder").font(.headline).frame(maxWidth: .infinity, minHeight: 44)
+            }
+            .buttonStyle(.borderedProminent).disabled(listing == nil || loading)
+            .padding(16)
+        }
+        .overlay { if loading { ProgressView().controlSize(.large) } }
+        .background(Palette.window)
+        .navigationTitle("Library tree root").navigationBarTitleDisplayMode(.inline)
+        .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
+        .task { await load(store.activeTreeRoot) }
+    }
+
+    @MainActor private func load(_ requested: String) async {
+        guard !loading else { return }
+        loading = true; failure = nil
+        defer { loading = false }
+        do {
+            let directory = try await store.api.browse(requested.trimmingCharacters(in: .whitespacesAndNewlines))
+            guard !directory.isArchive else {
+                throw KogError.response("Choose a folder rather than an archive.")
+            }
+            listing = directory
+            path = directory.path
+        } catch { failure = error.localizedDescription }
+    }
+}
+
+struct TrackRow: View {
     let track: Track
     let action: () -> Void
     let add: () -> Void
@@ -625,15 +699,7 @@ private struct TrackRow: View {
 
 }
 
-private struct SystemVolumeView: UIViewRepresentable {
-    func makeUIView(context: Context) -> MPVolumeView {
-        let view = MPVolumeView(frame: .zero)
-        return view
-    }
-    func updateUIView(_ uiView: MPVolumeView, context: Context) {}
-}
-
-private struct KogArtwork: View {
+struct KogArtwork: View {
     @EnvironmentObject private var store: KogStore
     let track: Track
     @State private var image: UIImage?

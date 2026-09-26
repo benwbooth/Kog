@@ -1685,10 +1685,14 @@ dependencies = [
 name = "kog-ios-audio"
 version = "0.9.41"
 dependencies = [
+ "axum",
  "kog-audio",
  "kog-core",
+ "kog-server",
  "serde_json",
  "tempfile",
+ "tokio",
+ "tower",
  "zip",
 ]
 

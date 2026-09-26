@@ -10,6 +10,12 @@ extern "C" {
 typedef struct KogFfmpeg KogFfmpeg;
 
 KogFfmpeg *kog_ffmpeg_open(const char *path);
+KogFfmpeg *kog_ffmpeg_open_headers(const char *path, const char *headers);
+// Reader ownership transfers on every call, including failed opens.
+// read returns bytes, zero at EOF, or a negative value on failure.
+typedef int (*KogFfmpegRead)(void *context, uint8_t *output, int capacity);
+typedef void (*KogFfmpegClose)(void *context);
+KogFfmpeg *kog_ffmpeg_open_reader(KogFfmpegRead read, KogFfmpegClose close, void *context);
 void kog_ffmpeg_close(KogFfmpeg *decoder);
 
 const char *kog_ffmpeg_error(const KogFfmpeg *decoder);

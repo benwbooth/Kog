@@ -238,6 +238,9 @@ pub struct StreamQuery {
     pub fragment: String,
     pub codec: Option<String>,
     pub bitrate: Option<u16>,
+    /// Seek the original decoder before encoding, even when no cache exists.
+    #[serde(default)]
+    pub start_ms: u64,
 }
 
 impl StreamQuery {
@@ -281,7 +284,7 @@ fn stream_key_for_request(
     bitrate: u16,
     midi_engine: kog_audio::settings::MidiEngine,
 ) -> StreamKey {
-    let key = StreamKey::new(query.locator(), codec, bitrate);
+    let key = StreamKey::new(query.locator(), codec, bitrate).with_start_ms(query.start_ms);
     let filename = if query.kind == "archive" && !query.entry.is_empty() {
         &query.entry
     } else {
@@ -306,6 +309,9 @@ async fn stream_audio(
     axum::extract::Query(query): axum::extract::Query<StreamQuery>,
     headers: axum::http::HeaderMap,
 ) -> Response {
+    if query.start_ms > 72 * 60 * 60 * 1000 {
+        return bad_request("stream start position exceeds 72 hours");
+    }
     let default_codec = { state.config.read().await.default_codec };
     let codec = match query.codec(default_codec) {
         Ok(codec) => codec,
@@ -320,6 +326,7 @@ async fn stream_audio(
         fragment: (!query.fragment.trim().is_empty()).then(|| query.fragment.trim().to_owned()),
     };
     if query.kind == "local"
+        && query.start_ms == 0
         && query.entry.is_empty()
         && entry.fragment.is_none()
         && std::path::Path::new(&query.path)
@@ -970,6 +977,7 @@ mod tests {
             fragment: String::new(),
             codec: None,
             bitrate: None,
+            start_ms: 0,
         };
         assert_eq!(local.locator(), "/music/a.flac");
         assert_eq!(local.codec(StreamCodec::Aac).unwrap(), StreamCodec::Aac);
@@ -986,6 +994,7 @@ mod tests {
             fragment: "2".to_owned(),
             codec: Some("opus".to_owned()),
             bitrate: None,
+            start_ms: 0,
         };
         assert_eq!(archived.locator(), "/music/pack.zip::Disc/a.wav#2");
         assert_eq!(archived.codec(StreamCodec::Aac).unwrap(), StreamCodec::Opus);
@@ -1013,6 +1022,7 @@ mod tests {
                 fragment: String::new(),
                 codec: None,
                 bitrate: None,
+                start_ms: 0,
             };
             let sf2 = stream_key_for_request(&query, StreamCodec::Aac, 192, MidiEngine::RustySynth);
             let opl3 = stream_key_for_request(&query, StreamCodec::Aac, 192, MidiEngine::Opl3Windows);
@@ -1025,6 +1035,7 @@ mod tests {
             fragment: String::new(),
             codec: None,
             bitrate: None,
+            start_ms: 0,
         };
         assert_eq!(
             stream_key_for_request(&non_midi, StreamCodec::Aac, 192, MidiEngine::RustySynth),
@@ -1041,6 +1052,7 @@ mod tests {
             fragment: String::new(),
             codec: None,
             bitrate: None,
+            start_ms: 0,
         };
         assert!(missing.location().is_err());
         let bogus = StreamQuery {
@@ -1055,6 +1067,7 @@ mod tests {
             fragment: String::new(),
             codec: None,
             bitrate: None,
+            start_ms: 0,
         };
         assert!(archive_without_member.location().is_err());
     }
