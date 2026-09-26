@@ -233,7 +233,8 @@ jobs:
         with:
           path: ~/AppData/Local/vcpkg/archives
           # Bump this suffix when the vcpkg package list below changes.
-          key: vcpkg-windows-2025-x64-windows-v1
+          key: vcpkg-windows-2025-x64-windows-v2
+          restore-keys: vcpkg-windows-2025-x64-windows-v1
 
       - name: Install native dependencies
         shell: pwsh
