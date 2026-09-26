@@ -77,6 +77,15 @@ class KogState(private val context: Context) {
     var repeatOn by mutableStateOf(false)
     var localMidiEngine by mutableStateOf(prefs.getString("local_midi_engine", "opl3windows") ?: "opl3windows")
         private set
+    var soundfontReady by mutableStateOf(prefs.getString("midi_soundfont", "")
+        ?.takeIf(String::isNotBlank)?.let { File(it).isFile } == true)
+        private set
+    var sc55RomsReady by mutableStateOf(prefs.getString("midi_sc55_roms", "")
+        ?.takeIf(String::isNotBlank)?.let { File(it).isDirectory } == true)
+        private set
+    var mt32RomsReady by mutableStateOf(prefs.getString("midi_mt32_roms", "")
+        ?.takeIf(String::isNotBlank)?.let { File(it).isDirectory } == true)
+        private set
     var localRoot by mutableStateOf("")
         private set
     var importing by mutableStateOf(false)
@@ -196,6 +205,7 @@ class KogState(private val context: Context) {
             destination.absolutePath
         }
         prefs.edit().putString("midi_soundfont", path).apply()
+        soundfontReady = true
         if (current?.isDevice == true) restartCurrentMidi()
     }
 
@@ -229,6 +239,7 @@ class KogState(private val context: Context) {
             destination.absolutePath
         }
         prefs.edit().putString(if (kind == "sc55") "midi_sc55_roms" else "midi_mt32_roms", path).apply()
+        if (kind == "sc55") sc55RomsReady = true else mt32RomsReady = true
         if (current?.isDevice == true) restartCurrentMidi()
     }
 

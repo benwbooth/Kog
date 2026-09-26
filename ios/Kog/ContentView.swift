@@ -582,6 +582,8 @@ struct ContentView: View {
                     }
                     Button("Import SF2 SoundFont") { showSettings = false; showSoundfontPicker = true }
                     Button("Import MT-32 ROM folder") { showSettings = false; showMt32Picker = true }
+                    if store.soundfontReady { Text("SF2 ready").font(.caption).foregroundStyle(Palette.muted) }
+                    if store.mt32RomsReady { Text("MT-32 ROMs ready").font(.caption).foregroundStyle(Palette.muted) }
                     Text("Device files use imported assets. SC-55 needs the Kog server; iOS cannot run its helper locally.")
                         .font(.caption).foregroundStyle(Palette.muted)
                 }

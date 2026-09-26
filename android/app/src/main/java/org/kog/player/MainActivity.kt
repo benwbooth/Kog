@@ -742,6 +742,12 @@ private fun SettingsSheet(state: KogState, pickFiles: () -> Unit, pickFolder: ()
                 OutlinedButton(onClick = pickSc55Roms) { Text("SC-55 ROMs") }
             }
             OutlinedButton(onClick = pickMt32Roms) { Text("Import MT-32 ROMs") }
+            Text(listOfNotNull(
+                if (state.soundfontReady) "SF2 ready" else null,
+                if (state.sc55RomsReady) "SC-55 ROMs ready" else null,
+                if (state.mt32RomsReady) "MT-32 ROMs ready" else null,
+            ).joinToString(" · ").ifEmpty { "No MIDI assets imported on this device" },
+                fontSize = 11.sp, color = Muted)
             Button(onClick = {
                 state.api.server = server
                 state.api.token = token

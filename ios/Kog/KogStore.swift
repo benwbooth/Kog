@@ -67,6 +67,8 @@ final class KogStore: ObservableObject {
     private var nowPlayingArtwork: MPMediaItemArtwork?
 
     var current: Track? { queue.indices.contains(currentIndex) ? queue[currentIndex] : nil }
+    var soundfontReady: Bool { !soundfontPath.isEmpty && FileManager.default.fileExists(atPath: soundfontPath) }
+    var mt32RomsReady: Bool { !mt32RomPath.isEmpty && FileManager.default.fileExists(atPath: mt32RomPath) }
     var api: KogAPI { KogAPI(server: server, token: token, username: username,
                             password: password, codec: codec, midiEngine: midiEngine) }
     var importsURL: URL {
