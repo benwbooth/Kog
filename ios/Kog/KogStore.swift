@@ -11,6 +11,10 @@ final class KogStore: ObservableObject {
     @Published var token = Secrets.read("token")
     @Published var password = Secrets.read("password")
     @Published var codec = UserDefaults.standard.string(forKey: "codec") ?? "aac"
+    @Published var midiEngine = UserDefaults.standard.string(forKey: "midi_engine") ?? "opl3windows"
+    @Published var localMidiEngine = UserDefaults.standard.string(forKey: "local_midi_engine") ?? "opl3windows"
+    @Published var soundfontPath = UserDefaults.standard.string(forKey: "midi_soundfont") ?? ""
+    @Published var mt32RomPath = UserDefaults.standard.string(forKey: "midi_mt32_roms") ?? ""
     @Published var connected = false
     @Published var listing: Listing?
     @Published var libraryRoot = ""
@@ -63,7 +67,8 @@ final class KogStore: ObservableObject {
     private var nowPlayingArtwork: MPMediaItemArtwork?
 
     var current: Track? { queue.indices.contains(currentIndex) ? queue[currentIndex] : nil }
-    var api: KogAPI { KogAPI(server: server, token: token, username: username, password: password, codec: codec) }
+    var api: KogAPI { KogAPI(server: server, token: token, username: username,
+                            password: password, codec: codec, midiEngine: midiEngine) }
     var importsURL: URL {
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         return documents.appendingPathComponent("Kog Imports", isDirectory: true)
@@ -94,6 +99,71 @@ final class KogStore: ObservableObject {
         Task { await refresh() }
     }
 
+    private func isMidi(_ track: Track) -> Bool {
+        let name = track.kind == "archive" ? track.entry : track.path
+        return ["kar", "mid", "midi", "rmi", "mids", "mds", "lds", "xmf", "mxmf"]
+            .contains(URL(fileURLWithPath: name).pathExtension.lowercased())
+    }
+
+    private func restartCurrentMidi() {
+        guard let track = current, isMidi(track) else { return }
+        startPlayer(resumeAt: position, shouldPlay: playing)
+    }
+
+    func selectMidiEngine(_ engine: String) {
+        midiEngine = engine
+        UserDefaults.standard.set(engine, forKey: "midi_engine")
+        if connected {
+            Task {
+                do {
+                    try await api.setMidiEngine(engine)
+                    if current?.isDevice == false { restartCurrentMidi() }
+                } catch { report(error) }
+            }
+        }
+    }
+
+    func selectLocalMidiEngine(_ engine: String) {
+        guard ["opl3windows", "rustysynth-sf2", "munt-mt32"].contains(engine) else { return }
+        guard engine != localMidiEngine else { return }
+        localMidiEngine = engine
+        UserDefaults.standard.set(engine, forKey: "local_midi_engine")
+        if current?.isDevice == true { restartCurrentMidi() }
+    }
+
+    func importMidiAsset(_ source: URL, kind: String) async {
+        guard ["soundfont", "mt32"].contains(kind) else { return }
+        if kind == "soundfont" && source.pathExtension.lowercased() != "sf2" {
+            error = "Choose an .sf2 SoundFont file"
+            return
+        }
+        let destination = importsURL.deletingLastPathComponent()
+            .appendingPathComponent("Kog MIDI", isDirectory: true)
+            .appendingPathComponent(kind == "soundfont" ? "soundfont.sf2" : kind,
+                                    isDirectory: kind != "soundfont")
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                let access = source.startAccessingSecurityScopedResource()
+                defer { if access { source.stopAccessingSecurityScopedResource() } }
+                let manager = FileManager.default
+                try manager.createDirectory(at: destination.deletingLastPathComponent(),
+                                            withIntermediateDirectories: true)
+                let temporary = destination.deletingLastPathComponent()
+                    .appendingPathComponent(".\(kind)-\(UUID().uuidString)")
+                defer { try? manager.removeItem(at: temporary) }
+                try manager.copyItem(at: source, to: temporary)
+                if manager.fileExists(atPath: destination.path) { try manager.removeItem(at: destination) }
+                try manager.moveItem(at: temporary, to: destination)
+            }.value
+            switch kind {
+            case "soundfont": soundfontPath = destination.path
+            default: mt32RomPath = destination.path
+            }
+            UserDefaults.standard.set(destination.path, forKey: "midi_\(kind == "soundfont" ? "soundfont" : kind + "_roms")")
+            if current?.isDevice == true { restartCurrentMidi() }
+        } catch { report(error) }
+    }
+
     private func saveQueue() {
         guard !suppressSave else { return }
         UserDefaults.standard.set(try? JSONEncoder().encode(queue), forKey: "queue")
@@ -114,6 +184,11 @@ final class KogStore: ObservableObject {
             libraryRoot = listing.path
             playlists = try await client.playlists()
             stars = try await client.stars()
+            if let serverEngine = try? await client.serverMidiEngine(), serverEngine != midiEngine {
+                midiEngine = serverEngine
+                UserDefaults.standard.set(serverEngine, forKey: "midi_engine")
+                if current?.isDevice == false { restartCurrentMidi() }
+            }
             connected = true
             error = nil
         } catch { connected = false; report(error) }
@@ -200,7 +275,7 @@ final class KogStore: ObservableObject {
         startPlayer()
     }
 
-    private func startPlayer() {
+    private func startPlayer(resumeAt: Double = 0, shouldPlay: Bool = true) {
         guard let track = current else { return }
         do {
             removePlayerObservers()
@@ -216,12 +291,17 @@ final class KogStore: ObservableObject {
                 let generation = nativeGeneration
                 let path = track.path
                 let subsong = Int32(track.fragment) ?? -1
-                playing = false; position = 0; duration = 0
+                let engine = localMidiEngine
+                let soundfont = soundfontPath
+                let mt32 = mt32RomPath
+                playing = false; position = resumeAt; duration = 0
                 updateNowPlaying()
                 nativeStartTask = Task { [weak self] in
                     do {
                         let source = try await Task.detached(priority: .userInitiated) {
-                            try NativeAudioSource(path: path, subsong: subsong)
+                            try NativeAudioSource(path: path, subsong: subsong, midiEngine: engine,
+                                                  soundfontPath: soundfont, sc55RomPath: "",
+                                                  mt32RomPath: mt32)
                         }.value
                         guard let self, !Task.isCancelled,
                               self.nativeGeneration == generation else { return }
@@ -238,8 +318,9 @@ final class KogStore: ObservableObject {
                         })
                         self.nativePlayer = decoder
                         self.duration = decoder.duration
-                        decoder.play()
-                        self.playing = true
+                        if resumeAt > 0 { decoder.seek(resumeAt) }
+                        if shouldPlay { decoder.play() }
+                        self.playing = shouldPlay
                         self.nativeTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
                             Task { @MainActor [weak self] in
                                 guard let self, self.nativeGeneration == generation,
@@ -293,9 +374,10 @@ final class KogStore: ObservableObject {
                 object: item, queue: .main) { [weak self] _ in
                 Task { @MainActor [weak self] in self?.next() }
             }
-            player?.play()
-            playing = true
-            position = 0
+            if resumeAt > 0 { player?.seek(to: CMTime(seconds: resumeAt, preferredTimescale: 600)) }
+            if shouldPlay { player?.play() }
+            playing = shouldPlay
+            position = resumeAt
             loadNowPlayingArt(for: track)
             updateNowPlaying()
         } catch { playing = false; report(error) }

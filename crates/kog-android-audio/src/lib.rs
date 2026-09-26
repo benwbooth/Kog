@@ -9,6 +9,7 @@ use jni::JNIEnv;
 use jni::objects::{JByteArray, JObject, JString};
 use jni::sys::{JNI_FALSE, JNI_TRUE, jboolean, jint, jlong};
 use kog_audio::decoder::{DecoderSettings, PlaybackSource};
+use kog_audio::settings::MidiEngine;
 use kog_audio::streaming::PcmReader;
 
 struct Handle {
@@ -60,6 +61,10 @@ pub extern "system" fn Java_org_kog_player_NativeAudio_nativeOpen(
     _receiver: JObject,
     path: JString,
     subsong: jint,
+    midi_engine: JString,
+    soundfont_path: JString,
+    sc55_rom_path: JString,
+    mt32_rom_path: JString,
 ) -> jlong {
     let path: String = match env.get_string(&path) {
         Ok(path) => path.into(),
@@ -68,13 +73,35 @@ pub extern "system" fn Java_org_kog_player_NativeAudio_nativeOpen(
             return 0;
         }
     };
+    let option = |env: &mut JNIEnv, value: JString| -> Result<Option<PathBuf>, String> {
+        let value: String = env.get_string(&value).map_err(|error| error.to_string())?.into();
+        Ok((!value.is_empty()).then(|| PathBuf::from(value)))
+    };
+    let settings = (|| -> Result<DecoderSettings, String> {
+        let engine: String = env
+            .get_string(&midi_engine)
+            .map_err(|error| error.to_string())?
+            .into();
+        let engine = MidiEngine::from_setting(&engine)
+            .ok_or_else(|| format!("Unknown MIDI synth: {engine}"))?;
+        Ok(DecoderSettings::new(option(&mut env, soundfont_path)?, engine)
+            .with_sc55_rom_path(option(&mut env, sc55_rom_path)?)
+            .with_mt32_rom_path(option(&mut env, mt32_rom_path)?))
+    })();
+    let settings = match settings {
+        Ok(settings) => settings,
+        Err(error) => {
+            fail(&mut env, error);
+            return 0;
+        }
+    };
     let path = PathBuf::from(path);
     let reader = if subsong >= 0 {
         let mut source = PlaybackSource::from_path(path);
         source.subsong = Some(subsong as u32);
-        PcmReader::open(source, DecoderSettings::default())
+        PcmReader::open(source, settings)
     } else {
-        PcmReader::open_path(path, DecoderSettings::default())
+        PcmReader::open_path(path, settings)
     };
     match reader {
         Ok(reader) => {

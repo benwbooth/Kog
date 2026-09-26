@@ -26,6 +26,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
+import java.io.File
 
 /** Queue and selection belong to this Android client; library rules belong to Rust. */
 class KogState(private val context: Context) {
@@ -74,6 +75,8 @@ class KogState(private val context: Context) {
         private set
     var shuffleOn by mutableStateOf(false)
     var repeatOn by mutableStateOf(false)
+    var localMidiEngine by mutableStateOf(prefs.getString("local_midi_engine", "opl3windows") ?: "opl3windows")
+        private set
     var localRoot by mutableStateOf("")
         private set
     var importing by mutableStateOf(false)
@@ -142,6 +145,93 @@ class KogState(private val context: Context) {
         }
     }
 
+    private fun restartCurrentMidi() {
+        val track = current ?: return
+        val name = when {
+            track.isDevice -> track.name
+            track.kind == "archive" -> track.entry
+            else -> track.path
+        }
+        if (name.substringAfterLast('.', "").lowercase() !in setOf(
+                "kar", "mid", "midi", "rmi", "mids", "mds", "lds", "xmf", "mxmf")) return
+        val player = controller ?: return
+        val index = player.currentMediaItemIndex.coerceAtLeast(0)
+        val at = player.currentPosition.coerceAtLeast(0)
+        val wasPlaying = player.isPlaying
+        player.setMediaItems(queue.map(::mediaItem), index.coerceAtMost(queue.lastIndex), at)
+        player.prepare()
+        if (wasPlaying) player.play()
+    }
+
+    fun selectMidiEngine(engine: String) {
+        api.midiEngine = engine
+        if (connected) task {
+            api.setMidiEngine(engine)
+            if (current?.isDevice == false) restartCurrentMidi()
+        }
+    }
+
+    fun selectLocalMidiEngine(engine: String) {
+        if (engine == localMidiEngine) return
+        localMidiEngine = engine
+        prefs.edit().putString("local_midi_engine", engine).apply()
+        if (current?.isDevice == true) restartCurrentMidi()
+    }
+
+    fun importMidiSoundfont(uri: Uri) = task {
+        val path = withContext(Dispatchers.IO) {
+            require(DocumentFile.fromSingleUri(context, uri)?.name?.endsWith(".sf2", true) == true) {
+                "Choose an .sf2 SoundFont file"
+            }
+            val destination = File(context.filesDir, "kog-midi/soundfont.sf2")
+            destination.parentFile?.mkdirs()
+            val temporary = File.createTempFile("soundfont-", ".sf2", destination.parentFile)
+            try {
+                context.contentResolver.openInputStream(uri)?.use { source ->
+                    temporary.outputStream().use(source::copyTo)
+                } ?: throw IllegalStateException("Cannot read the selected SoundFont")
+                if (destination.exists()) destination.delete()
+                check(temporary.renameTo(destination)) { "Cannot save the SoundFont" }
+            } finally { temporary.delete() }
+            destination.absolutePath
+        }
+        prefs.edit().putString("midi_soundfont", path).apply()
+        if (current?.isDevice == true) restartCurrentMidi()
+    }
+
+    fun importMidiRoms(uri: Uri, kind: String) = task {
+        require(kind == "sc55" || kind == "mt32")
+        val path = withContext(Dispatchers.IO) {
+            val source = DocumentFile.fromTreeUri(context, uri)
+                ?: throw IllegalStateException("Cannot open the selected ROM folder")
+            val destination = File(context.filesDir, "kog-midi/$kind")
+            val temporary = File(context.filesDir, "kog-midi/$kind.tmp")
+            temporary.deleteRecursively()
+            fun copyFolder(folder: DocumentFile, target: File) {
+                target.mkdirs()
+                for (child in folder.listFiles()) {
+                    val name = child.name ?: continue
+                    require(name != "." && name != ".." && '/' !in name && '\\' !in name)
+                    val output = File(target, name)
+                    if (child.isDirectory) copyFolder(child, output)
+                    else if (child.isFile) {
+                        context.contentResolver.openInputStream(child.uri)?.use { input ->
+                            output.outputStream().use(input::copyTo)
+                        } ?: throw IllegalStateException("Cannot read $name")
+                    }
+                }
+            }
+            try {
+                copyFolder(source, temporary)
+                if (destination.exists()) destination.deleteRecursively()
+                check(temporary.renameTo(destination)) { "Cannot save the ROM folder" }
+            } finally { temporary.deleteRecursively() }
+            destination.absolutePath
+        }
+        prefs.edit().putString(if (kind == "sc55") "midi_sc55_roms" else "midi_mt32_roms", path).apply()
+        if (current?.isDevice == true) restartCurrentMidi()
+    }
+
     private fun syncPlayer() {
         val player = controller ?: return
         currentIndex = player.currentMediaItemIndex
@@ -191,6 +281,12 @@ class KogState(private val context: Context) {
         libraryRoot = listing?.path.orEmpty()
         playlists.replaceWith(api.playlists())
         stars = api.stars()
+        runCatching { api.serverMidiEngine() }.getOrNull()?.let { serverEngine ->
+            if (serverEngine != api.midiEngine) {
+                api.midiEngine = serverEngine
+                restartCurrentMidi()
+            }
+        }
         connected = true
         error = ""
     }

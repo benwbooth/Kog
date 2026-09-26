@@ -6,6 +6,7 @@ use std::slice;
 use std::time::Duration;
 
 use kog_audio::decoder::DecoderSettings;
+use kog_audio::settings::MidiEngine;
 use kog_audio::streaming::PcmReader;
 
 mod catalog;
@@ -32,11 +33,15 @@ pub(crate) unsafe fn error_to_buffer(message: &str, output: *mut c_char, capacit
 pub unsafe extern "C" fn kog_audio_open(
     path: *const c_char,
     subsong: i32,
+    midi_engine: *const c_char,
+    soundfont_path: *const c_char,
+    sc55_rom_path: *const c_char,
+    mt32_rom_path: *const c_char,
     error: *mut c_char,
     error_capacity: usize,
 ) -> *mut KogAudioHandle {
-    if path.is_null() {
-        unsafe { error_to_buffer("Missing audio path", error, error_capacity) };
+    if path.is_null() || midi_engine.is_null() {
+        unsafe { error_to_buffer("Missing audio path or MIDI synth", error, error_capacity) };
         return ptr::null_mut();
     }
     let path = match unsafe { CStr::from_ptr(path) }.to_str() {
@@ -46,10 +51,36 @@ pub unsafe extern "C" fn kog_audio_open(
             return ptr::null_mut();
         }
     };
+    let options = (|| -> Result<DecoderSettings, String> {
+        let engine = unsafe { CStr::from_ptr(midi_engine) }
+            .to_str()
+            .map_err(|_| "MIDI synth is not UTF-8".to_owned())?;
+        let engine = MidiEngine::from_setting(engine)
+            .ok_or_else(|| format!("Unknown MIDI synth: {engine}"))?;
+        let optional_path = |value: *const c_char| -> Result<Option<PathBuf>, String> {
+            if value.is_null() {
+                return Ok(None);
+            }
+            let text = unsafe { CStr::from_ptr(value) }
+                .to_str()
+                .map_err(|_| "MIDI asset path is not UTF-8".to_owned())?;
+            Ok((!text.is_empty()).then(|| PathBuf::from(text)))
+        };
+        Ok(DecoderSettings::new(optional_path(soundfont_path)?, engine)
+            .with_sc55_rom_path(optional_path(sc55_rom_path)?)
+            .with_mt32_rom_path(optional_path(mt32_rom_path)?))
+    })();
+    let options = match options {
+        Ok(options) => options,
+        Err(message) => {
+            unsafe { error_to_buffer(&message, error, error_capacity) };
+            return ptr::null_mut();
+        }
+    };
     let reader = PcmReader::open_path_subsong(
         path,
         (subsong >= 0).then_some(subsong as u32),
-        DecoderSettings::default(),
+        options,
     );
     match reader {
         Ok(reader) => Box::into_raw(Box::new(KogAudioHandle { reader })),
@@ -162,8 +193,15 @@ mod tests {
         fs::write(&file, wav).expect("write audio fixture");
         let path = std::ffi::CString::new(file.to_str().expect("UTF-8 temp path"))
             .expect("no NUL in temp path");
+        let engine = std::ffi::CString::new("opl3windows").unwrap();
+        let empty = std::ffi::CString::new("").unwrap();
         let mut error = [0_i8; 256];
-        let handle = unsafe { kog_audio_open(path.as_ptr(), -1, error.as_mut_ptr(), error.len()) };
+        let handle = unsafe {
+            kog_audio_open(
+                path.as_ptr(), -1, engine.as_ptr(), empty.as_ptr(), empty.as_ptr(),
+                empty.as_ptr(), error.as_mut_ptr(), error.len(),
+            )
+        };
         assert!(
             !handle.is_null(),
             "{}",

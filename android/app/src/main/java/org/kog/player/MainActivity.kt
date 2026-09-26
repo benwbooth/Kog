@@ -116,6 +116,15 @@ class MainActivity : ComponentActivity() {
             state.importFolder(uri)
         }
     }
+    private val openSoundfont = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) state.importMidiSoundfont(uri)
+    }
+    private val openSc55Roms = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) state.importMidiRoms(uri, "sc55")
+    }
+    private val openMt32Roms = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) state.importMidiRoms(uri, "mt32")
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -131,7 +140,10 @@ class MainActivity : ComponentActivity() {
                 Surface(color = Window, contentColor = TextColor) {
                     KogApp(state,
                         pickFiles = { openFiles.launch(arrayOf("*/*")) },
-                        pickFolder = { openFolder.launch(null) })
+                        pickFolder = { openFolder.launch(null) },
+                        pickSoundfont = { openSoundfont.launch(arrayOf("*/*")) },
+                        pickSc55Roms = { openSc55Roms.launch(null) },
+                        pickMt32Roms = { openMt32Roms.launch(null) })
                 }
             }
         }
@@ -146,7 +158,9 @@ class MainActivity : ComponentActivity() {
 private enum class Tab { Library, Queue, Playlists }
 
 @Composable
-private fun KogApp(state: KogState, pickFiles: () -> Unit, pickFolder: () -> Unit) {
+private fun KogApp(state: KogState, pickFiles: () -> Unit, pickFolder: () -> Unit,
+                   pickSoundfont: () -> Unit, pickSc55Roms: () -> Unit,
+                   pickMt32Roms: () -> Unit) {
     var tab by remember { mutableStateOf(Tab.Queue) }
     var settings by remember { mutableStateOf(state.api.server.isBlank()) }
     var playerExpanded by remember { mutableStateOf(false) }
@@ -211,7 +225,8 @@ private fun KogApp(state: KogState, pickFiles: () -> Unit, pickFolder: () -> Uni
         }
     }
 
-    if (settings) SettingsSheet(state, pickFiles, pickFolder) { settings = false }
+    if (settings) SettingsSheet(state, pickFiles, pickFolder, pickSoundfont,
+        pickSc55Roms, pickMt32Roms) { settings = false }
     if (playerExpanded) FullPlayer(state) { playerExpanded = false }
     if (createPlaylist) NameDialog("New playlist", "Create", onDismiss = { createPlaylist = false }) {
         state.createPlaylist(it); createPlaylist = false
@@ -632,6 +647,8 @@ private fun FullPlayer(state: KogState, dismiss: () -> Unit) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SettingsSheet(state: KogState, pickFiles: () -> Unit, pickFolder: () -> Unit,
+                          pickSoundfont: () -> Unit, pickSc55Roms: () -> Unit,
+                          pickMt32Roms: () -> Unit,
                           dismiss: () -> Unit) {
     var server by remember { mutableStateOf(state.api.server) }
     var token by remember { mutableStateOf(state.api.token) }
@@ -639,6 +656,11 @@ private fun SettingsSheet(state: KogState, pickFiles: () -> Unit, pickFolder: ()
     var password by remember { mutableStateOf(state.api.password) }
     var codec by remember { mutableStateOf(state.api.codec) }
     var codecMenu by remember { mutableStateOf(false) }
+    var midiEngine by remember { mutableStateOf(state.api.midiEngine) }
+    var midiMenu by remember { mutableStateOf(false) }
+    var localMidiEngine by remember { mutableStateOf(state.localMidiEngine) }
+    var localMidiMenu by remember { mutableStateOf(false) }
+    LaunchedEffect(state.connected) { midiEngine = state.api.midiEngine }
     ModalBottomSheet(onDismissRequest = dismiss, containerColor = Surface) {
         val maxHeight = LocalConfiguration.current.screenHeightDp.dp * 0.78f
         Column(Modifier.fillMaxWidth().heightIn(max = maxHeight).verticalScroll(rememberScrollState())
@@ -670,6 +692,56 @@ private fun SettingsSheet(state: KogState, pickFiles: () -> Unit, pickFolder: ()
                     }
                 }
             }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Server MIDI synth", Modifier.weight(1f))
+                Box {
+                    TextButton(onClick = { midiMenu = true }, enabled = state.connected) {
+                        Text(when (midiEngine) {
+                            "rustysynth-sf2" -> "SoundFont"
+                            "nuked-sc55" -> "SC-55"
+                            "munt-mt32" -> "MT-32"
+                            else -> "OPL3"
+                        })
+                    }
+                    DropdownMenu(expanded = midiMenu, onDismissRequest = { midiMenu = false }) {
+                        listOf("opl3windows" to "OPL3", "rustysynth-sf2" to "SoundFont",
+                            "nuked-sc55" to "SC-55", "munt-mt32" to "MT-32").forEach { (value, label) ->
+                            DropdownMenuItem(text = { Text(label) }, onClick = {
+                                midiEngine = value; midiMenu = false; state.selectMidiEngine(value)
+                            })
+                        }
+                    }
+                }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("On-device MIDI synth", Modifier.weight(1f))
+                Box {
+                    TextButton(onClick = { localMidiMenu = true }) {
+                        Text(when (localMidiEngine) {
+                            "rustysynth-sf2" -> "SoundFont"
+                            "nuked-sc55" -> "SC-55"
+                            "munt-mt32" -> "MT-32"
+                            else -> "OPL3"
+                        })
+                    }
+                    DropdownMenu(expanded = localMidiMenu, onDismissRequest = { localMidiMenu = false }) {
+                        listOf("opl3windows" to "OPL3", "rustysynth-sf2" to "SoundFont",
+                            "nuked-sc55" to "SC-55", "munt-mt32" to "MT-32").forEach { (value, label) ->
+                            DropdownMenuItem(text = { Text(label) }, onClick = {
+                                localMidiEngine = value; localMidiMenu = false
+                                state.selectLocalMidiEngine(value)
+                            })
+                        }
+                    }
+                }
+            }
+            Text("Device files use assets imported below. Server tracks use the server's MIDI assets.",
+                fontSize = 11.sp, color = Muted)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = pickSoundfont) { Text("Import SF2") }
+                OutlinedButton(onClick = pickSc55Roms) { Text("SC-55 ROMs") }
+            }
+            OutlinedButton(onClick = pickMt32Roms) { Text("Import MT-32 ROMs") }
             Button(onClick = {
                 state.api.server = server
                 state.api.token = token

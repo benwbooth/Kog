@@ -32,6 +32,7 @@ struct KogAPI {
     var username: String
     var password: String
     var codec: String
+    var midiEngine: String = "opl3windows"
 
     func url(_ endpoint: String, _ query: [String: String] = [:]) throws -> URL {
         let origin = server.contains("://") ? server : "http://\(server)"
@@ -46,7 +47,26 @@ struct KogAPI {
 
     func stream(_ track: Track) throws -> URL {
         if track.isDevice { return URL(fileURLWithPath: track.path) }
-        return try url("/api/stream", track.locator.merging(["codec": codec, "token": token]) { _, new in new })
+        var options = track.locator.merging(["codec": codec, "token": token]) { _, new in new }
+        let name = track.kind == "archive" ? track.entry : track.path
+        let suffix = URL(fileURLWithPath: name).pathExtension.lowercased()
+        if ["kar", "mid", "midi", "rmi", "mids", "mds", "lds", "xmf", "mxmf"].contains(suffix) {
+            options["midi_engine"] = midiEngine
+        }
+        return try url("/api/stream", options)
+    }
+
+    func setMidiEngine(_ engine: String) async throws {
+        _ = try await request("/api/settings/midi", method: "POST", body: ["engine": engine])
+    }
+
+    func serverMidiEngine() async throws -> String {
+        let data = try await request("/api/settings/midi")
+        let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        guard let engine = object?["engine"] as? String else {
+            throw KogError.response("MIDI synth setting is missing")
+        }
+        return engine
     }
 
     func art(_ track: Track) -> URL? {

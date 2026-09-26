@@ -4,6 +4,8 @@ import Foundation
 #if KOG_NATIVE_AUDIO
 @_silgen_name("kog_audio_open")
 private func decoderOpen(_ path: UnsafePointer<CChar>, _ subsong: Int32,
+                         _ midiEngine: UnsafePointer<CChar>, _ soundfontPath: UnsafePointer<CChar>,
+                         _ sc55RomPath: UnsafePointer<CChar>, _ mt32RomPath: UnsafePointer<CChar>,
                          _ error: UnsafeMutablePointer<CChar>, _ capacity: Int) -> UnsafeMutableRawPointer?
 @_silgen_name("kog_audio_duration_ms")
 private func decoderDuration(_ handle: UnsafeRawPointer) -> Int64
@@ -22,9 +24,21 @@ final class NativeAudioSource: @unchecked Sendable {
     private var handle: UnsafeMutableRawPointer?
     let duration: Double
 
-    init(path: String, subsong: Int32 = -1) throws {
+    init(path: String, subsong: Int32 = -1, midiEngine: String,
+         soundfontPath: String, sc55RomPath: String, mt32RomPath: String) throws {
         var message = [CChar](repeating: 0, count: 1024)
-        let opened = path.withCString { decoderOpen($0, subsong, &message, message.count) }
+        let opened = path.withCString { pathPointer in
+            midiEngine.withCString { enginePointer in
+                soundfontPath.withCString { soundfontPointer in
+                    sc55RomPath.withCString { sc55Pointer in
+                        mt32RomPath.withCString { mt32Pointer in
+                            decoderOpen(pathPointer, subsong, enginePointer, soundfontPointer,
+                                        sc55Pointer, mt32Pointer, &message, message.count)
+                        }
+                    }
+                }
+            }
+        }
         guard let opened else { throw KogError.response(String(cString: message)) }
         handle = opened
         let milliseconds = decoderDuration(opened)

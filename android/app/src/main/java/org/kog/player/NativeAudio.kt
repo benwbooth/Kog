@@ -21,7 +21,8 @@ internal object NativeAudio {
     val loadError: String? = loadResult.exceptionOrNull()?.message
 
     external fun nativeSetHelperDirectory(path: String): Boolean
-    external fun nativeOpen(path: String, subsong: Int): Long
+    external fun nativeOpen(path: String, subsong: Int, midiEngine: String,
+        soundfontPath: String, sc55RomPath: String, mt32RomPath: String): Long
     external fun nativeDurationMs(handle: Long): Long
     external fun nativeRead(handle: Long, output: ByteArray, offset: Int, length: Int): Int
     external fun nativeSeek(handle: Long, positionMs: Long): Boolean
@@ -64,7 +65,12 @@ internal class NativePcmDataSource(private val context: Context) : BaseDataSourc
         val name = uri.getQueryParameter("name").orEmpty()
         val file = cacheFile(source, name)
         val fragment = uri.getQueryParameter("fragment")?.toIntOrNull() ?: -1
-        val opened = NativeAudio.nativeOpen(file.absolutePath, fragment)
+        val preferences = context.getSharedPreferences("kog", Context.MODE_PRIVATE)
+        val opened = NativeAudio.nativeOpen(file.absolutePath, fragment,
+            preferences.getString("local_midi_engine", "opl3windows") ?: "opl3windows",
+            preferences.getString("midi_soundfont", "").orEmpty(),
+            preferences.getString("midi_sc55_roms", "").orEmpty(),
+            preferences.getString("midi_mt32_roms", "").orEmpty())
         if (opened == 0L) throw IOException("Kog could not open $name")
         handle = opened
         sourceUri = uri

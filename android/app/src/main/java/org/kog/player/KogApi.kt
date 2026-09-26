@@ -77,6 +77,9 @@ class KogApi(private val context: Context) {
     var codec: String
         get() = prefs.getString("codec", "aac") ?: "aac"
         set(value) { prefs.edit().putString("codec", value).apply() }
+    var midiEngine: String
+        get() = prefs.getString("midi_engine", "opl3windows") ?: "opl3windows"
+        set(value) { prefs.edit().putString("midi_engine", value).apply() }
 
     fun uri(endpoint: String, vararg params: Pair<String, String>): String {
         val origin = server.ifBlank { "http://127.0.0.1:8420" }
@@ -85,11 +88,24 @@ class KogApi(private val context: Context) {
         return builder.build().toString()
     }
 
-    fun stream(track: Track): String = if (track.isDevice) track.path else uri(
-        "/api/stream", "kind" to track.kind, "path" to track.path,
-        "entry" to track.entry, "fragment" to track.fragment, "codec" to codec,
-        "token" to token,
-    )
+    fun stream(track: Track): String {
+        if (track.isDevice) return track.path
+        val path = if (track.kind == "archive") track.entry else track.path
+        val midi = path.substringAfterLast('.', "").lowercase() in setOf(
+            "kar", "mid", "midi", "rmi", "mids", "mds", "lds", "xmf", "mxmf")
+        val options = mutableListOf("kind" to track.kind, "path" to track.path,
+            "entry" to track.entry, "fragment" to track.fragment, "codec" to codec,
+            "token" to token)
+        if (midi) options.add("midi_engine" to midiEngine)
+        return uri("/api/stream", *options.toTypedArray())
+    }
+
+    suspend fun setMidiEngine(engine: String) {
+        request(uri("/api/settings/midi"), "POST", JSONObject().put("engine", engine))
+    }
+
+    suspend fun serverMidiEngine(): String =
+        JSONObject(request(uri("/api/settings/midi"))).getString("engine")
 
     fun art(track: Track): String? = if (track.isDevice) null else uri(
         "/api/art", "kind" to track.kind, "path" to track.path, "token" to token,

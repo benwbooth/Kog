@@ -7,7 +7,9 @@
 
 typedef struct KogAudioHandle KogAudioHandle;
 
-KogAudioHandle *kog_audio_open(const char *path, int32_t subsong, char *error, size_t error_capacity);
+KogAudioHandle *kog_audio_open(const char *path, int32_t subsong, const char *midi_engine,
+                              const char *soundfont_path, const char *sc55_rom_path,
+                              const char *mt32_rom_path, char *error, size_t error_capacity);
 int64_t kog_audio_duration_ms(const KogAudioHandle *handle);
 intptr_t kog_audio_read(KogAudioHandle *handle, uint8_t *output, size_t capacity,
                         char *error, size_t error_capacity);

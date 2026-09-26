@@ -20,6 +20,8 @@ struct ContentView: View {
     @State private var showPlayer = false
     @State private var showFilePicker = false
     @State private var showFolderPicker = false
+    @State private var showSoundfontPicker = false
+    @State private var showMt32Picker = false
     @State private var showCreatePlaylist = false
     @State private var newPlaylistName = ""
     @State private var renameTarget: SavedPlaylist?
@@ -60,6 +62,14 @@ struct ContentView: View {
         }
         .fileImporter(isPresented: $showFolderPicker, allowedContentTypes: [.folder]) { result in
             if case .success(let url) = result { Task { await store.importFiles([url]) } }
+            else if case .failure(let error) = result { store.error = error.localizedDescription }
+        }
+        .fileImporter(isPresented: $showSoundfontPicker, allowedContentTypes: [.item]) { result in
+            if case .success(let url) = result { Task { await store.importMidiAsset(url, kind: "soundfont") } }
+            else if case .failure(let error) = result { store.error = error.localizedDescription }
+        }
+        .fileImporter(isPresented: $showMt32Picker, allowedContentTypes: [.folder]) { result in
+            if case .success(let url) = result { Task { await store.importMidiAsset(url, kind: "mt32") } }
             else if case .failure(let error) = result { store.error = error.localizedDescription }
         }
         .alert("New playlist", isPresented: $showCreatePlaylist) {
@@ -554,6 +564,26 @@ struct ContentView: View {
                 Section("Playback") {
                     Toggle("Shuffle", isOn: $store.shuffle)
                     Toggle("Repeat queue", isOn: $store.repeatQueue)
+                }
+                Section("MIDI synthesis") {
+                    Picker("Server synth", selection: Binding(get: { store.midiEngine },
+                                                             set: { store.selectMidiEngine($0) })) {
+                        Text("OPL3").tag("opl3windows")
+                        Text("SoundFont").tag("rustysynth-sf2")
+                        Text("SC-55").tag("nuked-sc55")
+                        Text("MT-32").tag("munt-mt32")
+                    }
+                    .disabled(!store.connected)
+                    Picker("On-device synth", selection: Binding(get: { store.localMidiEngine },
+                                                               set: { store.selectLocalMidiEngine($0) })) {
+                        Text("OPL3").tag("opl3windows")
+                        Text("SoundFont").tag("rustysynth-sf2")
+                        Text("MT-32").tag("munt-mt32")
+                    }
+                    Button("Import SF2 SoundFont") { showSettings = false; showSoundfontPicker = true }
+                    Button("Import MT-32 ROM folder") { showSettings = false; showMt32Picker = true }
+                    Text("Device files use imported assets. SC-55 needs the Kog server; iOS cannot run its helper locally.")
+                        .font(.caption).foregroundStyle(Palette.muted)
                 }
             }
             .scrollContentBackground(.hidden).background(Palette.window)

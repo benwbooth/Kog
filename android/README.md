@@ -32,6 +32,10 @@ Settings. On an Android emulator, `http://10.0.2.2:8420` reaches a server on
 the development computer. On a phone, use an address the phone can reach.
 Settings also lets you select a device folder or individual files through
 Android's document picker. Access to those files persists across app starts.
+Separate MIDI synth selectors control server streams and device files. OPL3
+works locally without extra assets; SoundFont, SC-55, and MT-32 need an SF2 file or
+ROM folder imported in Settings. Assets imported on the phone are separate
+from the files configured on the Kog server.
 
 ## Current playback coverage
 
