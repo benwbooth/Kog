@@ -519,33 +519,9 @@ final class KogStore: ObservableObject {
                     return try NativeAudioCatalog.browse(root: root.path, path: path)
                 }.value
                 guard !Task.isCancelled else { return }
-                var resolved = [Track]()
-                for var track in listing.files {
-                    if Task.isCancelled { return }
-                    // AVFoundation handles common local tags. An archive member
-                    // is probed through Rust only when selected for the queue.
-                    if !track.path.hasPrefix("kog-archive:") {
-                        let asset = AVURLAsset(url: URL(fileURLWithPath: track.path))
-                        if let items = try? await asset.load(.commonMetadata) {
-                            for item in items {
-                                switch item.commonKey {
-                                case .commonKeyTitle: track.title = (try? await item.load(.stringValue)) ?? ""
-                                case .commonKeyArtist: track.artist = (try? await item.load(.stringValue)) ?? ""
-                                case .commonKeyAlbumName: track.album = (try? await item.load(.stringValue)) ?? ""
-                                default: break
-                                }
-                            }
-                        }
-                        if let length = try? await asset.load(.duration), length.seconds.isFinite {
-                            track.duration = Int64(max(0, length.seconds) * 1000)
-                        }
-                    }
-                    resolved.append(track)
-                }
-                guard !Task.isCancelled else { return }
                 deviceListing = listing
                 devicePath = path
-                deviceFiles = resolved
+                deviceFiles = listing.files
                 importing = false
             } catch {
                 if !Task.isCancelled { importing = false; report(error) }

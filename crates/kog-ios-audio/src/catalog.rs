@@ -10,6 +10,7 @@ use std::ptr;
 use kog_audio::archive;
 use kog_audio::cover_art;
 use kog_audio::decoder::{DecoderRegistry, DecoderSettings};
+use kog_audio::track::Track as AudioTrack;
 use serde_json::{Value, json};
 
 use crate::error_to_buffer;
@@ -211,7 +212,9 @@ fn expand(path: &Path) -> Result<Value, String> {
                         .into_owned(),
                 )
             };
-            let properties = registry.probe(&source).ok();
+            // Use the same tag, decoder, and legacy text-encoding rules as the
+            // desktop queue. The complete row is sent to Swift in one step.
+            let metadata = AudioTrack::from_source(source.clone(), &registry);
             let name = source.subsong.map_or(filename.clone(), |index| {
                 format!("{filename} #{}", index + 1)
             });
@@ -221,10 +224,10 @@ fn expand(path: &Path) -> Result<Value, String> {
             "entry": entry,
             "fragment": source.subsong.map_or(String::new(), |index| index.to_string()),
             "name": name,
-            "title": properties.as_ref().and_then(|properties| properties.title.as_deref()).unwrap_or_default(),
-            "artist": properties.as_ref().and_then(|properties| properties.artist.as_deref()).unwrap_or_default(),
-            "album": properties.as_ref().and_then(|properties| properties.album.as_deref()).unwrap_or_default(),
-            "duration": properties.as_ref().and_then(|properties| properties.duration).map_or(0, |duration| duration.as_millis().min(i64::MAX as u128) as i64),
+            "title": metadata.title,
+            "artist": metadata.artist,
+            "album": metadata.album,
+            "duration": metadata.duration.map_or(0, |duration| duration.as_millis().min(i64::MAX as u128) as i64),
         }));
         }
     }
