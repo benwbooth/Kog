@@ -183,7 +183,7 @@ impl Sc55 {
         let worker = std::thread::Builder::new()
             .name("kog-sc55-render".to_owned())
             .spawn(move || {
-                let mut message = [0_i8; 1024];
+                let mut message = [0 as c_char; 1024];
                 let fd = writer.into_raw_fd();
                 let result = unsafe { kog_sc55_render(schedule_path.as_ptr(), rom_path.as_ptr(),
                                                        fd, message.as_mut_ptr(), message.len()) };

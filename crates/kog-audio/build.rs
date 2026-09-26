@@ -53,6 +53,7 @@ fn main() {
         for name in ["kog_sc55_embedded", "kog_sc55_core"] {
             println!("cargo:rustc-link-lib=static={name}");
         }
+        println!("cargo:rustc-env=KOG_BUILD_SC55_HELPER=in-process");
         // These three upstream licenses still require separate helpers.
         for name in ["SFM", "PSF", "SNSF"] {
             println!("cargo:rustc-env=KOG_BUILD_{name}_HELPER=unsupported-on-ios");
@@ -71,6 +72,7 @@ fn main() {
             for name in ["kog_sc55_embedded", "kog_sc55_core"] {
                 println!("cargo:rustc-link-lib=static={name}");
             }
+            println!("cargo:rustc-env=KOG_BUILD_SC55_HELPER=in-process");
         } else {
             build_sc55_helper();
         }
