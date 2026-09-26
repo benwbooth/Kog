@@ -73,6 +73,13 @@ struct Encoder
         return AVERROR(EIO);
     }
 
+    // FFmpeg 6's AVIO callback takes mutable bytes; newer releases use const.
+    // Passing this overload set selects the signature in the installed header.
+    static int writePacket(void* opaque, uint8_t* bytes, int count)
+    {
+        return writePacket(opaque, static_cast<const uint8_t*>(bytes), count);
+    }
+
     void initialize(int kind, int bitrateKbps, int inputRate, int channels)
     {
         if(inputRate < 8000 || inputRate > 384000 || channels < 1 || channels > 8)
