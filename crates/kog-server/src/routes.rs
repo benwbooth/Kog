@@ -276,6 +276,29 @@ impl StreamQuery {
     }
 }
 
+fn stream_key_for_request(
+    query: &StreamQuery,
+    codec: StreamCodec,
+    bitrate: u16,
+    midi_engine: kog_audio::settings::MidiEngine,
+) -> StreamKey {
+    let key = StreamKey::new(query.locator(), codec, bitrate);
+    let filename = if query.kind == "archive" && !query.entry.is_empty() {
+        &query.entry
+    } else {
+        &query.path
+    };
+    let uses_midi_engine = std::path::Path::new(filename)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(kog_audio::decoder::uses_selected_midi_engine);
+    if uses_midi_engine {
+        key.with_render_profile(midi_engine.setting_value())
+    } else {
+        key
+    }
+}
+
 /// Serve one track. Local MP3 files can go straight to the browser with byte
 /// ranges; transcoding an hours-long MP3 would leave it unseekable until the
 /// entire encode finished. Other sources use the cached or progressive encode.
@@ -308,7 +331,7 @@ async fn stream_audio(
         return serve_file(std::path::Path::new(&query.path), "audio/mpeg", &headers).await;
     }
     let bitrate = query.bitrate.unwrap_or(crate::stream::DEFAULT_BITRATE_KBPS);
-    let key = StreamKey::new(query.locator(), codec, bitrate);
+    let key = stream_key_for_request(&query, codec, bitrate, state.streams.midi_engine());
 
     // Cache lookup, decoder resolution and the encoder check all touch the
     // filesystem, so they run on a blocking thread; failures come back as a
@@ -381,6 +404,9 @@ async fn serve_file(
             response
                 .headers_mut()
                 .insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+            response
+                .headers_mut()
+                .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
             response.headers_mut().insert(
                 header::CONTENT_LENGTH,
                 HeaderValue::from(total),
@@ -403,6 +429,9 @@ async fn serve_file(
     response
         .headers_mut()
         .insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     response
         .headers_mut()
         .insert(header::CONTENT_LENGTH, HeaderValue::from(length));
@@ -916,6 +945,24 @@ mod tests {
         assert_eq!(parse_range("bytes=0-0", 0), None);
     }
 
+    #[tokio::test]
+    async fn audio_streams_are_not_cached_by_clients() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("song.mid");
+        std::fs::write(&path, b"audio").unwrap();
+        for range in [None, Some("bytes=1-3")] {
+            let mut headers = HeaderMap::new();
+            if let Some(range) = range {
+                headers.insert(header::RANGE, HeaderValue::from_static(range));
+            }
+            let response = serve_file(&path, "audio/aac", &headers).await;
+            assert_eq!(
+                response.headers().get(header::CACHE_CONTROL).unwrap(),
+                "no-store"
+            );
+        }
+    }
+
     #[test]
     fn stream_locators_match_the_library_key_scheme() {
         let local = StreamQuery {
@@ -951,6 +998,40 @@ mod tests {
             ..local
         };
         assert!(unknown.codec(StreamCodec::Aac).is_err());
+    }
+
+    #[test]
+    fn midi_stream_keys_change_with_synth_for_files_and_archive_members() {
+        use kog_audio::settings::MidiEngine;
+
+        for (kind, path, entry) in [
+            ("local", "/music/song.MID", ""),
+            ("archive", "/music/collection.zip", "Disc/song.mid"),
+        ] {
+            let query = StreamQuery {
+                kind: kind.to_owned(),
+                path: path.to_owned(),
+                entry: entry.to_owned(),
+                fragment: String::new(),
+                codec: None,
+                bitrate: None,
+            };
+            let sf2 = stream_key_for_request(&query, StreamCodec::Aac, 192, MidiEngine::RustySynth);
+            let opl3 = stream_key_for_request(&query, StreamCodec::Aac, 192, MidiEngine::Opl3Windows);
+            assert_ne!(sf2.stem(), opl3.stem());
+        }
+        let non_midi = StreamQuery {
+            kind: "local".to_owned(),
+            path: "/music/song.flac".to_owned(),
+            entry: String::new(),
+            fragment: String::new(),
+            codec: None,
+            bitrate: None,
+        };
+        assert_eq!(
+            stream_key_for_request(&non_midi, StreamCodec::Aac, 192, MidiEngine::RustySynth),
+            stream_key_for_request(&non_midi, StreamCodec::Aac, 192, MidiEngine::Opl3Windows),
+        );
     }
 
     #[test]

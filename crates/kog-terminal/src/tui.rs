@@ -2600,9 +2600,42 @@ impl Ui {
                 };
                 match AppSettings::save_midi_engine(next) {
                     Ok(()) => {
+                        let resume = self.playing.and_then(|index| {
+                            self.tracks.get(index).and_then(|track| {
+                                let path = if track.entry.kind == "archive" {
+                                    &track.entry.entry
+                                } else {
+                                    &track.entry.path
+                                };
+                                (track.entry.kind != "remote"
+                                    && PlaybackSource::from_path(PathBuf::from(path))
+                                        .uses_selected_midi_engine()
+                                    && self.player.state() != PlaybackState::Stopped)
+                                    .then(|| (index, self.player.position(), self.player.state()))
+                            })
+                        });
                         self.decoder_settings.set_midi_engine(next);
                         self.invalidate_metadata();
                         self.status = format!("MIDI backend: {}", next.setting_value());
+                        if let Some((index, position, state)) = resume {
+                            let selected = self.selected[2];
+                            self.selected[2] = index;
+                            if self.try_play_selected() {
+                                if let Err(error) = self.player.seek(position) {
+                                    self.status = format!(
+                                        "MIDI synth changed; restoring position failed: {error}"
+                                    );
+                                } else {
+                                    self.status = format!("MIDI backend: {}", next.setting_value());
+                                }
+                                if state == PlaybackState::Paused {
+                                    self.player.play_pause();
+                                }
+                            } else {
+                                self.player.stop();
+                            }
+                            self.selected[2] = selected;
+                        }
                     }
                     Err(error) => self.status = error,
                 }

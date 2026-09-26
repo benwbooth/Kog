@@ -34,6 +34,8 @@ pub struct StreamKey {
     pub locator: String,
     pub codec: StreamCodec,
     pub bitrate_kbps: u16,
+    /// Render settings that change the PCM, such as the selected MIDI synth.
+    pub render_profile: Option<String>,
 }
 
 impl StreamKey {
@@ -42,7 +44,13 @@ impl StreamKey {
             locator: locator.into(),
             codec,
             bitrate_kbps: clamp_bitrate(bitrate_kbps),
+            render_profile: None,
         }
+    }
+
+    pub fn with_render_profile(mut self, profile: &str) -> Self {
+        self.render_profile = Some(profile.to_owned());
+        self
     }
 
     /// File stem for this entry: a readable prefix plus a hash, so the cache
@@ -54,6 +62,10 @@ impl StreamKey {
         fingerprint.push_str(self.codec.setting_value());
         fingerprint.push('\0');
         fingerprint.push_str(&self.bitrate_kbps.to_string());
+        if let Some(profile) = &self.render_profile {
+            fingerprint.push('\0');
+            fingerprint.push_str(profile);
+        }
         let hash = fnv1a64(fingerprint.as_bytes());
         let readable: String = self
             .locator
@@ -413,6 +425,16 @@ mod tests {
         assert_ne!(a, key("/music/song.flac", StreamCodec::Opus, 192));
         assert_ne!(a, key("/music/song.flac", StreamCodec::Aac, 128));
         assert_ne!(a, key("/music/other.flac", StreamCodec::Aac, 192));
+    }
+
+    #[test]
+    fn render_profiles_separate_cached_midi_audio() {
+        let basic = key("/music/song.mid", StreamCodec::Aac, 192);
+        let sf2 = basic.clone().with_render_profile("rustysynth-sf2");
+        let opl3 = basic.clone().with_render_profile("opl3windows");
+        assert_ne!(sf2, opl3);
+        assert_ne!(sf2.stem(), opl3.stem());
+        assert_ne!(sf2.stem(), basic.stem());
     }
 
     #[test]

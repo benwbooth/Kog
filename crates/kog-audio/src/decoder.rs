@@ -159,6 +159,17 @@ impl PlaybackSource {
         self.remote_url.is_some()
     }
 
+    /// Whether switching the selected MIDI synthesizer changes this source's
+    /// decoded audio. Archive members retain their suffix after extraction.
+    pub fn uses_selected_midi_engine(&self) -> bool {
+        !self.is_remote()
+            && self
+                .path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(uses_selected_midi_engine)
+    }
+
     pub fn input_location(&self) -> Cow<'_, str> {
         self.remote_url
             .as_deref()
@@ -1184,6 +1195,14 @@ impl DecoderBackend for RodioBackend {
 const MIDI_EXTENSIONS: &[&str] = &[
     "kar", "mid", "midi", "rmi", "mids", "mds", "lds", "xmf", "mxmf",
 ];
+
+/// File suffixes whose rendered PCM depends on the selected MIDI synthesizer.
+/// Container signatures are checked again when a decoder opens the file.
+pub fn uses_selected_midi_engine(extension: &str) -> bool {
+    MIDI_EXTENSIONS
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(extension))
+}
 const MIDI_SAMPLE_RATE: u32 = 48_000;
 const MIDI_CHANNELS: u16 = 2;
 const MIDI_RENDER_FRAMES: usize = 512;
@@ -1338,9 +1357,7 @@ impl DecoderBackend for MidiBackend {
         if extension.eq_ignore_ascii_case("xmf") {
             return file_starts_with(path, b"XMF_");
         }
-        MIDI_EXTENSIONS
-            .iter()
-            .any(|candidate| candidate.eq_ignore_ascii_case(extension))
+        uses_selected_midi_engine(extension)
     }
 
     fn capabilities(&self) -> DecoderCapabilities {
@@ -2332,6 +2349,21 @@ mod tests {
         }
         assert!(!registry.accepts_path(Path::new("notes.TXT")));
         assert!(!registry.accepts_path(Path::new("README")));
+    }
+
+    #[test]
+    fn selected_midi_engine_affects_local_and_archive_sources() {
+        let local = PlaybackSource::from_path(PathBuf::from("song.MID"));
+        assert!(local.uses_selected_midi_engine());
+        let mut archive = PlaybackSource::from_path(PathBuf::from("/tmp/unpacked/song.mid"));
+        archive.set_archive_origin(PathBuf::from("collection.zip"), "Disc/song.mid".to_owned());
+        assert!(archive.uses_selected_midi_engine());
+        let remote = PlaybackSource::from_remote_url(
+            Url::parse("https://example.com/song.mid").unwrap(),
+        );
+        assert!(!remote.uses_selected_midi_engine());
+        assert!(!PlaybackSource::from_path(PathBuf::from("song.flac"))
+            .uses_selected_midi_engine());
     }
 
     #[test]

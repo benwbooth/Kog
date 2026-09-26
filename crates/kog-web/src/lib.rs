@@ -3835,8 +3835,25 @@ fn App() -> impl IntoView {
     });
 
     let stream_url = move |entry: &Entry| {
+        // A selected synth changes the rendered bytes. Give MIDI a new media
+        // URL when it changes so the current track reloads, including when
+        // the browser has cached the old response.
+        let suffix = suffix_of(if entry.entry.is_empty() {
+            &entry.path
+        } else {
+            &entry.entry
+        });
+        let synth = if matches!(
+            suffix.as_str(),
+            "kar" | "mid" | "midi" | "rmi" | "mids" | "mds" | "lds" | "xmf" | "mxmf"
+        ) {
+            let engine = midi_engine.get();
+            (!engine.is_empty()).then(|| format!("&midi_engine={}", url_encode(&engine)))
+        } else {
+            None
+        };
         format!(
-            "{}/api/stream?kind={}&path={}&entry={}&codec={}{}&device={}&token={}",
+            "{}/api/stream?kind={}&path={}&entry={}&codec={}{}{}&device={}&token={}",
             base(),
             url_encode(&entry.kind),
             url_encode(&entry.path),
@@ -3848,6 +3865,7 @@ fn App() -> impl IntoView {
                 .filter(|fragment| !fragment.is_empty())
                 .map(|fragment| format!("&fragment={}", url_encode(fragment)))
                 .unwrap_or_default(),
+            synth.unwrap_or_default(),
             url_encode(&device_id()),
             // The audio element cannot send the Authorization header.
             url_encode(&token.get()),
@@ -7983,7 +8001,7 @@ fn App() -> impl IntoView {
                                 </For>
                             </select>
                         </label>
-                        <p class="hint">"Used the next time a MIDI file streams. The SF2 and ROM engines need the assets the desktop's Preferences sets."</p>
+                        <p class="hint">"Changing this reloads the current MIDI track. The SF2 and ROM engines need the assets the desktop's Preferences sets."</p>
                     </Show>
                     <label class="check">
                         <input

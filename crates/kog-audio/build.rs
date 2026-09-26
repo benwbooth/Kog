@@ -1500,8 +1500,15 @@ fn link_psf2_archives(root: &Path, ios: bool) {
         "lzma",
     ];
     for name in archives {
+        // Play!'s bundled zstd builds a distinct static archive on MSVC when
+        // its shared and static targets are both enabled.
+        let link_name = if windows && name == "zstd" {
+            "zstd_static"
+        } else {
+            name
+        };
         let filename = if windows {
-            format!("{name}.lib")
+            format!("{link_name}.lib")
         } else {
             format!("lib{name}.a")
         };
@@ -1522,7 +1529,7 @@ fn link_psf2_archives(root: &Path, ios: bool) {
             "cargo:rustc-link-search=native={}",
             archive.parent().unwrap().display()
         );
-        println!("cargo:rustc-link-lib=static={name}");
+        println!("cargo:rustc-link-lib=static={link_name}");
     }
     // CMake either finds the system bzip2, or builds its bundled copy.
     if !ios {

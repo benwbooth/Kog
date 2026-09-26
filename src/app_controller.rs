@@ -6593,6 +6593,21 @@ impl qobject::AppController {
                 .set_midi_status(qstring(format!("Unknown MIDI engine: {value}")));
             return;
         };
+        let current_engine = self.as_ref().rust().decoder_settings.midi_engine();
+        let resume = if current_engine != engine {
+            let model = self.as_ref();
+            let rust = model.rust();
+            let index = usize::try_from(rust.current_index).ok();
+            index.and_then(|index| {
+                rust.tracks.get(index).and_then(|track| {
+                    (rust.playback.state() != PlaybackState::Stopped
+                        && track.source.uses_selected_midi_engine())
+                    .then(|| (index, rust.playback.position(), rust.playback.state()))
+                })
+            })
+        } else {
+            None
+        };
         if let Err(error) = AppSettings::save_midi_engine(engine) {
             self.as_mut().set_midi_status(qstring(error));
             return;
@@ -6618,6 +6633,25 @@ impl qobject::AppController {
             MidiEngine::Sc55 => "MIDI engine changed to Nuked SC-55",
             MidiEngine::Mt32 => "MIDI engine changed to Munt MT-32/CM-32L",
         }));
+        if let Some((index, position, state)) = resume {
+            self.as_mut().play_source_index(index);
+            if self.as_ref().rust().playback.state() != PlaybackState::Stopped {
+                if !position.is_zero() {
+                    if let Err(error) = self.as_ref().rust().playback.seek(position) {
+                        self.as_mut().set_status(qstring(format!(
+                            "MIDI synth changed; restoring position failed: {error}"
+                        )));
+                    } else {
+                        self.as_mut()
+                            .set_position_seconds(position.as_secs_f64());
+                    }
+                }
+                if state == PlaybackState::Paused {
+                    self.as_mut().rust_mut().playback.play_pause();
+                }
+                self.as_mut().sync_playback_state();
+            }
+        }
     }
 
     pub fn select_opening_files_behavior(mut self: Pin<&mut Self>, behavior: QString) {
