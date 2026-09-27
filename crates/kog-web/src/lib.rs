@@ -2341,10 +2341,14 @@ fn App() -> impl IntoView {
     let (media_duration, set_media_duration) = signal(Option::<f64>::None);
     let (shuffle, set_shuffle) = signal(restored.shuffle);
     let (repeat_mode, set_repeat_mode) = signal(restored.repeat);
-    // Random Radio: the server owns the shuffled round; the web shows its
-    // window and plays it. `radio_busy` guards the async window top-up.
+    // Random Radio: the server owns the shuffled round; this browser keeps
+    // its own ready buffer. `radio_busy` serializes incremental requests.
     let (radio_on, set_radio_on) = signal(restored.radio_on);
     let (radio_busy, set_radio_busy) = signal(false);
+    // A press during a refill remains pending until the first pick arrives.
+    let (radio_waiting, set_radio_waiting) = signal(false);
+    // Stop automatic retries after an error or a barren round; Play/Next retries.
+    let (radio_refill_stopped, set_radio_refill_stopped) = signal(false);
     // Discard responses started under an earlier tree root. Their network
     // requests cannot be cancelled once the server is probing a large file.
     let (radio_generation, set_radio_generation) = signal(0_u64);
@@ -2605,12 +2609,13 @@ fn App() -> impl IntoView {
         set_radio_on.set(enabled);
         if !enabled {
             set_radio_pool.set(Vec::new());
+            set_radio_waiting.set(false);
             return;
         }
-        let entries = radio_entries(value);
-        if entries.is_empty() {
-            return;
-        }
+        // A restored server snapshot may include the last song already queued.
+        let mut entries = radio_entries(value);
+        entries.retain(|entry| !queue.get_untracked().iter()
+            .any(|queued| entry_star_locator(queued) == entry_star_locator(entry)));
         // Radio is a playback mode: repeat and shuffle would fight the round,
         // just as the desktop forces repeat off when radio is enabled.
         set_repeat_mode.set(Repeat::Off);
@@ -2630,7 +2635,7 @@ fn App() -> impl IntoView {
         let radio_scope = radio_scope.clone();
         move || {
             let root = radio_scope();
-            if root.is_empty() { String::new() } else { format!("?root={}", url_encode(&root)) }
+            if root.is_empty() { String::new() } else { format!("?incremental=true&root={}", url_encode(&root)) }
         }
     };
 
@@ -2642,6 +2647,8 @@ fn App() -> impl IntoView {
         move || {
             let generation = radio_generation.get_untracked();
             let radio_generation = radio_generation.clone();
+            set_radio_busy.set(true);
+            set_radio_refill_stopped.set(false);
             leptos::task::spawn_local(async move {
                 let result = get_json(format!("/api/radio{}", radio_root())).await;
                 if radio_generation.get_untracked() != generation {
@@ -2649,8 +2656,13 @@ fn App() -> impl IntoView {
                 }
                 match result {
                     Ok(value) => apply_radio(&value),
-                    Err(error) => set_message.set(error),
+                    Err(error) => {
+                        set_radio_refill_stopped.set(true);
+                        set_radio_waiting.set(false);
+                        set_message.set(error);
+                    }
                 }
+                set_radio_busy.set(false);
             });
         }
     };
@@ -2665,9 +2677,11 @@ fn App() -> impl IntoView {
             if root.is_empty() {
                 return;
             }
-            // Flip at once: building the first round can keep the server busy
-            // for a long while on a huge library, and a toggle that waits for
-            // that reads as broken. The response still lands here and wins.
+            set_radio_generation.update(|generation| *generation = generation.wrapping_add(1));
+            set_radio_busy.set(true);
+            set_radio_waiting.set(false);
+            set_radio_refill_stopped.set(false);
+            set_radio_pool.set(Vec::new());
             set_radio_on.set(enabled);
             let url = format!("{}/api/radio/enabled{root}", base());
             let header = auth().header();
@@ -2676,11 +2690,17 @@ fn App() -> impl IntoView {
             let radio_generation = radio_generation.clone();
             leptos::task::spawn_local(async move {
                 let body = serde_json::json!({ "enabled": enabled });
-                match post_json(url, header, body).await {
-                    Ok(value) if radio_generation.get_untracked() == generation => apply_radio(&value),
-                    Err(error) if radio_generation.get_untracked() == generation => set_message.set(error),
-                    _ => {}
+                let result = post_json(url, header, body).await;
+                if radio_generation.get_untracked() != generation { return; }
+                match result {
+                    Ok(value) => apply_radio(&value),
+                    Err(error) => {
+                        set_radio_refill_stopped.set(true);
+                        set_radio_waiting.set(false);
+                        set_message.set(error);
+                    }
                 }
+                set_radio_busy.set(false);
             });
         }
     };
@@ -2694,17 +2714,27 @@ fn App() -> impl IntoView {
             if root.is_empty() {
                 return;
             }
+            set_radio_generation.update(|generation| *generation = generation.wrapping_add(1));
+            set_radio_busy.set(true);
+            set_radio_refill_stopped.set(false);
+            set_radio_pool.set(Vec::new());
             let url = format!("{}/api/radio/reshuffle{root}", base());
             let header = auth().header();
             let apply_radio = apply_radio.clone();
             let generation = radio_generation.get_untracked();
             let radio_generation = radio_generation.clone();
             leptos::task::spawn_local(async move {
-                match post_json(url, header, serde_json::json!({})).await {
-                    Ok(value) if radio_generation.get_untracked() == generation => apply_radio(&value),
-                    Err(error) if radio_generation.get_untracked() == generation => set_message.set(error),
-                    _ => {}
+                let result = post_json(url, header, serde_json::json!({})).await;
+                if radio_generation.get_untracked() != generation { return; }
+                match result {
+                    Ok(value) => apply_radio(&value),
+                    Err(error) => {
+                        set_radio_refill_stopped.set(true);
+                        set_radio_waiting.set(false);
+                        set_message.set(error);
+                    }
                 }
+                set_radio_busy.set(false);
             });
         }
     };
@@ -3357,6 +3387,8 @@ fn App() -> impl IntoView {
             set_radio_generation.set(radio_generation.get_untracked().wrapping_add(1));
             set_radio_pool.set(Vec::new());
             set_radio_busy.set(false);
+            set_radio_waiting.set(false);
+            set_radio_refill_stopped.set(false);
             if scope.is_some() {
                 load_radio();
             }
@@ -4282,6 +4314,7 @@ fn App() -> impl IntoView {
     });
 
     let jump = move |index: usize| {
+        set_radio_waiting.set(false);
         set_current.set(index);
         set_position.set(0.0);
         set_media_duration.set(None);
@@ -4377,32 +4410,21 @@ fn App() -> impl IntoView {
         });
     });
 
-    // The desktop's shift_radio_track: move one staged radio track to the end
-    // of the playlist and play it. Skips picks already queued so a window
-    // refetched after a reload never duplicates restored rows.
+    // Move one ready pick into this browser's queue. Repeats from a new
+    // round are valid, including libraries smaller than the ten-track buffer.
     let shift_radio = {
         let jump = jump.clone();
         let radio_scope = radio_scope.clone();
         move || -> bool {
             let mut pool = radio_pool.get_untracked();
             let scope = radio_scope();
-            if scope.is_empty() {
-                return false;
-            }
+            if scope.is_empty() { return false; }
             pool.retain(|entry| is_under(&entry.path, &scope));
-            let Some(pos) = pool
-                .iter()
-                .position(|entry| {
-                    !queue
-                        .get_untracked()
-                        .iter()
-                        .any(|queued| entry_star_locator(queued) == entry_star_locator(entry))
-                })
-            else {
+            if pool.is_empty() {
                 set_radio_pool.set(pool);
                 return false;
-            };
-            let entry = pool.remove(pos);
+            }
+            let entry = pool.remove(0);
             set_radio_pool.set(pool);
             let index = queue.get_untracked().len();
             set_queue.update(|items| items.push(entry));
@@ -4411,120 +4433,88 @@ fn App() -> impl IntoView {
         }
     };
 
-    // Radio advances one track at a time: shift from the staged pool, and
-    // only when it runs dry ask the server for the next window. A barren
-    // round reshuffles so radio never stalls silently.
-
-    // Pull a fresh window in the background: building one takes the server a
-    // while on a huge library, and pressing next must never wait on that.
-    // Runs only when radio is on and the staged pool is running low.
+    // Use the same one-pick requests as the TUI. Each response becomes usable
+    // immediately; preparing later tracks never holds up an earlier pick.
     let refill_radio_pool = {
-        let radio_busy = radio_busy.clone();
-        let set_radio_pool = set_radio_pool.clone();
-        let set_radio_busy = set_radio_busy.clone();
-        let reshuffle_radio = reshuffle_radio.clone();
         let radio_root = radio_root.clone();
-        let radio_generation = radio_generation.clone();
         move || {
-            if radio_busy.get_untracked() {
+            if radio_busy.get_untracked() || !radio_on.get_untracked() {
                 return;
             }
             let root = radio_root();
-            if root.is_empty() {
-                return;
-            }
+            if root.is_empty() { return; }
             set_radio_busy.set(true);
+            let generation = radio_generation.get_untracked();
             let url = format!("{}/api/radio/advance{root}", base());
             let header = auth().header();
-            let set_radio_pool = set_radio_pool.clone();
-            let set_radio_busy = set_radio_busy.clone();
-            let reshuffle_radio = reshuffle_radio.clone();
-            let generation = radio_generation.get_untracked();
-            let radio_generation = radio_generation.clone();
             leptos::task::spawn_local(async move {
                 let result = post_json(url, header, serde_json::json!({})).await;
-                if radio_generation.get_untracked() != generation {
-                    return;
-                }
-                set_radio_busy.set(false);
+                if radio_generation.get_untracked() != generation { return; }
                 match result {
                     Ok(value) => {
                         let entries = radio_entries(&value);
-                        if !entries.is_empty() {
-                            set_radio_pool.set(entries);
-                        } else if value["exhausted"].as_bool().unwrap_or(true) {
-                            reshuffle_radio();
+                        if entries.is_empty() {
+                            set_radio_refill_stopped.set(true);
+                            if radio_waiting.get_untracked() {
+                                set_radio_waiting.set(false);
+                                set_message.set("Radio couldn't find a playable track in this folder".to_owned());
+                            }
+                        } else {
+                            // Preserve every ready track while topping up.
+                            set_radio_pool.update(|pool| pool.extend(entries));
                         }
                     }
-                    Err(_) => {}
+                    Err(error) => {
+                        set_radio_refill_stopped.set(true);
+                        set_radio_waiting.set(false);
+                        set_message.set(error);
+                    }
                 }
+                set_radio_busy.set(false);
             });
         }
     };
 
     let advance_radio = {
         let shift_radio = shift_radio.clone();
-        let reshuffle_radio = reshuffle_radio.clone();
         let refill_radio_pool = refill_radio_pool.clone();
-        let radio_pool = radio_pool.clone();
-        let radio_root = radio_root.clone();
-        let radio_generation = radio_generation.clone();
         move || {
-            // The staged pool serves the press at once; a fresh window is
-            // fetched in the background once it starts running low.
-            if shift_radio() {
-                if radio_on.get() && radio_pool.get_untracked().len() < 30 {
-                    refill_radio_pool();
-                }
-                return;
+            if shift_radio() { return; }
+            set_radio_waiting.set(true);
+            set_radio_refill_stopped.set(false);
+            // If a request is already running, the effect below fulfills the
+            // pending press as soon as its first track arrives.
+            refill_radio_pool();
+        }
+    };
+
+    {
+        let shift_radio = shift_radio.clone();
+        let refill_radio_pool = refill_radio_pool.clone();
+        Effect::new(move |_| {
+            if !connected.get() || !radio_on.get() { return; }
+            let waiting = radio_waiting.get();
+            let ready = radio_pool.get().len();
+            let busy = radio_busy.get();
+            let refill_stopped = radio_refill_stopped.get();
+            if waiting && ready > 0 {
+                shift_radio();
             }
-            if radio_busy.get_untracked() {
-                return;
+            if !busy && !refill_stopped && ready < 10 {
+                refill_radio_pool();
             }
-            let root = radio_root();
-            if root.is_empty() {
-                return;
-            }
-            set_radio_busy.set(true);
-            let url = format!("{}/api/radio/advance{root}", base());
-            let header = auth().header();
-            let shift_radio = shift_radio.clone();
-            let reshuffle_radio = reshuffle_radio.clone();
-            let set_radio_busy = set_radio_busy.clone();
-            let set_radio_pool = set_radio_pool.clone();
-            let refill_radio_pool = refill_radio_pool.clone();
-            let radio_on = radio_on.clone();
-            let generation = radio_generation.get_untracked();
-            let radio_generation = radio_generation.clone();
-            leptos::task::spawn_local(async move {
-                let result = post_json(url, header, serde_json::json!({})).await;
-                if radio_generation.get_untracked() != generation {
-                    return;
-                }
-                set_radio_busy.set(false);
-                match result {
-                    Ok(value) => {
-                        let entries = radio_entries(&value);
-                        if entries.is_empty() {
-                            if value["exhausted"].as_bool().unwrap_or(true) {
-                                reshuffle_radio();
-                            }
-                            return;
-                        }
-                        set_radio_pool.set(entries);
-                        if !shift_radio() {
-                            set_radio_pool.set(Vec::new());
-                            reshuffle_radio();
-                        }
-                        if radio_on.get()
-                            && radio_pool.get_untracked().len() < 30
-                        {
-                            refill_radio_pool();
-                        }
-                    }
-                    Err(error) => set_message.set(error),
-                }
-            });
+        });
+    }
+
+    let toggle_play = move || {
+        if radio_waiting.get_untracked() {
+            set_radio_waiting.set(false);
+            set_playing.set(false);
+        } else if queue.get_untracked().is_empty() {
+            if radio_on.get_untracked() { advance_radio(); }
+        } else {
+            set_playing.update(|value| *value = !*value);
+            set_stopped.set(false);
         }
     };
 
@@ -4655,7 +4645,9 @@ fn App() -> impl IntoView {
 
     if let Some(session) = media_session() {
         media_session_action(&session, "play", move |_| {
-            if !queue.get_untracked().is_empty() {
+            if queue.get_untracked().is_empty() && radio_on.get_untracked() {
+                advance_radio();
+            } else if !queue.get_untracked().is_empty() {
                 set_stopped.set(false);
                 set_playing.set(true);
                 // Keep play() inside the media-key callback. On mobile the
@@ -4666,6 +4658,7 @@ fn App() -> impl IntoView {
             }
         });
         media_session_action(&session, "pause", move |_| {
+            set_radio_waiting.set(false);
             set_playing.set(false);
             if let Some(audio) = audio_ref.get() {
                 let _ = audio.pause();
@@ -4673,6 +4666,7 @@ fn App() -> impl IntoView {
         });
         media_session_action(&session, "stop", move |_| {
             set_playing.set(false);
+            set_radio_waiting.set(false);
             set_stopped.set(true);
             set_position.set(0.0);
             if let Some(audio) = audio_ref.get() {
@@ -5496,6 +5490,7 @@ fn App() -> impl IntoView {
         set_current.set(0);
         set_position.set(0.0);
         set_media_duration.set(None);
+        set_radio_waiting.set(false);
         set_stopped.set(true);
         set_playing.set(false);
         set_selected.set(HashSet::new());
@@ -7580,30 +7575,22 @@ fn App() -> impl IntoView {
                         ></button>
                         <button
                             class="play"
-                            title="Play or pause"
+                            title=move || if radio_waiting.get() { "Preparing next radio track — click to cancel" } else { "Play or pause" }
+                            aria-busy=move || radio_waiting.get().to_string()
                             disabled=move || queue.get().is_empty() && !radio_on.get()
-                            on:click=move |_| {
-                                if queue.get().is_empty() {
-                                    // Radio kickstart: nothing queued yet.
-                                    if radio_on.get() {
-                                        advance_radio();
-                                    }
-                                } else {
-                                    set_playing.update(|value| *value = !*value);
-                                    set_stopped.set(false);
-                                }
-                            }
+                            on:click=move |_| toggle_play()
                         >
                             <span
                                 class="glyph-icon"
-                                inner_html=move || if playing.get() { icons::PAUSE } else { icons::PLAY }
+                                inner_html=move || if playing.get() || radio_waiting.get() { icons::PAUSE } else { icons::PLAY }
                             ></span>
                         </button>
                         <button
                             title="Stop"
-                            disabled=move || queue.get().is_empty()
+                            disabled=move || queue.get().is_empty() && !radio_waiting.get()
                             on:click=move |_| {
                                 set_playing.set(false);
+                                set_radio_waiting.set(false);
                                 set_stopped.set(true);
                                 set_position.set(0.0);
                                 if let Some(audio) = audio_ref.get() {
@@ -7838,10 +7825,13 @@ fn App() -> impl IntoView {
                         } else if let Some(next) = advance_after_track() {
                             jump(next);
                         } else {
-                            // The queue ran out: the desktop calls this
-                            // Stopped, not Paused.
-                            set_stopped.set(true);
-                            set_playing.set(false);
+                            // Radio either started the next ready track or
+                            // retained a pending advance; do not stop it here.
+                            if !radio_on.get_untracked() {
+                                set_radio_waiting.set(false);
+                                set_stopped.set(true);
+                                set_playing.set(false);
+                            }
                         }
                     }
                 ></audio>
@@ -8847,10 +8837,9 @@ fn App() -> impl IntoView {
                     </button>
                     <button
                         class="menu-item"
-                        disabled=move || queue.get().is_empty()
+                        disabled=move || queue.get().is_empty() && !radio_on.get()
                         on:click=move |_| {
-                            set_playing.update(|playing| *playing = !*playing);
-                            set_stopped.set(false);
+                            toggle_play();
                             set_menu_open.set(false);
                         }
                     >
@@ -8858,9 +8847,10 @@ fn App() -> impl IntoView {
                     </button>
                     <button
                         class="menu-item"
-                        disabled=move || queue.get().is_empty()
+                        disabled=move || queue.get().is_empty() && !radio_waiting.get()
                         on:click=move |_| {
                             set_playing.set(false);
+                            set_radio_waiting.set(false);
                             set_stopped.set(true);
                             set_position.set(0.0);
                             if let Some(audio) = audio_ref.get() {

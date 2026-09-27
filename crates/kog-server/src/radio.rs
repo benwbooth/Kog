@@ -42,10 +42,9 @@ use crate::routes::{AppState, bad_request};
 /// The desktop round file, by name, under the platform config directory.
 const ROUND_FILE: &str = "radio-round.json";
 
-/// How many picks one round window carries. The desktop stages a small hidden
-/// buffer; the web pane shows a window and asks for more when it runs out.
-/// Big enough to browse, small enough that a request stays a quick filesystem
-/// walk.
+/// Legacy batch size for clients that do not request incremental delivery.
+/// Interactive clients request one pick at a time and fill a ready buffer;
+/// proving this entire window before responding can take a long time.
 const WINDOW: usize = 60;
 
 /// Consecutive unplayable picks one window tolerates before giving up. Mirrors
@@ -174,12 +173,22 @@ impl Radio {
 
     /// Current state, materializing the first round window when radio is on.
     pub fn snapshot(&self, library_root: Option<&Path>, scope: Option<&Path>) -> RadioStatus {
+        self.snapshot_with_target(library_root, scope, WINDOW)
+    }
+
+    /// Resume with one proved pick so interactive clients can play while
+    /// they fill their ready buffer in the background.
+    pub fn snapshot_incremental(&self, library_root: Option<&Path>, scope: Option<&Path>) -> RadioStatus {
+        self.snapshot_with_target(library_root, scope, 1)
+    }
+
+    fn snapshot_with_target(&self, library_root: Option<&Path>, scope: Option<&Path>, target: usize) -> RadioStatus {
         let mut inner = lock(&self.inner);
         Self::ensure_loaded(&mut inner, library_root);
         Self::reroot(&mut inner, scope);
         if inner.enabled && inner.round.is_none() {
             Self::open_round(&mut inner);
-            Self::generate(&mut inner, WINDOW);
+            Self::generate(&mut inner, target);
         }
         status_of(&inner)
     }
@@ -718,7 +727,7 @@ pub async fn status(State(state): State<AppState>, query: Query<RootQuery>) -> R
         Err(error) => return bad_request(&error),
     };
     let root = scope.clone().or_else(|| state.library.root());
-    blocking(move || radio.snapshot(root.as_deref(), scope.as_deref())).await
+    blocking(move || if query.incremental { radio.snapshot_incremental(root.as_deref(), scope.as_deref()) } else { radio.snapshot(root.as_deref(), scope.as_deref()) }).await
 }
 
 /// `POST /api/radio/enabled` — turn random radio on or off.
@@ -1200,6 +1209,21 @@ mod tests {
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
         (status, json)
+    }
+
+    #[tokio::test]
+    async fn incremental_snapshot_reroots_without_building_a_full_window() {
+        let (library, root, save) = fixture(30);
+        let state = state_with_radio(library, root.clone(), save);
+        state.radio.set_enabled_incremental(true, Some(&root), None);
+        let scope = root.join("One");
+        let path = format!("/api/radio?incremental=true&root={}", scope.display());
+        let (status, first) = request(state.clone(), "GET", &path, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(first["entries"].as_array().unwrap().len(), 1);
+        assert!(first["entries"][0]["path"].as_str().unwrap().starts_with(scope.to_str().unwrap()));
+        let (_, again) = request(state, "GET", &path, None).await;
+        assert_eq!(first, again, "reading the snapshot must not consume more picks");
     }
 
     #[tokio::test]
