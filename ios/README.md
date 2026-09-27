@@ -19,8 +19,12 @@ downloads. Branch builds are available as the `kog-ios-unsigned` artifact.
 
 ## Build on Apple silicon
 
-Install Xcode, accept its license, and finish its first-launch components. The
-Mac needs the macOS version required by its Xcode release. Then:
+Install **Xcode 26.3 or newer**, accept its license, and finish its first-launch
+components. CI uses Xcode 26.3 explicitly; Xcode 16's older MediaToolbox Swift
+bindings cannot compile the current visualizer. If several Xcode versions are
+installed, select the intended one under **Xcode → Settings → Locations →
+Command Line Tools**, or set `DEVELOPER_DIR` to its `Contents/Developer` directory.
+The Mac needs the macOS version required by its Xcode release. Then:
 
 ```sh
 brew install cmake ninja pkg-config xcodegen imagemagick
