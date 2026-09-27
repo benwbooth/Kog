@@ -13,6 +13,7 @@ archives, the Android development APK, and the unsigned iOS IPA.
 3. Update Android's `versionName` and increment `versionCode`; update iOS's
    `CFBundleShortVersionString` and increment `CFBundleVersion`.
 4. Add the version and date to `packaging/linux/org.kog.player.metainfo.xml`.
+   Update the pinned installation examples in `README.md` and `packaging/README.md`.
 5. Refresh both lockfiles with Cargo, without changing dependency versions:
 
    ```sh
