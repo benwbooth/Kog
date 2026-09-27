@@ -149,7 +149,6 @@ export CMAKE_TOOLCHAIN_FILE="$build/ios.toolchain.cmake"
 export CMAKE_GENERATOR=Ninja
 export PKG_CONFIG_LIBDIR="$prefix/lib/pkgconfig"
 export PKG_CONFIG_ALLOW_CROSS=1
-export LIBARCHIVE_STATIC=1
 export CARGO_BUILD_JOBS="$jobs"
 export SDKROOT="$sdk"
 target_variable=${target//-/_}

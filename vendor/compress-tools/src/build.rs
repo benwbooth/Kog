@@ -63,9 +63,17 @@ fn find_libarchive() {
         probe_static("libxml-2.0");
     }
 
+    // Mobile builds supply static libarchive plus its compression archives.
+    // Explicit .statik(false) suppresses pkg-config's Libs.private, even when
+    // LIBARCHIVE_STATIC is set, leaving the final JNI link without LZMA/LZ4/etc.
+    let mobile = matches!(
+        std::env::var("CARGO_CFG_TARGET_OS").as_deref(),
+        Ok("ios" | "android")
+    );
+    let static_archive = cfg!(feature = "static") || mobile;
     pkg_config::Config::new()
         .atleast_version("3.2.0")
-        .statik(cfg!(feature = "static"))
+        .statik(static_archive)
         .probe("libarchive")
         .expect("Unable to find libarchive");
 
