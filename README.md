@@ -64,10 +64,14 @@ installation and remaining limitations.
 
 ## Get started
 
-[Download a release](https://github.com/benwbooth/Kog/releases/latest):
+[Download a desktop release](https://github.com/benwbooth/Kog/releases/latest):
 **Windows** MSI or portable ZIP · **Apple Silicon Mac** DMG · **Linux** AppImage,
-portable bundle, or Flatpak. Linux and macOS also have separate **TUI** and
-**server** bundles. Development Android APKs are available from successful
+portable bundle, or Flatpak.
+
+For the newest features, download artifacts from a successful
+[desktop build](https://github.com/benwbooth/Kog/actions/workflows/packages.yml).
+These also include separate Linux/macOS **TUI** and **server** bundles.
+Development Android APKs are available from successful
 [Android builds](https://github.com/benwbooth/Kog/actions/workflows/android.yml).
 
 Open Kog, choose your music folder, and add songs to the playlist. In a terminal:

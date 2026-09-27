@@ -6,7 +6,8 @@ Launch Kog from your desktop to open Qt. On Linux and macOS, launching `kog`
 in an interactive terminal opens the terminal player. Override this with
 `--gui`, `--tui`, or `--server`. Windows currently supports Qt and server mode.
 Separate `kog-tui` and `kog-server` packages are available for Linux and Apple
-Silicon; keep each extracted bundle together with its libraries.
+Silicon in successful [build artifacts](https://github.com/benwbooth/Kog/actions/workflows/packages.yml);
+keep each extracted bundle together with its libraries.
 
 ## Add your music
 
@@ -95,4 +96,3 @@ KOG_MIDI_ENGINE=rustysynth-sf2|opl3windows|nuked-sc55|munt-mt32
 Organya playback needs a user-owned `soundbank.wdb`, or a `wavetable.dat` and
 `drums.dat` pair. Put the files beside the `.org` file, in Kog's platform data
 directory, or set `KOG_ORGANYA_SOUNDBANK`.
-
