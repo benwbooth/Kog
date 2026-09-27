@@ -32,6 +32,14 @@ static inline bool kog_embedded_stream_cancelled(FILE* output)
 #ifdef _WIN32
 #include <fcntl.h>
 #include <io.h>
+// This adapter only needs kernel handles. Pulling in the optional RPC headers
+// also defines a global `boolean`, which conflicts with the ares core's type.
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 static FILE* kog_embedded_stream_open(intptr_t descriptor)
 {
