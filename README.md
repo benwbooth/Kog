@@ -68,9 +68,11 @@ installation and remaining limitations.
 **Windows** MSI or portable ZIP · **Apple Silicon Mac** DMG · **Linux** AppImage,
 portable bundle, or Flatpak.
 
+Separate **TUI** and **headless server** bundles are also available for Linux
+and macOS on the release page.
+
 For the newest features, download artifacts from a successful
 [desktop build](https://github.com/benwbooth/Kog/actions/workflows/packages.yml).
-These also include separate Linux/macOS **TUI** and **server** bundles.
 Development Android APKs are available from successful
 [Android builds](https://github.com/benwbooth/Kog/actions/workflows/android.yml).
 

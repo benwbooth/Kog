@@ -714,11 +714,11 @@ dependencies = [
 
 [[package]]
 name = "kog-playback-policy"
-version = "0.9.41"
+version = "0.9.42"
 
 [[package]]
 name = "kog-web"
-version = "0.9.41"
+version = "0.9.42"
 dependencies = [
  "console_error_panic_hook",
  "gloo-net 0.7.0",

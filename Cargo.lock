@@ -1591,7 +1591,7 @@ dependencies = [
 
 [[package]]
 name = "kog"
-version = "0.9.41"
+version = "0.9.42"
 dependencies = [
  "async-channel",
  "base64 0.22.1",
@@ -1630,7 +1630,7 @@ dependencies = [
 
 [[package]]
 name = "kog-android-audio"
-version = "0.9.41"
+version = "0.9.42"
 dependencies = [
  "jni",
  "kog-audio",
@@ -1638,7 +1638,7 @@ dependencies = [
 
 [[package]]
 name = "kog-audio"
-version = "0.9.41"
+version = "0.9.42"
 dependencies = [
  "async-channel",
  "cc",
@@ -1667,7 +1667,7 @@ dependencies = [
 
 [[package]]
 name = "kog-core"
-version = "0.9.41"
+version = "0.9.42"
 dependencies = [
  "async-channel",
  "chardetng",
@@ -1683,7 +1683,7 @@ dependencies = [
 
 [[package]]
 name = "kog-ios-audio"
-version = "0.9.41"
+version = "0.9.42"
 dependencies = [
  "axum",
  "kog-audio",
@@ -1698,11 +1698,11 @@ dependencies = [
 
 [[package]]
 name = "kog-playback-policy"
-version = "0.9.41"
+version = "0.9.42"
 
 [[package]]
 name = "kog-server"
-version = "0.9.41"
+version = "0.9.42"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -1734,7 +1734,7 @@ dependencies = [
 
 [[package]]
 name = "kog-terminal"
-version = "0.9.41"
+version = "0.9.42"
 dependencies = [
  "base64 0.22.1",
  "directories",

@@ -12,8 +12,8 @@ android {
         applicationId = "org.kog.player"
         minSdk = 28
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.9.41-dev"
+        versionCode = 2
+        versionName = "0.9.42-dev"
     }
 
     buildTypes {
