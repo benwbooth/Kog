@@ -943,14 +943,13 @@ fn entry_path(entry: &Entry) -> String {
     }
 }
 
-/// Hover text in the file tree treats an archive as a directory while the
-/// underlying locator keeps its separate archive and member fields.
-fn tree_tooltip_path(kind: &str, path: &str, entry: &str) -> String {
-    if kind == "archive" && !entry.is_empty() {
-        format!("{}/{}", path.trim_end_matches('/'), entry)
-    } else {
-        path.to_owned()
-    }
+/// Tree location tooltips show the basename, including on Windows servers.
+fn tree_location_name(path: &str) -> &str {
+    path.trim_end_matches(['/', '\\'])
+        .rsplit(['/', '\\'])
+        .next()
+        .filter(|name| !name.is_empty())
+        .unwrap_or(path)
 }
 
 /// The file name for the Filename column, mirroring `track_filename`: an
@@ -6251,7 +6250,7 @@ fn App() -> impl IntoView {
                                         >"↻"</button>
                                         <button
                                             class="root-path"
-                                            title=move || current_root()
+                                            title=move || tree_location_name(&current_root()).to_owned()
                                             on:click=move |_| goto_root(String::new())
                                         >{move || current_root()}</button>
                                     </div>
@@ -6353,7 +6352,7 @@ fn App() -> impl IntoView {
                                             >
                                                 <button
                                                     class="tree-row parent-row"
-                                                    title=move || format!("Go to {}", parent_path(&tree_root.get()))
+                                                    title=move || tree_location_name(&parent_path(&tree_root.get())).to_owned()
                                                     on:click={
                                                         let go_up = go_up.clone();
                                                         move |_| go_up()
@@ -6402,8 +6401,7 @@ fn App() -> impl IntoView {
                                                 let row_drag = row.clone();
                                                 let row_add = row.clone();
                                                 let row_name = row.name.clone();
-                                                let row_tooltip = tree_tooltip_path(
-                                                    &row.kind, &row.path, &row.entry);
+                                                let row_tooltip = row_name.clone();
                                                 let tree_toggle = tree_toggle.clone();
                                                 let add_row_to_playlist = add_row_to_playlist.clone();
                                                 let selected = row.path.clone();

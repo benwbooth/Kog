@@ -2622,8 +2622,7 @@ ApplicationWindow {
                                 toolTip: qsTr("Refresh file tree")
                                 onClicked: fileTreeModel.refresh_tree()
                             }
-                            // The root path is elided when the pane is narrow;
-                            // the tooltip carries all of it.
+                            // The root path is elided when the pane is narrow.
                             Label {
                                 id: treeRootLabel
                                 Layout.fillWidth: true
@@ -2641,7 +2640,7 @@ ApplicationWindow {
                                 ToolTip.visible: treeRootHover.containsMouse
                                     && text.length > 0
                                 ToolTip.delay: 600
-                                ToolTip.text: appController.directory_path
+                                ToolTip.text: fileTreeModel.display_name(appController.directory_path)
                             }
                         }
                     }
@@ -2837,7 +2836,7 @@ ApplicationWindow {
                     Accessible.name: qsTr("Go to parent folder")
                     ToolTip.visible: hovered && fileTreeModel.parent_path.length > 0
                     ToolTip.delay: 700
-                    ToolTip.text: fileTreeModel.parent_path
+                    ToolTip.text: fileTreeModel.display_name(fileTreeModel.parent_path)
                     onClicked: {
                         appController.parent_directory()
                         fileTreeModel.set_root_path_text(
@@ -2853,10 +2852,7 @@ ApplicationWindow {
                     property Item tooltipAnchor: directoryTree
                     property string tooltipText: ""
 
-                    function showRowTooltip(pointer, path) {
-                        if (!path)
-                            return
-                        const text = fileTreeModel.display_path(path)
+                    function showRowTooltip(pointer, text) {
                         if (!text)
                             return
                         tooltipOwner = null
@@ -3047,12 +3043,8 @@ ApplicationWindow {
                             z: 2
                             acceptedButtons: Qt.LeftButton | Qt.RightButton
                             hoverEnabled: true
-                            readonly property string rowPath:
-                                treeDelegate.filePath.length > 0
-                                    ? treeDelegate.filePath
-                                    : root.treePathAtRow(treeDelegate.row)
                             onEntered: directoryTree.showRowTooltip(
-                                treePointer, rowPath)
+                                treePointer, treeDelegate.fileName)
                             onExited: directoryTree.hideRowTooltip(treePointer)
                             preventStealing: true
                             scrollGestureEnabled: false

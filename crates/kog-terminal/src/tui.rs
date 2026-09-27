@@ -8386,12 +8386,17 @@ impl Ui {
             };
             if self.files_expanded {
                 let prefix = format!(" {FOLDER_ICON}  ↻  ");
+                let tooltip_location = if self.remote_active {
+                    self.remote_path.as_str()
+                } else {
+                    &location
+                };
                 register_hover_label(
                     &mut hover_labels,
                     cell_width(&prefix),
                     2,
                     sidebar.saturating_sub(cell_width(&prefix)),
-                    &location,
+                    tree_location_name(tooltip_location),
                     sidebar.saturating_sub(cell_width(&prefix)),
                 );
                 paint(
@@ -8480,7 +8485,7 @@ impl Ui {
                                     .is_some_and(|(x, row)| row == y && x < tree_width)
                                 {
                                     hover_labels.label = Some(HoverLabel {
-                                        text: path.display().to_string(),
+                                        text: tree_location_name(&path.to_string_lossy()).to_owned(),
                                     });
                                 }
                                 "  ↑  ..".to_owned()
@@ -8682,7 +8687,7 @@ impl Ui {
                                     .is_some_and(|(x, row)| row == y && x < tree_width)
                                 {
                                     hover_labels.label = Some(HoverLabel {
-                                        text: path.display().to_string(),
+                                        text: tree_location_name(&path.to_string_lossy()).to_owned(),
                                     });
                                 }
                                 "  ↑  ..".to_owned()
@@ -11118,6 +11123,14 @@ fn saved_list_label(name: &str, favorite: bool, count: usize, width: usize) -> S
 
 fn marquee_window(value: &str, width: usize, _tick: usize) -> String {
     truncate(value, width)
+}
+
+fn tree_location_name(path: &str) -> &str {
+    path.trim_end_matches(['/', '\\'])
+        .rsplit(['/', '\\'])
+        .next()
+        .filter(|name| !name.is_empty())
+        .unwrap_or(path)
 }
 
 fn register_hover_label(

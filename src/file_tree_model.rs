@@ -78,7 +78,7 @@ pub mod qobject {
         fn path_for_index(self: &FileTreeModel, index: &QModelIndex) -> QString;
 
         #[qinvokable]
-        fn display_path(self: &FileTreeModel, path: QString) -> QString;
+        fn display_name(self: &FileTreeModel, path: QString) -> QString;
 
         #[qinvokable]
         fn icon_name(self: &FileTreeModel, path: QString) -> QString;
@@ -138,8 +138,8 @@ impl qobject::FileTreeModel {
         self.file_path_super(index)
     }
 
-    pub fn display_path(&self, path: QString) -> QString {
-        QString::from(display_tree_path(&path.to_string()))
+    pub fn display_name(&self, path: QString) -> QString {
+        QString::from(display_tree_name(&path.to_string()))
     }
 
     pub fn icon_name(&self, path: QString) -> QString {
@@ -179,15 +179,19 @@ impl qobject::FileTreeModel {
     }
 }
 
-fn display_tree_path(path: &str) -> String {
-    match kog_audio::archive::tree_location(Path::new(path)) {
+fn display_tree_name(path: &str) -> String {
+    let path = match kog_audio::archive::tree_location(Path::new(path)) {
         Ok(Some(location)) => location
             .archive
             .join(location.entry)
             .to_string_lossy()
             .into_owned(),
         _ => path.to_owned(),
-    }
+    };
+    Path::new(&path)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or(path)
 }
 
 #[cfg(test)]
@@ -195,17 +199,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn archive_tooltip_uses_archive_and_member_path() {
+    fn archive_tooltip_uses_basename() {
         let archive = Path::new("/music/Sonic + Classics.zip");
         let member = "Sonic The Hedgehog/Genesis/Green Hill Zone.mid";
         let tree_url = kog_audio::archive::member_url(archive, member, false);
         assert_eq!(
-            display_tree_path(tree_url.to_str().unwrap()),
-            archive.join(member).to_string_lossy()
+            display_tree_name(tree_url.to_str().unwrap()),
+            "Green Hill Zone.mid"
         );
         assert_eq!(
-            display_tree_path("/music/Sonic + Classics.zip"),
-            "/music/Sonic + Classics.zip"
+            display_tree_name("/music/Sonic + Classics.zip"),
+            "Sonic + Classics.zip"
         );
     }
 }
