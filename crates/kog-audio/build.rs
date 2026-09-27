@@ -608,34 +608,26 @@ fn build_vgmstream() {
     }
 
     let target = std::env::var("TARGET").unwrap_or_default();
-    let mut config = cmake::Config::new(source);
-    config
-        .profile("Release")
-        .build_target("libvgmstream")
-        .define("BUILD_CLI", "OFF")
-        .define("BUILD_V123", "OFF")
-        .define("BUILD_AUDACIOUS", "OFF")
-        .define("BUILD_SHARED_LIBS", "OFF")
-        .define("USE_MPEG", "OFF")
-        .define("USE_VORBIS", "OFF")
-        .define("USE_FFMPEG", "OFF")
-        .define("USE_G7221", "ON")
-        .define("USE_G719", "OFF")
-        .define("USE_ATRAC9", "OFF")
-        .define("USE_CELT", "OFF")
-        .define("USE_SPEEX", "OFF");
-    if target.contains("windows") {
-        config
-            .define("BUILD_WINAMP", "OFF")
-            .define("BUILD_XMPLAY", "OFF")
-            .define("BUILD_FB2K", "OFF");
-        if target.contains("msvc") {
-            config.cflag("/DVGM_STDIO_UNICODE");
-        } else {
-            config.cflag("-DVGM_STDIO_UNICODE");
-        }
+    let mut includes = Vec::new();
+    for library in ["libavformat", "libavcodec", "libavutil", "libswresample"] {
+        let metadata = pkg_config::Config::new()
+            .cargo_metadata(false)
+            .probe(library)
+            .expect("vgmstream uses Kog's existing FFmpeg libraries");
+        includes.extend(metadata.include_paths);
     }
-    let output = config.build();
+    includes.sort();
+    includes.dedup();
+    let include_paths = includes
+        .iter()
+        .map(|path| plain_absolute(path.clone()).to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join(";");
+    let output = cmake::Config::new("../../native/vgmstream-kog")
+        .profile("Release")
+        .define("KOG_FFMPEG_INCLUDE_DIRS", include_paths)
+        .define("CMAKE_INSTALL_LIBDIR", "lib")
+        .build();
 
     cc::Build::new()
         .std("c11")
@@ -644,18 +636,31 @@ fn build_vgmstream() {
         .warnings(false)
         .compile("kog_vgmstream_bridge");
 
-    println!(
-        "cargo:rustc-link-search=native={}/build/src",
-        output.display()
-    );
-    println!(
-        "cargo:rustc-link-search=native={}/build/src/Release",
-        output.display()
-    );
-    if target.contains("msvc") {
-        println!("cargo:rustc-link-lib=static=libvgmstream");
-    } else {
-        println!("cargo:rustc-link-lib=static=vgmstream");
+    println!("cargo:rustc-link-search=native={}/lib", output.display());
+    for name in [
+        "kog_vgmstream",
+        "mpg123",
+        "vorbisfile",
+        "vorbis",
+        "ogg",
+        "kog_atrac9",
+        "kog_speex",
+        "kog_celt0061",
+        "kog_celt0110",
+    ] {
+        println!("cargo:rustc-link-lib=static={name}");
+    }
+    for name in [
+        "vgmstream-kog",
+        "mpg123",
+        "ogg",
+        "vorbis",
+        "libatrac9",
+        "speex",
+        "celt-0061",
+        "celt-0110",
+    ] {
+        watch_native(&format!("../../native/{name}"));
     }
     if !target.contains("windows") {
         println!("cargo:rustc-link-lib=m");

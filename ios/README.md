@@ -82,3 +82,13 @@ Server playback uses Kog's stream URL with no authentication or a bearer token.
 For Basic authentication the player supplies credentials through AVFoundation's
 resource loader challenge delegate. Playback with that mode still needs an
 on-device test.
+
+### Bundled codec coverage
+
+Local playback links the shared `kog-audio` decoder registry, including
+vgmstream's FFmpeg, MPEG, Vorbis, ATRAC9, CELT and Speex integrations. The
+mobile archive library includes LZMA/LZMA2 (7z), XZ, bzip2, Zstandard and LZ4.
+These are target-native libraries; no decoder executables are launched.
+G.719 remains excluded pending clear redistribution terms for its upstream
+reference decoder. Roland ROMs, selected SoundFonts and mini-format companion
+files remain user-supplied. See `docs/FORMAT_PARITY.md` for compatibility limits.

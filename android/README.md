@@ -61,3 +61,13 @@ filesystem path. Companion-file formats currently need more work: only the
 selected file is copied, so external sample banks or related miniPSF files may
 not be available. Opening a local archive plays its first expanded track; the
 Android library does not yet show individual archive members or subsongs.
+
+### Bundled codec coverage
+
+Local playback links the shared `kog-audio` decoder registry, including
+vgmstream's FFmpeg, MPEG, Vorbis, ATRAC9, CELT and Speex integrations. The
+mobile archive library includes LZMA/LZMA2 (7z), XZ, bzip2, Zstandard and LZ4.
+These are target-native libraries; no decoder executables are launched.
+G.719 remains excluded pending clear redistribution terms for its upstream
+reference decoder. Roland ROMs, selected SoundFonts and mini-format companion
+files remain user-supplied. See `docs/FORMAT_PARITY.md` for compatibility limits.

@@ -70,3 +70,33 @@
 [submodule "native/webamp"]
 	path = native/webamp
 	url = https://github.com/captbaritone/webamp.git
+[submodule "native/ogg"]
+	path = native/ogg
+	url = https://github.com/xiph/ogg.git
+[submodule "native/vorbis"]
+	path = native/vorbis
+	url = https://github.com/xiph/vorbis.git
+[submodule "native/mpg123"]
+	path = native/mpg123
+	url = https://github.com/madebr/mpg123.git
+[submodule "native/speex"]
+	path = native/speex
+	url = https://github.com/xiph/speex.git
+[submodule "native/libatrac9"]
+	path = native/libatrac9
+	url = https://github.com/Thealexbarney/LibAtrac9.git
+[submodule "native/celt-0061"]
+	path = native/celt-0061
+	url = https://gitlab.xiph.org/xiph/celt.git
+[submodule "native/celt-0110"]
+	path = native/celt-0110
+	url = https://gitlab.xiph.org/xiph/celt.git
+[submodule "native/xz"]
+	path = native/xz
+	url = https://github.com/tukaani-project/xz.git
+[submodule "native/lz4"]
+	path = native/lz4
+	url = https://github.com/lz4/lz4.git
+[submodule "native/bzip2"]
+	path = native/bzip2
+	url = https://github.com/libarchive/bzip2.git

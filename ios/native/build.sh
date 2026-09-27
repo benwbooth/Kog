@@ -68,23 +68,8 @@ Libs: -lz
 Cflags: -I\${includedir}
 EOF
 
-if [[ ! -d "$build/libarchive" ]]; then
-  git clone -q --depth 1 --branch v3.8.8 https://github.com/libarchive/libarchive.git "$build/libarchive"
-fi
-if [[ ! -f "$prefix/lib/libarchive.a" ]]; then
-  cmake -S "$build/libarchive" -B "$build/libarchive-build" -G Ninja \
-    -DCMAKE_TOOLCHAIN_FILE="$build/ios.toolchain.cmake" \
-    -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$prefix" \
-    -DBUILD_SHARED_LIBS=OFF -DENABLE_TEST=OFF -DENABLE_TAR=OFF \
-    -DENABLE_CPIO=OFF -DENABLE_CAT=OFF -DENABLE_UNZIP=OFF \
-    -DENABLE_OPENSSL=OFF -DENABLE_LIBB2=OFF -DENABLE_LZ4=OFF \
-    -DENABLE_LZMA=OFF -DENABLE_ZSTD=OFF -DENABLE_BZip2=OFF \
-    -DENABLE_LIBXML2=OFF -DENABLE_EXPAT=OFF -DENABLE_PCREPOSIX=OFF \
-    -DENABLE_PCRE2POSIX=OFF -DENABLE_ICONV=OFF -DENABLE_XATTR=OFF \
-    -DENABLE_ACL=OFF -DENABLE_WERROR=OFF
-  cmake --build "$build/libarchive-build" --parallel "$jobs"
-  cmake --install "$build/libarchive-build"
-fi
+bash "$repo/native/build-mobile-archive.sh" "$build" "$prefix" "${NATIVE_JOBS:-8}" \
+    -DCMAKE_TOOLCHAIN_FILE="$build/ios.toolchain.cmake"
 
 if [[ ! -d "$build/ffmpeg-8.1.2" ]]; then
   curl --fail --location --silent --show-error https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz \
@@ -164,6 +149,7 @@ export CMAKE_TOOLCHAIN_FILE="$build/ios.toolchain.cmake"
 export CMAKE_GENERATOR=Ninja
 export PKG_CONFIG_LIBDIR="$prefix/lib/pkgconfig"
 export PKG_CONFIG_ALLOW_CROSS=1
+export LIBARCHIVE_STATIC=1
 export CARGO_BUILD_JOBS="$jobs"
 export SDKROOT="$sdk"
 target_variable=${target//-/_}

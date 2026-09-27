@@ -32,7 +32,7 @@ impl DecoderBackend for VgmstreamBackend {
     }
 
     fn display_name(&self) -> &'static str {
-        "vgmstream r2117 (built-in codecs)"
+        "vgmstream r2117"
     }
 
     fn extensions(&self) -> &'static [&'static str] {

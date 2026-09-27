@@ -313,6 +313,26 @@ pub fn test_vag_bytes() -> Vec<u8> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn optional_codecs_decode_and_seek_through_the_shared_backend() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/codec-libs");
+        for (name, codec) in [("tone.msf", "MPEG"), ("tone.logg", "Vorbis"), ("tone.m4a", "AAC")] {
+            let mut decoder = Vgmstream::open(&root.join(name), None, 1.0, Duration::ZERO)
+                .unwrap_or_else(|error| panic!("{name}: {error}"));
+            assert!(decoder.codec().contains(codec), "{name}: {}", decoder.codec());
+            assert_eq!(decoder.channels(), 1);
+            for seek in [false, true] {
+                if seek { decoder.seek(Duration::from_millis(100)).expect("seek compressed audio"); }
+                let mut pcm = vec![0.0; 4096];
+                let count = decoder.render(&mut pcm).expect("render compressed audio");
+                assert!(count > 0);
+                assert!(pcm[..count].iter().all(|sample| sample.is_finite()));
+                assert!(pcm[..count].iter().map(|sample| sample * sample).sum::<f32>() > 1.0);
+            }
+        }
+    }
+
     fn fixture_dir(test_name: &str) -> std::path::PathBuf {
         let directory = std::env::temp_dir().join(format!(
             "kog-vgmstream-core-{}-{test_name}",

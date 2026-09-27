@@ -82,6 +82,11 @@ jobs:
           RUSTFLAGS: -C link-arg=-fuse-ld=mold
         run: cargo build --release --locked
 
+      - name: Verify shared codecs and archive extraction
+        env:
+          RUSTFLAGS: -C link-arg=-fuse-ld=mold
+        run: cargo test --release --locked -p kog-audio --lib optional_
+
       - name: Build self-contained terminal and server bundles
         if: github.event_name != 'workflow_dispatch' || inputs.build_cli
         env:
@@ -320,6 +325,12 @@ jobs:
         shell: pwsh
         run: cargo build --release --locked
 
+      - name: Verify shared codecs and archive extraction
+        shell: pwsh
+        run: |
+          $env:PATH = "$env:VCPKG_ROOT\installed\x64-windows\bin;$env:PATH"
+          cargo test --release --locked -p kog-audio --lib optional_
+
       - name: Build portable EXE bundle and MSI
         shell: pwsh
         run: packaging/windows/package.ps1
@@ -383,6 +394,11 @@ jobs:
         env:
           RUSTFLAGS: -C link-arg=-Wl,-headerpad_max_install_names
         run: cargo build --release --locked
+
+      - name: Verify shared codecs and archive extraction
+        env:
+          RUSTFLAGS: -C link-arg=-Wl,-headerpad_max_install_names
+        run: cargo test --release --locked -p kog-audio --lib optional_
 
       - name: Build self-contained terminal and server bundles
         if: github.event_name != 'workflow_dispatch' || inputs.build_cli

@@ -278,10 +278,26 @@ song and synthetic wavetable specifically for the test run.
 The `native/vgmstream` Git submodule is the official
 [vgmstream](https://github.com/vgmstream/vgmstream) source at r2117 commit
 `05dbda9b930b8d174f03387fb626d97d827d0647`. Kog builds the static library with
-its native codecs and built-in G.722.1 enabled, and calls its public C API
-through a small ownership and metadata bridge. The optional FFmpeg, Vorbis,
-mpg123, G.719, ATRAC9, CELT, and Speex dependencies are not part of this
-baseline build.
+its native codecs, G.722.1, FFmpeg, Vorbis, MPEG, ATRAC9, CELT and Speex
+on every native platform, through `native/vgmstream-kog`. G.719 remains
+excluded: upstream documents unclear redistribution terms for its reference
+implementation. No upstream Windows codec DLLs are used.
+
+The additional pinned Git submodules are built as static libraries:
+
+| Library | Pin | License notice |
+| --- | --- | --- |
+| Ogg | v1.3.5 | `LICENSES/Ogg-BSD.txt` |
+| Vorbis | v1.3.7 | `LICENSES/Vorbis-BSD.txt` |
+| mpg123 | 1.31.1 (`aec901b7`) | `LICENSES/mpg123-LGPL.txt` |
+| LibAtrac9 | `6a9e00f6` | `LICENSES/LibAtrac9-MIT.txt` |
+| Speex | Speex-1.2.1 | `LICENSES/Speex-BSD.txt` |
+| CELT | v0.6.1 / v0.11 | `LICENSES/CELT-0061-BSD.txt`, `LICENSES/CELT-0110-BSD.txt` |
+
+CELT symbols are namespaced to keep its two incompatible versions isolated
+from one another and other linked audio libraries. LibAtrac9's DLL annotations
+are removed from a generated build copy for static linkage; pinned sources
+are unchanged. FFmpeg is the same library already used by Kog's main decoder.
 
 vgmstream is Copyright (c) 2008-2025 Adam Gashlin, Fastelbja, Ronny Elfert,
 bnnm, Christopher Snowhill, NicknineTheEagle, bxaimc, Thealexbarney,
@@ -526,10 +542,16 @@ Nintendo or game data.
 
 Kog uses version 0.16.1 of the
 [compress-tools](https://github.com/OSSystems/compress-tools-rs) Rust crate
-under its MIT license option and dynamically links the system
-[libarchive](https://github.com/libarchive/libarchive) library. Neither
-libarchive source nor a libarchive binary is vendored in this repository. The
-pinned Nix development shell currently resolves libarchive 3.8.9.
+under its MIT license option and links [libarchive](https://github.com/libarchive/libarchive).
+Desktop packages use the platform library. iOS and Android build static
+libarchive 3.8.8 with zlib, XZ/liblzma 5.8.2, bzip2 1.0.8, LZ4 1.10.0 and the
+same pinned Zstandard source as Play!. Compression sources are pinned Git
+submodules and are compiled for the target by `native/archive-deps`.
+Notices: `LICENSES/XZ-0BSD.txt`, `LICENSES/bzip2.txt`,
+`LICENSES/LZ4-BSD.txt` and `LICENSES/Play-zstd-BSD.txt`. The full XZ library
+is installed as `libkog_liblzma.a` to avoid confusing it with Play!'s unrelated
+LZMA SDK archive. The shared mobile build fails if any required compression
+backend was not enabled.
 
 compress-tools is Copyright the OSSystems contributors and is available under
 MIT or Apache-2.0; Kog uses the MIT option, whose text is in

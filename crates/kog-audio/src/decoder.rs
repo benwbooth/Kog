@@ -2396,7 +2396,7 @@ mod tests {
                 .any(|value| value == "cmf")
         );
         assert!(
-            extensions_for("vgmstream r2117 (built-in codecs)")
+            extensions_for("vgmstream r2117")
                 .iter()
                 .any(|value| value == "vag")
         );

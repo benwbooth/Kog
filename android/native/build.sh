@@ -28,25 +28,10 @@ sysroot="$ndk/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
 zlib_library="$sysroot/usr/lib/$lib_triple/28/libz.so"
 mkdir -p "$build" "$prefix/lib/pkgconfig"
 
-if [[ ! -d "$build/libarchive" ]]; then
-  git clone -q --depth 1 --branch v3.8.8 https://github.com/libarchive/libarchive.git "$build/libarchive"
-fi
-if [[ ! -f "$prefix/lib/libarchive.a" ]]; then
-  cmake -S "$build/libarchive" -B "$build/libarchive-build" -G Ninja \
+bash "$repo/native/build-mobile-archive.sh" "$build" "$prefix" "${NATIVE_JOBS:-8}" \
     -DCMAKE_TOOLCHAIN_FILE="$ndk/build/cmake/android.toolchain.cmake" \
     -DANDROID_ABI="$abi" -DANDROID_PLATFORM=android-28 \
-    -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$prefix" \
-    -DZLIB_INCLUDE_DIR="$sysroot/usr/include" -DZLIB_LIBRARY="$zlib_library" \
-    -DBUILD_SHARED_LIBS=OFF -DENABLE_TEST=OFF -DENABLE_TAR=OFF \
-    -DENABLE_CPIO=OFF -DENABLE_CAT=OFF -DENABLE_UNZIP=OFF \
-    -DENABLE_OPENSSL=OFF -DENABLE_LIBB2=OFF -DENABLE_LZ4=OFF \
-    -DENABLE_LZMA=OFF -DENABLE_ZSTD=OFF -DENABLE_BZip2=OFF \
-    -DENABLE_LIBXML2=OFF -DENABLE_EXPAT=OFF -DENABLE_PCREPOSIX=OFF \
-    -DENABLE_PCRE2POSIX=OFF -DENABLE_ICONV=OFF -DENABLE_XATTR=OFF \
-    -DENABLE_ACL=OFF -DENABLE_WERROR=OFF
-  cmake --build "$build/libarchive-build" --parallel "${NATIVE_JOBS:-8}"
-  cmake --install "$build/libarchive-build"
-fi
+    -DZLIB_INCLUDE_DIR="$sysroot/usr/include" -DZLIB_LIBRARY="$zlib_library"
 
 cat > "$prefix/lib/pkgconfig/zlib.pc" <<EOF
 prefix=$sysroot/usr
@@ -96,6 +81,7 @@ export CMAKE_TOOLCHAIN_FILE="$build/android.toolchain.cmake"
 export CMAKE_GENERATOR=Ninja
 export ANDROID_ABI="$abi" ANDROID_PLATFORM=android-28
 export PKG_CONFIG_PATH="$prefix/lib/pkgconfig" PKG_CONFIG_LIBDIR="$prefix/lib/pkgconfig" PKG_CONFIG_ALLOW_CROSS=1
+export LIBARCHIVE_STATIC=1
 export CARGO_BUILD_JOBS="${NATIVE_JOBS:-8}"
 target_variable=${target//-/_}
 export "CC_${target_variable}=$toolchain/${target}28-clang"

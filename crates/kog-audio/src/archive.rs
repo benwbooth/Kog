@@ -825,6 +825,21 @@ fn decode_archive_name(bytes: &[u8]) -> compress_tools::Result<String> {
 #[cfg(any(test, feature = "test-util"))]
 pub mod tests {
     #[test]
+    fn optional_compression_extracts_exact_audio_bytes() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/codec-libs");
+        let expected = std::fs::read(root.join("tone.wav")).unwrap();
+        for name in ["lzma.7z", "lzma2.7z", "bzip2.zip", "lzma.zip",
+            "tone.wav.xz", "tone.wav.bz2", "zstd.tar", "lz4.tar"] {
+            let archive = super::ExtractedArchive::open(&root.join(name))
+                .unwrap_or_else(|error| panic!("{name}: {error}"));
+            assert!(archive.warnings.is_empty(), "{name}: {:?}", archive.warnings);
+            assert_eq!(archive.entries.len(), 1, "{name}");
+            assert_eq!(std::fs::read(&archive.entries[0].path).unwrap(), expected, "{name}");
+        }
+    }
+
+    #[test]
     fn shared_archive_browser_preserves_nested_folders_and_filters_hidden_members() {
         let names = vec![
             "Disc/song.wav",
