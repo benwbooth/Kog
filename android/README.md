@@ -8,6 +8,12 @@ in the background and receives system and Bluetooth media controls.
 
 ## Build and install
 
+For a ready-made arm64 development APK, use the
+[release page](https://github.com/benwbooth/Kog/releases/latest). Android is
+built by the same **Cross-platform packages** workflow as desktop and iOS;
+branch builds are available as the `kog-android-debug` artifact. These APKs
+use development signing and are not Google Play releases.
+
 Install JDK 17, Rust, CMake, Ninja, pkg-config, and the Android SDK (platform
 36, build tools 35, and NDK 28.2.13676358). Initialize the Git submodules and
 build the native decoders before Gradle:

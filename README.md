@@ -9,8 +9,7 @@
   <a href="https://github.com/benwbooth/Kog/issues">Report a bug</a>
 </p>
 
-[![Desktop builds](https://github.com/benwbooth/Kog/actions/workflows/packages.yml/badge.svg)](https://github.com/benwbooth/Kog/actions/workflows/packages.yml)
-[![Android build](https://github.com/benwbooth/Kog/actions/workflows/android.yml/badge.svg)](https://github.com/benwbooth/Kog/actions/workflows/android.yml)
+[![Builds](https://github.com/benwbooth/Kog/actions/workflows/packages.yml/badge.svg)](https://github.com/benwbooth/Kog/actions/workflows/packages.yml)
 
 Kog is a free, open-source music player inspired by [Cog](https://cog.losno.co/).
 Play your albums, audiobooks, MIDI, tracker modules, and game soundtracks from
@@ -71,10 +70,11 @@ portable bundle, or Flatpak.
 Separate **TUI** and **headless server** bundles are also available for Linux
 and macOS on the release page.
 
+Mobile downloads include an **Android development APK** and an **unsigned iOS
+IPA**. The IPA needs signing for your iPhone before installation.
+
 For the newest features, download artifacts from a successful
-[desktop build](https://github.com/benwbooth/Kog/actions/workflows/packages.yml).
-Development Android APKs are available from successful
-[Android builds](https://github.com/benwbooth/Kog/actions/workflows/android.yml).
+[package build](https://github.com/benwbooth/Kog/actions/workflows/packages.yml).
 
 Open Kog, choose your music folder, and add songs to the playlist. In a terminal:
 

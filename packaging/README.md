@@ -23,6 +23,9 @@ Kog's release workflow produces native packages from the same source revision:
   value point at that release asset.
 - Linux: an x86_64 AppImage, a portable AppDir tarball, a Flatpak bundle, and an
   OSTree Flatpak repository archive.
+- Android: an arm64 development APK with the shared Rust decoder libraries.
+- iOS: an unsigned arm64 IPA with the shared Rust decoder libraries. Users
+  must sign it for their device before installation.
 
 The portable Linux tarball is the practical replacement for a “static binary.”
 Kog cannot honestly be distributed as one fully static executable while it uses
@@ -53,8 +56,9 @@ builds still save size and maximized state; positioning remains compositor-owned
 Windows, macOS, and X11 save and restore normal geometry directly. Geometry tests
 can be run with `nix develop -c bash tests/native/run-window-state.sh`.
 
-The workflows build unsigned development artifacts on branch and pull-request
-runs. Tagged `v*` builds create or update the matching GitHub release. macOS
+The single **Cross-platform packages** workflow builds every frontend on branch
+and pull-request runs. Tagged `v*` builds publish the desktop and mobile assets
+to the matching GitHub release after all six platform jobs pass. macOS
 artifacts are ad-hoc signed, not Apple-notarized; Windows artifacts are not
 Authenticode-signed. Release signing and Apple notarization require maintainer
 certificates and are intentionally separate from reproducible package creation.

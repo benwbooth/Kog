@@ -1,99 +1,62 @@
 # Releasing Kog
 
-The release job (`Cross-platform packages`) builds every platform from a tag.
-The steps below exist because each one has broken a release at least once.
+**Cross-platform packages** builds Linux, Flatpak, Windows, macOS, Android, and
+iOS in one workflow. A successful version-tag build publishes all their assets
+to the matching GitHub release, including separate Linux/macOS TUI and server
+archives, the Android development APK, and the unsigned iOS IPA.
 
-## 1. Land the changes
+## Prepare the version
 
-Keep `main` building. The nix package build runs `cargo test`, so the suite
-must be green before tagging.
+1. Keep `main` building and resolve any failing platform jobs.
+2. Update the version in the root `Cargo.toml` and every `crates/*/Cargo.toml`,
+   including the standalone web crate.
+3. Update Android's `versionName` and increment `versionCode`; update iOS's
+   `CFBundleShortVersionString` and increment `CFBundleVersion`.
+4. Add the version and date to `packaging/linux/org.kog.player.metainfo.xml`.
+5. Refresh both lockfiles with Cargo, without changing dependency versions:
 
-## 2. Bump every workspace member's version
+   ```sh
+   cargo update --workspace --offline
+   cargo update --workspace --offline --manifest-path crates/kog-web/Cargo.toml
+   cargo check --locked --workspace
+   ```
 
-Kog is a workspace (`kog`, `crates/kog-core`, `crates/kog-audio`). Bump all of
-them plus the metainfo release list:
+The root workspace and web crate have separate lockfiles. Every path package's
+recorded version must match its manifest or `--locked` builds fail.
 
-```sh
-sed -i 's/^version = "X.Y.Z"/version = "X.Y.(Z+1)"/' \
-  Cargo.toml crates/kog-core/Cargo.toml crates/kog-audio/Cargo.toml
-# add <release version="X.Y.(Z+1)" date="..."/> to
-# packaging/linux/org.kog.player.metainfo.xml
-```
+## Publish
 
-## 3. Sync the lockfile — do not hand-edit it
-
-`Cargo.lock` records each member's version. Rewriting only the first match
-leaves the other members stale, and **every** CI job then dies with
-`cannot update the lock file ... because --locked was passed`. Always let
-cargo do it:
-
-```sh
-cargo update --workspace --offline
-```
-
-Verify all three members moved:
+Commit the version changes and push an annotated tag:
 
 ```sh
-grep -A1 'name = "kog"$\|name = "kog-core"\|name = "kog-audio"' Cargo.lock | grep version
+git commit -m "Release Kog X.Y.Z"
+git tag -a vX.Y.Z -m "Kog X.Y.Z"
+git push --atomic origin main vX.Y.Z
 ```
 
-## 4. Gate the release cheaply
+The tag automatically starts the release workflow. For a commit marked
+`[skip ci]`, explicitly dispatch it with `gh workflow run packages.yml --ref
+vX.Y.Z`. Leave `source_ref` empty and `mobile_only` disabled for a full release.
 
-```sh
-cargo check --locked --workspace
-```
+Wait for **all six platform jobs and Publish tagged release** to succeed.
+Then check `gh release view vX.Y.Z` and verify that every expected download is
+present. A successful branch build only uploads Actions artifacts; it does
+not publish a release.
 
-This catches the lockfile class of breakage in seconds. Do **not** gate with
-`cargo build --release`: it recompiles the native helper set and the final
-binary (several minutes) and duplicates the work the nix prebuild and CI
-already do.
+Manual builds can set `mobile_only` to build Android and iOS without rebuilding
+desktop packages. `source_ref` selects an existing source tag or commit, using
+the workflow on the dispatch ref. These source-override builds do not publish
+automatically; this is useful for preparing mobile assets for an existing tag.
 
-Only run a full `cargo build --release --locked` when the release specifically
-changes native build scripts or linker inputs.
+## Packaging notes
 
-The web frontend is built and embedded by each platform job (the AppImage,
-Flatpak, Windows, and macOS jobs all run `crates/kog-web/build.sh` before the
-Rust build), so nothing is committed from `crates/kog-server/web/` except the
-placeholder page. A release therefore still needs a runner with the wasm32
-target and a matching `wasm-bindgen-cli`; the packaged binary rather than the
-source tree is what carries the player.
-
-Streaming transcodes through linked FFmpeg libraries. Desktop packages include
-the required shared libraries; they do not require an `ffmpeg` executable on
-`PATH`.
-
-## 5. Commit, tag, dispatch
-
-Tags carry `[skip ci]`, so the workflow must be dispatched manually:
-
-```sh
-git commit -m "Release Kog X.Y.Z [skip ci]"
-git tag vX.Y.Z && git push origin main && git push origin vX.Y.Z
-gh workflow run "Cross-platform packages" --ref vX.Y.Z
-```
-
-## 6. Update the flake pin and prebuild
-
-```sh
-# /etc/nixos/flake.nix: inputs.kog.url = "...?ref=refs/tags/vX.Y.Z&submodules=1"
-nix flake lock --update-input kog
-nixos-rebuild build --flake /etc/nixos#nixos
-```
-
-Then run `switch` **and fully restart Kog**; switching alone leaves the old
-binary running.
-
-## Pitfalls
-
-- **Never commit a temporary `fetchGit` pin.** Verifying a packaged build from
-  a dirty worktree needs one (cleanSource drops submodules), but leaving it
-  committed freezes the package source at that revision forever.
-- **Regenerate the Flatpak vendor list when `Cargo.lock` gains crates**:
-  `uv run flatpak-cargo-generator.py Cargo.lock --output packaging/linux/cargo-sources.json`.
-  The Flatpak job fails if it is stale. Path-only workspace members add
-  nothing, so the split itself needed no change.
-- **Publish flakiness:** large asset uploads occasionally return HTTP 4xx/5xx.
-  The publish step retries each file individually; a genuine failure is
-  re-runnable without rebuilding.
-- **Local `nix build` from a dirty worktree fails on submodules** (cleanSource
-  omits them). That is expected; the tag-based build materializes them.
+- Desktop jobs build and embed the web frontend before the Rust application.
+- The Flatpak job generates its Cargo vendor list from the committed lockfile.
+- Android APKs currently use development signing. The iOS IPA is unsigned and
+  must be signed for the user's device; it is not an App Store distribution.
+- Windows packages are not Authenticode signed. macOS packages are ad-hoc
+  signed, not notarized. The Homebrew cask uses the published DMG's SHA-256.
+- Large uploads are retried individually. A failed publish job can be rerun
+  without rebuilding successful platform jobs.
+- Local NixOS activation is separate from publication. If requested, update
+  the flake pin, build, switch, and restart Kog before claiming it is active.

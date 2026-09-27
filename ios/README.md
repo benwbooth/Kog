@@ -6,6 +6,17 @@ APIs. Imported files stay in Kog's application storage and play locally. The
 Rust static library connects local formats to the same `kog-audio` decoder
 registry used by the other Kog frontends.
 
+## Download
+
+The [release page](https://github.com/benwbooth/Kog/releases/latest) includes
+an unsigned arm64 IPA built with the shared Rust decoder libraries. Sign it
+for your iPhone with your sideloading tool before installation; downloading
+the IPA alone does not authorize it to run on a device. It requires iOS 17
+or newer. This is a development build, not an App Store or TestFlight release.
+
+The same **Cross-platform packages** workflow builds desktop, Android, and iOS
+downloads. Branch builds are available as the `kog-ios-unsigned` artifact.
+
 ## Build on Apple silicon
 
 Install Xcode, accept its license, and finish its first-launch components. The

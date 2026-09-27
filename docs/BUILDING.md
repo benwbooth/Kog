@@ -56,4 +56,7 @@ along with the dependency versions and FFmpeg configuration used by Kog's
 regression tests.
 
 For mobile builds, see [Android](../android/README.md) and [iOS](../ios/README.md).
+GitHub's **Cross-platform packages** workflow builds all desktop and mobile
+packages together. Android APKs and unsigned iOS IPAs are included in tagged
+releases; the iOS IPA needs signing for the intended device before installation.
 For distribution, see [packaging](../packaging/README.md) and [releasing](RELEASING.md).

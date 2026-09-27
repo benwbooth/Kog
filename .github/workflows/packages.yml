@@ -11,12 +11,20 @@ on:
         description: Build standalone terminal and headless server binaries
         type: boolean
         default: true
+      mobile_only:
+        description: Build only Android and iOS packages
+        type: boolean
+        default: false
+      source_ref:
+        description: Optional source tag or commit for a manual build (does not publish)
+        type: string
+        default: ""
 
 permissions:
   contents: read
 
 concurrency:
-  group: packages-${{ github.ref }}
+  group: packages-${{ github.ref }}-${{ inputs.source_ref || 'current' }}-${{ inputs.mobile_only && 'mobile' || 'all' }}
   cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 env:
@@ -25,11 +33,13 @@ env:
 jobs:
   linux-appimage:
     name: Linux AppImage and portable bundle
+    if: github.event_name != 'workflow_dispatch' || !inputs.mobile_only
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v6
         with:
+          ref: ${{ inputs.source_ref || github.ref }}
           submodules: recursive
 
       - name: Install build dependencies
@@ -109,11 +119,13 @@ jobs:
 
   linux-flatpak:
     name: Linux Flatpak repository
+    if: github.event_name != 'workflow_dispatch' || !inputs.mobile_only
     runs-on: ubuntu-24.04
     timeout-minutes: 240
     steps:
       - uses: actions/checkout@v6
         with:
+          ref: ${{ inputs.source_ref || github.ref }}
           submodules: recursive
 
       - name: Install Flatpak tooling
@@ -208,6 +220,7 @@ jobs:
 
   windows:
     name: Windows EXE and MSI
+    if: github.event_name != 'workflow_dispatch' || !inputs.mobile_only
     runs-on: windows-2025
     timeout-minutes: 240
     env:
@@ -218,6 +231,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
+          ref: ${{ inputs.source_ref || github.ref }}
           submodules: recursive
 
       - uses: jurplel/install-qt-action@v4
@@ -320,11 +334,13 @@ jobs:
 
   macos:
     name: macOS DMG (arm64)
+    if: github.event_name != 'workflow_dispatch' || !inputs.mobile_only
     runs-on: macos-15
     timeout-minutes: 240
     steps:
       - uses: actions/checkout@v6
         with:
+          ref: ${{ inputs.source_ref || github.ref }}
           submodules: recursive
 
       - uses: jurplel/install-qt-action@v4
@@ -401,10 +417,98 @@ jobs:
           if-no-files-found: error
           path: dist/macos/Kog-*.dmg
 
+  android:
+    name: Android APK (arm64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.source_ref || github.ref }}
+          submodules: recursive
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v4
+      - name: Install Android build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build pkg-config
+          sdkmanager 'platforms;android-36' 'build-tools;35.0.0' 'ndk;28.2.13676358'
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Build arm64 Kog decoders
+        run: ANDROID_NDK_HOME="$ANDROID_HOME/ndk/28.2.13676358" android/native/build.sh arm64-v8a
+      - name: Build development APK
+        working-directory: android
+        run: ./gradlew :app:assembleDebug --no-daemon
+      - name: Package Android download
+        run: |
+          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)"
+          mkdir -p dist/android
+          cp android/app/build/outputs/apk/debug/app-debug.apk "dist/android/Kog-$version-android-arm64-debug.apk"
+          printf 'Android source commit: %s\n' "$(git rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: kog-android-debug
+          path: dist/android/Kog-*-android-arm64-debug.apk
+          if-no-files-found: error
+
+  ios:
+    name: iOS IPA (arm64, unsigned)
+    runs-on: macos-15
+    timeout-minutes: 240
+    env:
+      NATIVE_JOBS: 3
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.source_ref || github.ref }}
+          submodules: recursive
+      - name: Install iOS build tools
+        run: |
+          brew install cmake ninja pkg-config xcodegen
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add aarch64-apple-ios
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-ios-arm64-${{ hashFiles('Cargo.lock') }}
+      - name: Build iPhone app and shared Rust decoders
+        working-directory: ios
+        run: |
+          xcodegen generate
+          xcodebuild -project Kog.xcodeproj -scheme Kog -configuration Release \
+            -destination 'generic/platform=iOS' -derivedDataPath "$RUNNER_TEMP/kog-ios" \
+            ARCHS=arm64 CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+      - name: Package unsigned IPA
+        run: |
+          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)"
+          app="$RUNNER_TEMP/kog-ios/Build/Products/Release-iphoneos/Kog.app"
+          test -x "$app/Kog"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Info.plist")" = "$version"
+          plutil -lint "$app/Info.plist"
+          xcrun lipo -verify_arch arm64 "$app/Kog"
+          mkdir -p dist/ios/Payload
+          ditto "$app" dist/ios/Payload/Kog.app
+          (cd dist/ios && ditto -c -k --keepParent Payload "Kog-$version-ios-arm64-unsigned.ipa")
+          printf 'iOS source commit: %s\n\nThis IPA needs device signing before installation.\n' "$(git rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: kog-ios-unsigned
+          path: dist/ios/Kog-*-ios-arm64-unsigned.ipa
+          if-no-files-found: error
+
   release:
     name: Publish tagged release
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [linux-appimage, linux-flatpak, windows, macos]
+    if: startsWith(github.ref, 'refs/tags/v') && !inputs.mobile_only && inputs.source_ref == ''
+    needs: [linux-appimage, linux-flatpak, windows, macos, android, ios]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
