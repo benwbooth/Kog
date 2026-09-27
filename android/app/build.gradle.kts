@@ -4,6 +4,12 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+val kogVersion = Regex("""(?m)^version = "([^"]+)"""")
+    .find(rootProject.file("../Cargo.toml").readText())!!.groupValues[1]
+val versionParts = kogVersion.substringBefore('-').split('.').map(String::toInt)
+val kogVersionCode = versionParts[0] * 1_000_000 + versionParts[1] * 1_000 + versionParts[2]
+val kogAbis = providers.gradleProperty("kogAbis").getOrElse("arm64-v8a").split(',')
+
 android {
     namespace = "org.kog.player"
     compileSdk = 36
@@ -12,12 +18,20 @@ android {
         applicationId = "org.kog.player"
         minSdk = 28
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.9.42-dev"
+        versionCode = kogVersionCode
+        versionName = kogVersion
+        ndk { abiFilters += kogAbis }
     }
 
     buildTypes {
-        release { isMinifyEnabled = false }
+        debug { versionNameSuffix = "-dev" }
+        release {
+            isDebuggable = false
+            isJniDebuggable = false
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+        }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -26,22 +40,31 @@ android {
     buildFeatures { compose = true }
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
-        // Helper executables are packed as native libraries and need a real
-        // executable path in applicationInfo.nativeLibraryDir.
+        // NativeAudio configures nativeLibraryDir on service startup, so it
+        // must exist even though the decoders now run in process.
         jniLibs.useLegacyPackaging = true
     }
 }
 
-val kogNotices = tasks.register<Copy>("copyKogNotices") {
+abstract class CopyKogNotices : Sync() {
+    @get:OutputDirectory
+    abstract val outputDirectory: DirectoryProperty
+
+    init { into(outputDirectory) }
+}
+
+val kogNotices = tasks.register<CopyKogNotices>("copyKogNotices") {
     val sourceRoot = rootProject.projectDir.parentFile
     from(sourceRoot.resolve("LICENSE"))
     from(sourceRoot.resolve("THIRD_PARTY_NOTICES.md"))
     from(sourceRoot.resolve("LICENSES")) { into("LICENSES") }
-    into(layout.buildDirectory.dir("generated/kogNotices"))
+    outputDirectory.set(layout.buildDirectory.dir("generated/kogNotices"))
 }
-android.sourceSets["main"].assets.srcDir(layout.buildDirectory.dir("generated/kogNotices"))
-tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Assets") }
-    .configureEach { dependsOn(kogNotices) }
+androidComponents {
+    onVariants(selector().all()) { variant ->
+        variant.sources.assets?.addGeneratedSourceDirectory(kogNotices, CopyKogNotices::outputDirectory)
+    }
+}
 
 kotlin {
     compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) }

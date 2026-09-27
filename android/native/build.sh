@@ -4,6 +4,11 @@ set -euo pipefail
 # Build Kog's native decoder and its third-party libraries for one Android ABI.
 # Run before Gradle so app/src/main/jniLibs contains the output for packaging.
 abi=${1:-arm64-v8a}
+profile=${2:-release}
+case "$profile" in
+  release|debug) ;;
+  *) echo "Unsupported build profile: $profile (use release or debug)" >&2; exit 2 ;;
+esac
 case "$abi" in
   arm64-v8a) target=aarch64-linux-android; arch=aarch64; lib_triple=aarch64-linux-android ;;
   x86_64) target=x86_64-linux-android; arch=x86_64; lib_triple=x86_64-linux-android ;;
@@ -102,12 +107,14 @@ cmake --install "$build/sc55-build"
 export KOG_ANDROID_NATIVE_LIB_DIR="$prefix/lib"
 rustup target add "$target"
 cd "$repo"
-cargo build --locked -p kog-android-audio --target "$target"
+cargo_args=(build --locked -p kog-android-audio --target "$target")
+if [[ "$profile" == release ]]; then cargo_args+=(--release); fi
+cargo "${cargo_args[@]}"
 
 jni="$repo/android/app/src/main/jniLibs/$abi"
 mkdir -p "$jni"
 rm -f "$jni/libkog-sc55-helper.so"
-cp "$repo/target/$target/debug/libkog_android_audio.so" "$jni/"
+cp "$repo/target/$target/$profile/libkog_android_audio.so" "$jni/"
 "$toolchain/llvm-strip" --strip-unneeded "$jni/libkog_android_audio.so"
 cp "$sysroot/usr/lib/$lib_triple/libc++_shared.so" "$jni/"
 "$toolchain/llvm-strip" --strip-unneeded "$jni/libc++_shared.so"

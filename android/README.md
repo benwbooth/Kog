@@ -8,11 +8,19 @@ in the background and receives system and Bluetooth media controls.
 
 ## Build and install
 
-For a ready-made arm64 development APK, use the
-[release page](https://github.com/benwbooth/Kog/releases/latest). Android is
-built by the same **Cross-platform packages** workflow as desktop and iOS;
-branch builds are available as the `kog-android-debug` artifact. These APKs
-use development signing and are not Google Play releases.
+For a ready-made signed arm64 release APK, download and extract the `kog-android`
+artifact from a successful
+[Cross-platform packages build](https://github.com/benwbooth/Kog/actions/workflows/packages.yml).
+Android uses the same workflow as desktop and iOS. The v0.9.42 release page still
+has the older debug APK; the next tagged release will include the signed build.
+The Kotlin app and Rust decoder backend both use release builds. R8 shrinks the app and resources,
+with the native JNI bridge names preserved. Manual workflow runs can select
+the `android` platform to build just the APK.
+
+Official builds use a persistent release signing key, so future APKs can update
+an existing release installation. Earlier debug-signed builds require a one-time
+uninstall, which deletes Kog's app data and settings. Pull request and fork
+builds produce an unsigned release APK that needs signing before installation.
 
 Install JDK 17, Rust, CMake, Ninja, pkg-config, and the Android SDK (platform
 36, build tools 35, and NDK 28.2.13676358). Initialize the Git submodules and
@@ -20,18 +28,37 @@ build the native decoders before Gradle:
 
 ```sh
 git submodule update --init --recursive
-android/native/build.sh arm64-v8a
+android/native/build.sh arm64-v8a release
 cd android
-./gradlew :app:assembleDebug
-adb install -r app/build/outputs/apk/debug/app-debug.apk
+./gradlew :app:assembleRelease
 ```
+
+This creates `app/build/outputs/apk/release/app-release-unsigned.apk`. Sign it
+with your own keystore using Android Studio or the SDK's `zipalign` and
+`apksigner` tools before installing. See [Android's signing instructions](https://developer.android.com/studio/publish/app-signing).
+
+For a local development APK with automatic debug signing, use
+`android/native/build.sh arm64-v8a debug`, then `./gradlew :app:assembleDebug`
+from `android` and `adb install -r app/build/outputs/apk/debug/app-debug.apk`.
 
 Set `ANDROID_HOME` and, if the NDK is elsewhere, `ANDROID_NDK_HOME`. The native
 build downloads and statically links FFmpeg 8.1.2 and libarchive 3.8.8, builds
-Kog's other vendored decoders and helper programs, and packages the C++ runtime.
+Kog's other vendored decoder libraries, and packages the C++ runtime.
 The APK produced by GitHub Actions includes arm64; run
-`android/native/build.sh x86_64` as well for an x86_64 emulator. Android 9
+`android/native/build.sh x86_64 debug` and
+`./gradlew -PkogAbis=x86_64 :app:assembleDebug` for an x86_64 emulator. Android 9
 (API 28) or newer is required because libvgm uses the platform's iconv API.
+
+### Release signing in CI
+
+The official repository stores `KOG_ANDROID_KEYSTORE_BASE64` and
+`KOG_ANDROID_KEYSTORE_PASSWORD` as Actions secrets. The PKCS#12 key alias is
+`kog-android-release`. Keep an independent protected backup of the keystore and
+password: existing installations need that same key for future updates. Keys
+and passwords belong outside the repository. Signing runs after the build and
+is disabled for pull requests and forks; release jobs fail if the official
+signing credentials are missing. CI verifies the signature, arm64 ABI, APK
+alignment, and that the application is not debuggable.
 
 The app accepts a Kog server URL and access token or Basic credentials in
 Settings. On an Android emulator, `http://10.0.2.2:8420` reaches a server on
