@@ -461,6 +461,9 @@ jobs:
     timeout-minutes: 240
     env:
       NATIVE_JOBS: 3
+      # macos-15 still defaults to Xcode 16.4. Kog uses the Swift-managed
+      # MediaToolbox ownership annotations in the iOS 26 SDK.
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
     steps:
       - uses: actions/checkout@v6
         with:
@@ -474,6 +477,11 @@ jobs:
           rustup target add aarch64-apple-ios
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
+      - name: Check Swift against the selected iOS SDK
+        run: |
+          xcrun --sdk iphoneos swiftc -typecheck -parse-as-library \
+            -D KOG_NATIVE_AUDIO -module-name Kog -target arm64-apple-ios17.0 \
+            -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" ios/Kog/*.swift
       - uses: actions/cache@v5
         with:
           path: |
