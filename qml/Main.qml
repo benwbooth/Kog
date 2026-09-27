@@ -646,10 +646,8 @@ ApplicationWindow {
 
     function addTreeSelection(path, activate) {
         const paths = selectedTreePathsFor(path)
-        if (activate)
-            appController.activate_local_paths_json(JSON.stringify(paths))
-        else
-            appController.add_local_paths_json(JSON.stringify(paths))
+        appController.add_tree_paths_json(JSON.stringify(paths),
+            fileTreeModel.searchText, fileTreeModel.root_path, activate)
     }
 
     function isPlaylistRowSelected(row) {

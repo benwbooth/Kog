@@ -342,13 +342,13 @@ final class KogStore: ObservableObject {
 
     func addDeviceFolder(_ folder: Folder) async {
         pendingAdds += 1; defer { pendingAdds -= 1 }
-        do { add(try await deviceAPI.collect(folder.path)) }
+        do { add(try await deviceAPI.collect(folder.path, query: searchText, root: activeDeviceRoot)) }
         catch { report(error) }
     }
 
     func addFolder(_ folder: Folder, play: Bool = false) async {
         pendingAdds += 1; defer { pendingAdds -= 1 }
-        do { add(try await api.collect(folder.path), play: play) }
+        do { add(try await api.collect(folder.path, query: searchText, root: activeTreeRoot), play: play) }
         catch { report(error) }
     }
 

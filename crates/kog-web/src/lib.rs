@@ -5650,8 +5650,11 @@ fn App() -> impl IntoView {
                 return;
             }
             let report_add = report_add.clone();
+            let query = tree_search.get_untracked();
+            let search_root = tree_root.get_untracked();
             leptos::task::spawn_local(async move {
-                let route = format!("/api/library/collect?path={}", url_encode(&row.path));
+                let route = format!("/api/library/collect?path={}&q={}&root={}",
+                    url_encode(&row.path), url_encode(&query), url_encode(&search_root));
                 match get_json(route).await {
                     Ok(value) => {
                         let entries = value["tracks"]

@@ -937,11 +937,86 @@ pub fn collect_local_folder(
     read_cue_sheets: bool,
     read_playlists: bool,
 ) -> Result<Vec<(String, StoredEntry)>, String> {
+    collect_local_folder_filtered(
+        library,
+        decoders,
+        path,
+        unrestricted,
+        read_cue_sheets,
+        read_playlists,
+        &kog_audio::library_policy::TreeFilter::default(),
+    )
+}
+
+pub fn collect_local_folder_filtered(
+    library: &Arc<Library>,
+    decoders: &kog_audio::decoder::DecoderRegistry,
+    path: &std::path::Path,
+    unrestricted: bool,
+    read_cue_sheets: bool,
+    read_playlists: bool,
+    filter: &kog_audio::library_policy::TreeFilter,
+) -> Result<Vec<(String, StoredEntry)>, String> {
+    let entries = collect_folder_entries(
+        library,
+        path,
+        unrestricted,
+        read_cue_sheets,
+        read_playlists,
+        filter,
+        || false,
+    )?;
+    let root = library.root();
+    let mut tracks = Vec::new();
+    for (name, entry) in entries {
+        let expanded = expand_stored_entry(decoders, root.as_deref(), &entry, &name);
+        if expanded.is_empty() {
+            tracks.push((name, entry));
+        } else {
+            tracks.extend(expanded);
+        }
+    }
+    let specific: HashSet<_> = tracks
+        .iter()
+        .filter(|(_, entry)| entry.fragment.is_some())
+        .map(|(_, entry)| (entry.kind.clone(), entry.path.clone(), entry.entry.clone()))
+        .collect();
+    tracks.retain(|(_, entry)| {
+        entry.fragment.is_some()
+            || !specific.contains(&(entry.kind.clone(), entry.path.clone(), entry.entry.clone()))
+    });
+    Ok(tracks)
+}
+
+/// Shared structural collection for Qt, TUI, HTTP and the on-device API.
+/// Filter before decoder expansion/metadata work, including archive members.
+pub fn collect_folder_entries(
+    library: &Arc<Library>,
+    path: &std::path::Path,
+    unrestricted: bool,
+    read_cue_sheets: bool,
+    read_playlists: bool,
+    filter: &kog_audio::library_policy::TreeFilter,
+    cancelled: impl Fn() -> bool,
+) -> Result<Vec<(String, StoredEntry)>, String> {
     let mut pending = vec![path.to_path_buf()];
     let mut tracks = Vec::new();
-    let root = library.root();
     while let Some(directory) = pending.pop() {
-        let listing = browse_blocking(library, directory.to_str(), unrestricted)?;
+        if cancelled() {
+            break;
+        }
+        let listing = match browse_blocking(library, directory.to_str(), unrestricted) {
+            Ok(listing) => listing,
+            // Search also skips unreadable subtrees. An unrelated broken
+            // archive must not prevent adding the matches beside it. Keep
+            // reporting errors for the selected or explicitly matching item.
+            Err(_)
+                if !filter.is_empty() && directory != path && !filter.matches_path(&directory) =>
+            {
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         if let Some(dirs) = listing["directories"].as_array() {
             for dir in dirs.iter().rev() {
                 if let Some(path) = dir["path"].as_str() {
@@ -951,7 +1026,11 @@ pub fn collect_local_folder(
         }
         if let Some(files) = listing["files"].as_array() {
             for file in files {
-                let (Some(kind), Some(path)) = (file["kind"].as_str(), file["path"].as_str()) else {
+                if cancelled() {
+                    break;
+                }
+                let (Some(kind), Some(path)) = (file["kind"].as_str(), file["path"].as_str())
+                else {
                     continue;
                 };
                 let entry = StoredEntry {
@@ -974,11 +1053,13 @@ pub fn collect_local_folder(
                     continue;
                 }
                 let name = file["name"].as_str().unwrap_or_default();
-                let expanded = expand_stored_entry(decoders, root.as_deref(), &entry, name);
-                if expanded.is_empty() {
-                    tracks.push((name.to_owned(), entry));
+                let logical_path = if entry.kind == "archive" {
+                    PathBuf::from(&entry.path).join(entry.entry.replace('\\', "/"))
                 } else {
-                    tracks.extend(expanded);
+                    PathBuf::from(&entry.path)
+                };
+                if filter.matches_path(&logical_path) || filter.matches_path(&directory) {
+                    tracks.push((name.to_owned(), entry));
                 }
             }
         }
@@ -997,44 +1078,69 @@ pub fn collect_local_folder(
 
 /// HTTP and native frontends use the same recursive folder collector. The
 /// HTTP route keeps the configured music-root boundary enforced by browse.
+#[derive(Debug, Deserialize)]
+pub struct CollectQuery {
+    pub path: Option<String>,
+    #[serde(default)]
+    pub q: String,
+    pub root: Option<String>,
+}
+
 pub async fn collect_folder_http(
     State(state): State<AppState>,
-    Query(query): Query<BrowseQuery>,
+    Query(query): Query<CollectQuery>,
 ) -> Response {
     let library = Arc::clone(&state.library);
     let result = tokio::task::spawn_blocking(move || {
         let settings = kog_audio::settings::AppSettings::load();
         let decoders = kog_audio::decoder::DecoderRegistry::new(settings.decoder_settings());
-        let path = query.path.or_else(|| library.root().map(|path| path.to_string_lossy().into_owned()))
+        let path = query
+            .path
+            .or_else(|| {
+                library
+                    .root()
+                    .map(|path| path.to_string_lossy().into_owned())
+            })
             .ok_or_else(|| "no music directory is configured".to_owned())?;
         let root = library.root();
-        let entries = collect_local_folder(
+        let search_root = library.resolve(query.root.as_deref())?;
+        let filter = kog_audio::library_policy::TreeFilter::new(&query.q, search_root);
+        let entries = collect_local_folder_filtered(
             &library,
             &decoders,
             std::path::Path::new(&path),
             false,
             settings.read_cue_sheets_in_folders,
             library.read_playlists_in_folders(),
+            &filter,
         )?;
-        let files: Vec<_> = entries.into_iter().map(|(name, entry)| {
-            let relative = root
-                .as_deref()
-                .and_then(|root| std::path::Path::new(&entry.path).strip_prefix(root).ok())
-                .unwrap_or_else(|| std::path::Path::new(&entry.path))
-                .to_string_lossy()
-                .into_owned();
-            let relative = if entry.entry.is_empty() { relative } else { format!("{relative}/{}", entry.entry) };
-            serde_json::json!({
-                "name": name,
-                "relative": relative,
-                "kind": entry.kind,
-                "path": entry.path,
-                "entry": entry.entry,
-                "fragment": entry.fragment,
+        let files: Vec<_> = entries
+            .into_iter()
+            .map(|(name, entry)| {
+                let relative = root
+                    .as_deref()
+                    .and_then(|root| std::path::Path::new(&entry.path).strip_prefix(root).ok())
+                    .unwrap_or_else(|| std::path::Path::new(&entry.path))
+                    .to_string_lossy()
+                    .into_owned();
+                let relative = if entry.entry.is_empty() {
+                    relative
+                } else {
+                    format!("{relative}/{}", entry.entry)
+                };
+                serde_json::json!({
+                    "name": name,
+                    "relative": relative,
+                    "kind": entry.kind,
+                    "path": entry.path,
+                    "entry": entry.entry,
+                    "fragment": entry.fragment,
+                })
             })
-        }).collect();
+            .collect();
         Ok::<_, String>(serde_json::json!({ "tracks": files }))
-    }).await;
+    })
+    .await;
     match result {
         Ok(Ok(value)) => axum::Json(value).into_response(),
         Ok(Err(error)) => bad_request(&error),

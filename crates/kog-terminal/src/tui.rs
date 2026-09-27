@@ -21,7 +21,7 @@ use kog_audio::settings::{
 use kog_audio::track::Track as AudioTrack;
 use kog_core::db::{BLACKLIST_FOLDER, BLACKLIST_SONG, BlacklistEntry, StoredEntry};
 use kog_core::equalizer::{EqualizerSettings, presets};
-use kog_server::api::{Library, LocalSearch, browse_local_unrestricted, collect_local_folder, expand_stored_entry};
+use kog_server::api::{Library, LocalSearch, browse_local_unrestricted, expand_stored_entry};
 use kog_server::radio::{Radio, RadioAdvance, RadioEntry, RadioStatus};
 use kog_server::{AuthMode, StreamCodec, TlsMode};
 use rand::Rng;
@@ -957,7 +957,7 @@ struct RomImportResult {
 enum RemoteCommand {
     Root(u64, RemoteSettings, Option<String>),
     Expand(u64, RemoteSettings, PathBuf),
-    Collect(u64, u64, RemoteSettings, PathBuf),
+    Collect(u64, u64, RemoteSettings, PathBuf, String),
     Search(u64, u64, RemoteSettings, String),
     AddTracks(u64, u64, RemoteSettings, Vec<RemoteFile>, bool),
 }
@@ -1056,7 +1056,7 @@ struct Ui {
     cover_key: String,
     cover_preview: Option<CoverPreview>,
     download_cover_art: bool,
-    folder_requests: Sender<(u64, PathBuf)>,
+    folder_requests: Sender<(u64, PathBuf, kog_audio::library_policy::TreeFilter)>,
     folder_results: Receiver<(u64, PathBuf, Result<Vec<Track>, String>)>,
     folder_generation: u64,
     folder_play_pending: HashSet<PathBuf>,
@@ -1215,20 +1215,18 @@ impl Ui {
             }
         });
         let library = Arc::new(Library::open());
-        let (folder_requests, pending_folders) = mpsc::channel::<(u64, PathBuf)>();
+        let (folder_requests, pending_folders) = mpsc::channel::<(u64, PathBuf, kog_audio::library_policy::TreeFilter)>();
         let (completed_folders, folder_results) = mpsc::channel();
         let folder_library = library.clone();
         std::thread::spawn(move || {
             let decoders = DecoderRegistry::new(AppSettings::load().decoder_settings());
-            while let Ok((generation, path)) = pending_folders.recv() {
+            while let Ok((generation, path, filter)) = pending_folders.recv() {
                 let settings = AppSettings::load();
-                let result = collect_folder(
-                    &folder_library,
-                    &decoders,
-                    path.clone(),
-                    settings.read_cue_sheets_in_folders,
-                    settings.read_playlists_in_folders,
-                );
+                let result = kog_server::api::collect_local_folder_filtered(
+                    &folder_library, &decoders, &path, true,
+                    settings.read_cue_sheets_in_folders, settings.read_playlists_in_folders,
+                    &filter,
+                ).map(|entries| entries.into_iter().map(|(name, entry)| Track { name, entry }).collect());
                 if completed_folders.send((generation, path, result)).is_err() {
                     break;
                 }
@@ -1309,8 +1307,8 @@ impl Ui {
                         let result = settings.browse(path.to_str());
                         RemoteResponse::Expand(generation, path, settings, result)
                     }
-                    RemoteCommand::Collect(generation, folder_generation, settings, path) => {
-                        let result = settings.collect_folder(&path);
+                    RemoteCommand::Collect(generation, folder_generation, settings, path, query) => {
+                        let result = settings.collect_folder(&path, &query);
                         RemoteResponse::Collect(
                             generation,
                             folder_generation,
@@ -4296,6 +4294,7 @@ impl Ui {
                     self.folder_generation,
                     settings,
                     path.clone(),
+                    self.search_query.clone(),
                 ))
                 .is_ok()
             {
@@ -4307,7 +4306,9 @@ impl Ui {
         }
         if self
             .folder_requests
-            .send((self.folder_generation, path.clone()))
+            .send((self.folder_generation, path.clone(),
+                kog_audio::library_policy::TreeFilter::new(&self.search_query,
+                    self.search_root.clone().or_else(|| self.library.root()).unwrap_or_default())))
             .is_ok()
         {
             self.status = format!("Adding tracks from {}…", path.display());
@@ -10097,6 +10098,7 @@ fn radio_track(entry: RadioEntry) -> Track {
     })
 }
 
+#[cfg(test)]
 fn collect_folder(
     library: &Arc<Library>,
     decoders: &DecoderRegistry,
@@ -10104,7 +10106,7 @@ fn collect_folder(
     read_cue_sheets: bool,
     read_playlists: bool,
 ) -> Result<Vec<Track>, String> {
-    collect_local_folder(
+    kog_server::api::collect_local_folder(
         library,
         decoders,
         &path,

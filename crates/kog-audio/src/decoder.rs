@@ -474,6 +474,31 @@ impl DecoderRegistry {
         self.expand_local(path, None, &mut Vec::new(), 0)
     }
 
+    /// Expand a collected locator without serializing an intermediate playlist.
+    /// Archive origins and explicit subsong fragments stay attached.
+    pub fn expand_entry(
+        &self,
+        entry: &crate::playlist::PlaylistEntry,
+    ) -> Result<ExpansionResult, String> {
+        use crate::playlist::PlaylistLocation;
+        match &entry.location {
+            PlaylistLocation::Remote(url) => self.expand_remote_url(url),
+            PlaylistLocation::Local(path) => {
+                self.expand_local(path.clone(), entry.fragment.as_deref(), &mut Vec::new(), 0)
+            }
+            PlaylistLocation::Archive {
+                archive_path,
+                entry_name,
+            } => self.expand_archive_entry(
+                archive_path.clone(),
+                entry_name,
+                entry.fragment.as_deref(),
+                &mut Vec::new(),
+                0,
+            ),
+        }
+    }
+
     fn expand_archive_tree(
         &self,
         location: crate::archive::TreeLocation,

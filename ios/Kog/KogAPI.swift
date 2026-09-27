@@ -162,8 +162,8 @@ struct KogAPI {
         if deviceRoot != nil { listing.files = listing.files.map { $0.onDevice() } }
         return listing
     }
-    func collect(_ path: String) async throws -> [Track] {
-        let data = try await request("/api/library/collect", query: ["path": path], timeout: 300)
+    func collect(_ path: String, query: String = "", root: String = "") async throws -> [Track] {
+        let data = try await request("/api/library/collect", query: ["path": path, "q": query, "root": root], timeout: 300)
         let rows = (try JSONSerialization.jsonObject(with: data) as? [String: Any])?["tracks"] ?? []
         return try await metadata(decodeTracks(rows))
     }

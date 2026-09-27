@@ -155,8 +155,8 @@ class KogApi(private val context: Context) {
         )
     }
 
-    suspend fun collect(path: String): List<Track> {
-        val tracks = JSONObject(request(uri("/api/library/collect", "path" to path)))
+    suspend fun collect(path: String, query: String = "", root: String = ""): List<Track> {
+        val tracks = JSONObject(request(uri("/api/library/collect", "path" to path, "q" to query, "root" to root)))
             .optJSONArray("tracks").objects().map(Track::parse)
         return withMetadata(tracks)
     }

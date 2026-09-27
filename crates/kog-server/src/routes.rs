@@ -1454,6 +1454,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn filtered_folder_collection_keeps_only_matching_archive_contents() {
+        let (library, root) = library_with(&["NSFe/unrelated.wav"]);
+        let folder = root.join("NSFe");
+        let wav = kog_audio::archive::tests::wav_bytes(100);
+        for name in [
+            "FinalFantasy1.zip",
+            "FinalFantasy2.zip",
+            "FinalFantasy3.zip",
+            "Zelda.zip",
+        ] {
+            kog_audio::archive::tests::write_stored_zip(
+                &folder.join(name),
+                &[("Disc/intro.wav", &wav), ("Disc/theme.wav", &wav)],
+            );
+        }
+        // Also find a match inside an archive whose own name does not match.
+        kog_audio::archive::tests::write_stored_zip(
+            &folder.join("Mixed.zip"),
+            &[
+                ("Final Fantasy/ending.wav", &wav),
+                ("Other Game/theme.wav", &wav),
+            ],
+        );
+        let state = state_with(AuthMode::None, "", library);
+        let route = format!(
+            "/api/library/collect?path={}&root={}&q=final%20fantasy",
+            folder.display(),
+            root.display()
+        );
+        let (status, body) = get_json(state.clone(), &route, None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let tracks = body["tracks"].as_array().unwrap();
+        assert_eq!(
+            tracks.len(),
+            7,
+            "three complete matching archives plus one matching internal folder: {body}"
+        );
+        assert!(tracks.iter().all(|track| {
+            track["path"].as_str().unwrap().contains("FinalFantasy")
+                || track["entry"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("Final Fantasy/")
+        }));
+        let (status, body) = get_json(
+            state.clone(),
+            &route.replace("final%20fantasy", "no-such-match"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body["tracks"].as_array().unwrap().is_empty());
+        let (status, body) = get_json(
+            state.clone(),
+            &format!("/api/library/collect?path={}", folder.display()),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body["tracks"].as_array().unwrap().len(),
+            11,
+            "unfiltered adds still include the whole folder"
+        );
+        std::fs::write(folder.join("Unrelated-broken.zip"), b"not an archive").unwrap();
+        let (status, body) = get_json(state, &route, None).await;
+        assert_eq!(status, StatusCode::OK, "an unreadable unrelated archive must not block matches: {body}");
+        assert_eq!(body["tracks"].as_array().unwrap().len(), 7);
+    }
+
+    #[tokio::test]
     async fn browsing_expands_folder_playlists_and_drops_gme_companions() {
         let (library, root) = library_with(&["Album/one.wav"]);
         let album = root.join("Album");

@@ -345,7 +345,7 @@ class KogState(private val context: Context) {
     }
 
     fun addFolder(folder: Folder, play: Boolean = false, onAdded: () -> Unit = {}) = task {
-        val tracks = api.collect(folder.path)
+        val tracks = api.collect(folder.path, searchText, libraryRoot)
         add(tracks, play)
         if (tracks.isNotEmpty()) onAdded()
     }

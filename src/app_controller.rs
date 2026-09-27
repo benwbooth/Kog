@@ -107,6 +107,14 @@ pub mod qobject {
         #[qinvokable]
         fn activate_local_paths_json(self: Pin<&mut AppController>, paths: QString);
         #[qinvokable]
+        fn add_tree_paths_json(
+            self: Pin<&mut AppController>,
+            paths: QString,
+            query: QString,
+            search_root: QString,
+            activate: bool,
+        );
+        #[qinvokable]
         fn poll_directory_scan(self: Pin<&mut AppController>);
         #[qinvokable]
         fn cancel_directory_scan(self: Pin<&mut AppController>);
@@ -952,6 +960,62 @@ fn run_cover_art_job(
     });
 }
 
+#[derive(Clone)]
+enum ScanInput {
+    Path(PathBuf),
+    Entry(kog_core::db::StoredEntry),
+}
+
+impl ScanInput {
+    fn path(&self) -> PathBuf {
+        match self {
+            Self::Path(path) => path.clone(),
+            Self::Entry(entry) => PathBuf::from(&entry.path),
+        }
+    }
+}
+
+fn prepare_scan_input(
+    input: ScanInput,
+    decoders: &DecoderRegistry,
+    read_cue_sheets: bool,
+    read_playlists: bool,
+    explicit_root: bool,
+) -> PreparedScanFile {
+    match input {
+        ScanInput::Path(path) => prepare_scan_file(
+            path,
+            decoders,
+            read_cue_sheets,
+            read_playlists,
+            explicit_root,
+        ),
+        ScanInput::Entry(entry) => {
+            let mut prepared = PreparedScanFile {
+                path: PathBuf::from(&entry.path),
+                tracks: Vec::new(),
+                warnings: Vec::new(),
+            };
+            match kog_audio::playlist::PlaylistEntry::try_from(&entry)
+                .and_then(|entry| decoders.expand_entry(&entry))
+            {
+                Ok(expansion) => {
+                    prepared.warnings = expansion.warnings;
+                    for source in expansion.sources {
+                        let track = Track::from_source(source, decoders);
+                        if let Some(warning) = &track.decoder_warning {
+                            prepared.warnings.push(warning.clone());
+                        }
+                        prepared.tracks.push(track);
+                    }
+                }
+                Err(error) => prepared.warnings.push(error),
+            }
+            prepared
+        }
+    }
+}
+
 fn prepare_scan_file(
     path: PathBuf,
     decoders: &DecoderRegistry,
@@ -1013,8 +1077,32 @@ fn scan_directory_paths(
     decoder_settings: DecoderSettings,
     read_cue_sheets: bool,
     read_playlists: bool,
+    filter: Option<kog_audio::library_policy::TreeFilter>,
 ) {
     let mut files = Vec::new();
+    let library = if let Some(filter) = &filter {
+        match kog_core::db::LibraryDb::open_in_memory() {
+            Ok(db) => Some(Arc::new(
+                kog_server::api::Library::with_read_playlists_in_folders(
+                    Some(filter.root.clone()),
+                    db,
+                    read_playlists,
+                ),
+            )),
+            Err(error) => {
+                let _ =
+                    send_directory_scan_event(&sender, &cancel, DirectoryScanEvent::Warning(error));
+                let _ = send_directory_scan_event(
+                    &sender,
+                    &cancel,
+                    DirectoryScanEvent::Complete { cancelled: false },
+                );
+                return;
+            }
+        }
+    } else {
+        None
+    };
     // Explicitly passed playlist/cue files are always parsed: the folder
     // preference only governs playlists discovered during folder walks.
     // Without this, staging a playlist for import (e.g. loading a stored
@@ -1027,8 +1115,47 @@ fn scan_directory_paths(
         if cancel.load(AtomicOrdering::Relaxed) {
             break;
         }
+        if let (Some(filter), Some(library)) = (&filter, &library) {
+            let location = kog_audio::archive::tree_location(&root).ok().flatten();
+            let collection = location
+                .as_ref()
+                .filter(|location| {
+                    location.directory || kog_audio::archive::is_path(Path::new(&location.entry))
+                })
+                .map(|location| location.archive.join(&location.entry))
+                .or_else(|| {
+                    (root.is_dir() || kog_audio::archive::is_path(&root)).then(|| root.clone())
+                });
+            if let Some(collection) = collection {
+                match kog_server::api::collect_folder_entries(
+                    library,
+                    &collection,
+                    true,
+                    read_cue_sheets,
+                    read_playlists,
+                    filter,
+                    || cancel.load(AtomicOrdering::Relaxed),
+                ) {
+                    Ok(entries) => files.extend(
+                        entries
+                            .into_iter()
+                            .map(|(_, entry)| ScanInput::Entry(entry)),
+                    ),
+                    Err(error) => {
+                        if !send_directory_scan_event(
+                            &sender,
+                            &cancel,
+                            DirectoryScanEvent::Warning(error),
+                        ) {
+                            return;
+                        }
+                    }
+                }
+                continue;
+            }
+        }
         if kog_audio::archive::is_tree_location(&root) {
-            files.push(root);
+            files.push(ScanInput::Path(root));
             continue;
         }
         let root = match std::fs::canonicalize(&root) {
@@ -1047,7 +1174,7 @@ fn scan_directory_paths(
 
         if root.is_file() {
             explicit_roots.insert(root.clone());
-            files.push(root);
+            files.push(ScanInput::Path(root));
             continue;
         }
         if !root.is_dir() {
@@ -1069,7 +1196,7 @@ fn scan_directory_paths(
                 break 'roots;
             }
             if !is_directory {
-                files.push(path);
+                files.push(ScanInput::Path(path));
                 continue;
             }
 
@@ -1129,15 +1256,16 @@ fn scan_directory_paths(
                             break;
                         }
                         let index = next_index.fetch_add(1, AtomicOrdering::Relaxed);
-                        let Some(path) = files.get(index).cloned() else {
+                        let Some(input) = files.get(index).cloned() else {
                             break;
                         };
-                        let prepared = prepare_scan_file(
-                            path.clone(),
+                        let explicit = explicit_roots.contains(&input.path());
+                        let prepared = prepare_scan_input(
+                            input,
                             &worker_decoders,
                             read_cue_sheets,
                             read_playlists,
-                            explicit_roots.contains(&path),
+                            explicit,
                         );
                         if prepared_sender.send((index, prepared)).is_err() {
                             break;
@@ -2951,6 +3079,44 @@ impl qobject::AppController {
         )
         .unwrap_or_default();
         self.as_mut().add_local_paths(paths, behavior);
+    }
+
+    pub fn add_tree_paths_json(
+        mut self: Pin<&mut Self>,
+        paths: QString,
+        query: QString,
+        search_root: QString,
+        activate: bool,
+    ) {
+        let paths = match local_paths_from_json(&paths.to_string()) {
+            Ok(paths) => paths,
+            Err(error) => {
+                self.as_mut().set_status(qstring(error));
+                return;
+            }
+        };
+        let behavior = if activate {
+            OpeningFilesBehavior::from_setting(
+                &self.as_ref().rust().opening_files_behavior.to_string(),
+            )
+            .unwrap_or_default()
+        } else {
+            OpeningFilesBehavior::Enqueue
+        };
+        if query.to_string().trim().is_empty() {
+            self.as_mut().add_local_paths(paths, behavior);
+        } else if self.as_ref().rust().directory_scan_active {
+            self.as_mut().set_status(qstring(
+                "A folder scan is already running; cancel it before adding more files",
+            ));
+        } else if !paths.is_empty() {
+            let filter = kog_audio::library_policy::TreeFilter::new(
+                &query.to_string(),
+                PathBuf::from(search_root.to_string()),
+            );
+            self.as_mut()
+                .begin_directory_scan(paths, behavior, Some(filter));
+        }
     }
 
     pub fn set_radio_enabled(mut self: Pin<&mut Self>, enabled: bool) {
@@ -7017,13 +7183,14 @@ impl qobject::AppController {
             ));
             return;
         }
-        self.as_mut().begin_directory_scan(paths, behavior);
+        self.as_mut().begin_directory_scan(paths, behavior, None);
     }
 
     fn begin_directory_scan(
         mut self: Pin<&mut Self>,
         paths: Vec<PathBuf>,
         behavior: OpeningFilesBehavior,
+        filter: Option<kog_audio::library_policy::TreeFilter>,
     ) {
         if behavior.clears_playlist() {
             self.as_mut().clear_playlist();
@@ -7075,6 +7242,7 @@ impl qobject::AppController {
                     decoder_settings,
                     read_cue_sheets,
                     read_playlists,
+                    filter,
                 )
             })
         {
@@ -7623,6 +7791,7 @@ mod tests {
             DecoderSettings::default(),
             true,
             true,
+            None,
         );
         let relative = receiver
             .into_iter()
@@ -7851,6 +8020,62 @@ mod tests {
     }
 
     #[test]
+    fn filtered_tree_folder_import_excludes_unmatched_archives() {
+        let fixture = tempfile::tempdir().unwrap();
+        let folder = fixture.path().join("NSFe archives");
+        std::fs::create_dir(&folder).unwrap();
+        let wav = kog_audio::archive::tests::wav_bytes(100);
+        for name in [
+            "FinalFantasy1.zip",
+            "FinalFantasy2.zip",
+            "FinalFantasy3.zip",
+            "Zelda.zip",
+        ] {
+            kog_audio::archive::tests::write_stored_zip(
+                &folder.join(name),
+                &[("Disc/theme.wav", &wav)],
+            );
+        }
+        let (sender, receiver) = std::sync::mpsc::sync_channel(64);
+        scan_directory_paths(
+            vec![folder],
+            sender,
+            Arc::new(AtomicBool::new(false)),
+            DecoderRegistry::default(),
+            DecoderSettings::default(),
+            true,
+            true,
+            Some(kog_audio::library_policy::TreeFilter::new(
+                "final fantasy",
+                fixture.path(),
+            )),
+        );
+        let tracks: Vec<_> = receiver
+            .try_iter()
+            .flat_map(|event| match event {
+                DirectoryScanEvent::Prepared(prepared) => {
+                    assert!(prepared.warnings.is_empty(), "{:?}", prepared.warnings);
+                    prepared.tracks
+                }
+                _ => Vec::new(),
+            })
+            .collect();
+        assert_eq!(tracks.len(), 3);
+        assert!(tracks.iter().all(|track| {
+            track
+                .source
+                .archive_origin
+                .as_ref()
+                .unwrap()
+                .archive_path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("FinalFantasy")
+        }));
+    }
+
+    #[test]
     fn archive_tree_selection_flows_through_background_import() {
         let fixture = tempfile::tempdir().unwrap();
         let archive = fixture.path().join("songs.zip");
@@ -7869,6 +8094,7 @@ mod tests {
             DecoderSettings::default(),
             true,
             true,
+            None,
         );
         let prepared = receiver
             .try_iter()

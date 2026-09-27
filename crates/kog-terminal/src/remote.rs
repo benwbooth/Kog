@@ -1,7 +1,6 @@
 //! Small client for browsing another Kog server from the terminal frontend.
 //! Requests run on the TUI's remote worker, never on its input thread.
 
-use std::collections::HashSet;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -311,24 +310,13 @@ impl RemoteSettings {
         Ok(url.into())
     }
 
-    pub fn collect_folder(&self, start: &Path) -> Result<Vec<RemoteFile>, String> {
-        let mut pending = vec![start.to_string_lossy().into_owned()];
-        let mut visited = HashSet::new();
-        let mut files = Vec::new();
-        while let Some(path) = pending.pop() {
-            if !visited.insert(path.clone()) {
-                continue;
-            }
-            let listing = self.browse(Some(&path))?;
-            for directory in listing.directories.into_iter().rev() {
-                pending.push(directory.path);
-            }
-            files.extend(listing.files);
-            if files.len() > 50_000 || visited.len() > 50_000 {
-                return Err("Remote folder contains too many entries".to_owned());
-            }
-        }
-        self.expand_files(&files)
+    pub fn collect_folder(&self, start: &Path, query: &str) -> Result<Vec<RemoteFile>, String> {
+        #[derive(Deserialize)]
+        struct Collected { tracks: Vec<RemoteFile> }
+        let mut url = self.endpoint("/api/library/collect")?;
+        url.query_pairs_mut().append_pair("path", &start.to_string_lossy()).append_pair("q", query);
+        let result: Collected = self.get_json(url)?;
+        Ok(result.tracks)
     }
 }
 
