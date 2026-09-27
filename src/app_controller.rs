@@ -7592,6 +7592,7 @@ mod tests {
         assert_eq!(
             relative,
             [
+                PathBuf::from(".hidden.flac"),
                 PathBuf::from("01-first.flac"),
                 PathBuf::from("02-disc/01-middle.flac"),
                 PathBuf::from("02-disc/02-middle.flac"),
