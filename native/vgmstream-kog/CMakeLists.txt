@@ -53,6 +53,13 @@ target_compile_definitions(kog_speex PRIVATE FLOATING_POINT USE_ALLOCA EXPORT=
   SPEEX_EXTRA_VERSION="" SPEEX_VERSION="1.2.1")
 
 include(celt.cmake)
+if(MSVC)
+  # These older codecs test WIN32 rather than MSVC's predefined _WIN32,
+  # and use the POSIX spelling of Microsoft's stack-allocation intrinsic.
+  foreach(codec kog_celt0061 kog_celt0110 kog_speex)
+    target_compile_definitions(${codec} PRIVATE WIN32 alloca=_alloca)
+  endforeach()
+endif()
 
 # Keep upstream's source layout, including every game-container parser.
 file(GLOB vgm_sources "${VGM}/src/*.c" "${VGM}/src/base/*.c"
