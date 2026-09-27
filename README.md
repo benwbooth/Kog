@@ -51,12 +51,12 @@ installation and remaining limitations.
 
 **Web** — the same collection in your browser.
 
-![Kog web player with a soundtrack playing](docs/screenshots/web-desktop.png)
+![Kog web player with a soundtrack playing](docs/screenshots/web-desktop.jpg)
 
 </details>
 
 <p>
-  <img src="docs/screenshots/web-mobile.png" width="260" alt="Mobile web player showing a compact queue and bottom navigation">
+  <img src="docs/screenshots/web-mobile.jpg" width="260" alt="Mobile web player showing a compact queue and bottom navigation">
   &nbsp;
   <img src="docs/screenshots/android.png" width="260" alt="Native Android app browsing an album in the server library">
 </p>
