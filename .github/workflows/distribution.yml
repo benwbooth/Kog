@@ -1,0 +1,102 @@
+name: Publish Homebrew and Flatpak
+
+on:
+  workflow_call:
+    inputs:
+      release_tag:
+        description: Published release to distribute
+        required: true
+        type: string
+    secrets:
+      HOMEBREW_TAP_SSH_KEY:
+        required: true
+      FLATPAK_GPG_PRIVATE_KEY:
+        required: true
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Published release to distribute (for example v0.9.42)
+        required: true
+        type: string
+
+concurrency:
+  group: kog-distribution
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  homebrew:
+    name: Update Homebrew tap
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          repository: benwbooth/homebrew-kog
+          ssh-key: ${{ secrets.HOMEBREW_TAP_SSH_KEY }}
+      - name: Update cask from the published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$(gh release view --repo benwbooth/Kog --json tagName --jq .tagName)" = "$RELEASE_TAG"
+          mkdir -p Casks
+          gh release download "$RELEASE_TAG" --repo benwbooth/Kog --pattern kog.rb --dir "$RUNNER_TEMP/cask"
+          grep -Fq "version \"${RELEASE_TAG#v}\"" "$RUNNER_TEMP/cask/kog.rb"
+          ruby -c "$RUNNER_TEMP/cask/kog.rb"
+          cp "$RUNNER_TEMP/cask/kog.rb" Casks/kog.rb
+          git config user.name 'Kog release bot'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Casks/kog.rb
+          if ! git diff --cached --quiet; then
+            git commit -m "Update Kog to $RELEASE_TAG"
+            git push origin HEAD:main
+          fi
+
+  flatpak:
+    name: Sign Flatpak repository
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install repository tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends flatpak ostree gnupg zstd
+      - name: Prepare signed download site
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          FLATPAK_GPG_PRIVATE_KEY: ${{ secrets.FLATPAK_GPG_PRIVATE_KEY }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$(gh release view --repo benwbooth/Kog --json tagName --jq .tagName)" = "$RELEASE_TAG"
+          export GNUPGHOME="$RUNNER_TEMP/kog-signing"
+          mkdir -m 700 "$GNUPGHOME"
+          printf '%s' "$FLATPAK_GPG_PRIVATE_KEY" | gpg --batch --import
+          unset FLATPAK_GPG_PRIVATE_KEY
+          trap 'gpgconf --kill gpg-agent; rm -rf "$GNUPGHOME"' EXIT
+          version="${RELEASE_TAG#v}"
+          gh release download "$RELEASE_TAG" --pattern "Kog-$version-linux-x86_64-flatpak-repo.tar.zst" --dir "$RUNNER_TEMP/packages"
+          packaging/linux/prepare-flatpak-site.sh \
+            "$RUNNER_TEMP/packages/Kog-$version-linux-x86_64-flatpak-repo.tar.zst" \
+            "$RUNNER_TEMP/site" https://benwbooth.github.io/Kog
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: ${{ runner.temp }}/site
+
+  deploy:
+    name: Publish Flatpak download site
+    needs: flatpak
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/deploy-pages@v4
+        id: deployment

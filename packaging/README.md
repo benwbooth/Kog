@@ -20,9 +20,12 @@ Kog's release workflow produces native packages from the same source revision:
   Qt, codec DLLs, and an MSI installer for the same directory tree.
 - macOS: an Apple Silicon DMG containing a self-contained
   `Kog.app`. Tagged builds also generate a Homebrew cask whose URL and SHA-256
-  value point at that release asset.
+  value point at that release asset. The release publisher updates
+  [benwbooth/homebrew-kog](https://github.com/benwbooth/homebrew-kog), so users
+  can run `brew install --cask benwbooth/kog/kog` and receive normal Brew updates.
 - Linux: an x86_64 AppImage, a portable AppDir tarball, a Flatpak bundle, and an
-  OSTree Flatpak repository archive.
+  OSTree Flatpak repository archive. Published releases are also signed and
+  hosted at [Kog's Flatpak repository](https://benwbooth.github.io/Kog/).
 - Android: an arm64 development APK with the shared Rust decoder libraries.
 - iOS: an unsigned arm64 IPA with the shared Rust decoder libraries. Users
   must sign it for their device before installation.

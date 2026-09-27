@@ -90,19 +90,16 @@ open it. If macOS blocks this unnotarized build, try opening it once, then use
 **System Settings → Privacy & Security → Open Anyway** for Kog.
 [Apple's instructions](https://support.apple.com/en-us/102445)
 
-**Homebrew:** install [Homebrew](https://brew.sh), download `kog.rb` from the
-release, and put it in a local tap:
+**Homebrew:** install [Homebrew](https://brew.sh), then:
 
 ```sh
-brew tap-new local/kog
-mkdir -p "$(brew --repository local/kog)/Casks"
-cp kog.rb "$(brew --repository local/kog)/Casks/kog.rb"
-brew install --cask local/kog/kog
+brew install --cask benwbooth/kog/kog
 ```
 
-Create the tap only once. To update, replace its `kog.rb` with the new release's
-file and run `brew upgrade --cask local/kog/kog`. These packages require an
-Apple Silicon Mac; Intel Macs are unsupported. TUI/server instructions are below.
+Update with `brew update` followed by `brew upgrade --cask benwbooth/kog/kog`.
+The [Kog tap](https://github.com/benwbooth/homebrew-kog) follows new releases
+automatically. These packages require an Apple Silicon Mac; Intel Macs are
+unsupported. TUI/server instructions are below.
 
 </details>
 
@@ -129,8 +126,24 @@ tar -xzf Kog-*-linux-x86_64-portable.tar.gz
 
 Keep the whole `Kog.AppDir` directory together.
 
-**Flatpak bundle:** [install Flatpak](https://flatpak.org/setup/) for your
-distribution, download the `.flatpak`, then:
+**Flatpak (recommended for updates):** [install Flatpak](https://flatpak.org/setup/),
+then open [Install Kog](https://benwbooth.github.io/Kog/kog.flatpakref) in your
+software manager, or run:
+
+```sh
+flatpak install --user https://benwbooth.github.io/Kog/kog.flatpakref
+flatpak run org.kog.player --gui
+```
+
+This adds Kog's signed repository and offers to install the required runtime
+from Flathub. Update through your software manager or `flatpak update`.
+To add just the repository:
+
+```sh
+flatpak remote-add --user --if-not-exists kog https://benwbooth.github.io/Kog/kog.flatpakrepo
+```
+
+**Flatpak bundle:** to install a downloaded `.flatpak` instead:
 
 ```sh
 flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
@@ -138,17 +151,8 @@ flatpak install --user ./Kog-*-linux-x86_64.flatpak
 flatpak run org.kog.player --gui
 ```
 
-**Flatpak repository archive:** for a local repository, download the
-`flatpak-repo.tar.zst` instead. With Flatpak, Flathub, and `zstd` installed:
-
-```sh
-tar --zstd -xf Kog-*-linux-x86_64-flatpak-repo.tar.zst
-flatpak remote-add --user --no-gpg-verify kog-local "$(pwd)/repo"
-flatpak install --user kog-local org.kog.player
-flatpak run org.kog.player --gui
-```
-
-Keep the extracted `repo` directory: it is the source for this local remote.
+The `flatpak-repo.tar.zst` release asset is for mirroring or offline distribution;
+normal installations should use the hosted repository above.
 
 </details>
 

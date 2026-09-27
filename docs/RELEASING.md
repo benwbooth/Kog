@@ -39,7 +39,8 @@ The tag automatically starts the release workflow. For a commit marked
 `[skip ci]`, explicitly dispatch it with `gh workflow run packages.yml --ref
 vX.Y.Z`. Leave `source_ref` empty and `mobile_only` disabled for a full release.
 
-Wait for **all six platform jobs and Publish tagged release** to succeed.
+Wait for **all six platform jobs, Publish tagged release, and Update package
+repositories** to succeed.
 Then check `gh release view vX.Y.Z` and verify that every expected download is
 present. A successful branch build only uploads Actions artifacts; it does
 not publish a release.
@@ -50,6 +51,40 @@ the workflow on the dispatch ref. These source-override builds do not publish
 automatically; this is useful for preparing mobile assets for an existing tag.
 
 ## Packaging notes
+
+### Homebrew and hosted Flatpak
+
+After the release assets are uploaded, `distribution.yml` updates
+`benwbooth/homebrew-kog` and publishes a signed Flatpak repository through
+GitHub Pages. It reuses the built packages; it does not rebuild Kog. The tap's
+own workflow verifies the cask by installing it on a clean Apple Silicon runner.
+
+To republish the latest release after a distribution-only fix:
+
+```sh
+gh workflow run distribution.yml --ref main -f release_tag=vX.Y.Z
+```
+
+Required repository configuration:
+
+- GitHub Pages uses **GitHub Actions**, with the `github-pages` environment
+  allowing `main` and `v*` tags.
+- `HOMEBREW_TAP_SSH_KEY` is a write deploy key scoped to `homebrew-kog`.
+- `FLATPAK_GPG_PRIVATE_KEY` contains the armored signing key corresponding to
+  `packaging/linux/kog-flatpak.gpg.asc`. Keep a secure backup outside Git and
+  retain this key across releases so installed clients can verify updates.
+
+The publisher signs the app commit, AppStream data, and repository summary,
+then verifies the result using a fresh Flatpak installation. Only the app and
+its AppStream data are hosted; debug/source refs remain in the release archive.
+Static deltas speed up downloads. A size check enforces the GitHub Pages budget.
+If the project outgrows Pages, move the repository to an OSTree-compatible
+host or apply for Flathub; retain the signing key and publish a remote redirect.
+
+The `.flatpakref` installer includes the repository key and Flathub runtime
+source. The `.flatpakrepo` file supports adding the remote without installing.
+
+### Platform details
 
 - Desktop jobs build and embed the web frontend before the Rust application.
 - The Flatpak job generates its Cargo vendor list from the committed lockfile.
