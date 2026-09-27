@@ -502,7 +502,7 @@ jobs:
           test -x "$app/Kog"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Info.plist")" = "$version"
           plutil -lint "$app/Info.plist"
-          xcrun lipo -verify_arch arm64 "$app/Kog"
+          xcrun lipo "$app/Kog" -verify_arch arm64
           mkdir -p dist/ios/Payload
           ditto "$app" dist/ios/Payload/Kog.app
           (cd dist/ios && ditto -c -k --keepParent Payload "Kog-$version-ios-arm64-unsigned.ipa")
