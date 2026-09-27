@@ -112,7 +112,9 @@
             # build sees manifests with the version pinned to a constant
             # while the final package builds the real tree (and reports
             # the real version).
-            normalizedSrc = pkgs.runCommand "kog-deps-src"
+            # CXX-Qt caches absolute header paths. Both Cargo passes must use
+            # /build/source so those paths still resolve in the final build.
+            normalizedSrc = pkgs.runCommand "source"
               {
                 nativeBuildInputs = [ pkgs.python3 ];
               }
