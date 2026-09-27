@@ -66,11 +66,25 @@
             kogWeb = craneLib.buildPackage {
               pname = "kog-web";
               version = (builtins.fromTOML (builtins.readFile ./crates/kog-web/Cargo.toml)).package.version;
-              # Not cleanCargoSource: the frontend's HTML and CSS are part of
-              # the derivation, not just the Rust sources.
-              src = pkgs.lib.cleanSource ./crates/kog-web;
+              # Preserve the repository layout: the frontend imports the
+              # shared playback policy and embeds Qt's format icons.
+              src = pkgs.lib.fileset.toSource {
+                root = ./.;
+                fileset = pkgs.lib.fileset.unions [
+                  ./crates/kog-web/Cargo.toml
+                  ./crates/kog-web/Cargo.lock
+                  ./crates/kog-web/src
+                  ./crates/kog-web/index.html
+                  ./crates/kog-web/style.css
+                  ./crates/kog-web/manifest.webmanifest
+                  ./crates/kog-web/icons
+                  ./crates/kog-playback-policy
+                  ./qml/icons
+                ];
+              };
+              postUnpack = ''sourceRoot="$sourceRoot/crates/kog-web"'';
               cargoVendorDir = craneLib.vendorCargoDeps {
-                src = pkgs.lib.cleanSource ./crates/kog-web;
+                cargoLock = ./crates/kog-web/Cargo.lock;
               };
               cargoArtifacts = null;
               doCheck = false;
@@ -81,7 +95,12 @@
                 mkdir -p $out
                 wasm-bindgen --target web --no-typescript --out-dir $out \
                   target/wasm32-unknown-unknown/release/kog_web.wasm
-                cp index.html style.css $out/
+                cp index.html style.css manifest.webmanifest $out/
+                cp -r icons $out/icons
+                # Match build.sh: the server serves precompressed assets on
+                # mobile, while rewriting index.html and kog_web.js itself.
+                find "$out" -type f ! -name '*.gz' ! -name 'index.html' ! -name 'kog_web.js' -exec sh -c \
+                  'gzip -9 -c "$1" > "$1.gz"' _ {} \;
               '';
             };
             # Shared build environment for the dependency closure and the
@@ -103,27 +122,27 @@
                 ${pkgs.python3}/bin/python3 - <<'PYEOF'
                 import os
                 import re
+                import tomllib
                 root = os.environ["out"]
                 # Every workspace member manifest: pin the version constant so
                 # release bumps cannot invalidate the cached dependency build.
                 manifests = [os.path.join(root, "Cargo.toml")]
-                crates = os.path.join(root, "crates")
-                if os.path.isdir(crates):
-                    for member in sorted(os.listdir(crates)):
-                        candidate = os.path.join(crates, member, "Cargo.toml")
-                        if os.path.isfile(candidate):
-                            manifests.append(candidate)
+                workspace = tomllib.loads(open(manifests[0]).read())["workspace"]
+                manifests += [os.path.join(root, member, "Cargo.toml")
+                              for member in workspace["members"]]
+                names = []
                 for manifest in manifests:
                     text = open(manifest).read()
-                    head, sep, tail = text.partition("[dependencies]")
-                    assert sep, manifest + " has no [dependencies] section"
-                    head = re.sub(
-                        r'(?m)^version = "[^"]*"$', 'version = "0.0.0"', head, count=1
+                    names.append(tomllib.loads(text)["package"]["name"])
+                    text, count = re.subn(
+                        r'(\[package\]\s*\n(?:(?!\[)[^\n]*\n)*?version = ")[^"]*(")',
+                        r"\g<1>0.0.0\g<2>", text, count=1,
                     )
-                    open(manifest, "w").write(head + sep + tail)
+                    assert count == 1, manifest + " has no package version"
+                    open(manifest, "w").write(text)
                 lock = os.path.join(root, "Cargo.lock")
                 text = open(lock).read()
-                for name in ("kog", "kog-core", "kog-audio", "kog-server", "kog-terminal"):
+                for name in names:
                     text, count = re.subn(
                         r'(\[\[package\]\]\nname = "' + name + r'"\nversion = ")[^"]*(")',
                         r"\g<1>0.0.0\g<2>",
@@ -174,6 +193,8 @@
             default = craneLib.buildPackage (
               commonArgs
               // {
+                inherit cargoArtifacts;
+                KOG_BUILD_REV = inputs.self.shortRev or inputs.self.dirtyShortRev or "unknown";
                 # Embed the built frontend here, not in the shared args: the
                 # deps derivation uses a synthetic tree with no web directory.
                 # The crate falls back to a committed placeholder page.
