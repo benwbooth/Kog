@@ -26,7 +26,6 @@ foreach(arch X86 X64 ARM32 ARM64)
 endforeach()
 add_subdirectory("${NATIVE}/mpg123/ports/cmake" mpg123 EXCLUDE_FROM_ALL)
 
-file(GLOB atrac9_sources "${NATIVE}/libatrac9/C/src/*.c")
 # Upstream's public header only declares DLL import/export on Windows. Patch
 # an out-of-tree copy for static linkage; never modify the pinned checkout.
 file(COPY "${NATIVE}/libatrac9/C/src/" DESTINATION "${CMAKE_CURRENT_BINARY_DIR}/atrac9")
@@ -90,7 +89,8 @@ if(KOG_CODEC_TESTS)
     target_include_directories(celt_probe_${version} PRIVATE "${NATIVE}/celt-${version}/libcelt")
     target_sources(kog-codec-probe PRIVATE $<TARGET_OBJECTS:celt_probe_${version}>)
   endforeach()
-  target_include_directories(kog-codec-probe PRIVATE "${NATIVE}" "${VGM}/src" "${VGM}/ext_includes")
+  target_include_directories(kog-codec-probe PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/atrac9"
+    "${NATIVE}" "${VGM}/src" "${VGM}/ext_includes")
   target_link_libraries(kog-codec-probe PRIVATE kog_vgmstream kog_speex kog_atrac9 PkgConfig::FFMPEG)
   if(NOT WIN32)
     target_link_libraries(kog-codec-probe PRIVATE m)
