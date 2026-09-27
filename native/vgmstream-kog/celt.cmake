@@ -12,6 +12,18 @@ list(APPEND celt_symbols celt_header_init celt_header_to_packet celt_header_from
   kiss_ifft_stride_float kiss_fft_alloc_twiddles_float kiss_fft_free_float)
 foreach(version 0061 0110)
   set(source "${NATIVE}/celt-${version}/libcelt")
+  if(version STREQUAL "0110")
+    # Without glibc's __GNUC_PREREQ (Android/Apple), ec_tell uses the
+    # portable ec_ilog fallback. Declare it before that inline function so
+    # modern C99 compilers do not reject the implicit declaration. Keep the
+    # pinned source untouched and build the corrected copy on every target.
+    file(COPY "${source}/" DESTINATION "${CMAKE_CURRENT_BINARY_DIR}/celt-${version}")
+    set(source "${CMAKE_CURRENT_BINARY_DIR}/celt-${version}")
+    file(READ "${source}/entcode.h" entcode)
+    string(REPLACE "int ec_ilog(ec_uint32 _v);" "" entcode "${entcode}")
+    string(REPLACE "/*Shared functions.*/" "int ec_ilog(ec_uint32 _v);\n\n/*Shared functions.*/" entcode "${entcode}")
+    file(WRITE "${source}/entcode.h" "${entcode}")
+  endif()
   file(READ "${source}/Makefile.am" manifest)
   string(REPLACE "\\\n" " " manifest "${manifest}")
   string(REGEX MATCH "_la_SOURCES =[^\n]*" source_line "${manifest}")

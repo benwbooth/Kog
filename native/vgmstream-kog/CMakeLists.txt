@@ -20,6 +20,7 @@ add_subdirectory("${NATIVE}/vorbis" vorbis EXCLUDE_FROM_ALL)
 
 # Portable floating-point MPEG avoids platform assembler/tool dependencies.
 set(BUILD_LIBOUT123 OFF CACHE BOOL "" FORCE)
+set(BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
 foreach(arch X86 X64 ARM32 ARM64)
   set(HAVE_ARCH_IS_${arch} FALSE)
   set(ARCH_IS_${arch} FALSE)
