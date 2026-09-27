@@ -25,6 +25,7 @@ public:
     Q_INVOKABLE void refreshTree();
     Q_INVOKABLE void setSupportedFormats(const QString &catalog);
     Q_INVOKABLE QString filePath(const QModelIndex &index) const;
+    Q_INVOKABLE QModelIndex loadedIndex(const QString &path) const;
     Q_INVOKABLE bool isDir(const QModelIndex &index) const;
     QString searchText() const { return m_query; }
     void setSearchText(const QString &query);

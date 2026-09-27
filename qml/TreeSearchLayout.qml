@@ -58,9 +58,16 @@ QtObject {
             anotherPass = false
         }
         const started = Date.now()
+        if (!model.searchText.trim().length) {
+            // Plain browsing has no search ancestors to expand. In a large
+            // restored tree, walking every row here can keep work running for
+            // seconds while the user is already scrolling.
+            nextRow = -1
+            anotherPass = false
+        }
         for (let count = 0; nextRow >= 0 && count < 512 && Date.now() - started < 3; ++count) {
             const row = nextRow--
-            if (model.searchText.trim().length && model.isSearchAncestor(view.index(row, 0))) {
+            if (model.isSearchAncestor(view.index(row, 0))) {
                 const key = model.filePath(view.index(row, 0))
                 if (!openedAncestors[key]) {
                     view.expand(row)

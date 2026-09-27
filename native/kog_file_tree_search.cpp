@@ -20,6 +20,7 @@
 #include <QtCore/QTextBoundaryFinder>
 #include <optional>
 #include <algorithm>
+#include <utility>
 
 namespace {
 constexpr int directoryRole = Qt::UserRole + 100;
@@ -30,6 +31,12 @@ constexpr int iconRole = directoryRole + 4;
 constexpr int matchLimit = 2000;
 constexpr int nodeLimit = 12000;
 
+int compareTreeNames(const QString &left, const QString &right)
+{
+    const int folded = left.compare(right, Qt::CaseInsensitive);
+    return folded ? folded : left.compare(right);
+}
+
 // Tree rows sort alphabetically ignoring case, so names starting with
 // digits or symbols (like "_tapes") stay at the top instead of landing
 // between upper- and lowercase names under the default codepoint order.
@@ -38,7 +45,7 @@ public:
     using QStandardItem::QStandardItem;
     bool operator<(const QStandardItem &other) const override
     {
-        return text().compare(other.text(), Qt::CaseInsensitive) < 0;
+        return compareTreeNames(text(), other.text()) < 0;
     }
 };
 bool supportedFile(const QString &path, const QSet<QString> &extensions)
@@ -259,9 +266,25 @@ public:
     }
 
 private:
+    struct BrowseEntry {
+        QString name;
+        TreeEntry entry;
+    };
     struct Entries {
-        QMap<QString, TreeEntry> rows;
+        QList<BrowseEntry> rows;
+        QSet<QString> names;
         QString error;
+        qsizetype next = 0;
+        int reconcileRow = -1;
+
+        void prepare()
+        {
+            std::sort(rows.begin(), rows.end(), [](const auto &left, const auto &right) {
+                return compareTreeNames(left.name, right.name) < 0;
+            });
+            names.reserve(rows.size());
+            for (const auto &row : std::as_const(rows)) names.insert(row.name);
+        }
     };
     std::shared_ptr<std::atomic_bool> m_cancel;
     QFileSystemWatcher watcher;
@@ -278,18 +301,25 @@ private:
         connect(job, &QFutureWatcher<Entries>::finished, this,
                 [this, job, target, cancel, path, refresh] {
             job->deleteLater();
-            if (cancel->load() || !target.isValid()) return;
-            auto entries = std::make_shared<Entries>(job->result());
+            auto result = job->future().takeResult();
+            if (cancel->load() || !target.isValid()) {
+                (void)QtConcurrent::run([retired = std::move(result)] {});
+                return;
+            }
+            // Move the worker's result. Copying an implicitly shared container
+            // and erasing from it here used to clone the entire directory on
+            // the GUI thread before the first supposedly small batch.
+            auto entries = std::make_shared<Entries>(std::move(result));
             if (!entries->error.isEmpty()) {
                 setData(target, 2, fetchStateRole);
                 if (reportError) reportError(QFileInfo(path).fileName() + ": " + entries->error);
                 return;
             }
-            for (int row = rowCount(target) - 1; row >= 0; --row) {
-                const auto name = index(row, 0, target).data(QFileSystemModel::FileNameRole).toString();
-                if (refresh && !entries->rows.contains(name)) removeRow(row, target);
-                else entries->rows.remove(name);
-            }
+            entries->reconcileRow = refresh ? rowCount(target) - 1 : -1;
+            // Only an initial lazy expansion of bounded search results can
+            // already contain unsorted children. Ordinary directory rows are
+            // sorted by the worker and remain sorted throughout refreshes.
+            if (!refresh && rowCount(target)) itemFromIndex(target)->sortChildren(0);
             if (!path.startsWith("kog-archive:")) {
                 watcher.addPath(path);
                 watched.insert(path, target);
@@ -311,9 +341,10 @@ private:
                     if (!it.key().startsWith(prefix)) continue;
                     const auto name = it.key().mid(prefix.size());
                     if (name.isEmpty() || name.contains('/')) continue;
-                    entries.rows.insert(name, {kogArchiveUrl(location.archive, it.key(), it.value()),
-                                               it.value(), expandable});
+                    entries.rows.append({name, {kogArchiveUrl(location.archive, it.key(), it.value()),
+                                               it.value(), expandable}});
                 }
+                entries.prepare();
                 return entries;
             }
             QDirIterator dir(path, QDir::AllEntries | QDir::NoDotAndDotDot);
@@ -322,9 +353,10 @@ private:
                 const auto info = dir.fileInfo();
                 if (kogIsMetadataPath(info.absoluteFilePath())) continue;
                 if (!info.isDir() && !supportedFile(info.fileName(), extensions)) continue;
-                entries.rows.insert(info.fileName(), {info.absoluteFilePath(), info.isDir(),
-                    info.isDir() || kogIsArchive(info.absoluteFilePath())});
+                entries.rows.append({info.fileName(), {info.absoluteFilePath(), info.isDir(),
+                    info.isDir() || kogIsArchive(info.absoluteFilePath())}});
             }
+            entries.prepare();
             return entries;
         }));
     }
@@ -333,14 +365,52 @@ private:
                      const std::shared_ptr<Entries> &entries,
                      const std::shared_ptr<std::atomic_bool> &cancel)
     {
-        if (cancel->load() || !target.isValid()) return;
+        if (cancel->load() || !target.isValid()) {
+            (void)QtConcurrent::run([rows = std::move(entries->rows),
+                                    names = std::move(entries->names)] {});
+            return;
+        }
         auto *parent = itemFromIndex(target);
+        QElapsedTimer budget;
+        budget.start();
+        // Refresh removal also yields; never walk a hundred thousand existing
+        // QStandardItems in one callback while the user is trying to scroll.
+        while (entries->reconcileRow >= 0 && budget.elapsed() < 3) {
+            const int row = entries->reconcileRow--;
+            if (!entries->names.contains(parent->child(row)->text()))
+                parent->removeRow(row);
+        }
+        auto insertionRow = [parent](const QString &name) {
+            const int count = parent->rowCount();
+            if (!count || compareTreeNames(parent->child(count - 1)->text(), name) < 0)
+                return count;
+            int first = 0, last = count;
+            while (first < last) {
+                const int middle = first + (last - first) / 2;
+                if (compareTreeNames(parent->child(middle)->text(), name) < 0) first = middle + 1;
+                else last = middle;
+            }
+            return first;
+        };
         QList<QStandardItem *> batch;
-        for (int count = 0; count < 256 && !entries->rows.isEmpty(); ++count) {
-            auto first = entries->rows.begin();
-            const auto name = first.key();
-            const auto entry = first.value();
-            entries->rows.erase(first);
+        int batchRow = -1;
+        auto flush = [&] {
+            if (batch.isEmpty()) return;
+            parent->insertRows(batchRow, batch);
+            batch.clear();
+        };
+        for (int count = 0; entries->reconcileRow < 0 && count < 256
+             && entries->next < entries->rows.size() && budget.elapsed() < 3; ++count) {
+            const auto &next = std::as_const(entries->rows).at(entries->next++);
+            const auto &name = next.name;
+            const auto &entry = next.entry;
+            int row = insertionRow(name);
+            if (row < parent->rowCount() && parent->child(row)->text() == name) continue;
+            if (!batch.isEmpty() && row != batchRow) {
+                flush();
+                row = insertionRow(name);
+            }
+            batchRow = row;
             auto *item = new KogTreeItem(name);
             item->setData(name, QFileSystemModel::FileNameRole);
             item->setData(entry.path, QFileSystemModel::FilePathRole);
@@ -351,15 +421,18 @@ private:
             item->setEditable(false);
             batch.append(item);
         }
-        parent->appendRows(batch);
-        if (!entries->rows.isEmpty()) {
+        flush();
+        if (entries->reconcileRow >= 0 || entries->next < entries->rows.size()) {
             // Yield between batches so a large folder does not monopolize the UI.
-            QTimer::singleShot(0, this, [this, target, entries, cancel] {
+            QTimer::singleShot(4, this, [this, target, entries, cancel] {
                 appendBatch(target, entries, cancel);
             });
         } else {
-            parent->sortChildren(0);
             setData(target, 2, fetchStateRole);
+            // Free a large worker snapshot on a worker as well. The model now
+            // owns its displayed values; snapshot destruction needs no UI.
+            (void)QtConcurrent::run([rows = std::move(entries->rows),
+                                    names = std::move(entries->names)] {});
         }
     }
 };
@@ -429,6 +502,42 @@ bool KogFileTreeSearch::isSearchAncestor(const QModelIndex &index) const
 QString KogFileTreeSearch::filePath(const QModelIndex &index) const
 {
     return index.data(QFileSystemModel::FilePathRole).toString();
+}
+
+QModelIndex KogFileTreeSearch::loadedIndex(const QString &path) const
+{
+    // Walk only the path's ancestors. QML used to cross the language boundary
+    // for every visible row on each click and each expansion-restore timer.
+    const auto location = kogArchiveLocation(path);
+    const auto physical = location.archive.isEmpty()
+        ? path : QDir(location.archive).filePath(location.entry);
+    const auto relative = QDir(m_root).relativeFilePath(physical);
+    if (relative == ".." || relative.startsWith("../") || QDir::isAbsolutePath(relative)) return {};
+    auto parent = sourceModel()->index(0, 0);
+    if (relative == ".") return mapFromSource(parent);
+    for (const auto &name : relative.split('/', Qt::SkipEmptyParts)) {
+        const int count = sourceModel()->rowCount(parent);
+        int row = 0;
+        if (sourceModel() == m_files.get()) {
+            int last = count;
+            while (row < last) {
+                const int middle = row + (last - row) / 2;
+                const auto candidate = sourceModel()->index(middle, 0, parent);
+                if (compareTreeNames(candidate.data(QFileSystemModel::FileNameRole).toString(), name) < 0)
+                    row = middle + 1;
+                else last = middle;
+            }
+        } else {
+            // Search results are bounded and arrive in path order. They may
+            // not yet have the case-folded order of a browsed directory.
+            while (row < count && sourceModel()->index(row, 0, parent)
+                   .data(QFileSystemModel::FileNameRole).toString() != name) ++row;
+        }
+        const auto child = sourceModel()->index(row, 0, parent);
+        if (!child.isValid() || child.data(QFileSystemModel::FileNameRole).toString() != name) return {};
+        parent = child;
+    }
+    return mapFromSource(parent);
 }
 
 QString KogFileTreeSearch::displayPath(const QString &path) const

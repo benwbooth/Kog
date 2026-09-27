@@ -110,8 +110,9 @@ static void writeZipEntries(const QString &path,
 
 int main(int argc, char **argv)
 {
+    std::setvbuf(stdout, nullptr, _IOLBF, 0);
     QApplication app(argc, argv);
-    const QString formats = R"({"groups":[{"extensions":["MID","FlAc","mp3","zip","7z","m3u","cue"]}]})";
+    const QString formats = R"({"groups":[{"extensions":["MID","FlAc","mp3","sap","zip","7z","m3u","cue"]}]})";
     check(kogIsMetadataPath("Album/._song.flac"), "AppleDouble is metadata");
     check(kogIsMetadataPath("__MACOSX/Album/song.flac"), "Metadata descendants are excluded");
     check(kogIsMetadataPath("Album/DESKTOP.INI"), "Windows metadata is case insensitive");
@@ -457,20 +458,37 @@ int main(int argc, char **argv)
                     view->findChild<QObject *>("tree")->property("rows").toInt());
         return 0;
     }
-    if (argc == 2 && QString::fromUtf8(argv[1]) == "--scroll-benchmark") {
+    if (argc >= 2 && QString::fromUtf8(argv[1]) == "--scroll-benchmark") {
         QTemporaryDir manyFiles;
         check(manyFiles.isValid(), "Create scroll benchmark folder");
-        constexpr int fileCount = 12000;
+        const int fileCount = argc > 2 ? QString::fromUtf8(argv[2]).toInt() : 12000;
+        check(fileCount > 0 && fileCount <= 500000, "Benchmark size is between 1 and 500000");
         for (int i = 0; i < fileCount; ++i) {
             const auto suffix = i % 3 == 0 ? "mp3" : i % 3 == 1 ? "flac" : "mid";
             QFile file(manyFiles.filePath(QStringLiteral("Audiobook %1 - A long title with chapters and names that should be elided.%2")
                 .arg(i, 5, 10, QLatin1Char('0')).arg(suffix)));
             check(file.open(QIODevice::WriteOnly), "Create scroll benchmark file");
         }
+        QElapsedTimer loading, heartbeat;
+        loading.start(); heartbeat.start();
+        qint64 longestInputGap = 0;
+        QTimer input;
+        input.setInterval(10);
+        QObject::connect(&input, &QTimer::timeout, [&] {
+            longestInputGap = qMax(longestInputGap, heartbeat.restart());
+        });
+        input.start();
         model.setRootPath(manyFiles.path());
         auto *tree = view->findChild<QObject *>("tree");
-        waitFor([&] { return tree->property("rows").toInt() == fileCount; },
-                "Load benchmark rows into real TreeView");
+        while (loading.elapsed() < 180000 && tree->property("rows").toInt() != fileCount) {
+            QCoreApplication::processEvents();
+            QThread::msleep(1);
+        }
+        check(tree->property("rows").toInt() == fileCount, "Load benchmark rows into real TreeView");
+        input.stop();
+        std::printf("Tree loading: rows=%d, complete=%lld ms, longest input gap=%lld ms\n",
+                    fileCount, static_cast<long long>(loading.elapsed()),
+                    static_cast<long long>(longestInputGap));
         check(!qobject_cast<QQuickWindow *>(view.get())->grabWindow().isNull(),
               "Warm up Wayland renderer before scroll measurements");
         QElapsedTimer total, step;
@@ -479,7 +497,8 @@ int main(int argc, char **argv)
         constexpr int steps = 120;
         for (int i = 0; i < steps; ++i) {
             step.start();
-            tree->setProperty("contentY", double(i * 100 * 26));
+            const int row = (i < steps / 2 ? i : steps - 1 - i) * (fileCount - 1) / (steps / 2);
+            tree->setProperty("contentY", double(row * 26));
             QCoreApplication::processEvents();
             check(!qobject_cast<QQuickWindow *>(view.get())->grabWindow().isNull(),
                   "Render benchmark frame");
@@ -492,6 +511,20 @@ int main(int argc, char **argv)
                     tree->property("rows").toInt(), steps,
                     static_cast<long long>(total.elapsed()), static_cast<long long>(longestStep),
                     view->property("reusedRows").toInt());
+        QElapsedTimer lookups;
+        lookups.start();
+        for (int i = 0; i < 1000; ++i) {
+            const int row = (i * 7919) % fileCount;
+            const auto suffix = row % 3 == 0 ? "mp3" : row % 3 == 1 ? "flac" : "mid";
+            const auto path = manyFiles.filePath(QStringLiteral("Audiobook %1 - A long title with chapters and names that should be elided.%2")
+                .arg(row, 5, 10, QLatin1Char('0')).arg(suffix));
+            check(model.filePath(model.loadedIndex(path)) == path, "Find scattered loaded paths without a full model walk");
+        }
+        std::printf("Tree lookup: 1000 paths in %lld ms\n", static_cast<long long>(lookups.elapsed()));
+        QElapsedTimer reset;
+        reset.start();
+        model.setRootPath(fixture.path());
+        std::printf("Tree root change: %lld ms\n", static_cast<long long>(reset.elapsed()));
         return 0;
     }
     const bool syntheticWheel = argc == 2 && QString::fromUtf8(argv[1]) == "--wheel-synthetic";
@@ -778,6 +811,11 @@ int main(int argc, char **argv)
         sortedNames << model.index(row, 0, sortDir).data(QFileSystemModel::FileNameRole).toString();
     check(sortedNames == QStringList({"10-first.flac", "_top.flac", "apple.flac", "banana.flac", "Zebra.flac"}),
           "Tree sorts alphabetically ignoring case with symbols first");
+    check(model.loadedIndex(base.filePath("Sort/apple.flac")) == childNamed(model, sortDir, "apple.flac"),
+          "Loaded path lookup descends through sorted folder names");
+    check(model.loadedIndex(base.path()) == model.viewRootIndex(), "Loaded path lookup recognizes the root");
+    check(!model.loadedIndex(base.filePath("../outside.flac")).isValid(), "Loaded path lookup stays inside the current root");
+    check(!model.loadedIndex(base.filePath("Sort/missing.flac")).isValid(), "Loaded path lookup does not load missing files");
 
     const auto zip = base.filePath(QString::fromUtf8("Pack + 日本語.zip"));
     writeArchive(zip);
@@ -846,6 +884,8 @@ int main(int argc, char **argv)
     check(nestedNames == QStringList({"Disc", "inner-song.flac"}),
           "Nested levels sort like the rest of the tree");
     auto nestedSong = childNamed(model, nestedInner, "inner-song.flac");
+    check(model.loadedIndex(model.filePath(nestedSong)) == nestedSong,
+          "Loaded path lookup preserves nested archive identities");
     auto nestedLocation = kogArchiveLocation(model.filePath(nestedSong));
     check(nestedLocation.archive == base.filePath("Nested.zip")
               && nestedLocation.entry == "inner.zip/inner-song.flac" && !nestedLocation.directory,

@@ -509,25 +509,24 @@ ApplicationWindow {
             showSelectTimer.stop()
             return
         }
-            try {
-                for (let candidate = 0; candidate < directoryTree.rows; ++candidate) {
-                    if (treePathAtRow(candidate) !== path)
-                        continue
-                    directoryTree.selectionModel.clear()
-                    const index = directoryTree.index(candidate, 0)
-                    directoryTree.selectionModel.select(index,
-                        ItemSelectionModel.Select | ItemSelectionModel.Rows)
-                    // Selecting does not scroll: a row far outside the
-                    // viewport has no delegate yet, so the delegate's own
-                    // centering cannot fire either. Pull the row in first;
-                    // its delegate then finishes the centering once it exists.
-                    directoryTree.positionViewAtRow(candidate, TableView.Contain)
-                    // The delegate centers the pane; selection order matters, so
-                    // the flag is only cleared after it has fired.
-                    showSelectTimer.stop()
-                    return
-                }
-            } catch (error) { /* the model may still be settling */ }
+        try {
+            const index = fileTreeModel.loadedIndex(path)
+            const candidate = directoryTree.rowAtIndex(index)
+            if (candidate >= 0) {
+                directoryTree.selectionModel.clear()
+                directoryTree.selectionModel.select(index,
+                    ItemSelectionModel.Select | ItemSelectionModel.Rows)
+                // Selecting does not scroll: a row far outside the
+                // viewport has no delegate yet, so the delegate's own
+                // centering cannot fire either. Pull the row in first;
+                // its delegate then finishes the centering once it exists.
+                directoryTree.positionViewAtRow(candidate, TableView.Contain)
+                // The delegate centers the pane; selection order matters, so
+                // the flag is only cleared after it has fired.
+                showSelectTimer.stop()
+                return
+            }
+        } catch (error) { /* the model may still be settling */ }
         root.showSelectAttempts += 1
         if (root.showSelectAttempts >= 40) {
             showSelectTimer.stop()
@@ -540,15 +539,14 @@ ApplicationWindow {
             treeExpandRestoreTimer.stop()
             return
         }
-        // One model walk per retry, regardless of how many saved folders
-        // there are. A path-by-path walk used to block scrolling on large
-        // trees while the session was still being restored.
-        const wanted = new Set(root.pendingTreeExpanded)
+        // Look up remembered paths through their ancestors instead of walking
+        // every row in a possibly huge directory on the GUI thread.
         const completed = new Set()
         try {
-            for (let row = 0; row < directoryTree.rows; ++row) {
-                const path = treePathAtRow(row)
-                if (!wanted.has(path))
+            for (const path of root.pendingTreeExpanded) {
+                const index = fileTreeModel.loadedIndex(path)
+                const row = directoryTree.rowAtIndex(index)
+                if (row < 0)
                     continue
                 if (!directoryTree.isExpanded(row))
                     directoryTree.expand(row)
@@ -565,25 +563,27 @@ ApplicationWindow {
     }
 
     function setTreeSelection(paths, currentRow, anchorRow) {
-        const requested = []
-        for (const path of paths) {
-            if (path.length > 0 && requested.indexOf(path) === -1)
-                requested.push(path)
-        }
+        const requested = Array.from(new Set(paths.filter(path => path.length > 0)))
 
         directoryTree.selectionModel.clear()
         const ordered = []
-        for (let row = 0; row < directoryTree.rows; ++row) {
-            const path = treePathAtRow(row)
-            if (requested.indexOf(path) === -1)
-                continue
-            const index = directoryTree.index(row, 0)
+        const found = []
+        for (const path of requested) {
+            const index = fileTreeModel.loadedIndex(path)
+            const row = directoryTree.rowAtIndex(index)
+            if (row >= 0)
+                found.push({ path, index, row })
+        }
+        found.sort((left, right) => left.row - right.row)
+        for (const entry of found) {
+            const index = entry.index
             directoryTree.selectionModel.select(index,
                 ItemSelectionModel.Select | ItemSelectionModel.Rows)
-            ordered.push(path)
+            ordered.push(entry.path)
         }
+        const included = new Set(ordered)
         for (const path of requested) {
-            if (ordered.indexOf(path) === -1)
+            if (!included.has(path))
                 ordered.push(path)
         }
         treeSelectedPaths = ordered
@@ -607,13 +607,16 @@ ApplicationWindow {
             & (Qt.ControlModifier | Qt.MetaModifier)) !== 0
         if (extend && treeSelectionAnchorRow >= 0) {
             const paths = toggle ? treeSelectedPaths.slice() : []
+            const included = new Set(paths)
             const first = Math.min(treeSelectionAnchorRow, row)
             const last = Math.max(treeSelectionAnchorRow, row)
             for (let candidate = first; candidate <= last; ++candidate) {
                 const candidatePath = treePathAtRow(candidate)
                 if (candidatePath.length > 0
-                        && paths.indexOf(candidatePath) === -1)
+                        && !included.has(candidatePath)) {
                     paths.push(candidatePath)
+                    included.add(candidatePath)
+                }
             }
             setTreeSelection(paths, row, treeSelectionAnchorRow)
             return false
