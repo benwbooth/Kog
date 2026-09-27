@@ -58,6 +58,9 @@ jobs:
   flatpak:
     name: Sign Flatpak repository
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pages: read
     steps:
       - uses: actions/checkout@v6
       - name: Install repository tools
