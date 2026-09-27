@@ -1,5 +1,8 @@
 // Extracted unchanged from pinned ISC nall/path.cpp by vendor.py.
 #include <nall/path.hpp>
+#if defined(PLATFORM_WINDOWS)
+#include <windows.h>
+#endif
 namespace nall::Path {
 NALL_HEADER_INLINE auto temporary() -> string {
   #if defined(PLATFORM_WINDOWS)

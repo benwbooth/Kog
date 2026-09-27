@@ -98,7 +98,7 @@ for p in (dst/'ares/sfc').rglob('*'):
 a=(src/'nall/nall/path.cpp').read_text()
 begin=a.index('NALL_HEADER_INLINE auto temporary()')
 end=a.index('\n}\n',begin)+3
-(Path(__file__).resolve().parent/'nall-path.cpp').write_text('// Extracted unchanged from pinned ISC nall/path.cpp by vendor.py.\n#include <nall/path.hpp>\nnamespace nall::Path {\n'+a[begin:end]+'\n}\n')
+(Path(__file__).resolve().parent/'nall-path.cpp').write_text('// Extracted unchanged from pinned ISC nall/path.cpp by vendor.py.\n#include <nall/path.hpp>\n#if defined(PLATFORM_WINDOWS)\n#include <windows.h>\n#endif\nnamespace nall::Path {\n'+a[begin:end]+'\n}\n')
 p=dst/'libco/settings.h'
 t=p.read_text().replace('#define thread_local __thread','#if defined(_MSC_VER)\n      #define thread_local __declspec(thread)\n    #else\n      #define thread_local __thread\n    #endif')
 t+='\n#ifdef LIBCO_MPROTECT\n#error "Kog SNSF requires statically linked libco switch code"\n#endif\n'

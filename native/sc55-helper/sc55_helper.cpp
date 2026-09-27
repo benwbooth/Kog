@@ -182,6 +182,7 @@ Schedule readSchedule(const fs::path& path)
     return schedule;
 }
 
+#ifndef KOG_SC55_EMBEDDED
 uint64_t parseUnsigned(const char* text, const char* label)
 {
     uint64_t value = 0;
@@ -191,6 +192,7 @@ uint64_t parseUnsigned(const char* text, const char* label)
         throw std::runtime_error(std::string("invalid ") + label);
     return value;
 }
+#endif
 
 uint64_t framesForDuration(uint64_t nanoseconds, uint32_t sampleRate)
 {
