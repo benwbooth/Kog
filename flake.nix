@@ -46,6 +46,12 @@
           withGPL = false;
           withVersion3 = false;
         };
+        # Nixpkgs' libarchive omits liblz4 and otherwise launches an external
+        # lz4 executable. Keep archive extraction inside the shared backend.
+        kogLibarchive = pkgs.libarchive.overrideAttrs (previous: {
+          buildInputs = (previous.buildInputs or [ ]) ++ [ pkgs.lz4 ];
+          configureFlags = (previous.configureFlags or [ ]) ++ [ "--with-lz4" ];
+        });
         linuxRuntimeLibraries = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
           pkgs.libxcb-cursor
         ];
@@ -139,7 +145,7 @@
               dontUseNinjaBuild = true;
               dontUseNinjaCheck = true;
               dontUseNinjaInstall = true;
-              buildInputs = qtModules ++ [ kogFfmpeg pkgs.libarchive pkgs.alsa-lib pkgs.zlib pkgs.libxcb-cursor ];
+              buildInputs = qtModules ++ [ kogFfmpeg kogLibarchive pkgs.alsa-lib pkgs.zlib pkgs.libxcb-cursor ];
               QMAKE = "${qtEnv}/bin/qmake";
               LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
               preBuild = ''
@@ -204,7 +210,6 @@
               clang
               clippy
               cmake
-              libarchive
               ninja
               nodejs
               pkg-config
@@ -217,7 +222,7 @@
               watchexec
               zlib
             ])
-            ++ [ kogFfmpeg ]
+            ++ [ kogFfmpeg kogLibarchive ]
             ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
               pkgs.alsa-lib
               pkgs.libxcb-cursor

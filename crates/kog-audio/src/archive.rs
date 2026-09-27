@@ -829,8 +829,10 @@ pub mod tests {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/codec-libs");
         let expected = std::fs::read(root.join("tone.wav")).unwrap();
-        for name in ["lzma.7z", "lzma2.7z", "bzip2.zip", "lzma.zip",
-            "tone.wav.xz", "tone.wav.bz2", "zstd.tar", "lz4.tar"] {
+        // These are the archive containers advertised by Kog. The native
+        // archive probe additionally tests raw XZ/bzip2 and Zstd/LZ4 tar
+        // wrappers, without making those wrappers new UI-supported formats.
+        for name in ["lzma.7z", "lzma2.7z", "bzip2.zip", "lzma.zip"] {
             let archive = super::ExtractedArchive::open(&root.join(name))
                 .unwrap_or_else(|error| panic!("{name}: {error}"));
             assert!(archive.warnings.is_empty(), "{name}: {:?}", archive.warnings);
