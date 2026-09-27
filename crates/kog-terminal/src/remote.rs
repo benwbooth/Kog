@@ -158,16 +158,7 @@ impl RemoteSettings {
             .build()
             .into();
         let mut request = agent.get(url.as_str());
-        let authorization = match self.auth_mode.as_str() {
-            "token" if !self.token.is_empty() => Some(format!("Bearer {}", self.token)),
-            "basic" if !self.username.is_empty() => Some(format!(
-                "Basic {}",
-                base64::engine::general_purpose::STANDARD
-                    .encode(format!("{}:{}", self.username, self.password))
-            )),
-            _ => None,
-        };
-        if let Some(value) = authorization.as_deref() {
+        if let Some(value) = self.authorization() {
             request = request.header("Authorization", value);
         }
         let response = request.call().map_err(|error| match error {
@@ -178,6 +169,34 @@ impl RemoteSettings {
         })?;
         serde_json::from_reader(response.into_body().as_reader())
             .map_err(|error| format!("Unexpected response from server: {error}"))
+    }
+
+    fn authorization(&self) -> Option<String> {
+        match self.auth_mode.as_str() {
+            "token" if !self.token.is_empty() => Some(format!("Bearer {}", self.token)),
+            "basic" if !self.username.is_empty() => Some(format!(
+                "Basic {}",
+                base64::engine::general_purpose::STANDARD
+                    .encode(format!("{}:{}", self.username, self.password))
+            )),
+            _ => None,
+        }
+    }
+
+    fn search_control(&self, action: &str, generation: u64, paused: bool) -> Result<(), String> {
+        let url = self.endpoint(&format!("/api/library/search/{action}"))?;
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_global(Some(Duration::from_secs(15)))
+            .build()
+            .into();
+        let mut request = agent.post(url.as_str());
+        if let Some(value) = self.authorization() {
+            request = request.header("Authorization", value);
+        }
+        request
+            .send_json(serde_json::json!({ "generation": generation, "paused": paused }))
+            .map_err(|error| format!("Could not {action} search: {error}"))?;
+        Ok(())
     }
 
     /// Ask the server to turn multi-song locators into distinct playable
@@ -241,8 +260,9 @@ impl RemoteSettings {
         &self,
         query: &str,
         cancelled: impl Fn() -> bool,
-        mut progress: impl FnMut(RemoteSearchProgress),
-    ) -> Result<(String, Vec<RemoteSearchHit>), String> {
+        paused: impl Fn() -> bool,
+        mut progress: impl FnMut(&str, Vec<RemoteSearchHit>, RemoteSearchProgress),
+    ) -> Result<(), String> {
         let root = self.browse(None)?.path;
         let mut url = self.endpoint("/api/library/search")?;
         url.query_pairs_mut().append_pair("q", query);
@@ -250,37 +270,58 @@ impl RemoteSettings {
         let generation = page["generation"]
             .as_u64()
             .ok_or_else(|| "Server search response has no generation".to_owned())?;
-        let mut results = Vec::new();
-        loop {
-            if cancelled() {
-                return Err("Search superseded".to_owned());
+        let mut offset = 0;
+        let mut server_paused = false;
+        let result = (|| {
+            loop {
+                if cancelled() {
+                    return Err("Search superseded".to_owned());
+                }
+                let requested_pause = paused();
+                if server_paused != requested_pause {
+                    self.search_control("pause", generation, requested_pause)?;
+                    server_paused = requested_pause;
+                }
+                let mut results = Vec::new();
+                for item in page["results"].as_array().into_iter().flatten() {
+                    let file: RemoteFile = serde_json::from_value(item.clone())
+                        .map_err(|error| format!("Invalid server search result: {error}"))?;
+                    results.push(RemoteSearchHit {
+                        file,
+                        is_dir: item["is_dir"].as_bool().unwrap_or(false),
+                    });
+                }
+                offset += results.len();
+                progress(
+                    &root,
+                    results,
+                    RemoteSearchProgress {
+                        matches: page["total"].as_u64().unwrap_or(offset as u64) as usize,
+                        scanned: page["scanned"].as_u64().unwrap_or_default(),
+                        archive_count: page["archive_count"].as_u64().unwrap_or_default(),
+                        archives_scanned: page["archives_scanned"].as_u64().unwrap_or_default(),
+                        unreadable_archives: page["unreadable_archives"]
+                            .as_u64()
+                            .unwrap_or_default(),
+                        scanning_archives: page["scanning_archives"].as_bool().unwrap_or(false),
+                    },
+                );
+                let total = page["total"].as_u64().unwrap_or(offset as u64) as usize;
+                if (page["done"].as_bool().unwrap_or(false) && offset >= total) || offset >= 2_000 {
+                    return Ok(());
+                }
+                std::thread::sleep(Duration::from_millis(120));
+                let mut url = self.endpoint("/api/library/search/more")?;
+                url.query_pairs_mut()
+                    .append_pair("g", &generation.to_string())
+                    .append_pair("offset", &offset.to_string());
+                page = self.get_json(url)?;
             }
-            for item in page["results"].as_array().into_iter().flatten() {
-                let file: RemoteFile = serde_json::from_value(item.clone())
-                    .map_err(|error| format!("Invalid server search result: {error}"))?;
-                results.push(RemoteSearchHit {
-                    file,
-                    is_dir: item["is_dir"].as_bool().unwrap_or(false),
-                });
-            }
-            progress(RemoteSearchProgress {
-                matches: page["total"].as_u64().unwrap_or(results.len() as u64) as usize,
-                scanned: page["scanned"].as_u64().unwrap_or_default(),
-                archive_count: page["archive_count"].as_u64().unwrap_or_default(),
-                archives_scanned: page["archives_scanned"].as_u64().unwrap_or_default(),
-                unreadable_archives: page["unreadable_archives"].as_u64().unwrap_or_default(),
-                scanning_archives: page["scanning_archives"].as_bool().unwrap_or(false),
-            });
-            if page["done"].as_bool().unwrap_or(false) || results.len() >= 2_000 {
-                return Ok((root, results));
-            }
-            std::thread::sleep(Duration::from_millis(120));
-            let mut url = self.endpoint("/api/library/search/more")?;
-            url.query_pairs_mut()
-                .append_pair("g", &generation.to_string())
-                .append_pair("offset", &results.len().to_string());
-            page = self.get_json(url)?;
+        })();
+        if result.is_err() {
+            let _ = self.search_control("cancel", generation, false);
         }
+        result
     }
 
     pub fn stream_url(&self, file: &RemoteFile) -> Result<String, String> {
@@ -337,6 +378,170 @@ impl RemoteFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn search_server(
+        exchanges: Vec<(&'static str, Option<serde_json::Value>, serde_json::Value)>,
+    ) -> (RemoteSettings, std::thread::JoinHandle<()>) {
+        use std::io::Read;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let settings = RemoteSettings {
+            server_url: format!("http://{}", listener.local_addr().unwrap()),
+            token: "test-search-token".into(),
+            ..RemoteSettings::default()
+        };
+        let worker = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            for (expected, body, response) in exchanges {
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(
+                                std::time::Instant::now() < deadline,
+                                "missing request: {expected}"
+                            );
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => panic!("{error}"),
+                    }
+                };
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut bytes = Vec::new();
+                loop {
+                    let mut byte = [0];
+                    stream.read_exact(&mut byte).unwrap();
+                    bytes.push(byte[0]);
+                    if bytes.ends_with(b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let headers = String::from_utf8(bytes).unwrap();
+                assert!(
+                    headers.starts_with(expected),
+                    "expected {expected}, got {headers}"
+                );
+                assert!(
+                    headers
+                        .to_lowercase()
+                        .contains("authorization: bearer test-search-token")
+                );
+                let length = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().unwrap())
+                    })
+                    .unwrap_or(0);
+                let mut actual_body = vec![0; length];
+                stream.read_exact(&mut actual_body).unwrap();
+                if let Some(body) = body {
+                    assert_eq!(
+                        serde_json::from_slice::<serde_json::Value>(&actual_body).unwrap(),
+                        body
+                    );
+                }
+                let response = response.to_string();
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", response.len(), response).unwrap();
+            }
+        });
+        (settings, worker)
+    }
+
+    #[test]
+    fn remote_search_streams_hits_and_pauses_resumes_and_cancels_its_generation() {
+        use serde_json::json;
+        let page = json!({"generation":7,"results":[],"total":1,"done":false,"scanned":12});
+        let mut first = page.clone();
+        first["results"] = json!([{"name":"Phantasy Star.mp3","path":"/music/Phantasy Star.mp3"}]);
+        let (settings, server) = search_server(vec![
+            ("GET /api/library HTTP/", None, json!({"path":"/music"})),
+            ("GET /api/library/search?q=Phantasy+Star HTTP/", None, first),
+            (
+                "GET /api/library/search/more?g=7&offset=1 HTTP/",
+                None,
+                page.clone(),
+            ),
+            (
+                "POST /api/library/search/pause HTTP/",
+                Some(json!({"generation":7,"paused":true})),
+                json!({"ok":true}),
+            ),
+            (
+                "GET /api/library/search/more?g=7&offset=1 HTTP/",
+                None,
+                page.clone(),
+            ),
+            (
+                "POST /api/library/search/pause HTTP/",
+                Some(json!({"generation":7,"paused":false})),
+                json!({"ok":true}),
+            ),
+            (
+                "GET /api/library/search/more?g=7&offset=1 HTTP/",
+                None,
+                page,
+            ),
+            (
+                "POST /api/library/search/cancel HTTP/",
+                Some(json!({"generation":7,"paused":false})),
+                json!({"ok":true}),
+            ),
+        ]);
+        let paused = std::cell::Cell::new(false);
+        let cancelled = std::cell::Cell::new(false);
+        let mut batches = 0;
+        let result = settings.search(
+            "Phantasy Star",
+            || cancelled.get(),
+            || paused.get(),
+            |root, hits, progress| {
+                assert_eq!(root, "/music");
+                assert_eq!(progress.scanned, 12);
+                batches += 1;
+                if batches == 1 {
+                    assert_eq!(hits.len(), 1, "hits must be delivered before completion");
+                    paused.set(true);
+                } else {
+                    assert!(hits.is_empty(), "polling must not duplicate results");
+                    paused.set(false);
+                    if batches == 3 {
+                        cancelled.set(true);
+                    }
+                }
+            },
+        );
+        assert_eq!(result.unwrap_err(), "Search superseded");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn remote_search_drains_all_pages_even_when_scanner_is_done() {
+        use serde_json::json;
+        let page = |name| json!({"generation":7,"results":[{"name":name,"path":format!("/music/{name}")}],"total":2,"done":true});
+        let (settings, server) = search_server(vec![
+            ("GET /api/library HTTP/", None, json!({"path":"/music"})),
+            (
+                "GET /api/library/search?q=Star HTTP/",
+                None,
+                page("Star 1.mp3"),
+            ),
+            (
+                "GET /api/library/search/more?g=7&offset=1 HTTP/",
+                None,
+                page("Star 2.mp3"),
+            ),
+        ]);
+        let mut hits = Vec::new();
+        settings
+            .search("Star", || false, || false, |_, batch, _| hits.extend(batch))
+            .unwrap();
+        assert_eq!(hits.len(), 2);
+        server.join().unwrap();
+    }
 
     #[test]
     fn stream_url_preserves_archive_locator_and_token() {

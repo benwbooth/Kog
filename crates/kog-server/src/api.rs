@@ -1325,7 +1325,7 @@ pub async fn search(State(state): State<AppState>, Query(query): Query<SearchQue
     if let Err(error) = worker {
         return bad_request(&format!("starting the search failed: {error}"));
     }
-    *state.search.job.lock().unwrap() = Some(SearchJob { shared });
+    *state.search.job.lock().unwrap() = Some(SearchJob { generation, shared });
     // Give the walk a beat so the first response already carries matches.
     std::thread::sleep(std::time::Duration::from_millis(120));
     search_snapshot(&state, generation, 0)
@@ -1442,9 +1442,32 @@ pub async fn pause_search(
 ) -> Response {
     let paused = body["paused"].as_bool().unwrap_or(false);
     if let Some(job) = state.search.job.lock().unwrap().as_ref() {
+        if body["generation"]
+            .as_u64()
+            .is_some_and(|generation| generation != job.generation)
+        {
+            return (axum::http::StatusCode::CONFLICT, "Search superseded").into_response();
+        }
         job.shared.paused.store(paused, Ordering::Relaxed);
     }
     axum::Json(serde_json::json!({ "ok": true, "paused": paused })).into_response()
+}
+
+/// Cancel only the requesting client's search, so a stale client cannot stop
+/// a newer query started by another frontend.
+pub async fn cancel_search(
+    State(state): State<AppState>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> Response {
+    if let Some(job) = state.search.job.lock().unwrap().as_ref() {
+        if body["generation"].as_u64() != Some(job.generation) {
+            return (axum::http::StatusCode::CONFLICT, "Search superseded").into_response();
+        }
+        job.shared.cancel.store(true, Ordering::Relaxed);
+        job.shared.paused.store(false, Ordering::Relaxed);
+        job.shared.done.store(true, Ordering::Relaxed);
+    }
+    axum::Json(serde_json::json!({ "ok": true })).into_response()
 }
 
 fn cached_or_downloaded_cover(
@@ -1591,11 +1614,21 @@ pub struct SearchShared {
 }
 
 struct SearchJob {
+    generation: u64,
     shared: Arc<SearchShared>,
 }
 
+impl SearchShared {
+    fn wait_until_ready(&self) -> bool {
+        while self.paused.load(Ordering::Relaxed) && !self.cancel.load(Ordering::Relaxed) {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        !self.cancel.load(Ordering::Relaxed)
+    }
+}
+
 /// Native frontend handle for the same background search used by the web UI.
-/// Dropping the handle cancels the walk before it opens another directory.
+/// Dropping the handle cancels the walk, including while it is paused.
 pub struct LocalSearch {
     shared: Arc<SearchShared>,
 }
@@ -1621,6 +1654,14 @@ pub struct LocalSearchProgress {
 }
 
 impl LocalSearch {
+    pub fn set_paused(&self, paused: bool) {
+        self.shared.paused.store(paused, Ordering::Relaxed);
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.shared.paused.load(Ordering::Relaxed) && !self.shared.done.load(Ordering::Relaxed)
+    }
+
     pub fn start(library: Arc<Library>, query: &str) -> Result<Self, String> {
         let tokens: Vec<String> = query
             .trim()
@@ -1783,28 +1824,26 @@ fn walk_library_for_search(
     let mut archives: Vec<std::path::PathBuf> = Vec::new();
     let mut limited = false;
     let mut published = 0_usize;
-    let cancel = || shared.cancel.load(Ordering::Relaxed);
-    let publish =
-        |shared: &SearchShared, matches: &mut Vec<SearchMatch>, limited: &mut bool, published: &mut usize| {
-            *published += matches.len();
-            if *published >= SEARCH_MATCH_LIMIT {
-                *limited = true;
-            }
-            if !matches.is_empty() {
-                shared.matches.lock().unwrap().extend(matches.drain(..));
-            }
-        };
+    let publish = |shared: &SearchShared,
+                   matches: &mut Vec<SearchMatch>,
+                   limited: &mut bool,
+                   published: &mut usize| {
+        *published += matches.len();
+        if *published >= SEARCH_MATCH_LIMIT {
+            *limited = true;
+        }
+        if !matches.is_empty() {
+            shared.matches.lock().unwrap().extend(matches.drain(..));
+        }
+    };
 
     // Filesystem pass: every folder and supported file, a match when its own
     // name carries every word, or when it sits under a folder that matched
     // (the folder's whole contents are exposed, matching the desktop).
     let mut pending = vec![(root, false)];
     while let Some((directory, inherited)) = pending.pop() {
-        if cancel() {
+        if !shared.wait_until_ready() {
             return;
-        }
-        while shared.paused.load(Ordering::Relaxed) && !cancel() {
-            std::thread::sleep(std::time::Duration::from_millis(40));
         }
         // The flag is inherited by every child when a directory matches.
         // Rechecking all previously matched directories here made a broad
@@ -1815,7 +1854,7 @@ fn walk_library_for_search(
             continue;
         };
         for entry in entries.filter_map(Result::ok) {
-            if cancel() {
+            if !shared.wait_until_ready() {
                 return;
             }
             let Ok(file_type) = entry.file_type() else {
@@ -1913,12 +1952,7 @@ fn walk_library_for_search(
                         {
                             break;
                         }
-                        while shared.paused.load(Ordering::Relaxed)
-                            && !shared.cancel.load(Ordering::Relaxed)
-                        {
-                            std::thread::sleep(std::time::Duration::from_millis(40));
-                        }
-                        if shared.cancel.load(Ordering::Relaxed) {
+                        if !shared.wait_until_ready() {
                             break;
                         }
                         let index = next_archive.fetch_add(1, Ordering::Relaxed);
@@ -1935,7 +1969,7 @@ fn walk_library_for_search(
                         };
                         let mut found = Vec::new();
                         for member in members.iter() {
-                            if shared.cancel.load(Ordering::Relaxed) {
+                            if !shared.wait_until_ready() {
                                 break;
                             }
                             let entry = member.trim_end_matches('/');
@@ -2520,6 +2554,7 @@ pub fn router() -> axum::Router<AppState> {
         .route("/api/library/search", get(search))
         .route("/api/library/search/more", get(search_more))
         .route("/api/library/search/pause", post(pause_search))
+        .route("/api/library/search/cancel", post(cancel_search))
         .route("/api/media/download", get(media_download))
         .route("/api/art", get(art))
         .route("/api/metadata", get(metadata_one).post(metadata_batch))
@@ -2550,6 +2585,154 @@ pub fn router() -> axum::Router<AppState> {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn local_search_pauses_inside_a_folder_and_resumes_without_losing_hits() {
+        let directory = tempfile::tempdir().unwrap();
+        for index in 0..128 {
+            std::fs::write(
+                directory.path().join(format!("Phantasy Star {index}.mp3")),
+                [],
+            )
+            .unwrap();
+        }
+        let library = Arc::new(Library::new(
+            Some(directory.path().to_path_buf()),
+            LibraryDb::open_in_memory().unwrap(),
+        ));
+        let shared = Arc::new(SearchShared::default());
+        let search = LocalSearch {
+            shared: shared.clone(),
+        };
+        // Hold the first publication, so pause deterministically lands in the
+        // middle of a flat directory, rather than before or after the scan.
+        let publication = shared.matches.lock().unwrap();
+        let worker_shared = shared.clone();
+        let worker = std::thread::spawn(move || {
+            walk_library_for_search(
+                library,
+                None,
+                vec!["phantasy".into(), "star".into()],
+                worker_shared,
+            );
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while search.progress().scanned == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "scanner did not start"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        search.set_paused(true);
+        drop(publication);
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        assert!(search.is_paused());
+        let before = search.progress();
+        let (hits, done) = search.results_since(0);
+        assert!(!done);
+        assert!(!hits.is_empty());
+        assert!(before.scanned < 128);
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        assert_eq!(search.progress(), before);
+        search.set_paused(false);
+        worker.join().unwrap();
+        let (remaining, done) = search.results_since(hits.len());
+        assert!(done);
+        assert_eq!(hits.len() + remaining.len(), 128);
+        let paths: std::collections::HashSet<_> = hits
+            .into_iter()
+            .chain(remaining)
+            .map(|hit| hit.path)
+            .collect();
+        assert_eq!(paths.len(), 128);
+    }
+
+    #[test]
+    fn dropping_a_paused_local_search_stops_the_worker() {
+        let directory = tempfile::tempdir().unwrap();
+        let library = Arc::new(Library::new(
+            Some(directory.path().to_path_buf()),
+            LibraryDb::open_in_memory().unwrap(),
+        ));
+        let shared = Arc::new(SearchShared::default());
+        let search = LocalSearch {
+            shared: shared.clone(),
+        };
+        search.set_paused(true);
+        let (finished, result) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            walk_library_for_search(library, None, vec!["phantasy".into()], shared);
+            finished.send(()).unwrap();
+        });
+        assert!(
+            result
+                .recv_timeout(std::time::Duration::from_millis(60))
+                .is_err()
+        );
+        drop(search);
+        result
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("cancel must wake a paused scanner");
+    }
+
+    #[tokio::test]
+    async fn search_controls_reject_stale_generations() {
+        use tower::ServiceExt;
+        let directory = tempfile::tempdir().unwrap();
+        let state = AppState::new(
+            crate::config::ServerConfig::default(),
+            "test",
+            crate::service::StreamService::new(
+                crate::stream::StreamCache::new(directory.path().join("cache"), 1 << 20),
+                kog_audio::decoder::DecoderSettings::default(),
+                directory.path().join("scratch"),
+            ),
+            Library::new(
+                Some(directory.path().to_path_buf()),
+                LibraryDb::open_in_memory().unwrap(),
+            ),
+        );
+        let shared = Arc::new(SearchShared::default());
+        *state.search.job.lock().unwrap() = Some(SearchJob {
+            generation: 2,
+            shared: shared.clone(),
+        });
+        let app = router().with_state(state);
+        for (action, generation, expected) in [
+            ("pause", 1, 409),
+            ("cancel", 1, 409),
+            ("pause", 2, 200),
+            ("cancel", 2, 200),
+        ] {
+            let request = axum::http::Request::builder()
+                .method("POST")
+                .uri(format!("/api/library/search/{action}"))
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    serde_json::json!({"generation": generation, "paused": true}).to_string(),
+                ))
+                .unwrap();
+            assert_eq!(
+                app.clone()
+                    .oneshot(request)
+                    .await
+                    .unwrap()
+                    .status()
+                    .as_u16(),
+                expected
+            );
+            if generation == 1 {
+                assert!(!shared.paused.load(Ordering::Relaxed));
+                assert!(!shared.cancel.load(Ordering::Relaxed));
+            } else if action == "pause" {
+                assert!(shared.paused.load(Ordering::Relaxed));
+            }
+        }
+        assert!(shared.cancel.load(Ordering::Relaxed));
+        assert!(shared.done.load(Ordering::Relaxed));
+        assert!(!shared.paused.load(Ordering::Relaxed));
+    }
 
     #[test]
     fn web_cover_uses_shared_search_then_cache_without_redownloading() {

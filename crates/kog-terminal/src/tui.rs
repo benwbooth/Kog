@@ -5,7 +5,7 @@ use std::io::{self, Write};
 use std::net::IpAddr;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -958,7 +958,6 @@ enum RemoteCommand {
     Root(u64, RemoteSettings, Option<String>),
     Expand(u64, RemoteSettings, PathBuf),
     Collect(u64, u64, RemoteSettings, PathBuf, String),
-    Search(u64, u64, RemoteSettings, String),
     AddTracks(u64, u64, RemoteSettings, Vec<RemoteFile>, bool),
 }
 
@@ -972,8 +971,15 @@ enum RemoteResponse {
         RemoteSettings,
         Result<Vec<RemoteFile>, String>,
     ),
-    SearchProgress(u64, u64, RemoteSearchProgress),
-    Search(u64, u64, RemoteSettings, Result<(String, Vec<RemoteSearchHit>), String>),
+    SearchProgress(
+        u64,
+        u64,
+        RemoteSettings,
+        String,
+        Vec<RemoteSearchHit>,
+        RemoteSearchProgress,
+    ),
+    Search(u64, u64, Result<(), String>),
     AddTracks(
         u64,
         u64,
@@ -1081,6 +1087,8 @@ struct Ui {
     remote_requests: Sender<RemoteCommand>,
     remote_results: Receiver<RemoteResponse>,
     remote_search_generation: Arc<AtomicU64>,
+    remote_search_paused: Arc<AtomicBool>,
+    remote_search_requests: mpsc::Sender<(u64, u64, RemoteSettings, String)>,
     remote_search_progress: Option<RemoteSearchProgress>,
     search_done: bool,
     exit_requested: bool,
@@ -1295,7 +1303,49 @@ impl Ui {
         let (remote_requests, remote_jobs) = mpsc::channel::<RemoteCommand>();
         let (remote_done, remote_results) = mpsc::channel::<RemoteResponse>();
         let remote_search_generation = Arc::new(AtomicU64::new(0));
+        let remote_search_paused = Arc::new(AtomicBool::new(false));
         let worker_search_generation = remote_search_generation.clone();
+        let worker_search_paused = remote_search_paused.clone();
+        let (remote_search_requests, search_jobs) =
+            mpsc::channel::<(u64, u64, RemoteSettings, String)>();
+        let search_done = remote_done.clone();
+        // Pausing a search must not block browsing or adding its existing hits.
+        std::thread::spawn(move || {
+            while let Ok(mut job) = search_jobs.recv() {
+                while let Ok(newer) = search_jobs.try_recv() {
+                    job = newer;
+                }
+                let (generation, search_generation, settings, query) = job;
+                if worker_search_generation.load(Ordering::Relaxed) != search_generation {
+                    continue;
+                }
+                let result = settings.search(
+                    &query,
+                    || worker_search_generation.load(Ordering::Relaxed) != search_generation,
+                    || worker_search_paused.load(Ordering::Relaxed),
+                    |root, hits, progress| {
+                        let _ = search_done.send(RemoteResponse::SearchProgress(
+                            generation,
+                            search_generation,
+                            settings.clone(),
+                            root.to_owned(),
+                            hits,
+                            progress,
+                        ));
+                    },
+                );
+                if search_done
+                    .send(RemoteResponse::Search(
+                        generation,
+                        search_generation,
+                        result,
+                    ))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
         std::thread::spawn(move || {
             while let Ok(command) = remote_jobs.recv() {
                 let response = match command {
@@ -1316,17 +1366,6 @@ impl Ui {
                             settings,
                             result,
                         )
-                    }
-                    RemoteCommand::Search(generation, search_generation, settings, query) => {
-                        let updates = remote_done.clone();
-                        let result = settings.search(&query, || {
-                            worker_search_generation.load(Ordering::Relaxed) != search_generation
-                        }, |progress| {
-                            let _ = updates.send(RemoteResponse::SearchProgress(
-                                generation, search_generation, progress,
-                            ));
-                        });
-                        RemoteResponse::Search(generation, search_generation, settings, result)
                     }
                     RemoteCommand::AddTracks(
                         generation,
@@ -1499,6 +1538,8 @@ impl Ui {
             remote_requests,
             remote_results,
             remote_search_generation,
+            remote_search_paused,
+            remote_search_requests,
             remote_search_progress: None,
             search_done: false,
             exit_requested: false,
@@ -3728,63 +3769,66 @@ impl Ui {
                     });
                     self.accept_folder_result(path, tracks);
                 }
-                RemoteResponse::SearchProgress(generation, search_generation, progress) => {
-                    if generation == self.remote_generation
-                        && search_generation
-                            == self.remote_search_generation.load(Ordering::Relaxed)
-                    {
-                        self.remote_search_progress = Some(progress);
-                    }
-                }
-                RemoteResponse::Search(generation, search_generation, settings, result) => {
+                RemoteResponse::SearchProgress(
+                    generation,
+                    search_generation,
+                    settings,
+                    root,
+                    files,
+                    progress,
+                ) => {
                     if generation != self.remote_generation
                         || search_generation
                             != self.remote_search_generation.load(Ordering::Relaxed)
                     {
                         continue;
                     }
-                    match result.and_then(|(root, files)| {
-                        let count = files.len();
-                        let hits = files
-                            .into_iter()
-                            .map(|hit| {
-                                let file = hit.file;
-                                let hierarchy =
-                                    if file.kind == "archive" && !file.entry.is_empty() {
-                                        PathBuf::from(&file.path).join(&file.entry)
-                                    } else {
-                                        PathBuf::from(&file.path)
-                                    };
-                                let item = if hit.is_dir || file.kind == "dir" {
-                                    Item::Directory(file.name, hierarchy.clone())
-                                } else {
-                                    Item::Track(remote_track(&settings, file)?)
-                                };
-                                Ok(SearchTreeMatch { item, hierarchy })
-                            })
-                            .collect::<Result<Vec<_>, String>>()?;
-                        Ok((root, count, hits))
-                    }) {
-                        Ok((root, count, hits)) => {
-                            self.search_root = Some(PathBuf::from(root));
-                            self.search_seen = count;
-                            self.search_hits = hits;
-                            self.expanded.clear();
-                            self.selected_tree.clear();
-                            self.tree_anchor = None;
-                            self.rebuild_search_tree();
-                            self.search_done = true;
+                    self.remote_search_progress = Some(progress);
+                    self.search_root = Some(PathBuf::from(root));
+                    let changed = !files.is_empty();
+                    for hit in files {
+                        let file = hit.file;
+                        let hierarchy = if file.kind == "archive" && !file.entry.is_empty() {
+                            PathBuf::from(&file.path).join(&file.entry)
+                        } else {
+                            PathBuf::from(&file.path)
+                        };
+                        let item = if hit.is_dir || file.kind == "dir" {
+                            Item::Directory(file.name, hierarchy.clone())
+                        } else {
+                            match remote_track(&settings, file) {
+                                Ok(track) => Item::Track(track),
+                                Err(error) => {
+                                    self.status = error;
+                                    continue;
+                                }
+                            }
+                        };
+                        self.search_hits.push(SearchTreeMatch { item, hierarchy });
+                    }
+                    self.search_seen = self.search_hits.len();
+                    if changed {
+                        self.rebuild_search_tree();
+                    }
+                }
+                RemoteResponse::Search(generation, search_generation, result) => {
+                    if generation != self.remote_generation
+                        || search_generation
+                            != self.remote_search_generation.load(Ordering::Relaxed)
+                    {
+                        continue;
+                    }
+                    self.search_done = true;
+                    self.remote_search_paused.store(false, Ordering::Relaxed);
+                    match result {
+                        Ok(()) => {
                             self.status = format!(
                                 "{} remote matches for {}",
-                                count,
-                                self.search_query
-                            );
+                                self.search_seen, self.search_query
+                            )
                         }
                         Err(error) if error == "Search superseded" => {}
-                        Err(error) => {
-                            self.search_done = true;
-                            self.status = error;
-                        }
+                        Err(error) => self.status = error,
                     }
                 }
                 RemoteResponse::AddTracks(
@@ -5348,8 +5392,12 @@ impl Ui {
                 self.status = "Connect to a server first".to_owned();
                 return;
             };
+            if self.search_query == value && !self.search_done {
+                return;
+            }
             self.search_query = value.to_owned();
             self.search_done = false;
+            self.remote_search_paused.store(false, Ordering::Relaxed);
             self.remote_search_progress = None;
             self.clear_search_tree();
             self.remote_pending.clear();
@@ -5367,8 +5415,8 @@ impl Ui {
                 .fetch_add(1, Ordering::Relaxed)
                 .wrapping_add(1);
             if self
-                .remote_requests
-                .send(RemoteCommand::Search(
+                .remote_search_requests
+                .send((
                     self.remote_generation,
                     search_generation,
                     settings,
@@ -6064,6 +6112,76 @@ impl Ui {
         }
     }
 
+    fn search_paused(&self) -> bool {
+        if self.remote_active {
+            !self.search_done && self.remote_search_paused.load(Ordering::Relaxed)
+        } else {
+            self.search.as_ref().is_some_and(LocalSearch::is_paused)
+        }
+    }
+
+    fn toggle_search_pause(&mut self) {
+        if self.search_due.take().is_some()
+            && let Some((PromptKind::Search, value)) = self.prompt.clone()
+        {
+            self.run_file_search(&value);
+        }
+        if self.search_query.is_empty() || self.search_done {
+            return;
+        }
+        let paused = !self.search_paused();
+        if self.remote_active {
+            self.remote_search_paused.store(paused, Ordering::Relaxed);
+        } else if let Some(search) = self.search.as_ref() {
+            search.set_paused(paused);
+        }
+    }
+
+    fn cancel_file_search(&mut self) {
+        self.search_due = None;
+        self.search = None;
+        self.search_done = true;
+        self.remote_search_generation
+            .fetch_add(1, Ordering::Relaxed);
+        self.remote_search_paused.store(false, Ordering::Relaxed);
+        if let Some((PromptKind::Search, value)) = self.prompt.as_mut() {
+            value.clear();
+            self.input_cursor = 0;
+            self.input_select_all = false;
+        }
+        self.update_search_draft(PromptKind::Search, "");
+    }
+
+    fn file_search_box(&self, size: (usize, usize)) -> Option<SearchBox> {
+        let layout = self.layout(size);
+        let draft = self
+            .prompt
+            .as_ref()
+            .filter(|(kind, _)| *kind == PromptKind::Search);
+        let query = draft.map_or(self.search_query.as_str(), |(_, value)| value.as_str());
+        let busy = !self.search_query.is_empty() && !self.search_done;
+        if layout.show_sidebar {
+            self.files_expanded
+                .then(|| SearchBox::new(0, 3, layout.first, query, busy))
+        } else if !self
+            .prompt
+            .as_ref()
+            .is_some_and(|(kind, _)| *kind == PromptKind::PlaylistSearch)
+            && (draft.is_some() || self.focus == Focus::Library)
+        {
+            let x = (size.0 / 2).saturating_sub(17).max(14);
+            Some(SearchBox::new(
+                x - 1,
+                0,
+                size.0.saturating_sub(x + 7).min(36),
+                query,
+                busy,
+            ))
+        } else {
+            None
+        }
+    }
+
     fn search_activity(&self) -> Option<String> {
         if self.search_query.is_empty() || self.search_done {
             return None;
@@ -6071,6 +6189,7 @@ impl Ui {
         if self.remote_active {
             let progress = self.remote_search_progress.unwrap_or_default();
             return Some(format_search_activity(
+                self.search_paused(),
                 progress.matches,
                 progress.scanned,
                 progress.archive_count,
@@ -6081,6 +6200,7 @@ impl Ui {
         }
         let progress = self.search.as_ref()?.progress();
         Some(format_search_activity(
+            self.search_paused(),
             self.search_seen,
             progress.scanned,
             progress.archive_count,
@@ -6258,6 +6378,8 @@ impl Ui {
                 String::new(),
                 "FILES AND PLAYLISTS".to_owned(),
                 row("/", "Search files"),
+                row("Ctrl+P", "Pause / resume file search"),
+                row("Ctrl+G", "Cancel and clear file search"),
                 row("F", "Search playlist"),
                 row("o", "Choose music folder"),
                 row("a", "Add selected files"),
@@ -6626,6 +6748,14 @@ impl Ui {
                     self.accept_folder_chooser();
                 }
             }
+            return true;
+        }
+        if key == Key::CtrlP {
+            self.toggle_search_pause();
+            return true;
+        }
+        if key == Key::CtrlG {
+            self.cancel_file_search();
             return true;
         }
         if let Some((kind, mut value)) = self.prompt.take() {
@@ -7385,6 +7515,18 @@ impl Ui {
         if self.menu_open && y == 0 && !(4..8).contains(&x) {
             self.menu_open = false;
             self.menu_parents.clear();
+        }
+        if button & (32 | 64 | 128) == 0 && button & 3 == 0 {
+            if let Some(action) = self
+                .file_search_box(size)
+                .and_then(|field| field.action_at(x, y))
+            {
+                match action {
+                    SearchAction::Pause => self.toggle_search_pause(),
+                    SearchAction::Cancel => self.cancel_file_search(),
+                }
+                return;
+            }
         }
         if let Some((kind, value)) = self.prompt.as_ref() {
             if matches!(kind, PromptKind::Search | PromptKind::PlaylistSearch) {
@@ -8301,7 +8443,12 @@ impl Ui {
             top_query,
             top_draft.map(|_| self.input_cursor),
             search_width,
-            if top_file_search { "Search files" } else { "Search playlist" },
+            if top_file_search {
+                "Search files"
+            } else {
+                "Search playlist"
+            },
+            top_file_search && search_busy,
         );
         paint(
             &mut screen,
@@ -8316,32 +8463,22 @@ impl Ui {
             },
             false,
         );
-        if !top_query.is_empty() && search_width >= 6 {
-            paint(
-                &mut screen,
-                1,
-                search_x + search_width - 1,
-                "×",
-                1,
-                if top_draft.is_some() {
-                    Surface::Input
-                } else {
-                    Surface::Main
-                },
-                true,
-            );
-        }
-        if search_busy && search_width >= 8 {
-            paint(
-                &mut screen,
-                1,
-                search_x + search_width - 2,
-                "⚙",
-                1,
-                Surface::Accent,
-                true,
-            );
-        }
+        SearchBox::new(
+            search_x - 1,
+            0,
+            search_width,
+            top_query,
+            top_file_search && search_busy,
+        )
+        .draw_controls(
+            &mut screen,
+            if top_draft.is_some() {
+                Surface::Input
+            } else {
+                Surface::Main
+            },
+            self.search_paused(),
+        );
         paint(
             &mut screen,
             1,
@@ -8415,6 +8552,7 @@ impl Ui {
                 file_draft.map(|_| self.input_cursor),
                 sidebar,
                 "Search files and folders…",
+                search_busy,
             );
             if self.files_expanded {
                 paint(
@@ -8430,32 +8568,15 @@ impl Ui {
                     },
                     false,
                 );
-                if !tree_query.is_empty() && sidebar >= 6 {
-                    paint(
-                        &mut screen,
-                        4,
-                        sidebar,
-                        "×",
-                        1,
-                        if file_draft.is_some() {
-                            Surface::Input
-                        } else {
-                            Surface::Main
-                        },
-                        true,
-                    );
-                }
-                if search_busy && sidebar >= 8 {
-                    paint(
-                        &mut screen,
-                        4,
-                        sidebar - 1,
-                        "⚙",
-                        1,
-                        Surface::Accent,
-                        true,
-                    );
-                }
+                SearchBox::new(0, 3, sidebar, tree_query, search_busy).draw_controls(
+                    &mut screen,
+                    if file_draft.is_some() {
+                        Surface::Input
+                    } else {
+                        Surface::Main
+                    },
+                    self.search_paused(),
+                );
             }
             let tree_scrollbar = self.tree_scrollbar(&layout, size);
             let tree_width = sidebar.saturating_sub(usize::from(tree_scrollbar.is_some()));
@@ -9457,7 +9578,7 @@ impl Ui {
             if matches!(kind, PromptKind::Search | PromptKind::PlaylistSearch) {
                 if *kind == PromptKind::Search {
                     if let Some(activity) = &search_activity {
-                        return format!("{activity} · Enter finish · Esc clear");
+                        return format!("{activity} · Ctrl+P pause/resume · Ctrl+G cancel");
                     }
                     if !self.status.is_empty() {
                         return format!("{} · Enter finish · Esc clear", self.status);
@@ -9780,12 +9901,15 @@ impl Ui {
                 } else {
                     (1, search_x, search_width)
                 };
-                let clear_visible = !value.is_empty() && field_width >= 6;
-                let text_width = field_width.saturating_sub(if clear_visible { 6 } else { 5 });
-                let cursor = input_window(value, self.input_cursor, text_width).1;
-                let last_text_column =
-                    col + field_width.saturating_sub(if clear_visible { 2 } else { 1 });
-                let column = (col + 4 + cursor).min(last_text_column);
+                let field = SearchBox::new(
+                    col - 1,
+                    row - 1,
+                    field_width,
+                    value,
+                    *kind == PromptKind::Search && search_busy,
+                );
+                let cursor = input_window(value, self.input_cursor, field.text_width()).1;
+                let column = col + 4 + cursor;
                 screen.push_str(&format!("\x1b[{row};{column}H\x1b[?25h"));
             } else {
                 let box_width = width.saturating_sub(8).min(72).max(12);
@@ -10009,6 +10133,8 @@ fn draw_exit_confirmation(screen: &mut String, size: (usize, usize), exit_select
 
 impl Drop for Ui {
     fn drop(&mut self) {
+        self.remote_search_generation
+            .fetch_add(1, Ordering::Relaxed);
         if self.session_dirty {
             let _ = self.flush_session();
         }
@@ -10441,6 +10567,7 @@ fn input_window(text: &str, cursor: usize, width: usize) -> (String, usize) {
 }
 
 fn format_search_activity(
+    paused: bool,
     matches: usize,
     scanned: u64,
     archive_count: u64,
@@ -10453,28 +10580,103 @@ fn format_search_activity(
     } else {
         format!("Searching folders ({scanned} items)")
     };
-    let mut label = format!("⚙ {matches} matches · {stage}");
+    let state = if paused { "⏸︎ Paused" } else { "⚙︎" };
+    let mut label = format!("{state} {matches} matches · {stage}");
     if unreadable_archives > 0 {
         label.push_str(&format!(" · {unreadable_archives} unreadable"));
     }
     label
 }
 
-fn search_box_label(value: &str, cursor: Option<usize>, width: usize, placeholder: &str) -> String {
-    let text = if value.is_empty() && cursor.is_none() {
-        placeholder.to_owned()
-    } else {
-        let reserved = if !value.is_empty() && width >= 6 {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SearchAction {
+    Pause,
+    Cancel,
+}
+
+/// Zero-based geometry shared by painting, hit testing, and the input cursor.
+struct SearchBox {
+    x: usize,
+    y: usize,
+    width: usize,
+    clear: bool,
+    pause: bool,
+}
+
+impl SearchBox {
+    fn new(x: usize, y: usize, width: usize, query: &str, busy: bool) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            clear: !query.is_empty() && width >= 6,
+            pause: busy && width >= 8,
+        }
+    }
+
+    fn text_width(&self) -> usize {
+        self.width.saturating_sub(if self.pause {
+            8
+        } else if self.clear {
             6
         } else {
             5
-        };
-        let available = width.saturating_sub(reserved);
-        if let Some(cursor) = cursor {
-            input_window(value, cursor, available).0
-        } else {
-            truncate(value, available)
+        })
+    }
+
+    fn action_at(&self, x: usize, y: usize) -> Option<SearchAction> {
+        if y != self.y {
+            return None;
         }
+        if self.pause && x == self.x + self.width - 3 {
+            Some(SearchAction::Pause)
+        } else if self.clear && x == self.x + self.width - 1 {
+            Some(SearchAction::Cancel)
+        } else {
+            None
+        }
+    }
+
+    fn draw_controls(&self, screen: &mut String, surface: Surface, paused: bool) {
+        if self.clear {
+            paint(
+                screen,
+                self.y + 1,
+                self.x + self.width,
+                "×",
+                1,
+                surface,
+                true,
+            );
+        }
+        if self.pause {
+            paint(
+                screen,
+                self.y + 1,
+                self.x + self.width - 2,
+                if paused { "⏸︎" } else { "⚙︎" },
+                1,
+                Surface::Accent,
+                true,
+            );
+        }
+    }
+}
+
+fn search_box_label(
+    value: &str,
+    cursor: Option<usize>,
+    width: usize,
+    placeholder: &str,
+    busy: bool,
+) -> String {
+    let available = SearchBox::new(0, 0, width, value, busy).text_width();
+    let text = if value.is_empty() && cursor.is_none() {
+        truncate(placeholder, available)
+    } else if let Some(cursor) = cursor {
+        input_window(value, cursor, available).0
+    } else {
+        truncate(value, available)
     };
     format!(" ⌕  {text}")
 }
@@ -12052,6 +12254,8 @@ enum Key {
     CtrlC,
     CtrlL,
     CtrlO,
+    CtrlP,
+    CtrlG,
     CtrlR,
     CtrlSpace,
     CtrlU,
@@ -12194,6 +12398,8 @@ fn parse_event(bytes: &mut Vec<u8>) -> Option<Event> {
     let key = match byte {
         1 => Key::CtrlA,
         3 => Key::CtrlC,
+        7 => Key::CtrlG,
+        16 => Key::CtrlP,
         12 => Key::CtrlL,
         15 => Key::CtrlO,
         18 => Key::CtrlR,
@@ -12466,6 +12672,49 @@ mod tests {
     use super::*;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn search_controls_have_separate_cells_and_leave_room_for_input() {
+        // Sidebar and top-toolbar fields, including a narrow resized field.
+        for (x, y, width) in [(0, 3, 28), (22, 0, 36), (13, 0, 8)] {
+            let field = SearchBox::new(x, y, width, "Phantasy Star", true);
+            assert_eq!(field.action_at(x + width - 3, y), Some(SearchAction::Pause));
+            assert_eq!(field.action_at(x + width - 2, y), None);
+            assert_eq!(
+                field.action_at(x + width - 1, y),
+                Some(SearchAction::Cancel)
+            );
+            assert_eq!(field.action_at(x + width - 3, y + 1), None);
+            let label = search_box_label("Phantasy Star", Some(13), width, "Search files", true);
+            assert!(cell_width(&label) < width - 3);
+            let cursor = input_window("Phantasy Star", 13, field.text_width()).1;
+            assert!(4 + cursor < width - 3);
+            for paused in [false, true] {
+                let mut screen = String::new();
+                field.draw_controls(&mut screen, Surface::Input, paused);
+                assert!(screen.contains(if paused { "⏸︎" } else { "⚙︎" }));
+                assert!(screen.contains('×'));
+            }
+        }
+        assert_eq!(cell_width("⚙︎"), 1);
+        assert_eq!(cell_width("⏸︎"), 1);
+        let finished = SearchBox::new(0, 3, 28, "Phantasy Star", false);
+        assert_eq!(finished.action_at(25, 3), None);
+        assert_eq!(finished.action_at(27, 3), Some(SearchAction::Cancel));
+    }
+
+    #[test]
+    fn search_pause_and_cancel_shortcuts_are_parsed() {
+        let mut bytes = vec![16, 7];
+        assert!(matches!(
+            parse_event(&mut bytes),
+            Some(Event::Key(Key::CtrlP))
+        ));
+        assert!(matches!(
+            parse_event(&mut bytes),
+            Some(Event::Key(Key::CtrlG))
+        ));
+    }
 
     #[test]
     fn parent_navigation_can_leave_music_root() {
