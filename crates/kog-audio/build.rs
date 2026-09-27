@@ -1650,6 +1650,10 @@ fn link_snsf_archives(root: &Path) {
         println!("cargo:rustc-link-lib=static={name}");
     }
     println!("cargo:rustc-link-lib=z");
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        println!("cargo:rustc-link-lib=ws2_32");
+        println!("cargo:rustc-link-lib=shell32");
+    }
 }
 
 fn build_syntrax_helper() {
