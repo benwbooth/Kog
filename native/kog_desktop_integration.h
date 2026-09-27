@@ -14,6 +14,7 @@ QString kogFileIconName(const QString &path);
 // tree, the playlist pane, and the Rust icon_name() path in agreement; the
 // web client mirrors it in crates/kog-web/src/lib.rs.
 QString kogFormatIconName(const QString &suffix);
+QString kogDesktopCursorPos();
 std::unique_ptr<QApplication> kogApplicationNew();
 void kogApplicationSetName(QApplication &application, const QString &name);
 void kogApplicationSetVersion(QApplication &application, const QString &version);

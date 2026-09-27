@@ -7,6 +7,9 @@ pub mod qobject {
         type QUrl = cxx_qt_lib::QUrl;
         include!("cxx-qt-lib/qbytearray.h");
         type QByteArray = cxx_qt_lib::QByteArray;
+        include!("kog/kog_desktop_integration.h");
+        #[cxx_name = "kogDesktopCursorPos"]
+        fn kog_desktop_cursor_pos() -> QString;
         include!("kog/kog_cover_art_network.h");
         #[cxx_name = "kogFetchCoverArtUrl"]
         fn fetch_cover_art_url(url: &QString, max_bytes: u32) -> Result<QByteArray>;
@@ -134,6 +137,8 @@ pub mod qobject {
         #[qinvokable]
         fn choose_music_folder(self: Pin<&mut AppController>);
         #[qinvokable]
+        fn cursor_pos(self: &AppController) -> QString;
+        #[qinvokable]
         fn choose_server_music_folder(self: Pin<&mut AppController>);
         #[qinvokable]
         fn save_playlist(self: Pin<&mut AppController>);
@@ -182,8 +187,11 @@ pub mod qobject {
         #[qinvokable]
         fn prune_missing_playlist_entries(self: Pin<&mut AppController>, id: i32) -> QString;
         #[qinvokable]
-        fn blacklist_tree_paths(self: Pin<&mut AppController>, paths: QString, folders: bool)
-        -> QString;
+        fn blacklist_tree_paths(
+            self: Pin<&mut AppController>,
+            paths: QString,
+            folders: bool,
+        ) -> QString;
         #[qinvokable]
         fn blacklist_pane_selection(
             self: Pin<&mut AppController>,
@@ -405,25 +413,25 @@ use std::time::{Duration, Instant};
 use cxx_qt::CxxQtType;
 use cxx_qt_lib::{QString, QUrl};
 
+use crate::rom_import::{ImportedRomSet, RomKind, import_rom_archive};
+use crate::tag_editor::{artwork_file_json, parse_edits, snapshot_json, write_tags};
 use kog_audio::decoder::{
     DecoderRegistry, DecoderSettings, ExpansionResult, PlaybackSource, validate_soundfont,
 };
+use kog_audio::playback::{OutputDevice, PlaybackEngine, PlaybackState, available_output_devices};
+use kog_audio::playback_order::{PlaybackOrder, SelectionState};
+use kog_audio::playback_order::sort::{favorites_first, natural_compare};
+use kog_audio::playlist::{Playlist, PlaylistEntry, PlaylistLocation};
+use kog_audio::settings::{
+    AppSettings, MidiEngine, OpeningFilesBehavior, OutputDevicePreference, RepeatMode, ShuffleMode,
+};
+use kog_audio::track::{Track, canonical_path};
 use kog_core::equalizer::{
     EqualizerSettings, apply_preset, preset_for_genre, preset_named, preset_names,
 };
 use kog_core::mpris::{
     MprisCommand, MprisLoopStatus, MprisPlaybackStatus, MprisService, MprisSnapshot,
 };
-use kog_audio::playback::{OutputDevice, PlaybackEngine, PlaybackState, available_output_devices};
-use kog_audio::playback_order::{PlaybackOrder, SelectionState};
-use kog_audio::playback_order::sort::{favorites_first, natural_compare};
-use kog_audio::playlist::{Playlist, PlaylistEntry, PlaylistLocation};
-use crate::rom_import::{ImportedRomSet, RomKind, import_rom_archive};
-use kog_audio::settings::{
-    AppSettings, MidiEngine, OpeningFilesBehavior, OutputDevicePreference, RepeatMode, ShuffleMode,
-};
-use crate::tag_editor::{artwork_file_json, parse_edits, snapshot_json, write_tags};
-use kog_audio::track::{Track, canonical_path};
 
 #[derive(Debug, Default)]
 struct AddPathResult {
@@ -1801,8 +1809,7 @@ fn write_session_atomic(contents: &str) -> Result<(), String> {
     let temp = parent.join(format!(".session-{}.tmp", std::process::id()));
     std::fs::write(&temp, contents)
         .map_err(|error| format!("writing {}: {error}", temp.display()))?;
-    std::fs::rename(&temp, &path)
-        .map_err(|error| format!("replacing {}: {error}", path.display()))
+    std::fs::rename(&temp, &path).map_err(|error| format!("replacing {}: {error}", path.display()))
 }
 
 fn sort_visible_indices(
@@ -2729,6 +2736,13 @@ impl qobject::AppController {
         self.as_mut().add_local_paths(paths, behavior);
     }
 
+    /// The OS cursor position as "x,y" in global screen pixels. QML hover
+    /// enter/exit events around transient items are unreliable on Wayland,
+    /// so the tree tooltip polls this instead of trusting them.
+    pub fn cursor_pos(&self) -> QString {
+        qobject::kog_desktop_cursor_pos()
+    }
+
     pub fn choose_music_folder(mut self: Pin<&mut Self>) {
         let directory = self.as_ref().rust().directory.clone();
         let Some(path) = rfd::FileDialog::new()
@@ -2745,11 +2759,7 @@ impl qobject::AppController {
     /// and streams. Separate from the tree pane's root, which is local
     /// browsing state and moves independently.
     pub fn choose_server_music_folder(mut self: Pin<&mut Self>) {
-        let directory = self
-            .as_ref()
-            .rust()
-            .music_directory_path
-            .to_string();
+        let directory = self.as_ref().rust().music_directory_path.to_string();
         let Some(path) = rfd::FileDialog::new()
             .set_title("Choose Server Music Folder")
             .set_directory(std::path::PathBuf::from(&directory))
@@ -2758,7 +2768,8 @@ impl qobject::AppController {
             return;
         };
         let Ok(path) = canonical_path(&path) else {
-            self.as_mut().set_status(qstring("Directory is unavailable"));
+            self.as_mut()
+                .set_status(qstring("Directory is unavailable"));
             return;
         };
         if !path.is_dir() {
@@ -2768,9 +2779,8 @@ impl qobject::AppController {
             self.as_mut().set_status(qstring(error));
             return;
         }
-        self.as_mut().set_music_directory_path(qstring(
-            path.to_string_lossy(),
-        ));
+        self.as_mut()
+            .set_music_directory_path(qstring(path.to_string_lossy()));
         // The running server picks the new root up live; clients browse the
         // new folder on their next request without a restart.
         if let Some(library) = self
@@ -3080,11 +3090,8 @@ impl qobject::AppController {
             cursors: HashMap::new(),
             dead,
         };
-        self.as_mut().begin_radio_session(
-            root,
-            initial,
-            "Random Radio — fresh shuffle".to_owned(),
-        );
+        self.as_mut()
+            .begin_radio_session(root, initial, "Random Radio — fresh shuffle".to_owned());
     }
 
     pub fn poll_radio(mut self: Pin<&mut Self>) {
@@ -3318,13 +3325,7 @@ impl qobject::AppController {
     /// Move one staged radio track into the playlist. Returns its new index.
     /// Callers play it immediately (kickstart, end-of-playlist advance).
     fn shift_radio_track(mut self: Pin<&mut Self>) -> Option<usize> {
-        let track = self
-            .as_mut()
-            .rust_mut()
-            .radio
-            .as_mut()?
-            .ready
-            .pop_front()?;
+        let track = self.as_mut().rust_mut().radio.as_mut()?.ready.pop_front()?;
         let index = self.as_ref().rust().tracks.len();
         self.as_mut().rust_mut().tracks.push(track);
         self.as_mut().refresh_playback_order();
@@ -4476,7 +4477,11 @@ impl qobject::AppController {
     /// them. Songs match radio picks exactly (archive members resolve to
     /// outer + member); folders match everything beneath, including
     /// archive contents addressed as `outer :: member`.
-    pub fn blacklist_tree_paths(mut self: Pin<&mut Self>, paths: QString, folders: bool) -> QString {
+    pub fn blacklist_tree_paths(
+        mut self: Pin<&mut Self>,
+        paths: QString,
+        folders: bool,
+    ) -> QString {
         let outcome: Result<serde_json::Value, String> = (|| {
             let paths = local_paths_from_json(&paths.to_string())?;
             if paths.is_empty() {
@@ -4787,8 +4792,7 @@ impl qobject::AppController {
         let name = name.to_string();
         let outcome: Result<serde_json::Value, String> = (|| {
             let id = self.as_ref().rust().library_db.create_playlist(&name)?;
-            let (entries, skipped) =
-                collect_stored_entries(&self.as_ref().rust().tracks);
+            let (entries, skipped) = collect_stored_entries(&self.as_ref().rust().tracks);
             if entries.is_empty() {
                 let _ = self.as_ref().rust().library_db.delete_playlist(id);
                 return Err("The current pane has no savable tracks".to_owned());
@@ -4854,7 +4858,10 @@ impl qobject::AppController {
                 let _ = self.as_ref().rust().library_db.delete_playlist(id);
                 return Err("The selection has no savable tracks".to_owned());
             }
-            self.as_ref().rust().library_db.append_entries(id, &entries)?;
+            self.as_ref()
+                .rust()
+                .library_db
+                .append_entries(id, &entries)?;
             let mut value = serde_json::json!({
                 "ok": true,
                 "id": id,
@@ -5245,9 +5252,10 @@ impl qobject::AppController {
     }
 
     pub fn generate_api_token(&self) -> QString {
-        json_result(kog_server::auth::generate_token().map(|token| {
-            serde_json::json!({ "ok": true, "token": token })
-        }))
+        json_result(
+            kog_server::auth::generate_token()
+                .map(|token| serde_json::json!({ "ok": true, "token": token })),
+        )
     }
 
     /// Copy a user-supplied certificate and key into Kog's TLS directory.
@@ -5281,7 +5289,9 @@ impl qobject::AppController {
     /// the same server for a graceful shutdown.
     pub fn start_api_server(mut self: Pin<&mut Self>) -> QString {
         if self.rust().api_server.is_some() {
-            return json_result(Ok(serde_json::json!({ "ok": true, "alreadyRunning": true })));
+            return json_result(Ok(
+                serde_json::json!({ "ok": true, "alreadyRunning": true }),
+            ));
         }
         let outcome: Result<serde_json::Value, String> = (|| {
             let config = kog_server::config::load_config();
@@ -5290,10 +5300,7 @@ impl qobject::AppController {
             let state = kog_server::routes::AppState::with_radio(
                 config.clone(),
                 env!("CARGO_PKG_VERSION"),
-                kog_server::routes::AppState::stream_service(
-                    &config,
-                    settings.decoder_settings(),
-                ),
+                kog_server::routes::AppState::stream_service(&config, settings.decoder_settings()),
                 kog_server::api::Library::open(),
                 kog_server::radio::Radio::from_settings(),
             );
@@ -5308,7 +5315,9 @@ impl qobject::AppController {
                 "https"
             };
             let certificate_path = match config.tls.mode {
-                kog_server::TlsMode::SelfSigned => kog_server::tls::self_signed_certificate_path().ok(),
+                kog_server::TlsMode::SelfSigned => {
+                    kog_server::tls::self_signed_certificate_path().ok()
+                }
                 kog_server::TlsMode::Pem => Some(config.tls.certificate_path.clone()),
                 kog_server::TlsMode::Off => None,
             };
@@ -5331,13 +5340,11 @@ impl qobject::AppController {
                         }
                     };
                     runtime.block_on(async move {
-                        if let Err(error) = kog_server::routes::serve_with_shutdown(
-                            state,
-                            async move {
+                        if let Err(error) =
+                            kog_server::routes::serve_with_shutdown(state, async move {
                                 let _ = shutdown_rx.await;
-                            },
-                        )
-                        .await
+                            })
+                            .await
                         {
                             eprintln!("kog-server: {error}");
                         }
@@ -5363,8 +5370,7 @@ impl qobject::AppController {
     /// registry is process-wide, so this reads the live server's state.
     pub fn connected_devices_json(&self) -> QString {
         let devices = kog_server::devices::registry().list();
-        qstring(serde_json::to_string(&devices)
-            .unwrap_or_else(|_| "[]".to_owned()))
+        qstring(serde_json::to_string(&devices).unwrap_or_else(|_| "[]".to_owned()))
     }
 
     /// Cut a device off, or let it back in. Takes effect on the device's next
@@ -5379,8 +5385,7 @@ impl qobject::AppController {
                 if let Some(shutdown) = server.shutdown.take() {
                     let _ = shutdown.send(());
                 }
-                self.as_mut()
-                    .set_status(qstring("API server stopped"));
+                self.as_mut().set_status(qstring("API server stopped"));
                 json_result(Ok(serde_json::json!({ "ok": true, "running": false })))
             }
             None => json_result(Ok(serde_json::json!({ "ok": true, "running": false }))),
@@ -6766,7 +6771,8 @@ impl qobject::AppController {
             if let Some(job) = self.as_mut().rust_mut().cover_art.take() {
                 job.cancel.store(true, AtomicOrdering::Relaxed);
             }
-            self.as_mut().set_status(qstring("Cover art downloads disabled"));
+            self.as_mut()
+                .set_status(qstring("Cover art downloads disabled"));
             return;
         }
         self.as_mut()
@@ -6817,17 +6823,12 @@ impl qobject::AppController {
     }
 
     fn refresh_cover_art(mut self: Pin<&mut Self>, artist: String, album: String, file: PathBuf) {
-        let generation = self
-            .as_ref()
-            .rust()
-            .cover_art_generation
-            .wrapping_add(1);
+        let generation = self.as_ref().rust().cover_art_generation.wrapping_add(1);
         self.as_mut().rust_mut().cover_art_generation = generation;
         if let Some(job) = self.as_mut().rust_mut().cover_art.take() {
             job.cancel.store(true, AtomicOrdering::Relaxed);
         }
-        self.as_mut()
-            .set_current_artwork_path(QString::default());
+        self.as_mut().set_current_artwork_path(QString::default());
         let tagged_album = album.clone();
         let album = kog_audio::cover_art::fallback_album(&file, &album);
         if album.is_empty() {
@@ -7463,17 +7464,12 @@ impl qobject::AppController {
             .set_current_bits_per_sample(QString::default());
         self.as_mut().set_duration_seconds(0.0);
         self.as_mut().set_position_seconds(0.0);
-        let generation = self
-            .as_ref()
-            .rust()
-            .cover_art_generation
-            .wrapping_add(1);
+        let generation = self.as_ref().rust().cover_art_generation.wrapping_add(1);
         self.as_mut().rust_mut().cover_art_generation = generation;
         if let Some(job) = self.as_mut().rust_mut().cover_art.take() {
             job.cancel.store(true, AtomicOrdering::Relaxed);
         }
-        self.as_mut()
-            .set_current_artwork_path(QString::default());
+        self.as_mut().set_current_artwork_path(QString::default());
     }
 
     fn sync_playback_state(mut self: Pin<&mut Self>) {
@@ -7537,13 +7533,12 @@ mod tests {
     use super::{
         AddPathResult, DirectoryScanEvent, PlaylistSortColumn, add_path_status, compare_tracks,
         count_delete_entries, cover_art_key, dropped_urls_from_json, local_paths_from_json,
-        move_selected_items, natural_compare, normalize_playlist_save_path, ordered_directory_files,
-        output_devices_json, parse_delete_paths_json, parse_row_indices, playback_source_is_missing,
-        playlist_entry_for_track,
-        purged_track_indices, remove_path_permanent, prepare_scan_file, resolve_output_device,
-        sample_rate_label, sanitize_delete_paths, scan_directory_paths, sort_visible_indices,
-        star_key_for_track, stored_entry_is_missing, track_filename, track_path,
-        valid_equalizer_gain,
+        move_selected_items, natural_compare, normalize_playlist_save_path,
+        ordered_directory_files, output_devices_json, parse_delete_paths_json, parse_row_indices,
+        playback_source_is_missing, playlist_entry_for_track, prepare_scan_file,
+        purged_track_indices, remove_path_permanent, resolve_output_device, sample_rate_label,
+        sanitize_delete_paths, scan_directory_paths, sort_visible_indices, star_key_for_track,
+        stored_entry_is_missing, track_filename, track_path, valid_equalizer_gain,
     };
     use kog_audio::decoder::{ArchiveOrigin, DecoderRegistry, DecoderSettings, PlaybackSource};
     use kog_audio::playback::OutputDevice;
@@ -7580,6 +7575,7 @@ mod tests {
         fs::create_dir(root.join("__MACOSX")).unwrap();
         fs::write(root.join("__MACOSX/ghost.flac"), []).unwrap();
         fs::write(root.join("._ghost.flac"), []).unwrap();
+        fs::write(root.join(".hidden.flac"), []).unwrap();
         fs::write(root.join("desktop.ini"), []).unwrap();
         fs::create_dir(root.join("02-disc")).expect("create nested album folder");
         fs::write(root.join("01-first.flac"), []).expect("create first track");
@@ -7611,7 +7607,6 @@ mod tests {
         fs::create_dir(root.join("__MACOSX")).unwrap();
         fs::write(root.join("__MACOSX/ghost.flac"), []).unwrap();
         fs::write(root.join("._ghost.flac"), []).unwrap();
-        fs::write(root.join(".hidden.flac"), []).unwrap();
         fs::create_dir(root.join("02-disc")).expect("create nested album folder");
         fs::write(root.join("01-first.flac"), []).expect("create first track");
         fs::write(root.join("02-disc/01-middle.flac"), []).expect("create nested first track");
@@ -7745,13 +7740,7 @@ mod tests {
         );
         assert!(skipped.tracks.is_empty());
         assert!(skipped.warnings.is_empty());
-        let forced = prepare_scan_file(
-            playlist,
-            &DecoderRegistry::default(),
-            true,
-            false,
-            true,
-        );
+        let forced = prepare_scan_file(playlist, &DecoderRegistry::default(), true, false, true);
         assert!(forced.tracks.is_empty());
         assert!(
             forced
@@ -7815,7 +7804,6 @@ mod tests {
         assert!(parse_delete_paths_json(r#"{"path": 1}"#).is_empty());
     }
 
-
     #[test]
     fn track_path_shows_full_song_path() {
         let local = Track {
@@ -7860,7 +7848,6 @@ mod tests {
         assert!(tagged_download);
         assert_ne!(key, tagged_key);
     }
-
 
     #[test]
     fn archive_tree_selection_flows_through_background_import() {
@@ -8006,7 +7993,10 @@ mod tests {
             kog_core::db::KIND_LOCAL,
             temporary.path().join("gone.flac").to_str().unwrap()
         )));
-        assert!(stored_entry_is_missing(&stored(kog_core::db::KIND_LOCAL, "")));
+        assert!(stored_entry_is_missing(&stored(
+            kog_core::db::KIND_LOCAL,
+            ""
+        )));
         assert!(!stored_entry_is_missing(&stored(
             kog_core::db::KIND_ARCHIVE,
             present.to_str().unwrap()
@@ -8019,7 +8009,10 @@ mod tests {
             kog_core::db::KIND_REMOTE,
             "https://example.invalid/stream"
         )));
-        assert!(!stored_entry_is_missing(&stored("bogus-kind", "/music/x.flac")));
+        assert!(!stored_entry_is_missing(&stored(
+            "bogus-kind",
+            "/music/x.flac"
+        )));
     }
 
     #[test]
@@ -8038,10 +8031,7 @@ mod tests {
             temporary.path().join("gone.flac")
         )));
         let mut archived = local(temporary.path().join("member.wav"));
-        archived.set_archive_origin(
-            temporary.path().join("gone.zip"),
-            "member.wav".to_owned(),
-        );
+        archived.set_archive_origin(temporary.path().join("gone.zip"), "member.wav".to_owned());
         assert!(playback_source_is_missing(&archived));
         let outer = temporary.path().join("pack.zip");
         std::fs::write(&outer, []).expect("write present outer");

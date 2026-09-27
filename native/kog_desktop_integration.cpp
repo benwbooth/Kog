@@ -5,6 +5,7 @@
 #include <QtCore/QHash>
 #include <QtCore/QMimeDatabase>
 #include <QtCore/QSettings>
+#include <QtGui/QCursor>
 #include <QtGui/QGuiApplication>
 #include <QtGui/QIcon>
 #include <QtGui/QWindow>
@@ -57,6 +58,15 @@ void kogApplicationSetName(QApplication &application, const QString &name)
 int kogApplicationExec(QApplication &application)
 {
     return application.exec();
+}
+
+// The OS cursor position in global screen pixels. QML hover enter/exit
+// around transient items is unreliable on Wayland (opening a surface
+// delivers spurious leaves), so the tooltip polls this instead.
+QString kogDesktopCursorPos()
+{
+    const QPoint point = QCursor::pos();
+    return QString("%1,%2").arg(point.x()).arg(point.y());
 }
 
 QString kogFormatIconName(const QString &suffix)

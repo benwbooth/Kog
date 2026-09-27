@@ -143,7 +143,8 @@ impl qobject::FileTreeModel {
     }
 
     pub fn icon_name(&self, path: QString) -> QString {
-        if let Ok(Some(location)) = kog_audio::archive::tree_location(Path::new(&path.to_string())) {
+        if let Ok(Some(location)) = kog_audio::archive::tree_location(Path::new(&path.to_string()))
+        {
             if location.directory {
                 return QString::from("folder");
             }
