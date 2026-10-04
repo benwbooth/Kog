@@ -450,7 +450,7 @@ struct ContentView: View {
             } else {
                 List {
                     ForEach(store.playlists) { playlist in
-                        Button { Task { await store.openPlaylist(playlist) } } label: {
+                        Button { store.openPlaylistTab(playlist); tab = .queue } label: {
                             HStack(spacing: 12) {
                                 Image(systemName: "music.note.list").foregroundStyle(Palette.accent).frame(width: 28)
                                 VStack(alignment: .leading, spacing: 2) {
@@ -469,8 +469,7 @@ struct ContentView: View {
     }
 
     @ViewBuilder private func playlistActions(_ playlist: SavedPlaylist) -> some View {
-        Button("Play", systemImage: "play.fill") { Task { guard await store.openPlaylist(playlist) else { return }; store.replaceQueue(store.playlistTracks); tab = .queue } }
-        Button("Add to queue", systemImage: "text.badge.plus") { Task { guard await store.openPlaylist(playlist) else { return }; store.add(store.playlistTracks) } }
+        Button("Open in tab", systemImage: "rectangle.on.rectangle") { store.openPlaylistTab(playlist); tab = .queue }
         Button("Export M3U…", systemImage: "square.and.arrow.up") { Task { shareURL = await store.exportPlaylist(playlist) } }
         if playlist.id != 0 {
             Button("Add queue to playlist", systemImage: "text.badge.plus") { Task { await store.appendToPlaylist(playlist, tracks: store.queue) } }

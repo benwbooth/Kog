@@ -3393,3 +3393,22 @@ body.touch .track .index-cell {
     width: 40px;
   }
 }
+
+/* Saved playlists are drafts; transport always consumes Play Queue. */
+.playlist-tabs { display:flex; flex:none; gap:4px; overflow-x:auto; padding:6px; border-bottom:1px solid var(--border, #555); }
+.playlist-tab { display:flex; flex:none; border:1px solid transparent; border-radius:5px; }
+.playlist-tab.active { border-color:var(--accent, #7398dc); background:#738fb329; }
+.playlist-tab button { padding:7px 10px; color:inherit; background:transparent; border:0; white-space:nowrap; }
+.playlist-editor { display:flex; flex-direction:column; flex:1; min-height:0; overflow:hidden; padding:8px; gap:8px; }
+.workspace-actions,.workspace-close { display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
+.workspace-actions button,.workspace-close button { color:inherit; background:#738fb31a; border:1px solid #80808060; border-radius:4px; padding:7px 10px; }
+.workspace-actions button:disabled { opacity:.4; }
+.workspace-close { padding:10px; border:1px solid #d9a343; }
+.workspace-status { margin:0; font-size:12px; }
+.workspace-entries { display:flex; flex-direction:column; overflow:auto; min-height:0; flex:1; }
+.workspace-entries button { text-align:left; flex:none; padding:10px; border:0; background:transparent; color:inherit; }
+.workspace-entries button:nth-child(even) { background:#80808010; }
+.workspace-entries button.selected { background:#4877b960; }
+
+.playlist { display:flex; flex-direction:column; }
+.playlist > .rows { flex:1; min-height:0; }

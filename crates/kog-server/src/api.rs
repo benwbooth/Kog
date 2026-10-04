@@ -195,6 +195,8 @@ impl EntryRequest {
 #[derive(Debug, Deserialize)]
 pub struct AppendEntriesRequest {
     pub entries: Vec<EntryRequest>,
+    #[serde(default)]
+    pub expected_entries: Option<Vec<MetadataEntry>>,
 }
 
 /// One entry in a `POST /api/metadata` batch. Unlike [`EntryRequest`] the
@@ -2238,7 +2240,10 @@ pub async fn replace_playlist_entries(
             .map(EntryRequest::into_stored)
             .collect();
         let count = entries.len();
-        library.db().replace_entries(id, &entries)?;
+        let expected = request.expected_entries.map(|rows| rows.into_iter().map(|row| StoredEntry {
+            kind: row.kind, path: row.path, entry: row.entry.unwrap_or_default(), fragment: row.fragment.filter(|s| !s.is_empty()),
+        }).collect::<Vec<_>>());
+        library.db().replace_entries_checked(id, &entries, expected.as_deref())?;
         Ok::<_, String>(serde_json::json!({ "ok": true, "id": id, "count": count }))
     })
     .await
@@ -2489,13 +2494,23 @@ pub async fn set_star(
     }
 }
 
-fn entry_json(entry: StoredEntry) -> serde_json::Value {
+pub fn entry_json(entry: StoredEntry) -> serde_json::Value {
     serde_json::json!({
         "kind": entry.kind,
         "path": entry.path,
         "entry": entry.entry,
         "fragment": entry.fragment,
     })
+}
+
+/// Decode draft entries using the same locator validation used by playback.
+pub fn stored_entries_from_json(entries: &[serde_json::Value]) -> Result<Vec<StoredEntry>, String> {
+    entries.iter().map(|value| {
+        let entry: MetadataEntry = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+        let stored = StoredEntry { kind: entry.kind, path: entry.path, entry: entry.entry.unwrap_or_default(), fragment: entry.fragment.filter(|s| !s.is_empty()) };
+        kog_audio::playlist::PlaylistEntry::try_from(&stored)?;
+        Ok(stored)
+    }).collect()
 }
 
 /// Router fragment for the library endpoints, so `routes` stays readable.
@@ -2807,7 +2822,8 @@ mod tests {
         let files = disc["files"].as_array().unwrap();
         assert_eq!(files.len(), 2);
         assert_eq!(files[0]["name"], "01 Theme.MP3");
-        assert_eq!(files[1]["entry"], "Disc\\02 End.flac");
+        // The shared archive browser normalizes member separators.
+        assert_eq!(files[1]["entry"], "Disc/02 End.flac");
         assert!(disc["directories"].as_array().unwrap().is_empty());
     }
 

@@ -16,6 +16,8 @@ pub struct PolicyState {
     tracks: Vec<OrderTrack>,
     ids: Vec<String>,
     radio: RadioBuffer<Value>,
+    #[serde(default)]
+    workspace: crate::workspace::Workspace,
 }
 
 impl Default for PolicyState {
@@ -25,6 +27,7 @@ impl Default for PolicyState {
             tracks: Vec::new(),
             ids: Vec::new(),
             radio: RadioBuffer::default(),
+            workspace: crate::workspace::Workspace::default(),
         }
     }
 }
@@ -109,6 +112,9 @@ pub enum Command {
         rows: Vec<SortRow>,
         query: String,
     },
+    Workspace { command: crate::workspace::Command },
+    WorkspaceRestore { value: Value },
+    ApplyQueueAction { action: crate::workspace::QueueAction, start: usize, count: usize },
 }
 
 #[derive(Debug, Serialize)]
@@ -122,6 +128,10 @@ pub struct Reply {
     pub queued: Vec<usize>,
     pub stop_after: Vec<usize>,
     pub radio: RadioSnapshot,
+    pub workspace: crate::workspace::Snapshot,
+    pub workspace_state: Value,
+    pub workspace_effect: Option<crate::workspace::Effect>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -138,6 +148,8 @@ pub struct RadioSnapshot {
 impl PolicyState {
     pub fn apply(&mut self, command: Command) -> Reply {
         let mut decision = None;
+        let mut workspace_effect = None;
+        let mut error = None;
         let mut entry = None;
         let mut indices = None;
         let mut accepted = true;
@@ -218,6 +230,17 @@ impl PolicyState {
                         .collect(),
                 )
             }
+            Command::Workspace { command } => match self.workspace.apply(command) {
+                Ok(effect) => workspace_effect = Some(effect),
+                Err(message) => { accepted = false; error = Some(message); }
+            },
+            Command::WorkspaceRestore { value } => match crate::workspace::Workspace::restore(value) {
+                Ok(workspace) => self.workspace = workspace,
+                Err(message) => { accepted = false; error = Some(message); }
+            },
+            Command::ApplyQueueAction { action, start, count } => {
+                decision = self.order.apply_queue_action(action, start, count);
+            },
         }
         if self.radio.enabled() && !self.order.radio_enabled() {
             self.radio.reset(false);
@@ -229,6 +252,10 @@ impl PolicyState {
             entry,
             indices,
             accepted,
+            workspace: self.workspace.snapshot(),
+            workspace_state: serde_json::to_value(&self.workspace).expect("workspace is serializable"),
+            workspace_effect,
+            error,
             shuffle: self.order.shuffle_mode(),
             repeat: self.order.repeat_mode(),
             queued: self.order.queued_indices().to_vec(),

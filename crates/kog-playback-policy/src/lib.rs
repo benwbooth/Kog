@@ -6,6 +6,7 @@ use std::collections::HashSet;
 pub mod bridge;
 pub mod radio;
 pub mod sort;
+pub mod workspace;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -501,6 +502,27 @@ impl PlaybackOrder {
             } else {
                 self.queue.push(index);
             }
+        }
+    }
+
+    /// Explicit Play Next places a stable selection before earlier overrides.
+    pub fn queue_next(&mut self, indices: &[usize]) {
+        let mut next = Vec::new();
+        for &index in indices {
+            if !next.contains(&index) { next.push(index); }
+        }
+        next.extend(self.queue.iter().copied().filter(|index| !indices.contains(index)));
+        self.queue = next;
+    }
+
+    /// Execute a workspace action after the adapter has appended its resolved
+    /// entries. The actual added range can include expanded archive/subsong rows.
+    pub fn apply_queue_action(&mut self, action: workspace::QueueAction, start: usize, count: usize) -> Option<PlaybackDecision> {
+        if count == 0 { return None; }
+        match action {
+            workspace::QueueAction::PlayNow => { self.cancel_navigation(); Some(PlaybackDecision::Play(start)) }
+            workspace::QueueAction::PlayNext => { self.queue_next(&(start..start.saturating_add(count)).collect::<Vec<_>>()); None }
+            workspace::QueueAction::AddToQueue => None,
         }
     }
 

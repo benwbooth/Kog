@@ -54,6 +54,10 @@ ApplicationWindow {
     property int selectedRow: -1
     property int selectionAnchor: -1
     property var selectedRows: []
+    readonly property var playlistWorkspace: {
+        appController.workspace_revision
+        try { return JSON.parse(appController.workspace_json()) } catch (_) { return { active: "queue", tabs: [], entries: [], selected: [] } }
+    }
     property int playlistDropTarget: -1
     property var selectedPlaylistIds: []
     property int playlistSelectionAnchor: -1
@@ -1005,6 +1009,7 @@ ApplicationWindow {
         running: true
         repeat: true
         onTriggered: {
+            appController.poll_workspace()
             appController.poll_playback()
             appController.poll_cover_art()
             appController.poll_radio()
@@ -1654,7 +1659,7 @@ ApplicationWindow {
         text: qsTr("Save As…")
         icon.name: "document-save-as"
         shortcut: StandardKey.Save
-        enabled: appController.playlist_count > 0
+        enabled: appController.playlist_count > 0 && root.playlistWorkspace.active === "queue"
         onTriggered: appController.save_playlist()
     }
 
@@ -3345,27 +3350,17 @@ ApplicationWindow {
                                 onClicked: mouse => {
                                     if (mouse.button !== Qt.LeftButton)
                                         return
-                                    if (root.isPlaylistSelected(playlistRow.pid)
-                                            && mouse.modifiers === Qt.NoModifier) {
-                                        if (playlistRow.pid === 0)
-                                            return
-                                        root.playlistRenamePid = playlistRow.pid
-                                        playlistRenameTimer.restart()
-                                    } else {
-                                        root.selectPlaylistById(
-                                            playlistRow.pid, mouse.modifiers)
-                                    }
+                                    root.selectPlaylistById(playlistRow.pid, mouse.modifiers)
+                                    playlistRenameTimer.stop()
+                                    if (mouse.modifiers === Qt.NoModifier)
+                                        appController.open_playlist_tab(playlistRow.pid, playlistRow.name)
                                 }
                                 onDoubleClicked: mouse => {
                                     if (mouse.button !== Qt.LeftButton)
                                         return
-                                    // Add to the pane without touching
-                                    // playback: double-clicking a playlist
-                                    // must never interrupt the current song.
-                                    // Playback stays on the context menu.
                                     playlistRenameTimer.stop()
                                     root.renamingPlaylistId = -2
-                                    root.enqueueSelectedPlaylists(false)
+                                    appController.open_playlist_tab(playlistRow.pid, playlistRow.name)
                                 }
                                 onReleased: mouse => {
                                     if (!dragging)
@@ -3424,8 +3419,24 @@ ApplicationWindow {
                 anchors.fill: parent
                 spacing: 0
 
+                PlaylistWorkspaceBar {
+                    Layout.fillWidth: true
+                    app: appController
+                    workspaceState: root.playlistWorkspace
+                }
+                PlaylistEditor {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    visible: root.playlistWorkspace.active !== "queue"
+                    app: appController
+                    workspaceState: root.playlistWorkspace
+                    theme: root.palette
+                    queueSelection: root.selectedRows
+                }
+
                 Item {
                     id: playlistHeaderViewport
+                    visible: root.playlistWorkspace.active === "queue"
                     Layout.fillWidth: true
                     Layout.rightMargin: playlistView.verticalScrollGutter
                     Layout.preferredHeight: playlistHeader.implicitHeight
@@ -3454,6 +3465,7 @@ ApplicationWindow {
 
                 CountPreservingListView {
                     id: playlistView
+                    visible: root.playlistWorkspace.active === "queue"
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     clip: true
@@ -3620,6 +3632,7 @@ ApplicationWindow {
             }
 
             DropArea {
+                enabled: root.playlistWorkspace.active === "queue"
                 x: 0
                 y: playlistHeaderViewport.height
                 width: parent.width

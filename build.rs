@@ -45,6 +45,8 @@ fn main() {
         "qml/MiniPlayer.qml",
         "qml/NowPlayingNotification.qml",
         "qml/PlaylistHeader.qml",
+        "qml/PlaylistWorkspaceBar.qml",
+        "qml/PlaylistEditor.qml",
         "qml/PlaylistRow.qml",
         "qml/Preferences.qml",
         "qml/TagEditor.qml",

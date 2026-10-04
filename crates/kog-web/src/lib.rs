@@ -36,6 +36,7 @@ use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::JsCast;
 
 mod selection;
+mod workspace;
 use selection::click_selection;
 
 /// The desktop transport's SVG icons (`qml/icons/`), inlined verbatim. CSS
@@ -2371,6 +2372,10 @@ fn App() -> impl IntoView {
         signal_local(Rc::new(HashSet::<String>::new()));
     let audio_ref = NodeRef::<leptos::html::Audio>::new();
     let web_order = StoredValue::new(WebPlaybackOrder::new());
+    let workspace_model = StoredValue::new(load("kog.playlist-tabs").and_then(|raw| serde_json::from_str(&raw).ok())
+        .and_then(|value| kog_playback_policy::workspace::Workspace::restore(value).ok()).unwrap_or_default());
+    let workspace_dispatch = StoredValue::new(None::<Callback<kog_playback_policy::workspace::Command>>);
+
     let (policy_revision, set_policy_revision) = signal(0u64);
     // Starred locators from `GET /api/stars`, in the same scheme the server
     // stores them under. An `Rc` for the same reason as `metadata`.
@@ -3689,6 +3694,15 @@ fn App() -> impl IntoView {
                     || element.is_content_editable()
             })
             .unwrap_or(false);
+        if !in_text && workspace_model.with_value(|model| model.snapshot().active != "queue") {
+            use kog_playback_policy::workspace::Command;
+            let command = if ev.ctrl_key() || ev.meta_key() { match ev.key().to_lowercase().as_str() {
+                "s" => Some(Command::Save), "w" => Some(Command::Close {key:workspace_model.with_value(|model|model.snapshot().active)}),
+                "a" => Some(Command::Select {indices:(0..workspace_model.with_value(|model|model.snapshot().entries.len())).collect()}),
+                "z" if ev.shift_key() => Some(Command::Redo), "z" => Some(Command::Undo), "y"=>Some(Command::Redo), _=>None
+            }} else if ev.key()=="Delete" {Some(Command::Remove)} else {None};
+            if let Some(command)=command { ev.prevent_default(); if let Some(dispatch)=workspace_dispatch.get_value(){dispatch.run(command);} return; }
+        }
         if (ev.ctrl_key() || ev.meta_key())
             && !ev.alt_key()
             && ev.key().eq_ignore_ascii_case("a")
@@ -4741,6 +4755,27 @@ fn App() -> impl IntoView {
         added
     };
 
+    let playlist_workspace = workspace::Controller {
+        model: workspace_model,
+        revision: RwSignal::new(0), queue_generation: StoredValue::new(0), queue_jobs: StoredValue::new(workspace::QueueJobs::default()),
+        base: Callback::new(move |()| base()), auth: Callback::new(move |()| auth().header()),
+        saved: Callback::new(move |()| load_playlists()), error: set_message,
+        queued: Callback::new(move |(mode, entries): (kog_playback_policy::workspace::QueueAction, Vec<Entry>)| {
+            let start = queue.get_untracked().len(); let count = entries.len();
+            append_entries(entries);
+            let decision = {
+                let mut policy = web_order.write_value();
+                policy.tracks(&queue.get_untracked(), &metadata.get_untracked(), current.get_untracked(), shuffle.get_untracked(), repeat_mode.get_untracked());
+                policy.order.apply_queue_action(mode, start, count)
+            };
+            set_policy_revision.update(|value| *value += 1);
+            if let Some(PlaybackDecision::Play(index)) = decision { play_row(index); }
+            set_status_note.set(format!("Added {count} tracks to Play Queue"));
+        }),
+    };
+
+    workspace_dispatch.set_value(Some(Callback::new(move |command| playlist_workspace.send(command))));
+
     // Opening a playlist appends its tracks to the pane - like the desktop's
     // tree, where adding a playlist never throws away what is queued.
     let append_playlist = {
@@ -4776,10 +4811,9 @@ fn App() -> impl IntoView {
                 let url = format!("{}/api/playlists/{id}/rename", base());
                 let header = auth().header();
                 leptos::task::spawn_local(async move {
-                    if let Err(error) =
-                        post_json(url, header, serde_json::json!({ "name": name })).await
-                    {
-                        set_message.set(error);
+                    match post_json(url, header, serde_json::json!({ "name": name })).await {
+                        Ok(_) => playlist_workspace.send(kog_playback_policy::workspace::Command::Renamed {key:format!("{}:{id}",base()),name:name.clone()}),
+                        Err(error) => set_message.set(error),
                     }
                     load_playlists();
                 });
@@ -4802,7 +4836,8 @@ fn App() -> impl IntoView {
                     Ok(response) if !response.ok() => {
                         set_message.set(format!("Request failed ({})", response.status()))
                     }
-                    _ => load_playlists(),
+                    Ok(_) => { playlist_workspace.send(kog_playback_policy::workspace::Command::Deleted { key:format!("{}:{id}",base()) }); load_playlists(); },
+                    Err(error) => set_message.set(error.to_string()),
                 }
             });
         }
@@ -4835,30 +4870,7 @@ fn App() -> impl IntoView {
         }
     };
 
-    // Replace Pane, the desktop's load_playlist_into_pane: clear the pane,
-    // load the playlist, and play it from the top.
-    let replace_pane_with_playlist = {
-        let get_json = get_json;
-        let jump = play_row.clone();
-        move |id: i64, name: String| {
-            leptos::task::spawn_local(async move {
-                match get_json(format!("/api/playlists/{id}")).await {
-                    Ok(value) => {
-                        let entries: Vec<Entry> = value["entries"]
-                            .as_array()
-                            .map(|items| items.iter().map(entry_from_json).collect())
-                            .unwrap_or_default();
-                        set_queue.set(entries);
-                        set_selected.set(HashSet::new());
-                        set_selection_anchor.set(None);
-                        set_list_name.set(name);
-                        jump(0);
-                    }
-                    Err(error) => set_message.set(error),
-                }
-            });
-        }
-    };
+    let replace_pane_with_playlist = move |id: i64, name: String| playlist_workspace.open(id, name);
 
     // Remove Missing Files, with the desktop's status strings.
     let prune_playlist_missing = {
@@ -5241,6 +5253,7 @@ fn App() -> impl IntoView {
 
     // Clear the web queue and reset its playback state.
     let clear_pane = move || {
+        playlist_workspace.queue_generation.update_value(|value| *value += 1);
         stop_playback();
         web_order.write_value().order.clear_tracks();
         set_queue.set(Vec::new());
@@ -6411,12 +6424,12 @@ fn App() -> impl IntoView {
                                         view! {
                                         <button
                                             class="tree-row favorite-row"
-                                            title=if touch_mode { "Tap to open Favorites; use + to add it to the queue" } else { "Double-click to add to the playlist, or drag it there" }
+                                            title="Open Favorites in a tab"
                                             draggable="true"
                                             on:click=move |_| {
                                                 // Touch: a tap opens the list in
                                                 // the pane; the + button appends.
-                                                if touch_mode {
+                                                {
                                                     replace_pane_with_playlist(
                                                         0,
                                                         "Favorites".to_owned(),
@@ -6434,9 +6447,7 @@ fn App() -> impl IntoView {
                                             }
                                             on:dragend=move |_| set_dragging_playlist.set(None)
                                             on:dblclick=move |_| {
-                                                if !touch_mode {
-                                                    append_playlist(0);
-                                                }
+                                                playlist_workspace.open(0, "Favorites".into());
                                             }
                                         >
                                             <span class="twisty"></span>
@@ -6493,13 +6504,13 @@ fn App() -> impl IntoView {
                                             view! {
                                                 <button
                                                     class="tree-row playlist-row"
-                                                    title=if touch_mode { "Tap to open playlist; use + to add it to the queue" } else { "Double-click to add to the playlist, or drag it there" }
+                                                    title="Open playlist in a tab"
                                                     draggable="true"
                                                     on:click=move |_| {
                                                         // Touch: a tap opens the
                                                         // playlist in the pane; the
                                                         // + button appends.
-                                                        if touch_mode {
+                                                        {
                                                             replace_pane_with_playlist(
                                                                 drag_id,
                                                                 open_label.clone(),
@@ -6517,9 +6528,7 @@ fn App() -> impl IntoView {
                                                     }
                                                     on:dragend=move |_| set_dragging_playlist.set(None)
                                                     on:dblclick=move |_| {
-                                                        if !touch_mode {
-                                                            append_playlist(drag_id);
-                                                        }
+                                                        // Single click already focuses the editor tab.
                                                     }
                                                     on:contextmenu=move |ev: web_sys::MouseEvent| {
                                                         ev.prevent_default();
@@ -6602,7 +6611,12 @@ fn App() -> impl IntoView {
                 </aside>
 
                 <main class="playlist">
+                    <workspace::Tabs controller=playlist_workspace />
+                    <Show when=move || playlist_workspace.snapshot().active != "queue">
+                        <workspace::Editor controller=playlist_workspace queue=queue selected=selected />
+                    </Show>
                     <div
+                        style:display=move || if playlist_workspace.snapshot().active == "queue" { "" } else { "none" }
                         class="rows"
                         id="playlist-rows"
                         class:drop-active=move || playlist_drop_active.get()

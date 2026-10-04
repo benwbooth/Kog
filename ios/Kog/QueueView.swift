@@ -15,6 +15,13 @@ struct QueueView: View {
     private var rows: [Int] { store.filteredQueueIndices() }
     var body: some View {
         VStack(spacing: 0) {
+            PlaylistWorkspaceTabs()
+            if store.workspace.active == "queue" { queueContent }
+            else { PlaylistWorkspaceEditor(queueSelection: selected.sorted().compactMap { store.queue.indices.contains($0) ? store.queue[$0] : nil }) }
+        }
+    }
+    private var queueContent: some View {
+        VStack(spacing: 0) {
             HStack {
                 Image(systemName: "magnifyingglass").foregroundStyle(Palette.muted)
                 TextField("Search playlist", text: $store.queueFilter).autocorrectionDisabled()

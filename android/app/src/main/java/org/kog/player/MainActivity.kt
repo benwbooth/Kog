@@ -186,7 +186,7 @@ private fun KogApp(state: KogState, pickFiles: () -> Unit, pickFolder: () -> Uni
                         overflow = TextOverflow.Ellipsis)
                 }
             }
-            if (tab == Tab.Queue) {
+            if (tab == Tab.Queue && state.workspace.active == "queue") {
                 Box {
                     IconButton(onClick = { sortMenu = true }) { Icon(Icons.Default.Sort, "Sort queue") }
                     DropdownMenu(expanded = sortMenu, onDismissRequest = { sortMenu = false }) {
@@ -397,6 +397,15 @@ private fun SearchBox(text: String, onChange: (String) -> Unit) {
 
 @Composable
 private fun QueueView(state: KogState, openLibrary: () -> Unit) {
+    Column(Modifier.fillMaxSize()) {
+        PlaylistWorkspaceTabs(state)
+        if (state.workspace.active == "queue") QueueContents(state, openLibrary)
+        else PlaylistWorkspaceEditor(state)
+    }
+}
+
+@Composable
+private fun QueueContents(state: KogState, openLibrary: () -> Unit) {
     val rows = state.queue.toList()
     if (rows.isEmpty()) {
         EmptyPanel("Your queue is empty", "Browse your library or add files from this device.") {
@@ -457,7 +466,7 @@ private fun QueueTrack(state: KogState, track: Track, index: Int) {
                 state.playlists.filter { it.id != 0L }.forEach { playlist ->
                     DropdownMenuItem(text = { Text("Add to ${playlist.name}") }, onClick = {
                         state.saveToPlaylist(playlist, listOf(track)); menu = false
-                    }, enabled = !track.isDevice)
+                    }, enabled = track.kind == "remote" || track.isDevice == state.libraryOnDevice)
                 }
             }
         }
@@ -505,7 +514,7 @@ private fun PlaylistsView(state: KogState, openQueue: () -> Unit) {
             var menu by remember { mutableStateOf(false) }
             var rename by remember { mutableStateOf(false) }
             Row(Modifier.fillMaxWidth().height(60.dp).clip(RoundedCornerShape(12.dp))
-                .background(Alternate).clickable { state.openPlaylist(playlist) }
+                .background(Alternate).clickable { state.openPlaylistTab(playlist); openQueue() }
                 .padding(start = 14.dp), verticalAlignment = Alignment.CenterVertically) {
                 Icon(if (playlist.id == 0L) Icons.Default.Favorite else Icons.Default.PlaylistPlay,
                     null, tint = Accent)
@@ -516,7 +525,7 @@ private fun PlaylistsView(state: KogState, openQueue: () -> Unit) {
                     IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "Playlist actions") }
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                         DropdownMenuItem(text = { Text("Open") }, onClick = {
-                            state.openPlaylist(playlist); menu = false
+                            state.openPlaylistTab(playlist); openQueue(); menu = false
                         })
                         if (playlist.id != 0L) {
                             DropdownMenuItem(text = { Text("Add queue") }, onClick = {

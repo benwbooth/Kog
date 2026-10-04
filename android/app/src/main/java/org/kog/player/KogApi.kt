@@ -64,7 +64,7 @@ data class SearchPage(val tracks: List<Track>, val folders: List<Folder>, val ge
 /** The mobile client uses the same HTTP endpoints and locator shape as Kog Web. */
 class KogApi(private val context: Context, val onDevice: Boolean = false) {
     val deviceRoot get() = File(context.filesDir, "Kog Imports").absolutePath
-    private fun parseTrack(row: JSONObject): Track = Track.parse(row).let { if (onDevice) it.copy(kind = "device") else it }
+    private fun parseTrack(row: JSONObject): Track = Track.parse(row).let { if (onDevice && it.kind != "remote") it.copy(kind = "device") else it }
 
     private val prefs = context.getSharedPreferences("kog", Context.MODE_PRIVATE)
     var server: String
@@ -242,13 +242,21 @@ class KogApi(private val context: Context, val onDevice: Boolean = false) {
     suspend fun deletePlaylist(id: Long) { request(uri("/api/playlists/$id"), "DELETE") }
     suspend fun appendPlaylist(id: Long, tracks: List<Track>) {
         val entries = JSONArray()
-        tracks.filterNot(Track::isDevice).forEach { entries.put(it.locator()) }
+        require(tracks.all { it.kind == "remote" || it.isDevice == onDevice }) { "Choose a playlist in the same library as these tracks." }
+        tracks.forEach { entries.put(it.locator()) }
         if (entries.length() > 0) request(uri("/api/playlists/$id/entries"), "POST",
             JSONObject().put("entries", entries))
     }
 
+    suspend fun replacePlaylist(id: Long, tracks: List<Track>, expected: List<Track>) {
+        require(tracks.all { it.kind == "remote" || it.isDevice == onDevice }) { "Choose a playlist in the same library as these tracks." }
+        request(uri("/api/playlists/$id/entries"), "PUT", JSONObject()
+            .put("entries", JSONArray(tracks.map { it.locator() }))
+            .put("expected_entries", JSONArray(expected.map { it.locator() })))
+    }
+
     suspend fun stars(): Set<String> = JSONObject(request(uri("/api/stars")))
-        .optJSONArray("entries").objects().map { Track.parse(it).key }.toSet()
+        .optJSONArray("entries").objects().map { parseTrack(it).key }.toSet()
 
     suspend fun star(track: Track, starred: Boolean) {
         request(uri("/api/stars"), "POST", track.locator().put("starred", starred))

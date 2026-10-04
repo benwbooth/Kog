@@ -231,8 +231,11 @@ struct KogAPI {
     func prunePlaylist(_ id: Int64) async throws {
         _ = try await request("/api/playlists/\(id)/prune-missing", method: "POST")
     }
-    func replacePlaylist(_ id: Int64, tracks: [Track]) async throws {
-        _ = try await request("/api/playlists/\(id)/entries", method: "PUT", body: ["entries": tracks.map(\.locator)])
+    func replacePlaylist(_ id: Int64, tracks: [Track], expected: [Track]? = nil) async throws {
+        guard tracks.allSatisfy({ $0.kind == "remote" || $0.isDevice == (deviceRoot != nil) }) else { throw KogError.response("Choose a playlist in the same library as these tracks.") }
+        var body: [String: Any] = ["entries": tracks.map(\.locator)]
+        if let expected { body["expected_entries"] = expected.map(\.locator) }
+        _ = try await request("/api/playlists/\(id)/entries", method: "PUT", body: body)
     }
     func pauseSearch(_ paused: Bool) async throws {
         _ = try await request("/api/library/search/pause", method: "POST", body: ["paused": paused])

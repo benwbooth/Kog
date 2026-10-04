@@ -80,7 +80,7 @@ pub struct StoredPlaylist {
     pub entry_count: i64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StoredEntry {
     pub kind: String,
     pub path: String,
@@ -320,10 +320,27 @@ impl LibraryDb {
     /// Drop every entry of a playlist and store `entries` in their place:
     /// the "overwrite" path when a save reuses an existing name.
     pub fn replace_entries(&self, playlist_id: i64, entries: &[StoredEntry]) -> Result<(), String> {
-        let rows = self.playlist_entry_rows(playlist_id)?;
-        let ids: Vec<i64> = rows.iter().map(|(row_id, _)| *row_id).collect();
-        self.delete_entry_rows(playlist_id, &ids)?;
-        self.append_entries(playlist_id, entries)
+        self.replace_entries_checked(playlist_id, entries, None)
+    }
+
+    /// Save a draft atomically and, when supplied, check its original contents.
+    /// A concurrent editor must never silently overwrite another client's save.
+    pub fn replace_entries_checked(&self, playlist_id: i64, entries: &[StoredEntry], expected: Option<&[StoredEntry]>) -> Result<(), String> {
+        let transaction = self.conn.unchecked_transaction().map_err(|e| format!("saving playlist: {e}"))?;
+        let exists: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM playlists WHERE id = ?1)", [playlist_id], |row| row.get(0))
+            .map_err(|e| format!("reading playlist: {e}"))?;
+        if !exists { return Err("Playlist no longer exists".into()); }
+        if let Some(expected) = expected {
+            let equal = |a: &StoredEntry, b: &StoredEntry| a.kind == b.kind && a.path == b.path && a.entry == b.entry
+                && a.fragment.as_deref().unwrap_or_default() == b.fragment.as_deref().unwrap_or_default();
+            let current = self.playlist_entries(playlist_id)?;
+            if current.len() != expected.len() || !current.iter().zip(expected).all(|(a,b)| equal(a,b)) {
+                return Err("This playlist changed elsewhere. Your draft is preserved; reopen the playlist to load the latest version.".into());
+            }
+        }
+        transaction.execute("DELETE FROM playlist_entries WHERE playlist_id = ?1", [playlist_id]).map_err(|e| format!("saving playlist: {e}"))?;
+        self.append_entries(playlist_id, entries)?;
+        transaction.commit().map_err(|e| format!("saving playlist: {e}"))
     }
 
     pub fn delete_playlist(&self, id: i64) -> Result<(), String> {
@@ -596,6 +613,24 @@ mod tests {
         assert!(db.remove_blacklist_entry(999_999).is_err());
         db.remove_blacklist_entry(rows[0].id).unwrap();
         assert_eq!(db.list_blacklist().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn checked_playlist_save_preserves_conflicts_and_rolls_back_failed_writes() {
+        let db = memory_db();
+        let id = db.create_playlist("Draft").unwrap();
+        let entry = |path: &str| StoredEntry { kind: KIND_LOCAL.into(), path: path.into(), entry: String::new(), fragment: None };
+        let original = vec![entry("/music/a.flac"), entry("/music/a.flac")];
+        db.append_entries(id, &original).unwrap();
+        let updated = vec![entry("/music/b.flac")];
+        db.replace_entries_checked(id, &updated, Some(&original)).unwrap();
+        assert!(db.replace_entries_checked(id, &original, Some(&original)).unwrap_err().contains("changed elsewhere"));
+        assert_eq!(db.playlist_entries(id).unwrap(), updated);
+        db.conn.execute_batch("CREATE TRIGGER reject_bad_playlist_entry BEFORE INSERT ON playlist_entries WHEN NEW.path = 'reject' BEGIN SELECT RAISE(ABORT, 'test write failure'); END;").unwrap();
+        assert!(db.replace_entries_checked(id, &[entry("/music/c.flac"), entry("reject")], Some(&updated)).is_err());
+        assert_eq!(db.playlist_entries(id).unwrap(), updated);
+        db.delete_playlist(id).unwrap();
+        assert!(db.replace_entries_checked(id, &original, None).is_err());
     }
 
     #[test]

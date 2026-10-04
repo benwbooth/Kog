@@ -34,6 +34,7 @@ struct Track: Codable, Identifiable, Hashable {
     }
     var filename: String { URL(fileURLWithPath: displayPath).lastPathComponent }
     func onDevice() -> Track {
+        if kind == "remote" { return self }
         var copy = self
         if kind == "archive" {
             var url = URLComponents(); url.scheme = "kog-archive"

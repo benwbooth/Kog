@@ -21,6 +21,7 @@ pub mod qobject {
         #[qproperty(i32, playlist_count)]
         #[qproperty(i32, playlist_revision)]
         #[qproperty(i32, playlists_revision)]
+        #[qproperty(i32, workspace_revision)]
         #[qproperty(QString, playlist_sort_column)]
         #[qproperty(bool, playlist_sort_ascending)]
         #[qproperty(QString, playlist_column_layout)]
@@ -176,6 +177,16 @@ pub mod qobject {
         fn toggle_stars(self: Pin<&mut AppController>, indices: QString);
         #[qinvokable]
         fn playlists_json(self: &AppController) -> QString;
+        #[qinvokable]
+        fn workspace_json(self: &AppController) -> QString;
+        #[qinvokable]
+        fn workspace_command(self: Pin<&mut AppController>, command: QString);
+        #[qinvokable]
+        fn open_playlist_tab(self: Pin<&mut AppController>, id: i32, name: QString);
+        #[qinvokable]
+        fn workspace_add_queue_selection(self: Pin<&mut AppController>, indices: QString);
+        #[qinvokable]
+        fn poll_workspace(self: Pin<&mut AppController>);
         #[qinvokable]
         fn create_playlist(self: Pin<&mut AppController>, name: QString) -> QString;
         #[qinvokable]
@@ -431,6 +442,7 @@ use kog_audio::playback_order::{NavigationEvent, PlaybackDecision, PlaybackOrder
 use kog_audio::playback_order::sort::compare_values;
 #[cfg(test)]
 use kog_audio::playback_order::sort::natural_compare;
+use kog_audio::playback_order::workspace::{Workspace, Command as WorkspaceCommand, Effect as WorkspaceEffect, QueueAction};
 use kog_audio::playlist::{Playlist, PlaylistEntry, PlaylistLocation};
 use kog_audio::settings::{
     AppSettings, MidiEngine, OpeningFilesBehavior, OutputDevicePreference, RepeatMode, ShuffleMode,
@@ -1819,6 +1831,9 @@ pub struct AppControllerRust {
     playlist_count: i32,
     playlist_revision: i32,
     playlists_revision: i32,
+    workspace_revision: i32,
+    workspace: Workspace,
+    workspace_jobs: std::collections::VecDeque<(QueueAction, Receiver<Result<Vec<Track>, String>>)>,
     playlist_sort_column: QString,
     playlist_sort_ascending: bool,
     playlist_column_layout: QString,
@@ -2015,6 +2030,10 @@ impl Default for AppControllerRust {
             playlist_count: 0,
             playlist_revision: 0,
             playlists_revision: 0,
+            workspace_revision: 0,
+            workspace: kog_audio::settings::setting_path("playlist-tabs-qt.json").and_then(|path| std::fs::read(path).ok())
+                .and_then(|bytes| serde_json::from_slice(&bytes).ok()).and_then(|value| Workspace::restore(value).ok()).unwrap_or_default(),
+            workspace_jobs: std::collections::VecDeque::new(),
             playlist_sort_column: qstring(PlaylistSortColumn::Index.identifier()),
             playlist_sort_ascending: true,
             playlist_column_layout,
@@ -3564,6 +3583,7 @@ impl qobject::AppController {
 
     /// Clearing the queue stops transport and invalidates pending starts.
     pub fn clear_playlist(mut self: Pin<&mut Self>) {
+        self.as_mut().rust_mut().workspace_jobs.clear();
         self.as_mut().stop();
         {
             let mut rust = self.as_mut().rust_mut();
@@ -3736,6 +3756,7 @@ impl qobject::AppController {
                     "name": name.trim(),
                 })
             });
+        if outcome.is_ok() { self.as_mut().dispatch_workspace(WorkspaceCommand::Renamed {key:format!("local:{id}"),name:name.trim().into()}); }
         self.playlist_result(outcome, None)
     }
 
@@ -3767,6 +3788,7 @@ impl qobject::AppController {
         }
         match self.as_ref().rust().library_db.delete_playlist(id as i64) {
             Ok(()) => {
+                self.as_mut().dispatch_workspace(WorkspaceCommand::Deleted {key:format!("local:{id}")});
                 self.as_mut().bump_playlists_revision();
                 self.as_mut().set_status(qstring("Deleted playlist"));
             }
@@ -3793,6 +3815,121 @@ impl qobject::AppController {
             }
             Err(error) => {
                 self.as_mut().set_status(qstring(error));
+            }
+        }
+    }
+
+    pub fn workspace_json(&self) -> QString {
+        qstring(serde_json::to_string(&self.rust().workspace.snapshot()).unwrap_or_default())
+    }
+
+    fn workspace_changed(mut self: Pin<&mut Self>) {
+        if let Some(path) = kog_audio::settings::setting_path("playlist-tabs-qt.json") {
+            if let Ok(value) = serde_json::to_vec(&self.as_ref().rust().workspace) {
+                if let Some(parent) = path.parent() { let _ = std::fs::create_dir_all(parent); }
+                let temporary = path.with_extension("json.tmp");
+                if std::fs::write(&temporary, value).is_ok() { let _ = std::fs::rename(temporary, path); }
+            }
+        }
+        let next = self.as_ref().rust().workspace_revision.wrapping_add(1);
+        self.as_mut().set_workspace_revision(next);
+    }
+
+    pub fn open_playlist_tab(mut self: Pin<&mut Self>, id: i32, name: QString) {
+        self.as_mut().dispatch_workspace(WorkspaceCommand::Open { key: format!("local:{id}"), scope: "local".into(),
+            playlist_id: i64::from(id), name: name.to_string(), readonly: id == 0 });
+    }
+
+    pub fn workspace_command(mut self: Pin<&mut Self>, command: QString) {
+        match serde_json::from_str::<WorkspaceCommand>(&command.to_string()) {
+            Ok(command) => self.as_mut().dispatch_workspace(command),
+            Err(error) => self.as_mut().set_status(qstring(error.to_string())),
+        }
+    }
+
+    pub fn workspace_add_queue_selection(mut self: Pin<&mut Self>, indices: QString) {
+        let selected = if indices.to_string() == "all" { (0..self.as_ref().rust().visible_indices.len()).collect() } else { parse_row_indices(&indices.to_string(), self.as_ref().rust().visible_indices.len()) };
+        let entries = {
+            let pinned = self.as_ref(); let rust = pinned.rust();
+            let tracks = selected.into_iter().filter_map(|row| rust.visible_indices.get(row).and_then(|index| rust.tracks.get(*index))).cloned().collect::<Vec<_>>();
+            collect_stored_entries(&tracks).0.into_iter().map(kog_server::api::entry_json).collect()
+        };
+        self.as_mut().dispatch_workspace(WorkspaceCommand::Append { entries });
+    }
+
+    fn dispatch_workspace(mut self: Pin<&mut Self>, command: WorkspaceCommand) {
+        let effect = self.as_mut().rust_mut().workspace.apply(command);
+        self.as_mut().workspace_changed();
+        match effect {
+            Ok(WorkspaceEffect::None) => {},
+            Ok(WorkspaceEffect::Load { key, playlist_id, generation, .. }) => {
+                let command = match self.as_ref().playlist_stored_entries(playlist_id) {
+                    Ok(entries) => WorkspaceCommand::Loaded { key, generation, entries: entries.into_iter().map(kog_server::api::entry_json).collect() },
+                    Err(error) => WorkspaceCommand::LoadFailed { key, generation, error },
+                };
+                self.as_mut().dispatch_workspace(command);
+            }
+            Ok(WorkspaceEffect::Save { key, playlist_id, revision, entries, expected_entries, .. }) => {
+                let result = kog_server::api::stored_entries_from_json(&entries).and_then(|entries| {
+                    let expected = kog_server::api::stored_entries_from_json(&expected_entries)?;
+                    self.as_ref().rust().library_db.replace_entries_checked(playlist_id, &entries, Some(&expected))
+                });
+                let command = match result {
+                    Ok(()) => { self.as_mut().bump_playlists_revision(); WorkspaceCommand::Saved { key, revision } },
+                    Err(error) => WorkspaceCommand::SaveFailed { key, revision, error },
+                };
+                self.as_mut().dispatch_workspace(command);
+            }
+            Ok(WorkspaceEffect::Queue { mode, entries, .. }) => {
+                let entries = match kog_server::api::stored_entries_from_json(&entries) {
+                    Ok(entries) => entries,
+                    Err(error) => { self.as_mut().set_status(qstring(error)); return; }
+                };
+                let decoders = self.as_ref().rust().decoders.background_worker(self.as_ref().rust().decoder_settings.clone());
+                let (sender, receiver) = std::sync::mpsc::channel();
+                std::thread::spawn(move || {
+                    let mut tracks = Vec::new();
+                    for stored in entries {
+                        let result = PlaylistEntry::try_from(&stored).and_then(|entry| decoders.expand_entry(&entry));
+                        match result {
+                            Ok(expansion) => tracks.extend(expansion.sources.into_iter().map(|source| Track::from_source(source, &decoders))),
+                            Err(error) => { let _ = sender.send(Err(error)); return; }
+                        }
+                    }
+                    let _ = sender.send(Ok(tracks));
+                });
+                self.as_mut().rust_mut().workspace_jobs.push_back((mode, receiver));
+                self.as_mut().set_status(qstring("Preparing playlist tracks…"));
+            }
+            Err(error) => self.as_mut().set_status(qstring(error)),
+        }
+    }
+
+    pub fn poll_workspace(mut self: Pin<&mut Self>) {
+        loop {
+            let next = {
+                let mut rust = self.as_mut().rust_mut();
+                let Some((mode, receiver)) = rust.workspace_jobs.front() else { break; };
+                match receiver.try_recv() {
+                    Ok(result) => { let mode = *mode; rust.workspace_jobs.pop_front(); Some((mode, result)) },
+                    Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => { rust.workspace_jobs.pop_front(); Some((QueueAction::AddToQueue, Err("Playlist preparation stopped".into()))) },
+                }
+            };
+            let Some((mode, result)) = next else { break; };
+            match result {
+                Ok(tracks) => {
+                    let start = self.as_ref().rust().tracks.len(); let count = tracks.len();
+                    self.as_mut().rust_mut().tracks.extend(tracks);
+                    self.as_mut().refresh_playback_order(); self.as_mut().rebuild_playlist();
+                    let decision = self.as_mut().rust_mut().playback_order.apply_queue_action(mode, start, count);
+                    if let Some(PlaybackDecision::Play(index)) = decision {
+                        if let Some(radio) = self.as_mut().rust_mut().radio.as_mut() { radio.cancel_waiting(); }
+                        self.as_mut().play_source_index(index);
+                    }
+                    self.as_mut().set_status(qstring(format!("Added {count} tracks to Play Queue")));
+                }
+                Err(error) => self.as_mut().set_status(qstring(error)),
             }
         }
     }
@@ -7641,7 +7778,7 @@ mod tests {
     }
 
     #[test]
-    fn visible_sort_is_stable_and_index_mode_preserves_original_order() {
+    fn visible_sort_is_stable_and_index_mode_honors_direction() {
         let tracks = [
             Track {
                 title: "Song 10".to_owned(),
@@ -7675,6 +7812,8 @@ mod tests {
             false,
             &HashSet::new(),
         );
+        assert_eq!(original, [2, 1, 0]);
+        sort_visible_indices(&tracks, &mut original, PlaylistSortColumn::Index, true, &HashSet::new());
         assert_eq!(original, [0, 1, 2]);
     }
 }

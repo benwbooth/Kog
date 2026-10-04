@@ -84,6 +84,10 @@ final class KogStore: ObservableObject {
     private var searchTask: Task<Void, Never>?
     private var importScanTask: Task<Void, Never>?
     private let policy = SharedPlaybackPolicy()
+    @Published private(set) var workspace = PlaylistWorkspaceSnapshot.empty
+    private var lastWorkspaceData: Data?
+    private var workspaceQueueGeneration = 0
+    private var workspaceQueueTask: Task<Void, Never>?
     private var startingPrevious: Int?
     @Published private(set) var queuedIndices = [Int]()
     @Published private(set) var stopAfterIndices = Set<Int>()
@@ -125,7 +129,11 @@ final class KogStore: ObservableObject {
         soundfontPath = rebaseDevicePath(soundfontPath)
         sc55RomPath = rebaseDevicePath(sc55RomPath)
         mt32RomPath = rebaseDevicePath(mt32RomPath)
+        let restoredWorkspace = UserDefaults.standard.data(forKey: "playlist_workspace")
         _ = policyCommand(["op": "init", "seed": UInt32.random(in: 1...UInt32.max), "shuffle": shuffle.rawValue, "repeat": repeatMode.rawValue], sync: false)
+        if let restoredWorkspace, let value = try? JSONSerialization.jsonObject(with: restoredWorkspace) {
+            _ = policyCommand(["op": "workspace_restore", "value": rebaseWorkspace(value)], sync: false)
+        }
         syncPolicy()
         scanImports()
         Task { if let saved = try? await deviceAPI.stars() { localStars = saved } }
@@ -375,6 +383,11 @@ final class KogStore: ObservableObject {
         radioBusy = policy.radio["pending"] as? Bool ?? false
         queuedIndices = policy.snapshot["queued"] as? [Int] ?? []
         stopAfterIndices = Set(policy.snapshot["stop_after"] as? [Int] ?? [])
+        if let value = policy.snapshot["workspace"], let data = try? JSONSerialization.data(withJSONObject: value),
+           let snapshot = try? JSONDecoder().decode(PlaylistWorkspaceSnapshot.self, from: data) { workspace = snapshot }
+        if let value = policy.snapshot["workspace_state"], let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]), data != lastWorkspaceData {
+            UserDefaults.standard.set(data, forKey: "playlist_workspace"); lastWorkspaceData = data
+        }
     }
 
     @discardableResult
@@ -383,6 +396,7 @@ final class KogStore: ObservableObject {
             if sync { try policy.sync(queue, current: currentIndex) }
             let reply = try policy.send(command)
             applyPolicySnapshot()
+            if let message = reply["error"] as? String { self.error = message }
             return reply
         } catch { report(error); return nil }
     }
@@ -660,6 +674,8 @@ final class KogStore: ObservableObject {
     }
 
     func clearQueue() {
+        workspaceQueueGeneration += 1
+        workspaceQueueTask = nil
         stop()
         removePlayerObservers(); player?.pause(); player = nil; assetLoader = nil
         #if KOG_NATIVE_AUDIO
@@ -768,6 +784,79 @@ final class KogStore: ObservableObject {
         consumeRadio("radio_next")
         requestRadio()
     }
+    private var workspaceScope: String { playlistOnDevice ? "device" : "server:\(serverKey)" }
+    func openPlaylistTab(_ playlist: SavedPlaylist) {
+        workspaceCommand(["op": "open", "key": "\(workspaceScope):\(playlist.id)", "scope": workspaceScope,
+            "playlist_id": playlist.id, "name": playlist.name, "readonly": playlist.id == 0])
+    }
+    private func workspaceAPI(_ scope: String) throws -> KogAPI {
+        if scope == "device" { return deviceAPI }
+        guard scope == "server:\(serverKey)" else { throw KogError.response("Reconnect to this playlist's server to load or save it.") }
+        return api
+    }
+    private func workspaceTracks(_ value: Any?) throws -> [Track] {
+        let data = try JSONSerialization.data(withJSONObject: value ?? [])
+        return try JSONDecoder().decode([Track].self, from: data)
+    }
+    func workspaceAppend(_ tracks: [Track]) {
+        do {
+            let onDevice = workspace.activeTab?.scope == "device"
+            guard tracks.allSatisfy({ $0.kind == "remote" || $0.isDevice == onDevice }) else { throw KogError.response("Choose a playlist in the same library as these tracks.") }
+            let entries = try JSONSerialization.jsonObject(with: JSONEncoder().encode(tracks))
+            workspaceCommand(["op": "append", "entries": entries])
+        } catch { report(error) }
+    }
+    func workspaceSelect(_ index: Int) {
+        var indices = Set(workspace.selected)
+        if !indices.insert(index).inserted { indices.remove(index) }
+        workspaceCommand(["op": "select", "indices": indices.sorted()])
+    }
+    func workspaceCommand(_ command: [String: Any]) {
+        guard let reply = policyCommand(["op": "workspace", "command": command], sync: false),
+              let effect = reply["workspace_effect"] as? [String: Any], let action = effect["action"] as? String else { return }
+        switch action {
+        case "load":
+            let key = effect["key"] as? String ?? "", generation = effect["generation"] as? Int ?? 0
+            Task {
+                do {
+                    let client = try workspaceAPI(effect["scope"] as? String ?? "")
+                    let tracks = try await client.playlist((effect["playlist_id"] as? NSNumber)?.int64Value ?? 0)
+                    let entries = try JSONSerialization.jsonObject(with: JSONEncoder().encode(tracks))
+                    workspaceCommand(["op": "loaded", "key": key, "generation": generation, "entries": entries])
+                } catch { workspaceCommand(["op": "load_failed", "key": key, "generation": generation, "error": error.localizedDescription]) }
+            }
+        case "save":
+            let key = effect["key"] as? String ?? "", revision = effect["revision"] as? Int ?? 0
+            Task {
+                do {
+                    let client = try workspaceAPI(effect["scope"] as? String ?? "")
+                    try await client.replacePlaylist((effect["playlist_id"] as? NSNumber)?.int64Value ?? 0,
+                        tracks: workspaceTracks(effect["entries"]), expected: workspaceTracks(effect["expected_entries"]))
+                    workspaceCommand(["op": "saved", "key": key, "revision": revision]); await loadPlaylists()
+                } catch { workspaceCommand(["op": "save_failed", "key": key, "revision": revision, "error": error.localizedDescription]) }
+            }
+        case "queue":
+            let generation = workspaceQueueGeneration
+            let source = effect["scope"] as? String ?? ""
+            let previous = workspaceQueueTask
+            workspaceQueueTask = Task {
+                await previous?.value
+                guard generation == workspaceQueueGeneration else { return }
+                do {
+                    let client = try workspaceAPI(source)
+                    let selected = try workspaceTracks(effect["entries"])
+                    var expanded = [Track]()
+                    for track in selected { expanded += try await client.expand(track) }
+                    guard generation == workspaceQueueGeneration, source == "device" || source == "server:\(serverKey)" else { return }
+                    let start = queue.count; add(expanded)
+                    let reply = policyCommand(["op": "apply_queue_action", "action": effect["mode"] as? String ?? "add_to_queue", "start": start, "count": expanded.count])
+                    if let decision = reply?["decision"] as? [String: Any], let index = decision["index"] as? Int { playIndex(index) }
+                } catch { report(error) }
+            }
+        default: break
+        }
+    }
+
     func loadPlaylists() async {
         do { playlists = try await playlistAPI.playlists() } catch { report(error) }
     }
@@ -788,12 +877,14 @@ final class KogStore: ObservableObject {
         } catch { report(error) }
     }
     func renamePlaylist(_ playlist: SavedPlaylist, name: String) async {
-        do { try await playlistAPI.renamePlaylist(playlist.id, name: name); await loadPlaylists()
+        let key = "\(workspaceScope):\(playlist.id)"
+        do { try await playlistAPI.renamePlaylist(playlist.id, name: name); workspaceCommand(["op": "renamed", "key": key, "name": name]); await loadPlaylists()
             if selectedPlaylist?.id == playlist.id { selectedPlaylist?.name = name }
         } catch { report(error) }
     }
     func deletePlaylist(_ playlist: SavedPlaylist) async {
-        do { try await playlistAPI.deletePlaylist(playlist.id); selectedPlaylist = nil; await loadPlaylists() }
+        let key = "\(workspaceScope):\(playlist.id)"
+        do { try await playlistAPI.deletePlaylist(playlist.id); workspaceCommand(["op": "deleted", "key": key]); selectedPlaylist = nil; await loadPlaylists() }
         catch { report(error) }
     }
     private func checkPlaylistSource(_ tracks: [Track]) throws {
@@ -1074,6 +1165,21 @@ extension KogStore {
             }
         })
     }
+    private func rebaseWorkspace(_ value: Any) -> Any {
+        func entries(_ value: Any) -> Any {
+            if let array = value as? [Any] { return array.map(entries) }
+            if var object = value as? [String: Any] {
+                for (key, child) in object { object[key] = entries(child) }
+                if let path = object["path"] as? String { object["path"] = rebaseDevicePath(path) }
+                return object
+            }
+            return value
+        }
+        guard var object = value as? [String: Any], let tabs = object["tabs"] as? [[String: Any]] else { return value }
+        object["tabs"] = tabs.map { tab in tab["scope"] as? String == "device" ? entries(tab) : tab }
+        return object
+    }
+
     private func rebaseDevicePath(_ path: String) -> String {
         if path.hasPrefix("kog-archive:"), var url = URLComponents(string: path) {
             url.queryItems = url.queryItems?.map { item in

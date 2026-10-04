@@ -18,6 +18,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.random.Random
@@ -46,11 +48,17 @@ internal class PolicyPlayer(
     private var cursor = -1
     private var transportGeneration = 0L
     private var endScheduled = false
+    private val workspaceQueueLock = Mutex()
+    private var workspaceQueueGeneration = 0
+    private var lastWorkspaceState = ""
 
     init {
         policy.send(command("init").put("seed", Random.nextLong(1, Long.MAX_VALUE))
             .put("shuffle", prefs.getString("shuffle_mode", if (prefs.getBoolean("shuffle", false)) "all" else "off"))
             .put("repeat", prefs.getString("repeat_mode", if (prefs.getBoolean("repeat", false)) "all" else "off")))
+        prefs.getString("playlist_workspace", null)?.let { saved ->
+            runCatching { policy.send(command("workspace_restore").put("value", JSONObject(saved))) }
+        }
         // Prevent Media3 from choosing the next item at the end of a track.
         output.pauseAtEndOfMediaItems = true
         output.repeatMode = Player.REPEAT_MODE_OFF
@@ -80,8 +88,15 @@ internal class PolicyPlayer(
         policy.sync(tracks(), current(), oldToNew)
         changed()
     }
+    private fun publicSnapshot() = JSONObject(policy.snapshot.toString()).apply {
+        remove("state"); remove("workspace_state"); remove("workspace_effect"); put("current", current())
+    }
     private fun changed() {
-        val snapshot = JSONObject(policy.snapshot.toString()).apply { remove("state"); put("current", current()) }
+        val workspaceState = policy.snapshot.optJSONObject("workspace_state")?.toString().orEmpty()
+        if (workspaceState.isNotEmpty() && workspaceState != lastWorkspaceState) {
+            prefs.edit().putString("playlist_workspace", workspaceState).apply(); lastWorkspaceState = workspaceState
+        }
+        val snapshot = publicSnapshot()
         prefs.edit().putString("shuffle_mode", snapshot.optString("shuffle"))
             .putString("repeat_mode", snapshot.optString("repeat")).apply()
         publish(snapshot)
@@ -97,6 +112,7 @@ internal class PolicyPlayer(
         sync()
         when (request.getString("op")) {
             "sync" -> Unit
+            "workspace" -> workspace(request.getJSONObject("command"))
             "radio_toggle", "radio_reshuffle" -> {
                 radioRoot = request.optString("root", radioRoot)
                 radioOnDevice = request.optBoolean("on_device", radioOnDevice)
@@ -135,7 +151,61 @@ internal class PolicyPlayer(
                 if (!policy.radio.optBoolean("enabled")) radioJob?.cancel()
             }
         }
-        return JSONObject(policy.snapshot.toString()).apply { remove("state"); put("current", current()) }
+        return publicSnapshot()
+    }
+
+    private fun workspaceApi(scope: String): KogApi {
+        if (scope == "device") return deviceApi
+        check(scope == "server:${api.server}") { "Reconnect to this playlist's server to load or save it." }
+        return api
+    }
+    private fun workspaceTracks(rows: JSONArray?): List<Track> = if (rows == null) emptyList() else
+        (0 until rows.length()).map { Track.parse(rows.getJSONObject(it)) }
+    private fun workspace(request: JSONObject) {
+        val effect = send(command("workspace").put("command", request)).optJSONObject("workspace_effect") ?: return
+        when (effect.optString("action")) {
+            "load" -> scope.launch {
+                val key = effect.getString("key"); val generation = effect.getLong("generation")
+                try {
+                    val entries = workspaceApi(effect.getString("scope")).playlist(effect.getLong("playlist_id"))
+                    workspace(command("loaded").put("key", key).put("generation", generation).put("entries", JSONArray(entries.map { it.saved() })))
+                } catch (error: Exception) {
+                    workspace(command("load_failed").put("key", key).put("generation", generation).put("error", error.message))
+                }
+            }
+            "save" -> scope.launch {
+                val key = effect.getString("key"); val revision = effect.getLong("revision")
+                try {
+                    workspaceApi(effect.getString("scope")).replacePlaylist(effect.getLong("playlist_id"),
+                        workspaceTracks(effect.optJSONArray("entries")), workspaceTracks(effect.optJSONArray("expected_entries")))
+                    workspace(command("saved").put("key", key).put("revision", revision))
+                } catch (error: Exception) {
+                    workspace(command("save_failed").put("key", key).put("revision", revision).put("error", error.message))
+                }
+            }
+            "queue" -> {
+                val generation = workspaceQueueGeneration
+                scope.launch { workspaceQueueLock.withLock {
+                    try {
+                        if (generation != workspaceQueueGeneration) return@withLock
+                        val source = effect.getString("scope")
+                        val client = workspaceApi(source)
+                        val expanded = workspaceTracks(effect.optJSONArray("entries")).flatMap { client.expand(it) }
+                        workspaceApi(source) // A connection change invalidates the old request.
+                        if (generation != workspaceQueueGeneration) return@withLock
+                        val start = output.mediaItemCount
+                        output.addMediaItems(expanded.map { it.mediaItem(api) }); sync()
+                        val decision = send(command("apply_queue_action").put("action", effect.getString("mode"))
+                            .put("start", start).put("count", expanded.size)).optJSONObject("decision")
+                        if (decision?.optString("action") == "play") {
+                            send(command("cancel_waiting")); activate(decision.getInt("index"))
+                        }
+                    } catch (error: Exception) {
+                        publish(publicSnapshot().put("error", error.message))
+                    }
+                } }
+            }
+        }
     }
 
     private fun ended() {
@@ -270,6 +340,7 @@ internal class PolicyPlayer(
         return Futures.immediateVoidFuture()
     }
     override fun handleSetMediaItems(items: MutableList<MediaItem>, startIndex: Int, startPositionMs: Long): ListenableFuture<*> {
+        workspaceQueueGeneration++
         cancelNavigation()
         cursor = startIndex.takeIf { it in items.indices } ?: -1
         editing = true
@@ -294,7 +365,7 @@ internal class PolicyPlayer(
         editing = true
         val result = try { super.handleRemoveMediaItems(fromIndex, toIndex) } finally { editing = false }
         sync((0 until oldSize).map { if (it < fromIndex) it else if (it < toIndex) null else it - (toIndex - fromIndex) })
-        if (output.mediaItemCount == 0) stopOutput()
+        if (output.mediaItemCount == 0) { workspaceQueueGeneration++; stopOutput() }
         return result
     }
     override fun handleRelease(): ListenableFuture<*> {

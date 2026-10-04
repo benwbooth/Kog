@@ -56,6 +56,8 @@ class KogState(private val context: Context) {
         private set
     var libraryRoot by mutableStateOf("")
         private set
+    var workspace by mutableStateOf(PlaylistWorkspaceSnapshot())
+        private set
     var selectedPlaylist by mutableStateOf<SavedPlaylist?>(null)
         private set
     var searchText by mutableStateOf("")
@@ -292,7 +294,8 @@ class KogState(private val context: Context) {
         }.orEmpty()
         queuedIndices = indices("queued")
         stopAfterIndices = indices("stop_after")
-        snapshot.optString("error").takeIf(String::isNotEmpty)?.let { error = it }
+        snapshot.optJSONObject("workspace")?.let { workspace = PlaylistWorkspaceSnapshot.parse(it) }
+        if (!snapshot.isNull("error")) snapshot.optString("error").takeIf(String::isNotEmpty)?.let { error = it }
     }
     private fun policyCommand(op: String, fields: JSONObject = JSONObject()) {
         val player = controller ?: return
@@ -459,28 +462,49 @@ class KogState(private val context: Context) {
     fun toggleQueued(index: Int) = policyCommand("toggle_queue", JSONObject().put("indices", JSONArray().put(index)))
     fun toggleStopAfter(index: Int) = policyCommand("toggle_stop_after", JSONObject().put("indices", JSONArray().put(index)))
 
-    fun loadPlaylists() = task { playlists.replaceWith(api.playlists()) }
+    fun workspaceCommand(op: String, fields: JSONObject = JSONObject()) {
+        policyCommand("workspace", JSONObject().put("command", fields.put("op", op)))
+    }
+    fun openPlaylistTab(item: SavedPlaylist) {
+        val scope = if (libraryOnDevice) "device" else "server:${api.server}"
+        workspaceCommand("open", JSONObject().put("key", "$scope:${item.id}").put("scope", scope)
+            .put("playlist_id", item.id).put("name", item.name).put("readonly", item.id == 0L))
+    }
+    fun workspaceSelect(index: Int) {
+        val selection = workspace.selected.toMutableSet()
+        if (!selection.add(index)) selection.remove(index)
+        workspaceCommand("select", JSONObject().put("indices", JSONArray(selection.sorted())))
+    }
+    fun workspaceAppendQueue() {
+        val onDevice = workspace.tabs.firstOrNull { it.key == workspace.active }?.scope == "device"
+        if (queue.any { it.kind != "remote" && it.isDevice != onDevice }) { error = "Choose a playlist in the same library as these tracks."; return }
+        workspaceCommand("append", JSONObject().put("entries", JSONArray(queue.map { it.saved() })))
+    }
+
+    private val playlistApi get() = if (libraryOnDevice) deviceApi else api
+    fun loadPlaylists() = task { playlists.replaceWith(playlistApi.playlists()) }
     fun openPlaylist(item: SavedPlaylist) = task {
         selectedPlaylist = item
-        playlistTracks.replaceWith(api.playlist(item.id))
+        playlistTracks.replaceWith(playlistApi.playlist(item.id))
     }
     fun closePlaylist() { selectedPlaylist = null; playlistTracks.clear() }
-    fun createPlaylist(name: String) = task { api.createPlaylist(name); playlists.replaceWith(api.playlists()) }
+    fun createPlaylist(name: String) = task { playlistApi.createPlaylist(name); playlists.replaceWith(playlistApi.playlists()) }
     fun renamePlaylist(item: SavedPlaylist, name: String) = task {
-        api.renamePlaylist(item.id, name); playlists.replaceWith(api.playlists())
+        playlistApi.renamePlaylist(item.id, name); playlists.replaceWith(playlistApi.playlists())
+        workspaceCommand("renamed", JSONObject().put("key", "${if (libraryOnDevice) "device" else "server:${api.server}"}:${item.id}").put("name", name))
         selectedPlaylist = selectedPlaylist?.copy(name = name)
     }
     fun deletePlaylist(item: SavedPlaylist) = task {
-        api.deletePlaylist(item.id); playlists.replaceWith(api.playlists()); closePlaylist()
+        playlistApi.deletePlaylist(item.id); workspaceCommand("deleted", JSONObject().put("key", "${if (libraryOnDevice) "device" else "server:${api.server}"}:${item.id}")); playlists.replaceWith(playlistApi.playlists()); closePlaylist()
     }
     fun saveToPlaylist(item: SavedPlaylist, tracks: List<Track>) = task {
-        api.appendPlaylist(item.id, tracks)
-        playlists.replaceWith(api.playlists())
-        if (selectedPlaylist?.id == item.id) playlistTracks.replaceWith(api.playlist(item.id))
+        playlistApi.appendPlaylist(item.id, tracks)
+        playlists.replaceWith(playlistApi.playlists())
+        if (selectedPlaylist?.id == item.id) playlistTracks.replaceWith(playlistApi.playlist(item.id))
     }
     fun replacePlaylist(item: SavedPlaylist, tracks: List<Track>) = task {
-        api.appendPlaylist(item.id, tracks)
-        playlists.replaceWith(api.playlists())
+        playlistApi.appendPlaylist(item.id, tracks)
+        playlists.replaceWith(playlistApi.playlists())
     }
     fun toggleStar(track: Track) = task {
         val newValue = track.key !in stars

@@ -29,6 +29,8 @@ use rand::Rng;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+mod workspace;
+use kog_audio::playback_order::workspace::{Workspace, QueueAction};
 use crate::columns::Columns;
 use crate::cover_preview::{self, COVER_HEIGHT, COVER_WIDTH, CoverPreview};
 use crate::remote::{RemoteFile, RemoteListing, RemoteSearchHit, RemoteSearchProgress, RemoteSettings};
@@ -980,6 +982,10 @@ enum RemoteResponse {
 }
 
 struct Ui {
+    workspace: Workspace,
+    workspace_cursor: usize,
+    workspace_offset: usize,
+    workspace_jobs: std::collections::VecDeque<(QueueAction, Receiver<Vec<Track>>)>,
     library: Arc<Library>,
     decoder_settings: DecoderSettings,
     decoders: DecoderRegistry,
@@ -1407,6 +1413,7 @@ impl Ui {
             list_counts: HashMap::new(),
             selected_lists: HashSet::new(),
             list_anchor: None,
+            workspace: workspace::restore(), workspace_cursor: 0, workspace_offset: 0, workspace_jobs: std::collections::VecDeque::new(),
             tracks: Vec::new(),
             selected_tracks: HashSet::new(),
             selection_anchor: None,
@@ -2052,6 +2059,7 @@ impl Ui {
                 layout.first = width.clamp(18, size.0.saturating_sub(30).max(18));
             }
         }
+        layout.track_page = layout.track_page.saturating_sub(1).max(1);
         let track_width = size.0.saturating_sub(layout.playlist_left());
         let vertical = track_count > layout.track_page;
         if self.columns.total_width() > track_width.saturating_sub(usize::from(vertical))
@@ -3248,6 +3256,7 @@ impl Ui {
     }
 
     fn clear_playlist(&mut self) {
+        self.workspace_jobs.clear();
         self.folder_generation = self.folder_generation.wrapping_add(1);
         self.folder_play_pending.clear();
         self.player.stop();
@@ -5297,6 +5306,7 @@ impl Ui {
                 let result = self.library.db().rename_playlist(id, value);
                 match result {
                     Ok(()) => {
+                        self.workspace_command(kog_audio::playback_order::workspace::Command::Renamed {key:format!("local:{id}"),name:value.into()});
                         self.reload_lists();
                         self.status = format!("Renamed to {value}");
                     }
@@ -5316,8 +5326,9 @@ impl Ui {
                     .collect();
                 let mut deleted = 0;
                 for id in ids {
-                    match self.library.db().delete_playlist(id) {
-                        Ok(()) => deleted += 1,
+                    let result = self.library.db().delete_playlist(id);
+                    match result {
+                        Ok(()) => { self.workspace_command(kog_audio::playback_order::workspace::Command::Deleted { key:format!("local:{id}") }); deleted += 1; },
                         Err(error) => {
                             self.status = error;
                             break;
@@ -6154,6 +6165,14 @@ impl Ui {
                 row("Ctrl+A", "Select all"),
                 row("I", "Show full selected label"),
                 String::new(),
+                "PLAYLIST EDITOR TABS".to_owned(),
+                row("Alt+[ / Alt+]", "Previous / next tab"),
+                row("Alt+1 / Ctrl+W", "Play Queue / close tab"),
+                row("p / n / a", "Play Now / Play Next / Add to Queue"),
+                row("Ctrl+S / u / r", "Save / Undo / Redo draft"),
+                row("A / C", "Copy queue / queue selection into draft"),
+                row("d / K / J", "Remove / move draft rows up / down"),
+                String::new(),
                 "FILES AND PLAYLISTS".to_owned(),
                 row("/", "Search files"),
                 row("Ctrl+P", "Pause / resume file search"),
@@ -6392,6 +6411,7 @@ impl Ui {
 
     fn key(&mut self, key: Key, size: (usize, usize)) -> bool {
         self.hover_position = None;
+        if self.workspace.snapshot().pending_close.is_some() { self.workspace_key(key, size); return true; }
         if self.exit_confirm_open {
             match key {
                 Key::Esc
@@ -6708,6 +6728,7 @@ impl Ui {
             }
             return true;
         }
+        if self.workspace_key(key, size) { return true; }
         if let Some(column) = self.keyboard_column {
             match key {
                 Key::Esc | Key::Char('q') => self.request_exit(),
@@ -6950,7 +6971,7 @@ impl Ui {
                 self.columns
                     .scroll_by(8, size.0.saturating_sub(layout.playlist_left()));
             }
-            Key::Enter if self.focus == Focus::Playlists => self.enqueue_list(self.selected[0]),
+            Key::Enter if self.focus == Focus::Playlists => self.open_playlist_tab(self.selected[0]),
             Key::Enter if self.focus == Focus::Tracks => self.play_selected(),
             Key::Char('a') if self.focus == Focus::Library => self.add_selected(false),
             Key::Char('n') if self.focus == Focus::Playlists => {
@@ -7090,6 +7111,7 @@ impl Ui {
             return;
         }
         let layout = self.layout(size);
+        if self.modal.is_none() && !self.menu_open && self.prompt.is_none() && self.workspace_mouse(button, x, y, size) { return; }
         if self.modal.is_some() {
             if self.visualizer_open {
                 if button & 32 == 0 && (button & 0b1100_0000) != 64 && button & 3 == 0 {
@@ -7208,7 +7230,7 @@ impl Ui {
                 return;
             }
             if let Some(bar) = self.scrollbar(&layout, size)
-                && y == layout.footer_top - 1
+                && y == layout.footer_top - 2
                 && (bar.x..bar.x + bar.width).contains(&x)
             {
                 self.columns
@@ -7433,7 +7455,7 @@ impl Ui {
                 && y < layout.footer_top
             {
                 self.focus = Focus::Tracks;
-                if self.scrollbar(&layout, size).is_some() && y == layout.footer_top - 1 {
+                if self.scrollbar(&layout, size).is_some() && y == layout.footer_top - 2 {
                     self.open_context(MenuPage::Playlist, x, y, size);
                     return;
                 }
@@ -7478,7 +7500,7 @@ impl Ui {
             return;
         }
         if let Some(bar) = self.scrollbar(&layout, size)
-            && y == layout.footer_top - 1
+            && y == layout.footer_top - 2
             && (bar.x..bar.x + bar.width).contains(&x)
         {
             if x == bar.x {
@@ -7500,7 +7522,7 @@ impl Ui {
         }
         if self.scrollbar(&layout, size).is_some()
             && self.track_scrollbar(&layout, size).is_some()
-            && y == layout.footer_top - 1
+            && y == layout.footer_top - 2
             && x == size.0.saturating_sub(1)
         {
             return;
@@ -7741,9 +7763,7 @@ impl Ui {
                     } else {
                         Some((now, 0, index))
                     };
-                    if double {
-                        self.enqueue_list(index);
-                    }
+                    if !modified { self.open_playlist_tab(index); }
                 }
                 return;
             }
@@ -7901,9 +7921,7 @@ impl Ui {
                     } else {
                         Some((now, 0, index))
                     };
-                    if double {
-                        self.enqueue_list(index);
-                    }
+                    if !modified { self.open_playlist_tab(index); }
                 }
             }
             return;
@@ -8699,7 +8717,7 @@ impl Ui {
             let mut status_waveform = None::<Vec<char>>;
             for y in 2..layout
                 .footer_top
-                .saturating_sub(usize::from(scrollbar.is_some()))
+                .saturating_sub(1 + usize::from(scrollbar.is_some()))
             {
                 let index = visible_tracks.get(self.offsets[2] + y - 2).copied();
                 let surface = if index.is_some_and(|index| self.selected_tracks.contains(&index))
@@ -8770,7 +8788,7 @@ impl Ui {
                 );
             }
             if let Some(bar) = scrollbar {
-                let row = layout.footer_top;
+                let row = layout.footer_top.saturating_sub(1);
                 paint(&mut screen, row, bar.x + 1, "‹", 1, Surface::Header, true);
                 paint(
                     &mut screen,
@@ -8808,6 +8826,7 @@ impl Ui {
             }
         }
 
+        self.draw_workspace(&mut screen, size, &layout);
         for y in layout.footer_top..height {
             paint(&mut screen, y + 1, 1, "", width, Surface::Toolbar, false);
         }
@@ -12036,6 +12055,9 @@ enum Key {
     CtrlP,
     CtrlG,
     CtrlR,
+    CtrlS,
+    CtrlY,
+    CtrlZ,
     CtrlSpace,
     CtrlU,
     CtrlW,
@@ -12182,6 +12204,9 @@ fn parse_event(bytes: &mut Vec<u8>) -> Option<Event> {
         12 => Key::CtrlL,
         15 => Key::CtrlO,
         18 => Key::CtrlR,
+        19 => Key::CtrlS,
+        25 => Key::CtrlY,
+        26 => Key::CtrlZ,
         0 => Key::CtrlSpace,
         21 => Key::CtrlU,
         23 => Key::CtrlW,
@@ -12357,6 +12382,7 @@ pub fn run() -> Result<(), String> {
         ui.poll_search_due();
         ui.poll_search();
         ui.poll_folders();
+        ui.poll_workspace();
         ui.poll_remote();
         ui.poll_deletes();
         ui.poll_tags();
