@@ -27,22 +27,35 @@ backends may use safe Rust, C, or C++ libraries.
 
 ## Frontend sharing
 
-Qt, TUI, and Web keep separate playback queues so each device can listen on its
-own. They share the decoder registry, archive classification, folder-add file
-policy, playlist expansion, metadata/stream locators, and radio-round rules.
-The queue, shuffle, and repeat policy lives in the platform-neutral
-`kog-playback-policy` crate; native players call it through `kog-audio`, and
-the browser compiles it to WebAssembly.
-Playlist text and star comparisons also compile from that crate, so numbered
-titles and favorite-first sorting behave alike across all three panes.
+Qt, TUI, Web, iOS, and Android keep separate playback sessions so each device
+can listen on its own. Their business rules belong to the Rust backend.
+`kog-playback-policy` owns navigation (including failed opens and end of stream),
+queue overrides, stop-after markers, all shuffle/repeat modes, radio buffering
+and cancellation, playlist sorting, and playlist filtering. Qt and TUI call it
+through `kog-audio`; Web compiles it to WebAssembly. Swift and Kotlin send
+commands through the crate's JSON bridge, linked through the mobile audio
+libraries. The bridge serializes the same Rust types and does not reimplement
+their algorithms. Android's playback service owns the policy, so background
+playback and headset commands use it even when the activity is closed.
+
+Radio selection, playable-track validation, blacklists, round persistence, and
+subsong selection live in `kog-server::radio`. Qt and TUI use `RadioClient` to
+schedule that service; HTTP and the on-device API expose the same service to
+Web and mobile. All use `RadioBuffer` for the ten-song ready buffer, request
+generations, and deferred starts. Enabling or reshuffling radio stages music;
+it does not issue a playback command.
 Saved and streamed track locators are validated by `PlaylistEntry::from_locator`
 in `kog-audio`, so a malformed archive member or unknown kind cannot be
 silently interpreted as a local file by one frontend.
-The Web frontend reaches the Rust library backend through authenticated HTTP;
-the TUI calls the same library collector directly. Qt keeps a parallel scan
-worker for progress and cancellation, then uses the same archive decoder and
-folder-add policy to prepare tracks. Browser audio output and native device
-output remain platform adapters; neither decides which files are playable.
+Web and remote mobile libraries reach the Rust library API through authenticated
+HTTP. iOS and Android device libraries invoke those same routes in-process
+through `kog-server::local_api`. Qt and TUI call the same structural collector
+directly; their workers supply progress and cancellation. Android's document
+provider adapter copies permitted files and companions into app storage before
+passing their paths to Rust for expansion, metadata, and decoding.
+Browser audio output, native audio output, file permissions, and system media
+integration remain platform adapters. See [the shared backend contract](SHARED_BACKEND.md)
+for command semantics and regression gates.
 Cover-art keying, provider order, result matching, image validation, and
 MusicBrainz pacing also live in `kog-audio::cover_art`. Qt and TUI supply their
 own network transports and display adapters to that shared policy. The Web

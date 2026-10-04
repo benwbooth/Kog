@@ -1,10 +1,14 @@
 //! Shared queue, shuffle, and repeat policy for native and browser players.
 
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
+pub mod bridge;
+pub mod radio;
 pub mod sort;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ShuffleMode {
     #[default]
     Off,
@@ -39,7 +43,8 @@ impl ShuffleMode {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum RepeatMode {
     #[default]
     Off,
@@ -86,7 +91,28 @@ pub trait TrackOrderInfo {
     fn track_number(&self) -> Option<u32>;
 }
 
-#[derive(Clone, Debug, Default)]
+/// Match retained rows by identity and occurrence, including duplicate songs.
+/// Callers with an explicit move/removal map can pass that exact map instead.
+pub fn remap_track_ids(previous: &[String], next: &[String]) -> Vec<Option<usize>> {
+    let mut used = HashSet::new();
+    previous
+        .iter()
+        .map(|old| {
+            let index = next
+                .iter()
+                .enumerate()
+                .find(|(index, id)| !used.contains(index) && *id == old)
+                .map(|(index, _)| index);
+            if let Some(index) = index {
+                used.insert(index);
+            }
+            index
+        })
+        .collect()
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct OrderTrack {
     pub album: String,
     pub disc_number: Option<u32>,
@@ -112,7 +138,7 @@ pub enum SelectionState {
     All,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PlaybackOrder {
     shuffle_mode: ShuffleMode,
     repeat_mode: RepeatMode,
@@ -120,6 +146,41 @@ pub struct PlaybackOrder {
     queue: Vec<usize>,
     stop_after: HashSet<usize>,
     seed: u64,
+    #[serde(default)]
+    radio_enabled: bool,
+    #[serde(default)]
+    navigation: Option<Navigation>,
+    #[serde(default)]
+    sequence: Vec<usize>,
+    #[serde(default)]
+    original: Vec<usize>,
+}
+
+/// Commands have the same meaning for buttons, media keys, and end-of-stream
+/// callbacks. In particular, manual Next ignores Repeat One.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NavigationEvent {
+    Next,
+    Previous,
+    Ended,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "action", content = "index", rename_all = "snake_case")]
+pub enum PlaybackDecision {
+    Play(usize),
+    Radio,
+    Stop,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct Navigation {
+    cursor: Option<usize>,
+    previous: bool,
+    repeat_one: bool,
+    attempted: HashSet<usize>,
 }
 
 impl PlaybackOrder {
@@ -131,6 +192,10 @@ impl PlaybackOrder {
             queue: Vec::new(),
             stop_after: HashSet::new(),
             seed,
+            radio_enabled: false,
+            navigation: None,
+            sequence: Vec::new(),
+            original: Vec::new(),
         }
     }
 
@@ -149,14 +214,131 @@ impl PlaybackOrder {
         current: Option<usize>,
     ) {
         self.shuffle_mode = mode;
+        if mode != ShuffleMode::Off {
+            self.radio_enabled = false;
+        }
         self.reset_shuffle_order(tracks, current);
     }
 
     pub fn set_repeat_mode(&mut self, mode: RepeatMode) {
         self.repeat_mode = mode;
+        if mode != RepeatMode::Off {
+            self.radio_enabled = false;
+        }
+    }
+
+    pub const fn radio_enabled(&self) -> bool {
+        self.radio_enabled
+    }
+
+    /// Radio supplies its own shuffled order. Selecting repeat or shuffle
+    /// turns radio off; enabling radio clears both modes in every frontend.
+    pub fn set_radio_enabled<T: TrackOrderInfo>(
+        &mut self,
+        enabled: bool,
+        tracks: &[T],
+        current: Option<usize>,
+    ) {
+        if enabled {
+            self.set_repeat_mode(RepeatMode::Off);
+            self.set_shuffle_mode(ShuffleMode::Off, tracks, current);
+        }
+        self.radio_enabled = enabled;
+    }
+
+    /// Select a candidate or an end-of-queue action. A failed asynchronous
+    /// open feeds `Failed` back into this same state machine, so all clients
+    /// skip each broken candidate at most once, including under Repeat One
+    /// and Repeat All. Direct row activation calls `cancel_navigation` first.
+    pub fn navigate<T: TrackOrderInfo>(
+        &mut self,
+        tracks: &[T],
+        current: Option<usize>,
+        event: NavigationEvent,
+    ) -> PlaybackDecision {
+        if event != NavigationEvent::Failed {
+            self.navigation = None;
+            if event == NavigationEvent::Ended
+                && current.is_some_and(|index| self.should_stop_after(index))
+            {
+                return PlaybackDecision::Stop;
+            }
+            self.navigation = Some(Navigation {
+                cursor: current.filter(|index| *index < tracks.len()),
+                previous: event == NavigationEvent::Previous,
+                repeat_one: event == NavigationEvent::Ended,
+                attempted: HashSet::new(),
+            });
+        }
+        let Some(mut navigation) = self.navigation.take() else {
+            return PlaybackDecision::Stop;
+        };
+        // Invalid queue entries and repeat wraparound cannot spin forever.
+        let budget = tracks
+            .len()
+            .saturating_add(self.queue.len())
+            .saturating_add(1);
+        for _ in 0..budget {
+            let next = if navigation.previous {
+                self.previous(tracks, navigation.cursor)
+            } else {
+                self.next(tracks, navigation.cursor, navigation.repeat_one)
+            };
+            navigation.repeat_one = false;
+            let Some(next) = next.filter(|index| *index < tracks.len()) else {
+                break;
+            };
+            navigation.cursor = Some(next);
+            if navigation.attempted.insert(next) {
+                self.navigation = Some(navigation);
+                return PlaybackDecision::Play(next);
+            }
+        }
+        if self.radio_enabled && !navigation.previous {
+            PlaybackDecision::Radio
+        } else {
+            PlaybackDecision::Stop
+        }
+    }
+
+    pub fn cancel_navigation(&mut self) {
+        self.navigation = None;
+    }
+
+    /// A radio candidate is already selected by the shared radio service.
+    /// Keep its failure in the same traversal as a normal Next candidate.
+    pub fn radio_candidate(&mut self, index: usize) {
+        self.navigation = Some(Navigation {
+            cursor: Some(index),
+            previous: false,
+            repeat_one: false,
+            attempted: HashSet::from([index]),
+        });
+    }
+
+    pub fn started(&mut self, previous: Option<usize>, index: usize) {
+        self.cancel_navigation();
+        self.clear_stop_after_when_leaving(previous, index);
+    }
+
+    pub fn queued_indices(&self) -> &[usize] {
+        &self.queue
+    }
+
+    pub fn stop_after_indices(&self) -> impl Iterator<Item = usize> + '_ {
+        self.stop_after.iter().copied()
     }
 
     pub fn tracks_changed<T: TrackOrderInfo>(&mut self, tracks: &[T], current: Option<usize>) {
+        self.original.retain(|index| *index < tracks.len());
+        for index in 0..tracks.len() {
+            if !self.original.contains(&index) {
+                self.original.push(index);
+            }
+        }
+        if !self.sequence.is_empty() {
+            self.set_sequence(self.sequence.clone(), tracks.len());
+        }
         self.queue.retain(|index| *index < tracks.len());
         self.stop_after.retain(|index| *index < tracks.len());
         self.reset_shuffle_order(tracks, current);
@@ -205,12 +387,16 @@ impl PlaybackOrder {
     }
 
     pub fn clear_tracks(&mut self) {
+        self.cancel_navigation();
         self.shuffle_order.clear();
         self.queue.clear();
         self.stop_after.clear();
+        self.sequence.clear();
+        self.original.clear();
     }
 
     pub fn remap_tracks(&mut self, old_to_new: &[Option<usize>]) {
+        self.cancel_navigation();
         self.queue = remap_indices(&self.queue, old_to_new);
         self.stop_after = self
             .stop_after
@@ -218,6 +404,36 @@ impl PlaybackOrder {
             .filter_map(|index| old_to_new.get(*index).copied().flatten())
             .collect();
         self.shuffle_order.clear();
+        self.sequence = remap_indices(&self.sequence, old_to_new);
+        self.original = remap_indices(&self.original, old_to_new);
+    }
+
+    /// A sorted projection can retain stable row identities while navigating
+    /// in the displayed order. An empty sequence means the physical order.
+    pub fn set_sequence(&mut self, mut sequence: Vec<usize>, count: usize) {
+        if sequence.is_empty() {
+            self.sequence.clear();
+            return;
+        }
+        let mut used = HashSet::new();
+        sequence.retain(|index| *index < count && used.insert(*index));
+        sequence.extend((0..count).filter(|index| !used.contains(index)));
+        self.sequence = sequence;
+    }
+
+    pub fn original_position(&self, index: usize) -> usize {
+        self.original
+            .iter()
+            .position(|old| *old == index)
+            .unwrap_or(index)
+    }
+
+    fn sequence(&self, count: usize) -> Vec<usize> {
+        if self.sequence.len() == count {
+            self.sequence.clone()
+        } else {
+            (0..count).collect()
+        }
     }
 
     pub fn next<T: TrackOrderInfo>(
@@ -251,12 +467,17 @@ impl PlaybackOrder {
             return None;
         }
         match self.shuffle_mode {
-            ShuffleMode::Off => match current.filter(|index| *index < tracks.len()) {
-                Some(index) if index > 0 => Some(index - 1),
-                Some(index) if self.repeat_mode != RepeatMode::All => Some(index),
-                Some(_) => Some(tracks.len() - 1),
-                None => Some(0),
-            },
+            ShuffleMode::Off => {
+                let sequence = self.sequence(tracks.len());
+                let position =
+                    current.and_then(|current| sequence.iter().position(|index| *index == current));
+                match position {
+                    Some(position) if position > 0 => sequence.get(position - 1).copied(),
+                    Some(_) if self.repeat_mode == RepeatMode::All => sequence.last().copied(),
+                    Some(_) => current,
+                    None => sequence.first().copied(),
+                }
+            }
             ShuffleMode::Albums | ShuffleMode::All => self.previous_shuffled(tracks, current),
         }
     }
@@ -316,23 +537,28 @@ impl PlaybackOrder {
         tracks: &[T],
         current: Option<usize>,
     ) -> Option<usize> {
+        let sequence = self.sequence(tracks.len());
         let Some(current) = current.filter(|index| *index < tracks.len()) else {
-            return Some(0);
+            return sequence.first().copied();
         };
-        let next = current + 1;
+        let next = sequence
+            .iter()
+            .position(|index| *index == current)
+            .and_then(|position| sequence.get(position + 1))
+            .copied();
         if self.repeat_mode == RepeatMode::Album {
             let album = tracks[current].album();
-            if next < tracks.len() && tracks[next].album().eq_ignore_ascii_case(album) {
-                return Some(next);
+            if next.is_some_and(|next| tracks[next].album().eq_ignore_ascii_case(album)) {
+                return next;
             }
-            return tracks
-                .iter()
-                .position(|track| track.album().eq_ignore_ascii_case(album));
+            return sequence
+                .into_iter()
+                .find(|index| tracks[*index].album().eq_ignore_ascii_case(album));
         }
-        if next < tracks.len() {
-            Some(next)
+        if next.is_some() {
+            next
         } else if self.repeat_mode == RepeatMode::All {
-            Some(0)
+            sequence.first().copied()
         } else {
             None
         }

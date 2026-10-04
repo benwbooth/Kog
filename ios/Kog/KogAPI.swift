@@ -242,10 +242,9 @@ struct KogAPI {
         if !root.isEmpty { query["root"] = root }
         return query
     }
-    func reshuffleRadio(root: String) async throws -> [Track] {
+    func reshuffleRadio(root: String) async throws -> RadioBatch {
         let data = try await request("/api/radio/reshuffle", query: radioQuery(root), method: "POST")
-        let rows = (try JSONSerialization.jsonObject(with: data) as? [String: Any])?["entries"] ?? []
-        return try await metadata(decodeTracks(rows))
+        return try await radioBatch(data)
     }
     func renamePlaylist(_ id: Int64, name: String) async throws { _ = try await request("/api/playlists/\(id)/rename", method: "POST", body: ["name": name]) }
     func deletePlaylist(_ id: Int64) async throws { _ = try await request("/api/playlists/\(id)", method: "DELETE") }
@@ -263,15 +262,18 @@ struct KogAPI {
         body["starred"] = enabled
         _ = try await request("/api/stars", method: "POST", body: body)
     }
-    func radio(_ enabled: Bool, root: String) async throws -> [Track] {
+    func radio(_ enabled: Bool, root: String) async throws -> RadioBatch {
         let data = try await request("/api/radio/enabled", query: radioQuery(root), method: "POST", body: ["enabled": enabled])
-        let rows = (try JSONSerialization.jsonObject(with: data) as? [String: Any])?["entries"] ?? []
-        return enabled ? try await metadata(decodeTracks(rows)) : []
+        return try await radioBatch(data)
     }
-    func radioAdvance(root: String) async throws -> [Track] {
+    func radioAdvance(root: String) async throws -> RadioBatch {
         let data = try await request("/api/radio/advance", query: radioQuery(root), method: "POST")
-        let rows = (try JSONSerialization.jsonObject(with: data) as? [String: Any])?["entries"] ?? []
-        return try await metadata(decodeTracks(rows))
+        return try await radioBatch(data)
+    }
+    private func radioBatch(_ data: Data) async throws -> RadioBatch {
+        let reply = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+        let tracks = try await metadata(decodeTracks(reply["entries"] ?? []))
+        return RadioBatch(tracks: tracks, exhausted: reply["exhausted"] as? Bool ?? tracks.isEmpty)
     }
 
     private func decodeTracks(_ object: Any) -> [Track] {

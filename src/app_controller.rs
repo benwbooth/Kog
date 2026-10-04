@@ -409,7 +409,7 @@ pub mod qobject {
 }
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -427,8 +427,10 @@ use kog_audio::decoder::{
     DecoderRegistry, DecoderSettings, ExpansionResult, PlaybackSource, validate_soundfont,
 };
 use kog_audio::playback::{OutputDevice, PlaybackEngine, PlaybackState, available_output_devices};
-use kog_audio::playback_order::{PlaybackOrder, SelectionState};
-use kog_audio::playback_order::sort::{favorites_first, natural_compare};
+use kog_audio::playback_order::{NavigationEvent, PlaybackDecision, PlaybackOrder, SelectionState};
+use kog_audio::playback_order::sort::compare_values;
+#[cfg(test)]
+use kog_audio::playback_order::sort::natural_compare;
 use kog_audio::playlist::{Playlist, PlaylistEntry, PlaylistLocation};
 use kog_audio::settings::{
     AppSettings, MidiEngine, OpeningFilesBehavior, OutputDevicePreference, RepeatMode, ShuffleMode,
@@ -488,112 +490,13 @@ struct TreeDeleteState {
     failures: Vec<String>,
 }
 
-struct RadioEvent {
-    track: Option<Track>,
-}
+type RadioState = kog_server::radio_client::RadioClient<Track>;
 
-/// One in-flight radio expansion: up to MAX_EXPANDERS run at once so a
-/// single slow archive cannot wedge staging. The locator identifies timed
-/// out picks for the session skip-list.
-struct RadioJob {
-    receiver: Receiver<RadioEvent>,
-    cancel: Arc<AtomicBool>,
-    locator: PathBuf,
-    started: Instant,
-}
-
-/// Live radio state: staged tracks waiting for their playlist turn, the
-/// in-flight expansions, the background staging thread's pick channel,
-/// locators that timed out this session, and whether an explicit play press
-/// is owed an instant start. Picking never touches the UI thread: the
-/// staging thread owns the round, its decoders, and its cursors, paced by
-/// the bounded channel.
-struct RadioState {
-    ready: VecDeque<Track>,
-    expand_jobs: Vec<RadioJob>,
-    dead: Arc<Mutex<HashSet<String>>>,
-    blacklist: Arc<Mutex<kog_audio::radio::Blacklist>>,
-    staging: Option<StagingWorker>,
-    kickstart_armed: bool,
-    consecutive_dead: u32,
-}
-
-/// Background staging thread handle: picks arrive on the bounded channel
-/// (which paces the thread), and the cancel flag stops it after teardown.
-struct StagingWorker {
-    picks: Receiver<kog_audio::radio::StagingResponse>,
-    cancel: Arc<AtomicBool>,
-}
-
-/// Spawn the staging thread. Only cheap clones happen here, so toggling
-/// never waits: decoder construction and the first descent run over there.
-/// Returns the channel handle plus the shared dead set, which the UI feeds
-/// with proven-unplayable locators and the thread consults per pick.
-fn spawn_staging_worker(
-    root: PathBuf,
-    settings: DecoderSettings,
-    read_cue: bool,
-    initial: kog_audio::radio::RoundInitial,
-    blacklist: kog_audio::radio::Blacklist,
-) -> Result<
-    (
-        StagingWorker,
-        Arc<Mutex<HashSet<String>>>,
-        Arc<Mutex<kog_audio::radio::Blacklist>>,
-    ),
-    String,
-> {
-    let (sender, receiver) = std::sync::mpsc::sync_channel(4);
-    let cancel = Arc::new(AtomicBool::new(false));
-    let worker_cancel = Arc::clone(&cancel);
-    let nested_cache = kog_audio::archive::nested_cache_dir();
-    let save_path = kog_audio::settings::setting_path("radio-round.json");
-    let dead = Arc::new(Mutex::new(HashSet::new()));
-    let worker_dead = Arc::clone(&dead);
-    let blacklist = Arc::new(Mutex::new(blacklist));
-    let worker_blacklist = Arc::clone(&blacklist);
-    std::thread::Builder::new()
-        .name("kog-radio-stage".to_owned())
-        .spawn(move || {
-            kog_audio::radio::run_staging(
-                root,
-                settings,
-                read_cue,
-                nested_cache,
-                initial,
-                save_path,
-                worker_dead,
-                worker_blacklist,
-                sender,
-                worker_cancel,
-            );
-        })
-        .map_err(|_| "Random Radio could not start its worker".to_owned())?;
-    Ok((
-        StagingWorker {
-            picks: receiver,
-            cancel,
-        },
-        dead,
-        blacklist,
-    ))
-}
-
-fn prepare_radio_track(decoders: &DecoderRegistry, locator: &Path, seed: u64) -> Option<Track> {
-    kog_audio::radio::prepare_pick(decoders, locator, seed, |source, _| {
-        Some(Track::from_source(source, decoders))
+fn make_radio_client(decoders: &DecoderRegistry, settings: DecoderSettings) -> Result<RadioState, String> {
+    let decoders = decoders.background_worker(settings);
+    kog_server::radio_client::RadioClient::new(kog_server::radio::Radio::from_settings(), move |entry| {
+        entry.audio_track(&decoders)
     })
-}
-
-/// Blacklist snapshot from the library store for radio staging.
-fn blacklist_snapshot(db: &kog_core::db::LibraryDb) -> kog_audio::radio::Blacklist {
-    let rows: Vec<(String, String, String)> = db
-        .list_blacklist()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|entry| (entry.kind, entry.path, entry.entry))
-        .collect();
-    kog_audio::radio::Blacklist::from_rows(&rows)
 }
 
 /// One blacklist row, with the path resolved best-effort so keys match
@@ -614,13 +517,6 @@ fn blacklist_path(path: &str) -> String {
     kog_audio::track::canonical_path(&candidate)
         .map(|canonical| canonical.to_string_lossy().into_owned())
         .unwrap_or_else(|_| path.to_owned())
-}
-
-/// Persisted round for `root`, or None when nothing valid waits. A wrong
-/// music folder never resumes another folder's positions.
-fn load_radio_round(root: &Path) -> Option<kog_audio::radio::RoundInitial> {
-    let path = kog_audio::settings::setting_path("radio-round.json")?;
-    kog_audio::radio::RadioRound::load(&path, root)
 }
 
 struct CoverArtRequest {
@@ -1648,61 +1544,12 @@ fn compare_tracks(
     column: PlaylistSortColumn,
     starred: &HashSet<String>,
 ) -> Ordering {
-    match column {
-        PlaylistSortColumn::Index
-        | PlaylistSortColumn::Rating
-        | PlaylistSortColumn::PlayCount
-        | PlaylistSortColumn::Status => Ordering::Equal,
-        // Starred first when ascending: reversed boolean order so a click
-        // on the star header groups favorites on top.
-        PlaylistSortColumn::Star => favorites_first(
-            starred.contains(&star_key_for_track(left)),
-            starred.contains(&star_key_for_track(right)),
-        ),
-        PlaylistSortColumn::Title => natural_compare(&left.title, &right.title),
-        PlaylistSortColumn::AlbumArtist => natural_compare(&left.album_artist, &right.album_artist),
-        PlaylistSortColumn::Artist => natural_compare(&left.artist, &right.artist),
-        PlaylistSortColumn::Composer => natural_compare(&left.composer, &right.composer),
-        PlaylistSortColumn::Album => natural_compare(&left.album, &right.album),
-        PlaylistSortColumn::Length => left.duration.cmp(&right.duration),
-        PlaylistSortColumn::FileSizeBytes | PlaylistSortColumn::FileSize => {
-            left.file_size_bytes.cmp(&right.file_size_bytes)
-        }
-        PlaylistSortColumn::Date => left.year.cmp(&right.year),
-        PlaylistSortColumn::Genre => natural_compare(&left.genre, &right.genre),
-        PlaylistSortColumn::Path => natural_compare(&track_path(left), &track_path(right)),
-        PlaylistSortColumn::Filename => {
-            natural_compare(&track_filename(left), &track_filename(right))
-        }
-        PlaylistSortColumn::Codec => natural_compare(&left.codec, &right.codec),
-        PlaylistSortColumn::SampleRate => left.sample_rate.cmp(&right.sample_rate),
-        PlaylistSortColumn::BitsPerSample => left.bits_per_sample.cmp(&right.bits_per_sample),
-        PlaylistSortColumn::Bitrate => left.bitrate.cmp(&right.bitrate),
-        PlaylistSortColumn::Track => {
-            let left_album_artist = if left.album_artist.is_empty() {
-                &left.artist
-            } else {
-                &left.album_artist
-            };
-            let right_album_artist = if right.album_artist.is_empty() {
-                &right.artist
-            } else {
-                &right.album_artist
-            };
-            natural_compare(left_album_artist, right_album_artist)
-                .then_with(|| natural_compare(&left.album, &right.album))
-                .then_with(|| {
-                    left.disc_number
-                        .unwrap_or_default()
-                        .cmp(&right.disc_number.unwrap_or_default())
-                })
-                .then_with(|| {
-                    left.track_number
-                        .unwrap_or_default()
-                        .cmp(&right.track_number.unwrap_or_default())
-                })
-        }
-    }
+    let row = |track: &Track| {
+        let mut row = kog_audio::playback_order::sort_row(track);
+        row.star = starred.contains(&star_key_for_track(track));
+        row.value(column.identifier())
+    };
+    compare_values(&row(left), &row(right))
 }
 
 /// Song-level identity for stars: the radio locator plus the subsong
@@ -1943,11 +1790,11 @@ fn sort_visible_indices(
     ascending: bool,
     starred: &HashSet<String>,
 ) {
-    if column == PlaylistSortColumn::Index {
-        return;
-    }
     visible_indices.sort_by(|left, right| {
-        let ordering = compare_tracks(&tracks[*left], &tracks[*right], column, starred);
+        let ordering = if column == PlaylistSortColumn::Index {
+            compare_values(&kog_audio::playback_order::sort::SortValue::Number(Some(*left as f64)),
+                &kog_audio::playback_order::sort::SortValue::Number(Some(*right as f64)))
+        } else { compare_tracks(&tracks[*left], &tracks[*right], column, starred) };
         if ascending {
             ordering
         } else {
@@ -2297,49 +2144,19 @@ impl Default for AppControllerRust {
             }
         }
 
-        // Startup restore for radio users: resume the persisted round so
-        // picks continue instead of replaying openers, and the first pick
-        // only needs a short descent. Skipped when repeat is on (radio and
-        // repeat are mutually exclusive) or the folder is unavailable.
-        if app_settings.radio_enabled {
-            if app_settings.repeat_mode != RepeatMode::Off {
-                let _ = AppSettings::save_radio_enabled(false);
-            } else if controller.directory.is_dir() {
-                let restored = load_radio_round(&controller.directory);
-                let resumed = restored.is_some();
-                let initial = restored.unwrap_or_else(|| {
-                    kog_audio::radio::RoundInitial::fresh(kog_audio::radio::random_seed())
-                });
-                let staged = spawn_staging_worker(
-                    controller.directory.clone(),
-                    controller.decoder_settings.clone(),
-                    controller.read_cue_sheets_in_folders,
-                    initial,
-                    blacklist_snapshot(&controller.library_db),
-                )
-                .ok();
-                match staged {
-                    None => {
-                        let _ = AppSettings::save_radio_enabled(false);
-                    }
-                    Some((staging, dead, blacklist)) => {
-                        controller.radio = Some(RadioState {
-                            ready: VecDeque::new(),
-                            expand_jobs: Vec::new(),
-                            dead,
-                            blacklist,
-                            staging: Some(staging),
-                            kickstart_armed: false,
-                            consecutive_dead: 0,
-                        });
-                        controller.radio_active = true;
-                        controller.status = qstring(if resumed {
-                            "Random Radio on — resumed"
-                        } else {
-                            "Random Radio on"
-                        });
-                    }
+        if app_settings.radio_enabled && controller.directory.is_dir() {
+            match make_radio_client(&controller.decoders, controller.decoder_settings.clone()) {
+                Ok(mut radio) => {
+                    let root = Some(controller.directory.clone());
+                    radio.set_enabled(true, root.clone(), root);
+                    controller.playback_order.set_radio_enabled(true, &controller.tracks, None);
+                    controller.repeat_mode = qstring(RepeatMode::Off.setting_value());
+                    controller.shuffle_mode = qstring(ShuffleMode::Off.setting_value());
+                    controller.radio = Some(radio);
+                    controller.radio_active = true;
+                    controller.status = qstring("Random Radio on");
                 }
+                Err(error) => controller.status = qstring(error),
             }
         }
 
@@ -2733,22 +2550,12 @@ impl AppControllerRust {
     }
 
     fn rebuild_visible_indices(&mut self) {
-        self.visible_indices = self
-            .tracks
-            .iter()
-            .enumerate()
-            .filter(|(_, track)| track.matches(&self.filter))
-            .map(|(index, _)| index)
-            .collect();
+        let mut sorted: Vec<_> = (0..self.tracks.len()).collect();
         if self.sort_column != PlaylistSortColumn::Index {
-            sort_visible_indices(
-                &self.tracks,
-                &mut self.visible_indices,
-                self.sort_column,
-                self.playlist_sort_ascending,
-                &self.starred,
-            );
+            sort_visible_indices(&self.tracks, &mut sorted, self.sort_column, self.playlist_sort_ascending, &self.starred);
         }
+        self.playback_order.set_sequence(sorted.clone(), self.tracks.len());
+        self.visible_indices = sorted.into_iter().filter(|index| self.tracks[*index].matches(&self.filter)).collect();
     }
 
     fn sync_tracks_in_playback_order(&mut self) -> usize {
@@ -3114,485 +2921,95 @@ impl qobject::AppController {
     }
 
     pub fn set_radio_enabled(mut self: Pin<&mut Self>, enabled: bool) {
-        if enabled == self.as_ref().rust().radio_active {
-            return;
-        }
-        if !enabled {
+        if enabled == self.as_ref().rust().radio_active { return; }
+        if enabled {
+            let root = self.as_ref().rust().directory.clone();
+            self.as_mut().begin_radio_session(root, false, "Random Radio on");
+        } else {
             self.as_mut().teardown_radio();
-            if let Err(error) = AppSettings::save_radio_enabled(false) {
-                self.as_mut().set_status(qstring(error));
-                return;
-            }
             self.as_mut().set_status(qstring("Random Radio off"));
+        }
+    }
+
+    fn refresh_radio_blacklist(mut self: Pin<&mut Self>) {
+        if let Some(radio) = self.as_mut().rust_mut().radio.as_mut() {
+            radio.refresh();
+        }
+    }
+
+    fn begin_radio_session(mut self: Pin<&mut Self>, root: PathBuf, reshuffle: bool, status: &str) {
+        if !root.is_dir() {
+            self.as_mut().set_status(qstring(format!("Music folder {} is unavailable", root.display())));
             return;
         }
-        if let Err(error) = AppSettings::save_radio_enabled(true) {
-            self.as_mut().set_status(qstring(error));
-            return;
+        if self.as_ref().rust().radio.is_none() {
+            let radio = {
+                let pinned = self.as_ref();
+                let rust = pinned.rust();
+                make_radio_client(&rust.decoders, rust.decoder_settings.clone())
+            };
+            match radio {
+                Ok(radio) => self.as_mut().rust_mut().radio = Some(radio),
+                Err(error) => { self.as_mut().set_status(qstring(error)); return; }
+            }
         }
         self.as_mut().apply_repeat_mode(RepeatMode::Off);
-        let root = self.as_ref().rust().directory.clone();
-        if !root.is_dir() {
-            self.as_mut().set_status(qstring(format!(
-                "Music folder {} is unavailable",
-                root.display()
-            )));
-            return;
+        self.as_mut().apply_shuffle_mode(ShuffleMode::Off);
+        {
+            let mut rust = self.as_mut().rust_mut();
+            let tracks = rust.tracks.clone();
+            let current = usize::try_from(rust.current_index).ok();
+            rust.playback_order.set_radio_enabled(true, &tracks, current);
+            let radio = rust.radio.as_mut().expect("radio initialized above");
+            if reshuffle { radio.reshuffle(Some(root.clone()), Some(root)); }
+            else { radio.set_enabled(true, Some(root.clone()), Some(root)); }
         }
-        // Manual toggle-on resumes the persisted round when one waits, so
-        // positions (and the no-repeat promise) survive toggling. The Reset
-        // control is the explicit reshuffle action, not this toggle.
-        // Either way nothing autoplays before play.
-        let (initial, resumed) = match load_radio_round(&root) {
-            Some(initial) => (initial, true),
-            None => (
-                kog_audio::radio::RoundInitial::fresh(kog_audio::radio::random_seed()),
-                false,
-            ),
-        };
-        self.as_mut().begin_radio_session(
-            root,
-            initial,
-            if resumed {
-                "Random Radio on — resumed".to_owned()
-            } else {
-                "Random Radio on".to_owned()
-            },
-        );
-    }
-
-    /// Blacklist snapshot from the library store for radio staging:
-    /// songs as locator keys, folders as paths.
-    fn load_blacklist_snapshot(&self) -> kog_audio::radio::Blacklist {
-        blacklist_snapshot(&self.rust().library_db)
-    }
-
-    /// Refresh the running staging thread's blacklist after menu edits.
-    fn refresh_radio_blacklist(mut self: Pin<&mut Self>) {
-        let snapshot = self.as_ref().load_blacklist_snapshot();
-        if let Some(radio) = self.as_mut().rust_mut().radio.as_mut() {
-            *radio
-                .blacklist
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = snapshot;
-        }
-    }
-
-    /// Spawn the staging worker and install fresh radio state for `root`,
-    /// clearing the ready buffer and in-flight jobs from
-    /// the previous folder. Callers choose the round (resumed or fresh)
-    /// and the status line.
-    fn begin_radio_session(
-        mut self: Pin<&mut Self>,
-        root: PathBuf,
-        initial: kog_audio::radio::RoundInitial,
-        status: String,
-    ) {
-        let blacklist = self.as_ref().load_blacklist_snapshot();
-        let staging = {
-            let rust = self.as_ref();
-            spawn_staging_worker(
-                root,
-                rust.rust().decoder_settings.clone(),
-                rust.rust().read_cue_sheets_in_folders,
-                initial,
-                blacklist,
-            )
-        };
-        let (staging, dead, blacklist) = match staging {
-            Ok(staging) => staging,
-            Err(error) => {
-                self.as_mut().set_status(qstring(error));
-                return;
-            }
-        };
-        self.as_mut().rust_mut().radio = Some(RadioState {
-            ready: VecDeque::new(),
-            expand_jobs: Vec::new(),
-            dead,
-            blacklist,
-            staging: Some(staging),
-            // Never autoplay on toggle: staging fills the hidden buffer,
-            // and the first track moves (and plays) only after an explicit
-            // play/next press or a natural track end.
-            kickstart_armed: false,
-            consecutive_dead: 0,
-        });
         self.as_mut().set_radio_active(true);
         self.as_mut().set_status(qstring(status));
     }
 
-    /// Fresh shuffle for the running radio session: new seed and cleared
-    /// positions, keeping unplayability knowledge. Radio turns on if off.
     pub fn reshuffle_radio(mut self: Pin<&mut Self>) {
         let root = self.as_ref().rust().directory.clone();
-        if !root.is_dir() {
-            self.as_mut().set_status(qstring(format!(
-                "Music folder {} is unavailable",
-                root.display()
-            )));
-            return;
-        }
-        if let Err(error) = AppSettings::save_radio_enabled(true) {
-            self.as_mut().set_status(qstring(error));
-            return;
-        }
-        self.as_mut().apply_repeat_mode(RepeatMode::Off);
-        self.as_mut().teardown_radio();
-        let dead: Vec<String> = load_radio_round(&root)
-            .map(|loaded| loaded.dead)
-            .unwrap_or_default();
-        let initial = kog_audio::radio::RoundInitial {
-            seed: kog_audio::radio::random_seed(),
-            counter: 0,
-            cursors: HashMap::new(),
-            dead,
-        };
-        self.as_mut()
-            .begin_radio_session(root, initial, "Random Radio — fresh shuffle".to_owned());
+        self.as_mut().begin_radio_session(root, true, "Random Radio — fresh shuffle");
     }
 
     pub fn poll_radio(mut self: Pin<&mut Self>) {
-        if !self.as_ref().rust().radio_active {
-            return;
+        let (pending, error) = {
+            let mut rust = self.as_mut().rust_mut();
+            let Some(radio) = rust.radio.as_mut() else { return; };
+            radio.poll();
+            (radio.take_pending(), radio.take_error())
+        };
+        if let Some(error) = error { self.as_mut().set_status(qstring(error)); }
+        if let Some(track) = pending {
+            let index = self.as_mut().append_radio_track(track);
+            self.as_mut().play_shifted_radio_track(index);
         }
-        let mut events = Vec::new();
-        // Finished lanes with the locator they expanded: empty completions
-        // prove the pick unplayable and join the shared dead set.
-        let mut finished: Vec<(usize, Option<String>)> = Vec::new();
-        if let Some(radio) = self.as_ref().rust().radio.as_ref() {
-            for (index, job) in radio.expand_jobs.iter().enumerate() {
-                // Expand workers send exactly once, so a first event and a
-                // disconnect both mean that lane is done.
-                let mut done = false;
-                let mut empty = false;
-                while events.len() < 16 {
-                    match job.receiver.try_recv() {
-                        Ok(event) => {
-                            empty = event.track.is_none();
-                            events.push(event);
-                            done = true;
-                            break;
-                        }
-                        Err(TryRecvError::Empty) => break,
-                        Err(TryRecvError::Disconnected) => {
-                            done = true;
-                            break;
-                        }
-                    }
-                }
-                if done {
-                    let key = empty.then(|| kog_audio::radio::radio_locator_key(&job.locator));
-                    finished.push((index, key));
-                }
-            }
-        } else {
-            self.as_mut().set_radio_active(false);
-            return;
-        }
-        for event in events {
-            self.as_mut().handle_radio_event(event);
-        }
-        if let Some(radio) = self.as_mut().rust_mut().radio.as_mut() {
-            for (index, key) in finished.into_iter().rev() {
-                if let Some(dead) = key {
-                    radio
-                        .dead
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .insert(dead);
-                }
-                if index < radio.expand_jobs.len() {
-                    radio.expand_jobs.remove(index);
-                }
-            }
-        }
-        let kickstart = self
-            .as_ref()
-            .rust()
-            .radio
-            .as_ref()
-            .is_some_and(|radio| radio.kickstart_armed)
-            && self.as_ref().rust().tracks.is_empty()
-            && self
-                .as_ref()
-                .rust()
-                .radio
-                .as_ref()
-                .is_some_and(|radio| !radio.ready.is_empty());
-        if kickstart {
-            if let Some(index) = self.as_mut().shift_radio_track() {
-                self.as_mut().play_shifted_radio_track(index);
-            }
-            if let Some(radio) = self.as_mut().rust_mut().radio.as_mut() {
-                radio.kickstart_armed = false;
-            }
-        }
-        self.as_mut().top_up_radio();
     }
 
     fn teardown_radio(mut self: Pin<&mut Self>) {
-        if let Some(state) = self.as_mut().rust_mut().radio.take() {
-            for job in state.expand_jobs {
-                job.cancel.store(true, AtomicOrdering::Relaxed);
-            }
-            if let Some(staging) = state.staging {
-                staging.cancel.store(true, AtomicOrdering::Relaxed);
-            }
+        let mut rust = self.as_mut().rust_mut();
+        if let Some(radio) = rust.radio.as_mut() {
+            radio.set_enabled(false, None, None);
         }
+        let tracks = rust.tracks.clone();
+        let current = usize::try_from(rust.current_index).ok();
+        rust.playback_order.set_radio_enabled(false, &tracks, current);
+        drop(rust);
         self.as_mut().set_radio_active(false);
     }
 
-    fn request_radio_expand(mut self: Pin<&mut Self>, locator: PathBuf) {
-        let worker_decoders = {
-            let this = self.as_ref();
-            let rust = this.rust();
-            rust.decoders.background_worker(rust.decoder_settings.clone())
-        };
-        let (sender, receiver) = std::sync::mpsc::sync_channel(4);
-        let cancel = Arc::new(AtomicBool::new(false));
-        let job = RadioJob {
-            receiver,
-            cancel: Arc::clone(&cancel),
-            locator: locator.clone(),
-            started: Instant::now(),
-        };
-        let spawned = std::thread::Builder::new()
-            .name("kog-radio-expand".to_owned())
-            .spawn(move || {
-                if cancel.load(AtomicOrdering::Relaxed) {
-                    return;
-                }
-                // A panicking pick must free its lane instead of wedging
-                // staging forever: catch it and report a skipped pick.
-                let track = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    prepare_radio_track(&worker_decoders, &locator, kog_audio::radio::random_seed())
-                }))
-                .unwrap_or(None);
-                if !cancel.load(AtomicOrdering::Relaxed) {
-                    let _ = sender.send(RadioEvent { track });
-                }
-            })
-            .is_ok();
-        if spawned {
-            if let Some(radio) = self.as_mut().rust_mut().radio.as_mut() {
-                radio.expand_jobs.push(job);
-            }
-        }
-    }
-
-    fn handle_radio_event(mut self: Pin<&mut Self>, event: RadioEvent) {
-        let live = event.track.is_some();
-        if let Some(radio) = self.as_mut().rust_mut().radio.as_mut() {
-            radio.ready.extend(event.track);
-            if live {
-                radio.consecutive_dead = 0;
-            } else {
-                // Dead picks (unlistable archives, over-claimed extensions,
-                // unopenable files) are routine in big libraries: staging
-                // flows past them silently. Only a long barren run reports,
-                // so a misconfigured folder does not fail silently forever.
-                radio.consecutive_dead = radio.consecutive_dead.saturating_add(1);
-                if radio.consecutive_dead == 25 {
-                    self.as_mut().set_status(qstring(
-                        "Random Radio — no playable files found under the music folder",
-                    ));
-                }
-            }
-        }
-    }
-
-    /// Move one staged radio track into the playlist. Returns its new index.
-    /// Callers play it immediately (kickstart, end-of-playlist advance).
-    fn shift_radio_track(mut self: Pin<&mut Self>) -> Option<usize> {
-        let track = self.as_mut().rust_mut().radio.as_mut()?.ready.pop_front()?;
+    fn append_radio_track(mut self: Pin<&mut Self>, track: Track) -> usize {
         let index = self.as_ref().rust().tracks.len();
         self.as_mut().rust_mut().tracks.push(track);
         self.as_mut().refresh_playback_order();
         self.as_mut().rebuild_playlist();
-        Some(index)
+        index
     }
 
-    /// Keep the hidden staging buffer filled from the background staging
-    /// thread: take staged locators off the channel and expand the first
-    /// ones that are not already queued or proven dead. Up to three
-    /// expansions fly at once so one slow archive cannot wedge staging;
-    /// lanes that overrun their timeout join the shared dead set instead of
-    /// blocking forever. Everything here is channel drains and key lookups;
-    /// picking itself never runs on the UI thread.
-    fn top_up_radio(mut self: Pin<&mut Self>) {
-        const RADIO_READY_TARGET: usize = 10;
-        const MAX_EXPANDERS: usize = 3;
-        const MAX_DRAIN: usize = 128;
-        const EXPAND_TIMEOUT: Duration = Duration::from_secs(300);
-        let Some(_) = self.as_ref().rust().radio.as_ref() else {
-            return;
-        };
-        // Retire lanes that overran: best-effort cancel, and their locators
-        // join the shared dead set so no turn is spent on them again.
-        let now = Instant::now();
-        let mut timed_out = Vec::new();
-        if let Some(radio) = self.as_mut().rust_mut().radio.as_mut() {
-            let mut kept = Vec::new();
-            for job in radio.expand_jobs.drain(..) {
-                if now.duration_since(job.started) > EXPAND_TIMEOUT {
-                    job.cancel.store(true, AtomicOrdering::Relaxed);
-                    timed_out.push(kog_audio::radio::radio_locator_key(&job.locator));
-                } else {
-                    kept.push(job);
-                }
-            }
-            radio.expand_jobs = kept;
-            if !timed_out.is_empty() {
-                let mut dead = radio
-                    .dead
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                for key in &timed_out {
-                    dead.insert(key.clone());
-                }
-            }
-        }
-        if !timed_out.is_empty() {
-            self.as_mut()
-                .set_status(qstring("Random Radio — skipping an unresponsive file"));
-        }
-        let dead: Vec<String> = self
-            .as_ref()
-            .rust()
-            .radio
-            .as_ref()
-            .map(|radio| {
-                radio
-                    .dead
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .iter()
-                    .cloned()
-                    .collect()
-            })
-            .unwrap_or_default();
-        let mut staged: HashSet<String> = self
-            .as_ref()
-            .rust()
-            .tracks
-            .iter()
-            .map(kog_audio::radio::radio_track_key)
-            .chain(
-                self.as_ref()
-                    .rust()
-                    .radio
-                    .as_ref()
-                    .map(|radio| radio.ready.iter().map(kog_audio::radio::radio_track_key))
-                    .into_iter()
-                    .flatten(),
-            )
-            .chain(
-                self.as_ref()
-                    .rust()
-                    .radio
-                    .as_ref()
-                    .into_iter()
-                    .flat_map(|radio| radio.expand_jobs.iter())
-                    .map(|job| kog_audio::radio::radio_locator_key(&job.locator)),
-            )
-            .chain(dead)
-            .collect();
-        let mut budget = MAX_DRAIN;
-        loop {
-            let (ready_len, active) = self
-                .as_ref()
-                .rust()
-                .radio
-                .as_ref()
-                .map(|radio| (radio.ready.len(), radio.expand_jobs.len()))
-                .unwrap_or((RADIO_READY_TARGET, MAX_EXPANDERS));
-            if ready_len + active >= RADIO_READY_TARGET || active >= MAX_EXPANDERS {
-                return;
-            }
-            enum Drain {
-                Pick(PathBuf),
-                Empty,
-                Barren,
-                Dry,
-                Gone,
-            }
-            let mut outcome = Drain::Dry;
-            while budget > 0 {
-                budget -= 1;
-                let response = {
-                    let mut this = self.as_mut();
-                    let mut rust = this.as_mut().rust_mut();
-                    let Some(radio) = rust.radio.as_mut() else {
-                        return;
-                    };
-                    let Some(staging) = radio.staging.as_ref() else {
-                        return;
-                    };
-                    staging.picks.try_recv()
-                };
-                match response {
-                    Ok(kog_audio::radio::StagingResponse::Pick(locator)) => {
-                        if !staged.insert(kog_audio::radio::radio_locator_key(&locator)) {
-                            continue;
-                        }
-                        outcome = Drain::Pick(locator);
-                        break;
-                    }
-                    Ok(kog_audio::radio::StagingResponse::Empty) => {
-                        outcome = Drain::Empty;
-                        break;
-                    }
-                    Ok(kog_audio::radio::StagingResponse::Barren) => {
-                        outcome = Drain::Barren;
-                        break;
-                    }
-                    Err(TryRecvError::Empty) => break,
-                    Err(TryRecvError::Disconnected) => {
-                        outcome = Drain::Gone;
-                        break;
-                    }
-                }
-            }
-            match outcome {
-                Drain::Pick(locator) => {
-                    self.as_mut().request_radio_expand(locator);
-                }
-                Drain::Empty => {
-                    // The worker exited after reporting: drop the handle so
-                    // later polls do not overwrite this with a disconnect note.
-                    if let Some(radio) = self.as_mut().rust_mut().radio.as_mut() {
-                        radio.staging = None;
-                    }
-                    self.as_mut()
-                        .set_status(qstring("Random Radio — music folder is empty"));
-                    return;
-                }
-                Drain::Barren => {
-                    // Everything reachable already failed: park with the dead
-                    // set kept, so toggling is the way back if files appear.
-                    if let Some(radio) = self.as_mut().rust_mut().radio.as_mut() {
-                        radio.staging = None;
-                    }
-                    self.as_mut().set_status(qstring(
-                        "Random Radio — no playable files found under the music folder",
-                    ));
-                    return;
-                }
-                Drain::Dry => return,
-                Drain::Gone => {
-                    // The staging thread is gone: park radio visibly instead
-                    // of stalling silently. Toggling restarts it.
-                    if let Some(radio) = self.as_mut().rust_mut().radio.as_mut() {
-                        radio.staging = None;
-                    }
-                    self.as_mut().set_status(qstring(
-                        "Random Radio worker stopped — toggle radio to restart",
-                    ));
-                    return;
-                }
-            }
-        }
+    fn shift_radio_track(mut self: Pin<&mut Self>) -> Option<usize> {
+        let track = self.as_mut().rust_mut().radio.as_mut()?.request_next()?;
+        Some(self.as_mut().append_radio_track(track))
     }
 
     pub fn poll_directory_scan(mut self: Pin<&mut Self>) {
@@ -4145,11 +3562,9 @@ impl qobject::AppController {
         encode_row_indices(&new_indices)
     }
 
-    /// Empty the pane without touching playback: whatever is playing stays
-    /// loaded and can still be paused, resumed, or stopped. The track is
-    /// detached from the list, so when it ends there is nothing to advance to
-    /// and playback stops.
+    /// Clearing the queue stops transport and invalidates pending starts.
     pub fn clear_playlist(mut self: Pin<&mut Self>) {
+        self.as_mut().stop();
         {
             let mut rust = self.as_mut().rust_mut();
             rust.tracks.clear();
@@ -4157,13 +3572,9 @@ impl qobject::AppController {
         }
         self.as_mut().set_queue_count(0);
         self.as_mut().set_current_index(-1);
+        self.as_mut().reset_now_playing();
         self.as_mut().rebuild_playlist();
-        let playing = self.as_ref().rust().playback.state() != PlaybackState::Stopped;
-        self.as_mut().set_status(qstring(if playing {
-            "Playlist cleared — the current track keeps playing"
-        } else {
-            "Playlist cleared"
-        }));
+        self.as_mut().set_status(qstring("Playlist cleared"));
     }
 
     pub fn filter_playlist(mut self: Pin<&mut Self>, query: QString) {
@@ -5160,6 +4571,8 @@ impl qobject::AppController {
         let Some(source_index) = visible_source_index(self.as_ref().get_ref(), index) else {
             return;
         };
+        self.as_mut().rust_mut().playback_order.cancel_navigation();
+        if let Some(radio) = self.as_mut().rust_mut().radio.as_mut() { radio.cancel_waiting(); }
         self.as_mut().play_source_index(source_index);
     }
 
@@ -5170,39 +4583,23 @@ impl qobject::AppController {
         if self.as_ref().rust().current_index == saturating_i32(source_index) {
             self.as_mut().play_pause();
         } else {
-            self.as_mut().play_source_index(source_index);
+            self.as_mut().rust_mut().playback_order.cancel_navigation();
+        if let Some(radio) = self.as_mut().rust_mut().radio.as_mut() { radio.cancel_waiting(); }
+        self.as_mut().play_source_index(source_index);
         }
     }
 
     pub fn play_pause(mut self: Pin<&mut Self>) {
+        if self.as_ref().rust().radio.as_ref().is_some_and(|radio| radio.waiting()) {
+            self.as_mut().stop();
+            return;
+        }
         // A track can outlive the pane: clearing the playlist detaches what is
         // playing, and pause/resume must keep working for it.
         let loaded = self.as_ref().rust().playback.state() != PlaybackState::Stopped;
         if self.as_ref().rust().tracks.is_empty() && !loaded {
-            // Empty playlist with radio on: (re)arm kickstart so the next
-            // staged track autoplays, or play one right now if buffered.
-            // Without radio this stays a silent no-op as before.
             if self.as_ref().rust().radio_active {
-                if let Some(radio) = self.as_mut().rust_mut().radio.as_mut() {
-                    radio.kickstart_armed = true;
-                }
-                let buffered = self
-                    .as_ref()
-                    .rust()
-                    .radio
-                    .as_ref()
-                    .is_some_and(|radio| !radio.ready.is_empty());
-                if buffered {
-                    if let Some(index) = self.as_mut().shift_radio_track() {
-                        self.as_mut().play_shifted_radio_track(index);
-                    }
-                    if let Some(radio) = self.as_mut().rust_mut().radio.as_mut() {
-                        radio.kickstart_armed = false;
-                    }
-                } else {
-                    self.as_mut()
-                        .set_status(qstring("Random Radio — finding a track…"));
-                }
+                self.as_mut().advance_past_end();
             }
             return;
         }
@@ -5529,6 +4926,8 @@ impl qobject::AppController {
     }
 
     pub fn stop(mut self: Pin<&mut Self>) {
+        self.as_mut().rust_mut().playback_order.cancel_navigation();
+        if let Some(radio) = self.as_mut().rust_mut().radio.as_mut() { radio.cancel_waiting(); }
         self.as_mut().rust_mut().playback.stop();
         self.as_mut().set_position_seconds(0.0);
         self.as_mut().set_status(qstring("Stopped"));
@@ -5542,45 +4941,7 @@ impl qobject::AppController {
     }
 
     pub fn previous(mut self: Pin<&mut Self>) {
-        // Like advancement, walk past verifiably-gone tracks instead of
-        // stopping on them.
-        let budget = self.as_ref().rust().tracks.len().saturating_add(1).max(1);
-        let mut skips = 0_usize;
-        loop {
-            let tracks = self.as_ref().rust().tracks.clone();
-            let current = usize::try_from(self.as_ref().rust().current_index).ok();
-            let target = {
-                self.as_mut()
-                    .rust_mut()
-                    .playback_order
-                    .previous(&tracks, current)
-            };
-            let Some(target) = target else {
-                return;
-            };
-            if self
-                .as_ref()
-                .rust()
-                .tracks
-                .get(target)
-                .is_some_and(|track| track.missing)
-            {
-                skips += 1;
-                if skips >= budget {
-                    return;
-                }
-                continue;
-            }
-            match self.as_mut().play_source_index(target) {
-                PlayOutcome::Started => return,
-                PlayOutcome::Skipped => {
-                    skips += 1;
-                    if skips >= budget {
-                        return;
-                    }
-                }
-            }
-        }
+        self.as_mut().navigate_playback(NavigationEvent::Previous);
     }
 
     pub fn next(mut self: Pin<&mut Self>) {
@@ -5858,14 +5219,7 @@ impl qobject::AppController {
             self.as_mut().set_status(qstring(error));
         }
         if self.as_ref().rust().playback.finished() {
-            let current = usize::try_from(self.as_ref().rust().current_index).ok();
-            if current
-                .is_some_and(|index| self.as_ref().rust().playback_order.should_stop_after(index))
-            {
-                self.as_mut().stop();
-            } else {
-                self.as_mut().advance_playback(true);
-            }
+            self.as_mut().advance_playback(true);
             self.as_ref()
                 .rust()
                 .mpris
@@ -7188,87 +6542,45 @@ impl qobject::AppController {
     }
 
     fn advance_playback(mut self: Pin<&mut Self>, honor_repeat_one: bool) {
-        // Walk past verifiably-gone tracks instead of stopping on them.
-        // The budget caps the walk below two full passes so repeat-all
-        // over an all-missing pane still reaches the end handling.
-        let budget = self.as_ref().rust().tracks.len().saturating_add(1).max(1);
-        let mut skips = 0_usize;
+        self.as_mut().navigate_playback(if honor_repeat_one { NavigationEvent::Ended } else { NavigationEvent::Next });
+    }
+
+    fn navigate_playback(mut self: Pin<&mut Self>, mut event: NavigationEvent) {
+        let tracks = self.as_ref().rust().tracks.clone();
         loop {
-            let tracks = self.as_ref().rust().tracks.clone();
             let current = usize::try_from(self.as_ref().rust().current_index).ok();
-            let (target, queue_count) = {
+            let (decision, queued) = {
                 let mut rust = self.as_mut().rust_mut();
-                let target = rust.playback_order.next(&tracks, current, honor_repeat_one);
-                (target, rust.playback_order.queue_count())
+                let decision = rust.playback_order.navigate(&tracks, current, event);
+                (decision, rust.playback_order.queue_count())
             };
-            self.as_mut().set_queue_count(saturating_i32(queue_count));
-            let Some(target) = target else {
-                self.as_mut().advance_past_end();
-                return;
-            };
-            if self
-                .as_ref()
-                .rust()
-                .tracks
-                .get(target)
-                .is_some_and(|track| track.missing)
-            {
-                skips += 1;
-                if skips >= budget {
-                    self.as_mut().advance_past_end();
-                    return;
+            self.as_mut().set_queue_count(saturating_i32(queued));
+            match decision {
+                PlaybackDecision::Play(index) => {
+                    if matches!(self.as_mut().play_source_index(index), PlayOutcome::Started) { return; }
+                    event = NavigationEvent::Failed;
                 }
-                continue;
-            }
-            match self.as_mut().play_source_index(target) {
-                PlayOutcome::Started => return,
-                PlayOutcome::Skipped => {
-                    skips += 1;
-                    if skips >= budget {
-                        self.as_mut().advance_past_end();
-                        return;
-                    }
-                }
+                PlaybackDecision::Radio => { self.as_mut().advance_past_end(); return; }
+                PlaybackDecision::Stop => { self.as_mut().stop(); return; }
             }
         }
     }
 
-    /// End-of-playlist handling for advance: radio pulls a staged track,
-    /// otherwise playback stops. Shared by advancement and by skip
-    /// exhaustion over an all-missing pane.
     fn advance_past_end(mut self: Pin<&mut Self>) {
         if self.as_ref().rust().radio_active {
-            // End of the playlist with radio on: pull one staged track into
-            // the playlist instead of stopping. Stop-after never reaches here;
-            // it stops explicitly before advancing.
-            let pulled = self
-                .as_ref()
-                .rust()
-                .radio
-                .as_ref()
-                .is_some_and(|radio| !radio.ready.is_empty());
-            if pulled {
-                if let Some(index) = self.as_mut().shift_radio_track() {
-                    self.as_mut().play_shifted_radio_track(index);
-                } else {
-                    self.as_mut().stop();
-                }
-            } else if self.as_ref().rust().tracks.is_empty() {
-                // Explicit next on an empty radio playlist with nothing
-                // staged yet: arm kickstart so the next staged track
-                // autoplays instead of sitting stopped.
-                self.as_mut().stop();
-                if let Some(radio) = self.as_mut().rust_mut().radio.as_mut() {
-                    radio.kickstart_armed = true;
-                }
-                self.as_mut()
-                    .set_status(qstring("Random Radio — finding a track…"));
+            if let Some(index) = self.as_mut().shift_radio_track() {
+                self.as_mut().play_shifted_radio_track(index);
             } else {
-                self.as_mut().stop();
+                self.as_mut().rust_mut().playback.stop();
+                self.as_mut().sync_playback_state();
+                let waiting = self.as_ref().rust().radio.as_ref().is_some_and(|radio| radio.waiting());
+                self.as_mut().set_status(qstring(if waiting {
+                    "Random Radio — finding a track…"
+                } else {
+                    "Random Radio — no playable tracks found"
+                }));
             }
-        } else {
-            self.as_mut().stop();
-        }
+        } else { self.as_mut().stop(); }
     }
 
     fn apply_shuffle_mode(mut self: Pin<&mut Self>, mode: ShuffleMode) {
@@ -7289,6 +6601,9 @@ impl qobject::AppController {
         }
         self.as_mut()
             .set_shuffle_mode(qstring(mode.setting_value()));
+        if self.as_ref().rust().radio_active && !self.as_ref().rust().playback_order.radio_enabled() {
+            self.as_mut().teardown_radio();
+        }
         self.as_mut().set_status(qstring(match mode {
             ShuffleMode::Off => "Shuffle off",
             ShuffleMode::Albums => "Shuffle albums",
@@ -7309,7 +6624,7 @@ impl qobject::AppController {
             .playback_order
             .set_repeat_mode(mode);
         self.as_mut().set_repeat_mode(qstring(mode.setting_value()));
-        if mode != RepeatMode::Off && self.as_ref().rust().radio_active {
+        if self.as_ref().rust().radio_active && !self.as_ref().rust().playback_order.radio_enabled() {
             self.as_mut().teardown_radio();
             if let Err(error) = AppSettings::save_radio_enabled(false) {
                 self.as_mut().set_status(qstring(error));
@@ -7327,30 +6642,10 @@ impl qobject::AppController {
         }));
     }
 
-    /// Play a freshly-shifted radio pick. If it fails to open, drop the dead
-    /// pick and try the next staged track (bounded), so one bad file never
-    /// stops radio. Manual plays keep the existing stop-with-error behavior.
-    fn play_shifted_radio_track(mut self: Pin<&mut Self>, mut index: usize) {
-        for _ in 0..5 {
-            self.as_mut().play_source_index(index);
-            if self.as_ref().rust().playback.state() != PlaybackState::Stopped {
-                return;
-            }
-            // The corpse appended at `index` is addressed by visible row for
-            // removal; a filter-hidden corpse is simply left behind unplayed.
-            let row = self
-                .as_ref()
-                .rust()
-                .visible_indices
-                .iter()
-                .position(|&source| source == index);
-            if let Some(row) = row {
-                self.as_mut().remove_track(saturating_i32(row));
-            }
-            let Some(next) = self.as_mut().shift_radio_track() else {
-                return;
-            };
-            index = next;
+    fn play_shifted_radio_track(mut self: Pin<&mut Self>, index: usize) {
+        self.as_mut().rust_mut().playback_order.radio_candidate(index);
+        if matches!(self.as_mut().play_source_index(index), PlayOutcome::Skipped) {
+            self.as_mut().navigate_playback(NavigationEvent::Failed);
         }
     }
 
@@ -7386,7 +6681,7 @@ impl qobject::AppController {
                 self.as_mut()
                     .rust_mut()
                     .playback_order
-                    .clear_stop_after_when_leaving(previous, source_index);
+                    .started(previous, source_index);
                 self.as_mut()
                     .set_current_index(saturating_i32(source_index));
                 self.as_mut().populate_now_playing(source_index);
@@ -7408,9 +6703,8 @@ impl qobject::AppController {
                 PlayOutcome::Started
             }
             Err(error) => {
-                // A verifiably-gone file grays out for skipping instead of
-                // stopping the whole playlist on it; anything else keeps
-                // the existing stop-with-error behavior.
+                // Mark missing entries for presentation. The shared transport
+                // policy decides whether a failed open advances or stops.
                 let title = self
                     .as_ref()
                     .rust()
@@ -7425,6 +6719,8 @@ impl qobject::AppController {
                     .get(source_index)
                     .is_some_and(|track| playback_source_is_missing(&track.source));
                 if gone {
+                    self.as_mut().rust_mut().playback.stop();
+                    self.as_mut().sync_playback_state();
                     if let Some(track) = self.as_mut().rust_mut().tracks.get_mut(source_index) {
                         track.missing = true;
                     }
@@ -7440,7 +6736,7 @@ impl qobject::AppController {
                 self.as_mut().set_status(qstring(error));
                 self.as_mut().rust_mut().playback.stop();
                 self.as_mut().sync_playback_state();
-                PlayOutcome::Started
+                PlayOutcome::Skipped
             }
         }
     }
@@ -7569,27 +6865,8 @@ impl qobject::AppController {
         self.as_mut().rust_mut().directory = path.clone();
         self.as_mut()
             .set_directory_path(qstring(path.to_string_lossy()));
-        // A new tree root invalidates everything radio staged from the old
-        // one: drop the ready buffer and in-flight jobs, then stage from
-        // the new folder (resuming its saved round when one waits).
         if self.as_ref().rust().radio_active {
-            self.as_mut().teardown_radio();
-            let (initial, resumed) = match load_radio_round(&path) {
-                Some(initial) => (initial, true),
-                None => (
-                    kog_audio::radio::RoundInitial::fresh(kog_audio::radio::random_seed()),
-                    false,
-                ),
-            };
-            self.as_mut().begin_radio_session(
-                path,
-                initial,
-                if resumed {
-                    "Random Radio — new folder, resumed".to_owned()
-                } else {
-                    "Random Radio — new folder, staging fresh".to_owned()
-                },
-            );
+            self.as_mut().begin_radio_session(path, false, "Random Radio — new folder");
         }
     }
 }
@@ -7601,7 +6878,7 @@ mod tests {
         count_delete_entries, cover_art_key, dropped_urls_from_json, local_paths_from_json,
         move_selected_items, natural_compare, normalize_playlist_save_path,
         ordered_directory_files, output_devices_json, parse_delete_paths_json, parse_row_indices,
-        playback_source_is_missing, playlist_entry_for_track, prepare_radio_track, prepare_scan_file,
+        playback_source_is_missing, playlist_entry_for_track, prepare_scan_file,
         purged_track_indices, remove_path_permanent, resolve_output_device, sample_rate_label,
         sanitize_delete_paths, scan_directory_paths, sort_visible_indices, star_key_for_track,
         stored_entry_is_missing, track_filename, track_path, valid_equalizer_gain,
@@ -7618,59 +6895,6 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
     use tempfile::tempdir;
-
-    #[test]
-    fn radio_pick_prepares_only_one_song_from_a_multisong_file() {
-        let directory = tempdir().unwrap();
-        let file = directory.path().join("game.nsf");
-        let mut bytes = vec![0_u8; 128];
-        bytes[..5].copy_from_slice(b"NESM\x1a");
-        bytes[5] = 1;
-        bytes[6] = 12;
-        bytes[7] = 1;
-        bytes[8..10].copy_from_slice(&0x8000_u16.to_le_bytes());
-        bytes[10..12].copy_from_slice(&0x8000_u16.to_le_bytes());
-        bytes[12..14].copy_from_slice(&0x8001_u16.to_le_bytes());
-        bytes.extend_from_slice(&[0x60, 0x60]);
-        fs::write(&file, bytes).unwrap();
-
-        let decoders = DecoderRegistry::default();
-        assert_eq!(decoders.expand(file.clone()).unwrap().len(), 12);
-        // The Qt worker returns one track per file, with no deferred songs to
-        // inject when unrelated expansion jobs complete in a different order.
-        for seed in [10, 2] {
-            let track = prepare_radio_track(&decoders, &file, seed).unwrap();
-            assert_eq!(track.source.subsong, Some(seed as u32));
-            assert_eq!(
-                kog_audio::radio::radio_track_key(&track),
-                file.display().to_string()
-            );
-        }
-        let broken = directory.path().join("broken.nsf");
-        fs::write(&broken, b"invalid").unwrap();
-        assert!(prepare_radio_track(&decoders, &broken, 0).is_none());
-    }
-
-    #[test]
-    #[ignore = "requires KOG_RADIO_TEST_FILE pointing to a real multi-song file"]
-    fn radio_pick_from_real_multisong_file() {
-        let file = PathBuf::from(std::env::var_os("KOG_RADIO_TEST_FILE").expect("KOG_RADIO_TEST_FILE"));
-        let decoders = DecoderRegistry::default();
-        let sources = decoders.expand(file.clone()).unwrap();
-        assert!(sources.len() > 1);
-        for seed in [10_u64, 2] {
-            let track = prepare_radio_track(&decoders, &file, seed).unwrap();
-            assert_eq!(
-                track.source.subsong,
-                sources[seed as usize % sources.len()].subsong
-            );
-            assert_eq!(track.source.path, file);
-            eprintln!(
-                "Radio prepared one of {} subsongs: {:?}, {}",
-                sources.len(), track.source.subsong, track.title
-            );
-        }
-    }
 
     #[test]
     fn add_path_status_keeps_every_warning() {

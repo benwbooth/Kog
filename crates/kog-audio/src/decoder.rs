@@ -11,7 +11,7 @@ use std::time::SystemTime;
 
 use midly::{Format, Fps, Header, MetaMessage, MidiMessage, Smf, Timing, TrackEventKind};
 use lofty::file::TaggedFileExt;
-use lofty::tag::ItemKey;
+use lofty::tag::{Accessor, ItemKey};
 use rodio::source::SeekError;
 use rodio::{ChannelCount, Decoder, Player, SampleRate, Source};
 use rustysynth::{MidiFile, MidiFileSequencer, SoundFont, Synthesizer, SynthesizerSettings};
@@ -65,6 +65,7 @@ pub struct StreamProperties {
     pub lyrics: Option<String>,
     pub year: Option<u32>,
     pub track_number: Option<u32>,
+    pub disc_number: Option<u32>,
     pub codec: Option<String>,
     pub bitrate: Option<u32>,
     pub bits_per_sample: Option<u8>,
@@ -84,6 +85,7 @@ impl StreamProperties {
         };
         self.album_artist = tag.get_string(ItemKey::AlbumArtist).map(str::to_owned);
         self.composer = tag.get_string(ItemKey::Composer).map(str::to_owned);
+        self.disc_number = tag.disk();
     }
 }
 

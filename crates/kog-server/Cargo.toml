@@ -7,6 +7,7 @@ description = "Kog's HTTP/HTTPS API and audio streaming server"
 repository = "https://github.com/benwbooth/Kog"
 
 [dependencies]
+tower = { version = "0.5", features = ["util"] }
 kog-core = { path = "../kog-core" }
 kog-audio = { path = "../kog-audio" }
 axum = { version = "0.8", features = ["ws", "macros"] }
@@ -41,7 +42,6 @@ directories = "6.0"
 ureq = { version = "3.4.0", features = ["rustls"] }
 
 [dev-dependencies]
-tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 tempfile = "3.27.0"
 kog-audio = { path = "../kog-audio", features = ["test-util"] }

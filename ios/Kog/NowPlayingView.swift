@@ -38,7 +38,7 @@ struct NowPlayingView: View {
                         .font(.caption.monospacedDigit()).foregroundStyle(Palette.muted)
                 }
                 HStack(spacing: 0) {
-                    control("shuffle", "Shuffle", active: store.shuffle) { store.shuffle.toggle() }
+                    control("shuffle", "Shuffle: \(store.shuffle.label)", active: store.shuffle != .off) { store.cycleShuffle() }
                     Spacer(minLength: 0)
                     control("backward.end.fill", "Previous") { store.previous() }
                     Spacer(minLength: 0)
@@ -50,7 +50,7 @@ struct NowPlayingView: View {
                     control("forward.end.fill", "Next") { store.next() }
                     Spacer(minLength: 0)
                     control(store.repeatMode == .one ? "repeat.1" : "repeat", "Repeat: \(store.repeatMode.label)", active: store.repeatMode != .off) {
-                        store.repeatMode = store.repeatMode == .off ? .all : (store.repeatMode == .all ? .one : .off)
+                        store.cycleRepeat()
                     }
                 }
                 HStack {

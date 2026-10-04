@@ -1,5 +1,11 @@
 package org.kog.player
 
+import android.os.Bundle
+import androidx.media3.session.SessionCommand
+import androidx.media3.session.SessionResult
+import com.google.common.util.concurrent.Futures
+import com.google.common.util.concurrent.ListenableFuture
+import org.json.JSONObject
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.DataSource
@@ -12,6 +18,7 @@ import java.util.Base64
 /** Owns playback while the UI is closed and exposes Bluetooth/system media controls. */
 class PlaybackService : MediaSessionService() {
     private var session: MediaSession? = null
+    companion object { const val POLICY_COMMAND = "org.kog.player.POLICY" }
 
     override fun onCreate() {
         super.onCreate()
@@ -32,7 +39,28 @@ class PlaybackService : MediaSessionService() {
         val player = ExoPlayer.Builder(this)
             .setMediaSourceFactory(DefaultMediaSourceFactory(data))
             .build()
-        session = MediaSession.Builder(this, player).build()
+        val policyPlayer = PolicyPlayer(this, player) { snapshot ->
+            session?.setSessionExtras(Bundle().apply { putString("kog_policy", snapshot.toString()) })
+        }
+        session = MediaSession.Builder(this, policyPlayer).setCallback(object : MediaSession.Callback {
+            override fun onConnect(session: MediaSession, controller: MediaSession.ControllerInfo): MediaSession.ConnectionResult {
+                return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
+                    .setAvailableSessionCommands(MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS.buildUpon()
+                        .add(SessionCommand(POLICY_COMMAND, Bundle.EMPTY)).build()).build()
+            }
+            override fun onCustomCommand(session: MediaSession, controller: MediaSession.ControllerInfo,
+                customCommand: SessionCommand, args: Bundle): ListenableFuture<SessionResult> {
+                if (customCommand.customAction != POLICY_COMMAND) return super.onCustomCommand(session, controller, customCommand, args)
+                return try {
+                    val snapshot = policyPlayer.dispatch(JSONObject(args.getString("command") ?: "{}"))
+                    Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS,
+                        Bundle().apply { putString("kog_policy", snapshot.toString()) }))
+                } catch (error: Exception) {
+                    Futures.immediateFuture(SessionResult(SessionResult.RESULT_ERROR_BAD_VALUE,
+                        Bundle().apply { putString("error", error.message) }))
+                }
+            }
+        }).build()
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session

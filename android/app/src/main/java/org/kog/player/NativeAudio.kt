@@ -21,6 +21,8 @@ internal object NativeAudio {
     val loadError: String? = loadResult.exceptionOrNull()?.message
 
     external fun nativeSetHelperDirectory(path: String): Boolean
+    external fun nativePolicy(input: String): String
+    external fun nativeLibrary(input: String): String
     external fun nativeOpen(path: String, subsong: Int, midiEngine: String,
         soundfontPath: String, sc55RomPath: String, mt32RomPath: String): Long
     external fun nativeDurationMs(handle: Long): Long
@@ -32,15 +34,11 @@ internal object NativeAudio {
         if (available) nativeSetHelperDirectory(context.applicationInfo.nativeLibraryDir)
     }
 
-    fun useFor(track: Track): Boolean {
-        if (!track.isDevice) return false
-        val extension = track.name.substringAfterLast('.', "").lowercase()
-        return extension !in setOf("mp3", "mp2", "aac", "m4a", "m4b", "mp4", "flac", "wav",
-            "wave", "ogg", "oga", "opus", "webm", "mka", "mkv")
-    }
+    fun useFor(track: Track): Boolean = track.isDevice
 
     fun uri(track: Track): Uri = Uri.Builder().scheme("kog-native").authority("device")
         .appendQueryParameter("source", track.path)
+        .appendQueryParameter("entry", track.entry)
         .appendQueryParameter("name", track.name)
         .appendQueryParameter("fragment", track.fragment)
         .build()
@@ -63,10 +61,14 @@ internal class NativePcmDataSource(private val context: Context) : BaseDataSourc
         val uri = dataSpec.uri
         val source = Uri.parse(uri.getQueryParameter("source") ?: throw IOException("Missing device file"))
         val name = uri.getQueryParameter("name").orEmpty()
-        val file = cacheFile(source, name)
+        val file = if (source.scheme == null) File(source.toString()) else if (source.scheme == "file") File(source.path!!) else cacheFile(source, name)
+        val entry = uri.getQueryParameter("entry").orEmpty()
+        val path = if (entry.isEmpty()) file.absolutePath else Uri.Builder().scheme("kog-archive")
+            .appendQueryParameter("archive", file.absolutePath).appendQueryParameter("entry", entry)
+            .appendQueryParameter("directory", "0").build().toString()
         val fragment = uri.getQueryParameter("fragment")?.toIntOrNull() ?: -1
         val preferences = context.getSharedPreferences("kog", Context.MODE_PRIVATE)
-        val opened = NativeAudio.nativeOpen(file.absolutePath, fragment,
+        val opened = NativeAudio.nativeOpen(path, fragment,
             preferences.getString("local_midi_engine", "opl3windows") ?: "opl3windows",
             preferences.getString("midi_soundfont", "").orEmpty(),
             preferences.getString("midi_sc55_roms", "").orEmpty(),

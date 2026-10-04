@@ -1,6 +1,6 @@
 //! A small terminal frontend. The terminal protocol, layout and hit testing
 //! live here; browsing, persistence and playback use Kog's existing crates.
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{self, Write};
 use std::net::IpAddr;
 use std::ops::Range;
@@ -12,8 +12,8 @@ use std::time::{Duration, Instant};
 
 use kog_audio::decoder::{DecoderRegistry, DecoderSettings, PlaybackSource, validate_soundfont};
 use kog_audio::playback::{PlaybackEngine, PlaybackState, available_output_devices};
-use kog_audio::playback_order::PlaybackOrder;
-use kog_audio::playback_order::sort::{favorites_first, natural_compare};
+use kog_audio::playback_order::{NavigationEvent, PlaybackDecision, PlaybackOrder};
+use kog_audio::playback_order::sort::{SortRow, sorted_rows};
 use kog_audio::playlist::{Playlist, PlaylistEntry};
 use kog_audio::settings::{
     AppSettings, MidiEngine, OpeningFilesBehavior, OutputDevicePreference, RepeatMode, ShuffleMode,
@@ -22,7 +22,8 @@ use kog_audio::track::Track as AudioTrack;
 use kog_core::db::{BLACKLIST_FOLDER, BLACKLIST_SONG, BlacklistEntry, StoredEntry};
 use kog_core::equalizer::{EqualizerSettings, presets};
 use kog_server::api::{Library, LocalSearch, browse_local_unrestricted, expand_stored_entry};
-use kog_server::radio::{Radio, RadioAdvance, RadioEntry, RadioStatus};
+use kog_server::radio::{Radio, RadioEntry};
+use kog_server::radio_client::RadioClient;
 use kog_server::{AuthMode, StreamCodec, TlsMode};
 use rand::Rng;
 use unicode_segmentation::UnicodeSegmentation;
@@ -55,7 +56,6 @@ const SESSION_MAX_BYTES: usize = 64 * 1024 * 1024;
 const SESSION_MAX_TRACKS: usize = 100_000;
 const TREE_STATE_MAX_BYTES: usize = 1024 * 1024;
 const TREE_STATE_MAX_EXPANDED: usize = 10_000;
-const RADIO_READY_TARGET: usize = 10;
 const FOLDER_ICON: &str = "🗀";
 const MEDIA_PLAY: &str = "▶️";
 const MEDIA_PAUSE: &str = "⏸️";
@@ -922,16 +922,6 @@ impl FolderChooser {
     }
 }
 
-enum RadioCommand {
-    Enable(bool),
-    Reshuffle,
-    Advance,
-}
-enum RadioResponse {
-    Status(RadioStatus),
-    Advance(RadioAdvance),
-}
-
 struct TagSession {
     sources: Vec<PlaybackSource>,
     snapshot: serde_json::Value,
@@ -1006,8 +996,6 @@ struct Ui {
     selected_lists: HashSet<i64>,
     list_anchor: Option<usize>,
     tracks: Vec<Track>,
-    queue: VecDeque<usize>,
-    stop_after_rows: HashSet<usize>,
     selected_tracks: HashSet<usize>,
     selection_anchor: Option<usize>,
     range_click_pending: Option<Focus>,
@@ -1026,15 +1014,8 @@ struct Ui {
     repeat_mode: RepeatMode,
     shuffle_mode: ShuffleMode,
     order: PlaybackOrder,
-    stop_after_current: bool,
     radio_enabled: bool,
-    radio_pool: VecDeque<Track>,
-    radio_pending_next: bool,
-    radio_refill_pending: bool,
-    radio_exhausted: bool,
-    radio_generation: u64,
-    radio_requests: Sender<(u64, RadioCommand, Option<PathBuf>)>,
-    radio_results: Receiver<(u64, RadioResponse)>,
+    radio: RadioClient<Track>,
     equalizer: EqualizerSettings,
     last_click: Option<(Instant, usize, usize)>,
     prompt: Option<(PromptKind, String)>,
@@ -1390,34 +1371,8 @@ impl Ui {
             }
         });
         let decoders = DecoderRegistry::new(decoder_settings.clone());
-        let (radio_requests, radio_commands) =
-            mpsc::channel::<(u64, RadioCommand, Option<PathBuf>)>();
-        let (radio_responses, radio_results) = mpsc::channel();
-        let radio_library = library.clone();
-        std::thread::spawn(move || {
-            let radio = Radio::from_settings();
-            while let Ok((generation, command, scope)) = radio_commands.recv() {
-                let root = radio_library.root();
-                let response = match command {
-                    RadioCommand::Enable(enabled) => RadioResponse::Status(
-                        radio.set_enabled_incremental(
-                            enabled,
-                            root.as_deref(),
-                            scope.as_deref(),
-                        ),
-                    ),
-                    RadioCommand::Reshuffle => RadioResponse::Status(
-                        radio.reshuffle_incremental(root.as_deref(), scope.as_deref()),
-                    ),
-                    RadioCommand::Advance => RadioResponse::Advance(
-                        radio.advance_incremental(root.as_deref(), scope.as_deref()),
-                    ),
-                };
-                if radio_responses.send((generation, response)).is_err() {
-                    break;
-                }
-            }
-        });
+        let radio = RadioClient::new(Radio::from_settings(), |entry| Ok(radio_track(entry)))
+            .expect("start radio worker");
         let mut player = PlaybackEngine::with_equalizer_and_output(
             DecoderRegistry::new(decoder_settings.clone()),
             settings.equalizer.clone(),
@@ -1453,8 +1408,6 @@ impl Ui {
             selected_lists: HashSet::new(),
             list_anchor: None,
             tracks: Vec::new(),
-            queue: VecDeque::new(),
-            stop_after_rows: HashSet::new(),
             selected_tracks: HashSet::new(),
             selection_anchor: None,
             range_click_pending: None,
@@ -1477,15 +1430,8 @@ impl Ui {
                 settings.repeat_mode,
                 rand::rng().random(),
             ),
-            stop_after_current: false,
             radio_enabled: settings.radio_enabled,
-            radio_pool: VecDeque::new(),
-            radio_pending_next: false,
-            radio_refill_pending: false,
-            radio_exhausted: false,
-            radio_generation: 0,
-            radio_requests,
-            radio_results,
+            radio,
             equalizer: settings.equalizer,
             last_click: None,
             prompt: None,
@@ -1603,7 +1549,7 @@ impl Ui {
             ui.start_api_server();
         }
         if ui.radio_enabled {
-            ui.request_radio_command(RadioCommand::Enable(true));
+            ui.start_radio(false);
         }
         ui
     }
@@ -1763,92 +1709,39 @@ impl Ui {
     }
 
     fn poll_radio(&mut self) {
-        loop {
-            let (generation, response) = match self.radio_results.try_recv() {
-                Ok(result) => result,
-                Err(mpsc::TryRecvError::Empty) => break,
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    if self.radio_enabled && !self.radio_exhausted {
-                        self.radio_exhausted = true;
-                        self.status = "Random Radio worker stopped".to_owned();
-                    }
-                    break;
-                }
-            };
-            if generation != self.radio_generation {
-                continue;
-            }
-            self.radio_refill_pending = false;
-            match response {
-                RadioResponse::Status(status) => {
-                    self.radio_enabled = status.enabled;
-                    self.radio_pool = status.entries.into_iter().map(radio_track).collect();
-                    if !status.enabled {
-                        self.radio_pending_next = false;
-                    }
-                }
-                RadioResponse::Advance(advance) => {
-                    self.radio_exhausted = advance.exhausted;
-                    self.radio_pool
-                        .extend(advance.entries.into_iter().map(radio_track));
-                }
-            }
-            if self.radio_pending_next && !self.radio_pool.is_empty() {
-                self.append_next_radio();
-            }
-            if self.radio_pending_next && self.radio_exhausted && self.radio_pool.is_empty() {
-                self.radio_pending_next = false;
-                self.status = "Random Radio found no playable tracks".to_owned();
-            }
-            self.top_up_radio_pool();
-        }
+        self.radio.poll();
+        if let Some(error) = self.radio.take_error() { self.status = error; }
+        if let Some(track) = self.radio.take_pending() { self.play_radio_track(track); }
     }
 
-    fn request_radio_command(&mut self, command: RadioCommand) {
-        if self
-            .radio_requests
-            .send((self.radio_generation, command, self.browse_path.clone()))
-            .is_ok()
-        {
-            self.radio_refill_pending = true;
+    fn start_radio(&mut self, reshuffle: bool) {
+        self.order.set_radio_enabled(true, &self.order_tracks(), self.playing);
+        self.sync_order_modes();
+        if reshuffle {
+            self.radio.reshuffle(self.library.root(), self.browse_path.clone());
         } else {
-            self.radio_exhausted = true;
-            self.status = "Random Radio worker stopped".to_owned();
-        }
-    }
-
-    fn top_up_radio_pool(&mut self) {
-        if self.radio_enabled
-            && !self.radio_refill_pending
-            && !self.radio_exhausted
-            && self.radio_pool.len() < RADIO_READY_TARGET
-        {
-            self.request_radio_command(RadioCommand::Advance);
+            self.radio.set_enabled(true, self.library.root(), self.browse_path.clone());
         }
     }
 
     fn toggle_radio(&mut self) {
-        self.radio_generation = self.radio_generation.wrapping_add(1);
-        self.radio_enabled = !self.radio_enabled;
-        self.radio_pending_next = false;
-        self.radio_refill_pending = false;
-        self.radio_exhausted = false;
         if self.radio_enabled {
-            self.repeat_mode = RepeatMode::Off;
-            self.shuffle_mode = ShuffleMode::Off;
-            self.order.set_repeat_mode(self.repeat_mode);
-            self.order
-                .set_shuffle_mode(self.shuffle_mode, &self.order_tracks(), self.playing);
-            let _ = AppSettings::save_repeat_mode(self.repeat_mode);
-            let _ = AppSettings::save_shuffle_mode(self.shuffle_mode);
-        } else {
-            self.radio_pool.clear();
+            self.order.set_radio_enabled(false, &self.order_tracks(), self.playing);
+            self.sync_order_modes();
+        } else { self.start_radio(false); }
+        self.status = format!("Random Radio: {}", if self.radio_enabled { "on" } else { "off" });
+    }
+
+    fn sync_order_modes(&mut self) {
+        let was_radio = self.radio_enabled;
+        self.radio_enabled = self.order.radio_enabled();
+        self.repeat_mode = self.order.repeat_mode();
+        self.shuffle_mode = self.order.shuffle_mode();
+        if was_radio && !self.radio_enabled {
+            self.radio.set_enabled(false, self.library.root(), self.browse_path.clone());
         }
-        self.status = format!(
-            "Random Radio: {}",
-            if self.radio_enabled { "on" } else { "off" }
-        );
-        self.request_radio_command(RadioCommand::Enable(self.radio_enabled));
+        let _ = AppSettings::save_repeat_mode(self.repeat_mode);
+        let _ = AppSettings::save_shuffle_mode(self.shuffle_mode);
     }
 
     fn activate_transport(&mut self, action: TransportAction) {
@@ -1858,7 +1751,8 @@ impl Ui {
             TransportAction::PlayPause => self.play_pause(),
             TransportAction::Stop => {
                 self.player.stop();
-                self.playing = None;
+                self.radio.cancel_waiting();
+                self.order.cancel_navigation();
             }
             TransportAction::Next => self.next(false),
             TransportAction::Repeat => self.cycle_repeat(),
@@ -1867,40 +1761,28 @@ impl Ui {
     }
 
     fn reshuffle_radio(&mut self) {
-        self.radio_generation = self.radio_generation.wrapping_add(1);
-        self.radio_enabled = true;
-        self.radio_pool.clear();
-        self.radio_pending_next = false;
-        self.radio_refill_pending = false;
-        self.radio_exhausted = false;
-        self.repeat_mode = RepeatMode::Off;
-        self.shuffle_mode = ShuffleMode::Off;
-        self.order.set_repeat_mode(self.repeat_mode);
-        self.order
-            .set_shuffle_mode(self.shuffle_mode, &self.order_tracks(), self.playing);
-        let _ = AppSettings::save_repeat_mode(self.repeat_mode);
-        let _ = AppSettings::save_shuffle_mode(self.shuffle_mode);
+        self.start_radio(true);
         self.status = "Reshuffling Random Radio…".to_owned();
-        self.request_radio_command(RadioCommand::Reshuffle);
+    }
+
+    fn play_radio_track(&mut self, track: Track) {
+        self.tracks.push(track);
+        self.order_tracks_changed();
+        self.selected[2] = self.tracks.len() - 1;
+        self.select_track(self.selected[2], false, false);
+        self.order.radio_candidate(self.selected[2]);
+        if !self.try_play_selected() { self.navigate(NavigationEvent::Failed); }
     }
 
     fn append_next_radio(&mut self) {
-        self.radio_pending_next = false;
-        if let Some(track) = self.radio_pool.pop_front() {
-            self.tracks.push(track);
-            self.order_tracks_changed();
-            self.selected[2] = self.tracks.len() - 1;
-            self.select_track(self.selected[2], false, false);
-            self.play_selected();
-            self.top_up_radio_pool();
-            return;
+        if let Some(track) = self.radio.request_next() {
+            self.play_radio_track(track);
+        } else {
+            self.player.stop();
+            self.status = if self.radio.waiting() {
+                "Random Radio — finding a track…"
+            } else { "Random Radio found no playable tracks" }.to_owned();
         }
-        if self.radio_exhausted {
-            self.status = "Random Radio found no playable tracks".to_owned();
-            return;
-        }
-        self.radio_pending_next = true;
-        self.top_up_radio_pool();
     }
 
     fn request_metadata(&mut self, entry: &StoredEntry) {
@@ -1952,7 +1834,7 @@ impl Ui {
             }
             .to_owned(),
             "status" => {
-                if self.stop_after_rows.contains(&index) {
+                if self.order.should_stop_after(index) {
                     MEDIA_STOP.to_owned()
                 } else if self.playing == Some(index) {
                     match self.player.state() {
@@ -1961,7 +1843,7 @@ impl Ui {
                         PlaybackState::Stopped => "",
                     }
                     .to_owned()
-                } else if let Some(position) = self.queue.iter().position(|queued| *queued == index)
+                } else if let Some(position) = self.order.queue_position(index)
                 {
                     format!("{MEDIA_NEXT}{}", position + 1)
                 } else {
@@ -2041,29 +1923,19 @@ impl Ui {
     }
 
     fn toggle_selected_queue(&mut self) {
-        for index in self.selected_track_indices() {
-            if let Some(position) = self.queue.iter().position(|&queued| queued == index) {
-                self.queue.remove(position);
-            } else {
-                self.queue.push_back(index);
-            }
-        }
+        self.order.toggle_queue(&self.selected_track_indices());
         self.auto_fit_cache = None;
-        self.status = format!("{} track(s) queued", self.queue.len());
+        self.status = format!("{} track(s) queued", self.order.queue_count());
     }
 
     fn toggle_selected_stop_after(&mut self) {
-        for index in self.selected_track_indices() {
-            if !self.stop_after_rows.remove(&index) {
-                self.stop_after_rows.insert(index);
-            }
-        }
+        self.order.toggle_stop_after(&self.selected_track_indices());
         self.auto_fit_cache = None;
-        self.status = format!("{} stop-after marker(s)", self.stop_after_rows.len());
+        self.status = format!("{} stop-after marker(s)", self.order.stop_after_indices().count());
     }
 
     fn clear_queue(&mut self) {
-        self.queue.clear();
+        self.order.clear_queue();
         self.auto_fit_cache = None;
         self.status = "Queue cleared".to_owned();
     }
@@ -2527,18 +2399,19 @@ impl Ui {
             (MenuPage::Playback, 0) => self.play_pause(),
             (MenuPage::Playback, 1) => {
                 self.player.stop();
-                self.playing = None;
+                self.radio.cancel_waiting();
+                self.order.cancel_navigation();
             }
             (MenuPage::Playback, 2) => self.previous(),
             (MenuPage::Playback, 3) => self.next(false),
             (MenuPage::Playback, 4) => self.cycle_shuffle(),
             (MenuPage::Playback, 5) => self.cycle_repeat(),
             (MenuPage::Playback, 6) => {
-                self.stop_after_current = !self.stop_after_current;
-                self.status = format!(
-                    "Stop after current: {}",
-                    if self.stop_after_current { "on" } else { "off" }
-                );
+                if let Some(index) = self.playing {
+                    self.order.toggle_stop_after(&[index]);
+                    self.status = format!("Stop after current: {}",
+                        if self.order.should_stop_after(index) { "on" } else { "off" });
+                }
             }
             (MenuPage::Playback, 7) => self.toggle_mute(),
             (MenuPage::Playback, 8) => self.toggle_radio(),
@@ -3286,40 +3159,26 @@ impl Ui {
             true
         };
         self.sort_column = Some(column);
-        let mut order: Vec<_> = (0..self.tracks.len()).collect();
         let id = self.columns.entries[column].id;
-        let value = |index: usize| {
-            if id == "index" {
-                format!("{index:012}")
-            } else if id == "filesizebytes" || id == "filesize" {
-                format!(
-                    "{:020}",
-                    self.metadata_for(&self.tracks[index])
-                        .and_then(|meta| meta.file_size_bytes)
-                        .unwrap_or_default()
-                )
-            } else if id == "title" {
-                self.title_for(&self.tracks[index]).to_lowercase()
-            } else {
-                self.column_value(index, &self.tracks[index], id)
-                    .to_lowercase()
+        let rows = self.tracks.iter().enumerate().map(|(index, track)| {
+            let meta = self.metadata_for(track);
+            SortRow {
+                original: Some(self.order.original_position(index) as f64), title: self.title_for(track).to_owned(),
+                artist: meta.map(|m| m.artist.clone()).unwrap_or_default(),
+                album: meta.map(|m| m.album.clone()).unwrap_or_default(),
+                album_artist: meta.map(|m| m.album_artist.clone()).unwrap_or_default(),
+                composer: meta.map(|m| m.composer.clone()).unwrap_or_default(), genre: meta.map(|m| m.genre.clone()).unwrap_or_default(),
+                year: meta.and_then(|m| m.year).map(f64::from), disc_number: meta.and_then(|m| m.disc_number).map(f64::from),
+                track_number: meta.and_then(|m| m.track_number).map(f64::from),
+                duration: meta.and_then(|m| m.duration).map(|d| d.as_secs_f64()),
+                file_size_bytes: meta.and_then(|m| m.file_size_bytes).map(|n| n as f64),
+                sample_rate: meta.and_then(|m| m.sample_rate).map(f64::from), bits_per_sample: meta.and_then(|m| m.bits_per_sample).map(f64::from),
+                bitrate: meta.and_then(|m| m.bitrate).map(f64::from), channels: meta.and_then(|m| m.channels).map(f64::from),
+                codec: meta.map(|m| m.codec.clone()).unwrap_or_default(), path: display_entry_path(&track.entry),
+                filename: self.column_value(index, track, "filename"), star: self.starred_keys.contains(&metadata_key(&track.entry)),
             }
-        };
-        order.sort_by(|&left, &right| {
-            let comparison = if id == "star" {
-                favorites_first(
-                    self.starred_keys.contains(&metadata_key(&self.tracks[left].entry)),
-                    self.starred_keys.contains(&metadata_key(&self.tracks[right].entry)),
-                )
-            } else {
-                natural_compare(&value(left), &value(right))
-            };
-            if self.sort_ascending {
-                comparison
-            } else {
-                comparison.reverse()
-            }
-        });
+        }).collect::<Vec<_>>();
+        let order = sorted_rows(&rows, id, !self.sort_ascending);
         let mut mapping = vec![0; order.len()];
         for (new, &old) in order.iter().enumerate() {
             mapping[old] = new;
@@ -3333,16 +3192,7 @@ impl Ui {
             .map(|old| tracks[old].take().unwrap())
             .collect();
         self.playing = self.playing.and_then(|old| mapping.get(old).copied());
-        self.queue = self
-            .queue
-            .iter()
-            .filter_map(|old| mapping.get(*old).copied())
-            .collect();
-        self.stop_after_rows = self
-            .stop_after_rows
-            .iter()
-            .filter_map(|old| mapping.get(*old).copied())
-            .collect();
+        self.order.remap_tracks(&mapping.iter().copied().map(Some).collect::<Vec<_>>());
         self.selected_tracks = self
             .selected_tracks
             .iter()
@@ -3405,8 +3255,7 @@ impl Ui {
         self.tracks.clear();
         self.auto_fit_cache = None;
         self.order.clear_tracks();
-        self.queue.clear();
-        self.stop_after_rows.clear();
+        self.radio.cancel_waiting();
         self.selected_tracks.clear();
         self.selection_anchor = None;
         self.selected[2] = 0;
@@ -3619,7 +3468,9 @@ impl Ui {
                 self.remote_generation = self.remote_generation.wrapping_add(1);
                 self.remote_pending.clear();
                 self.remote_path.clear();
+                let radio_scope_changed = self.browse_path != location;
                 self.browse_path = location;
+                if self.radio_enabled && radio_scope_changed { self.start_radio(false); }
                 self.root_items = items;
                 self.expanded.clear();
                 self.children.clear();
@@ -4414,8 +4265,7 @@ impl Ui {
             self.tracks.clear();
             self.auto_fit_cache = None;
             self.order.clear_tracks();
-            self.queue.clear();
-            self.stop_after_rows.clear();
+            self.order.clear_tracks();
             self.selected_tracks.clear();
             self.session_dirty = true;
         }
@@ -4527,6 +4377,8 @@ impl Ui {
     }
 
     fn play_selected(&mut self) {
+        self.order.cancel_navigation();
+        self.radio.cancel_waiting();
         self.try_play_selected();
     }
 
@@ -4552,25 +4404,14 @@ impl Ui {
         .and_then(|source| self.player.play_source(&source).map(|_| ()))
         {
             Ok(()) => {
-                let starting = self.playing.is_none();
-                if let Some(previous) = self.playing
-                    && previous != index
-                {
-                    self.stop_after_rows.remove(&previous);
-                }
+                self.order.started(self.playing, index);
                 self.playing = Some(index);
                 self.auto_fit_cache = None;
-                if starting && self.shuffle_mode != ShuffleMode::Off {
-                    self.order.set_shuffle_mode(
-                        self.shuffle_mode,
-                        &self.order_tracks(),
-                        self.playing,
-                    );
-                }
                 self.status = "Playing".to_owned();
                 true
             }
             Err(error) => {
+                self.player.stop();
                 self.status = error;
                 false
             }
@@ -4578,71 +4419,37 @@ impl Ui {
     }
 
     fn next(&mut self, honor_repeat_one: bool) {
-        if self.tracks.is_empty() {
-            if self.radio_enabled {
-                self.append_next_radio();
-            }
-            return;
-        }
-        if honor_repeat_one
-            && (self.stop_after_current
-                || self
-                    .playing
-                    .is_some_and(|index| self.stop_after_rows.contains(&index)))
-        {
-            self.stop_after_current = false;
-            if let Some(index) = self.playing {
-                self.stop_after_rows.remove(&index);
-            }
-            self.player.stop();
-            self.playing = None;
-            self.auto_fit_cache = None;
-            return;
-        }
-        if honor_repeat_one && self.repeat_mode == RepeatMode::One {
-            if let Some(index) = self.playing {
-                self.selected[2] = index;
-                if self.try_play_selected() {
+        self.navigate(if honor_repeat_one { NavigationEvent::Ended } else { NavigationEvent::Next });
+    }
+
+    fn navigate(&mut self, mut event: NavigationEvent) {
+        let tracks = self.order_tracks();
+        loop {
+            match self.order.navigate(&tracks, self.playing, event) {
+                PlaybackDecision::Play(index) => {
+                    self.selected[2] = index;
+                    if self.try_play_selected() { return; }
+                    event = NavigationEvent::Failed;
+                }
+                PlaybackDecision::Radio => { self.append_next_radio(); return; }
+                PlaybackDecision::Stop => {
+                    self.player.stop();
+                    self.radio.cancel_waiting();
+                    self.order.cancel_navigation();
+                    self.auto_fit_cache = None;
                     return;
                 }
             }
         }
-        if self.radio_enabled && self.playing.is_some_and(|i| i + 1 >= self.tracks.len()) {
-            self.append_next_radio();
-            return;
-        }
-        let tracks = self.order_tracks();
-        let mut cursor = self.playing;
-        let mut attempted = HashSet::new();
-        for _ in 0..self.tracks.len().saturating_add(self.queue.len()) {
-            let queued = loop {
-                match self.queue.pop_front() {
-                    Some(index) if index < self.tracks.len() => break Some(index),
-                    Some(_) => continue,
-                    None => break None,
-                }
-            };
-            let next = queued.or_else(|| self.order.next(&tracks, cursor, false));
-            let Some(next) = next else { break };
-            if !attempted.insert(next) {
-                continue;
-            }
-            self.selected[2] = next;
-            if self.try_play_selected() {
-                return;
-            }
-            cursor = Some(next);
-        }
-        self.player.stop();
-        self.playing = None;
-        self.auto_fit_cache = None;
     }
 
     fn play_pause(&mut self) {
+        if self.radio.waiting() { self.radio.cancel_waiting(); self.player.stop(); return; }
         if self.player.state() == PlaybackState::Stopped {
             if self.tracks.is_empty() && self.radio_enabled {
                 self.append_next_radio();
             } else {
+                self.selected[2] = self.playing.unwrap_or(0).min(self.tracks.len().saturating_sub(1));
                 self.play_selected();
             }
         } else {
@@ -4650,35 +4457,17 @@ impl Ui {
         }
     }
 
-    fn previous(&mut self) {
-        if self.tracks.is_empty() {
-            return;
-        }
-        let tracks = self.order_tracks();
-        if let Some(previous) = self.order.previous(&tracks, self.playing) {
-            self.selected[2] = previous;
-            self.play_selected();
-        }
-    }
+    fn previous(&mut self) { self.navigate(NavigationEvent::Previous); }
 
     fn cycle_repeat(&mut self) {
-        if self.radio_enabled {
-            self.toggle_radio();
-        }
-        self.repeat_mode = self.repeat_mode.next();
-        self.order.set_repeat_mode(self.repeat_mode);
-        let _ = AppSettings::save_repeat_mode(self.repeat_mode);
+        self.order.set_repeat_mode(self.order.repeat_mode().next());
+        self.sync_order_modes();
         self.status = format!("Repeat: {}", self.repeat_mode.setting_value());
     }
 
     fn cycle_shuffle(&mut self) {
-        if self.radio_enabled {
-            self.toggle_radio();
-        }
-        self.shuffle_mode = self.shuffle_mode.next();
-        self.order
-            .set_shuffle_mode(self.shuffle_mode, &self.order_tracks(), self.playing);
-        let _ = AppSettings::save_shuffle_mode(self.shuffle_mode);
+        self.order.set_shuffle_mode(self.order.shuffle_mode().next(), &self.order_tracks(), self.playing);
+        self.sync_order_modes();
         self.status = format!("Shuffle: {}", self.shuffle_mode.setting_value());
     }
 
@@ -4704,12 +4493,7 @@ impl Ui {
                 Some(old - indices.iter().filter(|&&index| index < old).count())
             }
         };
-        self.queue = self.queue.iter().filter_map(|&old| remap(old)).collect();
-        self.stop_after_rows = self
-            .stop_after_rows
-            .iter()
-            .filter_map(|&old| remap(old))
-            .collect();
+        self.order.remap_tracks(&(0..self.tracks.len()).map(remap).collect::<Vec<_>>());
         let was_playing = self
             .playing
             .is_some_and(|index| indices.binary_search(&index).is_ok());
@@ -4837,8 +4621,7 @@ impl Ui {
         let track = self.tracks.remove(from);
         self.tracks.insert(to, track);
         self.playing = self.playing.map(remap);
-        self.queue = self.queue.iter().copied().map(remap).collect();
-        self.stop_after_rows = self.stop_after_rows.iter().copied().map(remap).collect();
+        self.order.remap_tracks(&(0..self.tracks.len()).map(|index| Some(remap(index))).collect::<Vec<_>>());
         self.selected_tracks = self.selected_tracks.iter().copied().map(remap).collect();
         self.selected[2] = remap(self.selected[2]);
         self.selection_anchor = self.selection_anchor.map(remap);
@@ -4996,13 +4779,7 @@ impl Ui {
     }
 
     fn refresh_radio_blacklist(&mut self) {
-        if self.radio_enabled {
-            self.radio_generation = self.radio_generation.wrapping_add(1);
-            self.radio_pool.clear();
-            self.radio_refill_pending = false;
-            self.radio_exhausted = false;
-            self.request_radio_command(RadioCommand::Reshuffle);
-        }
+        if self.radio_enabled { self.radio.refresh(); }
     }
 
     fn show_blacklist(&mut self) {
@@ -6324,14 +6101,15 @@ impl Ui {
                     return None;
                 }
                 let metadata = self.metadata_for(track);
-                let matches = [
-                    self.title_for(track),
-                    metadata.map_or(String::new(), |meta| meta.artist.clone()),
+                let fields = [
+                    self.title_for(track), metadata.map_or(String::new(), |meta| meta.artist.clone()),
                     metadata.map_or(String::new(), |meta| meta.album.clone()),
-                    track.name.clone(),
-                ]
-                .iter()
-                .any(|value| value.to_lowercase().contains(&self.playlist_query));
+                    metadata.map_or(String::new(), |meta| meta.album_artist.clone()),
+                    metadata.map_or(String::new(), |meta| meta.composer.clone()),
+                    metadata.map_or(String::new(), |meta| meta.genre.clone()),
+                    self.column_value(index, track, "filename"),
+                ];
+                let matches = kog_audio::playback_order::sort::matches_query(&fields.iter().map(String::as_str).collect::<Vec<_>>(), &self.playlist_query);
                 matches.then_some(index)
             })
             .collect()
@@ -7216,7 +6994,8 @@ impl Ui {
             Key::Char(' ') => self.play_pause(),
             Key::Char('s') => {
                 self.player.stop();
-                self.playing = None;
+                self.radio.cancel_waiting();
+                self.order.cancel_navigation();
             }
             Key::Char('>') => self.next(false),
             Key::Char('<') => self.previous(),

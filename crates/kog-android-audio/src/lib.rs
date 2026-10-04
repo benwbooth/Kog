@@ -8,7 +8,7 @@ use std::time::Duration;
 use jni::JNIEnv;
 use jni::objects::{JByteArray, JObject, JString};
 use jni::sys::{JNI_FALSE, JNI_TRUE, jboolean, jint, jlong};
-use kog_audio::decoder::{DecoderSettings, PlaybackSource};
+use kog_audio::decoder::DecoderSettings;
 use kog_audio::settings::MidiEngine;
 use kog_audio::streaming::PcmReader;
 
@@ -30,6 +30,37 @@ fn get_handle(id: jlong) -> Option<Arc<Mutex<Handle>>> {
 
 fn fail(env: &mut JNIEnv, message: impl AsRef<str>) {
     let _ = env.throw_new("java/io/IOException", message.as_ref());
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_kog_player_NativeAudio_nativeLibrary(
+    mut env: JNIEnv, _receiver: JObject, input: JString,
+) -> jni::sys::jstring {
+    let result = (|| {
+        let input: String = env.get_string(&input).map_err(|e| e.to_string())?.into();
+        let request = serde_json::from_str(&input).map_err(|e| e.to_string())?;
+        let reply = kog_server::local_api::request(request)?;
+        env.new_string(reply.to_string()).map_err(|e| e.to_string())
+    })();
+    match result {
+        Ok(reply) => reply.into_raw(),
+        Err(error) => { fail(&mut env, error); std::ptr::null_mut() }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_kog_player_NativeAudio_nativePolicy(
+    mut env: JNIEnv, _receiver: JObject, input: JString,
+) -> jni::sys::jstring {
+    let result = (|| {
+        let input: String = env.get_string(&input).map_err(|e| e.to_string())?.into();
+        let reply = kog_audio::playback_order::bridge::dispatch_json(&input)?;
+        env.new_string(reply).map_err(|e| e.to_string())
+    })();
+    match result {
+        Ok(reply) => reply.into_raw(),
+        Err(error) => { fail(&mut env, error); std::ptr::null_mut() }
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -96,13 +127,7 @@ pub extern "system" fn Java_org_kog_player_NativeAudio_nativeOpen(
         }
     };
     let path = PathBuf::from(path);
-    let reader = if subsong >= 0 {
-        let mut source = PlaybackSource::from_path(path);
-        source.subsong = Some(subsong as u32);
-        PcmReader::open(source, settings)
-    } else {
-        PcmReader::open_path(path, settings)
-    };
+    let reader = PcmReader::open_path_subsong(path, (subsong >= 0).then_some(subsong as u32), settings);
     match reader {
         Ok(reader) => {
             let id = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);

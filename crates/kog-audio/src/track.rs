@@ -140,6 +140,7 @@ impl Track {
                 track.lyrics = lyrics;
             }
             track.track_number = properties.track_number.or(track.track_number);
+            track.disc_number = properties.disc_number.or(track.disc_number);
             track.decoder_warning = properties.warning;
         }
 
@@ -197,7 +198,7 @@ impl Track {
         if query.is_empty() {
             return true;
         }
-        self.search_text.contains(query)
+        crate::playback_order::sort::matches_query(&[&self.search_text], query)
     }
 
     pub fn duration_label(&self) -> String {

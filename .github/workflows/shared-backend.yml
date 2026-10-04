@@ -1,0 +1,62 @@
+name: Shared backend contract
+
+on:
+  push:
+    branches: [main, 'codex/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: shared-backend-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  policy-and-web:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: kog-policy-contract
+          workspaces: |
+            . -> target
+            crates/kog-web -> target
+      - name: Assert common command outcomes
+        run: cargo test --locked -p kog-playback-policy
+      - name: Check WebAssembly adapter
+        run: cargo check --locked --manifest-path crates/kog-web/Cargo.toml --target wasm32-unknown-unknown
+
+  swift-adapter:
+    runs-on: macos-15
+    timeout-minutes: 10
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v6
+      - name: Check Swift against the iOS SDK
+        run: |
+          xcrun --sdk iphoneos swiftc -typecheck -parse-as-library \
+            -D KOG_NATIVE_AUDIO -module-name Kog -target arm64-apple-ios17.0 \
+            -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" ios/Kog/*.swift
+
+  kotlin-adapter:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v4
+      - run: sdkmanager 'platforms;android-36' 'build-tools;35.0.0'
+      - name: Check Android service and UI adapter
+        run: ./android/gradlew -p android :app:compileDebugKotlin --no-daemon

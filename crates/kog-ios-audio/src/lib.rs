@@ -12,6 +12,24 @@ use kog_audio::streaming::PcmReader;
 mod catalog;
 mod library;
 
+/// Platform-neutral playback commands. The caller frees the reply with
+/// `kog_audio_string_free`, just like catalog replies.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kog_playback_policy(
+    input: *const c_char, error: *mut c_char, error_capacity: usize,
+) -> *mut c_char {
+    let result = (|| {
+        if input.is_null() { return Err("Missing playback command".to_owned()); }
+        let input = unsafe { CStr::from_ptr(input) }.to_str().map_err(|e| e.to_string())?;
+        let reply = kog_audio::playback_order::bridge::dispatch_json(input)?;
+        std::ffi::CString::new(reply).map_err(|e| e.to_string())
+    })();
+    match result {
+        Ok(reply) => reply.into_raw(),
+        Err(message) => { unsafe { error_to_buffer(&message, error, error_capacity) }; ptr::null_mut() }
+    }
+}
+
 pub struct KogAudioHandle {
     reader: PcmReader,
 }

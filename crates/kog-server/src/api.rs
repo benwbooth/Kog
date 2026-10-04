@@ -243,6 +243,7 @@ pub struct MetadataRow {
     pub genre: Option<String>,
     pub year: Option<u32>,
     pub track_number: Option<u32>,
+    pub disc_number: Option<u32>,
     /// Seconds, as a float.
     pub duration: Option<f64>,
     pub sample_rate: Option<u32>,
@@ -264,6 +265,7 @@ impl MetadataRow {
             genre: properties.genre,
             year: properties.year,
             track_number: properties.track_number,
+            disc_number: properties.disc_number,
             duration: properties.duration.map(|duration| duration.as_secs_f64()),
             sample_rate: properties.sample_rate,
             channels: properties.channels,
@@ -2843,6 +2845,7 @@ mod tests {
             genre: None,
             year: None,
             track_number: None,
+            disc_number: None,
             duration: None,
             sample_rate: None,
             channels: None,

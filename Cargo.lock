@@ -1634,6 +1634,8 @@ version = "0.9.42"
 dependencies = [
  "jni",
  "kog-audio",
+ "kog-server",
+ "serde_json",
 ]
 
 [[package]]
@@ -1685,20 +1687,21 @@ dependencies = [
 name = "kog-ios-audio"
 version = "0.9.42"
 dependencies = [
- "axum",
  "kog-audio",
  "kog-core",
  "kog-server",
  "serde_json",
  "tempfile",
- "tokio",
- "tower",
  "zip",
 ]
 
 [[package]]
 name = "kog-playback-policy"
 version = "0.9.42"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "kog-server"

@@ -2,8 +2,8 @@ package org.kog.player
 
 import android.content.ComponentName
 import android.content.Context
-import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.os.Bundle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -16,6 +16,7 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
+import androidx.media3.session.SessionCommand
 import androidx.core.content.ContextCompat
 import com.google.common.util.concurrent.ListenableFuture
 import kotlinx.coroutines.CoroutineScope
@@ -26,11 +27,14 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
 
 /** Queue and selection belong to this Android client; library rules belong to Rust. */
 class KogState(private val context: Context) {
     val api = KogApi(context)
+    val deviceApi = KogApi(context, onDevice = true)
+    private val deviceLibrary = DeviceLibrary(context)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val prefs = context.getSharedPreferences("kog", Context.MODE_PRIVATE)
     private var controllerFuture: ListenableFuture<MediaController>? = null
@@ -59,6 +63,7 @@ class KogState(private val context: Context) {
         private set
     var searchScanned by mutableStateOf(0)
         private set
+    var libraryOnDevice by mutableStateOf(api.server.isBlank())
     var currentIndex by mutableStateOf(-1)
         private set
     var playing by mutableStateOf(false)
@@ -73,8 +78,18 @@ class KogState(private val context: Context) {
         private set
     var radioOn by mutableStateOf(false)
         private set
-    var shuffleOn by mutableStateOf(false)
-    var repeatOn by mutableStateOf(false)
+    var shuffleMode by mutableStateOf("off")
+        private set
+    var repeatMode by mutableStateOf("off")
+        private set
+    val shuffleOn get() = shuffleMode != "off"
+    val repeatOn get() = repeatMode != "off"
+    var radioWaiting by mutableStateOf(false)
+        private set
+    var queuedIndices by mutableStateOf(emptyList<Int>())
+        private set
+    var stopAfterIndices by mutableStateOf(emptyList<Int>())
+        private set
     var localMidiEngine by mutableStateOf(prefs.getString("local_midi_engine", "opl3windows") ?: "opl3windows")
         private set
     var soundfontReady by mutableStateOf(prefs.getString("midi_soundfont", "")
@@ -105,9 +120,10 @@ class KogState(private val context: Context) {
             val rows = JSONArray(prefs.getString("queue", "[]"))
             for (i in 0 until rows.length()) rows.optJSONObject(i)?.let { queue.add(Track.parse(it)) }
         }
-        shuffleOn = prefs.getBoolean("shuffle", false)
-        repeatOn = prefs.getBoolean("repeat", false)
+        shuffleMode = prefs.getString("shuffle_mode", if (prefs.getBoolean("shuffle", false)) "all" else "off") ?: "off"
+        repeatMode = prefs.getString("repeat_mode", if (prefs.getBoolean("repeat", false)) "all" else "off") ?: "off"
         localRoot = prefs.getString("local_root", "").orEmpty()
+        task { stars = deviceApi.stars() }
         if (localRoot.isNotBlank()) {
             DocumentFile.fromTreeUri(context, Uri.parse(localRoot))?.let(::browseDevice)
         }
@@ -116,7 +132,9 @@ class KogState(private val context: Context) {
     fun connectPlayer() {
         if (controllerFuture != null) return
         val future = MediaController.Builder(context, SessionToken(context,
-            ComponentName(context, PlaybackService::class.java))).buildAsync()
+            ComponentName(context, PlaybackService::class.java))).setListener(object : MediaController.Listener {
+                override fun onExtrasChanged(controller: MediaController, extras: Bundle) { applyPolicy(extras) }
+            }).buildAsync()
         controllerFuture = future
         future.addListener({
             runCatching {
@@ -127,8 +145,7 @@ class KogState(private val context: Context) {
                         prefs.getLong("position", 0))
                     controller?.prepare()
                 }
-                controller?.shuffleModeEnabled = shuffleOn
-                controller?.repeatMode = if (repeatOn) Player.REPEAT_MODE_ALL else Player.REPEAT_MODE_OFF
+                policyCommand("sync")
                 syncPlayer()
             }.onFailure { error = it.message ?: "Cannot start playback" }
         }, ContextCompat.getMainExecutor(context))
@@ -245,7 +262,9 @@ class KogState(private val context: Context) {
 
     private fun syncPlayer() {
         val player = controller ?: return
-        currentIndex = player.currentMediaItemIndex
+        val tracks = (0 until player.mediaItemCount).map { player.getMediaItemAt(it).kogTrack() }
+        if (tracks != queue.toList()) queue.replaceWith(tracks)
+        currentIndex = player.sessionExtras.getString("kog_policy")?.let { JSONObject(it).optInt("current", -1) } ?: -1
         playing = player.isPlaying
         position = player.currentPosition.coerceAtLeast(0)
         duration = player.duration.coerceAtLeast(0)
@@ -258,17 +277,30 @@ class KogState(private val context: Context) {
         duration = player.duration.coerceAtLeast(0)
     }
 
-    private fun mediaItem(track: Track): MediaItem {
-        val meta = MediaMetadata.Builder()
-            .setTitle(track.label).setArtist(track.artist).setAlbumTitle(track.album)
-        api.art(track)?.let { meta.setArtworkUri(Uri.parse(it)) }
-        val builder = MediaItem.Builder().setMediaId(track.key).setMediaMetadata(meta.build())
-        if (NativeAudio.useFor(track)) {
-            builder.setUri(NativeAudio.uri(track)).setMimeType(MimeTypes.AUDIO_WAV)
-        } else {
-            builder.setUri(api.stream(track))
-        }
-        return builder.build()
+    private fun mediaItem(track: Track): MediaItem = track.mediaItem(api)
+
+    private fun applyPolicy(extras: Bundle) {
+        extras.getString("error")?.let { error = it }
+        val snapshot = extras.getString("kog_policy")?.let(::JSONObject) ?: return
+        currentIndex = snapshot.optInt("current", -1)
+        shuffleMode = snapshot.optString("shuffle", "off")
+        repeatMode = snapshot.optString("repeat", "off")
+        radioOn = snapshot.optJSONObject("radio")?.optBoolean("enabled") ?: false
+        radioWaiting = snapshot.optJSONObject("radio")?.optBoolean("waiting") ?: false
+        fun indices(key: String): List<Int> = snapshot.optJSONArray(key)?.let { rows ->
+            (0 until rows.length()).map(rows::getInt)
+        }.orEmpty()
+        queuedIndices = indices("queued")
+        stopAfterIndices = indices("stop_after")
+        snapshot.optString("error").takeIf(String::isNotEmpty)?.let { error = it }
+    }
+    private fun policyCommand(op: String, fields: JSONObject = JSONObject()) {
+        val player = controller ?: return
+        fields.put("op", op)
+        val future = player.sendCustomCommand(SessionCommand(PlaybackService.POLICY_COMMAND, Bundle.EMPTY),
+            Bundle().apply { putString("command", fields.toString()) })
+        future.addListener({ runCatching { applyPolicy(future.get().extras) }
+            .onFailure { error = it.message ?: "Playback command failed" } }, ContextCompat.getMainExecutor(context))
     }
 
     private fun saveQueue() {
@@ -277,7 +309,7 @@ class KogState(private val context: Context) {
         prefs.edit().putString("queue", rows.toString())
             .putInt("index", currentIndex.coerceAtLeast(0))
             .putLong("position", position)
-            .putBoolean("shuffle", shuffleOn).putBoolean("repeat", repeatOn).apply()
+            .putString("shuffle_mode", shuffleMode).putString("repeat_mode", repeatMode).apply()
     }
 
     private fun task(work: suspend () -> Unit) {
@@ -291,7 +323,7 @@ class KogState(private val context: Context) {
         listing = api.browse()
         libraryRoot = listing?.path.orEmpty()
         playlists.replaceWith(api.playlists())
-        stars = api.stars()
+        stars = api.stars() + deviceApi.stars()
         runCatching { api.serverMidiEngine() }.getOrNull()?.let { serverEngine ->
             if (serverEngine != api.midiEngine) {
                 api.midiEngine = serverEngine
@@ -339,7 +371,7 @@ class KogState(private val context: Context) {
     }
 
     fun addFile(track: Track, play: Boolean = false, onAdded: () -> Unit = {}) = task {
-        val tracks = if (track.isDevice) listOf(track) else api.expand(track)
+        val tracks = (if (track.isDevice) deviceApi else api).expand(track)
         add(tracks, play)
         if (tracks.isNotEmpty()) onAdded()
     }
@@ -366,36 +398,19 @@ class KogState(private val context: Context) {
     fun play(index: Int) {
         val player = controller ?: return
         if (index !in queue.indices) return
-        if (currentIndex == index) {
-            if (player.isPlaying) player.pause() else player.play()
-        } else {
-            player.seekTo(index, 0)
-            player.play()
-        }
+        player.seekTo(index, 0)
+        player.prepare()
+        player.play()
         syncPlayer()
     }
 
     fun toggle() {
-        controller?.let { if (it.isPlaying) it.pause() else it.play() }
+        controller?.let { if (radioWaiting) it.stop() else if (it.isPlaying) it.pause() else it.play() }
         syncPlayer()
     }
-    fun previous() { controller?.seekToPreviousMediaItem(); controller?.play(); syncPlayer() }
-    fun next() {
-        val player = controller ?: return
-        if (radioOn && currentIndex >= queue.lastIndex) {
-            task {
-                add(api.radioAdvance(libraryRoot))
-                player.seekToNextMediaItem()
-                player.play()
-                syncPlayer()
-            }
-        } else {
-            if (radioOn && currentIndex >= queue.lastIndex - 2) refillRadio()
-            player.seekToNextMediaItem()
-            player.play()
-            syncPlayer()
-        }
-    }
+    fun previous() { controller?.seekToPreviousMediaItem(); syncPlayer() }
+    fun next() { controller?.seekToNextMediaItem(); syncPlayer() }
+    fun stop() { controller?.stop(); syncPlayer() }
     fun seek(milliseconds: Long) { controller?.seekTo(milliseconds); syncPlayer() }
 
     fun remove(index: Int) {
@@ -415,42 +430,34 @@ class KogState(private val context: Context) {
         saveQueue()
     }
 
+    private var sortField = ""
+    private var sortDescending = false
     fun sortQueue(field: String) {
-        val playingKey = current?.key
-        val at = position
-        val wasPlaying = playing
-        val sorted = when (field) {
-            "Artist" -> queue.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.artist })
-            "Album" -> queue.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.album })
-            "Duration" -> queue.sortedBy { it.duration }
-            else -> queue.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.label })
+        if (field == sortField) sortDescending = !sortDescending else { sortField = field; sortDescending = false }
+        val rows = queue.map { track ->
+            JSONObject().put("title", track.label).put("artist", track.artist).put("album", track.album)
+                .put("track_number", track.trackNumber ?: JSONObject.NULL).put("disc_number", track.discNumber ?: JSONObject.NULL)
+                .put("duration", if (track.duration > 0) track.duration / 1000.0 else JSONObject.NULL)
+                .put("star", track.key in stars)
         }
-        queue.replaceWith(sorted)
-        val index = queue.indexOfFirst { it.key == playingKey }.coerceAtLeast(0)
-        controller?.setMediaItems(queue.map(::mediaItem), index, at)
-        controller?.prepare()
-        if (wasPlaying) controller?.play()
-        saveQueue()
+        policyCommand("sort_rows", JSONObject().put("rows", JSONArray(rows)).put("column", field.lowercase()).put("descending", sortDescending))
     }
 
-    fun shuffle() {
-        shuffleOn = !shuffleOn
-        controller?.shuffleModeEnabled = shuffleOn
-        saveQueue()
+    fun shuffle() = policyCommand("cycle_shuffle")
+    fun repeat() = policyCommand("cycle_repeat")
+    private fun radioRequest(op: String) = task {
+        if (libraryOnDevice && localRoot.isNotBlank()) {
+            withContext(Dispatchers.IO) {
+                DocumentFile.fromTreeUri(context, Uri.parse(localRoot))?.let { deviceLibrary.stageFolder(it) }
+            }
+        }
+        policyCommand(op, JSONObject().put("root", if (libraryOnDevice) deviceApi.deviceRoot else libraryRoot)
+            .put("on_device", libraryOnDevice))
     }
-    fun repeat() {
-        repeatOn = !repeatOn
-        controller?.repeatMode = if (repeatOn) Player.REPEAT_MODE_ALL else Player.REPEAT_MODE_OFF
-        saveQueue()
-    }
-
-    fun radio() = task {
-        val enabled = !radioOn
-        val tracks = api.radio(enabled, libraryRoot)
-        radioOn = enabled
-        if (enabled) add(tracks, queue.isEmpty())
-    }
-    private fun refillRadio() = task { add(api.radioAdvance(libraryRoot)) }
+    fun radio() = radioRequest("radio_toggle")
+    fun reshuffleRadio() = radioRequest("radio_reshuffle")
+    fun toggleQueued(index: Int) = policyCommand("toggle_queue", JSONObject().put("indices", JSONArray().put(index)))
+    fun toggleStopAfter(index: Int) = policyCommand("toggle_stop_after", JSONObject().put("indices", JSONArray().put(index)))
 
     fun loadPlaylists() = task { playlists.replaceWith(api.playlists()) }
     fun openPlaylist(item: SavedPlaylist) = task {
@@ -476,14 +483,17 @@ class KogState(private val context: Context) {
         playlists.replaceWith(api.playlists())
     }
     fun toggleStar(track: Track) = task {
-        if (track.isDevice) return@task
         val newValue = track.key !in stars
-        api.star(track, newValue)
+        (if (track.isDevice) deviceApi else api).star(track, newValue)
         stars = if (newValue) stars + track.key else stars - track.key
     }
 
     fun importFiles(uris: List<Uri>, play: Boolean = false, onAdded: () -> Unit = {}) = task {
-        val tracks = withContext(Dispatchers.IO) { uris.mapNotNull(::localTrack) }
+        val files = withContext(Dispatchers.IO) {
+            val tree = localRoot.takeIf(String::isNotBlank)?.let { DocumentFile.fromTreeUri(context, Uri.parse(it)) }
+            uris.map { deviceLibrary.stageFile(it, tree) }
+        }
+        val tracks = files.flatMap { deviceApi.expand(Track(kind = "device", path = it.absolutePath, name = it.name)) }
         add(tracks, play)
         if (tracks.isNotEmpty()) onAdded()
     }
@@ -515,16 +525,8 @@ class KogState(private val context: Context) {
     fun addDeviceFolder(folder: DocumentFile, onAdded: () -> Unit = {}) = task {
         importing = true
         try {
-            val tracks = withContext(Dispatchers.IO) {
-            val found = mutableListOf<Uri>()
-            fun visit(directory: DocumentFile) {
-                for (child in directory.listFiles()) {
-                    if (child.isDirectory) visit(child) else if (child.isFile) found.add(child.uri)
-                }
-            }
-            visit(folder)
-            found.mapNotNull(::localTrack)
-            }
+            val staged = withContext(Dispatchers.IO) { deviceLibrary.stageFolder(folder) }
+            val tracks = deviceApi.collect(staged.absolutePath, root = deviceApi.deviceRoot)
             add(tracks)
             if (tracks.isNotEmpty()) onAdded()
         } finally {
@@ -532,23 +534,7 @@ class KogState(private val context: Context) {
         }
     }
 
-    private fun localTrack(uri: Uri): Track? {
-        val row = DocumentFile.fromSingleUri(context, uri)
-        val name = row?.name ?: uri.lastPathSegment.orEmpty()
-        val retriever = MediaMetadataRetriever()
-        val tags = runCatching {
-            retriever.setDataSource(context, uri)
-            listOf(
-                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE).orEmpty(),
-                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST).orEmpty(),
-                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUM).orEmpty(),
-                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION).orEmpty(),
-            )
-        }.getOrDefault(listOf("", "", "", ""))
-        runCatching { retriever.release() }
-        return Track("device", uri.toString(), name = name, title = tags[0],
-            artist = tags[1], album = tags[2], duration = tags[3].toLongOrNull() ?: 0)
-    }
+
 }
 
 private fun <T> androidx.compose.runtime.snapshots.SnapshotStateList<T>.replaceWith(items: List<T>) {

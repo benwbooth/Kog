@@ -26,8 +26,9 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use gloo_net::http::Request;
-use kog_playback_policy::{OrderTrack, PlaybackOrder, RepeatMode, ShuffleMode};
-use kog_playback_policy::sort::{favorites_first, natural_compare};
+use kog_playback_policy::{NavigationEvent, OrderTrack, PlaybackDecision, PlaybackOrder, RepeatMode, ShuffleMode};
+use kog_playback_policy::radio::RadioBuffer;
+use kog_playback_policy::sort::{SortRow, sorted_rows};
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::closure::Closure;
@@ -299,6 +300,7 @@ struct MetaRow {
     genre: Option<String>,
     year: Option<u32>,
     track_number: Option<u32>,
+    disc_number: Option<u32>,
     duration: Option<f64>,
     sample_rate: Option<u32>,
     channels: Option<u16>,
@@ -996,14 +998,7 @@ fn file_size_label(bytes: u64) -> String {
     format!("{value:.1} {unit}")
 }
 
-/// Repeat policy, cycled by the transport's repeat toggle.
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
-enum Repeat {
-    #[default]
-    Off,
-    One,
-    All,
-}
+type Repeat = RepeatMode;
 
 /// Each browser owns its queue, while ordering decisions use the same policy
 /// engine as the native players. The locator list detects additions, removals,
@@ -1011,6 +1006,7 @@ enum Repeat {
 struct WebPlaybackOrder {
     order: PlaybackOrder,
     locators: Vec<String>,
+    metadata: Vec<OrderTrack>,
 }
 
 impl WebPlaybackOrder {
@@ -1018,7 +1014,14 @@ impl WebPlaybackOrder {
         Self {
             order: PlaybackOrder::new(ShuffleMode::Off, RepeatMode::Off, js_sys::Date::now() as u64),
             locators: Vec::new(),
+            metadata: Vec::new(),
         }
+    }
+
+    fn remap(&mut self, queue: &[Entry], old_to_new: &[Option<usize>]) {
+        self.order.remap_tracks(old_to_new);
+        self.locators = queue.iter().map(meta_key).collect();
+        self.metadata.clear();
     }
 
     fn tracks(
@@ -1026,33 +1029,30 @@ impl WebPlaybackOrder {
         queue: &[Entry],
         cache: &HashMap<String, Option<MetaRow>>,
         current: usize,
-        shuffle: bool,
+        shuffle: ShuffleMode,
         repeat: Repeat,
     ) -> Vec<OrderTrack> {
-        let tracks: Vec<_> = queue
-            .iter()
-            .map(|entry| OrderTrack {
-                album: meta_for(cache, entry)
-                    .and_then(|meta| meta.album)
-                    .unwrap_or_default(),
-                ..OrderTrack::default()
-            })
-            .collect();
+        let tracks: Vec<_> = queue.iter().map(|entry| {
+            let meta = meta_for(cache, entry);
+            OrderTrack {
+                album: meta.as_ref().and_then(|meta| meta.album.clone()).unwrap_or_default(),
+                disc_number: meta.as_ref().and_then(|meta| meta.disc_number),
+                track_number: meta.as_ref().and_then(|meta| meta.track_number),
+            }
+        }).collect();
         let locators: Vec<_> = queue.iter().map(meta_key).collect();
         if locators != self.locators {
+            self.order.remap_tracks(&kog_playback_policy::remap_track_ids(&self.locators, &locators));
             self.locators = locators;
             self.order.tracks_changed(&tracks, Some(current));
+        } else if tracks != self.metadata {
+            self.order.album_metadata_changed(&tracks, Some(current));
         }
-        let shuffle_mode = if shuffle { ShuffleMode::All } else { ShuffleMode::Off };
-        if self.order.shuffle_mode() != shuffle_mode {
-            self.order.set_shuffle_mode(shuffle_mode, &tracks, Some(current));
+        self.metadata = tracks.clone();
+        if self.order.shuffle_mode() != shuffle {
+            self.order.set_shuffle_mode(shuffle, &tracks, Some(current));
         }
-        let repeat_mode = match repeat {
-            Repeat::Off => RepeatMode::Off,
-            Repeat::One => RepeatMode::One,
-            Repeat::All => RepeatMode::All,
-        };
-        self.order.set_repeat_mode(repeat_mode);
+        self.order.set_repeat_mode(repeat);
         tracks
     }
 }
@@ -1144,7 +1144,6 @@ fn device_id() -> String {
 /// Everything the web player remembers across a reload, in one localStorage
 /// value. Deliberately client-side: the desktop's session.json is shared by
 /// every client, so a phone must never overwrite the desktop's pane.
-#[derive(Default)]
 struct RestoredSession {
     queue: Vec<Entry>,
     current: usize,
@@ -1152,9 +1151,17 @@ struct RestoredSession {
     tree_root: String,
     expanded: Vec<String>,
     volume: Option<f64>,
-    shuffle: bool,
+    shuffle: ShuffleMode,
     repeat: Repeat,
     radio_on: bool,
+}
+
+impl Default for RestoredSession {
+    fn default() -> Self {
+        Self { queue: Vec::new(), current: usize::MAX, list_name: String::new(),
+            tree_root: String::new(), expanded: Vec::new(), volume: None,
+            shuffle: ShuffleMode::Off, repeat: Repeat::Off, radio_on: false }
+    }
 }
 
 /// Parse the persisted session, skipping anything that no longer resolves.
@@ -1180,13 +1187,8 @@ fn decode_session(raw: &str) -> RestoredSession {
             })
             .collect();
     }
-    session.current = value["current"].as_u64().unwrap_or(0) as usize;
-    // A remembered row that no longer exists falls back to the first row.
-    if session.queue.is_empty() {
-        session.current = 0;
-    } else {
-        session.current = session.current.min(session.queue.len() - 1);
-    }
+    session.current = value["current"].as_u64().map(|index| index as usize)
+        .filter(|index| *index < session.queue.len()).unwrap_or(usize::MAX);
     session.list_name = value["listName"].as_str().unwrap_or_default().to_owned();
     session.tree_root = value["treeRoot"].as_str().unwrap_or_default().to_owned();
     session.expanded = value["expanded"]
@@ -1200,12 +1202,9 @@ fn decode_session(raw: &str) -> RestoredSession {
         })
         .unwrap_or_default();
     session.volume = value["volume"].as_f64().filter(|volume| volume.is_finite());
-    session.shuffle = value["shuffle"].as_bool().unwrap_or(false);
-    session.repeat = match value["repeat"].as_str() {
-        Some("one") => Repeat::One,
-        Some("all") => Repeat::All,
-        _ => Repeat::Off,
-    };
+    session.shuffle = value["shuffle"].as_str().and_then(ShuffleMode::from_setting)
+        .unwrap_or_else(|| if value["shuffle"].as_bool().unwrap_or(false) { ShuffleMode::All } else { ShuffleMode::Off });
+    session.repeat = value["repeat"].as_str().and_then(RepeatMode::from_setting).unwrap_or_default();
     session.radio_on = value["radioOn"].as_bool().unwrap_or(false);
     session
 }
@@ -1219,7 +1218,7 @@ fn encode_session(
     tree_root: &str,
     expanded: &HashSet<String>,
     volume: f64,
-    shuffle: bool,
+    shuffle: ShuffleMode,
     repeat: Repeat,
     radio_on: bool,
 ) -> String {
@@ -1238,14 +1237,11 @@ fn encode_session(
     // session never rewrites localStorage.
     let mut expanded: Vec<&String> = expanded.iter().collect();
     expanded.sort();
-    let repeat = match repeat {
-        Repeat::Off => "off",
-        Repeat::One => "one",
-        Repeat::All => "all",
-    };
+    let repeat = repeat.setting_value();
+    let shuffle = shuffle.setting_value();
     serde_json::json!({
         "queue": entries,
-        "current": current,
+        "current": (current < queue.len()).then_some(current),
         "listName": list_name,
         "treeRoot": tree_root,
         "expanded": expanded,
@@ -1690,6 +1686,26 @@ fn meta_key(entry: &Entry) -> String {
 }
 
 /// A cached metadata row for an entry, if one has been fetched.
+fn entry_sort_row(index: usize, entry: &Entry, cache: &HashMap<String, Option<MetaRow>>, starred: &HashSet<String>) -> SortRow {
+    let meta = meta_for(cache, entry).unwrap_or_default();
+    SortRow {
+        original: Some(index as f64), title: meta.title.unwrap_or_else(|| entry.name.clone()),
+        artist: meta.artist.unwrap_or_default(), album: meta.album.unwrap_or_default(),
+        album_artist: meta.album_artist.unwrap_or_default(), composer: meta.composer.unwrap_or_default(), genre: meta.genre.unwrap_or_default(),
+        year: meta.year.map(f64::from), disc_number: meta.disc_number.map(f64::from), track_number: meta.track_number.map(f64::from),
+        duration: meta.duration, file_size_bytes: meta.file_size_bytes.map(|value| value as f64),
+        sample_rate: meta.sample_rate.map(f64::from), bits_per_sample: meta.bits_per_sample.map(f64::from),
+        bitrate: meta.bitrate.map(f64::from), channels: meta.channels.map(f64::from), codec: meta.codec.unwrap_or_default(),
+        path: entry_path(entry), filename: entry_filename(entry), star: starred.contains(&entry_star_locator(entry)),
+    }
+}
+
+fn sorted_queue_indices(entries: &[Entry], cache: &HashMap<String, Option<MetaRow>>, starred: &HashSet<String>, key: SortKey, descending: bool) -> Vec<usize> {
+    let rows = entries.iter().enumerate().map(|(index, entry)| entry_sort_row(index, entry, cache, starred)).collect::<Vec<_>>();
+    let column = ColumnId::ALL.into_iter().find(|column| column.sort_key() == key).unwrap_or(ColumnId::Index);
+    sorted_rows(&rows, column.key(), descending)
+}
+
 fn meta_for(cache: &HashMap<String, Option<MetaRow>>, entry: &Entry) -> Option<MetaRow> {
     cache.get(&meta_key(entry)).and_then(|row| row.clone())
 }
@@ -2340,21 +2356,11 @@ fn App() -> impl IntoView {
     let (media_duration, set_media_duration) = signal(Option::<f64>::None);
     let (shuffle, set_shuffle) = signal(restored.shuffle);
     let (repeat_mode, set_repeat_mode) = signal(restored.repeat);
-    // Random Radio: the server owns the shuffled round; this browser keeps
-    // its own ready buffer. `radio_busy` serializes incremental requests.
-    let (radio_on, set_radio_on) = signal(restored.radio_on);
-    let (radio_busy, set_radio_busy) = signal(false);
-    // A press during a refill remains pending until the first pick arrives.
-    let (radio_waiting, set_radio_waiting) = signal(false);
-    // Stop automatic retries after an error or a barren round; Play/Next retries.
-    let (radio_refill_stopped, set_radio_refill_stopped) = signal(false);
-    // Discard responses started under an earlier tree root. Their network
-    // requests cannot be cancelled once the server is probing a large file.
-    let (radio_generation, set_radio_generation) = signal(0_u64);
-    // The desktop stages radio picks into a hidden buffer and moves one onto
-    // the playlist at a time; the pool is that buffer. Only shifted tracks
-    // become rows.
-    let (radio_pool, set_radio_pool) = signal(Vec::<Entry>::new());
+    let mut restored_radio = RadioBuffer::<Entry>::default();
+    restored_radio.reset(restored.radio_on);
+    let (radio_buffer, set_radio_buffer) = signal(restored_radio);
+    let radio_on = Memo::new(move |_| radio_buffer.with(|radio| radio.enabled()));
+    let radio_waiting = Memo::new(move |_| radio_buffer.with(|radio| radio.waiting()));
     // Tag cache keyed by locator. An `Rc` so reading it clones a pointer, not
     // the map, on every cell render.
     let (metadata, set_metadata) =
@@ -2363,7 +2369,9 @@ fn App() -> impl IntoView {
     // the lookup. Keep failures separate from cached "no tags" results.
     let (metadata_failed, set_metadata_failed) =
         signal_local(Rc::new(HashSet::<String>::new()));
+    let audio_ref = NodeRef::<leptos::html::Audio>::new();
     let web_order = StoredValue::new(WebPlaybackOrder::new());
+    let (policy_revision, set_policy_revision) = signal(0u64);
     // Starred locators from `GET /api/stars`, in the same scheme the server
     // stores them under. An `Rc` for the same reason as `metadata`.
     let (stars, set_stars) = signal_local(Rc::new(HashSet::<String>::new()));
@@ -2597,145 +2605,89 @@ fn App() -> impl IntoView {
         }
     };
 
-    // ---------------------------------------------------------------- radio
-    // Random Radio is server-owned: the server shuffles the library (sharing
-    // the desktop's radio-round.json) and returns a window of tracks. Like the
-    // desktop, the window is a hidden staging buffer: the visible playlist
-    // only ever grows by one shifted track at a time, appended at the end.
-    // Toggling or reshuffling never disturbs the queue that is playing.
-    let apply_radio = move |value: &serde_json::Value| {
-        let enabled = value["enabled"].as_bool().unwrap_or(false);
-        set_radio_on.set(enabled);
-        if !enabled {
-            set_radio_pool.set(Vec::new());
-            set_radio_waiting.set(false);
-            return;
-        }
-        // A restored server snapshot may include the last song already queued.
-        let mut entries = radio_entries(value);
-        entries.retain(|entry| !queue.get_untracked().iter()
-            .any(|queued| entry_star_locator(queued) == entry_star_locator(entry)));
-        // Radio is a playback mode: repeat and shuffle would fight the round,
-        // just as the desktop forces repeat off when radio is enabled.
-        set_repeat_mode.set(Repeat::Off);
-        set_shuffle.set(false);
-        set_list_name.set("Random Radio".to_owned());
-        set_radio_pool.set(entries);
-    };
-
-    // An empty tree root means the server's library root. Send that path
-    // explicitly: omitting ?root would leave a previously scoped round in
-    // place when the user moves the tree back to the library root.
+    // Shared buffering policy; HTTP is only this client's transport adapter.
     let radio_scope = move || {
         let root = tree_root.get();
         if root.is_empty() { library_root.get() } else { root }
     };
-    let radio_root = {
-        let radio_scope = radio_scope.clone();
-        move || {
-            let root = radio_scope();
-            if root.is_empty() { String::new() } else { format!("?incremental=true&root={}", url_encode(&root)) }
+    let radio_root = move || {
+        let root = radio_scope();
+        if root.is_empty() { String::new() } else { format!("?incremental=true&root={}", url_encode(&root)) }
+    };
+    let apply_radio = move |generation: u64, value: &serde_json::Value| {
+        if radio_buffer.with_untracked(|radio| radio.generation()) != generation { return; }
+        let enabled = value["enabled"].as_bool().unwrap_or(false);
+        let entries = radio_entries(value);
+        let exhausted = entries.is_empty();
+        set_radio_buffer.update(|radio| {
+            if enabled != radio.enabled() { radio.reset(enabled); }
+            radio.accept(radio.generation(), entries, exhausted);
+        });
+        let mut policy = web_order.write_value();
+        let tracks = policy.tracks(&queue.get_untracked(), &metadata.get_untracked(), current.get_untracked(), shuffle.get_untracked(), repeat_mode.get_untracked());
+        policy.order.set_radio_enabled(enabled, &tracks, Some(current.get_untracked()));
+        if enabled {
+            set_repeat_mode.set(policy.order.repeat_mode());
+            set_shuffle.set(policy.order.shuffle_mode());
+            set_list_name.set("Random Radio".to_owned());
         }
     };
-
-    let load_radio = {
-        let get_json = get_json;
-        let apply_radio = apply_radio.clone();
-        let radio_root = radio_root.clone();
-        let radio_generation = radio_generation.clone();
-        move || {
-            let generation = radio_generation.get_untracked();
-            let radio_generation = radio_generation.clone();
-            set_radio_busy.set(true);
-            set_radio_refill_stopped.set(false);
-            leptos::task::spawn_local(async move {
-                let result = get_json(format!("/api/radio{}", radio_root())).await;
-                if radio_generation.get_untracked() != generation {
-                    return;
+    let load_radio = move || {
+        let mut generation = 0;
+        set_radio_buffer.update(|radio| { generation = radio.begin_request(); });
+        let route = format!("/api/radio{}", radio_root());
+        leptos::task::spawn_local(async move {
+            match get_json(route).await {
+                Ok(value) => apply_radio(generation, &value),
+                Err(error) => {
+                    let mut accepted = false;
+                    set_radio_buffer.update(|radio| { accepted = radio.fail(generation); });
+                    if accepted { set_message.set(error); }
                 }
-                match result {
-                    Ok(value) => apply_radio(&value),
-                    Err(error) => {
-                        set_radio_refill_stopped.set(true);
-                        set_radio_waiting.set(false);
-                        set_message.set(error);
-                    }
-                }
-                set_radio_busy.set(false);
-            });
-        }
-    };
-
-    let set_radio = {
-        let apply_radio = apply_radio.clone();
-        let radio_on = radio_on.clone();
-        let radio_root = radio_root.clone();
-        let radio_generation = radio_generation.clone();
-        move |enabled: bool| {
-            let root = radio_root();
-            if root.is_empty() {
-                return;
             }
-            set_radio_generation.update(|generation| *generation = generation.wrapping_add(1));
-            set_radio_busy.set(true);
-            set_radio_waiting.set(false);
-            set_radio_refill_stopped.set(false);
-            set_radio_pool.set(Vec::new());
-            set_radio_on.set(enabled);
-            let url = format!("{}/api/radio/enabled{root}", base());
-            let header = auth().header();
-            let apply_radio = apply_radio.clone();
-            let generation = radio_generation.get_untracked();
-            let radio_generation = radio_generation.clone();
-            leptos::task::spawn_local(async move {
-                let body = serde_json::json!({ "enabled": enabled });
-                let result = post_json(url, header, body).await;
-                if radio_generation.get_untracked() != generation { return; }
-                match result {
-                    Ok(value) => apply_radio(&value),
-                    Err(error) => {
-                        set_radio_refill_stopped.set(true);
-                        set_radio_waiting.set(false);
-                        set_message.set(error);
-                    }
-                }
-                set_radio_busy.set(false);
-            });
-        }
+        });
     };
-
-    let reshuffle_radio = {
-        let apply_radio = apply_radio.clone();
-        let radio_root = radio_root.clone();
-        let radio_generation = radio_generation.clone();
-        move || {
-            let root = radio_root();
-            if root.is_empty() {
-                return;
-            }
-            set_radio_generation.update(|generation| *generation = generation.wrapping_add(1));
-            set_radio_busy.set(true);
-            set_radio_refill_stopped.set(false);
-            set_radio_pool.set(Vec::new());
-            let url = format!("{}/api/radio/reshuffle{root}", base());
-            let header = auth().header();
-            let apply_radio = apply_radio.clone();
-            let generation = radio_generation.get_untracked();
-            let radio_generation = radio_generation.clone();
-            leptos::task::spawn_local(async move {
-                let result = post_json(url, header, serde_json::json!({})).await;
-                if radio_generation.get_untracked() != generation { return; }
-                match result {
-                    Ok(value) => apply_radio(&value),
-                    Err(error) => {
-                        set_radio_refill_stopped.set(true);
-                        set_radio_waiting.set(false);
-                        set_message.set(error);
-                    }
-                }
-                set_radio_busy.set(false);
-            });
+    let change_radio = move |enabled: bool, reshuffle: bool| {
+        let root = radio_root();
+        if root.is_empty() { return; }
+        let mut generation = 0;
+        set_radio_buffer.update(|radio| { radio.reset(enabled); generation = radio.begin_request(); });
+        {
+            let mut policy = web_order.write_value();
+            let tracks = policy.tracks(&queue.get_untracked(), &metadata.get_untracked(), current.get_untracked(), shuffle.get_untracked(), repeat_mode.get_untracked());
+            policy.order.set_radio_enabled(enabled, &tracks, Some(current.get_untracked()));
+            set_shuffle.set(policy.order.shuffle_mode());
+            set_repeat_mode.set(policy.order.repeat_mode());
         }
+        let endpoint = if reshuffle { "reshuffle" } else { "enabled" };
+        let url = format!("{}/api/radio/{endpoint}{root}", base());
+        let header = auth().header();
+        leptos::task::spawn_local(async move {
+            match post_json(url, header, serde_json::json!({"enabled": enabled})).await {
+                Ok(value) => apply_radio(generation, &value),
+                Err(error) => {
+                    let mut accepted = false;
+                    set_radio_buffer.update(|radio| { accepted = radio.fail(generation); });
+                    if accepted { set_message.set(error); }
+                }
+            }
+        });
+    };
+    let set_radio = move |enabled| change_radio(enabled, false);
+    let reshuffle_radio = move || change_radio(true, true);
+    let select_shuffle = move |mode: ShuffleMode| {
+        let mut policy = web_order.write_value();
+        let tracks = policy.tracks(&queue.get_untracked(), &metadata.get_untracked(), current.get_untracked(), shuffle.get_untracked(), repeat_mode.get_untracked());
+        policy.order.set_shuffle_mode(mode, &tracks, Some(current.get_untracked()));
+        let disable_radio = radio_on.get_untracked() && !policy.order.radio_enabled();
+        drop(policy);
+        if disable_radio { set_radio(false); }
+        set_shuffle.set(mode);
+    };
+    let select_repeat = move |mode: RepeatMode| {
+        web_order.write_value().order.set_repeat_mode(mode);
+        if radio_on.get_untracked() && !web_order.read_value().order.radio_enabled() { set_radio(false); }
+        set_repeat_mode.set(mode);
     };
 
     // Load one directory level. The library root is keyed as "". When the load
@@ -3162,11 +3114,16 @@ fn App() -> impl IntoView {
         }
         let insert_at = if to < from { to } else { to - 1 };
         let current_index = current.get_untracked();
+        let mut identities: Vec<_> = (0..total).collect();
+        let moved = identities.remove(from);
+        identities.insert(insert_at, moved);
+        let remap: Vec<_> = (0..total).map(|old| identities.iter().position(|index| *index == old)).collect();
         set_queue.update(|items| {
             let moved = items.remove(from);
             items.insert(insert_at.min(items.len()), moved);
         });
-        let new_current = if from == current_index {
+        web_order.write_value().remap(&queue.get_untracked(), &remap);
+        let new_current = if current_index >= total { usize::MAX } else if from == current_index {
             insert_at
         } else {
             let adjusted = if from < current_index {
@@ -3180,7 +3137,7 @@ fn App() -> impl IntoView {
                 adjusted
             }
         };
-        set_current.set(new_current.min(total - 1));
+        set_current.set(new_current);
     };
 
     // The playlists header's "+", as the desktop sidebar offers.
@@ -3363,34 +3320,16 @@ fn App() -> impl IntoView {
         }
     };
 
-    // A tree-root change invalidates staged picks immediately and asks the
-    // server for a window under the new root. This also waits until the base
-    // library path is known before loading radio at the default tree root.
+    // Root changes invalidate outstanding replies through the shared policy.
     {
-        let load_radio = load_radio.clone();
-        let radio_scope = radio_scope.clone();
-        let radio_generation = radio_generation.clone();
-        let set_radio_generation = set_radio_generation.clone();
         let last_scope = Rc::new(RefCell::new(None::<String>));
         Effect::new(move |_| {
-            let scope = if connected.get() {
-                let root = radio_scope();
-                (!root.is_empty()).then_some(root)
-            } else {
-                None
-            };
-            if *last_scope.borrow() == scope {
-                return;
-            }
+            let scope = connected.get().then(radio_scope).filter(|root| !root.is_empty());
+            if *last_scope.borrow() == scope { return; }
             *last_scope.borrow_mut() = scope.clone();
-            set_radio_generation.set(radio_generation.get_untracked().wrapping_add(1));
-            set_radio_pool.set(Vec::new());
-            set_radio_busy.set(false);
-            set_radio_waiting.set(false);
-            set_radio_refill_stopped.set(false);
-            if scope.is_some() {
-                load_radio();
-            }
+            let enabled = radio_on.get_untracked();
+            set_radio_buffer.update(|radio| { radio.reset(enabled); });
+            if scope.is_some() { load_radio(); }
         });
     }
 
@@ -3708,7 +3647,17 @@ fn App() -> impl IntoView {
         }
         indices.sort_unstable();
         let current_index = current.get_untracked();
-        let removed_before_current = indices.iter().filter(|index| **index < current_index).count();
+        if indices.contains(&current_index) {
+            web_order.write_value().order.cancel_navigation();
+            set_radio_buffer.update(|radio| radio.cancel_waiting());
+            set_playing.set(false);
+            set_stopped.set(true);
+            set_position.set(0.0);
+            if let Some(audio) = audio_ref.get() { let _ = audio.pause(); audio.set_current_time(0.0); }
+        }
+        let remap: Vec<_> = (0..queue.get_untracked().len()).map(|old| {
+            (!indices.contains(&old)).then(|| old - indices.iter().filter(|index| **index < old).count())
+        }).collect();
         set_queue.update(|items| {
             for index in indices.iter().rev() {
                 if *index < items.len() {
@@ -3716,16 +3665,10 @@ fn App() -> impl IntoView {
                 }
             }
         });
-        let len = queue.get_untracked().len();
-        let next = if len == 0 {
-            0
-        } else {
-            current_index.saturating_sub(removed_before_current).min(len - 1)
-        };
+        web_order.write_value().remap(&queue.get_untracked(), &remap);
+        let next = remap.get(current_index).copied().flatten().unwrap_or(usize::MAX);
         if next != current_index {
             set_current.set(next);
-            set_position.set(0.0);
-            set_media_duration.set(None);
         }
         set_selected.set(HashSet::new());
         set_selection_anchor.set(None);
@@ -3903,7 +3846,6 @@ fn App() -> impl IntoView {
         )
     };
 
-    let audio_ref = NodeRef::<leptos::html::Audio>::new();
     let current_entry = move || queue.get().get(current.get()).cloned();
     let audio_src = move || current_entry().map(|entry| stream_url(&entry)).unwrap_or_default();
 
@@ -4029,14 +3971,7 @@ fn App() -> impl IntoView {
             {
                 return;
             }
-            if audio.error().is_some() {
-                // Re-assigning the source restarts the load; the ready
-                // handlers take over and resume playback from zero.
-                let src = audio.src();
-                source_changing.set(true);
-                let _ = audio.set_src(&src);
-                return;
-            }
+            if audio.error().is_some() { return; }
             if audio.paused() && !audio.ended() {
                 let _ = audio.play();
             }
@@ -4312,13 +4247,27 @@ fn App() -> impl IntoView {
         }
     });
 
+    let starting_previous = StoredValue::new(None::<usize>);
     let jump = move |index: usize| {
-        set_radio_waiting.set(false);
+        starting_previous.set_value(Some(current.get_untracked()));
+        set_radio_buffer.update(|radio| radio.cancel_waiting());
+        if index == current.get_untracked() {
+            if let Some(audio) = audio_ref.get() {
+                if audio.error().is_some() { audio.load(); }
+                else { audio.set_current_time(0.0); }
+                let _ = audio.play();
+            }
+        }
         set_current.set(index);
         set_position.set(0.0);
         set_media_duration.set(None);
         set_stopped.set(false);
         set_playing.set(true);
+    };
+
+    let play_row = move |index: usize| {
+        web_order.write_value().order.cancel_navigation();
+        jump(index);
     };
 
     // Album art for the transport thumbnail: the current track's embedded
@@ -4409,179 +4358,96 @@ fn App() -> impl IntoView {
         });
     });
 
-    // Move one ready pick into this browser's queue. Repeats from a new
-    // round are valid, including libraries smaller than the ten-track buffer.
-    let shift_radio = {
-        let jump = jump.clone();
-        let radio_scope = radio_scope.clone();
-        move || -> bool {
-            let mut pool = radio_pool.get_untracked();
-            let scope = radio_scope();
-            if scope.is_empty() { return false; }
-            pool.retain(|entry| is_under(&entry.path, &scope));
-            if pool.is_empty() {
-                set_radio_pool.set(pool);
-                return false;
-            }
-            let entry = pool.remove(0);
-            set_radio_pool.set(pool);
-            let index = queue.get_untracked().len();
-            set_queue.update(|items| items.push(entry));
-            jump(index);
-            true
+    let play_radio_entry = move |entry: Entry| {
+        let index = queue.get_untracked().len();
+        set_queue.update(|items| items.push(entry));
+        {
+            let mut policy = web_order.write_value();
+            policy.tracks(&queue.get_untracked(), &metadata.get_untracked(), current.get_untracked(), shuffle.get_untracked(), repeat_mode.get_untracked());
+            policy.order.radio_candidate(index);
         }
+        jump(index);
     };
-
-    // Use the same one-pick requests as the TUI. Each response becomes usable
-    // immediately; preparing later tracks never holds up an earlier pick.
-    let refill_radio_pool = {
-        let radio_root = radio_root.clone();
-        move || {
-            if radio_busy.get_untracked() || !radio_on.get_untracked() {
-                return;
-            }
-            let root = radio_root();
-            if root.is_empty() { return; }
-            set_radio_busy.set(true);
-            let generation = radio_generation.get_untracked();
-            let url = format!("{}/api/radio/advance{root}", base());
-            let header = auth().header();
-            leptos::task::spawn_local(async move {
-                let result = post_json(url, header, serde_json::json!({})).await;
-                if radio_generation.get_untracked() != generation { return; }
-                match result {
-                    Ok(value) => {
-                        let entries = radio_entries(&value);
-                        if entries.is_empty() {
-                            set_radio_refill_stopped.set(true);
-                            if radio_waiting.get_untracked() {
-                                set_radio_waiting.set(false);
-                                set_message.set("Radio couldn't find a playable track in this folder".to_owned());
-                            }
-                        } else {
-                            // Preserve every ready track while topping up.
-                            set_radio_pool.update(|pool| pool.extend(entries));
-                        }
-                    }
-                    Err(error) => {
-                        set_radio_refill_stopped.set(true);
-                        set_radio_waiting.set(false);
-                        set_message.set(error);
-                    }
+    let refill_radio_pool = move || {
+        if !radio_buffer.with_untracked(|radio| radio.needs_refill()) { return; }
+        let root = radio_root();
+        if root.is_empty() { return; }
+        let mut generation = 0;
+        set_radio_buffer.update(|radio| { generation = radio.begin_request(); });
+        let url = format!("{}/api/radio/advance{root}", base());
+        let header = auth().header();
+        leptos::task::spawn_local(async move {
+            match post_json(url, header, serde_json::json!({})).await {
+                Ok(value) => {
+                    let entries = radio_entries(&value);
+                    let exhausted = value["exhausted"].as_bool().unwrap_or(entries.is_empty());
+                    set_radio_buffer.update(|radio| { radio.accept(generation, entries, exhausted); });
                 }
-                set_radio_busy.set(false);
-            });
-        }
-    };
-
-    let advance_radio = {
-        let shift_radio = shift_radio.clone();
-        let refill_radio_pool = refill_radio_pool.clone();
-        move || {
-            if shift_radio() { return; }
-            set_radio_waiting.set(true);
-            set_radio_refill_stopped.set(false);
-            // If a request is already running, the effect below fulfills the
-            // pending press as soon as its first track arrives.
-            refill_radio_pool();
-        }
-    };
-
-    {
-        let shift_radio = shift_radio.clone();
-        let refill_radio_pool = refill_radio_pool.clone();
-        Effect::new(move |_| {
-            if !connected.get() || !radio_on.get() { return; }
-            let waiting = radio_waiting.get();
-            let ready = radio_pool.get().len();
-            let busy = radio_busy.get();
-            let refill_stopped = radio_refill_stopped.get();
-            if waiting && ready > 0 {
-                shift_radio();
-            }
-            if !busy && !refill_stopped && ready < 10 {
-                refill_radio_pool();
+                Err(error) => {
+                    let mut accepted = false;
+                    set_radio_buffer.update(|radio| { accepted = radio.fail(generation); });
+                    if accepted { set_message.set(error); }
+                }
             }
         });
-    }
-
-    let toggle_play = move || {
-        if radio_waiting.get_untracked() {
-            set_radio_waiting.set(false);
+    };
+    let advance_radio = move || {
+        let mut entry = None;
+        set_radio_buffer.update(|radio| { entry = radio.request_next(); });
+        if let Some(entry) = entry { play_radio_entry(entry); }
+        else {
             set_playing.set(false);
-        } else if queue.get_untracked().is_empty() {
+            set_stopped.set(true);
+            set_position.set(0.0);
+            if let Some(audio) = audio_ref.get() { let _ = audio.pause(); audio.set_current_time(0.0); }
+        }
+        refill_radio_pool();
+    };
+    Effect::new(move |_| {
+        if !connected.get() { return; }
+        let radio = radio_buffer.get();
+        if radio.waiting() && radio.ready_len() > 0 {
+            let mut entry = None;
+            set_radio_buffer.update(|radio| { entry = radio.take_pending(); });
+            if let Some(entry) = entry { play_radio_entry(entry); }
+        }
+        if radio.needs_refill() { refill_radio_pool(); }
+    });
+    let stop_playback = move || {
+        set_radio_buffer.update(|radio| radio.cancel_waiting());
+        web_order.write_value().order.cancel_navigation();
+        set_playing.set(false);
+        set_stopped.set(true);
+        set_position.set(0.0);
+        if let Some(audio) = audio_ref.get() { let _ = audio.pause(); audio.set_current_time(0.0); }
+    };
+    let toggle_play = move || {
+        if radio_waiting.get_untracked() { stop_playback(); }
+        else if queue.get_untracked().is_empty() {
             if radio_on.get_untracked() { advance_radio(); }
+        } else if current.get_untracked() >= queue.get_untracked().len() {
+            play_row(0);
         } else {
             set_playing.update(|value| *value = !*value);
             set_stopped.set(false);
         }
     };
-
-    // End-of-track advance: radio shifts in one staged track when the queue
-    // runs out; every other ordering decision uses the native players'
-    // shared shuffle and repeat policy.
-    let advance_after_track = {
-        let advance_radio = advance_radio.clone();
-        let web_order = web_order;
-        move || -> Option<usize> {
-            let len = queue.get().len();
-            if len == 0 {
-                return None;
-            }
-            if radio_on.get() && current.get() + 1 >= len {
-                advance_radio();
-                return None;
-            }
-            queue.with_untracked(|items| {
-                let cache = metadata.get_untracked();
-                let current = current.get();
-                let mut policy = web_order.write_value();
-                let tracks = policy.tracks(items, &cache, current, shuffle.get(), repeat_mode.get());
-                policy.order.next(&tracks, Some(current), true)
-            })
+    let navigate = move |event: NavigationEvent| {
+        let decision = {
+            let mut policy = web_order.write_value();
+            let index = current.get_untracked();
+            let tracks = policy.tracks(&queue.get_untracked(), &metadata.get_untracked(), index, shuffle.get_untracked(), repeat_mode.get_untracked());
+            policy.order.set_sequence(sorted_queue_indices(&queue.get_untracked(), &metadata.get_untracked(), &stars.get_untracked(), sort_key.get_untracked(), !sort_asc.get_untracked()), tracks.len());
+            policy.order.navigate(&tracks, Some(index), event)
+        };
+        set_policy_revision.update(|value| *value = value.wrapping_add(1));
+        match decision {
+            PlaybackDecision::Play(index) => jump(index),
+            PlaybackDecision::Radio => advance_radio(),
+            PlaybackDecision::Stop => stop_playback(),
         }
     };
-
-    let step = {
-        let advance_radio = advance_radio.clone();
-        let web_order = web_order;
-        move |delta: i64| {
-            let len = queue.get().len();
-            if len == 0 {
-                // Radio kickstart: with nothing queued, play/next shifts the
-                // first staged track in and plays it, as the desktop does.
-                if radio_on.get() && delta > 0 {
-                    advance_radio();
-                }
-                return;
-            }
-            // Next at the end of a radio round pulls the following window
-            // instead of stopping.
-            if delta > 0
-                && radio_on.get()
-                && current.get() + 1 >= len
-                && repeat_mode.get() != Repeat::All
-                && !shuffle.get()
-            {
-                advance_radio();
-                return;
-            }
-            let next = queue.with_untracked(|items| {
-                let cache = metadata.get_untracked();
-                let current = current.get();
-                let mut policy = web_order.write_value();
-                let tracks = policy.tracks(items, &cache, current, shuffle.get(), repeat_mode.get());
-                if delta < 0 {
-                    policy.order.previous(&tracks, Some(current))
-                } else {
-                    policy.order.next(&tracks, Some(current), false)
-                }
-            });
-            if let Some(next) = next.filter(|next| *next != current.get()) {
-                jump(next);
-            }
-        }
-    };
+    let step = move |delta: i64| navigate(if delta < 0 { NavigationEvent::Previous } else { NavigationEvent::Next });
 
     // Publish the same resolved tags as the visible transport. A track change
     // clears the previous song immediately, then publishes the new song only
@@ -4657,22 +4523,13 @@ fn App() -> impl IntoView {
             }
         });
         media_session_action(&session, "pause", move |_| {
-            set_radio_waiting.set(false);
+            set_radio_buffer.update(|radio| radio.cancel_waiting());
             set_playing.set(false);
             if let Some(audio) = audio_ref.get() {
                 let _ = audio.pause();
             }
         });
-        media_session_action(&session, "stop", move |_| {
-            set_playing.set(false);
-            set_radio_waiting.set(false);
-            set_stopped.set(true);
-            set_position.set(0.0);
-            if let Some(audio) = audio_ref.get() {
-                let _ = audio.pause();
-                audio.set_current_time(0.0);
-            }
-        });
+        media_session_action(&session, "stop", move |_| stop_playback());
         media_session_action(&session, "previoustrack", move |_| step(-1));
         media_session_action(&session, "nexttrack", move |_| step(1));
         media_session_action(&session, "seekto", move |details| {
@@ -4751,118 +4608,17 @@ fn App() -> impl IntoView {
         }
     };
 
-    // The visible rows carry their index into the queue, so filtering and
-    // sorting never change what plays next.
+    // Sorting supplies the same playback sequence as the other frontends;
+    // filtering changes only visibility and preserves stable row identities.
     let view_rows = move || {
-        // Desktop search semantics: the query is whitespace-separated words,
-        // and a row matches when every word appears somewhere in its name or
-        // tags — order-independent, so longer queries keep finding rows.
-        let tokens: Vec<String> = filter
-            .get()
-            .split_whitespace()
-            .map(|word| word.to_lowercase())
-            .collect();
+        let entries = queue.get();
         let cache = metadata.get();
         let failed = metadata_failed.get();
-        let key = sort_key.get();
-        let mut rows: Vec<(usize, Entry)> = queue
-            .get()
-            .into_iter()
-            .enumerate()
-            .filter(|(_, entry)| {
-                if !metadata_ready(&cache, &failed, entry) {
-                    return false;
-                }
-                if tokens.is_empty() {
-                    return true;
-                }
-                let mut fields = vec![entry.name.to_lowercase(), entry.location.to_lowercase()];
-                if let Some(meta) = meta_for(&cache, entry) {
-                    fields.extend(
-                        [meta.title, meta.artist, meta.album]
-                            .into_iter()
-                            .flatten()
-                            .map(|value| value.to_lowercase()),
-                    );
-                }
-                tokens.iter().all(|token| {
-                    fields
-                        .iter()
-                        .any(|field| field.contains(token.as_str()))
-                })
-            })
-            .collect();
-        if key != SortKey::Index {
-            let starred = (key == SortKey::Star).then(|| stars.get());
-            let value = |entry: &Entry| -> String {
-                let meta = meta_for(&cache, entry);
-                match key {
-                    SortKey::Index => String::new(),
-                    SortKey::Star => String::new(),
-                    // No server-side rating/status value to order by; keeps the
-                    // header toggle from reordering the pane.
-                    SortKey::Status | SortKey::Rating | SortKey::PlayCount => String::new(),
-                    SortKey::Title => meta
-                        .and_then(|meta| meta.title)
-                        .unwrap_or_else(|| entry.name.clone()),
-                    SortKey::AlbumArtist => meta
-                        .and_then(|meta| meta.album_artist)
-                        .unwrap_or_default(),
-                    SortKey::Composer => meta.and_then(|meta| meta.composer).unwrap_or_default(),
-                    SortKey::Artist => meta.and_then(|meta| meta.artist).unwrap_or_default(),
-                    SortKey::Album => meta.and_then(|meta| meta.album).unwrap_or_default(),
-                    SortKey::Genre => meta.and_then(|meta| meta.genre).unwrap_or_default(),
-                    SortKey::Year => meta
-                        .and_then(|meta| meta.year)
-                        .map(|year| format!("{year:010}"))
-                        .unwrap_or_default(),
-                    SortKey::Length => meta
-                        .and_then(|meta| meta.duration)
-                        .map(|seconds| format!("{seconds:010.3}"))
-                        .unwrap_or_default(),
-                    SortKey::FileSizeBytes | SortKey::FileSize => meta
-                        .and_then(|meta| meta.file_size_bytes)
-                        .map(|bytes| format!("{bytes:020}"))
-                        .unwrap_or_default(),
-                    SortKey::Track => meta
-                        .and_then(|meta| meta.track_number)
-                        .map(|number| format!("{number:06}"))
-                        .unwrap_or_default(),
-                    SortKey::Path => entry_path(entry),
-                    SortKey::Filename => entry_filename(entry),
-                    SortKey::Codec => meta.and_then(|meta| meta.codec).unwrap_or_default(),
-                    SortKey::SampleRate => meta
-                        .and_then(|meta| meta.sample_rate)
-                        .map(|rate| format!("{rate:010}"))
-                        .unwrap_or_default(),
-                    SortKey::BitsPerSample => meta
-                        .and_then(|meta| meta.bits_per_sample)
-                        .map(|bits| format!("{bits:06}"))
-                        .unwrap_or_default(),
-                    SortKey::Bitrate => meta
-                        .and_then(|meta| meta.bitrate)
-                        .map(|bitrate| format!("{bitrate:010}"))
-                        .unwrap_or_default(),
-                }
-            };
-            rows.sort_by(|(_, left), (_, right)| {
-                let comparison = if key == SortKey::Star {
-                    let starred = starred.as_ref().expect("star set for star sort");
-                    favorites_first(
-                        starred.contains(&entry_star_locator(left)),
-                        starred.contains(&entry_star_locator(right)),
-                    )
-                } else {
-                    natural_compare(&value(left), &value(right))
-                };
-                if sort_asc.get() {
-                    comparison
-                } else {
-                    comparison.reverse()
-                }
-            });
-        }
-        rows
+        let starred = stars.get();
+        let query = filter.get();
+        sorted_queue_indices(&entries, &cache, &starred, sort_key.get(), !sort_asc.get()).into_iter()
+            .filter(|index| metadata_ready(&cache, &failed, &entries[*index]) && entry_sort_row(*index, &entries[*index], &cache, &starred).matches(&query))
+            .map(|index| (index, entries[index].clone())).collect::<Vec<_>>()
     };
 
     // The pane's status line, shared by the header and the transport: how many
@@ -5056,7 +4812,7 @@ fn App() -> impl IntoView {
     // playing the first of them.
     let play_playlist = {
         let get_json = get_json;
-        let jump = jump.clone();
+        let jump = play_row.clone();
         move |id: i64| {
             leptos::task::spawn_local(async move {
                 match get_json(format!("/api/playlists/{id}")).await {
@@ -5083,7 +4839,7 @@ fn App() -> impl IntoView {
     // load the playlist, and play it from the top.
     let replace_pane_with_playlist = {
         let get_json = get_json;
-        let jump = jump.clone();
+        let jump = play_row.clone();
         move |id: i64, name: String| {
             leptos::task::spawn_local(async move {
                 match get_json(format!("/api/playlists/{id}")).await {
@@ -5485,11 +5241,13 @@ fn App() -> impl IntoView {
 
     // Clear the web queue and reset its playback state.
     let clear_pane = move || {
+        stop_playback();
+        web_order.write_value().order.clear_tracks();
         set_queue.set(Vec::new());
-        set_current.set(0);
+        set_current.set(usize::MAX);
         set_position.set(0.0);
         set_media_duration.set(None);
-        set_radio_waiting.set(false);
+        set_radio_buffer.update(|radio| radio.cancel_waiting());
         set_stopped.set(true);
         set_playing.set(false);
         set_selected.set(HashSet::new());
@@ -6054,19 +5812,19 @@ fn App() -> impl IntoView {
     let repeat_badge = move || match repeat_mode.get() {
         Repeat::Off => "",
         Repeat::One => "1",
+        Repeat::Album => "A",
         Repeat::All => "∞",
     };
     let repeat_tip = move || match repeat_mode.get() {
         Repeat::Off => "Repeat off — click for one track",
-        Repeat::One => "Repeat one track — click for all",
+        Repeat::One => "Repeat one track — click for album",
+        Repeat::Album => "Repeat album — click for all",
         Repeat::All => "Repeat all tracks — click to turn off",
     };
-    let shuffle_tip = move || {
-        if shuffle.get() {
-            "Shuffle on — click to turn off"
-        } else {
-            "Shuffle off — click to turn on"
-        }
+    let shuffle_tip = move || match shuffle.get() {
+        ShuffleMode::Off => "Shuffle off — click for albums",
+        ShuffleMode::Albums => "Shuffle albums — click for all tracks",
+        ShuffleMode::All => "Shuffle all tracks — click to turn off",
     };
 
     view! {
@@ -7054,11 +6812,7 @@ fn App() -> impl IntoView {
                                                     if current.get_untracked() != index {
                                                         set_selected.set(HashSet::from([index]));
                                                         set_selection_anchor.set(Some(index));
-                                                        set_current.set(index);
-                                                        set_position.set(0.0);
-                                                        set_media_duration.set(None);
-                                                        set_stopped.set(false);
-                                                        set_playing.set(true);
+                                                        play_row(index);
                                                     }
                                                     return;
                                                 }
@@ -7098,11 +6852,7 @@ fn App() -> impl IntoView {
                                                 }
                                                 set_selected.set(HashSet::from([index]));
                                                 set_selection_anchor.set(Some(index));
-                                                set_current.set(index);
-                                                set_position.set(0.0);
-                                                set_media_duration.set(None);
-                                                set_stopped.set(false);
-                                                set_playing.set(true);
+                                                play_row(index);
                                             }
                                         >
                                             <For
@@ -7171,6 +6921,13 @@ fn App() -> impl IntoView {
                                                         } else {
                                                             ""
                                                         };
+                                                        if id == ColumnId::Status {
+                                                            policy_revision.track();
+                                                            let policy = web_order.read_value();
+                                                            let queued = policy.order.queue_position(index).map(|position| format!(" {}", position + 1)).unwrap_or_default();
+                                                            let stop = if policy.order.should_stop_after(index) { " ■" } else { "" };
+                                                            return format!("{status}{queued}{stop}");
+                                                        }
                                                         if id == ColumnId::Title {
                                                             display_title(&cache, &metadata_failed.get(), &entry)
                                                                 .unwrap_or_default()
@@ -7562,15 +7319,15 @@ fn App() -> impl IntoView {
                     <div class="controls">
                         <button
                             class="toggle shuffle"
-                            class:active=move || shuffle.get()
+                            class:active=move || shuffle.get() != ShuffleMode::Off
                             title=move || shuffle_tip()
                             disabled=move || queue.get().len() <= 1
-                            on:click=move |_| set_shuffle.update(|value| *value = !*value)
+                            on:click=move |_| select_shuffle(shuffle.get_untracked().next())
                             inner_html=icons::SHUFFLE
                         ></button>
                         <button
                             title="Previous"
-                            disabled=move || queue.get().is_empty() || (!shuffle.get() && current.get() == 0 && repeat_mode.get() != Repeat::All)
+                            disabled=move || queue.get().is_empty()
                             on:click=move |_| step(-1)
                             inner_html=icons::SKIP_BACKWARD
                         ></button>
@@ -7590,25 +7347,13 @@ fn App() -> impl IntoView {
                             title="Stop"
                             disabled=move || queue.get().is_empty() && !radio_waiting.get()
                             on:click=move |_| {
-                                set_playing.set(false);
-                                set_radio_waiting.set(false);
-                                set_stopped.set(true);
-                                set_position.set(0.0);
-                                if let Some(audio) = audio_ref.get() {
-                                    let _ = audio.set_current_time(0.0);
-                                }
+                                stop_playback();
                             }
                             inner_html=icons::STOP
                         ></button>
                         <button
                             title="Next"
-                            disabled=move || {
-                                (queue.get().is_empty() && !radio_on.get())
-                                    || (current.get() + 1 >= queue.get().len()
-                                        && repeat_mode.get() != Repeat::All
-                                        && !shuffle.get()
-                                        && !radio_on.get())
-                            }
+                            disabled=move || queue.get().is_empty() && !radio_on.get()
                             on:click=move |_| step(1)
                             inner_html=icons::SKIP_FORWARD
                         ></button>
@@ -7618,13 +7363,7 @@ fn App() -> impl IntoView {
                             title=move || repeat_tip()
                             disabled=move || queue.get().is_empty()
                             on:click=move |_| {
-                                set_repeat_mode.update(|mode| {
-                                    *mode = match mode {
-                                        Repeat::Off => Repeat::One,
-                                        Repeat::One => Repeat::All,
-                                        Repeat::All => Repeat::Off,
-                                    };
-                                });
+                                select_repeat(repeat_mode.get_untracked().next());
                             }
                         >
                             <span class="glyph-icon" inner_html=icons::REPEAT></span>
@@ -7796,6 +7535,10 @@ fn App() -> impl IntoView {
                         }
                     }
                     on:playing=move |_| {
+                        let previous = starting_previous.get_value();
+                        web_order.write_value().order.started(previous, current.get_untracked());
+                        starting_previous.set_value(None);
+                        set_policy_revision.update(|value| *value = value.wrapping_add(1));
                         // Likewise, native resume can bypass the action
                         // handler. A stopped queue needs an explicit Play.
                         if !stopped.get_untracked() && !playing.get_untracked() {
@@ -7814,27 +7557,8 @@ fn App() -> impl IntoView {
                     on:loadedmetadata=resume_when_ready.clone()
                     on:durationchange=refresh_media_duration
                     on:canplay=resume_when_ready
-                    on:ended=move |_| {
-                        if repeat_mode.get() == Repeat::One {
-                            if let Some(audio) = audio_ref.get() {
-                                let _ = audio.set_current_time(0.0);
-                                let _ = audio.play();
-                            }
-                            set_position.set(0.0);
-                            set_stopped.set(false);
-                            set_playing.set(true);
-                        } else if let Some(next) = advance_after_track() {
-                            jump(next);
-                        } else {
-                            // Radio either started the next ready track or
-                            // retained a pending advance; do not stop it here.
-                            if !radio_on.get_untracked() {
-                                set_radio_waiting.set(false);
-                                set_stopped.set(true);
-                                set_playing.set(false);
-                            }
-                        }
-                    }
+                    on:error=move |_| navigate(NavigationEvent::Failed)
+                    on:ended=move |_| navigate(NavigationEvent::Ended)
                 ></audio>
             </footer>
 
@@ -8241,13 +7965,29 @@ fn App() -> impl IntoView {
                             move |_| {
                                 if let Some((_, _, index, entry)) = song_menu.get_untracked() {
                                     set_song_menu.set(None);
-                                    jump(index);
+                                    play_row(index);
                                 }
                             }
                         }
                     >
                         "Play"
                     </button>
+                    <button class="menu-item" on:click=move |_| {
+                        if let Some((_, _, index, _)) = song_menu.get_untracked() {
+                            let indices = if selected.get_untracked().contains(&index) { let mut indices: Vec<_> = selected.get_untracked().into_iter().collect(); indices.sort_unstable(); indices } else { vec![index] };
+                            web_order.write_value().order.toggle_queue(&indices);
+                            set_policy_revision.update(|value| *value = value.wrapping_add(1));
+                            set_song_menu.set(None);
+                        }
+                    }>"Toggle Play Next"</button>
+                    <button class="menu-item" on:click=move |_| {
+                        if let Some((_, _, index, _)) = song_menu.get_untracked() {
+                            let indices = if selected.get_untracked().contains(&index) { let mut indices: Vec<_> = selected.get_untracked().into_iter().collect(); indices.sort_unstable(); indices } else { vec![index] };
+                            web_order.write_value().order.toggle_stop_after(&indices);
+                            set_policy_revision.update(|value| *value = value.wrapping_add(1));
+                            set_song_menu.set(None);
+                        }
+                    }>"Toggle Stop After"</button>
                     <button
                         class="menu-item"
                         on:click=move |_| {
@@ -8850,13 +8590,7 @@ fn App() -> impl IntoView {
                         class="menu-item"
                         disabled=move || queue.get().is_empty() && !radio_waiting.get()
                         on:click=move |_| {
-                            set_playing.set(false);
-                            set_radio_waiting.set(false);
-                            set_stopped.set(true);
-                            set_position.set(0.0);
-                            if let Some(audio) = audio_ref.get() {
-                                let _ = audio.set_current_time(0.0);
-                            }
+                            stop_playback();
                             set_menu_open.set(false);
                         }
                     >
@@ -8864,7 +8598,7 @@ fn App() -> impl IntoView {
                     </button>
                     <button
                         class="menu-item"
-                        disabled=move || queue.get().is_empty() || (!shuffle.get() && current.get() == 0 && repeat_mode.get() != Repeat::All)
+                        disabled=move || queue.get().is_empty()
                         on:click=move |_| {
                             step(-1);
                             set_menu_open.set(false);
@@ -8874,7 +8608,7 @@ fn App() -> impl IntoView {
                     </button>
                     <button
                         class="menu-item"
-                        disabled=move || queue.get().is_empty() || (current.get() + 1 >= queue.get().len() && repeat_mode.get() != Repeat::All && !shuffle.get() && !radio_on.get())
+                        disabled=move || queue.get().is_empty() && !radio_on.get()
                         on:click=move |_| {
                             step(1);
                             set_menu_open.set(false);
@@ -8886,28 +8620,32 @@ fn App() -> impl IntoView {
                     <button
                         class="menu-item"
                         on:click=move |_| {
-                            set_shuffle.set(false);
+                            select_shuffle(ShuffleMode::Off);
                             set_menu_open.set(false);
                         }
                     >
-                        <span class="menu-check">{move || if !shuffle.get() { "●" } else { "" }}</span>
+                        <span class="menu-check">{move || if shuffle.get() == ShuffleMode::Off { "●" } else { "" }}</span>
                         "Off"
                     </button>
                     <button
                         class="menu-item"
                         on:click=move |_| {
-                            set_shuffle.set(true);
+                            select_shuffle(ShuffleMode::All);
                             set_menu_open.set(false);
                         }
                     >
-                        <span class="menu-check">{move || if shuffle.get() { "●" } else { "" }}</span>
+                        <span class="menu-check">{move || if shuffle.get() == ShuffleMode::All { "●" } else { "" }}</span>
                         "All Tracks"
+                    </button>
+                    <button class="menu-item" on:click=move |_| { select_shuffle(ShuffleMode::Albums); set_menu_open.set(false); }>
+                        <span class="menu-check">{move || if shuffle.get() == ShuffleMode::Albums { "●" } else { "" }}</span>
+                        "Albums"
                     </button>
                     <div class="menu-group">"Repeat"</div>
                     <button
                         class="menu-item"
                         on:click=move |_| {
-                            set_repeat_mode.set(Repeat::Off);
+                            select_repeat(Repeat::Off);
                             set_menu_open.set(false);
                         }
                     >
@@ -8917,17 +8655,21 @@ fn App() -> impl IntoView {
                     <button
                         class="menu-item"
                         on:click=move |_| {
-                            set_repeat_mode.set(Repeat::One);
+                            select_repeat(Repeat::One);
                             set_menu_open.set(false);
                         }
                     >
                         <span class="menu-check">{move || if repeat_mode.get() == Repeat::One { "●" } else { "" }}</span>
                         "One Track"
                     </button>
+                    <button class="menu-item" on:click=move |_| { select_repeat(Repeat::Album); set_menu_open.set(false); }>
+                        <span class="menu-check">{move || if repeat_mode.get() == Repeat::Album { "●" } else { "" }}</span>
+                        "Album"
+                    </button>
                     <button
                         class="menu-item"
                         on:click=move |_| {
-                            set_repeat_mode.set(Repeat::All);
+                            select_repeat(Repeat::All);
                             set_menu_open.set(false);
                         }
                     >

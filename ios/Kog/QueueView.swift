@@ -12,12 +12,7 @@ struct QueueView: View {
     @State private var name = ""
     @State private var saveOnDevice = false
     @State private var confirmClear = false
-    private var rows: [Int] {
-        store.queue.indices.filter { index in
-            let track = store.queue[index]
-            return store.queueFilter.isEmpty || [track.label, track.detail, track.displayPath].joined(separator: " ").localizedStandardContains(store.queueFilter)
-        }
-    }
+    private var rows: [Int] { store.filteredQueueIndices() }
     var body: some View {
         VStack(spacing: 0) {
             HStack {
@@ -91,6 +86,8 @@ struct QueueView: View {
                                     }.frame(maxWidth: .infinity, alignment: .leading)
                                 }.frame(minHeight: 44).contentShape(Rectangle())
                             }.buttonStyle(.plain)
+                            if let position = store.queuedIndices.firstIndex(of: index) { Text("\(position + 1)").font(.caption).foregroundStyle(Palette.muted) }
+                            if store.stopAfterIndices.contains(index) { Image(systemName: "stop.fill").font(.caption).foregroundStyle(Palette.muted) }
                             if !selecting {
                                 Button { Task { await store.toggleStar(track) } } label: {
                                     Image(systemName: store.isStarred(track) ? "star.fill" : "star")
@@ -102,6 +99,8 @@ struct QueueView: View {
                         .listRowBackground(index == store.currentIndex ? Palette.raised : Palette.window)
                         .contextMenu {
                             Button("Play", systemImage: "play.fill") { store.playIndex(index) }
+                            Button(store.queuedIndices.contains(index) ? "Remove from Play Next" : "Play Next", systemImage: "text.line.first.and.arrowtriangle.forward") { store.toggleQueued(index) }
+                            Button(store.stopAfterIndices.contains(index) ? "Cancel Stop After" : "Stop After", systemImage: "stop.fill") { store.toggleStopAfter(index) }
                             Button("Track details", systemImage: "info.circle") { showDetails(track) }
                             Button("Reveal in library", systemImage: "folder") { Task { await store.reveal(track); openLibrary() } }
                             Button(store.isStarred(track) ? "Unstar" : "Star", systemImage: "star") { Task { await store.toggleStar(track) } }

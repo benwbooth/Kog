@@ -259,15 +259,15 @@ private fun BottomTabs(selected: Tab, choose: (Tab) -> Unit) {
 @Composable
 private fun LibraryView(state: KogState, pickFiles: () -> Unit, pickFolder: () -> Unit,
                         openQueue: () -> Unit) {
-    var deviceMode by remember { mutableStateOf(state.api.server.isBlank() && state.localRoot.isNotBlank()) }
+    val deviceMode = state.libraryOnDevice
     val listing = state.listing
     Column(Modifier.fillMaxSize().background(Base)) {
         Row(Modifier.fillMaxWidth().height(42.dp).background(Surface).padding(horizontal = 12.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = { deviceMode = false }) {
+            TextButton(onClick = { state.libraryOnDevice = false }) {
                 Text("Server", color = if (!deviceMode) Accent else Muted)
             }
-            TextButton(onClick = { deviceMode = true; state.refreshDevice() }) {
+            TextButton(onClick = { state.libraryOnDevice = true; state.refreshDevice() }) {
                 Text("On this device", color = if (deviceMode) Accent else Muted)
             }
         }
@@ -419,7 +419,7 @@ private fun QueueTrack(state: KogState, track: Track, index: Int) {
     val active = index == state.currentIndex
     Row(Modifier.fillMaxWidth().height(60.dp)
         .background(if (active) Accent.copy(alpha = 0.12f) else Base)
-        .combinedClickable(onClick = { state.play(index) }, onLongClick = { menu = true })
+        .combinedClickable(onClick = { if (active) state.toggle() else state.play(index) }, onLongClick = { menu = true })
         .padding(start = 12.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         FormatIcon(track, Modifier.width(28.dp))
         Column(Modifier.weight(1f)) {
@@ -432,8 +432,10 @@ private fun QueueTrack(state: KogState, track: Track, index: Int) {
             Text(track.detail.ifBlank { track.path.substringBeforeLast('/').substringAfterLast('/') }, maxLines = 1,
                 overflow = TextOverflow.Ellipsis, color = Muted, fontSize = 12.sp)
         }
+        state.queuedIndices.indexOf(index).takeIf { it >= 0 }?.let { Text("${it + 1} ", color = Muted, fontSize = 12.sp) }
+        if (index in state.stopAfterIndices) Text("■ ", color = Muted, fontSize = 12.sp)
         Text(formatTime(track.duration), color = Muted, fontSize = 12.sp)
-        IconButton(onClick = { state.toggleStar(track) }, enabled = !track.isDevice) {
+        IconButton(onClick = { state.toggleStar(track) }) {
             Icon(if (track.key in state.stars) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                 "Favorite", tint = if (track.key in state.stars) Accent else Muted,
                 modifier = Modifier.size(19.dp))
@@ -441,6 +443,8 @@ private fun QueueTrack(state: KogState, track: Track, index: Int) {
         Box {
             IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "Track actions", tint = Muted) }
             DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                DropdownMenuItem(text = { Text(if (index in state.queuedIndices) "Remove from Play Next" else "Play Next") }, onClick = { state.toggleQueued(index); menu = false })
+                DropdownMenuItem(text = { Text(if (index in state.stopAfterIndices) "Cancel Stop After" else "Stop After") }, onClick = { state.toggleStopAfter(index); menu = false })
                 DropdownMenuItem(text = { Text("Remove from queue") }, onClick = {
                     state.remove(index); menu = false
                 })
@@ -623,7 +627,7 @@ private fun FullPlayer(state: KogState, dismiss: () -> Unit) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = state::shuffle) {
-                    Icon(Icons.Default.Shuffle, "Shuffle", tint = if (state.shuffleOn) Accent else Muted)
+                    Icon(Icons.Default.Shuffle, "Shuffle: ${state.shuffleMode}", tint = if (state.shuffleOn) Accent else Muted)
                 }
                 IconButton(onClick = state::previous) { Icon(Icons.Default.SkipPrevious, "Previous", Modifier.size(34.dp)) }
                 IconButton(onClick = state::toggle) {
@@ -632,9 +636,10 @@ private fun FullPlayer(state: KogState, dismiss: () -> Unit) {
                 }
                 IconButton(onClick = state::next) { Icon(Icons.Default.SkipNext, "Next", Modifier.size(34.dp)) }
                 IconButton(onClick = state::repeat) {
-                    Icon(Icons.Default.Repeat, "Repeat", tint = if (state.repeatOn) Accent else Muted)
+                    Icon(Icons.Default.Repeat, "Repeat: ${state.repeatMode}", tint = if (state.repeatOn) Accent else Muted)
                 }
             }
+            Text("Shuffle: ${state.shuffleMode} · Repeat: ${state.repeatMode}", color = Muted, fontSize = 12.sp)
             TextButton(onClick = state::radio) {
                 Icon(Icons.Default.Casino, null, tint = if (state.radioOn) Accent else Muted)
                 Spacer(Modifier.width(6.dp))

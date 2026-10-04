@@ -171,8 +171,8 @@ struct ContentView: View {
                 Button("Stop", systemImage: "stop.fill") { store.stop() }
                 Button("Previous", systemImage: "backward.end.fill") { store.previous() }
                 Button("Next", systemImage: "forward.end.fill") { store.next() }
-                Toggle("Shuffle", isOn: $store.shuffle)
-                Picker("Repeat", selection: $store.repeatMode) { ForEach(RepeatMode.allCases) { Text($0.label).tag($0) } }
+                Picker("Shuffle", selection: Binding(get: { store.shuffle }, set: { store.selectShuffle($0) })) { ForEach(ShuffleMode.allCases) { Text($0.label).tag($0) } }
+                Picker("Repeat", selection: Binding(get: { store.repeatMode }, set: { store.selectRepeat($0) })) { ForEach(RepeatMode.allCases) { Text($0.label).tag($0) } }
                 Button { Task { await store.toggleRadio() } } label: {
                     Label(store.radio ? "Turn Random Radio off" : "Random Radio", systemImage: store.radio ? "checkmark" : "die.face.5")
                 }
@@ -558,8 +558,8 @@ struct ContentView: View {
                         .font(.caption).foregroundStyle(Palette.muted)
                 }
                 Section("Playback") {
-                    Toggle("Shuffle", isOn: $store.shuffle)
-                    Picker("Repeat", selection: $store.repeatMode) { ForEach(RepeatMode.allCases) { Text($0.label).tag($0) } }
+                    Picker("Shuffle", selection: Binding(get: { store.shuffle }, set: { store.selectShuffle($0) })) { ForEach(ShuffleMode.allCases) { Text($0.label).tag($0) } }
+                    Picker("Repeat", selection: Binding(get: { store.repeatMode }, set: { store.selectRepeat($0) })) { ForEach(RepeatMode.allCases) { Text($0.label).tag($0) } }
                     Toggle("Track notifications", isOn: Binding(get: { store.notifyTracks }, set: { value in Task { await store.setNotifications(value) } }))
                 }
                 Section("MIDI synthesis") {

@@ -72,6 +72,24 @@ pub struct RadioEntry {
     pub relative: String,
 }
 
+impl RadioEntry {
+    pub fn playlist_entry(&self) -> Result<kog_audio::playlist::PlaylistEntry, String> {
+        kog_audio::playlist::PlaylistEntry::from_locator(
+            &self.kind, &self.path, &self.entry, self.fragment.clone(),
+        )
+    }
+
+    /// Native presentation adapter. Expansion still goes through the same
+    /// validated locator used by the stream API, including CUE track numbers
+    /// and nested archive members. Keep `decoders` alive while using the track.
+    pub fn audio_track(&self, decoders: &DecoderRegistry) -> Result<kog_audio::track::Track, String> {
+        let entry = self.playlist_entry()?;
+        let source = decoders.expand_entry(&entry)?.sources.into_iter().next()
+            .ok_or_else(|| "Radio pick no longer contains a playable track".to_owned())?;
+        Ok(kog_audio::track::Track::from_source(source, decoders))
+    }
+}
+
 /// The full radio state, returned by every radio endpoint.
 #[derive(Clone, Debug, Serialize)]
 pub struct RadioStatus {

@@ -153,10 +153,16 @@ enum KogError: LocalizedError {
 }
 
 
-enum RepeatMode: String, CaseIterable, Identifiable {
-    case off, one, all
+enum ShuffleMode: String, CaseIterable, Identifiable {
+    case off, albums, all
     var id: String { rawValue }
-    var label: String { switch self { case .off: "Off"; case .one: "One track"; case .all: "All tracks" } }
+    var label: String { switch self { case .off: "Off"; case .albums: "Albums"; case .all: "All tracks" } }
+}
+
+enum RepeatMode: String, CaseIterable, Identifiable {
+    case off, one, album, all
+    var id: String { rawValue }
+    var label: String { switch self { case .off: "Off"; case .one: "One track"; case .album: "Album"; case .all: "All tracks" } }
 }
 
 struct TrackSort: Identifiable {
@@ -168,6 +174,7 @@ struct TrackSort: Identifiable {
         .init(key: "albumArtist", label: "Album artist"), .init(key: "composer", label: "Composer"),
         .init(key: "year", label: "Year", numeric: true), .init(key: "genre", label: "Genre"),
         .init(key: "trackNumber", label: "Track number", numeric: true),
+        .init(key: "discNumber", label: "Disc number", numeric: true),
         .init(key: "fileSizeBytes", label: "File size (bytes)", numeric: true),
         .init(key: "codec", label: "Codec"), .init(key: "sampleRate", label: "Sample rate", numeric: true),
         .init(key: "bitsPerSample", label: "Bits per sample", numeric: true),
@@ -176,3 +183,5 @@ struct TrackSort: Identifiable {
         .init(key: "album", label: "Album"), .init(key: "duration", label: "Length", numeric: true)] + metadataFields + [
         .init(key: "path", label: "Path"), .init(key: "filename", label: "Filename"), .init(key: "star", label: "Star", numeric: true)]
 }
+
+struct RadioBatch { var tracks: [Track]; var exhausted: Bool }

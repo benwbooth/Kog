@@ -31,10 +31,8 @@ final class KogStore: ObservableObject {
     @Published var playing = false
     @Published var position = 0.0
     @Published var duration = 0.0
-    @Published var shuffle = UserDefaults.standard.bool(forKey: "shuffle") {
-        didSet { UserDefaults.standard.set(shuffle, forKey: "shuffle") }
-    }
-    @Published var repeatMode = RepeatMode(rawValue: UserDefaults.standard.string(forKey: "repeat_mode") ?? "") ?? (UserDefaults.standard.bool(forKey: "repeat") ? .all : .off) {
+    @Published private(set) var shuffle = ShuffleMode(rawValue: UserDefaults.standard.string(forKey: "shuffle_mode") ?? "") ?? (UserDefaults.standard.bool(forKey: "shuffle") ? .all : .off)
+    @Published private(set) var repeatMode = RepeatMode(rawValue: UserDefaults.standard.string(forKey: "repeat_mode") ?? "") ?? (UserDefaults.standard.bool(forKey: "repeat") ? .all : .off) {
         didSet { UserDefaults.standard.set(repeatMode.rawValue, forKey: "repeat_mode") }
     }
     @Published var volume = UserDefaults.standard.object(forKey: "player_volume") as? Double ?? 1.0 {
@@ -52,10 +50,7 @@ final class KogStore: ObservableObject {
     @Published var sortDescending = false
     @Published var deviceTreeRoot = UserDefaults.standard.string(forKey: "device_tree_root") ?? ""
     private var radioOnDevice = false
-    private var radioGeneration = 0
     private var radioTask: Task<Void, Never>?
-    private var radioRefillTask: Task<Void, Never>?
-    private var radioCache = [Track]()
     private var interruptedPlayback = false
     private var audioObservers = [NSObjectProtocol]()
     private var exportURL: URL?
@@ -88,7 +83,10 @@ final class KogStore: ObservableObject {
     private var statusObserver: NSKeyValueObservation?
     private var searchTask: Task<Void, Never>?
     private var importScanTask: Task<Void, Never>?
-    private var shuffleHistory = [Int]()
+    private let policy = SharedPlaybackPolicy()
+    private var startingPrevious: Int?
+    @Published private(set) var queuedIndices = [Int]()
+    @Published private(set) var stopAfterIndices = Set<Int>()
     private var suppressSave = false
     private var downloadNoticeTask: Task<Void, Never>?
     private var nowPlayingArtTask: Task<Void, Never>?
@@ -127,6 +125,8 @@ final class KogStore: ObservableObject {
         soundfontPath = rebaseDevicePath(soundfontPath)
         sc55RomPath = rebaseDevicePath(sc55RomPath)
         mt32RomPath = rebaseDevicePath(mt32RomPath)
+        _ = policyCommand(["op": "init", "seed": UInt32.random(in: 1...UInt32.max), "shuffle": shuffle.rawValue, "repeat": repeatMode.rawValue], sync: false)
+        syncPolicy()
         scanImports()
         Task { if let saved = try? await deviceAPI.stars() { localStars = saved } }
         do {
@@ -218,7 +218,7 @@ final class KogStore: ObservableObject {
         guard !suppressSave else { return }
         UserDefaults.standard.set(try? JSONEncoder().encode(queue), forKey: "queue")
         UserDefaults.standard.set(currentIndex, forKey: "index")
-        UserDefaults.standard.set(shuffle, forKey: "shuffle")
+        UserDefaults.standard.set(shuffle.rawValue, forKey: "shuffle_mode")
         UserDefaults.standard.set(repeatMode.rawValue, forKey: "repeat_mode")
     }
 
@@ -357,17 +357,73 @@ final class KogStore: ObservableObject {
         let start = queue.count
         let order = (queue.compactMap(\.queueOrder).max() ?? -1) + 1
         queue += tracks.enumerated().map { offset, track in var copy = track; copy.queueOrder = order + Int64(offset); return copy }
+        syncPolicy()
         if play { playIndex(start) }
     }
 
+    private func syncPolicy(oldToNew: [Int?]? = nil) {
+        do { try policy.sync(queue, current: currentIndex, oldToNew: oldToNew) }
+        catch { report(error) }
+        applyPolicySnapshot()
+    }
+
+    private func applyPolicySnapshot() {
+        shuffle = ShuffleMode(rawValue: policy.snapshot["shuffle"] as? String ?? "") ?? .off
+        repeatMode = RepeatMode(rawValue: policy.snapshot["repeat"] as? String ?? "") ?? .off
+        UserDefaults.standard.set(shuffle.rawValue, forKey: "shuffle_mode")
+        radio = policy.radio["enabled"] as? Bool ?? false
+        radioBusy = policy.radio["pending"] as? Bool ?? false
+        queuedIndices = policy.snapshot["queued"] as? [Int] ?? []
+        stopAfterIndices = Set(policy.snapshot["stop_after"] as? [Int] ?? [])
+    }
+
+    @discardableResult
+    private func policyCommand(_ command: [String: Any], sync: Bool = true) -> [String: Any]? {
+        do {
+            if sync { try policy.sync(queue, current: currentIndex) }
+            let reply = try policy.send(command)
+            applyPolicySnapshot()
+            return reply
+        } catch { report(error); return nil }
+    }
+
+    func selectShuffle(_ mode: ShuffleMode) {
+        _ = policyCommand(["op": "set_shuffle", "mode": mode.rawValue, "current": SharedPlaybackPolicy.index(currentIndex)])
+        if !radio { radioTask?.cancel() }
+    }
+    func cycleShuffle() {
+        _ = policyCommand(["op": "cycle_shuffle", "current": SharedPlaybackPolicy.index(currentIndex)])
+        if !radio { radioTask?.cancel() }
+    }
+    func selectRepeat(_ mode: RepeatMode) {
+        _ = policyCommand(["op": "set_repeat", "mode": mode.rawValue])
+        if !radio { radioTask?.cancel() }
+    }
+    func cycleRepeat() {
+        _ = policyCommand(["op": "cycle_repeat"])
+        if !radio { radioTask?.cancel() }
+    }
+    func toggleQueued(_ index: Int) { _ = policyCommand(["op": "toggle_queue", "indices": [index]]) }
+    func toggleStopAfter(_ index: Int) { _ = policyCommand(["op": "toggle_stop_after", "indices": [index]]) }
+
     func playIndex(_ index: Int) {
         guard queue.indices.contains(index) else { return }
+        _ = policyCommand(["op": "cancel_navigation"])
+        _ = policyCommand(["op": "cancel_waiting"])
+        activateIndex(index)
+    }
+
+    private func activateIndex(_ index: Int) {
+        guard queue.indices.contains(index) else { return }
+        startingPrevious = currentIndex
         currentIndex = index
         startPlayer()
     }
 
     private func startPlayer(resumeAt: Double = 0, shouldPlay: Bool = true) {
         guard let track = current else { return }
+        let previous = startingPrevious ?? currentIndex
+        startingPrevious = nil
         do {
             removePlayerObservers()
             player?.pause()
@@ -408,10 +464,11 @@ final class KogStore: ObservableObject {
                         }, onError: { [weak self] message in
                             Task { @MainActor [weak self] in
                                 guard let self, self.nativeGeneration == generation else { return }
-                                self.error = message; self.playing = false
+                                self.error = message; self.navigate("failed")
                             }
                         })
                         self.nativePlayer = decoder
+                        _ = self.policyCommand(["op": "started", "previous": SharedPlaybackPolicy.index(previous), "index": self.currentIndex])
                         self.applyVolume()
                         self.duration = streamOffset + decoder.duration
                         if track.isDevice && resumeAt > 0 { decoder.seek(resumeAt) }
@@ -430,8 +487,8 @@ final class KogStore: ObservableObject {
                     } catch {
                         guard let self, !Task.isCancelled,
                               self.nativeGeneration == generation else { return }
-                        self.playing = false
                         self.report(error)
+                        self.navigate("failed")
                     }
                 }
                 return
@@ -452,7 +509,12 @@ final class KogStore: ObservableObject {
             player = AVPlayer(playerItem: item)
             applyVolume()
             statusObserver = item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
-                if item.status == .failed {
+                if item.status == .readyToPlay {
+                    Task { @MainActor [weak self] in
+                        guard let self, self.player?.currentItem === item else { return }
+                        _ = self.policyCommand(["op": "started", "previous": SharedPlaybackPolicy.index(previous), "index": self.currentIndex])
+                    }
+                } else if item.status == .failed {
                     Task { @MainActor [weak self] in
                         guard let self, self.player?.currentItem === item else { return }
                         self.playing = false
@@ -464,6 +526,7 @@ final class KogStore: ObservableObject {
                         self.error = !track.isDevice && !self.connected
                             ? "The Kog server is no longer reachable. Check that Kog is running on the server, then tap Play to retry."
                             : failure
+                        self.navigate("failed")
                         self.updateNowPlaying()
                     }
                 }
@@ -488,7 +551,7 @@ final class KogStore: ObservableObject {
             loadNowPlayingArt(for: track)
             updateNowPlaying()
             postTrackNotification(track)
-        } catch { playing = false; report(error) }
+        } catch { report(error); navigate("failed") }
     }
 
     private func removePlayerObservers() {
@@ -502,6 +565,8 @@ final class KogStore: ObservableObject {
     }
 
     func togglePlayback() {
+        if policy.waiting { stop(); return }
+        if queue.isEmpty && radio { navigate("next"); return }
         if playing {
             player?.pause()
             #if KOG_NATIVE_AUDIO
@@ -524,6 +589,8 @@ final class KogStore: ObservableObject {
     }
 
     func stop() {
+        _ = policyCommand(["op": "cancel_navigation"])
+        _ = policyCommand(["op": "cancel_waiting"])
         removePlayerObservers()
         player?.pause(); player = nil; assetLoader = nil
         #if KOG_NATIVE_AUDIO
@@ -533,7 +600,7 @@ final class KogStore: ObservableObject {
         playing = false; position = 0; updateNowPlaying()
     }
     private func finishedTrack() {
-        if repeatMode == .one { startPlayer() } else { next() }
+        navigate("ended")
     }
     func seek(_ seconds: Double) {
         guard seconds.isFinite else { return }
@@ -550,29 +617,26 @@ final class KogStore: ObservableObject {
         updateNowPlaying()
     }
 
-    func next() {
-        guard !queue.isEmpty else { return }
-        if shuffle && queue.count > 1 {
-            shuffleHistory.append(currentIndex)
-            let candidates = queue.indices.filter { $0 != currentIndex }
-            playIndex(candidates.randomElement() ?? 0)
-        } else if currentIndex + 1 < queue.count { playIndex(currentIndex + 1) }
-        else if repeatMode == .all { playIndex(0) }
-        else if radio { Task { await advanceRadio() } }
-        else { stop() }
+    private func navigate(_ event: String) {
+        guard let decision = policyCommand(["op": "navigate", "event": event,
+            "current": SharedPlaybackPolicy.index(currentIndex)])?["decision"] as? [String: Any] else { return }
+        switch decision["action"] as? String {
+        case "play": if let index = decision["index"] as? Int { activateIndex(index) }
+        case "radio": advanceRadio()
+        default: stop()
+        }
     }
-
-    func previous() {
-        if position > 3 { seek(0); return }
-        if shuffle, let index = shuffleHistory.popLast() { playIndex(index) }
-        else { playIndex(max(0, currentIndex - 1)) }
-    }
+    func next() { navigate("next") }
+    func previous() { navigate("previous") }
 
     func remove(_ offsets: IndexSet) {
+        let remaining = queue.indices.filter { !offsets.contains($0) }
+        let remap = queue.indices.map { remaining.firstIndex(of: $0) }
         let removedCurrent = offsets.contains(currentIndex)
-        let removedBefore = offsets.filter { $0 < currentIndex }.count
-        shuffleHistory = []
+        if removedCurrent { stop() }
         queue.remove(atOffsets: offsets)
+        currentIndex = remap.indices.contains(currentIndex) ? (remap[currentIndex] ?? -1) : -1
+        syncPolicy(oldToNew: remap)
         if queue.isEmpty {
             removePlayerObservers(); player?.pause(); player = nil; assetLoader = nil
             #if KOG_NATIVE_AUDIO
@@ -580,64 +644,62 @@ final class KogStore: ObservableObject {
             nativePlayer?.stop(); nativePlayer = nil
             #endif
             currentIndex = -1; playing = false; position = 0; duration = 0
-            shuffleHistory = []
             nowPlayingArtTask?.cancel(); nowPlayingArtwork = nil
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
         }
-        else if removedCurrent { playIndex(min(max(0, currentIndex - removedBefore), queue.count - 1)) }
-        else { currentIndex -= removedBefore }
+
     }
 
     func move(_ source: IndexSet, to destination: Int) {
-        shuffleHistory = []
         var ordering = Array(queue.indices)
         ordering.move(fromOffsets: source, toOffset: destination)
         let nextIndex = ordering.firstIndex(of: currentIndex) ?? currentIndex
         queue.move(fromOffsets: source, toOffset: destination)
         currentIndex = nextIndex
+        syncPolicy(oldToNew: ordering.indices.map { ordering.firstIndex(of: $0) })
     }
 
     func clearQueue() {
+        stop()
         removePlayerObservers(); player?.pause(); player = nil; assetLoader = nil
         #if KOG_NATIVE_AUDIO
         nativeGeneration += 1; nativeStartTask?.cancel()
         nativePlayer?.stop(); nativePlayer = nil
         #endif
         queue = []; currentIndex = -1; playing = false; position = 0; duration = 0
-        shuffleHistory = []
+        syncPolicy()
         nowPlayingArtTask?.cancel(); nowPlayingArtwork = nil
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+    }
+
+    private func policyRows() -> [[String: Any]] {
+        queue.map { track in
+            var row: [String: Any] = ["original": track.queueOrder.map { $0 as Any } ?? NSNull(),
+                "title": track.label, "artist": track.artist, "album": track.album,
+                "duration": track.duration > 0 ? (Double(track.duration) / 1000) as Any : NSNull(),
+                "path": track.displayPath, "filename": track.filename, "star": isStarred(track)]
+            for field in TrackSort.metadataFields {
+                let value = track.metadata[field.key] ?? ""
+                row[field.key] = field.numeric ? (Double(value).map { $0 as Any } ?? NSNull()) : value
+            }
+            return row
+        }
+    }
+    func filteredQueueIndices() -> [Int] {
+        guard !queueFilter.isEmpty else { return Array(queue.indices) }
+        do {
+            return try policy.send(["op": "filter_rows", "rows": policyRows(), "query": queueFilter])["indices"] as? [Int] ?? []
+        } catch { return [] }
     }
 
     func sortQueue(_ key: String) {
         if sortKey == key { sortDescending.toggle() } else { sortKey = key; sortDescending = false }
         let selectedIndex = currentIndex
-        let numeric = TrackSort.all.first { $0.key == key }?.numeric ?? false
-        func value(_ track: Track) -> String {
-            switch key {
-            case "original": return String(track.queueOrder ?? 0)
-            case "title": return track.label
-            case "artist": return track.artist
-            case "album": return track.album
-            case "duration": return String(track.duration)
-            case "path": return track.displayPath
-            case "filename": return track.filename
-            case "star": return isStarred(track) ? "1" : "0"
-            default: return track.metadata[key] ?? ""
-            }
-        }
-        let ordered = queue.enumerated().sorted {
-            let lhs = value($0.element), rhs = value($1.element)
-            let comparison: ComparisonResult
-            if numeric {
-                let l = Double(lhs) ?? 0, r = Double(rhs) ?? 0
-                comparison = l == r ? .orderedSame : (l < r ? .orderedAscending : .orderedDescending)
-            } else { comparison = lhs.localizedStandardCompare(rhs) }
-            return comparison == .orderedSame ? $0.offset < $1.offset : comparison == (sortDescending ? .orderedDescending : .orderedAscending)
-        }
-        queue = ordered.map(\.element)
-        if selectedIndex >= 0 { currentIndex = ordered.firstIndex { $0.offset == selectedIndex } ?? selectedIndex }
-        shuffleHistory = []
+        let rows = policyRows()
+        guard let ordering = policyCommand(["op": "sort_rows", "rows": rows, "column": key, "descending": sortDescending])?["indices"] as? [Int] else { return }
+        queue = ordering.map { queue[$0] }
+        if selectedIndex >= 0 { currentIndex = ordering.firstIndex(of: selectedIndex) ?? -1 }
+        syncPolicy(oldToNew: ordering.indices.map { ordering.firstIndex(of: $0) })
     }
 
     func isStarred(_ track: Track) -> Bool { (track.isDevice ? localStars : stars).contains(track.id) }
@@ -655,76 +717,56 @@ final class KogStore: ObservableObject {
     }
 
     func toggleRadio() async {
-        // Reflect the tap before network/probe work, and permit another tap
-        // while it runs. Only the newest request may populate this queue.
         radio.toggle()
         prepareRadio(selectSource: true)
     }
-    private func prepareRadio(selectSource: Bool = false) {
-        radioGeneration += 1
-        let generation = radioGeneration, enabled = radio
-        radioTask?.cancel(); radioRefillTask?.cancel(); radioRefillTask = nil; radioCache = []
-        if enabled && selectSource { radioOnDevice = libraryOnDevice }
+    private func prepareRadio(selectSource: Bool = false, reshuffle: Bool = false) {
+        radioTask?.cancel()
+        if radio && selectSource { radioOnDevice = libraryOnDevice }
+        _ = policyCommand(["op": "radio_reset", "enabled": radio, "current": SharedPlaybackPolicy.index(currentIndex)])
+        requestRadio(initial: true, reshuffle: reshuffle)
+    }
+    private func requestRadio(initial: Bool = false, reshuffle: Bool = false) {
+        guard initial || policy.needsRefill else { return }
+        _ = policyCommand(["op": "radio_begin"])
+        let generation = policy.generation, enabled = radio
         let client = radioOnDevice ? deviceAPI : api
         let root = radioOnDevice ? activeDeviceRoot : activeTreeRoot
-        radioBusy = enabled
         radioTask = Task {
-            defer { if radioGeneration == generation { radioBusy = false } }
             do {
-                let tracks = try await client.radio(enabled, root: root)
-                guard !Task.isCancelled, radioGeneration == generation else { return }
-                if enabled {
-                    radioCache = tracks
-                    if queue.isEmpty, !radioCache.isEmpty { add([radioCache.removeFirst()], play: true) }
-                    refillRadio()
-                }
+                let response: RadioBatch
+                if reshuffle { response = try await client.reshuffleRadio(root: root) }
+                else if initial { response = try await client.radio(enabled, root: root) }
+                else { response = try await client.radioAdvance(root: root) }
+                guard !Task.isCancelled, policy.generation == generation else { return }
+                let entries = try JSONSerialization.jsonObject(with: JSONEncoder().encode(response.tracks))
+                _ = policyCommand(["op": "radio_accept", "generation": generation, "entries": entries, "exhausted": response.exhausted])
+                consumeRadio("radio_pending")
+                requestRadio()
             } catch {
-                guard !Task.isCancelled, radioGeneration == generation else { return }
-                radio = false; report(error)
+                guard !Task.isCancelled, policy.generation == generation else { return }
+                _ = policyCommand(["op": "radio_fail", "generation": generation])
+                report(error)
             }
         }
     }
-    private func refillRadio() {
-        guard radio, radioRefillTask == nil, radioCache.count < 10 else { return }
-        let generation = radioGeneration
-        let client = radioOnDevice ? deviceAPI : api
-        let root = radioOnDevice ? activeDeviceRoot : activeTreeRoot
-        radioRefillTask = Task {
-            defer { if radioGeneration == generation { radioRefillTask = nil } }
-            do {
-                while !Task.isCancelled, radioGeneration == generation, radio, radioCache.count < 10 {
-                    let tracks = try await client.radioAdvance(root: root)
-                    guard !Task.isCancelled, radioGeneration == generation else { return }
-                    if tracks.isEmpty { break }
-                    radioCache += tracks
-                }
-            } catch { if !Task.isCancelled && radioGeneration == generation { report(error) } }
-        }
-    }
     func reshuffleRadio() async {
-        radioGeneration += 1; let generation = radioGeneration
-        radioTask?.cancel(); radioRefillTask?.cancel(); radioRefillTask = nil; radioCache = []
-        radio = true; radioBusy = true
-        let client = radioOnDevice ? deviceAPI : api
-        let root = radioOnDevice ? activeDeviceRoot : activeTreeRoot
-        radioTask = Task {
-            defer { if radioGeneration == generation { radioBusy = false } }
-            do {
-                let tracks = try await client.reshuffleRadio(root: root)
-                guard !Task.isCancelled, radioGeneration == generation else { return }
-                radioCache = tracks
-                if !radioCache.isEmpty { replaceQueue([radioCache.removeFirst()]) }
-                refillRadio()
-            } catch { if !Task.isCancelled && radioGeneration == generation { radio = false; report(error) } }
-        }
+        radio = true
+        prepareRadio(reshuffle: true)
     }
-    private func advanceRadio() async {
-        let generation = radioGeneration
-        if radioCache.isEmpty { await radioTask?.value }
-        if radioCache.isEmpty { await radioRefillTask?.value }
-        guard radio, radioGeneration == generation else { return }
-        if radioCache.isEmpty { stop() }
-        else { add([radioCache.removeFirst()], play: true); refillRadio() }
+    private func consumeRadio(_ operation: String) {
+        guard let reply = policyCommand(["op": operation]) else { return }
+        if let entry = reply["entry"] as? [String: Any],
+           let data = try? JSONSerialization.data(withJSONObject: entry),
+           let track = try? JSONDecoder().decode(Track.self, from: data) {
+            add([track])
+            _ = policyCommand(["op": "radio_candidate", "index": queue.count - 1])
+            activateIndex(queue.count - 1)
+        } else if operation == "radio_next", !policy.waiting { stop() }
+    }
+    private func advanceRadio() {
+        consumeRadio("radio_next")
+        requestRadio()
     }
     func loadPlaylists() async {
         do { playlists = try await playlistAPI.playlists() } catch { report(error) }
@@ -929,7 +971,7 @@ final class KogStore: ObservableObject {
             return .success
         }
         commands.pauseCommand.addTarget { [weak self] _ in
-            Task { @MainActor [weak self] in if self?.playing == true { self?.togglePlayback() } }
+            Task { @MainActor [weak self] in if self?.playing == true || self?.policy.waiting == true { self?.togglePlayback() } }
             return .success
         }
         commands.togglePlayPauseCommand.addTarget { [weak self] _ in
@@ -1020,7 +1062,7 @@ extension KogStore {
         audioObservers.append(NotificationCenter.default.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { [weak self] note in
             let reason = (note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt) ?? 0
             if reason == AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue {
-                Task { @MainActor [weak self] in if self?.playing == true { self?.togglePlayback() } }
+                Task { @MainActor [weak self] in if self?.playing == true || self?.policy.waiting == true { self?.togglePlayback() } }
             }
         })
         audioObservers.append(NotificationCenter.default.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: .main) { [weak self] _ in

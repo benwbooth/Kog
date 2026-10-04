@@ -13,6 +13,7 @@ mod cover_network;
 pub mod devices;
 pub mod media_filter;
 pub mod radio;
+pub mod radio_client;
 pub mod routes;
 pub mod service;
 pub mod stream;
@@ -77,3 +78,5 @@ impl StreamCodec {
         }
     }
 }
+
+pub mod local_api;

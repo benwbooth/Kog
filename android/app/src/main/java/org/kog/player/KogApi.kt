@@ -8,6 +8,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.io.File
 import java.util.Base64
 
 data class Track(
@@ -20,6 +21,8 @@ data class Track(
     val artist: String = "",
     val album: String = "",
     val duration: Long = 0,
+    val discNumber: Int? = null,
+    val trackNumber: Int? = null,
 ) {
     val key: String get() = "$kind|$path|$entry|$fragment"
     val label: String get() = title.ifBlank {
@@ -29,10 +32,11 @@ data class Track(
     val isDevice: Boolean get() = kind == "device"
 
     fun locator(): JSONObject = JSONObject()
-        .put("kind", kind).put("path", path).put("entry", entry).put("fragment", fragment)
+        .put("kind", if (isDevice) (if (entry.isEmpty()) "local" else "archive") else kind).put("path", path).put("entry", entry).put("fragment", fragment)
 
-    fun saved(): JSONObject = locator().put("name", name).put("title", title)
+    fun saved(): JSONObject = locator().put("kind", kind).put("name", name).put("title", title)
         .put("artist", artist).put("album", album).put("duration", duration)
+        .put("discNumber", discNumber ?: JSONObject.NULL).put("trackNumber", trackNumber ?: JSONObject.NULL)
 
     companion object {
         fun parse(row: JSONObject): Track = Track(
@@ -45,6 +49,8 @@ data class Track(
             artist = row.optString("artist", ""),
             album = row.optString("album", ""),
             duration = row.optLong("duration", 0),
+            discNumber = if (row.isNull("discNumber")) null else row.optInt("discNumber"),
+            trackNumber = if (row.isNull("trackNumber")) null else row.optInt("trackNumber"),
         )
     }
 }
@@ -56,7 +62,10 @@ data class SearchPage(val tracks: List<Track>, val folders: List<Folder>, val ge
                       val count: Int, val scanned: Int, val done: Boolean)
 
 /** The mobile client uses the same HTTP endpoints and locator shape as Kog Web. */
-class KogApi(private val context: Context) {
+class KogApi(private val context: Context, val onDevice: Boolean = false) {
+    val deviceRoot get() = File(context.filesDir, "Kog Imports").absolutePath
+    private fun parseTrack(row: JSONObject): Track = Track.parse(row).let { if (onDevice) it.copy(kind = "device") else it }
+
     private val prefs = context.getSharedPreferences("kog", Context.MODE_PRIVATE)
     var server: String
         get() = prefs.getString("server", "") ?: ""
@@ -113,6 +122,17 @@ class KogApi(private val context: Context) {
 
     private suspend fun request(path: String, method: String = "GET", body: Any? = null): String =
         withContext(Dispatchers.IO) {
+            if (onDevice) {
+                val uri = Uri.parse(path)
+                val apiPath = uri.encodedPath.orEmpty() + (uri.encodedQuery?.let { "?$it" } ?: "")
+                val request = JSONObject().put("root", deviceRoot)
+                    .put("storage", File(context.filesDir, "kog-library").absolutePath)
+                    .put("method", method).put("uri", apiPath).put("body", body ?: JSONObject.NULL)
+                val response = JSONObject(NativeAudio.nativeLibrary(request.toString()))
+                val result = response.get("body")
+                check(response.getInt("status") in 200..299) { (result as? JSONObject)?.optString("error") ?: "Device library request failed" }
+                return@withContext result.toString()
+            }
             val connection = URL(path).openConnection() as HttpURLConnection
             try {
                 connection.requestMethod = method
@@ -151,13 +171,13 @@ class KogApi(private val context: Context) {
             response.optJSONArray("directories").objects().map {
                 Folder(it.optString("name"), it.optString("path"))
             },
-            response.optJSONArray("files").objects().map(Track::parse),
+            response.optJSONArray("files").objects().map(::parseTrack),
         )
     }
 
     suspend fun collect(path: String, query: String = "", root: String = ""): List<Track> {
         val tracks = JSONObject(request(uri("/api/library/collect", "path" to path, "q" to query, "root" to root)))
-            .optJSONArray("tracks").objects().map(Track::parse)
+            .optJSONArray("tracks").objects().map(::parseTrack)
         return withMetadata(tracks)
     }
 
@@ -165,7 +185,7 @@ class KogApi(private val context: Context) {
         val response = JSONObject(request(uri("/api/expand"), "POST", JSONArray().put(
             track.locator().put("name", track.name))))
         val rows = response.optJSONArray("tracks")?.optJSONArray(0)
-        return withMetadata(rows.objects().map(Track::parse))
+        return withMetadata(rows.objects().map(::parseTrack))
     }
 
     suspend fun withMetadata(tracks: List<Track>): List<Track> {
@@ -181,6 +201,8 @@ class KogApi(private val context: Context) {
                     artist = row?.optString("artist", "")?.takeUnless { it == "null" }.orEmpty(),
                     album = row?.optString("album", "")?.takeUnless { it == "null" }.orEmpty(),
                     duration = ((row?.optDouble("duration", 0.0) ?: 0.0) * 1000).toLong(),
+                    discNumber = if (row == null || row.isNull("discNumber")) null else row.optInt("discNumber"),
+                    trackNumber = if (row == null || row.isNull("trackNumber")) null else row.optInt("trackNumber"),
                 )
             }
         }
@@ -194,7 +216,7 @@ class KogApi(private val context: Context) {
         val response = JSONObject(request(uri(path, *params)))
         val rows = response.optJSONArray("results").objects()
         return SearchPage(
-            rows.filterNot { it.optBoolean("is_dir") }.map(Track::parse),
+            rows.filterNot { it.optBoolean("is_dir") }.map(::parseTrack),
             rows.filter { it.optBoolean("is_dir") }.map {
                 Folder(it.optString("name"), it.optString("path"))
             }, response.optLong("generation"), response.optInt("total"),
@@ -209,7 +231,7 @@ class KogApi(private val context: Context) {
 
     suspend fun playlist(id: Long): List<Track> {
         val tracks = JSONObject(request(uri("/api/playlists/$id")))
-            .optJSONArray("entries").objects().map(Track::parse)
+            .optJSONArray("entries").objects().map(::parseTrack)
         return withMetadata(tracks)
     }
 
@@ -232,16 +254,23 @@ class KogApi(private val context: Context) {
         request(uri("/api/stars"), "POST", track.locator().put("starred", starred))
     }
 
-    suspend fun radio(enabled: Boolean, root: String): List<Track> {
-        val response = JSONObject(request(uri("/api/radio/enabled", "root" to root), "POST",
-            JSONObject().put("enabled", enabled)))
-        return if (enabled) withMetadata(response.optJSONArray("entries").objects().map(Track::parse)) else emptyList()
-    }
+    suspend fun radio(enabled: Boolean, root: String): RadioBatch = radioBatch(
+        JSONObject(request(uri("/api/radio/enabled", "root" to root, "incremental" to "true"), "POST",
+            JSONObject().put("enabled", enabled))))
 
-    suspend fun radioAdvance(root: String): List<Track> = withMetadata(
-        JSONObject(request(uri("/api/radio/advance", "root" to root), "POST"))
-            .optJSONArray("entries").objects().map(Track::parse))
+    suspend fun radioAdvance(root: String): RadioBatch = radioBatch(
+        JSONObject(request(uri("/api/radio/advance", "root" to root, "incremental" to "true"), "POST")))
+
+    suspend fun reshuffleRadio(root: String): RadioBatch = radioBatch(
+        JSONObject(request(uri("/api/radio/reshuffle", "root" to root, "incremental" to "true"), "POST")))
+
+    private suspend fun radioBatch(reply: JSONObject): RadioBatch {
+        val tracks = withMetadata(reply.optJSONArray("entries").objects().map(::parseTrack))
+        return RadioBatch(tracks, reply.optBoolean("exhausted", tracks.isEmpty()))
+    }
 }
 
 private fun JSONArray?.objects(): List<JSONObject> = if (this == null) emptyList() else
     (0 until length()).mapNotNull(::optJSONObject)
+
+data class RadioBatch(val tracks: List<Track>, val exhausted: Boolean)
