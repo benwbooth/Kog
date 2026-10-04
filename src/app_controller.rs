@@ -488,12 +488,8 @@ struct TreeDeleteState {
     failures: Vec<String>,
 }
 
-enum RadioEvent {
-    TracksReady {
-        locator: PathBuf,
-        tracks: Vec<Track>,
-        warnings: Vec<String>,
-    },
+struct RadioEvent {
+    track: Option<Track>,
 }
 
 /// One in-flight radio expansion: up to MAX_EXPANDERS run at once so a
@@ -514,12 +510,6 @@ struct RadioJob {
 /// the bounded channel.
 struct RadioState {
     ready: VecDeque<Track>,
-    /// Surplus subsongs from multi-song single files (NSF and friends),
-    /// already shuffled, served spaced out instead of back-to-back.
-    deferred: VecDeque<Track>,
-    /// Stagings committed (fresh expansions plus deferred servings): drives
-    /// the interleave below.
-    staged_count: u64,
     expand_jobs: Vec<RadioJob>,
     dead: Arc<Mutex<HashSet<String>>>,
     blacklist: Arc<Mutex<kog_audio::radio::Blacklist>>,
@@ -587,6 +577,12 @@ fn spawn_staging_worker(
         dead,
         blacklist,
     ))
+}
+
+fn prepare_radio_track(decoders: &DecoderRegistry, locator: &Path, seed: u64) -> Option<Track> {
+    kog_audio::radio::prepare_pick(decoders, locator, seed, |source, _| {
+        Some(Track::from_source(source, decoders))
+    })
 }
 
 /// Blacklist snapshot from the library store for radio staging.
@@ -2329,8 +2325,6 @@ impl Default for AppControllerRust {
                     Some((staging, dead, blacklist)) => {
                         controller.radio = Some(RadioState {
                             ready: VecDeque::new(),
-                            deferred: VecDeque::new(),
-                            staged_count: 0,
                             expand_jobs: Vec::new(),
                             dead,
                             blacklist,
@@ -3185,7 +3179,7 @@ impl qobject::AppController {
     }
 
     /// Spawn the staging worker and install fresh radio state for `root`,
-    /// clearing any ready buffer, deferred tracks, and in-flight jobs from
+    /// clearing the ready buffer and in-flight jobs from
     /// the previous folder. Callers choose the round (resumed or fresh)
     /// and the status line.
     fn begin_radio_session(
@@ -3214,8 +3208,6 @@ impl qobject::AppController {
         };
         self.as_mut().rust_mut().radio = Some(RadioState {
             ready: VecDeque::new(),
-            deferred: VecDeque::new(),
-            staged_count: 0,
             expand_jobs: Vec::new(),
             dead,
             blacklist,
@@ -3277,7 +3269,7 @@ impl qobject::AppController {
                 while events.len() < 16 {
                     match job.receiver.try_recv() {
                         Ok(event) => {
-                            empty = matches!(&event, RadioEvent::TracksReady { tracks, .. } if tracks.is_empty());
+                            empty = event.track.is_none();
                             events.push(event);
                             done = true;
                             break;
@@ -3352,15 +3344,10 @@ impl qobject::AppController {
     }
 
     fn request_radio_expand(mut self: Pin<&mut Self>, locator: PathBuf) {
-        let (worker_decoders, read_cue, read_playlists) = {
+        let worker_decoders = {
             let this = self.as_ref();
             let rust = this.rust();
-            (
-                rust.decoders
-                    .background_worker(rust.decoder_settings.clone()),
-                rust.read_cue_sheets_in_folders,
-                rust.read_playlists_in_folders,
-            )
+            rust.decoders.background_worker(rust.decoder_settings.clone())
         };
         let (sender, receiver) = std::sync::mpsc::sync_channel(4);
         let cancel = Arc::new(AtomicBool::new(false));
@@ -3378,50 +3365,12 @@ impl qobject::AppController {
                 }
                 // A panicking pick must free its lane instead of wedging
                 // staging forever: catch it and report a skipped pick.
-                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let prepared = prepare_scan_file(
-                        locator.clone(),
-                        &worker_decoders,
-                        read_cue,
-                        read_playlists,
-                        false,
-                    );
-                    // Probe-open every candidate: only tracks that actually
-                    // open reach the staging buffer, so an unplayable file can
-                    // never surface as a playback error later.
-                    let mut tracks = prepared.tracks;
-                    let mut warnings = prepared.warnings;
-                    if !cancel.load(AtomicOrdering::Relaxed) && !tracks.is_empty() {
-                        tracks.retain(|track| match worker_decoders.probe(&track.source) {
-                            Ok(_) => true,
-                            Err(error) => {
-                                warnings.push(format!(
-                                    "{} cannot be played and was skipped: {error}",
-                                    track.source.display_label()
-                                ));
-                                false
-                            }
-                        });
-                    }
-                    (tracks, warnings)
-                }));
-                match outcome {
-                    Ok((tracks, warnings)) => {
-                        let _ = sender.send(RadioEvent::TracksReady {
-                            locator,
-                            tracks,
-                            warnings,
-                        });
-                    }
-                    Err(_) => {
-                        let _ = sender.send(RadioEvent::TracksReady {
-                            locator,
-                            tracks: Vec::new(),
-                            warnings: vec![
-                                "A radio pick failed unexpectedly and was skipped".to_owned(),
-                            ],
-                        });
-                    }
+                let track = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    prepare_radio_track(&worker_decoders, &locator, kog_audio::radio::random_seed())
+                }))
+                .unwrap_or(None);
+                if !cancel.load(AtomicOrdering::Relaxed) {
+                    let _ = sender.send(RadioEvent { track });
                 }
             })
             .is_ok();
@@ -3433,44 +3382,9 @@ impl qobject::AppController {
     }
 
     fn handle_radio_event(mut self: Pin<&mut Self>, event: RadioEvent) {
-        let RadioEvent::TracksReady {
-            locator, tracks, ..
-        } = event;
-        // Multi-song single files (NSF and friends) expand to one track per
-        // subsong. Stage a single shuffled pick now and defer the rest for
-        // spaced staging, instead of queueing the whole file back-to-back.
-        // Anything without uniform subsong indices stages whole, as before.
-        let mut staged = tracks;
-        let mut deferred = Vec::new();
-        if staged.len() > 1 {
-            let indices: Vec<u32> = staged
-                .iter()
-                .filter_map(|track| track.source.subsong)
-                .collect();
-            // Every track indexed, or nobody is: a partial set would orphan
-            // the unindexed tracks, so those stage whole as before.
-            if indices.len() == staged.len() {
-                if let Some(order) = kog_audio::radio::shuffle_subsong_order(
-                    &kog_audio::radio::radio_locator_key(&locator),
-                    &indices,
-                ) {
-                    let mut ordered = Vec::with_capacity(staged.len());
-                    for index in order {
-                        let position = staged
-                            .iter()
-                            .position(|track| track.source.subsong == Some(index))
-                            .expect("shuffled index comes from these tracks");
-                        ordered.push(staged.remove(position));
-                    }
-                    deferred = ordered.split_off(1);
-                    staged = ordered;
-                }
-            }
-        }
-        let live = !staged.is_empty();
+        let live = event.track.is_some();
         if let Some(radio) = self.as_mut().rust_mut().radio.as_mut() {
-            radio.ready.extend(staged);
-            radio.deferred.extend(deferred);
+            radio.ready.extend(event.track);
             if live {
                 radio.consecutive_dead = 0;
             } else {
@@ -3558,7 +3472,7 @@ impl qobject::AppController {
                     .collect()
             })
             .unwrap_or_default();
-        let staged: HashSet<String> = self
+        let mut staged: HashSet<String> = self
             .as_ref()
             .rust()
             .tracks
@@ -3573,6 +3487,15 @@ impl qobject::AppController {
                     .into_iter()
                     .flatten(),
             )
+            .chain(
+                self.as_ref()
+                    .rust()
+                    .radio
+                    .as_ref()
+                    .into_iter()
+                    .flat_map(|radio| radio.expand_jobs.iter())
+                    .map(|job| kog_audio::radio::radio_locator_key(&job.locator)),
+            )
             .chain(dead)
             .collect();
         let mut budget = MAX_DRAIN;
@@ -3586,28 +3509,6 @@ impl qobject::AppController {
                 .unwrap_or((RADIO_READY_TARGET, MAX_EXPANDERS));
             if ready_len + active >= RADIO_READY_TARGET || active >= MAX_EXPANDERS {
                 return;
-            }
-            // Spaced subsong staging: every SUBSONG_EVERY-th staging serves
-            // the deferred queue instead of fresh picks, so one multi-song
-            // file spreads across the session rather than playing back to
-            // back. Deferred servings count like fresh ones below.
-            const SUBSONG_EVERY: u64 = 4;
-            let serve_deferred = self.as_ref().rust().radio.as_ref().is_some_and(|radio| {
-                !radio.deferred.is_empty()
-                    && radio.staged_count % SUBSONG_EVERY == SUBSONG_EVERY - 1
-            });
-            if serve_deferred {
-                let mut this = self.as_mut();
-                let mut rust = this.as_mut().rust_mut();
-                if let Some(radio) = rust.radio.as_mut() {
-                    if radio.ready.len() < RADIO_READY_TARGET {
-                        if let Some(track) = radio.deferred.pop_front() {
-                            radio.ready.push_back(track);
-                            radio.staged_count += 1;
-                        }
-                    }
-                }
-                continue;
             }
             enum Drain {
                 Pick(PathBuf),
@@ -3632,7 +3533,7 @@ impl qobject::AppController {
                 };
                 match response {
                     Ok(kog_audio::radio::StagingResponse::Pick(locator)) => {
-                        if staged.contains(&kog_audio::radio::radio_locator_key(&locator)) {
+                        if !staged.insert(kog_audio::radio::radio_locator_key(&locator)) {
                             continue;
                         }
                         outcome = Drain::Pick(locator);
@@ -3656,9 +3557,6 @@ impl qobject::AppController {
             match outcome {
                 Drain::Pick(locator) => {
                     self.as_mut().request_radio_expand(locator);
-                    if let Some(radio) = self.as_mut().rust_mut().radio.as_mut() {
-                        radio.staged_count += 1;
-                    }
                 }
                 Drain::Empty => {
                     // The worker exited after reporting: drop the handle so
@@ -7703,7 +7601,7 @@ mod tests {
         count_delete_entries, cover_art_key, dropped_urls_from_json, local_paths_from_json,
         move_selected_items, natural_compare, normalize_playlist_save_path,
         ordered_directory_files, output_devices_json, parse_delete_paths_json, parse_row_indices,
-        playback_source_is_missing, playlist_entry_for_track, prepare_scan_file,
+        playback_source_is_missing, playlist_entry_for_track, prepare_radio_track, prepare_scan_file,
         purged_track_indices, remove_path_permanent, resolve_output_device, sample_rate_label,
         sanitize_delete_paths, scan_directory_paths, sort_visible_indices, star_key_for_track,
         stored_entry_is_missing, track_filename, track_path, valid_equalizer_gain,
@@ -7720,6 +7618,59 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
     use tempfile::tempdir;
+
+    #[test]
+    fn radio_pick_prepares_only_one_song_from_a_multisong_file() {
+        let directory = tempdir().unwrap();
+        let file = directory.path().join("game.nsf");
+        let mut bytes = vec![0_u8; 128];
+        bytes[..5].copy_from_slice(b"NESM\x1a");
+        bytes[5] = 1;
+        bytes[6] = 12;
+        bytes[7] = 1;
+        bytes[8..10].copy_from_slice(&0x8000_u16.to_le_bytes());
+        bytes[10..12].copy_from_slice(&0x8000_u16.to_le_bytes());
+        bytes[12..14].copy_from_slice(&0x8001_u16.to_le_bytes());
+        bytes.extend_from_slice(&[0x60, 0x60]);
+        fs::write(&file, bytes).unwrap();
+
+        let decoders = DecoderRegistry::default();
+        assert_eq!(decoders.expand(file.clone()).unwrap().len(), 12);
+        // The Qt worker returns one track per file, with no deferred songs to
+        // inject when unrelated expansion jobs complete in a different order.
+        for seed in [10, 2] {
+            let track = prepare_radio_track(&decoders, &file, seed).unwrap();
+            assert_eq!(track.source.subsong, Some(seed as u32));
+            assert_eq!(
+                kog_audio::radio::radio_track_key(&track),
+                file.display().to_string()
+            );
+        }
+        let broken = directory.path().join("broken.nsf");
+        fs::write(&broken, b"invalid").unwrap();
+        assert!(prepare_radio_track(&decoders, &broken, 0).is_none());
+    }
+
+    #[test]
+    #[ignore = "requires KOG_RADIO_TEST_FILE pointing to a real multi-song file"]
+    fn radio_pick_from_real_multisong_file() {
+        let file = PathBuf::from(std::env::var_os("KOG_RADIO_TEST_FILE").expect("KOG_RADIO_TEST_FILE"));
+        let decoders = DecoderRegistry::default();
+        let sources = decoders.expand(file.clone()).unwrap();
+        assert!(sources.len() > 1);
+        for seed in [10_u64, 2] {
+            let track = prepare_radio_track(&decoders, &file, seed).unwrap();
+            assert_eq!(
+                track.source.subsong,
+                sources[seed as usize % sources.len()].subsong
+            );
+            assert_eq!(track.source.path, file);
+            eprintln!(
+                "Radio prepared one of {} subsongs: {:?}, {}",
+                sources.len(), track.source.subsong, track.title
+            );
+        }
+    }
 
     #[test]
     fn add_path_status_keeps_every_warning() {

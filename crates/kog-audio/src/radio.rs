@@ -8,8 +8,9 @@
 //! Only cursor positions persist per folder; the shuffled orders are
 //! recomputed functionally, so memory stays flat no matter how large the
 //! library is. Exhausted folders drop out of rotation. When the root is
-//! exhausted every song has played exactly once, and a new round starts with
-//! a fresh seed, making every round a unique full-coverage shuffle.
+//! exhausted every candidate file has had a turn, and a new round starts with
+//! a fresh seed. Each file contributes one randomly chosen playable song per
+//! turn, including multi-song formats such as HES, NSF and cue sheets.
 //!
 //! Small folders would otherwise vanish for the rest of a long round once
 //! played out, so spent folders replay after every pick they served has aged
@@ -36,7 +37,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use crate::decoder::{DecoderRegistry, DecoderSettings};
+use crate::decoder::{DecoderRegistry, DecoderSettings, PlaybackSource, StreamProperties};
 
 fn hash_with_seed(seed: u64, bytes: &[u8]) -> u64 {
     let mut salted = seed.to_le_bytes().to_vec();
@@ -660,32 +661,38 @@ pub fn radio_locator_key(path: &Path) -> String {
     path.display().to_string()
 }
 
-/// Shuffled play order for one multi-song file: uniform multi-song
-/// expansions (every track carries a distinct subsong index, as NSF and
-/// friends produce) come back in hash order, so radio stages a single
-/// shuffled pick now and defers the rest for spaced staging. Anything else
-/// (single tracks, missing or duplicated indices) returns None and stages
-/// whole, exactly as before.
-pub fn shuffle_subsong_order(file_key: &str, subsongs: &[u32]) -> Option<Vec<u32>> {
-    if subsongs.len() < 2 {
+/// Prepare exactly one playable song from a radio file's expansion. All
+/// frontends use this boundary: subsongs do not get extra turns or a separate
+/// queue that bypasses the file-level shuffle. A fresh seed varies the chosen
+/// subsong when the file is selected again.
+///
+/// Start at a random candidate and try the rest only if probing or conversion
+/// fails (for example, an unaddressable cue track). Metadata is prepared only
+/// for the chosen song, rather than probing every subsong before picking one.
+pub fn prepare_pick<T>(
+    decoders: &DecoderRegistry,
+    pick: &Path,
+    seed: u64,
+    mut prepare: impl FnMut(PlaybackSource, StreamProperties) -> Option<T>,
+) -> Option<T> {
+    let expansion = decoders.expand_detailed(pick.to_path_buf()).ok()?;
+    select_source(expansion.sources, seed, |source| {
+        let properties = decoders.probe(&source).ok()?;
+        prepare(source, properties)
+    })
+}
+
+fn select_source<T>(
+    mut sources: Vec<PlaybackSource>,
+    seed: u64,
+    prepare: impl FnMut(PlaybackSource) -> Option<T>,
+) -> Option<T> {
+    if sources.is_empty() {
         return None;
     }
-    let mut unique = subsongs.to_vec();
-    unique.sort_unstable();
-    unique.dedup();
-    if unique.len() != subsongs.len() {
-        return None;
-    }
-    unique.sort_by(|left, right| {
-        let mut left_key = file_key.as_bytes().to_vec();
-        left_key.extend_from_slice(&left.to_le_bytes());
-        let mut right_key = file_key.as_bytes().to_vec();
-        right_key.extend_from_slice(&right.to_le_bytes());
-        hash_with_seed(FILE_ORDER_SALT, &left_key)
-            .cmp(&hash_with_seed(FILE_ORDER_SALT, &right_key))
-            .then_with(|| left.cmp(right))
-    });
-    Some(unique)
+    let start = (seed % sources.len() as u64) as usize;
+    sources.rotate_left(start);
+    sources.into_iter().find_map(prepare)
 }
 
 /// Whether a discovered file is eligible for random queueing: regular
@@ -1112,29 +1119,51 @@ mod tests {
     }
 
     #[test]
-    fn subsong_order_shuffles_uniform_sets_only() {
-        let order = shuffle_subsong_order("pack.zip::a", &[0, 1, 2, 3, 4]).expect("order");
-        assert_eq!(order.len(), 5);
-        let mut sorted = order.clone();
-        sorted.sort_unstable();
-        assert_eq!(sorted, vec![0, 1, 2, 3, 4], "a permutation, no loss");
-        assert_eq!(
-            order,
-            shuffle_subsong_order("pack.zip::a", &[0, 1, 2, 3, 4]).expect("order"),
-            "deterministic per file"
-        );
-        // Key sensitivity: across several files the orders must vary (a
-        // single fixed order per key set would still pass determinism).
-        // Deterministic inputs, so green stays green.
-        let orders: HashSet<Vec<u32>> = ["a", "b", "c", "d", "e", "f"]
-            .iter()
-            .map(|key| shuffle_subsong_order(key, &[0, 1, 2, 3, 4]).expect("order"))
+    fn radio_pick_selects_one_subsong_and_varies_it_between_turns() {
+        let sources: Vec<_> = (0..12)
+            .map(|subsong| PlaybackSource {
+                path: PathBuf::from("/music/IC03005.hes"),
+                subsong: Some(subsong),
+                ..PlaybackSource::default()
+            })
             .collect();
-        assert!(orders.len() >= 2, "shuffles vary by file");
-        assert!(shuffle_subsong_order("x", &[]).is_none());
-        assert!(shuffle_subsong_order("x", &[7]).is_none());
-        assert!(shuffle_subsong_order("x", &[1, 1, 2]).is_none());
-        assert!(shuffle_subsong_order("x", &[0, 2]).is_some());
+        let mut chosen = HashSet::new();
+        for seed in 0..12 {
+            let mut prepared = 0;
+            let selected = select_source(sources.clone(), seed, |source| {
+                prepared += 1;
+                Some(source)
+            })
+            .unwrap();
+            assert_eq!(prepared, 1, "a pick must not prepare or queue surplus subsongs");
+            chosen.insert(selected.subsong.unwrap());
+        }
+        assert_eq!(chosen.len(), 12, "file revisits can choose every subsong");
+    }
+
+    #[test]
+    fn radio_pick_skips_unplayable_candidates_and_stops_after_one_success() {
+        let sources: Vec<_> = (0..4)
+            .map(|subsong| PlaybackSource {
+                path: PathBuf::from("/music/game.nsf"),
+                subsong: Some(subsong),
+                ..PlaybackSource::default()
+            })
+            .collect();
+        let mut attempted = Vec::new();
+        let selected = select_source(sources.clone(), 3, |source| {
+            attempted.push(source.subsong.unwrap());
+            (source.subsong == Some(1)).then_some(source)
+        })
+        .unwrap();
+        assert_eq!(selected.subsong, Some(1));
+        assert_eq!(
+            attempted,
+            [3, 0, 1],
+            "failed candidates wrap, then stop at the first usable song"
+        );
+        assert!(select_source(sources, 2, |_| None::<()>).is_none());
+        assert!(select_source(Vec::new(), 0, |_| Some(())).is_none());
     }
 
     #[test]

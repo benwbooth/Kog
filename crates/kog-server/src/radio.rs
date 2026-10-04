@@ -540,8 +540,8 @@ fn persisted_root(path: &Path) -> Option<String> {
 /// One pick stages one song, and a multi-song file (an NSF with forty
 /// subsongs, a cue sheet with twenty tracks) expands to that many sources —
 /// staging them all flooded the window with one file's songs back to back.
-/// Only the first source is staged per pick, mirroring the desktop, where a
-/// pick arrives as a single locator.
+/// The shared radio policy selects one playable source per file in every
+/// frontend, so subsongs cannot bypass the file-level shuffle.
 /// Expand and prove one pick with a deadline. The proving thread owns its
 /// inputs, so when the deadline passes the caller moves on while the stuck
 /// thread is abandoned: its result is dropped and the pick is treated as
@@ -579,27 +579,11 @@ fn prove_pick(
 }
 
 fn entries_from_pick(decoders: &DecoderRegistry, pick: &Path, root: &Path) -> Vec<RadioEntry> {
-    let Ok(expansion) = decoders.expand_detailed(pick.to_path_buf()) else {
-        return Vec::new();
-    };
-    let count = expansion.sources.len();
-    if count == 0 {
-        return Vec::new();
-    }
-    // One song per pick, chosen at random among the file's own songs, so
-    // repeats of the same file vary instead of always its first song. Sources
-    // that fail to probe are walked past.
-    let start = (random_seed() % count as u64) as usize;
-    for offset in 0..count {
-        let index = (start + offset) % count;
-        let source = &expansion.sources[index];
-        if let Ok(properties) = decoders.probe(source) {
-            if let Some(entry) = entry_from_source(decoders, source, &properties, root) {
-                return vec![entry];
-            }
-        }
-    }
-    Vec::new()
+    kog_audio::radio::prepare_pick(decoders, pick, random_seed(), |source, properties| {
+        entry_from_source(decoders, &source, &properties, root)
+    })
+    .into_iter()
+    .collect()
 }
 
 /// Map one played-back source to a streamable entry, shaped like every other
