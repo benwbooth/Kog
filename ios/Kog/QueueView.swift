@@ -7,7 +7,7 @@ struct QueueView: View {
     @State private var showVisualizer = false
     @State private var playlistTracks: [Track]?
     @State private var selecting = false
-    @State private var selected = Set<Int>()
+    private var selected: Set<Int> { store.queueSelection }
     @State private var showSave = false
     @State private var name = ""
     @State private var saveOnDevice = false
@@ -35,13 +35,13 @@ struct QueueView: View {
                 Text(selecting ? "\(selected.count) selected" : "\(rows.count) / \(store.queue.count) tracks")
                     .font(.caption).foregroundStyle(Palette.muted)
                 Spacer()
-                Button(selecting ? "Done" : "Select") { selecting.toggle(); selected = [] }.frame(minHeight: 44)
+                Button(selecting ? "Done" : "Select") { selecting.toggle(); store.selectQueue(["op": "clear"]) }.frame(minHeight: 44)
                 if !selecting && store.queueFilter.isEmpty { EditButton().frame(minHeight: 44) }
                 Menu {
                     if selecting {
-                        Button("Select all results", systemImage: "checkmark.circle") { selected = Set(rows) }
+                        Button("Select all results", systemImage: "checkmark.circle") { store.selectQueue(["op": "set", "indices": rows, "anchor": rows.first.map { $0 as Any } ?? NSNull()]) }
                         Button("Add selected to playlist…", systemImage: "text.badge.plus") { playlistTracks = selected.sorted().map { store.queue[$0] } }.disabled(selected.isEmpty)
-                        Button("Remove selected", systemImage: "trash", role: .destructive) { store.remove(IndexSet(selected)); selected = [] }
+                        Button("Remove selected", systemImage: "trash", role: .destructive) { store.remove(IndexSet(selected)); store.selectQueue(["op": "clear"]) }
                             .disabled(selected.isEmpty)
                     }
                     Menu("Sort", systemImage: "arrow.up.arrow.down") {
@@ -79,8 +79,7 @@ struct QueueView: View {
                             }
                             Button {
                                 if selecting { toggle(index) }
-                                else if index == store.currentIndex { store.togglePlayback() }
-                                else { store.playIndex(index) }
+                                else { store.activateIndex(index) }
                             } label: {
                                 HStack(spacing: 8) {
                                     if index != store.currentIndex || !store.playing {
@@ -115,7 +114,7 @@ struct QueueView: View {
                                 Button("Save to iPhone", systemImage: "square.and.arrow.down") { Task { await store.saveFromServer(track) } }
                             }
                             Button("Add to playlist…", systemImage: "text.badge.plus") { playlistTracks = [track] }
-                            Button("Select", systemImage: "checkmark.circle") { selecting = true; selected.insert(index) }
+                            Button("Select", systemImage: "checkmark.circle") { selecting = true; store.selectQueue(["op": "set", "indices": [index], "anchor": index]) }
                             Button("Remove", systemImage: "trash", role: .destructive) { store.remove(IndexSet(integer: index)) }
                         }
                     }
@@ -129,7 +128,6 @@ struct QueueView: View {
         .sheet(isPresented: Binding(get: { playlistTracks != nil }, set: { if !$0 { playlistTracks = nil } })) {
             if let tracks = playlistTracks { AddToPlaylistView(tracks: tracks) }
         }
-        .onChange(of: store.queue) { _, _ in selected = [] }
         .confirmationDialog("Clear all tracks from the queue?", isPresented: $confirmClear, titleVisibility: .visible) {
             Button("Clear queue", role: .destructive) { store.clearQueue() }
         }
@@ -149,7 +147,7 @@ struct QueueView: View {
             }.presentationDetents([.medium, .large])
         }
     }
-    private func toggle(_ index: Int) { if selected.contains(index) { selected.remove(index) } else { selected.insert(index) } }
+    private func toggle(_ index: Int) { store.selectQueue(["op": "choose", "index": index, "gesture": "toggle"]) }
 }
 
 struct TrackDetailsView: View {

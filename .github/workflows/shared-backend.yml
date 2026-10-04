@@ -41,6 +41,11 @@ jobs:
       DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
     steps:
       - uses: actions/checkout@v6
+      - name: Run UI contract through production Swift and Rust bridge
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          bash tests/ui-contract/run-swift.sh
       - name: Check Swift against the iOS SDK
         run: |
           xcrun --sdk iphoneos swiftc -typecheck -parse-as-library \
@@ -59,4 +64,4 @@ jobs:
       - uses: android-actions/setup-android@v4
       - run: sdkmanager 'platforms;android-36' 'build-tools;35.0.0'
       - name: Check Android service and UI adapter
-        run: ./android/gradlew -p android :app:compileDebugKotlin --no-daemon
+        run: ./android/gradlew -p android :app:compileDebugKotlin :app:compileDebugAndroidTestKotlin --no-daemon

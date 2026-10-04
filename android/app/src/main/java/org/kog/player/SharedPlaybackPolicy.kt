@@ -35,6 +35,7 @@ internal class SharedPlaybackPolicy {
     val needsRefill: Boolean get() = radio.optBoolean("needs_refill")
 
     companion object {
+        fun query(command: JSONObject): JSONObject = JSONObject(NativeAudio.nativePolicy(JSONObject().put("command", command).toString()))
         fun command(op: String) = JSONObject().put("op", op)
         fun index(index: Int): Any = if (index >= 0) index else JSONObject.NULL
     }

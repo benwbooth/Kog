@@ -501,6 +501,20 @@ impl DecoderRegistry {
         }
     }
 
+    /// Canonical queue-add expansion, used by native and HTTP adapters alike.
+    /// Bad locators contribute no rows; they never discard other selected rows.
+    pub fn expand_queue_entry(&self, stored: &kog_core::db::StoredEntry) -> Vec<PlaybackSource> {
+        if stored.path.trim().is_empty()
+            || (stored.kind == "local" && Path::new(&stored.path).is_dir())
+            || (stored.kind == "archive" && stored.entry.trim().is_empty()) {
+            return Vec::new();
+        }
+        crate::playlist::PlaylistEntry::try_from(stored)
+            .and_then(|entry| self.expand_entry(&entry))
+            .map(|expanded| expanded.sources)
+            .unwrap_or_default()
+    }
+
     fn expand_archive_tree(
         &self,
         location: crate::archive::TreeLocation,

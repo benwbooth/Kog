@@ -42,7 +42,7 @@ Item {
         anchors.centerIn: parent
         modal: true
         title: qsTr("Save playlist changes?")
-        visible: !!bar.workspaceState.pending_close
+        visible: bar.visible && !!bar.Window.window && bar.Window.window.visible && !!bar.workspaceState.pending_close
         closePolicy: Popup.NoAutoClose
         Label { text: qsTr("The playlist has unsaved changes.") }
         footer: DialogButtonBox {

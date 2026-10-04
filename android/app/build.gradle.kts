@@ -18,10 +18,13 @@ android {
         applicationId = "org.kog.player"
         minSdk = 28
         targetSdk = 35
+        testInstrumentationRunner = "org.kog.player.UiContractInstrumentation"
         versionCode = kogVersionCode
         versionName = kogVersion
         ndk { abiFilters += kogAbis }
     }
+
+    sourceSets.getByName("androidTest").assets.srcDir(rootProject.file("../tests/ui-contract"))
 
     buildTypes {
         debug { versionNameSuffix = "-dev" }

@@ -21,6 +21,8 @@ struct Row {
 struct Draft {
     rows: Vec<Row>,
     selected: Vec<u64>,
+    #[serde(default)]
+    anchor: Option<u64>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct PendingSave {
@@ -118,6 +120,9 @@ pub enum Command {
     },
     Select {
         indices: Vec<usize>,
+    },
+    Selection {
+        command: crate::selection::Command,
     },
     Append {
         entries: Vec<Value>,
@@ -217,11 +222,87 @@ pub struct Snapshot {
     pub can_redo: bool,
     pub pending_close: Option<String>,
     pub error: Option<String>,
+    pub actions: Actions,
+}
+
+/// Presentations render this availability instead of reimplementing eligibility.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct Actions {
+    pub append: bool,
+    pub queue: bool,
+    pub save: bool,
+    pub reload: bool,
+    pub add_play_queue: bool,
+    pub add_queue_selection: bool,
+    pub remove: bool,
+    pub move_up: bool,
+    pub move_down: bool,
+    pub undo: bool,
+    pub redo: bool,
+    pub select_all: bool,
+    pub clear_selection: bool,
+}
+impl Actions {
+    pub fn allows(&self, command: &Command) -> bool {
+        use Command::*;
+        match command {
+            Queue { .. } => self.queue,
+            Save => self.save,
+            Reload => self.reload,
+            Append { .. } | Sort { .. } => self.append,
+            Remove => self.remove,
+            Nudge { delta } => {
+                if *delta < 0 {
+                    self.move_up
+                } else {
+                    self.move_down
+                }
+            }
+            Undo => self.undo,
+            Redo => self.redo,
+            Selection {
+                command: crate::selection::Command::Clear,
+            } => self.clear_selection,
+            Selection { .. } | Select { .. } => self.select_all,
+            _ => true,
+        }
+    }
 }
 
 impl Workspace {
     pub fn snapshot(&self) -> Snapshot {
+        self.snapshot_for(0, 0)
+    }
+    pub fn snapshot_for(&self, queue_count: usize, queue_selected: usize) -> Snapshot {
         let active = self.tabs.iter().find(|t| t.key == self.active);
+        let actions = active
+            .map(|tab| {
+                let ready = tab.loading.is_none() && self.pending_close.is_none();
+                let editable = ready && !tab.readonly;
+                let selected = tab.selected_indices();
+                Actions {
+                    append: editable,
+                    queue: ready && !tab.draft.rows.is_empty(),
+                    save: editable && tab.dirty() && tab.saving.is_none(),
+                    reload: ready && !tab.dirty() && tab.saving.is_none(),
+                    add_play_queue: editable && queue_count > 0,
+                    add_queue_selection: editable && queue_selected > 0,
+                    remove: editable && !selected.is_empty(),
+                    move_up: editable
+                        && selected
+                            .iter()
+                            .any(|i| *i > 0 && !selected.contains(&(i - 1))),
+                    move_down: editable
+                        && selected
+                            .iter()
+                            .any(|i| i + 1 < tab.draft.rows.len() && !selected.contains(&(i + 1))),
+                    undo: editable && !tab.undo.is_empty(),
+                    redo: editable && !tab.redo.is_empty(),
+                    select_all: ready && !tab.draft.rows.is_empty(),
+                    clear_selection: ready && !selected.is_empty(),
+                }
+            })
+            .unwrap_or_default();
         let mut tabs = vec![TabSnapshot {
             key: QUEUE_TAB.into(),
             scope: String::new(),
@@ -255,7 +336,25 @@ impl Workspace {
             can_redo: active.is_some_and(|t| !t.redo.is_empty()),
             pending_close: self.pending_close.clone(),
             error: active.and_then(|t| t.error.clone()),
+            actions,
         }
+    }
+    /// All presentation adapters enter here, including keyboard shortcuts.
+    /// A disabled action has no effects even if a stale UI event arrives.
+    pub fn apply_ui(
+        &mut self,
+        command: Command,
+        queue_count: usize,
+        queue_selected: usize,
+    ) -> Result<Effect, String> {
+        if !self
+            .snapshot_for(queue_count, queue_selected)
+            .actions
+            .allows(&command)
+        {
+            return Ok(Effect::None);
+        }
+        self.apply(command)
     }
     pub fn restore(value: Value) -> Result<Self, String> {
         let mut workspace: Self = serde_json::from_value(value).map_err(|e| e.to_string())?;
@@ -395,6 +494,7 @@ impl Workspace {
                     tab.draft = Draft {
                         rows,
                         selected: vec![],
+                        anchor: None,
                     };
                     tab.undo.clear();
                     tab.redo.clear();
@@ -423,13 +523,29 @@ impl Workspace {
                 self.active = key;
             }
             Select { indices } => {
+                let anchor = indices.first().copied();
+                return self.apply(Selection {
+                    command: crate::selection::Command::Set { indices, anchor },
+                });
+            }
+            Selection { command } => {
                 let tab = self.active_mut()?;
-                tab.draft.selected = tab
-                    .draft
-                    .rows
+                if tab.loading.is_some() {
+                    return Ok(Effect::None);
+                }
+                let mut selection = crate::selection::Selection {
+                    indices: tab.selected_indices(),
+                    anchor: tab
+                        .draft
+                        .anchor
+                        .and_then(|id| tab.draft.rows.iter().position(|r| r.id == id)),
+                };
+                selection.apply(command, tab.draft.rows.len(), &[]);
+                tab.draft.anchor = selection.anchor.map(|i| tab.draft.rows[i].id);
+                tab.draft.selected = selection
+                    .indices
                     .iter()
-                    .enumerate()
-                    .filter_map(|(i, r)| indices.contains(&i).then_some(r.id))
+                    .map(|i| tab.draft.rows[*i].id)
                     .collect();
             }
             Append { entries } => {
@@ -440,6 +556,7 @@ impl Workspace {
                 let rows = self.rows(entries);
                 let tab = self.active_mut()?;
                 tab.draft.selected = rows.iter().map(|r| r.id).collect();
+                tab.draft.anchor = rows.first().map(|r| r.id);
                 tab.draft.rows.extend(rows);
             }
             Remove => {
@@ -452,6 +569,7 @@ impl Workspace {
                     .rows
                     .retain(|r| !tab.draft.selected.contains(&r.id));
                 tab.draft.selected.clear();
+                tab.draft.anchor = None;
             }
             Nudge { delta } => {
                 let tab = self.active_mut()?;
@@ -515,6 +633,9 @@ impl Workspace {
             Reload => {
                 if self.active_mut()?.dirty() {
                     return Err("Save or undo the draft before reloading".into());
+                }
+                if self.active_mut()?.saving.is_some() || self.active_mut()?.loading.is_some() {
+                    return Err("Wait for the playlist operation to finish before reloading".into());
                 }
                 self.serial += 1;
                 let generation = self.serial;

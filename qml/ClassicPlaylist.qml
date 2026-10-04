@@ -8,6 +8,17 @@ Item {
     signal closeRequested()
     property var selectedRows: []
     property int selectionAnchor: -1
+    readonly property var workspaceState: {
+        app.workspace_revision; app.playlist_revision
+        return JSON.parse(app.workspace_json_for_selection(selectedRows.length))
+    }
+    readonly property bool queueActive: workspaceState.active === "queue"
+    readonly property var savedPlaylists: {
+        app.playlists_revision
+        return JSON.parse(app.playlists_json()).playlists || []
+    }
+    readonly property var editorTheme: ({text: root.normal, base: root.normalBg,
+        alternateBase: root.normalBg, highlight: root.selectedBg, highlightedText: root.current})
     readonly property string sheet: (skin.assets || {}).pledit || ""
     readonly property var colors: skin.playlistColors || ({})
     readonly property color normal: colors.normal || "#00ff00"
@@ -15,14 +26,10 @@ Item {
     readonly property color normalBg: colors.normalbg || "#000000"
     readonly property color selectedBg: colors.selectedbg || "#0000c6"
     function selectRow(row, modifiers) {
-        if ((modifiers & Qt.ShiftModifier) && selectionAnchor >= 0) {
-            const rows = []
-            for (let i = Math.min(row, selectionAnchor); i <= Math.max(row, selectionAnchor); ++i) rows.push(i)
-            selectedRows = rows
-        } else if (modifiers & Qt.ControlModifier) {
-            selectedRows = selectedRows.includes(row) ? selectedRows.filter(i => i !== row) : selectedRows.concat([row])
-            selectionAnchor = row
-        } else { selectedRows = [row]; selectionAnchor = row }
+        const range = !!(modifiers & Qt.ShiftModifier), toggle = !!(modifiers & (Qt.ControlModifier | Qt.MetaModifier))
+        const state = JSON.parse(app.selection_json(JSON.stringify({indices:selectedRows,anchor:selectionAnchor >= 0 ? selectionAnchor : null}),
+            JSON.stringify({op:"choose",index:row,gesture:range ? (toggle ? "add_range" : "range") : (toggle ? "toggle" : "replace")}), app.playlist_count))
+        selectedRows = state.indices; selectionAnchor = state.anchor === null ? -1 : state.anchor
         list.currentIndex = row
         list.forceActiveFocus()
     }
@@ -63,10 +70,30 @@ Item {
     SkinSprite { y: root.height - 38; width: 125; height: 38; source: root.sheet; sheetY: 72 }
     SkinSprite { x: 125; y: root.height - 38; width: 150; height: 38; source: root.sheet; sheetX: 126; sheetY: 72 }
     Rectangle { x: 12; y: 20; width: 243; height: root.height - 58; color: root.normalBg }
+    ComboBox {
+        id: savedPicker
+        objectName: "classicSavedPlaylists"
+        x: 12; y: 20; width: 243; height: 28
+        model: root.savedPlaylists; textRole: "name"
+        displayText: qsTr("Open playlist…")
+        onActivated: {
+            const item = root.savedPlaylists[index]
+            root.app.open_playlist_tab(item.id, item.name)
+        }
+    }
+    PlaylistWorkspaceBar { x: 12; y: 48; width: 243; app: root.app; workspaceState: root.workspaceState }
+    PlaylistEditor {
+        objectName: "classicPlaylistEditor"
+        x: 12; y: 86; width: 243; height: root.height - 124
+        visible: !root.queueActive
+        app: root.app; workspaceState: root.workspaceState; theme: root.editorTheme
+        queueSelection: root.selectedRows; compact: true
+    }
     ListView {
         id: list
         objectName: "classicPlaylist"
-        x: 12; y: 20; width: 243; height: root.height - 58
+        x: 12; y: 86; width: 243; height: root.height - 124
+        visible: root.queueActive
         clip: true
         model: root.app.playlist_count
         reuseItems: true
@@ -124,7 +151,7 @@ Item {
         }
         ScrollBar.vertical: ScrollBar {
             parent: root
-            x: 259; y: 20; width: 8; height: list.height
+            x: 259; y: 86; width: 8; height: list.height
             policy: ScrollBar.AlwaysOn
             minimumSize: Math.min(1, 18 / height)
             contentItem: Item {
@@ -136,7 +163,8 @@ Item {
         KineticWheelHandler { view: list }
     }
     DropArea {
-        x: 12; y: 20; width: 243; height: root.height - 58
+        x: 12; y: 86; width: 243; height: root.height - 124
+        enabled: root.queueActive
         onDropped: drop => { if (drop.hasUrls) { root.app.enqueue_urls_json(JSON.stringify(drop.urls)); drop.acceptProposedAction() } }
     }
     Menu {
@@ -148,6 +176,7 @@ Item {
     }
     Item {
         y: root.height - 30; width: 275; height: 18
+        visible: root.queueActive
         Repeater {
             model: [qsTr("ADD"), qsTr("REM"), qsTr("SEL"), qsTr("MISC"), qsTr("LIST")]
             Item {

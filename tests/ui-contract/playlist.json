@@ -1,0 +1,673 @@
+{
+  "description": "Expected visible states and effects for equivalent playlist actions on every frontend.",
+  "steps": [
+    {
+      "command": {
+        "op": "sync",
+        "tracks": [
+          {
+            "id": "x",
+            "album": "Album"
+          },
+          {
+            "id": "y",
+            "album": "Album"
+          },
+          {
+            "id": "z",
+            "album": "Album"
+          }
+        ],
+        "current": null
+      },
+      "expect": {
+        "workspace.active": "queue",
+        "decision": null
+      }
+    },
+    {
+      "command": {
+        "op": "activate",
+        "index": 0,
+        "current": null
+      },
+      "expect": {
+        "activation": {
+          "action": "play",
+          "index": 0
+        }
+      }
+    },
+    {
+      "command": {
+        "op": "activate",
+        "index": 0,
+        "current": 0
+      },
+      "expect": {
+        "activation": {
+          "action": "toggle_playback"
+        }
+      }
+    },
+    {
+      "command": {
+        "op": "activate",
+        "index": 99,
+        "current": 0
+      },
+      "expect": {
+        "activation": null
+      }
+    },
+    {
+      "command": {
+        "op": "select_queue",
+        "command": {
+          "op": "choose",
+          "index": 1,
+          "gesture": "toggle"
+        }
+      },
+      "expect": {
+        "queue_selection.indices": [
+          1
+        ]
+      }
+    },
+    {
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "open",
+          "key": "test:1",
+          "scope": "test",
+          "playlist_id": 1,
+          "name": "Draft"
+        }
+      },
+      "expect": {
+        "workspace.tabs.1.loading": true,
+        "workspace.actions.queue": false,
+        "workspace.actions.save": false
+      }
+    },
+    {
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "queue",
+          "action": "play_now"
+        }
+      },
+      "expect": {
+        "workspace_effect.action": "none",
+        "decision": null
+      }
+    },
+    {
+      "load": [
+        {
+          "kind": "local",
+          "path": "/music/a.wav",
+          "entry": "",
+          "fragment": null
+        },
+        {
+          "kind": "local",
+          "path": "/music/b.wav",
+          "entry": "",
+          "fragment": null
+        },
+        {
+          "kind": "local",
+          "path": "/music/c.wav",
+          "entry": "",
+          "fragment": null
+        },
+        {
+          "kind": "local",
+          "path": "/music/d.wav",
+          "entry": "",
+          "fragment": null
+        }
+      ],
+      "expect": {
+        "workspace.entries": [
+          {
+            "kind": "local",
+            "path": "/music/a.wav",
+            "entry": "",
+            "fragment": null
+          },
+          {
+            "kind": "local",
+            "path": "/music/b.wav",
+            "entry": "",
+            "fragment": null
+          },
+          {
+            "kind": "local",
+            "path": "/music/c.wav",
+            "entry": "",
+            "fragment": null
+          },
+          {
+            "kind": "local",
+            "path": "/music/d.wav",
+            "entry": "",
+            "fragment": null
+          }
+        ],
+        "workspace.actions.queue": true,
+        "workspace.actions.reload": true,
+        "workspace.actions.save": false,
+        "workspace.actions.add_play_queue": true,
+        "workspace.actions.add_queue_selection": true
+      }
+    },
+    {
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "selection",
+          "command": {
+            "op": "choose",
+            "index": 2,
+            "gesture": "replace"
+          }
+        }
+      },
+      "expect": {
+        "workspace.selected": [
+          2
+        ],
+        "workspace.actions.remove": true,
+        "workspace.actions.move_down": true
+      }
+    },
+    {
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "selection",
+          "command": {
+            "op": "choose",
+            "index": 0,
+            "gesture": "range"
+          }
+        }
+      },
+      "expect": {
+        "workspace.selected": [
+          0,
+          1,
+          2
+        ]
+      }
+    },
+    {
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "selection",
+          "command": {
+            "op": "choose",
+            "index": 1,
+            "gesture": "range"
+          }
+        }
+      },
+      "expect": {
+        "workspace.selected": [
+          1,
+          2
+        ]
+      }
+    },
+    {
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "selection",
+          "command": {
+            "op": "choose",
+            "index": 0,
+            "gesture": "toggle"
+          }
+        }
+      },
+      "expect": {
+        "workspace.selected": [
+          0,
+          1,
+          2
+        ]
+      }
+    },
+    {
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "nudge",
+          "delta": 1
+        }
+      },
+      "expect": {
+        "workspace.selected": [
+          1,
+          2,
+          3
+        ],
+        "workspace.entries": [
+          {
+            "kind": "local",
+            "path": "/music/d.wav",
+            "entry": "",
+            "fragment": null
+          },
+          {
+            "kind": "local",
+            "path": "/music/a.wav",
+            "entry": "",
+            "fragment": null
+          },
+          {
+            "kind": "local",
+            "path": "/music/b.wav",
+            "entry": "",
+            "fragment": null
+          },
+          {
+            "kind": "local",
+            "path": "/music/c.wav",
+            "entry": "",
+            "fragment": null
+          }
+        ],
+        "workspace.actions.move_down": false,
+        "workspace.actions.save": true,
+        "workspace.actions.reload": false
+      }
+    },
+    {
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "reload"
+        }
+      },
+      "expect": {
+        "workspace_effect.action": "none",
+        "workspace.tabs.1.dirty": true
+      }
+    },
+    {
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "remove"
+        }
+      },
+      "expect": {
+        "workspace.entries": [
+          {
+            "kind": "local",
+            "path": "/music/d.wav",
+            "entry": "",
+            "fragment": null
+          }
+        ],
+        "workspace.selected": []
+      }
+    },
+    {
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "undo"
+        }
+      },
+      "expect": {
+        "workspace.entries": [
+          {
+            "kind": "local",
+            "path": "/music/d.wav",
+            "entry": "",
+            "fragment": null
+          },
+          {
+            "kind": "local",
+            "path": "/music/a.wav",
+            "entry": "",
+            "fragment": null
+          },
+          {
+            "kind": "local",
+            "path": "/music/b.wav",
+            "entry": "",
+            "fragment": null
+          },
+          {
+            "kind": "local",
+            "path": "/music/c.wav",
+            "entry": "",
+            "fragment": null
+          }
+        ],
+        "workspace.selected": [
+          1,
+          2,
+          3
+        ]
+      }
+    },
+    {
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "redo"
+        }
+      },
+      "expect": {
+        "workspace.entries": [
+          {
+            "kind": "local",
+            "path": "/music/d.wav",
+            "entry": "",
+            "fragment": null
+          }
+        ],
+        "workspace.selected": []
+      }
+    },
+    {
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "undo"
+        }
+      },
+      "expect": {
+        "workspace.entries": [
+          {
+            "kind": "local",
+            "path": "/music/d.wav",
+            "entry": "",
+            "fragment": null
+          },
+          {
+            "kind": "local",
+            "path": "/music/a.wav",
+            "entry": "",
+            "fragment": null
+          },
+          {
+            "kind": "local",
+            "path": "/music/b.wav",
+            "entry": "",
+            "fragment": null
+          },
+          {
+            "kind": "local",
+            "path": "/music/c.wav",
+            "entry": "",
+            "fragment": null
+          }
+        ],
+        "workspace.actions.undo": true
+      }
+    },
+    {
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "queue",
+          "action": "play_next"
+        }
+      },
+      "expect": {
+        "workspace_effect.action": "queue",
+        "workspace_effect.mode": "play_next",
+        "workspace_effect.entries": [
+          {
+            "kind": "local",
+            "path": "/music/a.wav",
+            "entry": "",
+            "fragment": null
+          },
+          {
+            "kind": "local",
+            "path": "/music/b.wav",
+            "entry": "",
+            "fragment": null
+          },
+          {
+            "kind": "local",
+            "path": "/music/c.wav",
+            "entry": "",
+            "fragment": null
+          }
+        ],
+        "decision": null,
+        "queued": []
+      }
+    },
+    {
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "close",
+          "key": "test:1"
+        }
+      },
+      "expect": {
+        "workspace.pending_close": "test:1",
+        "workspace.actions.queue": false
+      }
+    },
+    {
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "resolve_close",
+          "choice": "cancel"
+        }
+      },
+      "expect": {
+        "workspace.pending_close": null,
+        "workspace.tabs.1.dirty": true
+      }
+    },
+    {
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "save"
+        }
+      },
+      "expect": {
+        "workspace.tabs.1.saving": true,
+        "workspace.actions.save": false
+      }
+    },
+    {
+      "save_ok": true,
+      "expect": {
+        "workspace.tabs.1.dirty": false,
+        "workspace.tabs.1.saving": false,
+        "workspace.actions.reload": true
+      }
+    },
+    {
+      "command": {
+        "op": "sync",
+        "tracks": [
+          {
+            "id": "y",
+            "album": "Album"
+          },
+          {
+            "id": "x",
+            "album": "Album"
+          },
+          {
+            "id": "z",
+            "album": "Album"
+          }
+        ],
+        "current": null,
+        "old_to_new": [
+          1,
+          0,
+          2
+        ]
+      },
+      "expect": {
+        "queue_selection.indices": [
+          0
+        ]
+      }
+    },
+    {
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "close",
+          "key": "test:1"
+        }
+      },
+      "expect": {
+        "workspace.active": "queue",
+        "workspace.pending_close": null
+      }
+    },
+    {
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "open",
+          "key": "test:0",
+          "scope": "test",
+          "playlist_id": 0,
+          "name": "Favorites"
+        }
+      },
+      "expect": {
+        "workspace.tabs.1.readonly": true
+      }
+    },
+    {
+      "load": [
+        {
+          "kind": "local",
+          "path": "/music/a.wav",
+          "entry": "",
+          "fragment": null
+        },
+        {
+          "kind": "local",
+          "path": "/music/b.wav",
+          "entry": "",
+          "fragment": null
+        },
+        {
+          "kind": "local",
+          "path": "/music/c.wav",
+          "entry": "",
+          "fragment": null
+        },
+        {
+          "kind": "local",
+          "path": "/music/d.wav",
+          "entry": "",
+          "fragment": null
+        }
+      ],
+      "expect": {
+        "workspace.actions.queue": true,
+        "workspace.actions.save": false,
+        "workspace.actions.add_play_queue": false,
+        "workspace.actions.add_queue_selection": false
+      }
+    },
+    {
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "selection",
+          "command": {
+            "op": "choose",
+            "index": 0,
+            "gesture": "toggle"
+          }
+        }
+      },
+      "expect": {
+        "workspace.selected": [
+          0
+        ],
+        "workspace.actions.remove": false,
+        "workspace.actions.move_down": false
+      }
+    },
+    {
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "remove"
+        }
+      },
+      "expect": {
+        "workspace.entries": [
+          {
+            "kind": "local",
+            "path": "/music/a.wav",
+            "entry": "",
+            "fragment": null
+          },
+          {
+            "kind": "local",
+            "path": "/music/b.wav",
+            "entry": "",
+            "fragment": null
+          },
+          {
+            "kind": "local",
+            "path": "/music/c.wav",
+            "entry": "",
+            "fragment": null
+          },
+          {
+            "kind": "local",
+            "path": "/music/d.wav",
+            "entry": "",
+            "fragment": null
+          }
+        ],
+        "workspace_effect.action": "none"
+      }
+    },
+    {
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "queue",
+          "action": "add_to_queue"
+        }
+      },
+      "expect": {
+        "workspace_effect.entries": [
+          {
+            "kind": "local",
+            "path": "/music/a.wav",
+            "entry": "",
+            "fragment": null
+          }
+        ],
+        "workspace_effect.mode": "add_to_queue",
+        "decision": null
+      }
+    }
+  ]
+}

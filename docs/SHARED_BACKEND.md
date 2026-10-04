@@ -12,6 +12,8 @@ or current track across devices.
 | Next, Previous, end of stream, failed open | `kog-playback-policy::PlaybackOrder` | Execute `Play`, `Radio`, or `Stop`; report successful starts and failed opens |
 | Shuffle, repeat, queue overrides, stop after | `PlaybackOrder` | Send commands; display returned state; remap row identities on edits |
 | Natural text, numeric, album/disc/track and star sorting | `kog-playback-policy::sort` | Supply raw metadata; apply returned order |
+| Selection, range anchor, activation | `kog-playback-policy::selection` | Translate gestures; retain returned indices and anchor |
+| Saved playlist tabs, edits, undo, dirty close, enabled actions | `kog-playback-policy::workspace` | Render snapshots; execute load/save/queue effects |
 | Playlist text filtering | `sort::matches_query` | Supply searchable metadata and display matching rows |
 | Radio picks, subsongs, blacklists, persisted rounds | `kog-server::radio::Radio` | Supply root and scope |
 | Ready radio buffer, waiting, stale replies | `kog-playback-policy::radio::RadioBuffer` | Schedule service requests; honor generation checks |
@@ -66,3 +68,51 @@ runtime parity.
 
 New UI controls must call these backend commands. If a rule is missing, add it
 to Rust and its contract tests before wiring a frontend-specific handler.
+
+## Equivalent playlist interactions
+
+Qt (including Classic), terminal, Web, SwiftUI, and Compose dispatch the same
+workspace commands. Opening a saved playlist focuses an editor tab and leaves
+playback unchanged. Explicit Play Now, Play Next, and Add to Queue copy the
+selection, or the whole draft when nothing is selected. Add Play Queue copies
+all queue rows; Add Queue Selection copies only selected rows. Favorites uses
+the same read-only snapshot. Saving acknowledges a specific revision, and
+checked storage writes reject conflicts with another editor.
+
+The backend supplies enabled actions, including loading/saving, pending-close,
+read-only, selection, history, and move boundaries. Disabled commands also do
+nothing when sent through shortcuts. Selection replaces, toggles, or extends a
+range with a stable anchor. Queue filters affect Select All Results and range
+order without changing the queue. Activating the current row toggles playback;
+activating another row starts it. Touch, keyboard, and mouse gesture recognition
+remain native to each frontend.
+
+### UI contract checks
+
+`tests/ui-contract/playlist.json` contains expected states and effects for 30
+steps, covering activation, queue selection remapping, editor selection, action
+availability, edits, history, saving, dirty close, and Favorites. The same
+transcript runs through native Rust plus its JSON wire, the production Swift/C
+bridge, and the packaged Android JNI bridge and UI snapshot parser. These tests
+check the actual language boundaries; they are not screenshots or device audio
+tests.
+
+- Rust: `cargo test -p kog-playback-policy`.
+- Swift/C: `bash tests/ui-contract/run-swift.sh` (Swift and Rust required).
+- Android: build `assembleDebug` and `assembleDebugAndroidTest`, install both
+  APKs, then run `adb shell am instrument -w
+  org.kog.player.test/org.kog.player.UiContractInstrumentation`.
+- Qt: after a native build, `nix develop --command bash
+  tests/playlist-workspace/run-qt.sh` exercises the real controller and both
+  editor components, including range shrinking and enabled actions.
+- Terminal: `nix develop --command python3
+  tests/playlist-workspace/tui-smoke.py` drives the actual app in a private PTY
+  and checks stored draft and database outcomes.
+- Browser: build WebAssembly and exercise tabs, action availability, filtered
+  selection, save/close, and current-row activation against a private server.
+
+The shared-backend workflow runs policy/Web checks, the Swift bridge transcript
+and iOS SDK typecheck, and Android UI/instrumentation compilation. Android JNI
+instrumentation and Qt/terminal/browser runtime checks run separately. This
+verifies the shared interaction contract; hardware output, operating-system
+interruptions, and every native gesture still require platform-specific tests.

@@ -148,7 +148,7 @@ ApplicationWindow {
         case "savePlaylist": app.save_playlist(); break
         case "restore": hide(); mainWindow.showFromTray(); break
         case "shuffle": if (["off", "all", "albums"].indexOf(data) >= 0) app.select_shuffle_mode(data); break
-        case "repeat": if (["off", "playlist", "track"].indexOf(data) >= 0) app.select_repeat_mode(data); break
+        case "repeat": if (["off", "playlist", "track", "one", "album", "all"].indexOf(data) >= 0) app.select_repeat_mode(data); break
         case "eqBand":
             if (data && number(data.index) && Math.floor(data.index) === data.index && data.index >= 0 && data.index < 10 && number(data.gain))
                 app.update_skin_equalizer_band(data.index, Math.max(-20, Math.min(20, data.gain)))

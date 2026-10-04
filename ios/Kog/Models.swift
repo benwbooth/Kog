@@ -186,3 +186,31 @@ struct TrackSort: Identifiable {
 }
 
 struct RadioBatch { var tracks: [Track]; var exhausted: Bool }
+
+struct PlaylistWorkspaceTab: Decodable, Identifiable {
+    var key: String
+    var scope: String
+    var playlist_id: Int64
+    var name: String
+    var dirty: Bool
+    var readonly: Bool
+    var loading: Bool
+    var saving: Bool
+    var count: Int
+    var id: String { key }
+}
+struct PlaylistWorkspaceSnapshot: Decodable {
+    var active: String
+    var tabs: [PlaylistWorkspaceTab]
+    var entries: [Track]
+    var selected: [Int]
+    var can_undo: Bool
+    var can_redo: Bool
+    var pending_close: String?
+    var error: String?
+    var actions: [String: Bool] = [:]
+    var activeTab: PlaylistWorkspaceTab? { tabs.first { $0.key == active } }
+    static let empty = PlaylistWorkspaceSnapshot(active: "queue", tabs: [PlaylistWorkspaceTab(
+        key: "queue", scope: "", playlist_id: -1, name: "Play Queue", dirty: false, readonly: false,
+        loading: false, saving: false, count: 0)], entries: [], selected: [], can_undo: false, can_redo: false)
+}

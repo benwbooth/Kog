@@ -56,6 +56,8 @@ class KogState(private val context: Context) {
         private set
     var libraryRoot by mutableStateOf("")
         private set
+    var queueSelection by mutableStateOf(setOf<Int>())
+        private set
     var workspace by mutableStateOf(PlaylistWorkspaceSnapshot())
         private set
     var selectedPlaylist by mutableStateOf<SavedPlaylist?>(null)
@@ -294,6 +296,7 @@ class KogState(private val context: Context) {
         }.orEmpty()
         queuedIndices = indices("queued")
         stopAfterIndices = indices("stop_after")
+        snapshot.optJSONObject("queue_selection")?.optJSONArray("indices")?.let { indices -> queueSelection = (0 until indices.length()).map(indices::getInt).toSet() }
         snapshot.optJSONObject("workspace")?.let { workspace = PlaylistWorkspaceSnapshot.parse(it) }
         if (!snapshot.isNull("error")) snapshot.optString("error").takeIf(String::isNotEmpty)?.let { error = it }
     }
@@ -433,18 +436,31 @@ class KogState(private val context: Context) {
         saveQueue()
     }
 
+    var queueFilter by mutableStateOf("")
     private var sortField = ""
     private var sortDescending = false
     fun sortQueue(field: String) {
         if (field == sortField) sortDescending = !sortDescending else { sortField = field; sortDescending = false }
-        val rows = queue.map { track ->
-            JSONObject().put("title", track.label).put("artist", track.artist).put("album", track.album)
-                .put("track_number", track.trackNumber ?: JSONObject.NULL).put("disc_number", track.discNumber ?: JSONObject.NULL)
-                .put("duration", if (track.duration > 0) track.duration / 1000.0 else JSONObject.NULL)
-                .put("star", track.key in stars)
-        }
-        policyCommand("sort_rows", JSONObject().put("rows", JSONArray(rows)).put("column", field.lowercase()).put("descending", sortDescending))
+        policyCommand("sort_rows", JSONObject().put("rows", policyRows()).put("column", field).put("descending", sortDescending))
     }
+    private fun policyRows(): JSONArray = JSONArray(queue.map { track ->
+        val row = JSONObject().put("title", track.label).put("artist", track.artist).put("album", track.album)
+            .put("track_number", track.trackNumber ?: JSONObject.NULL).put("disc_number", track.discNumber ?: JSONObject.NULL)
+            .put("duration", if (track.duration > 0) track.duration / 1000.0 else JSONObject.NULL)
+            .put("path", if (track.entry.isEmpty()) track.path else "${track.path}/${track.entry}")
+            .put("filename", track.entry.ifBlank { track.path }.substringAfterLast('/')).put("star", track.key in stars)
+        for (key in listOf("albumArtist", "composer", "genre", "codec")) row.put(key, track.metadata[key].orEmpty())
+        for (key in listOf("year", "fileSizeBytes", "sampleRate", "bitsPerSample", "bitrate", "channels"))
+            row.put(key, track.metadata[key]?.toDoubleOrNull() ?: JSONObject.NULL)
+        row
+    })
+    fun filteredQueueIndices(): List<Int> {
+        if (queueFilter.isBlank()) return queue.indices.toList()
+        val rows = SharedPlaybackPolicy.query(JSONObject().put("op", "filter_rows").put("rows", policyRows()).put("query", queueFilter)).getJSONArray("indices")
+        return (0 until rows.length()).map(rows::getInt)
+    }
+    fun selectQueueIndices(indices: List<Int>) = policyCommand("select_queue", JSONObject().put("command",
+        JSONObject().put("op", "set").put("indices", JSONArray(indices)).put("anchor", indices.firstOrNull() ?: JSONObject.NULL)))
 
     fun shuffle() = policyCommand("cycle_shuffle")
     fun repeat() = policyCommand("cycle_repeat")
@@ -471,14 +487,19 @@ class KogState(private val context: Context) {
             .put("playlist_id", item.id).put("name", item.name).put("readonly", item.id == 0L))
     }
     fun workspaceSelect(index: Int) {
-        val selection = workspace.selected.toMutableSet()
-        if (!selection.add(index)) selection.remove(index)
-        workspaceCommand("select", JSONObject().put("indices", JSONArray(selection.sorted())))
+        workspaceCommand("selection", JSONObject().put("command", JSONObject().put("op", "choose").put("index", index).put("gesture", "toggle")))
     }
-    fun workspaceAppendQueue() {
+    fun activate(index: Int) = policyCommand("activate", JSONObject().put("index", index))
+    fun selectQueue(op: String, index: Int? = null) {
+        val command = JSONObject().put("op", op)
+        if (index != null) command.put("index", index).put("gesture", "toggle")
+        policyCommand("select_queue", JSONObject().put("command", command))
+    }
+    fun workspaceAppendQueue(selectionOnly: Boolean = false) {
+        val rows = queue.filterIndexed { index, _ -> !selectionOnly || index in queueSelection }
         val onDevice = workspace.tabs.firstOrNull { it.key == workspace.active }?.scope == "device"
-        if (queue.any { it.kind != "remote" && it.isDevice != onDevice }) { error = "Choose a playlist in the same library as these tracks."; return }
-        workspaceCommand("append", JSONObject().put("entries", JSONArray(queue.map { it.saved() })))
+        if (rows.any { it.kind != "remote" && it.isDevice != onDevice }) { error = "Choose a playlist in the same library as these tracks."; return }
+        workspaceCommand("append", JSONObject().put("entries", JSONArray(rows.map { it.saved() })))
     }
 
     private val playlistApi get() = if (libraryOnDevice) deviceApi else api

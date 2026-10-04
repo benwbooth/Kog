@@ -84,6 +84,7 @@ final class KogStore: ObservableObject {
     private var searchTask: Task<Void, Never>?
     private var importScanTask: Task<Void, Never>?
     private let policy = SharedPlaybackPolicy()
+    @Published private(set) var queueSelection = Set<Int>()
     @Published private(set) var workspace = PlaylistWorkspaceSnapshot.empty
     private var lastWorkspaceData: Data?
     private var workspaceQueueGeneration = 0
@@ -381,6 +382,7 @@ final class KogStore: ObservableObject {
         UserDefaults.standard.set(shuffle.rawValue, forKey: "shuffle_mode")
         radio = policy.radio["enabled"] as? Bool ?? false
         radioBusy = policy.radio["pending"] as? Bool ?? false
+        queueSelection = Set((policy.snapshot["queue_selection"] as? [String: Any])?["indices"] as? [Int] ?? [])
         queuedIndices = policy.snapshot["queued"] as? [Int] ?? []
         stopAfterIndices = Set(policy.snapshot["stop_after"] as? [Int] ?? [])
         if let value = policy.snapshot["workspace"], let data = try? JSONSerialization.data(withJSONObject: value),
@@ -576,6 +578,12 @@ final class KogStore: ObservableObject {
         #if KOG_NATIVE_AUDIO
         nativeTimer?.invalidate(); nativeTimer = nil
         #endif
+    }
+
+    func activateIndex(_ index: Int) {
+        guard let activation = policyCommand(["op": "activate", "index": index, "current": SharedPlaybackPolicy.index(currentIndex)])?["activation"] as? [String: Any] else { return }
+        if activation["action"] as? String == "toggle_playback" { togglePlayback() }
+        else if let index = activation["index"] as? Int { playIndex(index) }
     }
 
     func togglePlayback() {
@@ -807,10 +815,12 @@ final class KogStore: ObservableObject {
         } catch { report(error) }
     }
     func workspaceSelect(_ index: Int) {
-        var indices = Set(workspace.selected)
-        if !indices.insert(index).inserted { indices.remove(index) }
-        workspaceCommand(["op": "select", "indices": indices.sorted()])
+        workspaceCommand(["op": "selection", "command": ["op": "choose", "index": index, "gesture": "toggle"]])
     }
+    func selectQueue(_ command: [String: Any]) {
+        _ = policyCommand(["op": "select_queue", "command": command])
+    }
+
     func workspaceCommand(_ command: [String: Any]) {
         guard let reply = policyCommand(["op": "workspace", "command": command], sync: false),
               let effect = reply["workspace_effect"] as? [String: Any], let action = effect["action"] as? String else { return }

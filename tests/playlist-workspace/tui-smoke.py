@@ -61,7 +61,13 @@ with tempfile.TemporaryDirectory(prefix="kog-playlist-tui-") as directory:
         send(b"\x1b[B")  # Favorites -> saved playlist
         send(b"\r")
         wait(lambda value:value["active"]=="local:1" and len(value["tabs"][0]["draft"]["rows"])==2,"Enter should open a draft tab")
-        send(b"x")
+        send(b"\x13")  # disabled Save on clean draft must be a no-op
+        assert count()==2,"Clean Save changed stored contents"
+        send(b"\x1b[H")  # Home: replace selection at first row
+        send(b"\x1b[1;2B")  # Shift+Down: range from original anchor
+        wait(lambda value:len(value["tabs"][0]["draft"]["selected"])==2,"Range selects both rows")
+        send(b"\x1b[1;2A")  # Shift+Up: shrink range
+        wait(lambda value:len(value["tabs"][0]["draft"]["selected"])==1,"Range shrinks to anchor")
         send(b"d")
         wait(lambda value:len(value["tabs"][0]["draft"]["rows"])==1,"Delete draft row")
         assert count()==2,"Draft edit wrote through before Save"

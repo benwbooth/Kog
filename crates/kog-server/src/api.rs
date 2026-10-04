@@ -486,61 +486,17 @@ fn expand_locator(
     root: Option<&std::path::Path>,
     request: &ExpandEntry,
 ) -> Vec<BrowseFile> {
-    let entry = request.entry.clone().unwrap_or_default();
-    let fragment = request.fragment.clone().unwrap_or_default();
-    if !fragment.trim().is_empty() {
-        let name = request
-            .name
-            .clone()
-            .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| expand_single_name(&request.kind, &request.path, &entry));
-        return vec![BrowseFile {
-            name,
-            path: request.path.clone(),
-            relative: expand_single_name(&request.kind, &request.path, &entry),
-            kind: request.kind.clone(),
-            entry,
-            fragment: Some(fragment.trim().to_owned()),
-        }];
-    }
-    let expanded = match request.kind.as_str() {
-        "local" => {
-            if request.path.trim().is_empty() {
-                return Vec::new();
-            }
-            let path = std::path::PathBuf::from(&request.path);
-            if path.is_dir() {
-                return Vec::new();
-            }
-            decoders.expand_detailed(path)
-        }
-        "archive" => {
-            if request.path.trim().is_empty() || entry.trim().is_empty() {
-                return Vec::new();
-            }
-            let url = kog_audio::archive::member_url(
-                std::path::Path::new(&request.path),
-                &entry,
-                false,
-            );
-            decoders.expand_detailed(url)
-        }
-        "remote" => {
-            if request.path.trim().is_empty() {
-                return Vec::new();
-            }
-            decoders.expand_remote_url(&request.path)
-        }
-        _ => return Vec::new(),
+    let stored = StoredEntry {
+        kind: request.kind.clone(), path: request.path.clone(),
+        entry: request.entry.clone().unwrap_or_default(), fragment: request.fragment.clone(),
     };
-    match expanded {
-        Ok(expansion) => expansion
-            .sources
-            .iter()
-            .map(|source| expand_source_browse_file(decoders, source, root))
-            .collect(),
-        Err(_) => Vec::new(),
-    }
+    decoders.expand_queue_entry(&stored).iter().map(|source| {
+        let mut row = expand_source_browse_file(decoders, source, root);
+        if request.fragment.as_ref().is_some_and(|s| !s.trim().is_empty()) {
+            if let Some(name) = request.name.as_ref().filter(|s| !s.is_empty()) { row.name = name.clone(); }
+        }
+        row
+    }).collect()
 }
 
 /// Reuse the HTTP expansion rules in native frontends. A multi-song locator
@@ -573,21 +529,6 @@ pub fn expand_stored_entry(
             )
         })
         .collect()
-}
-
-/// Display name for a locator that already addresses one track: the file (or
-/// member) name the pane would show.
-fn expand_single_name(kind: &str, path: &str, entry: &str) -> String {
-    if kind == "archive" && !entry.is_empty() {
-        return std::path::Path::new(entry)
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| entry.to_owned());
-    }
-    if kind == "remote" {
-        return path.rsplit('/').next().unwrap_or(path).to_owned();
-    }
-    browse_file_name(std::path::Path::new(path))
 }
 
 /// One expanded source as a browse row: the shared locator mapping, plus the
@@ -2504,6 +2445,10 @@ pub fn entry_json(entry: StoredEntry) -> serde_json::Value {
 }
 
 /// Decode draft entries using the same locator validation used by playback.
+pub fn queue_entries_from_json(entries: &[serde_json::Value]) -> Vec<StoredEntry> {
+    entries.iter().flat_map(|entry| stored_entries_from_json(std::slice::from_ref(entry)).unwrap_or_default()).collect()
+}
+
 pub fn stored_entries_from_json(entries: &[serde_json::Value]) -> Result<Vec<StoredEntry>, String> {
     entries.iter().map(|value| {
         let entry: MetadataEntry = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
@@ -3003,6 +2948,27 @@ mod tests {
         assert_eq!(tracks.len(), 1);
         assert_eq!(tracks[0].fragment.as_deref(), Some("2"));
         assert_eq!(tracks[0].name, "Game [3]");
+    }
+
+    #[test]
+    fn mixed_queue_batch_skips_bad_rows_without_losing_valid_duplicates() {
+        let directory = tempfile::tempdir().unwrap();
+        let wav = directory.path().join("song.wav");
+        write_test_wav(&wav);
+        let decoders = kog_audio::decoder::DecoderRegistry::new(
+            kog_audio::settings::AppSettings::load().decoder_settings(),
+        );
+        let valid = serde_json::json!({"kind":"local", "path":wav});
+        let entries = vec![valid.clone(), serde_json::json!({"kind":"bogus", "path":"invalid"}),
+            serde_json::json!({"kind":"local", "path":""}), valid];
+        assert!(stored_entries_from_json(&entries).is_err(), "saving must reject malformed entries");
+        let rows = queue_entries_from_json(&entries);
+        let native: Vec<_> = rows.iter().flat_map(|row| decoders.expand_queue_entry(row)).collect();
+        let service: Vec<_> = rows.iter().flat_map(|row| expand_stored_entry(&decoders, None, row, "song")).collect();
+        assert_eq!(native.len(), 2);
+        assert_eq!(service.len(), 2);
+        assert_eq!(service[0].1.path, wav.to_string_lossy());
+        assert_eq!(service[0].1, service[1].1, "duplicates are independent queue rows");
     }
 
     #[test]

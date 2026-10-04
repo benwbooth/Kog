@@ -1,8 +1,8 @@
 import Foundation
 
-@_silgen_name("kog_playback_policy")
+@_silgen_name("kog_policy_json")
 private func playbackPolicy(_ input: UnsafePointer<CChar>, _ error: UnsafeMutablePointer<CChar>, _ capacity: Int) -> UnsafeMutablePointer<CChar>?
-@_silgen_name("kog_audio_string_free")
+@_silgen_name("kog_policy_string_free")
 private func playbackPolicyFree(_ string: UnsafeMutablePointer<CChar>)
 
 /// Serialization only. All ordering, radio lifecycle, and comparison rules

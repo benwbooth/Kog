@@ -53,6 +53,7 @@ import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Sort
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -190,9 +191,13 @@ private fun KogApp(state: KogState, pickFiles: () -> Unit, pickFolder: () -> Uni
                 Box {
                     IconButton(onClick = { sortMenu = true }) { Icon(Icons.Default.Sort, "Sort queue") }
                     DropdownMenu(expanded = sortMenu, onDismissRequest = { sortMenu = false }) {
-                        listOf("Title", "Artist", "Album", "Duration").forEach { name ->
+                        listOf("Title" to "title", "Artist" to "artist", "Album" to "album", "Duration" to "duration",
+                            "Album artist" to "albumArtist", "Composer" to "composer", "Genre" to "genre", "Year" to "year",
+                            "Disc number" to "discNumber", "Track number" to "trackNumber", "File size" to "fileSizeBytes",
+                            "Sample rate" to "sampleRate", "Bit depth" to "bitsPerSample", "Bitrate" to "bitrate", "Channels" to "channels",
+                            "Codec" to "codec", "Path" to "path", "Filename" to "filename", "Favorites" to "star", "Original order" to "original").forEach { (name, key) ->
                             DropdownMenuItem(text = { Text("Sort by $name") }, onClick = {
-                                state.sortQueue(name); sortMenu = false
+                                state.sortQueue(key); sortMenu = false
                             })
                         }
                         DropdownMenuItem(text = { Text("Clear queue") }, onClick = {
@@ -385,10 +390,10 @@ private fun DeviceLibraryView(state: KogState, pickFiles: () -> Unit, pickFolder
 }
 
 @Composable
-private fun SearchBox(text: String, onChange: (String) -> Unit) {
+private fun SearchBox(text: String, onChange: (String) -> Unit, placeholder: String = "Search files and folders") {
     OutlinedTextField(value = text, onValueChange = onChange,
         modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp).height(50.dp),
-        singleLine = true, placeholder = { Text("Search files and folders", fontSize = 14.sp) },
+        singleLine = true, placeholder = { Text(placeholder, fontSize = 14.sp) },
         leadingIcon = { Icon(Icons.Default.Search, null, Modifier.size(20.dp)) },
         trailingIcon = { if (text.isNotEmpty()) IconButton(onClick = { onChange("") }) {
             Icon(Icons.Default.Close, "Clear search") } },
@@ -407,29 +412,46 @@ private fun QueueView(state: KogState, openLibrary: () -> Unit) {
 @Composable
 private fun QueueContents(state: KogState, openLibrary: () -> Unit) {
     val rows = state.queue.toList()
+    var selecting by remember { mutableStateOf(false) }
+    val visibleRows = state.filteredQueueIndices()
     if (rows.isEmpty()) {
         EmptyPanel("Your queue is empty", "Browse your library or add files from this device.") {
             Button(onClick = openLibrary) { Text("Browse library") }
         }
         return
     }
-    LazyColumn(Modifier.fillMaxSize().background(Base)) {
-        itemsIndexed(rows, key = { index, track -> "${track.key}:$index" }) { index, track ->
-            QueueTrack(state, track, index)
-            HorizontalDivider(color = Border)
+    Column(Modifier.fillMaxSize()) {
+        SearchBox(state.queueFilter, { state.queueFilter = it }, "Search playlist")
+        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(if (selecting) "${state.queueSelection.size} selected" else "${visibleRows.size} / ${rows.size} tracks", Modifier.weight(1f), color = Muted)
+            TextButton(onClick = { selecting = !selecting; state.selectQueue("clear") }) { Text(if (selecting) "Done" else "Select") }
+            if (selecting) {
+                TextButton(onClick = { state.selectQueueIndices(visibleRows) }) { Text("All") }
+                TextButton(enabled = state.queueSelection.isNotEmpty(), onClick = {
+                    state.queueSelection.sortedDescending().forEach(state::remove)
+                    state.selectQueue("clear")
+                }) { Text("Remove") }
+            }
+        }
+        LazyColumn(Modifier.weight(1f).fillMaxWidth().background(Base)) {
+            itemsIndexed(visibleRows, key = { _, index -> "${rows[index].key}:$index" }) { _, index ->
+                QueueTrack(state, rows[index], index, selecting)
+                HorizontalDivider(color = Border)
+            }
         }
     }
 }
 
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-private fun QueueTrack(state: KogState, track: Track, index: Int) {
+private fun QueueTrack(state: KogState, track: Track, index: Int, selecting: Boolean = false) {
     var menu by remember { mutableStateOf(false) }
     val active = index == state.currentIndex
     Row(Modifier.fillMaxWidth().height(60.dp)
         .background(if (active) Accent.copy(alpha = 0.12f) else Base)
-        .combinedClickable(onClick = { if (active) state.toggle() else state.play(index) }, onLongClick = { menu = true })
+        .combinedClickable(onClick = { if (selecting) state.selectQueue("choose", index) else state.activate(index) }, onLongClick = { menu = true })
         .padding(start = 12.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        if (selecting) Checkbox(index in state.queueSelection, onCheckedChange = { state.selectQueue("choose", index) })
         FormatIcon(track, Modifier.width(28.dp))
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {

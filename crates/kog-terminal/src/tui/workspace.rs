@@ -1,5 +1,6 @@
 //! Terminal adapter for the portable saved-playlist draft model.
 use super::*;
+use kog_audio::playback_order::selection::{Command as Select, Gesture};
 use kog_audio::playback_order::workspace::{CloseChoice, Command, Effect, QueueAction, Workspace};
 
 pub(super) fn restore() -> Workspace {
@@ -11,7 +12,9 @@ pub(super) fn restore() -> Workspace {
 }
 impl Ui {
     pub(super) fn workspace_command(&mut self, command: Command) {
-        let effect = self.workspace.apply(command);
+        let effect =
+            self.workspace
+                .apply_ui(command, self.tracks.len(), self.selected_tracks.len());
         if let Some(path) = kog_audio::settings::setting_path("playlist-tabs-tui.json") {
             let result = (|| -> Result<(), String> {
                 let parent = path.parent().ok_or("Invalid workspace settings path")?;
@@ -88,13 +91,7 @@ impl Ui {
                 self.workspace_command(command);
             }
             Ok(Effect::Queue { mode, entries, .. }) => {
-                let entries = match kog_server::api::stored_entries_from_json(&entries) {
-                    Ok(entries) => entries,
-                    Err(error) => {
-                        self.status = error;
-                        return;
-                    }
-                };
+                let entries = kog_server::api::queue_entries_from_json(&entries);
                 let decoders = self
                     .decoders
                     .background_worker(self.decoder_settings.clone());
@@ -161,7 +158,9 @@ impl Ui {
         }
     }
     fn workspace_cycle(&mut self, delta: isize) {
-        let state = self.workspace.snapshot();
+        let state = self
+            .workspace
+            .snapshot_for(self.tracks.len(), self.selected_tracks.len());
         let index = state
             .tabs
             .iter()
@@ -186,7 +185,9 @@ impl Ui {
         self.workspace_command(Command::Append { entries });
     }
     pub(super) fn workspace_key(&mut self, key: Key, size: (usize, usize)) -> bool {
-        let state = self.workspace.snapshot();
+        let state = self
+            .workspace
+            .snapshot_for(self.tracks.len(), self.selected_tracks.len());
         if state.pending_close.is_some() {
             let choice = match key {
                 Key::Char('s') | Key::CtrlS => Some(CloseChoice::Save),
@@ -251,19 +252,18 @@ impl Ui {
                 self.workspace_append_queue(false);
                 return true;
             }
-            Key::CtrlA => Some(Command::Select {
-                indices: (0..state.entries.len()).collect(),
+            Key::CtrlA => Some(Command::Selection {
+                command: Select::All,
             }),
-            Key::Esc => Some(Command::Select { indices: vec![] }),
-            Key::Char('x') | Key::CtrlSpace | Key::Enter => {
-                let mut indices = state.selected;
-                if let Some(at) = indices.iter().position(|i| *i == self.workspace_cursor) {
-                    indices.remove(at);
-                } else {
-                    indices.push(self.workspace_cursor);
-                }
-                Some(Command::Select { indices })
-            }
+            Key::Esc => Some(Command::Selection {
+                command: Select::Clear,
+            }),
+            Key::Char('x') | Key::CtrlSpace | Key::Enter => Some(Command::Selection {
+                command: Select::Choose {
+                    index: self.workspace_cursor,
+                    gesture: Gesture::Toggle,
+                },
+            }),
             Key::Up
             | Key::Down
             | Key::Char('j')
@@ -283,14 +283,16 @@ impl Ui {
                     Key::PageDown => old.saturating_add(size.1.saturating_sub(9)).min(last),
                     _ => (old + 1).min(last),
                 };
-                let indices = if matches!(key, Key::ShiftUp | Key::ShiftDown) {
-                    let anchor = state.selected.first().copied().unwrap_or(old);
-                    (anchor.min(self.workspace_cursor)..=anchor.max(self.workspace_cursor))
-                        .collect()
-                } else {
-                    vec![self.workspace_cursor]
-                };
-                Some(Command::Select { indices })
+                Some(Command::Selection {
+                    command: Select::Choose {
+                        index: self.workspace_cursor,
+                        gesture: if matches!(key, Key::ShiftUp | Key::ShiftDown) {
+                            Gesture::Range
+                        } else {
+                            Gesture::Replace
+                        },
+                    },
+                })
             }
             // Queue-only operations must not silently act on the hidden queue.
             Key::Backspace | Key::CtrlUp | Key::CtrlDown | Key::Char('D') | Key::Char('H') => {
@@ -304,7 +306,9 @@ impl Ui {
         true
     }
     fn workspace_tab_cells(&self, width: usize) -> Vec<(usize, usize, String, String, bool)> {
-        let state = self.workspace.snapshot();
+        let state = self
+            .workspace
+            .snapshot_for(self.tracks.len(), self.selected_tracks.len());
         let mut cells = Vec::new();
         let mut x = 0;
         let active = state
@@ -338,7 +342,9 @@ impl Ui {
         if self.compact_mode || (!layout.show_sidebar && self.focus != Focus::Tracks) {
             return false;
         }
-        let state = self.workspace.snapshot();
+        let state = self
+            .workspace
+            .snapshot_for(self.tracks.len(), self.selected_tracks.len());
         if state.pending_close.is_some() {
             return true;
         }
@@ -399,19 +405,15 @@ impl Ui {
             let index = self.workspace_offset + y - 4;
             if index < state.entries.len() {
                 self.workspace_cursor = index;
-                let mut indices = state.selected;
-                if button & 16 != 0 {
-                    if let Some(at) = indices.iter().position(|i| *i == index) {
-                        indices.remove(at);
-                    } else {
-                        indices.push(index);
-                    }
-                } else if button & (4 | 8) != 0 && !indices.is_empty() {
-                    indices = (indices[0].min(index)..=indices[0].max(index)).collect();
-                } else {
-                    indices = vec![index];
-                }
-                self.workspace_command(Command::Select { indices });
+                let gesture = match (button & 4 != 0, button & 16 != 0) {
+                    (true, true) => Gesture::AddRange,
+                    (true, false) => Gesture::Range,
+                    (false, true) => Gesture::Toggle,
+                    _ => Gesture::Replace,
+                };
+                self.workspace_command(Command::Selection {
+                    command: Select::Choose { index, gesture },
+                });
             }
         }
         true
@@ -427,7 +429,9 @@ impl Ui {
         }
         let left = layout.playlist_left() + 1;
         let width = size.0.saturating_sub(left - 1);
-        let state = self.workspace.snapshot();
+        let state = self
+            .workspace
+            .snapshot_for(self.tracks.len(), self.selected_tracks.len());
         if state.active != "queue" {
             let page = layout.footer_top.saturating_sub(5).max(1);
             self.workspace_cursor = self
@@ -442,24 +446,50 @@ impl Ui {
             for y in 1..layout.footer_top {
                 paint(screen, y + 1, left, "", width, Surface::Main, false);
             }
-            paint(
-                screen,
-                2,
-                left,
-                "[p] Play Now [n] Play Next [a] Add to Queue [s] Save [W] Close",
-                width,
-                Surface::Header,
-                true,
-            );
-            paint(
-                screen,
-                3,
-                left,
-                "x select · d remove · K/J move · u/r undo/redo · A add queue · C add selection",
-                width,
-                Surface::Header,
-                false,
-            );
+            for (row, actions) in [
+                (
+                    2,
+                    vec![
+                        ("[p] Play Now ", state.actions.queue),
+                        ("[n] Play Next ", state.actions.queue),
+                        ("[a] Add to Queue ", state.actions.queue),
+                        ("[s] Save ", state.actions.save),
+                        ("[W] Close", true),
+                    ],
+                ),
+                (
+                    3,
+                    vec![
+                        ("x select · ", state.actions.select_all),
+                        ("d remove · ", state.actions.remove),
+                        ("K up · ", state.actions.move_up),
+                        ("J down · ", state.actions.move_down),
+                        ("u undo · ", state.actions.undo),
+                        ("r redo · ", state.actions.redo),
+                        ("A add queue · ", state.actions.add_play_queue),
+                        ("C add selection", state.actions.add_queue_selection),
+                    ],
+                ),
+            ] {
+                let mut offset = 0;
+                for (label, enabled) in actions {
+                    let length = cell_width(label).min(width.saturating_sub(offset));
+                    paint(
+                        screen,
+                        row,
+                        left + offset,
+                        label,
+                        length,
+                        if enabled {
+                            Surface::Header
+                        } else {
+                            Surface::Muted
+                        },
+                        enabled && row == 2,
+                    );
+                    offset += length;
+                }
+            }
             let info = state.error.clone().unwrap_or_else(|| {
                 format!(
                     "{} tracks · {} selected · Alt+[ / Alt+] tabs · Ctrl+W close",

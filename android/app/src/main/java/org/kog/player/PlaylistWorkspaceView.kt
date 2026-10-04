@@ -29,6 +29,7 @@ data class PlaylistWorkspaceSnapshot(
     val entries: List<Track> = emptyList(), val selected: List<Int> = emptyList(),
     val canUndo: Boolean = false, val canRedo: Boolean = false,
     val pendingClose: String? = null, val error: String? = null,
+    val actions: Map<String, Boolean> = emptyMap(),
 ) {
     val activeTab get() = tabs.firstOrNull { it.key == active }
     companion object {
@@ -43,7 +44,8 @@ data class PlaylistWorkspaceSnapshot(
                 (0 until entries.length()).map { Track.parse(entries.getJSONObject(it)) },
                 (0 until selected.length()).map(selected::getInt), row.optBoolean("can_undo"), row.optBoolean("can_redo"),
                 if (row.isNull("pending_close")) null else row.optString("pending_close"),
-                if (row.isNull("error")) null else row.optString("error"))
+                if (row.isNull("error")) null else row.optString("error"),
+                row.optJSONObject("actions")?.let { actions -> actions.keys().asSequence().associateWith { actions.optBoolean(it) } } ?: emptyMap())
         }
     }
 }
@@ -84,36 +86,37 @@ internal fun PlaylistWorkspaceEditor(state: KogState) {
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp)) {
             listOf("Play Now" to "play_now", "Play Next" to "play_next", "Add to Queue" to "add_to_queue").forEach { (label, mode) ->
-                TextButton(enabled = tab?.loading != true && workspace.entries.isNotEmpty(),
+                TextButton(enabled = workspace.actions["queue"] == true,
                     onClick = { state.workspaceCommand("queue", JSONObject().put("action", mode)) }) { Text(label) }
             }
         }
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(if (workspace.selected.isEmpty()) "${workspace.entries.size} tracks · whole playlist" else "${workspace.selected.size} selected",
                 Modifier.weight(1f), style = MaterialTheme.typography.labelMedium)
-            TextButton(enabled = tab?.dirty == true && !tab.saving,
+            TextButton(enabled = workspace.actions["save"] == true,
                 onClick = { state.workspaceCommand("save") }) { Text(if (tab?.saving == true) "Saving…" else "Save") }
             Box {
                 IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "Playlist editor actions") }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                    DropdownMenuItem(text = { Text("Select all") }, onClick = {
-                        state.workspaceCommand("select", JSONObject().put("indices", JSONArray(workspace.entries.indices.toList()))); menu = false
+                    DropdownMenuItem(text = { Text("Select all") }, enabled = workspace.actions["select_all"] == true, onClick = {
+                        state.workspaceCommand("selection", JSONObject().put("command", JSONObject().put("op", "all"))); menu = false
                     })
-                    DropdownMenuItem(text = { Text("Clear selection") }, onClick = {
-                        state.workspaceCommand("select", JSONObject().put("indices", JSONArray())); menu = false
+                    DropdownMenuItem(text = { Text("Clear selection") }, enabled = workspace.actions["clear_selection"] == true, onClick = {
+                        state.workspaceCommand("selection", JSONObject().put("command", JSONObject().put("op", "clear"))); menu = false
                     })
                     if (tab?.readonly != true) {
-                        DropdownMenuItem(text = { Text("Add Play Queue") }, enabled = state.queue.isNotEmpty(), onClick = { state.workspaceAppendQueue(); menu = false })
-                        DropdownMenuItem(text = { Text("Remove selected") }, enabled = workspace.selected.isNotEmpty(), onClick = { state.workspaceCommand("remove"); menu = false })
+                        DropdownMenuItem(text = { Text("Add Play Queue") }, enabled = workspace.actions["add_play_queue"] == true, onClick = { state.workspaceAppendQueue(); menu = false })
+                        DropdownMenuItem(text = { Text("Add Queue Selection") }, enabled = workspace.actions["add_queue_selection"] == true, onClick = { state.workspaceAppendQueue(true); menu = false })
+                        DropdownMenuItem(text = { Text("Remove selected") }, enabled = workspace.actions["remove"] == true, onClick = { state.workspaceCommand("remove"); menu = false })
                         listOf("Move Up" to -1, "Move Down" to 1).forEach { (label, delta) ->
-                            DropdownMenuItem(text = { Text(label) }, enabled = workspace.selected.isNotEmpty(), onClick = {
+                            DropdownMenuItem(text = { Text(label) }, enabled = workspace.actions[if (delta < 0) "move_up" else "move_down"] == true, onClick = {
                                 state.workspaceCommand("nudge", JSONObject().put("delta", delta)); menu = false
                             })
                         }
-                        DropdownMenuItem(text = { Text("Undo") }, enabled = workspace.canUndo, onClick = { state.workspaceCommand("undo"); menu = false })
-                        DropdownMenuItem(text = { Text("Redo") }, enabled = workspace.canRedo, onClick = { state.workspaceCommand("redo"); menu = false })
+                        DropdownMenuItem(text = { Text("Undo") }, enabled = workspace.actions["undo"] == true, onClick = { state.workspaceCommand("undo"); menu = false })
+                        DropdownMenuItem(text = { Text("Redo") }, enabled = workspace.actions["redo"] == true, onClick = { state.workspaceCommand("redo"); menu = false })
                     }
-                    DropdownMenuItem(text = { Text("Reload") }, enabled = tab?.dirty != true && tab?.loading != true, onClick = { state.workspaceCommand("reload"); menu = false })
+                    DropdownMenuItem(text = { Text("Reload") }, enabled = workspace.actions["reload"] == true, onClick = { state.workspaceCommand("reload"); menu = false })
                 }
             }
         }

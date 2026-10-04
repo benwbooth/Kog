@@ -4385,6 +4385,15 @@ impl Ui {
         }
     }
 
+    fn activate_queue_selected(&mut self) {
+        use kog_audio::playback_order::selection::{activate, Activation};
+        match activate(self.selected[2], self.playing, self.tracks.len()) {
+            Some(Activation::TogglePlayback) => self.play_pause(),
+            Some(Activation::Play { .. }) => self.play_selected(),
+            None => (),
+        }
+    }
+
     fn play_selected(&mut self) {
         self.order.cancel_navigation();
         self.radio.cancel_waiting();
@@ -4526,36 +4535,16 @@ impl Ui {
     }
 
     fn select_track(&mut self, index: usize, shift: bool, ctrl: bool) {
-        if index >= self.tracks.len() {
-            return;
-        }
-        if shift {
-            let anchor = self.selection_anchor.unwrap_or(self.selected[2]);
-            if !ctrl {
-                self.selected_tracks.clear();
-            }
-            let visible = self.visible_tracks();
-            if let (Some(start), Some(end)) = (
-                visible.iter().position(|&row| row == anchor),
-                visible.iter().position(|&row| row == index),
-            ) {
-                for &row in &visible[start.min(end)..=start.max(end)] {
-                    self.selected_tracks.insert(row);
-                }
-            } else {
-                self.selected_tracks.insert(index);
-                self.selection_anchor = Some(index);
-            }
-        } else if ctrl {
-            if !self.selected_tracks.insert(index) {
-                self.selected_tracks.remove(&index);
-            }
-            self.selection_anchor = Some(index);
-        } else {
-            self.selected_tracks.clear();
-            self.selected_tracks.insert(index);
-            self.selection_anchor = Some(index);
-        }
+        use kog_audio::playback_order::selection::{Command, Gesture, Selection};
+        if index >= self.tracks.len() { return; }
+        let mut state = Selection { indices:self.selected_tracks.iter().copied().collect(), anchor:self.selection_anchor };
+        let gesture = match (shift,ctrl) {
+            (true,true)=>Gesture::AddRange, (true,false)=>Gesture::Range,
+            (false,true)=>Gesture::Toggle, _=>Gesture::Replace,
+        };
+        state.apply(Command::Choose { index,gesture }, self.tracks.len(), &self.visible_tracks());
+        self.selected_tracks = state.indices.into_iter().collect();
+        self.selection_anchor = state.anchor;
         self.selected[2] = index;
     }
 
@@ -6972,7 +6961,7 @@ impl Ui {
                     .scroll_by(8, size.0.saturating_sub(layout.playlist_left()));
             }
             Key::Enter if self.focus == Focus::Playlists => self.open_playlist_tab(self.selected[0]),
-            Key::Enter if self.focus == Focus::Tracks => self.play_selected(),
+            Key::Enter if self.focus == Focus::Tracks => self.activate_queue_selected(),
             Key::Char('a') if self.focus == Focus::Library => self.add_selected(false),
             Key::Char('n') if self.focus == Focus::Playlists => {
                 self.begin_prompt(PromptKind::NewPlaylist, String::new())
@@ -8010,11 +7999,7 @@ impl Ui {
                 Some((now, 2, index))
             };
             if double {
-                if self.playing == Some(index) && self.player.state() != PlaybackState::Stopped {
-                    self.play_pause();
-                } else {
-                    self.play_selected();
-                }
+                self.activate_queue_selected();
                 self.last_click = None;
             }
         }

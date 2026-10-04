@@ -3681,6 +3681,18 @@ fn App() -> impl IntoView {
         set_song_menu.set(None);
     };
 
+    let select_all_results = move || {
+        use kog_playback_policy::selection::{Command, Selection};
+        let entries = queue.get_untracked(); let cache = metadata.get_untracked();
+        let failed = metadata_failed.get_untracked(); let starred = stars.get_untracked();
+        let query = filter.get_untracked();
+        let indices:Vec<_> = sorted_queue_indices(&entries, &cache, &starred, sort_key.get_untracked(), !sort_asc.get_untracked()).into_iter()
+            .filter(|i| metadata_ready(&cache, &failed, &entries[*i]) && entry_sort_row(*i, &entries[*i], &cache, &starred).matches(&query)).collect();
+        let anchor = indices.first().copied(); let mut selection = Selection::default();
+        selection.apply(Command::Set { indices, anchor }, entries.len(), &[]);
+        set_selected.set(selection.indices.into_iter().collect()); set_selection_anchor.set(selection.anchor);
+    };
+
     // Global keys, from anywhere on the page. Escape dismisses any open menu
     // or dialog; Ctrl/Cmd+A selects the whole pane like the desktop's
     // Select All — except inside a text field, where it keeps selecting text.
@@ -3709,14 +3721,7 @@ fn App() -> impl IntoView {
         {
             if !in_text && !queue.get_untracked().is_empty() {
                 ev.prevent_default();
-                let total = queue.get_untracked().len();
-                set_selected.update(|set| {
-                    set.clear();
-                    for index in 0..total {
-                        set.insert(index);
-                    }
-                });
-                set_selection_anchor.set(Some(current.get_untracked().min(total - 1)));
+                select_all_results();
             }
             return;
         }
@@ -4624,6 +4629,15 @@ fn App() -> impl IntoView {
 
     // Sorting supplies the same playback sequence as the other frontends;
     // filtering changes only visibility and preserves stable row identities.
+    let activate_row = move |index:usize| {
+        use kog_playback_policy::selection::{activate, Activation};
+        match activate(index, (current.get_untracked() < queue.get_untracked().len()).then_some(current.get_untracked()), queue.get_untracked().len()) {
+            Some(Activation::TogglePlayback) => toggle_play(),
+            Some(Activation::Play { index }) => play_row(index),
+            None => (),
+        }
+    };
+
     let view_rows = move || {
         let entries = queue.get();
         let cache = metadata.get();
@@ -4756,7 +4770,7 @@ fn App() -> impl IntoView {
     };
 
     let playlist_workspace = workspace::Controller {
-        model: workspace_model,
+        model: workspace_model, queue, selected,
         revision: RwSignal::new(0), queue_generation: StoredValue::new(0), queue_jobs: StoredValue::new(workspace::QueueJobs::default()),
         base: Callback::new(move |()| base()), auth: Callback::new(move |()| auth().header()),
         saved: Callback::new(move |()| load_playlists()), error: set_message,
@@ -6811,22 +6825,10 @@ fn App() -> impl IntoView {
                                                 )));
                                             }
                                             on:click=move |ev: web_sys::MouseEvent| {
-                                                // Touch: a tap is the activate.
-                                                // The tapped row plays; a tap on
-                                                // the current row does nothing
-                                                // (pause lives on the transport
-                                                // button), so a double tap can
-                                                // never end up paused.
-                                                if touch_mode
-                                                    && !ev.shift_key()
-                                                    && !ev.ctrl_key()
-                                                    && !ev.meta_key()
-                                                {
-                                                    if current.get_untracked() != index {
-                                                        set_selected.set(HashSet::from([index]));
-                                                        set_selection_anchor.set(Some(index));
-                                                        play_row(index);
-                                                    }
+                                                if touch_mode && !ev.shift_key() && !ev.ctrl_key() && !ev.meta_key() {
+                                                    set_selected.set(HashSet::from([index]));
+                                                    set_selection_anchor.set(Some(index));
+                                                    activate_row(index);
                                                     return;
                                                 }
                                                 // A single click only selects,
@@ -6855,17 +6857,9 @@ fn App() -> impl IntoView {
                                                 if touch_mode {
                                                     return;
                                                 }
-                                                // The desktop's activate: the
-                                                // playing row toggles pause, any
-                                                // other row starts playing.
-                                                if current.get_untracked() == index {
-                                                    set_playing.update(|value| *value = !*value);
-                                                    set_stopped.set(false);
-                                                    return;
-                                                }
                                                 set_selected.set(HashSet::from([index]));
                                                 set_selection_anchor.set(Some(index));
-                                                play_row(index);
+                                                activate_row(index);
                                             }
                                         >
                                             <For
@@ -7453,7 +7447,7 @@ fn App() -> impl IntoView {
                     <div class="volume-row">
                         <button
                             class="flat clear-list"
-                            title=if touch_mode { "Clear queue" } else { "Clear Playlist" }
+                            title=if touch_mode { "Clear queue" } else { "Clear Play Queue" }
                             disabled=move || queue.get().is_empty()
                             on:click=move |_| clear_pane()
                         >
@@ -8035,16 +8029,7 @@ fn App() -> impl IntoView {
                         class="menu-item"
                         on:click=move |_| {
                             set_song_menu.set(None);
-                            let total = queue.get_untracked().len();
-                            set_selected.update(|set| {
-                                set.clear();
-                                for index in 0..total {
-                                    set.insert(index);
-                                }
-                            });
-                            if total > 0 {
-                                set_selection_anchor.set(Some(current.get_untracked().min(total - 1)));
-                            }
+                            select_all_results();
                         }
                     >
                         "Select All"
@@ -8056,7 +8041,7 @@ fn App() -> impl IntoView {
                             clear_pane();
                         }
                     >
-                        {if touch_mode { "Clear Queue" } else { "Clear Playlist" }}
+                        {if touch_mode { "Clear Queue" } else { "Clear Play Queue" }}
                     </button>
                     <div class="menu-separator"></div>
                     <button
@@ -8558,7 +8543,7 @@ fn App() -> impl IntoView {
                         disabled=move || queue.get().is_empty()
                         on:click=move |_| clear_pane()
                     >
-                        {if touch_mode { "Clear Queue" } else { "Clear Playlist" }}
+                        {if touch_mode { "Clear Queue" } else { "Clear Play Queue" }}
                     </button>
                     <div class="menu-separator"></div>
                     <div class="menu-group">"View"</div>

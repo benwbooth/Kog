@@ -10,28 +10,15 @@ pub fn click_selection(
     shift: bool,
     toggle: bool,
 ) -> (HashSet<usize>, Option<usize>) {
-    if shift {
-        if let (Some(start), Some(end)) = (
-            anchor.and_then(|index| visible.iter().position(|row| *row == index)),
-            visible.iter().position(|row| *row == clicked),
-        ) {
-            let mut next = if toggle { selected.clone() } else { HashSet::new() };
-            for &index in &visible[start.min(end)..=start.max(end)] {
-                next.insert(index);
-            }
-            return (next, anchor);
-        }
-    }
-    if toggle {
-        let mut next = selected.clone();
-        if !next.insert(clicked) {
-            next.remove(&clicked);
-        }
-        let anchor = (!next.is_empty()).then_some(clicked);
-        (next, anchor)
-    } else {
-        (HashSet::from([clicked]), Some(clicked))
-    }
+    use kog_playback_policy::selection::{Command, Gesture, Selection};
+    let mut state = Selection { indices: selected.iter().copied().collect(), anchor };
+    let gesture = match (shift, toggle) {
+        (true, true) => Gesture::AddRange, (true, false) => Gesture::Range,
+        (false, true) => Gesture::Toggle, _ => Gesture::Replace,
+    };
+    let count = visible.iter().chain(selected.iter()).copied().chain([clicked]).max().unwrap_or(0) + 1;
+    state.apply(Command::Choose { index: clicked, gesture }, count, visible);
+    (state.indices.into_iter().collect(), state.anchor)
 }
 
 #[cfg(test)]

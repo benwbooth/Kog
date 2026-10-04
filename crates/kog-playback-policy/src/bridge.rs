@@ -18,6 +18,8 @@ pub struct PolicyState {
     radio: RadioBuffer<Value>,
     #[serde(default)]
     workspace: crate::workspace::Workspace,
+    #[serde(default)]
+    queue_selection: crate::selection::Selection,
 }
 
 impl Default for PolicyState {
@@ -28,6 +30,7 @@ impl Default for PolicyState {
             ids: Vec::new(),
             radio: RadioBuffer::default(),
             workspace: crate::workspace::Workspace::default(),
+            queue_selection: crate::selection::Selection::default(),
         }
     }
 }
@@ -55,6 +58,10 @@ pub enum Command {
     },
     Navigate {
         event: NavigationEvent,
+        current: Option<usize>,
+    },
+    Activate {
+        index: usize,
         current: Option<usize>,
     },
     Started {
@@ -112,13 +119,27 @@ pub enum Command {
         rows: Vec<SortRow>,
         query: String,
     },
-    Workspace { command: crate::workspace::Command },
-    WorkspaceRestore { value: Value },
-    ApplyQueueAction { action: crate::workspace::QueueAction, start: usize, count: usize },
+    Workspace {
+        command: crate::workspace::Command,
+    },
+    SelectQueue {
+        command: crate::selection::Command,
+        #[serde(default)]
+        visible: Vec<usize>,
+    },
+    WorkspaceRestore {
+        value: Value,
+    },
+    ApplyQueueAction {
+        action: crate::workspace::QueueAction,
+        start: usize,
+        count: usize,
+    },
 }
 
 #[derive(Debug, Serialize)]
 pub struct Reply {
+    pub activation: Option<crate::selection::Activation>,
     pub decision: Option<PlaybackDecision>,
     pub entry: Option<Value>,
     pub indices: Option<Vec<usize>>,
@@ -132,6 +153,7 @@ pub struct Reply {
     pub workspace_state: Value,
     pub workspace_effect: Option<crate::workspace::Effect>,
     pub error: Option<String>,
+    pub queue_selection: crate::selection::Selection,
 }
 
 #[derive(Debug, Serialize)]
@@ -148,6 +170,7 @@ pub struct RadioSnapshot {
 impl PolicyState {
     pub fn apply(&mut self, command: Command) -> Reply {
         let mut decision = None;
+        let mut activation = None;
         let mut workspace_effect = None;
         let mut error = None;
         let mut entry = None;
@@ -173,6 +196,7 @@ impl PolicyState {
                     let remap =
                         old_to_new.unwrap_or_else(|| crate::remap_track_ids(&self.ids, &ids));
                     self.order.remap_tracks(&remap);
+                    self.queue_selection.remap(&remap);
                     self.order.tracks_changed(&metadata, current);
                 } else if metadata != self.tracks {
                     self.order.album_metadata_changed(&metadata, current);
@@ -182,6 +206,9 @@ impl PolicyState {
             }
             Command::Navigate { event, current } => {
                 decision = Some(self.order.navigate(&self.tracks, current, event));
+            }
+            Command::Activate { index, current } => {
+                activation = crate::selection::activate(index, current, self.tracks.len());
             }
             Command::Started { previous, index } => self.order.started(previous, index),
             Command::RadioCandidate { index } => self.order.radio_candidate(index),
@@ -218,10 +245,17 @@ impl PolicyState {
                 indices = Some(sorted_indices(&values, descending))
             }
             Command::SortRows {
-                rows,
+                mut rows,
                 column,
                 descending,
-            } => indices = Some(sorted_rows(&rows, &column, descending)),
+            } => {
+                for (index, row) in rows.iter_mut().enumerate() {
+                    if row.original.is_none() {
+                        row.original = Some(self.order.original_position(index) as f64);
+                    }
+                }
+                indices = Some(sorted_rows(&rows, &column, descending));
+            }
             Command::FilterRows { rows, query } => {
                 indices = Some(
                     rows.iter()
@@ -230,17 +264,37 @@ impl PolicyState {
                         .collect(),
                 )
             }
-            Command::Workspace { command } => match self.workspace.apply(command) {
+            Command::Workspace { command } => match self.workspace.apply_ui(
+                command,
+                self.tracks.len(),
+                self.queue_selection.indices.len(),
+            ) {
                 Ok(effect) => workspace_effect = Some(effect),
-                Err(message) => { accepted = false; error = Some(message); }
+                Err(message) => {
+                    accepted = false;
+                    error = Some(message);
+                }
             },
-            Command::WorkspaceRestore { value } => match crate::workspace::Workspace::restore(value) {
-                Ok(workspace) => self.workspace = workspace,
-                Err(message) => { accepted = false; error = Some(message); }
-            },
-            Command::ApplyQueueAction { action, start, count } => {
+            Command::SelectQueue { command, visible } => {
+                self.queue_selection
+                    .apply(command, self.tracks.len(), &visible)
+            }
+            Command::WorkspaceRestore { value } => {
+                match crate::workspace::Workspace::restore(value) {
+                    Ok(workspace) => self.workspace = workspace,
+                    Err(message) => {
+                        accepted = false;
+                        error = Some(message);
+                    }
+                }
+            }
+            Command::ApplyQueueAction {
+                action,
+                start,
+                count,
+            } => {
                 decision = self.order.apply_queue_action(action, start, count);
-            },
+            }
         }
         if self.radio.enabled() && !self.order.radio_enabled() {
             self.radio.reset(false);
@@ -248,12 +302,17 @@ impl PolicyState {
         let mut stop_after: Vec<_> = self.order.stop_after_indices().collect();
         stop_after.sort_unstable();
         Reply {
+            activation,
             decision,
             entry,
             indices,
             accepted,
-            workspace: self.workspace.snapshot(),
-            workspace_state: serde_json::to_value(&self.workspace).expect("workspace is serializable"),
+            workspace: self
+                .workspace
+                .snapshot_for(self.tracks.len(), self.queue_selection.indices.len()),
+            queue_selection: self.queue_selection.clone(),
+            workspace_state: serde_json::to_value(&self.workspace)
+                .expect("workspace is serializable"),
             workspace_effect,
             error,
             shuffle: self.order.shuffle_mode(),

@@ -56,7 +56,8 @@ ApplicationWindow {
     property var selectedRows: []
     readonly property var playlistWorkspace: {
         appController.workspace_revision
-        try { return JSON.parse(appController.workspace_json()) } catch (_) { return { active: "queue", tabs: [], entries: [], selected: [] } }
+        appController.playlist_revision
+        try { return JSON.parse(appController.workspace_json_for_selection(root.selectedRows.length)) } catch (_) { return { active: "queue", tabs: [], entries: [], selected: [] } }
     }
     property int playlistDropTarget: -1
     property var selectedPlaylistIds: []
@@ -659,43 +660,18 @@ ApplicationWindow {
     }
 
     function setPlaylistSelection(rows, current, anchor) {
-        const unique = []
-        for (const row of rows) {
-            if (row >= 0 && row < appController.playlist_count
-                    && unique.indexOf(row) === -1)
-                unique.push(row)
-        }
-        unique.sort((left, right) => left - right)
-        selectedRows = unique
-        selectedRow = unique.length > 0
-            ? (unique.indexOf(current) !== -1 ? current : unique[0])
-            : -1
-        selectionAnchor = unique.length > 0 ? anchor : -1
+        const state = JSON.parse(appController.selection_json("{}", JSON.stringify({op:"set", indices:rows, anchor:anchor >= 0 ? anchor : null}), appController.playlist_count))
+        selectedRows = state.indices
+        selectedRow = selectedRows.length > 0 ? (selectedRows.indexOf(current) >= 0 ? current : selectedRows[0]) : -1
+        selectionAnchor = state.anchor === null ? -1 : state.anchor
     }
 
     function selectPlaylistRow(row, modifiers) {
-        const extend = (modifiers & Qt.ShiftModifier) !== 0
-        const toggle = (modifiers & (Qt.ControlModifier | Qt.MetaModifier)) !== 0
-        if (extend && selectionAnchor >= 0) {
-            const first = Math.min(selectionAnchor, row)
-            const last = Math.max(selectionAnchor, row)
-            const rows = toggle ? selectedRows.slice() : []
-            for (let index = first; index <= last; ++index) {
-                if (rows.indexOf(index) === -1)
-                    rows.push(index)
-            }
-            setPlaylistSelection(rows, row, selectionAnchor)
-        } else if (toggle) {
-            const rows = selectedRows.slice()
-            const selectedIndex = rows.indexOf(row)
-            if (selectedIndex === -1)
-                rows.push(row)
-            else
-                rows.splice(selectedIndex, 1)
-            setPlaylistSelection(rows, row, row)
-        } else {
-            setPlaylistSelection([row], row, row)
-        }
+        const range = !!(modifiers & Qt.ShiftModifier)
+        const toggle = !!(modifiers & (Qt.ControlModifier | Qt.MetaModifier))
+        const state = JSON.parse(appController.selection_json(JSON.stringify({indices:selectedRows, anchor:selectionAnchor >= 0 ? selectionAnchor : null}),
+            JSON.stringify({op:"choose", index:row, gesture:range ? (toggle ? "add_range" : "range") : (toggle ? "toggle" : "replace")}), appController.playlist_count))
+        setPlaylistSelection(state.indices, row, state.anchor === null ? -1 : state.anchor)
         playlistView.forceActiveFocus()
     }
 
@@ -1637,16 +1613,20 @@ ApplicationWindow {
         id: removeSelectedAction
         text: qsTr("Remove Selected")
         shortcut: StandardKey.Delete
-        enabled: root.selectedRows.length > 0
-        onTriggered: root.removeSelectedTracks()
+        enabled: root.playlistWorkspace.active === "queue" ? root.selectedRows.length > 0 : !!root.playlistWorkspace.actions.remove
+        onTriggered: {
+            if (root.playlistWorkspace.active === "queue") root.removeSelectedTracks()
+            else appController.workspace_command(JSON.stringify({op:"remove"}))
+        }
     }
 
     Action {
         id: selectAllAction
         text: qsTr("Select All")
         shortcut: StandardKey.SelectAll
-        enabled: playlistView.activeFocus && appController.playlist_count > 0
+        enabled: root.playlistWorkspace.active === "queue" ? playlistView.activeFocus && appController.playlist_count > 0 : !!root.playlistWorkspace.actions.select_all
         onTriggered: {
+            if (root.playlistWorkspace.active !== "queue") { appController.workspace_command(JSON.stringify({op:"selection",command:{op:"all"}})); return }
             const rows = []
             for (let index = 0; index < appController.playlist_count; ++index)
                 rows.push(index)
@@ -1667,7 +1647,7 @@ ApplicationWindow {
         id: saveSelectionAction
         text: qsTr("Save Selection As…")
         icon.name: "document-save-as"
-        enabled: root.selectedRows.length > 0
+        enabled: root.playlistWorkspace.active === "queue" && root.selectedRows.length > 0
         onTriggered: appController.save_playlist_selection(
             root.selectedRows.join(","))
     }
@@ -1677,7 +1657,7 @@ ApplicationWindow {
         text: qsTr("Edit Tags…")
         icon.name: "document-edit"
         shortcut: "Ctrl+Shift+E"
-        enabled: root.selectedRows.length > 0
+        enabled: root.playlistWorkspace.active === "queue" && root.selectedRows.length > 0
         onTriggered: tagEditor.openForRows(root.selectedRows)
     }
 
@@ -1691,7 +1671,7 @@ ApplicationWindow {
         icon.name: root.selectedQueueState === "all"
             ? "list-remove"
             : "list-add"
-        enabled: root.selectedRows.length > 0
+        enabled: root.playlistWorkspace.active === "queue" && root.selectedRows.length > 0
         onTriggered: appController.toggle_queue(root.selectedRows.join(","))
     }
 
@@ -1703,7 +1683,7 @@ ApplicationWindow {
                 ? qsTr("Toggle Stop After")
                 : qsTr("Stop After Selection"))
         icon.name: "media-playback-stop"
-        enabled: root.selectedRows.length > 0
+        enabled: root.playlistWorkspace.active === "queue" && root.selectedRows.length > 0
         onTriggered: appController.toggle_stop_after(root.selectedRows.join(","))
     }
 
@@ -1717,7 +1697,7 @@ ApplicationWindow {
 
     Action {
         id: clearPlaylistAction
-        text: qsTr("Clear Playlist")
+        text: qsTr("Clear Play Queue")
         icon.name: "edit-clear-list"
         enabled: appController.playlist_count > 0
         onTriggered: {

@@ -180,6 +180,10 @@ pub mod qobject {
         #[qinvokable]
         fn workspace_json(self: &AppController) -> QString;
         #[qinvokable]
+        fn workspace_json_for_selection(self: &AppController, selected: i32) -> QString;
+        #[qinvokable]
+        fn selection_json(self: &AppController, state: QString, command: QString, count: i32) -> QString;
+        #[qinvokable]
         fn workspace_command(self: Pin<&mut AppController>, command: QString);
         #[qinvokable]
         fn open_playlist_tab(self: Pin<&mut AppController>, id: i32, name: QString);
@@ -3820,7 +3824,18 @@ impl qobject::AppController {
     }
 
     pub fn workspace_json(&self) -> QString {
-        qstring(serde_json::to_string(&self.rust().workspace.snapshot()).unwrap_or_default())
+        self.workspace_json_for_selection(0)
+    }
+    pub fn workspace_json_for_selection(&self, selected: i32) -> QString {
+        qstring(serde_json::to_string(&self.rust().workspace.snapshot_for(self.rust().tracks.len(), selected.max(0) as usize)).unwrap_or_default())
+    }
+    pub fn selection_json(&self, state: QString, command: QString, count: i32) -> QString {
+        use kog_audio::playback_order::selection::{Selection, Command};
+        let mut state: Selection = serde_json::from_str(&state.to_string()).unwrap_or_default();
+        if let Ok(command) = serde_json::from_str::<Command>(&command.to_string()) {
+            state.apply(command, count.max(0) as usize, &[]);
+        }
+        qstring(serde_json::to_string(&state).unwrap_or_default())
     }
 
     fn workspace_changed(mut self: Pin<&mut Self>) {
@@ -3848,17 +3863,21 @@ impl qobject::AppController {
     }
 
     pub fn workspace_add_queue_selection(mut self: Pin<&mut Self>, indices: QString) {
-        let selected = if indices.to_string() == "all" { (0..self.as_ref().rust().visible_indices.len()).collect() } else { parse_row_indices(&indices.to_string(), self.as_ref().rust().visible_indices.len()) };
         let entries = {
             let pinned = self.as_ref(); let rust = pinned.rust();
-            let tracks = selected.into_iter().filter_map(|row| rust.visible_indices.get(row).and_then(|index| rust.tracks.get(*index))).cloned().collect::<Vec<_>>();
+            let tracks = if indices.to_string() == "all" { rust.tracks.clone() } else {
+                parse_row_indices(&indices.to_string(), rust.visible_indices.len()).into_iter()
+                    .filter_map(|row| rust.visible_indices.get(row).and_then(|index| rust.tracks.get(*index)))
+                    .cloned().collect::<Vec<_>>()
+            };
             collect_stored_entries(&tracks).0.into_iter().map(kog_server::api::entry_json).collect()
         };
         self.as_mut().dispatch_workspace(WorkspaceCommand::Append { entries });
     }
 
     fn dispatch_workspace(mut self: Pin<&mut Self>, command: WorkspaceCommand) {
-        let effect = self.as_mut().rust_mut().workspace.apply(command);
+        let queue_count = self.as_ref().rust().tracks.len();
+        let effect = self.as_mut().rust_mut().workspace.apply_ui(command, queue_count, 0);
         self.as_mut().workspace_changed();
         match effect {
             Ok(WorkspaceEffect::None) => {},
@@ -3881,20 +3900,13 @@ impl qobject::AppController {
                 self.as_mut().dispatch_workspace(command);
             }
             Ok(WorkspaceEffect::Queue { mode, entries, .. }) => {
-                let entries = match kog_server::api::stored_entries_from_json(&entries) {
-                    Ok(entries) => entries,
-                    Err(error) => { self.as_mut().set_status(qstring(error)); return; }
-                };
+                let entries = kog_server::api::queue_entries_from_json(&entries);
                 let decoders = self.as_ref().rust().decoders.background_worker(self.as_ref().rust().decoder_settings.clone());
                 let (sender, receiver) = std::sync::mpsc::channel();
                 std::thread::spawn(move || {
                     let mut tracks = Vec::new();
                     for stored in entries {
-                        let result = PlaylistEntry::try_from(&stored).and_then(|entry| decoders.expand_entry(&entry));
-                        match result {
-                            Ok(expansion) => tracks.extend(expansion.sources.into_iter().map(|source| Track::from_source(source, &decoders))),
-                            Err(error) => { let _ = sender.send(Err(error)); return; }
-                        }
+                        tracks.extend(decoders.expand_queue_entry(&stored).into_iter().map(|source| Track::from_source(source, &decoders)));
                     }
                     let _ = sender.send(Ok(tracks));
                 });
@@ -4717,12 +4729,15 @@ impl qobject::AppController {
         let Some(source_index) = visible_source_index(self.as_ref().get_ref(), index) else {
             return;
         };
-        if self.as_ref().rust().current_index == saturating_i32(source_index) {
-            self.as_mut().play_pause();
-        } else {
-            self.as_mut().rust_mut().playback_order.cancel_navigation();
-        if let Some(radio) = self.as_mut().rust_mut().radio.as_mut() { radio.cancel_waiting(); }
-        self.as_mut().play_source_index(source_index);
+        use kog_audio::playback_order::selection::{activate, Activation};
+        match activate(source_index, usize::try_from(self.as_ref().rust().current_index).ok(), self.as_ref().rust().tracks.len()) {
+            Some(Activation::TogglePlayback) => self.as_mut().play_pause(),
+            Some(Activation::Play { index }) => {
+                self.as_mut().rust_mut().playback_order.cancel_navigation();
+                if let Some(radio) = self.as_mut().rust_mut().radio.as_mut() { radio.cancel_waiting(); }
+                self.as_mut().play_source_index(index);
+            }
+            None => {}
         }
     }
 

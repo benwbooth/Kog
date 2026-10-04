@@ -28,7 +28,7 @@ ApplicationWindow {
     width: 275 * scaleFactor
     height: (116 + (playlistVisible ? 232 : 0)) * scaleFactor + (toolbarVisible ? 44 : 0)
     minimumWidth: 275
-    minimumHeight: Math.ceil((116 + (playlistVisible ? 116 : 0)) * displayScale) + (toolbarVisible ? 44 : 0)
+    minimumHeight: Math.ceil((116 + (playlistVisible ? 200 : 0)) * displayScale) + (toolbarVisible ? 44 : 0)
     maximumHeight: playlistVisible ? 16777215 : minimumHeight
     onScaleFactorChanged: {
         width = 275 * scaleFactor
@@ -184,18 +184,18 @@ ApplicationWindow {
         SkinSprite {
             x: 164; y: 89; width: 47; height: 15; source: root.assets.shufrep || ""; sheetX: 28
             sheetY: root.app.shuffle_mode !== "off" ? 30 : 0
-            MouseArea { anchors.fill: parent; onClicked: root.app.select_shuffle_mode(root.app.shuffle_mode === "off" ? "all" : "off") }
+            MouseArea { anchors.fill: parent; onClicked: root.app.cycle_shuffle_mode() }
         }
         SkinSprite {
             x: 210; y: 89; width: 28; height: 15; source: root.assets.shufrep || ""
             sheetY: root.app.repeat_mode !== "off" ? 30 : 0
-            MouseArea { anchors.fill: parent; onClicked: root.app.select_repeat_mode(root.app.repeat_mode === "off" ? "playlist" : "off") }
+            MouseArea { anchors.fill: parent; onClicked: root.app.cycle_repeat_mode() }
         }
     }
     ClassicPlaylist {
         objectName: "classicPlaylistPanel"
         x: 0; y: 116 * root.displayScale
-        width: 275; height: Math.max(116, (root.contentItem.height - y) / root.displayScale)
+        width: 275; height: Math.max(200, (root.contentItem.height - y) / root.displayScale)
         scale: root.displayScale
         transformOrigin: Item.TopLeft
         visible: root.playlistVisible

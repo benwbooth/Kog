@@ -4,8 +4,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
 pub mod bridge;
+pub mod ffi;
 pub mod radio;
 pub mod sort;
+pub mod selection;
 pub mod workspace;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

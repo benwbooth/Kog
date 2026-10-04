@@ -6,6 +6,9 @@ license = "GPL-3.0-or-later"
 description = "Platform-neutral playback order policy shared by Kog frontends"
 repository = "https://github.com/benwbooth/Kog"
 
+[lib]
+crate-type = ["rlib", "staticlib"]
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

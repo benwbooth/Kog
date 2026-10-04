@@ -23,6 +23,7 @@ data class Track(
     val duration: Long = 0,
     val discNumber: Int? = null,
     val trackNumber: Int? = null,
+    val metadata: Map<String, String> = emptyMap(),
 ) {
     val key: String get() = "$kind|$path|$entry|$fragment"
     val label: String get() = title.ifBlank {
@@ -36,7 +37,7 @@ data class Track(
 
     fun saved(): JSONObject = locator().put("kind", kind).put("name", name).put("title", title)
         .put("artist", artist).put("album", album).put("duration", duration)
-        .put("discNumber", discNumber ?: JSONObject.NULL).put("trackNumber", trackNumber ?: JSONObject.NULL)
+        .put("discNumber", discNumber ?: JSONObject.NULL).put("trackNumber", trackNumber ?: JSONObject.NULL).put("metadata", JSONObject(metadata))
 
     companion object {
         fun parse(row: JSONObject): Track = Track(
@@ -51,6 +52,7 @@ data class Track(
             duration = row.optLong("duration", 0),
             discNumber = if (row.isNull("discNumber")) null else row.optInt("discNumber"),
             trackNumber = if (row.isNull("trackNumber")) null else row.optInt("trackNumber"),
+            metadata = row.optJSONObject("metadata")?.let { data -> data.keys().asSequence().filterNot { data.isNull(it) }.associateWith { data.get(it).toString() } } ?: emptyMap(),
         )
     }
 }
@@ -203,6 +205,7 @@ class KogApi(private val context: Context, val onDevice: Boolean = false) {
                     duration = ((row?.optDouble("duration", 0.0) ?: 0.0) * 1000).toLong(),
                     discNumber = if (row == null || row.isNull("discNumber")) null else row.optInt("discNumber"),
                     trackNumber = if (row == null || row.isNull("trackNumber")) null else row.optInt("trackNumber"),
+                    metadata = row?.let { data -> data.keys().asSequence().filterNot { data.isNull(it) }.associateWith { data.get(it).toString() } } ?: track.metadata,
                 )
             }
         }

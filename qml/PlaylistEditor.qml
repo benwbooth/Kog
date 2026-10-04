@@ -8,23 +8,19 @@ FocusScope {
     required property var workspaceState
     required property var theme
     property var queueSelection: []
+    property bool compact: false
     readonly property var tab: (workspaceState.tabs || []).find(item => item.key === workspaceState.active) || ({})
+    readonly property var actions: workspaceState.actions || ({})
     readonly property var selection: workspaceState.selected || []
     function send(command) { app.workspace_command(JSON.stringify(command)) }
     function label(entry) {
         return entry.title || entry.name || ((entry.entry || entry.path || "").split(/[\\/]/).pop() + (entry.fragment ? " [" + entry.fragment + "]" : ""))
     }
     function choose(index, modifiers) {
-        let selected = selection.slice()
-        if (modifiers & Qt.ControlModifier) {
-            const at = selected.indexOf(index)
-            if (at >= 0) selected.splice(at, 1); else selected.push(index)
-        } else if ((modifiers & Qt.ShiftModifier) && selected.length > 0) {
-            const first = Math.min(selected[0], index), last = Math.max(selected[0], index)
-            selected = []
-            for (let row = first; row <= last; row++) selected.push(row)
-        } else selected = [index]
-        send({op: "select", indices: selected})
+        const range = !!(modifiers & Qt.ShiftModifier)
+        const toggle = !!(modifiers & (Qt.ControlModifier | Qt.MetaModifier))
+        send({op: "selection", command: {op: "choose", index: index,
+            gesture: range ? (toggle ? "add_range" : "range") : (toggle ? "toggle" : "replace")}})
         forceActiveFocus()
     }
     Keys.onDeletePressed: send({op: "remove"})
@@ -35,25 +31,59 @@ FocusScope {
         anchors.fill: parent
         spacing: 4
         Flow {
+            visible: !editor.compact
             Layout.fillWidth: true
             spacing: 4
-            Button { text: qsTr("Play Now"); enabled: !editor.tab.loading && editor.workspaceState.entries.length > 0; onClicked: editor.send({op:"queue", action:"play_now"}) }
-            Button { text: qsTr("Play Next"); enabled: !editor.tab.loading && editor.workspaceState.entries.length > 0; onClicked: editor.send({op:"queue", action:"play_next"}) }
-            Button { text: qsTr("Add to Queue"); enabled: !editor.tab.loading && editor.workspaceState.entries.length > 0; onClicked: editor.send({op:"queue", action:"add_to_queue"}) }
-            Button { text: editor.tab.saving ? qsTr("Saving…") : qsTr("Save"); enabled: !!editor.tab.dirty && !editor.tab.saving; onClicked: editor.send({op:"save"}) }
-            Button { text: qsTr("Reload"); enabled: !editor.tab.dirty && !editor.tab.loading; onClicked: editor.send({op:"reload"}) }
+            Button { text: qsTr("Play Now"); enabled: editor.actions.queue; onClicked: editor.send({op:"queue", action:"play_now"}) }
+            Button { text: qsTr("Play Next"); enabled: editor.actions.queue; onClicked: editor.send({op:"queue", action:"play_next"}) }
+            Button { text: qsTr("Add to Queue"); enabled: editor.actions.queue; onClicked: editor.send({op:"queue", action:"add_to_queue"}) }
+            Button { text: editor.tab.saving ? qsTr("Saving…") : qsTr("Save"); enabled: editor.actions.save; onClicked: editor.send({op:"save"}) }
+            Button { text: qsTr("Reload"); enabled: editor.actions.reload; onClicked: editor.send({op:"reload"}) }
         }
         Flow {
             Layout.fillWidth: true
-            visible: !editor.tab.readonly
+            visible: !editor.compact && !editor.tab.readonly
             spacing: 4
-            Button { text: qsTr("Add Play Queue"); onClicked: editor.app.workspace_add_queue_selection("all") }
-            Button { text: qsTr("Add Queue Selection"); enabled: editor.queueSelection.length > 0; onClicked: editor.app.workspace_add_queue_selection(editor.queueSelection.join(",")) }
-            Button { text: qsTr("Remove"); enabled: editor.selection.length > 0; onClicked: editor.send({op:"remove"}) }
-            Button { text: qsTr("Move Up"); enabled: editor.selection.length > 0; onClicked: editor.send({op:"nudge", delta:-1}) }
-            Button { text: qsTr("Move Down"); enabled: editor.selection.length > 0; onClicked: editor.send({op:"nudge", delta:1}) }
-            Button { text: qsTr("Undo"); enabled: !!editor.workspaceState.can_undo; onClicked: editor.send({op:"undo"}) }
-            Button { text: qsTr("Redo"); enabled: !!editor.workspaceState.can_redo; onClicked: editor.send({op:"redo"}) }
+            Button { text: qsTr("Add Play Queue"); enabled: editor.actions.add_play_queue; onClicked: editor.app.workspace_add_queue_selection("all") }
+            Button { text: qsTr("Add Queue Selection"); enabled: editor.actions.add_queue_selection; onClicked: editor.app.workspace_add_queue_selection(editor.queueSelection.join(",")) }
+            Button { text: qsTr("Remove"); enabled: editor.actions.remove; onClicked: editor.send({op:"remove"}) }
+            Button { text: qsTr("Move Up"); enabled: editor.actions.move_up; onClicked: editor.send({op:"nudge", delta:-1}) }
+            Button { text: qsTr("Move Down"); enabled: editor.actions.move_down; onClicked: editor.send({op:"nudge", delta:1}) }
+            Button { text: qsTr("Undo"); enabled: editor.actions.undo; onClicked: editor.send({op:"undo"}) }
+            Button { text: qsTr("Redo"); enabled: editor.actions.redo; onClicked: editor.send({op:"redo"}) }
+        }
+        Flow {
+            visible: !editor.compact
+            Layout.fillWidth: true; spacing: 4
+            Button { text: qsTr("Select All"); enabled: editor.actions.select_all; onClicked: editor.send({op:"selection", command:{op:"all"}}) }
+            Button { text: qsTr("Clear Selection"); enabled: editor.actions.clear_selection; onClicked: editor.send({op:"selection", command:{op:"clear"}}) }
+        }
+        RowLayout {
+            visible: editor.compact
+            Layout.fillWidth: true
+            ToolButton {
+                text: qsTr("Actions")
+                onClicked: compactMenu.popup()
+                Menu {
+                    id: compactMenu
+                    MenuItem { text: qsTr("Play Now"); enabled: editor.actions.queue; onTriggered: editor.send({op:"queue",action:"play_now"}) }
+                    MenuItem { text: qsTr("Play Next"); enabled: editor.actions.queue; onTriggered: editor.send({op:"queue",action:"play_next"}) }
+                    MenuItem { text: qsTr("Add to Queue"); enabled: editor.actions.queue; onTriggered: editor.send({op:"queue",action:"add_to_queue"}) }
+                    MenuSeparator {}
+                    MenuItem { text: qsTr("Add Play Queue"); enabled: editor.actions.add_play_queue; onTriggered: editor.app.workspace_add_queue_selection("all") }
+                    MenuItem { text: qsTr("Add Queue Selection"); enabled: editor.actions.add_queue_selection; onTriggered: editor.app.workspace_add_queue_selection(editor.queueSelection.join(",")) }
+                    MenuItem { text: qsTr("Remove"); enabled: editor.actions.remove; onTriggered: editor.send({op:"remove"}) }
+                    MenuItem { text: qsTr("Move Up"); enabled: editor.actions.move_up; onTriggered: editor.send({op:"nudge",delta:-1}) }
+                    MenuItem { text: qsTr("Move Down"); enabled: editor.actions.move_down; onTriggered: editor.send({op:"nudge",delta:1}) }
+                    MenuItem { text: qsTr("Undo"); enabled: editor.actions.undo; onTriggered: editor.send({op:"undo"}) }
+                    MenuItem { text: qsTr("Redo"); enabled: editor.actions.redo; onTriggered: editor.send({op:"redo"}) }
+                    MenuItem { text: qsTr("Select All"); enabled: editor.actions.select_all; onTriggered: editor.send({op:"selection",command:{op:"all"}}) }
+                    MenuItem { text: qsTr("Clear Selection"); enabled: editor.actions.clear_selection; onTriggered: editor.send({op:"selection",command:{op:"clear"}}) }
+                    MenuItem { text: qsTr("Reload"); enabled: editor.actions.reload; onTriggered: editor.send({op:"reload"}) }
+                }
+            }
+            Item { Layout.fillWidth: true }
+            ToolButton { text: qsTr("Save"); enabled: editor.actions.save; onClicked: editor.send({op:"save"}) }
         }
         Label {
             Layout.fillWidth: true

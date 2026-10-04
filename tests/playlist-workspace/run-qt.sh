@@ -12,7 +12,7 @@ python3 - "$test_dir/data/kog/kog.db" <<'PYTEST'
 import sqlite3,sys
 with sqlite3.connect(sys.argv[1]) as db:
     assert db.execute("SELECT count(*) FROM playlists WHERE name='Workspace smoke complete'").fetchone()[0] == 1, "QML smoke did not complete"
-    assert db.execute("SELECT count(*) FROM playlist_entries").fetchone()[0] == 1
-print("QT WORKSPACE PASS: open/edit/save/queue/close/undo/rename/focus")
+    assert db.execute("SELECT count(*) FROM playlist_entries").fetchone()[0] == 3
+print("QT WORKSPACE PASS: open/selection/range/Classic/actions/edit/save/queue/close/undo/rename/focus")
 PYTEST
 if rg -q 'WORKSPACE FAIL|Binding loop|TypeError|ReferenceError|Cannot assign' "$test_dir/run.log"; then exit 1; fi

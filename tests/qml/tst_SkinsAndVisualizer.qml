@@ -18,6 +18,19 @@ TestCase {
         property real volume: 0.5
         property int playlist_count: 3
         property int playlist_revision: 0
+        property int workspace_revision: 0
+        property int playlists_revision: 0
+        function workspace_json_for_selection(count) {
+            return JSON.stringify({active:"queue",tabs:[{key:"queue",name:"Play Queue",dirty:false}],entries:[],selected:[],actions:{queue:false,save:false,reload:false,append:false,add_play_queue:false,add_queue_selection:false,remove:false,move_up:false,move_down:false,undo:false,redo:false,select_all:false,clear_selection:false}})
+        }
+        function playlists_json() { return JSON.stringify({playlists:[]}) }
+        // Fixed backend replies for this layout test's two scripted selections.
+        function selection_json(state, command, count) {
+            const action = JSON.parse(command)
+            if (action.index === 0 && action.gesture === "replace") return '{"indices":[0],"anchor":0}'
+            if (action.index === 2 && action.gesture === "range") return '{"indices":[0,1,2],"anchor":0}'
+            throw new Error("Unexpected selection in layout fixture")
+        }
         property int current_index: 0
         property int activatedRow: -1
         property string removedRows: ""

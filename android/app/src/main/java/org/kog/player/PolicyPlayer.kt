@@ -112,6 +112,13 @@ internal class PolicyPlayer(
         sync()
         when (request.getString("op")) {
             "sync" -> Unit
+            "activate" -> {
+                val activation = send(request.put("current", index(current()))).optJSONObject("activation")
+                when (activation?.optString("action")) {
+                    "toggle_playback" -> if (policy.waiting) stop() else if (output.isPlaying) pause() else play()
+                    "play" -> { send(command("cancel_waiting")); activate(activation.getInt("index")) }
+                }
+            }
             "workspace" -> workspace(request.getJSONObject("command"))
             "radio_toggle", "radio_reshuffle" -> {
                 radioRoot = request.optString("root", radioRoot)
