@@ -2043,7 +2043,9 @@ ApplicationWindow {
         RowLayout {
             anchors.fill: parent
             anchors.leftMargin: 12
-            anchors.rightMargin: 12
+            // Together with the control group's margin, leave an 8 px
+            // resize edge beside the Linux window buttons.
+            anchors.rightMargin: Qt.platform.os === "linux" ? 5 : 12
             spacing: 2
 
             RowLayout {
@@ -3737,6 +3739,7 @@ ApplicationWindow {
         cursorShape: Qt.SizeFDiagCursor
     }
     ResizeHandle {
+        id: topRightResizeHandle
         z: 10001
         edges: Qt.TopEdge | Qt.RightEdge
         parent: root.header
@@ -3744,6 +3747,13 @@ ApplicationWindow {
         height: 24
         anchors { right: parent.right; top: parent.top }
         cursorShape: Qt.SizeBDiagCursor
+        // Keep the close button clickable inside the corner's bounding box.
+        containmentMask: QtObject {
+            function contains(point: point): bool {
+                return Qt.platform.os !== "linux"
+                    || point.x >= topRightResizeHandle.width - 8 || point.y < 8
+            }
+        }
     }
     ResizeHandle {
         z: 10001
