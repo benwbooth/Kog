@@ -580,7 +580,7 @@ final class KogStore: ObservableObject {
         #endif
     }
 
-    func activateIndex(_ index: Int) {
+    func activateQueueIndex(_ index: Int) {
         guard let activation = policyCommand(["op": "activate", "index": index, "current": SharedPlaybackPolicy.index(currentIndex)])?["activation"] as? [String: Any] else { return }
         if activation["action"] as? String == "toggle_playback" { togglePlayback() }
         else if let index = activation["index"] as? Int { playIndex(index) }

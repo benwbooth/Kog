@@ -79,7 +79,7 @@ struct QueueView: View {
                             }
                             Button {
                                 if selecting { toggle(index) }
-                                else { store.activateIndex(index) }
+                                else { store.activateQueueIndex(index) }
                             } label: {
                                 HStack(spacing: 8) {
                                     if index != store.currentIndex || !store.playing {
