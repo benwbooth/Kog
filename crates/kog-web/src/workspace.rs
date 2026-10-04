@@ -221,7 +221,7 @@ async fn request(
 pub fn Tabs(controller: Controller) -> impl IntoView {
     view! {
         <div class="playlist-tabs" role="tablist" aria-label="Open playlists">
-            <For each=move || controller.snapshot().tabs key=|tab| tab.key.clone() let:tab>
+            <For each=move || controller.snapshot().tabs key=|tab| (tab.key.clone(), tab.name.clone(), tab.dirty) let:tab>
                 { let focus = tab.key.clone(); let active = tab.key.clone(); let close = tab.key.clone(); let closable = tab.key != "queue";
                   view! { <div class="playlist-tab" class:active=move || controller.snapshot().active == active>
                     <button role="tab" aria-selected=move || controller.snapshot().active == focus

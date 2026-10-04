@@ -6487,9 +6487,8 @@ fn App() -> impl IntoView {
                                         </button>
                                         }
                                     }
-                                    // The key carries the name: a rename must
-                                    // re-render the row's label, not reuse it.
-                                    <For each=move || playlists.get() key=|item| format!("{}#{}", item.0, item.1) let:item>
+                                    // Re-render labels and counts after a rename or save.
+                                    <For each=move || playlists.get() key=|item| format!("{}#{}#{}", item.0, item.1, item.2) let:item>
                                         {
                                             let id = item.0;
                                             let count = item.2;

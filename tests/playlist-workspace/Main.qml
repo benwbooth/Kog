@@ -51,7 +51,8 @@ ApplicationWindow {
                 controller.open_playlist_tab(root.playlistId,"Renamed smoke")
                 root.check(root.snapshot.tabs.length === 2,"focus existing tab")
                 root.stage=3
-                console.log("WORKSPACE PASS: open/edit/save/queue/close/undo/rename/focus")
+                root.check(JSON.parse(controller.create_playlist("Workspace smoke complete")).ok, "completion marker")
+                console.warn("WORKSPACE PASS: open/edit/save/queue/close/undo/rename/focus")
                 Qt.quit()
             }
         }
