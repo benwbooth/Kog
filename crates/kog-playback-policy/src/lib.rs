@@ -158,6 +158,10 @@ pub struct PlaybackOrder {
     sequence: Vec<usize>,
     #[serde(default)]
     original: Vec<usize>,
+    /// An explicitly started playlist owns navigation until a queue row is
+    /// activated. Some(empty) must stay empty after all its rows are removed.
+    #[serde(default)]
+    playback_scope: Option<Vec<usize>>,
 }
 
 /// Commands have the same meaning for buttons, media keys, and end-of-stream
@@ -200,6 +204,7 @@ impl PlaybackOrder {
             navigation: None,
             sequence: Vec::new(),
             original: Vec::new(),
+            playback_scope: None,
         }
     }
 
@@ -334,6 +339,9 @@ impl PlaybackOrder {
     }
 
     pub fn tracks_changed<T: TrackOrderInfo>(&mut self, tracks: &[T], current: Option<usize>) {
+        if let Some(scope) = &mut self.playback_scope {
+            scope.retain(|index| *index < tracks.len());
+        }
         self.original.retain(|index| *index < tracks.len());
         for index in 0..tracks.len() {
             if !self.original.contains(&index) {
@@ -370,7 +378,7 @@ impl PlaybackOrder {
         };
         let played: HashSet<_> = self.shuffle_order[..=position].iter().copied().collect();
         let album = tracks[self.shuffle_order[position]].album();
-        let mut same_album: Vec<_> = (0..tracks.len())
+        let mut same_album: Vec<_> = self.sequence(tracks.len()).into_iter()
             .filter(|index| {
                 !played.contains(index) && tracks[*index].album().eq_ignore_ascii_case(album)
             })
@@ -397,6 +405,7 @@ impl PlaybackOrder {
         self.stop_after.clear();
         self.sequence.clear();
         self.original.clear();
+        self.playback_scope = None;
     }
 
     pub fn remap_tracks(&mut self, old_to_new: &[Option<usize>]) {
@@ -410,6 +419,27 @@ impl PlaybackOrder {
         self.shuffle_order.clear();
         self.sequence = remap_indices(&self.sequence, old_to_new);
         self.original = remap_indices(&self.original, old_to_new);
+        if let Some(scope) = &mut self.playback_scope {
+            *scope = remap_indices(scope, old_to_new);
+        }
+    }
+
+    pub fn set_playback_scope<T: TrackOrderInfo>(
+        &mut self,
+        scope: Option<Vec<usize>>,
+        tracks: &[T],
+        current: Option<usize>,
+    ) {
+        if self.playback_scope == scope {
+            return;
+        }
+        self.playback_scope = scope.map(|mut rows| {
+            let mut used = HashSet::new();
+            rows.retain(|index| *index < tracks.len() && used.insert(*index));
+            rows
+        });
+        self.cancel_navigation();
+        self.reset_shuffle_order(tracks, current);
     }
 
     /// A sorted projection can retain stable row identities while navigating
@@ -433,7 +463,9 @@ impl PlaybackOrder {
     }
 
     fn sequence(&self, count: usize) -> Vec<usize> {
-        if self.sequence.len() == count {
+        if let Some(scope) = &self.playback_scope {
+            scope.iter().copied().filter(|index| *index < count).collect()
+        } else if self.sequence.len() == count {
             self.sequence.clone()
         } else {
             (0..count).collect()
@@ -612,7 +644,7 @@ impl PlaybackOrder {
 
         let previous = current;
         self.shuffle_order = self.build_shuffle_order(tracks);
-        if tracks.len() > 1 && self.shuffle_order.first().copied() == previous {
+        if self.shuffle_order.len() > 1 && self.shuffle_order.first().copied() == previous {
             self.shuffle_order.swap(0, 1);
         }
         self.shuffle_order.first().copied()
@@ -642,11 +674,12 @@ impl PlaybackOrder {
 
     fn ensure_shuffle_order<T: TrackOrderInfo>(&mut self, tracks: &[T], current: Option<usize>) {
         let mut unique = HashSet::with_capacity(self.shuffle_order.len());
-        let valid = self.shuffle_order.len() == tracks.len()
+        let candidates: HashSet<_> = self.sequence(tracks.len()).into_iter().collect();
+        let valid = self.shuffle_order.len() == candidates.len()
             && self
                 .shuffle_order
                 .iter()
-                .all(|index| *index < tracks.len() && unique.insert(*index));
+                .all(|index| candidates.contains(index) && unique.insert(*index));
         if !valid {
             self.reset_shuffle_order(tracks, current);
         }
@@ -685,10 +718,24 @@ impl PlaybackOrder {
     }
 
     fn build_shuffle_order<T: TrackOrderInfo>(&mut self, tracks: &[T]) -> Vec<usize> {
+        let candidates = self.playback_scope.clone().unwrap_or_else(|| (0..tracks.len()).collect());
         match self.shuffle_mode {
             ShuffleMode::Off => Vec::new(),
-            ShuffleMode::All => shuffled_indices(tracks.len(), &mut self.seed),
-            ShuffleMode::Albums => shuffled_album_indices(tracks, &mut self.seed),
+            ShuffleMode::All => shuffled_indices(candidates.len(), &mut self.seed)
+                .into_iter()
+                .map(|i| candidates[i])
+                .collect(),
+            ShuffleMode::Albums => {
+                let albums: Vec<_> = candidates.iter().map(|i| OrderTrack {
+                    album: tracks[*i].album().to_owned(),
+                    disc_number: tracks[*i].disc_number(),
+                    track_number: tracks[*i].track_number(),
+                }).collect();
+                shuffled_album_indices(&albums, &mut self.seed)
+                    .into_iter()
+                    .map(|i| candidates[i])
+                    .collect()
+            }
         }
     }
 }

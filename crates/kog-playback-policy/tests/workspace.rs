@@ -159,6 +159,7 @@ fn duplicate_edits_undo_redo_and_queue_copies_preserve_identity() {
         Effect::Queue {
             mode: QueueAction::PlayNext,
             scope: "test".into(),
+            start: 0,
             entries: vec![json!({"path":"same"})]
         }
     );
@@ -176,6 +177,7 @@ fn duplicate_edits_undo_redo_and_queue_copies_preserve_identity() {
         Effect::Queue {
             mode: QueueAction::PlayNext,
             scope: "test".into(),
+            start: 0,
             entries: vec![json!({"path":"same"})]
         }
     );
@@ -393,7 +395,7 @@ fn language_bridge_runs_the_same_workspace_without_changing_transport() {
     assert!(reply["decision"].is_null());
     assert_eq!(
         reply["workspace_effect"],
-        json!({"action":"queue","mode":"play_next","scope":"server","entries":[{"path":"one"}]})
+        json!({"action":"queue","mode":"play_next","scope":"server","start":0,"entries":[{"path":"one"}]})
     );
     let reply = send(json!({"op":"workspace","command":{"op":"save"}}));
     assert_eq!(

@@ -152,7 +152,11 @@ with tempfile.TemporaryDirectory(prefix="kog-tui-drag-") as directory:
             # Send both complete clicks within the application's double-click threshold.
             send(b"\x1b[<0;70;7M\x1b[<0;70;7m\x1b[<0;70;7M\x1b[<0;70;7m")
             wait(lambda: playing(names[3]), "Double-click on a draft row did not play that song")
-            assert len(checkpoint()["queue"]) == 2, "Activation queued more than the clicked row"
+            assert len(checkpoint()["queue"]) == 2 * len(original), "Activation did not retain the complete playing playlist"
+            send(b">")
+            wait(lambda: playing(names[4]), "Next left the playing playlist tab")
+            send(b"<")
+            wait(lambda: playing(names[3]), "Previous left the playing playlist tab")
             send(b" ")
             wait(lambda: "Paused" in "\n".join(screen.display[-4:]), "Second song did not pause")
             playing_queue = checkpoint()["queue"]
@@ -284,7 +288,7 @@ with tempfile.TemporaryDirectory(prefix="kog-tui-drag-") as directory:
             # Filtering must also activate the displayed row, not the hidden index.
             send(b"Fkeep\r\x1b[H\r")
             expected = next(name for name in names if name.startswith("keep"))
-            wait(lambda: playing(expected) and len(checkpoint()["queue"]) == 3, "Filtered Enter played the wrong row")
+            wait(lambda: playing(expected) and len(checkpoint()["queue"]) == len(playing_queue) + len(names), "Filtered Enter played the wrong row")
             send(b" ")
 
         send(b"\x03")

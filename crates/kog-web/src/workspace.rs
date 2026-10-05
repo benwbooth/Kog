@@ -120,7 +120,7 @@ pub fn Editor(
                 <button disabled=move || !controller.snapshot().actions.select_all on:click=move |_| controller.send(Command::Selection { command:kog_playback_policy::selection::Command::All })>"Select All"</button>
                 <button disabled=move || !controller.snapshot().actions.clear_selection on:click=move |_| controller.send(Command::Selection { command:kog_playback_policy::selection::Command::Clear })>"Clear Selection"</button>
             </div>
-            <p class="workspace-status">{move || {let state=controller.snapshot(); state.error.unwrap_or_else(||format!("{} tracks · {} selected · playback actions use {}",state.entries.len(),state.selected.len(),if state.selected.is_empty(){"the whole playlist"}else{"the selection"}))}}</p>
+            <p class="workspace-status">{move || {let state=controller.snapshot(); state.error.unwrap_or_else(||format!("{} tracks · {} selected · Play Now uses {}",state.entries.len(),state.selected.len(),match state.selected.len(){0=>"the whole playlist",1=>"the playlist starting at the selected track",_=>"the selected tracks"}))}}</p>
             <div class="workspace-entries" role="listbox" aria-multiselectable="true">
                 <For each={move || controller.snapshot().entries.into_iter().enumerate().collect::<Vec<_>>()} key=|(i,entry)|format!("{i}:{entry}") let:row>
                     {let (index,entry)=row; let label=entry["title"].as_str().or_else(||entry["name"].as_str()).filter(|value|!value.is_empty()).map(str::to_owned).unwrap_or_else(||last_segment(entry["entry"].as_str().filter(|value|!value.is_empty()).or_else(||entry["path"].as_str()).unwrap_or_default()));

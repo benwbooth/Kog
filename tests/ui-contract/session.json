@@ -860,6 +860,377 @@
       "expect": {
         "snapshot.workspace.entries.0.title": "Menu B"
       }
+    },
+    {
+      "session": "tab-playback",
+      "expect": {
+        "snapshot.current": null
+      },
+      "command": {
+        "op": "append",
+        "tracks": [
+          {
+            "kind": "local",
+            "path": "/Outside.wav",
+            "title": "Outside",
+            "album": "Album"
+          },
+          {
+            "kind": "local",
+            "path": "/Other.wav",
+            "title": "Other",
+            "album": "Album"
+          }
+        ]
+      }
+    },
+    {
+      "session": "tab-playback",
+      "expect": {},
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "open",
+          "key": "album",
+          "scope": "local",
+          "playlist_id": 12,
+          "name": "Album"
+        }
+      },
+      "capture": {
+        "nav_load": "effects.1.token"
+      }
+    },
+    {
+      "session": "tab-playback",
+      "expect": {
+        "snapshot.workspace.entries": [
+          {
+            "kind": "local",
+            "path": "/First.wav",
+            "title": "First",
+            "album": "Album"
+          },
+          {
+            "kind": "local",
+            "path": "/Middle.wav",
+            "title": "Middle",
+            "album": "Album"
+          },
+          {
+            "kind": "local",
+            "path": "/Last.wav",
+            "title": "Last",
+            "album": "Album"
+          }
+        ]
+      },
+      "command": {
+        "op": "complete",
+        "token": "@nav_load",
+        "result": {
+          "kind": "loaded",
+          "entries": [
+            {
+              "kind": "local",
+              "path": "/First.wav",
+              "title": "First",
+              "album": "Album"
+            },
+            {
+              "kind": "local",
+              "path": "/Middle.wav",
+              "title": "Middle",
+              "album": "Album"
+            },
+            {
+              "kind": "local",
+              "path": "/Last.wav",
+              "title": "Last",
+              "album": "Album"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "session": "tab-playback",
+      "expect": {},
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "select",
+          "indices": [
+            1
+          ]
+        }
+      }
+    },
+    {
+      "session": "tab-playback",
+      "expect": {},
+      "command": {
+        "op": "toggle_queued",
+        "indices": [
+          0
+        ]
+      }
+    },
+    {
+      "session": "tab-playback",
+      "expect": {
+        "effects.1.entries": [
+          {
+            "kind": "local",
+            "path": "/First.wav",
+            "title": "First",
+            "album": "Album"
+          }
+        ],
+        "effects.2.entries": [
+          {
+            "kind": "local",
+            "path": "/Middle.wav",
+            "title": "Middle",
+            "album": "Album"
+          },
+          {
+            "kind": "local",
+            "path": "/Last.wav",
+            "title": "Last",
+            "album": "Album"
+          }
+        ]
+      },
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "queue",
+          "action": "play_now"
+        }
+      },
+      "capture": {
+        "nav_prefix": "effects.1.token",
+        "nav_suffix": "effects.2.token"
+      }
+    },
+    {
+      "session": "tab-playback",
+      "expect": {
+        "snapshot.queue": [
+          {
+            "kind": "local",
+            "path": "/Outside.wav",
+            "title": "Outside",
+            "album": "Album"
+          },
+          {
+            "kind": "local",
+            "path": "/Other.wav",
+            "title": "Other",
+            "album": "Album"
+          }
+        ],
+        "snapshot.current": null
+      },
+      "command": {
+        "op": "complete",
+        "token": "@nav_suffix",
+        "result": {
+          "kind": "expanded",
+          "tracks": [
+            {
+              "kind": "local",
+              "path": "/Middle.wav",
+              "title": "Middle",
+              "album": "Album"
+            },
+            {
+              "kind": "local",
+              "path": "/Last.wav",
+              "title": "Last",
+              "album": "Album"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "session": "tab-playback",
+      "expect": {
+        "snapshot.current": 3,
+        "snapshot.queue.3.title": "Middle",
+        "snapshot.queued": []
+      },
+      "command": {
+        "op": "complete",
+        "token": "@nav_prefix",
+        "result": {
+          "kind": "expanded",
+          "tracks": [
+            {
+              "kind": "local",
+              "path": "/First.wav",
+              "title": "First",
+              "album": "Album"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "session": "tab-playback",
+      "expect": {
+        "snapshot.current": 4,
+        "snapshot.queue.4.title": "Last"
+      },
+      "command": {
+        "op": "navigate",
+        "event": "next"
+      }
+    },
+    {
+      "session": "tab-playback",
+      "expect": {
+        "snapshot.current": 3
+      },
+      "command": {
+        "op": "navigate",
+        "event": "previous"
+      }
+    },
+    {
+      "session": "tab-playback",
+      "expect": {
+        "snapshot.workspace.active": "queue"
+      },
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "focus",
+          "key": "queue"
+        }
+      }
+    },
+    {
+      "session": "tab-playback",
+      "expect": {},
+      "command": {
+        "op": "repeat",
+        "mode": "all"
+      }
+    },
+    {
+      "session": "tab-playback",
+      "expect": {
+        "snapshot.current": 4
+      },
+      "command": {
+        "op": "navigate",
+        "event": "next"
+      },
+      "capture": {
+        "nav_output": "snapshot.output_token"
+      }
+    },
+    {
+      "session": "tab-playback",
+      "expect": {
+        "snapshot.current": 2
+      },
+      "command": {
+        "op": "output",
+        "token": "@nav_output",
+        "event": {
+          "event": "ended"
+        }
+      }
+    },
+    {
+      "session": "tab-playback",
+      "expect": {
+        "snapshot.current": 2
+      },
+      "command": {
+        "op": "reorder",
+        "indices": [
+          4,
+          1,
+          2,
+          3,
+          0
+        ]
+      },
+      "capture": {
+        "nav_checkpoint": "checkpoint"
+      }
+    },
+    {
+      "session": "tab-playback",
+      "expect": {
+        "snapshot.current": 2,
+        "snapshot.transport": "stopped"
+      },
+      "restore": "@nav_checkpoint"
+    },
+    {
+      "session": "tab-playback",
+      "expect": {
+        "snapshot.current": 3
+      },
+      "command": {
+        "op": "navigate",
+        "event": "next"
+      }
+    },
+    {
+      "session": "tab-playback",
+      "expect": {
+        "snapshot.current": 0
+      },
+      "command": {
+        "op": "navigate",
+        "event": "next"
+      }
+    },
+    {
+      "session": "tab-playback",
+      "expect": {},
+      "command": {
+        "op": "repeat",
+        "mode": "off"
+      }
+    },
+    {
+      "session": "tab-playback",
+      "expect": {
+        "snapshot.current": 0,
+        "snapshot.transport": "stopped"
+      },
+      "command": {
+        "op": "navigate",
+        "event": "next"
+      }
+    },
+    {
+      "session": "tab-playback",
+      "expect": {
+        "snapshot.current": 1
+      },
+      "command": {
+        "op": "play",
+        "index": 1
+      }
+    },
+    {
+      "session": "tab-playback",
+      "expect": {
+        "snapshot.current": 2
+      },
+      "command": {
+        "op": "navigate",
+        "event": "next"
+      }
     }
   ]
 }

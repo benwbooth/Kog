@@ -2508,6 +2508,7 @@ ApplicationWindow {
                         Layout.preferredHeight: 34
                         glyph: "◀"
                         iconName: "media-skip-backward"
+                        objectName: "previousTrackButton"
                         toolTip: qsTr("Previous")
                         enabled: appController.playlist_count > 0
                         onClicked: appController.previous()
@@ -2537,6 +2538,7 @@ ApplicationWindow {
                         Layout.preferredHeight: 34
                         glyph: "▶"
                         iconName: "media-skip-forward"
+                        objectName: "nextTrackButton"
                         toolTip: qsTr("Next")
                         enabled: appController.playlist_count > 0 || appController.radio_active
                         onClicked: appController.next()

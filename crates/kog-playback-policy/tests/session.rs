@@ -98,6 +98,275 @@ fn play_token(effects: Vec<Effect>) -> Token {
         .unwrap()
 }
 
+fn play_tab(s: &mut Session<Value>, selected: Vec<usize>) {
+    workspace_action(s, workspace::Command::Select { indices: selected });
+    let effects = workspace_action(
+        s,
+        workspace::Command::Queue {
+            action: workspace::QueueAction::PlayNow,
+        },
+    );
+    // Each port resolves entries asynchronously. Complete in reverse order to
+    // catch a prefix/suffix race when starting in the middle of a playlist.
+    for effect in effects.into_iter().rev() {
+        if let Effect::Expand { token, entries, .. } = effect {
+            s.dispatch(Command::Complete {
+                token,
+                result: IoResult::Expanded { tracks: entries },
+            });
+        }
+    }
+}
+
+fn tab(s: &mut Session<Value>, titles: &[&str]) {
+    workspace_action(
+        s,
+        workspace::Command::Open {
+            key: "album".into(),
+            scope: "local".into(),
+            playlist_id: 7,
+            name: "Album".into(),
+            readonly: false,
+        },
+    );
+    workspace_action(
+        s,
+        workspace::Command::Loaded {
+            key: "album".into(),
+            generation: 1,
+            entries: titles.iter().map(|t| row(t)).collect(),
+        },
+    );
+}
+
+#[test]
+fn next_and_previous_follow_the_playing_tab_not_the_main_queue_or_viewed_tab() {
+    let mut s = session("tab-playback");
+    append(&mut s, &["unrelated", "main queue"]);
+    s.dispatch(Command::ToggleQueued { indices: vec![0] });
+    s.dispatch(Command::Repeat {
+        mode: RepeatMode::All,
+    });
+    tab(&mut s, &["first", "middle", "last"]);
+    play_tab(&mut s, vec![1]);
+    assert_eq!(s.queue()[s.current().unwrap()]["title"], "middle");
+    s.dispatch(Command::Navigate {
+        event: NavigationEvent::Next,
+    });
+    assert_eq!(
+        s.queue()[s.current().unwrap()]["title"],
+        "last",
+        "Next must stay in the playlist that started playback"
+    );
+    workspace_action(
+        &mut s,
+        workspace::Command::Focus {
+            key: "queue".into(),
+        },
+    );
+    s.dispatch(Command::Navigate {
+        event: NavigationEvent::Next,
+    });
+    assert_eq!(
+        s.queue()[s.current().unwrap()]["title"],
+        "first",
+        "Repeat All must wrap within the playing playlist after browsing another tab"
+    );
+    s.dispatch(Command::Navigate {
+        event: NavigationEvent::Previous,
+    });
+    assert_eq!(s.queue()[s.current().unwrap()]["title"], "last");
+    assert_eq!(
+        s.queue()[0]["title"],
+        "unrelated",
+        "Starting a tab must retain the main queue"
+    );
+    assert_eq!(s.workspace_model().snapshot().active, "queue");
+}
+
+#[test]
+fn tab_end_repeat_restore_and_queue_activation_use_the_correct_playback_scope() {
+    let mut s = session("tab-boundaries");
+    append(&mut s, &["main one", "main two"]);
+    tab(&mut s, &["first", "last"]);
+    play_tab(&mut s, vec![0]);
+    let token = s.snapshot().output_token.unwrap().clone();
+    s.dispatch(Command::Output {
+        token,
+        event: OutputEvent::Ended,
+    });
+    assert_eq!(s.queue()[s.current().unwrap()]["title"], "last");
+    let token = s.snapshot().output_token.unwrap().clone();
+    s.dispatch(Command::Output {
+        token,
+        event: OutputEvent::Ended,
+    });
+    assert_eq!(s.snapshot().transport, Transport::Stopped);
+    assert_eq!(s.queue()[s.current().unwrap()]["title"], "last");
+
+    // Reordering the underlying queue and restoring the player retain the
+    // original playing playlist's row identities and traversal order.
+    s.dispatch(Command::Reorder {
+        indices: vec![3, 1, 2, 0],
+    });
+    let saved = s.checkpoint();
+    s.restore(saved, |v| Ok(v.clone())).unwrap();
+    s.dispatch(Command::Navigate {
+        event: NavigationEvent::Previous,
+    });
+    assert_eq!(s.queue()[s.current().unwrap()]["title"], "first");
+    s.dispatch(Command::Repeat {
+        mode: RepeatMode::One,
+    });
+    let token = s.snapshot().output_token.unwrap().clone();
+    s.dispatch(Command::Output {
+        token,
+        event: OutputEvent::Ended,
+    });
+    assert_eq!(s.queue()[s.current().unwrap()]["title"], "first");
+    s.dispatch(Command::Navigate {
+        event: NavigationEvent::Next,
+    });
+    assert_eq!(s.queue()[s.current().unwrap()]["title"], "last");
+
+    // Explicit playback from the main queue returns to its normal order.
+    s.dispatch(Command::Repeat {
+        mode: RepeatMode::Off,
+    });
+    s.dispatch(Command::Play { index: 1 });
+    s.dispatch(Command::Navigate {
+        event: NavigationEvent::Next,
+    });
+    assert_eq!(s.current(), Some(2));
+}
+
+#[test]
+fn tab_shuffle_and_late_album_metadata_never_include_other_queue_rows() {
+    for mode in [ShuffleMode::All, ShuffleMode::Albums] {
+        let mut s = session("tab-shuffle");
+        append(&mut s, &["main one", "main two"]);
+        tab(&mut s, &["first", "second", "third"]);
+        play_tab(&mut s, vec![0]);
+        s.dispatch(Command::Repeat {
+            mode: RepeatMode::All,
+        });
+        s.dispatch(Command::Shuffle { mode });
+        let rows = s.queue().iter().map(Item::metadata).collect();
+        s.dispatch(Command::Metadata { rows });
+        for _ in 0..15 {
+            s.dispatch(Command::Navigate {
+                event: NavigationEvent::Next,
+            });
+            assert!(s.current().unwrap() >= 2);
+        }
+        // Removing the playing playlist cannot fall back to the other rows.
+        s.dispatch(Command::Remove {
+            indices: vec![2, 3, 4],
+        });
+        let effects = s.dispatch(Command::Navigate {
+            event: NavigationEvent::Next,
+        });
+        assert!(effects.iter().all(|e| !matches!(e, Effect::Play { .. })));
+        assert_eq!(s.snapshot().transport, Transport::Stopped);
+    }
+    let mut s = session("one-song-tab");
+    append(&mut s, &["outside"]);
+    tab(&mut s, &["only"]);
+    play_tab(&mut s, vec![0]);
+    s.dispatch(Command::Repeat {
+        mode: RepeatMode::All,
+    });
+    s.dispatch(Command::Shuffle {
+        mode: ShuffleMode::All,
+    });
+    s.dispatch(Command::Navigate {
+        event: NavigationEvent::Next,
+    });
+    assert_eq!(s.current(), Some(1));
+}
+
+#[test]
+fn tab_start_accounts_for_expanded_prefix_and_rejects_superseded_completions() {
+    for cancel in [false, true] {
+        let mut s = session("tab-expansion");
+        append(&mut s, &["outside"]);
+        tab(&mut s, &["multi-song file", "clicked", "following"]);
+        workspace_action(&mut s, workspace::Command::Select { indices: vec![1] });
+        let effects = workspace_action(
+            &mut s,
+            workspace::Command::Queue {
+                action: workspace::QueueAction::PlayNow,
+            },
+        );
+        let jobs: Vec<_> = effects
+            .into_iter()
+            .filter_map(|e| match e {
+                Effect::Expand { token, entries, .. } => Some((token, entries)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(jobs.len(), 2);
+        s.dispatch(Command::Complete {
+            token: jobs[1].0.clone(),
+            result: IoResult::Expanded {
+                tracks: jobs[1].1.clone(),
+            },
+        });
+        assert_eq!(
+            s.queue(),
+            &[row("outside")],
+            "A partial load cannot publish a partial playlist"
+        );
+        if cancel {
+            s.dispatch(Command::Stop);
+        }
+        s.dispatch(Command::Complete {
+            token: jobs[0].0.clone(),
+            result: IoResult::Expanded {
+                tracks: vec![row("subsong 1"), row("subsong 2")],
+            },
+        });
+        if cancel {
+            assert_eq!(s.queue(), &[row("outside")]);
+            assert_eq!(s.snapshot().transport, Transport::Stopped);
+        } else {
+            assert_eq!(s.current(), Some(3));
+            assert_eq!(s.queue()[3]["title"], "clicked");
+            s.dispatch(Command::Navigate {
+                event: NavigationEvent::Previous,
+            });
+            assert_eq!(s.queue()[s.current().unwrap()]["title"], "subsong 2");
+        }
+    }
+}
+
+#[test]
+fn duplicate_occurrences_and_explicit_multi_selection_have_bounded_navigation() {
+    let mut s = session("tab-duplicates");
+    append(&mut s, &["outside"]);
+    tab(&mut s, &["same", "middle", "same", "last"]);
+    play_tab(&mut s, vec![2]);
+    assert_eq!(
+        s.current(),
+        Some(3),
+        "Start at the selected occurrence, not the first matching path"
+    );
+    s.dispatch(Command::Navigate {
+        event: NavigationEvent::Next,
+    });
+    assert_eq!(s.queue()[s.current().unwrap()]["title"], "last");
+    play_tab(&mut s, vec![1, 3]);
+    assert_eq!(s.queue()[s.current().unwrap()]["title"], "middle");
+    s.dispatch(Command::Navigate {
+        event: NavigationEvent::Next,
+    });
+    assert_eq!(s.queue()[s.current().unwrap()]["title"], "last");
+    s.dispatch(Command::Navigate {
+        event: NavigationEvent::Next,
+    });
+    assert_eq!(s.snapshot().transport, Transport::Stopped);
+}
+
 #[test]
 fn sessions_own_independent_queues_modes_drafts_and_effects() {
     let mut a = session("qt");

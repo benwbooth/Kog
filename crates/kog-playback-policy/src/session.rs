@@ -343,6 +343,11 @@ enum Pending<T> {
         scope: String,
         ready: Option<Result<Vec<T>, String>>,
     },
+    Playlist {
+        scope: String,
+        request: u64,
+        prefix: bool,
+    },
     Radio {
         generation: u64,
         scope: String,
@@ -355,6 +360,7 @@ impl<T> Pending<T> {
             Self::Load { scope, .. }
             | Self::Save { scope, .. }
             | Self::Expand { scope, .. }
+            | Self::Playlist { scope, .. }
             | Self::Radio { scope, .. } => scope,
         }
     }
@@ -378,6 +384,17 @@ struct QueueAppend {
     entries: Vec<Value>,
     token: u64,
     rows: Vec<u64>,
+}
+
+/// Expand the prefix separately so an archive or multi-song file before the
+/// clicked row cannot shift the requested starting song. Both halves commit
+/// together, and a newer transport command invalidates the pending start.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct PlaylistRequest<T> {
+    request: u64,
+    transport_epoch: u64,
+    before: Option<Vec<T>>,
+    after: Option<Vec<T>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -405,6 +422,8 @@ pub struct Session<T> {
     visible: Vec<usize>,
     pending: BTreeMap<u64, Pending<T>>,
     expansion_order: VecDeque<u64>,
+    #[serde(default)]
+    playlist_request: Option<PlaylistRequest<T>>,
     #[serde(default)]
     append_undo: Vec<QueueAppend>,
     #[serde(default)]
@@ -478,6 +497,7 @@ impl<T: Item> Session<T> {
             visible: vec![],
             pending: BTreeMap::new(),
             expansion_order: VecDeque::new(),
+            playlist_request: None,
             append_undo: vec![],
             append_redo: vec![],
             output: None,
@@ -621,6 +641,10 @@ impl<T: Item> Session<T> {
     ) {
         if tracks.is_empty() {
             return;
+        }
+        if action == workspace::QueueAction::PlayNow {
+            self.order
+                .set_playback_scope(None, &self.order_tracks(), self.current);
         }
         let start = self.queue.len();
         let count = tracks.len();
@@ -805,6 +829,106 @@ impl<T: Item> Session<T> {
         if self.append_undo.len() > 50 {
             self.append_undo.remove(0);
         }
+    }
+
+    fn begin_playlist(
+        &mut self,
+        scope: String,
+        entries: Vec<Value>,
+        start: usize,
+        effects: &mut Vec<Effect>,
+    ) {
+        if start >= entries.len() {
+            return;
+        }
+        self.transport_epoch += 1;
+        self.pending
+            .retain(|_, pending| !matches!(pending, Pending::Playlist { .. }));
+        let request = self.token().serial;
+        self.playlist_request = Some(PlaylistRequest {
+            request,
+            transport_epoch: self.transport_epoch,
+            before: (start == 0).then(Vec::new),
+            after: None,
+        });
+        for (prefix, entries) in [(true, &entries[..start]), (false, &entries[start..])] {
+            if entries.is_empty() {
+                continue;
+            }
+            let token = self.token();
+            self.pending.insert(
+                token.serial,
+                Pending::Playlist {
+                    scope: scope.clone(),
+                    request,
+                    prefix,
+                },
+            );
+            effects.push(Effect::Expand {
+                token,
+                scope: scope.clone(),
+                entries: entries.to_vec(),
+            });
+        }
+    }
+
+    fn finish_playlist(
+        &mut self,
+        request: u64,
+        prefix: bool,
+        result: IoResult<T>,
+        effects: &mut Vec<Effect>,
+    ) {
+        let Some(load) = self
+            .playlist_request
+            .as_mut()
+            .filter(|load| load.request == request)
+        else {
+            return;
+        };
+        if load.transport_epoch != self.transport_epoch {
+            self.playlist_request = None;
+            return;
+        }
+        match result {
+            IoResult::Expanded { tracks } => {
+                if prefix {
+                    load.before = Some(tracks);
+                } else {
+                    load.after = Some(tracks);
+                }
+            }
+            other => {
+                self.error = Some(match other {
+                    IoResult::Failed { error } => error,
+                    _ => "Invalid playlist expansion response".into(),
+                });
+                self.playlist_request = None;
+                return;
+            }
+        }
+        if load.before.is_none() || load.after.is_none() {
+            return;
+        }
+        let load = self.playlist_request.take().unwrap();
+        let mut tracks = load.before.unwrap();
+        let after = load.after.unwrap();
+        if after.is_empty() {
+            return;
+        }
+        let start = self.queue.len();
+        let current = start + tracks.len();
+        tracks.extend(after);
+        self.append(tracks, workspace::QueueAction::AddToQueue, effects);
+        self.order.clear_queue();
+        self.order
+            .set_radio_enabled(false, &self.order_tracks(), self.current);
+        self.order.set_playback_scope(
+            Some((start..self.queue.len()).collect()),
+            &self.order_tracks(),
+            Some(current),
+        );
+        self.play(current, false, effects);
     }
     fn undo_append(&mut self, redo: bool, effects: &mut Vec<Effect>) {
         if redo {
@@ -1012,8 +1136,11 @@ impl<T: Item> Session<T> {
                 mode,
                 entries,
                 scope,
+                start,
             }) => {
-                if mode == workspace::QueueAction::AddToQueue && !entries.is_empty() {
+                if mode == workspace::QueueAction::PlayNow {
+                    self.begin_playlist(scope, entries, start, effects);
+                } else if mode == workspace::QueueAction::AddToQueue && !entries.is_empty() {
                     self.append_redo.clear();
                     self.begin_append(scope, entries, effects);
                 } else {
@@ -1040,6 +1167,9 @@ impl<T: Item> Session<T> {
             result
         };
         match pending {
+            Pending::Playlist {
+                request, prefix, ..
+            } => self.finish_playlist(request, prefix, result, effects),
             Pending::Load {
                 key, generation, ..
             } => self.workspace_command(
@@ -1323,8 +1453,18 @@ impl<T: Item> Session<T> {
                 });
             }
             Command::Complete { token, result } => self.complete(token, result, &mut effects),
-            Command::Play { index } => self.play(index, false, &mut effects),
+            Command::Play { index } => {
+                if index < self.queue.len() {
+                    self.order
+                        .set_playback_scope(None, &self.order_tracks(), Some(index));
+                    self.play(index, false, &mut effects);
+                }
+            }
             Command::Activate { index } => {
+                if index < self.queue.len() {
+                    self.order
+                        .set_playback_scope(None, &self.order_tracks(), Some(index));
+                }
                 match crate::selection::activate(index, self.current, self.queue.len()) {
                     Some(crate::selection::Activation::Play { index }) => {
                         self.play(index, false, &mut effects)
@@ -1358,7 +1498,12 @@ impl<T: Item> Session<T> {
                     effects.push(Effect::Volume { value: self.volume })
                 }
             }
-            Command::Navigate { event } => self.navigate(event, &mut effects),
+            Command::Navigate { event } => {
+                if matches!(event, NavigationEvent::Next | NavigationEvent::Previous) {
+                    self.transport_epoch += 1;
+                }
+                self.navigate(event, &mut effects);
+            }
             Command::Output { token, event } => {
                 if let Some(request) = self.output.clone().filter(|r| r.token == token) {
                     if let Some(index) = self.rows.iter().position(|id| *id == request.row) {
@@ -1421,6 +1566,10 @@ impl<T: Item> Session<T> {
                 root,
                 reshuffle,
             } => {
+                if enabled {
+                    self.order
+                        .set_playback_scope(None, &self.order_tracks(), self.current);
+                }
                 self.order
                     .set_radio_enabled(enabled, &self.order_tracks(), self.current);
                 self.radio.reset(enabled);
@@ -1515,7 +1664,8 @@ impl<T: Item> Session<T> {
         self.selection = Selection::default();
         self.order.clear_tracks();
         self.pending
-            .retain(|_, p| !matches!(p, Pending::Expand { .. }));
+            .retain(|_, p| !matches!(p, Pending::Expand { .. } | Pending::Playlist { .. }));
+        self.playlist_request = None;
         self.expansion_order.clear();
         self.append_undo.clear();
         self.append_redo.clear();

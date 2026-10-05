@@ -206,6 +206,8 @@ pub enum Effect {
         mode: QueueAction,
         entries: Vec<Value>,
         scope: String,
+        #[serde(default)]
+        start: usize,
     },
 }
 
@@ -752,17 +754,27 @@ impl Workspace {
                 if tab.loading.is_some() {
                     return Err("The playlist is still loading".into());
                 }
+                // A single-row Play Now starts there and continues through
+                // the playlist. Explicit multi-selection plays that set.
+                let start = if action == QueueAction::PlayNow && tab.draft.selected.len() == 1 {
+                    tab.selected_indices().first().copied().unwrap_or(0)
+                } else {
+                    0
+                };
+                let whole = tab.draft.selected.is_empty()
+                    || (action == QueueAction::PlayNow && tab.draft.selected.len() == 1);
                 let entries = tab
                     .draft
                     .rows
                     .iter()
-                    .filter(|r| tab.draft.selected.is_empty() || tab.draft.selected.contains(&r.id))
+                    .filter(|r| whole || tab.draft.selected.contains(&r.id))
                     .map(|r| r.entry.clone())
                     .collect();
                 return Ok(Effect::Queue {
                     mode: action,
                     entries,
                     scope: tab.scope.clone(),
+                    start,
                 });
             }
             Renamed { key, name } => {
