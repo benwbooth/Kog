@@ -8,4 +8,5 @@ pub mod db;
 pub mod equalizer;
 pub mod media_path;
 pub mod mpris;
+pub mod state;
 pub mod text_encoding;

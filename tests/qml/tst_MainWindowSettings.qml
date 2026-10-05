@@ -6,7 +6,13 @@ import "../../qml"
 TestCase {
     name: "MainWindowSettings"
 
-    Component { id: settingsFactory; MainWindowSettings {} }
+    QtObject {
+        id: store
+        property var preferences: ({})
+        function load_ui_setting(key, legacy) { return preferences[key] === undefined ? legacy : preferences[key] }
+        function save_ui_setting(key, value) { preferences[key] = value; return true }
+    }
+    Component { id: settingsFactory; MainWindowSettings { app: store } }
 
     function initTestCase() {
         failOnWarning(/Setting initial properties failed|Failed to initialize QSettings/)
@@ -16,7 +22,7 @@ TestCase {
         const path = StandardPaths.writableLocation(StandardPaths.TempLocation)
             + "/kog-main-window-settings-" + Date.now() + "-" + Math.random() + ".ini"
         const location = Qt.resolvedUrl(path)
-        let settings = settingsFactory.createObject(null, { location: location })
+        let settings = settingsFactory.createObject(null, { location: location, fileName: path })
         verify(settings !== null)
         compare(settings.location, location)
         compare(settings.sidebarVisible, true, "A fresh installation shows the file tree")
@@ -24,20 +30,20 @@ TestCase {
         settings.sidebarVisible = false
         settings.destroy()
         wait(0)
-        settings = settingsFactory.createObject(null, { location: location })
+        settings = settingsFactory.createObject(null, { location: location, fileName: path })
         compare(settings.sidebarVisible, false, "Hidden state survives a new settings instance")
 
         settings.sidebarVisible = true
         settings.destroy()
         wait(0)
-        settings = settingsFactory.createObject(null, { location: location })
+        settings = settingsFactory.createObject(null, { location: location, fileName: path })
         compare(settings.sidebarVisible, true, "Shown state survives a new settings instance")
 
         compare(settings.sidebarWidth, 285, "Fresh installations use the default tree width")
         settings.sidebarWidth = 340
         settings.destroy()
         wait(0)
-        settings = settingsFactory.createObject(null, { location: location })
+        settings = settingsFactory.createObject(null, { location: location, fileName: path })
         compare(settings.sidebarWidth, 340, "Resized tree width survives a new settings instance")
         settings.destroy()
     }

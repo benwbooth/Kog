@@ -81,23 +81,11 @@ const PLAYLIST_PAUSE: &str = "❚❚";
 const STATUS_WAVEFORM_WIDTH: usize = 4;
 
 fn load_sidebar_width() -> Option<usize> {
-    let path = kog_audio::settings::setting_path(SIDEBAR_WIDTH_FILE)?;
-    std::fs::read_to_string(path)
-        .ok()?
-        .trim()
-        .parse::<usize>()
-        .ok()
-        .filter(|width| *width >= 18)
+    kog_audio::settings::load_text(SIDEBAR_WIDTH_FILE)?.parse::<usize>().ok().filter(|width| *width >= 18)
 }
 
 fn save_sidebar_width(width: usize) -> Result<(), String> {
-    let path = kog_audio::settings::setting_path(SIDEBAR_WIDTH_FILE)
-        .ok_or("Cannot find the terminal settings directory")?;
-    let parent = path.parent().ok_or("Invalid terminal settings path")?;
-    std::fs::create_dir_all(parent)
-        .map_err(|error| format!("creating {}: {error}", parent.display()))?;
-    std::fs::write(&path, width.to_string())
-        .map_err(|error| format!("writing {}: {error}", path.display()))
+    kog_audio::settings::save_text(SIDEBAR_WIDTH_FILE, &width.to_string())
 }
 
 struct SavedTreeState {
@@ -106,12 +94,11 @@ struct SavedTreeState {
 }
 
 fn load_tree_state(library_root: Option<&Path>) -> Option<SavedTreeState> {
-    let path = kog_audio::settings::setting_path(TREE_STATE_FILE)?;
-    let contents = std::fs::read(path).ok()?;
+    let contents = kog_audio::settings::load_text(TREE_STATE_FILE)?;
     if contents.len() > TREE_STATE_MAX_BYTES {
         return None;
     }
-    let value: serde_json::Value = serde_json::from_slice(&contents).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&contents).ok()?;
     let expected_root = library_root.map(|root| root.to_string_lossy());
     if value["libraryRoot"].as_str() != expected_root.as_deref() {
         return None;
@@ -147,11 +134,6 @@ fn save_tree_state(
     browse_path: Option<&Path>,
     expanded: &HashSet<PathBuf>,
 ) -> Result<(), String> {
-    let path = kog_audio::settings::setting_path(TREE_STATE_FILE)
-        .ok_or("Cannot find the terminal settings directory")?;
-    let parent = path.parent().ok_or("Invalid terminal settings path")?;
-    std::fs::create_dir_all(parent)
-        .map_err(|error| format!("creating {}: {error}", parent.display()))?;
     let mut paths: Vec<_> = expanded
         .iter()
         .filter(|item| {
@@ -174,16 +156,7 @@ fn save_tree_state(
     if contents.len() > TREE_STATE_MAX_BYTES {
         return Err("the expanded tree is too large to save".to_owned());
     }
-    let mut temporary = tempfile::NamedTempFile::new_in(parent)
-        .map_err(|error| format!("creating terminal tree state: {error}"))?;
-    temporary
-        .write_all(&contents)
-        .and_then(|()| temporary.flush())
-        .map_err(|error| format!("writing terminal tree state: {error}"))?;
-    temporary
-        .persist(&path)
-        .map_err(|error| format!("saving {}: {}", path.display(), error.error))?;
-    Ok(())
+    kog_audio::settings::save_text(TREE_STATE_FILE, std::str::from_utf8(&contents).map_err(|e| e.to_string())?)
 }
 
 struct RestoredPlaylist {
@@ -982,6 +955,7 @@ enum RemoteResponse {
 
 struct Ui {
     session: Session<Track>,
+    session_store: kog_core::state::StateCursor,
     session_effects: std::collections::VecDeque<SessionEffect>,
     session_jobs: Vec<(Token, Receiver<IoResult<Track>>)>,
     workspace_cursor: usize,
@@ -1350,8 +1324,11 @@ impl Ui {
             .iter()
             .map(metadata_key)
             .collect();
+        let session_store = kog_core::state::StateCursor::open(&library.db(), "sessions", &session_id,
+            kog_audio::playback_order::session_path(&session_id, "session").as_deref());
         let mut ui = Self {
             library,
+            session_store,
             decoder_settings,
             decoders,
             player,
@@ -1485,10 +1462,15 @@ impl Ui {
             column_viewport_width: 40,
             starred_keys,
         };
-        let restored = kog_audio::playback_order::session_path(ui.session.id(), "session")
-            .and_then(|p| std::fs::read(p).ok())
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .is_some_and(|value| ui.session.restore(value, session::decode_track).is_ok());
+        let restore = ui.session_store.value()
+            .map(|text| serde_json::from_str(text).map_err(|e| format!("Invalid saved session: {e}")))
+            .map(|value| value.and_then(|value| ui.session.restore(value, session::decode_track)));
+        let restored = match restore {
+            Some(Ok(_)) => true,
+            Some(Err(error)) => { ui.session_store.reject(error); true }
+            None => ui.session_store.error().is_some(),
+        };
+        if let Some(error) = ui.session_store.error() { ui.status = error.to_owned(); }
         if !restored {
             if std::env::var_os("KOG_SESSION_ID").is_none() {
                 if let Some(legacy) = kog_audio::settings::setting_path(SESSION_FILE)
@@ -1671,7 +1653,7 @@ impl Ui {
 
     fn flush_session(&mut self) -> Result<(), String> {
         if self.session_dirty {
-            kog_audio::playback_order::save_session(self.session.id(), &self.session.checkpoint())?;
+            self.session_store.save(&self.library.db(), &self.session.checkpoint().to_string())?;
             self.session_dirty = false;
         }
         Ok(())
@@ -4331,18 +4313,21 @@ impl Ui {
             }
         };
         let db = self.library.db();
-        let starred = !db.is_starred(&locator);
-        let result = db.set_star(
+        let result = db.write_transaction(|db| {
+            let starred = !db.is_starred(&locator);
+            db.set_star(
             &locator,
             &track.entry.kind,
             &track.entry.path,
             &track.entry.entry,
             track.entry.fragment.as_deref(),
             starred,
-        );
+            )?;
+            Ok(starred)
+        });
         drop(db);
         match result {
-            Ok(()) => {
+            Ok(starred) => {
                 let key = metadata_key(&track.entry);
                 if starred {
                     self.starred_keys.insert(key);
@@ -5102,23 +5087,15 @@ impl Ui {
                     self.status = "Select tracks to save".to_owned();
                     return;
                 }
-                let created = self.library.db().create_playlist(value);
+                let created = self.library.db().create_playlist_with_entries(value, &entries);
                 match created {
                     Ok(id) => {
-                        let appended = self.library.db().append_entries(id, &entries);
-                        match appended {
-                            Ok(()) => {
-                                self.reload_lists();
-                                if let Some(index) =
-                                    self.lists.iter().position(|(list_id, _)| *list_id == id)
-                                {
-                                    self.select_list(index);
-                                    self.offsets[0] = index.saturating_sub(5);
-                                }
-                                self.status = format!("Saved {} tracks to {value}", entries.len());
-                            }
-                            Err(error) => self.status = error,
+                        self.reload_lists();
+                        if let Some(index) = self.lists.iter().position(|(list_id, _)| *list_id == id) {
+                            self.select_list(index);
+                            self.offsets[0] = index.saturating_sub(5);
                         }
+                        self.status = format!("Saved {} tracks to {value}", entries.len());
                     }
                     Err(error) => self.status = error,
                 }

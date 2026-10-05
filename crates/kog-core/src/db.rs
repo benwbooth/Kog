@@ -1,10 +1,10 @@
-//! SQLite library store (single file): starred songs and custom playlists.
+//! SQLite application store: library, preferences, and session checkpoints.
 //!
 //! One database, `kog.db`, holds what used to need ad-hoc files: the star
 //! set (favorites source of truth) and named playlists with full-fidelity
 //! entries (local files, archive members, remote URLs, subsong fragments).
-//! Small settings files and the hot-path radio round stay where they are;
-//! this store is for relational library data with keyed lookups.
+//! Connections use WAL and a bounded busy timeout. Read/modify/write operations
+//! acquire SQLite's writer lock before reading, including across processes.
 //!
 //! Locator keys reuse the radio identity scheme (plain path,
 //! `outer :: member`, remote URL) so stars, the dead set, and dedup logic
@@ -12,7 +12,7 @@
 
 use std::path::{Path, PathBuf};
 
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS meta (
@@ -50,9 +50,17 @@ CREATE TABLE IF NOT EXISTS blacklist (
     entry TEXT NOT NULL DEFAULT '',
     UNIQUE(kind, path, entry)
 );
+CREATE TABLE IF NOT EXISTS app_state (
+    namespace TEXT NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    revision INTEGER NOT NULL CHECK(revision > 0),
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY(namespace, key)
+);
 ";
 
-const SCHEMA_VERSION: &str = "1";
+const SCHEMA_VERSION: &str = "2";
 
 /// Entry kinds stored in `kind` columns. Archive members keep outer path +
 /// member name; remote tracks keep the URL in `path`.
@@ -92,10 +100,51 @@ pub struct LibraryDb {
     conn: Connection,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoredState {
+    pub value: String,
+    pub revision: i64,
+}
+
+#[derive(Debug)]
+pub enum StateWriteError {
+    Conflict,
+    Database(String),
+}
+
+impl std::fmt::Display for StateWriteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Conflict => f.write_str("This session changed in another instance. Your current session has not overwritten its saved state."),
+            Self::Database(error) => f.write_str(error),
+        }
+    }
+}
+
+impl std::error::Error for StateWriteError {}
+
 fn database_path() -> PathBuf {
     directories::ProjectDirs::from("org", "Kog", "Kog")
         .map(|directories| directories.data_dir().join("kog.db"))
         .unwrap_or_else(|| std::env::temp_dir().join("kog.db"))
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+static DEVICE_DATABASE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Mobile has one application-private store. Configure it before any shared
+/// service reads preferences, so platform directory fallbacks cannot create
+/// a second store for the native library.
+pub fn configure_device_database(path: &Path) -> Result<(), String> {
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        let current = DEVICE_DATABASE.get_or_init(|| path.to_owned());
+        if current != path {
+            return Err("The device database is already configured at another path".into());
+        }
+    }
+    let _ = path;
+    Ok(())
 }
 
 fn now_millis() -> i64 {
@@ -106,33 +155,130 @@ fn now_millis() -> i64 {
 }
 
 impl LibraryDb {
+    pub fn path(&self) -> Option<PathBuf> {
+        self.conn
+            .path()
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from)
+    }
     pub fn open() -> Result<Self, String> {
+        #[cfg(any(target_os = "android", target_os = "ios"))]
+        return Self::open_at(
+            DEVICE_DATABASE
+                .get()
+                .ok_or("The device database has not been configured")?,
+        );
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
         Self::open_at(&database_path())
     }
 
     /// Memory-only database for tests and for degraded startup when the
     /// data directory is unavailable (stars/playlists won't persist).
     pub fn open_in_memory() -> Result<Self, String> {
-        let conn = Connection::open_in_memory().map_err(|error| format!("opening library database: {error}"))?;
+        let conn = Connection::open_in_memory()
+            .map_err(|error| format!("opening library database: {error}"))?;
+        Self::configure(&conn, false)?;
         let db = Self { conn };
         db.migrate()?;
         Ok(db)
     }
 
-    pub fn open_at(path: &Path) -> Result<Self, String> {        if let Some(parent) = path.parent() {
+    pub fn open_at(path: &Path) -> Result<Self, String> {
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
             std::fs::create_dir_all(parent)
                 .map_err(|error| format!("creating {}: {error}", parent.display()))?;
         }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .mode(0o600)
+                .open(path)
+                .map_err(|e| format!("opening private database: {e}"))?;
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))
+                .map_err(|e| format!("protecting database: {e}"))?;
+            for suffix in ["-wal", "-shm"] {
+                let mut sibling = path.as_os_str().to_owned();
+                sibling.push(suffix);
+                match std::fs::set_permissions(&sibling, std::fs::Permissions::from_mode(0o600)) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(format!("protecting database journal: {error}")),
+                }
+            }
+        }
         let conn = Connection::open(path)
             .map_err(|error| format!("opening {}: {error}", path.display()))?;
-        conn.execute_batch("PRAGMA foreign_keys = ON;")
-            .map_err(|error| format!("configuring {}: {error}", path.display()))?;
+        Self::configure(&conn, true)?;
         let db = Self { conn };
         db.migrate()?;
         Ok(db)
     }
 
+    fn configure(conn: &Connection, on_disk: bool) -> Result<(), String> {
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .map_err(|e| format!("configuring database timeout: {e}"))?;
+        conn.execute_batch("PRAGMA foreign_keys = ON;")
+            .map_err(|e| format!("configuring database: {e}"))?;
+        if on_disk {
+            let mode: String = conn
+                .pragma_query_value(None, "journal_mode", |row| row.get(0))
+                .map_err(|e| format!("reading database journal mode: {e}"))?;
+            if !mode.eq_ignore_ascii_case("wal") {
+                let mode: String = conn
+                    .query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))
+                    .map_err(|e| format!("enabling concurrent database readers: {e}"))?;
+                if !mode.eq_ignore_ascii_case("wal") {
+                    return Err("The database filesystem does not support WAL journaling".into());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Compose library mutations into one transaction without nested BEGINs.
+    /// The connection is exclusively borrowed by its owner/Mutex; nested calls
+    /// here can only belong to the same synchronous operation.
+    pub fn write_transaction<T>(
+        &self,
+        operation: impl FnOnce(&Self) -> Result<T, String>,
+    ) -> Result<T, String> {
+        if !self.conn.is_autocommit() {
+            return operation(self);
+        }
+        let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)
+            .map_err(|e| format!("starting database transaction: {e}"))?;
+        let result = operation(self)?;
+        transaction
+            .commit()
+            .map_err(|e| format!("committing database transaction: {e}"))?;
+        Ok(result)
+    }
+
     fn migrate(&self) -> Result<(), String> {
+        let version = self
+            .conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'schema_version'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional();
+        if let Ok(Some(version)) = version {
+            if version == SCHEMA_VERSION {
+                return Ok(());
+            }
+            if version.parse::<u32>().unwrap_or(u32::MAX) > SCHEMA_VERSION.parse::<u32>().unwrap() {
+                return Err("This database was created by a newer Kog version".into());
+            }
+        }
+        self.write_transaction(|db| db.migrate_in_transaction())
+    }
+
+    fn migrate_in_transaction(&self) -> Result<(), String> {
         self.conn
             .execute_batch(SCHEMA)
             .map_err(|error| format!("creating library schema: {error}"))?;
@@ -145,6 +291,11 @@ impl LibraryDb {
             )
             .optional()
             .map_err(|error| format!("reading library schema version: {error}"))?;
+        if version.as_ref().is_some_and(|v| {
+            v.parse::<u32>().unwrap_or(u32::MAX) > SCHEMA_VERSION.parse::<u32>().unwrap()
+        }) {
+            return Err("This database was created by a newer version of Kog".into());
+        }
         if version.as_deref() != Some(SCHEMA_VERSION) {
             self.conn
                 .execute(
@@ -155,6 +306,114 @@ impl LibraryDb {
                 .map_err(|error| format!("writing library schema version: {error}"))?;
         }
         Ok(())
+    }
+
+    pub fn load_state(&self, namespace: &str, key: &str) -> Result<Option<StoredState>, String> {
+        self.conn
+            .query_row(
+                "SELECT value, revision FROM app_state WHERE namespace = ?1 AND key = ?2",
+                rusqlite::params![namespace, key],
+                |row| {
+                    Ok(StoredState {
+                        value: row.get(0)?,
+                        revision: row.get(1)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|e| format!("reading saved state: {e}"))
+    }
+
+    pub fn list_state(&self, namespace: &str) -> Result<Vec<(String, StoredState)>, String> {
+        let mut query = self
+            .conn
+            .prepare("SELECT key, value, revision FROM app_state WHERE namespace = ?1 ORDER BY key")
+            .map_err(|e| format!("reading preferences: {e}"))?;
+        query
+            .query_map([namespace], |row| {
+                Ok((
+                    row.get(0)?,
+                    StoredState {
+                        value: row.get(1)?,
+                        revision: row.get(2)?,
+                    },
+                ))
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<_, _>>()
+            .map_err(|e| e.to_string())
+    }
+
+    /// Each preference is an independent key, so updating one never rewrites
+    /// an older in-memory copy of unrelated preferences.
+    pub fn put_state(&self, namespace: &str, key: &str, value: &str) -> Result<(), String> {
+        self.conn.execute(
+            "INSERT INTO app_state(namespace, key, value, revision, updated_at) VALUES(?1, ?2, ?3, 1, ?4)
+             ON CONFLICT(namespace, key) DO UPDATE SET value = excluded.value,
+                 revision = app_state.revision + 1, updated_at = excluded.updated_at",
+            rusqlite::params![namespace, key, value, now_millis()],
+        ).map_err(|e| format!("saving preference: {e}"))?;
+        Ok(())
+    }
+
+    /// Legacy data is imported once. A concurrent writer's SQLite value wins.
+    pub fn import_state(
+        &self,
+        namespace: &str,
+        key: &str,
+        value: &str,
+    ) -> Result<StoredState, String> {
+        self.write_transaction(|db| {
+            db.conn.execute(
+                "INSERT INTO app_state(namespace, key, value, revision, updated_at) VALUES(?1, ?2, ?3, 1, ?4)
+                 ON CONFLICT(namespace, key) DO NOTHING",
+                rusqlite::params![namespace, key, value, now_millis()],
+            ).map_err(|e| format!("migrating saved state: {e}"))?;
+            db.load_state(namespace, key)?.ok_or_else(|| "Migrated state is missing".into())
+        })
+    }
+
+    /// Compare-and-swap a checkpoint. Revision zero means it has never been
+    /// saved; every subsequent save must present the last observed revision.
+    pub fn save_state_checked(
+        &self,
+        namespace: &str,
+        key: &str,
+        value: &str,
+        expected_revision: i64,
+    ) -> Result<i64, StateWriteError> {
+        if !(0..i64::MAX).contains(&expected_revision) {
+            return Err(StateWriteError::Database(
+                "Invalid saved-state revision".into(),
+            ));
+        }
+        let changed = if expected_revision == 0 {
+            self.conn.execute(
+                "INSERT INTO app_state(namespace, key, value, revision, updated_at) VALUES(?1, ?2, ?3, 1, ?4)
+                 ON CONFLICT(namespace, key) DO NOTHING",
+                rusqlite::params![namespace, key, value, now_millis()],
+            )
+        } else {
+            self.conn.execute(
+                "UPDATE app_state SET value = ?3, revision = revision + 1, updated_at = ?4
+                 WHERE namespace = ?1 AND key = ?2 AND revision = ?5",
+                rusqlite::params![namespace, key, value, now_millis(), expected_revision],
+            )
+        }.map_err(|e| StateWriteError::Database(format!("saving session: {e}")))?;
+        if changed == 0 {
+            // An HTTP reply can be lost after commit. Retrying the identical
+            // value acknowledges that save without making a second write.
+            if let Some(saved) = self
+                .load_state(namespace, key)
+                .map_err(StateWriteError::Database)?
+            {
+                if saved.value == value {
+                    return Ok(saved.revision);
+                }
+            }
+            return Err(StateWriteError::Conflict);
+        }
+        Ok(expected_revision + 1)
     }
 
     // ---- stars ----
@@ -190,11 +449,9 @@ impl LibraryDb {
 
     pub fn is_starred(&self, locator: &str) -> bool {
         self.conn
-            .query_row(
-                "SELECT 1 FROM stars WHERE locator = ?1",
-                [locator],
-                |_| Ok(()),
-            )
+            .query_row("SELECT 1 FROM stars WHERE locator = ?1", [locator], |_| {
+                Ok(())
+            })
             .optional()
             .map(|hit| hit.is_some())
             .unwrap_or(false)
@@ -215,9 +472,7 @@ impl LibraryDb {
     pub fn starred_entries(&self) -> Result<Vec<StoredEntry>, String> {
         let mut statement = self
             .conn
-            .prepare(
-                "SELECT kind, path, entry, fragment FROM stars ORDER BY starred_at, locator",
-            )
+            .prepare("SELECT kind, path, entry, fragment FROM stars ORDER BY starred_at, locator")
             .map_err(|error| format!("reading stars: {error}"))?;
         statement
             .query_map([], |row| {
@@ -234,6 +489,34 @@ impl LibraryDb {
     }
 
     // ---- playlists ----
+
+    fn require_playlist(&self, id: i64) -> Result<(), String> {
+        let exists: bool = self
+            .conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM playlists WHERE id = ?1)",
+                [id],
+                |row| row.get(0),
+            )
+            .map_err(|e| format!("reading playlist: {e}"))?;
+        if exists {
+            Ok(())
+        } else {
+            Err("Playlist no longer exists".into())
+        }
+    }
+
+    pub fn create_playlist_with_entries(
+        &self,
+        name: &str,
+        entries: &[StoredEntry],
+    ) -> Result<i64, String> {
+        self.write_transaction(|db| {
+            let id = db.create_playlist(name)?;
+            db.append_entries(id, entries)?;
+            Ok(id)
+        })
+    }
 
     pub fn list_playlists(&self) -> Result<Vec<StoredPlaylist>, String> {
         let mut statement = self
@@ -259,6 +542,10 @@ impl LibraryDb {
     }
 
     pub fn create_playlist(&self, name: &str) -> Result<i64, String> {
+        self.write_transaction(|db| db.create_playlist_in_transaction(name))
+    }
+
+    fn create_playlist_in_transaction(&self, name: &str) -> Result<i64, String> {
         let name = name.trim();
         if name.is_empty() {
             return Err("Playlist name cannot be empty".to_owned());
@@ -311,6 +598,11 @@ impl LibraryDb {
     }
 
     pub fn duplicate_playlist(&self, id: i64, name: &str) -> Result<i64, String> {
+        self.write_transaction(|db| db.duplicate_playlist_in_transaction(id, name))
+    }
+
+    fn duplicate_playlist_in_transaction(&self, id: i64, name: &str) -> Result<i64, String> {
+        self.require_playlist(id)?;
         let new_id = self.create_playlist(name)?;
         let entries = self.playlist_entries(id)?;
         self.append_entries(new_id, &entries)?;
@@ -325,22 +617,46 @@ impl LibraryDb {
 
     /// Save a draft atomically and, when supplied, check its original contents.
     /// A concurrent editor must never silently overwrite another client's save.
-    pub fn replace_entries_checked(&self, playlist_id: i64, entries: &[StoredEntry], expected: Option<&[StoredEntry]>) -> Result<(), String> {
-        let transaction = self.conn.unchecked_transaction().map_err(|e| format!("saving playlist: {e}"))?;
-        let exists: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM playlists WHERE id = ?1)", [playlist_id], |row| row.get(0))
-            .map_err(|e| format!("reading playlist: {e}"))?;
-        if !exists { return Err("Playlist no longer exists".into()); }
+    pub fn replace_entries_checked(
+        &self,
+        playlist_id: i64,
+        entries: &[StoredEntry],
+        expected: Option<&[StoredEntry]>,
+    ) -> Result<(), String> {
+        self.write_transaction(|db| {
+            db.replace_entries_in_transaction(playlist_id, entries, expected)
+        })
+    }
+
+    fn replace_entries_in_transaction(
+        &self,
+        playlist_id: i64,
+        entries: &[StoredEntry],
+        expected: Option<&[StoredEntry]>,
+    ) -> Result<(), String> {
+        self.require_playlist(playlist_id)?;
         if let Some(expected) = expected {
-            let equal = |a: &StoredEntry, b: &StoredEntry| a.kind == b.kind && a.path == b.path && a.entry == b.entry
-                && a.fragment.as_deref().unwrap_or_default() == b.fragment.as_deref().unwrap_or_default();
+            let equal = |a: &StoredEntry, b: &StoredEntry| {
+                a.kind == b.kind
+                    && a.path == b.path
+                    && a.entry == b.entry
+                    && a.fragment.as_deref().unwrap_or_default()
+                        == b.fragment.as_deref().unwrap_or_default()
+            };
             let current = self.playlist_entries(playlist_id)?;
-            if current.len() != expected.len() || !current.iter().zip(expected).all(|(a,b)| equal(a,b)) {
+            if current.len() != expected.len()
+                || !current.iter().zip(expected).all(|(a, b)| equal(a, b))
+            {
                 return Err("This playlist changed elsewhere. Your draft is preserved; reopen the playlist to load the latest version.".into());
             }
         }
-        transaction.execute("DELETE FROM playlist_entries WHERE playlist_id = ?1", [playlist_id]).map_err(|e| format!("saving playlist: {e}"))?;
-        self.append_entries(playlist_id, entries)?;
-        transaction.commit().map_err(|e| format!("saving playlist: {e}"))
+        self.conn
+            .execute(
+                "DELETE FROM playlist_entries WHERE playlist_id = ?1",
+                [playlist_id],
+            )
+            .map_err(|e| format!("saving playlist: {e}"))?;
+        self.append_entries(playlist_id, entries)
     }
 
     pub fn delete_playlist(&self, id: i64) -> Result<(), String> {
@@ -356,6 +672,10 @@ impl LibraryDb {
 
     /// Move playlist `id` to zero-based `to_position`, shifting neighbours.
     pub fn move_playlist(&self, id: i64, to_position: usize) -> Result<(), String> {
+        self.write_transaction(|db| db.move_playlist_in_transaction(id, to_position))
+    }
+
+    fn move_playlist_in_transaction(&self, id: i64, to_position: usize) -> Result<(), String> {
         let mut playlists = self.list_playlists()?;
         let Some(from) = playlists.iter().position(|playlist| playlist.id == id) else {
             return Err("Playlist no longer exists".to_owned());
@@ -375,6 +695,15 @@ impl LibraryDb {
     }
 
     pub fn append_entries(&self, playlist_id: i64, entries: &[StoredEntry]) -> Result<(), String> {
+        self.write_transaction(|db| db.append_entries_in_transaction(playlist_id, entries))
+    }
+
+    fn append_entries_in_transaction(
+        &self,
+        playlist_id: i64,
+        entries: &[StoredEntry],
+    ) -> Result<(), String> {
+        self.require_playlist(playlist_id)?;
         let base: i64 = self
             .conn
             .query_row(
@@ -453,6 +782,14 @@ impl LibraryDb {
 
     /// Delete specific entry rows. Returns the number removed.
     pub fn delete_entry_rows(&self, playlist_id: i64, ids: &[i64]) -> Result<usize, String> {
+        self.write_transaction(|db| db.delete_entry_rows_in_transaction(playlist_id, ids))
+    }
+
+    fn delete_entry_rows_in_transaction(
+        &self,
+        playlist_id: i64,
+        ids: &[i64],
+    ) -> Result<usize, String> {
         let mut removed = 0_usize;
         for id in ids {
             removed += self
@@ -469,6 +806,13 @@ impl LibraryDb {
     /// Add blacklist rows, skipping kinds/paths already listed. Returns
     /// the number actually added.
     pub fn add_blacklist_entries(&self, entries: &[BlacklistEntry]) -> Result<usize, String> {
+        self.write_transaction(|db| db.add_blacklist_entries_in_transaction(entries))
+    }
+
+    fn add_blacklist_entries_in_transaction(
+        &self,
+        entries: &[BlacklistEntry],
+    ) -> Result<usize, String> {
         let mut added = 0_usize;
         for entry in entries {
             if entry.kind != BLACKLIST_SONG && entry.kind != BLACKLIST_FOLDER {
@@ -525,10 +869,115 @@ mod tests {
     use super::*;
 
     fn memory_db() -> LibraryDb {
-        let conn = Connection::open_in_memory().expect("memory database");
-        let db = LibraryDb { conn };
-        db.migrate().expect("migrate memory database");
-        db
+        LibraryDb::open_in_memory().expect("memory database")
+    }
+
+    #[test]
+    fn independent_connections_keep_readers_live_and_reject_stale_checkpoints() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("kog.db");
+        let first = LibraryDb::open_at(&path).unwrap();
+        let second = LibraryDb::open_at(&path).unwrap();
+        assert_eq!(
+            first
+                .conn
+                .pragma_query_value(None, "journal_mode", |r| r.get::<_, String>(0))
+                .unwrap(),
+            "wal"
+        );
+        assert_eq!(
+            first
+                .save_state_checked("sessions", "qt:test", "first", 0)
+                .unwrap(),
+            1
+        );
+        let transaction =
+            Transaction::new_unchecked(&first.conn, TransactionBehavior::Immediate).unwrap();
+        first
+            .save_state_checked("sessions", "qt:test", "uncommitted", 1)
+            .unwrap();
+        // This read must not need the writer's lock or observe its uncommitted row.
+        assert_eq!(
+            second
+                .load_state("sessions", "qt:test")
+                .unwrap()
+                .unwrap()
+                .value,
+            "first"
+        );
+        transaction.commit().unwrap();
+        assert!(matches!(
+            second.save_state_checked("sessions", "qt:test", "stale", 1),
+            Err(StateWriteError::Conflict)
+        ));
+        assert_eq!(
+            second
+                .load_state("sessions", "qt:test")
+                .unwrap()
+                .unwrap()
+                .value,
+            "uncommitted"
+        );
+        assert_eq!(
+            second
+                .save_state_checked("sessions", "web:test", "independent", 0)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            second
+                .import_state("sessions", "qt:test", "old JSON")
+                .unwrap()
+                .value,
+            "uncommitted"
+        );
+    }
+
+    #[test]
+    fn compound_mutations_roll_back_completely() {
+        let db = memory_db();
+        let item = |path: &str| StoredEntry {
+            kind: KIND_LOCAL.into(),
+            path: path.into(),
+            entry: String::new(),
+            fragment: None,
+        };
+        let id = db
+            .create_playlist_with_entries("Original", &[item("kept")])
+            .unwrap();
+        db.conn.execute_batch("CREATE TRIGGER reject_entry BEFORE INSERT ON playlist_entries WHEN NEW.path = 'reject' BEGIN SELECT RAISE(ABORT, 'rejected'); END;").unwrap();
+        assert!(
+            db.append_entries(id, &[item("partial"), item("reject")])
+                .is_err()
+        );
+        assert_eq!(db.playlist_entries(id).unwrap(), vec![item("kept")]);
+        assert!(
+            db.create_playlist_with_entries("Incomplete", &[item("partial"), item("reject")])
+                .is_err()
+        );
+        assert!(db.duplicate_playlist(123456, "Missing source").is_err());
+        assert_eq!(db.list_playlists().unwrap().len(), 1);
+        assert!(
+            db.add_blacklist_entries(&[
+                BlacklistEntry {
+                    id: 0,
+                    kind: BLACKLIST_SONG.into(),
+                    path: "partial".into(),
+                    entry: String::new()
+                },
+                BlacklistEntry {
+                    id: 0,
+                    kind: "invalid".into(),
+                    path: "reject".into(),
+                    entry: String::new()
+                },
+            ])
+            .is_err()
+        );
+        assert!(db.list_blacklist().unwrap().is_empty());
+        // Foreign-key enforcement applies to the in-memory fallback as well.
+        db.delete_playlist(id).unwrap();
+        assert!(db.playlist_entries(id).unwrap().is_empty());
     }
 
     #[test]
@@ -619,15 +1068,32 @@ mod tests {
     fn checked_playlist_save_preserves_conflicts_and_rolls_back_failed_writes() {
         let db = memory_db();
         let id = db.create_playlist("Draft").unwrap();
-        let entry = |path: &str| StoredEntry { kind: KIND_LOCAL.into(), path: path.into(), entry: String::new(), fragment: None };
+        let entry = |path: &str| StoredEntry {
+            kind: KIND_LOCAL.into(),
+            path: path.into(),
+            entry: String::new(),
+            fragment: None,
+        };
         let original = vec![entry("/music/a.flac"), entry("/music/a.flac")];
         db.append_entries(id, &original).unwrap();
         let updated = vec![entry("/music/b.flac")];
-        db.replace_entries_checked(id, &updated, Some(&original)).unwrap();
-        assert!(db.replace_entries_checked(id, &original, Some(&original)).unwrap_err().contains("changed elsewhere"));
+        db.replace_entries_checked(id, &updated, Some(&original))
+            .unwrap();
+        assert!(
+            db.replace_entries_checked(id, &original, Some(&original))
+                .unwrap_err()
+                .contains("changed elsewhere")
+        );
         assert_eq!(db.playlist_entries(id).unwrap(), updated);
         db.conn.execute_batch("CREATE TRIGGER reject_bad_playlist_entry BEFORE INSERT ON playlist_entries WHEN NEW.path = 'reject' BEGIN SELECT RAISE(ABORT, 'test write failure'); END;").unwrap();
-        assert!(db.replace_entries_checked(id, &[entry("/music/c.flac"), entry("reject")], Some(&updated)).is_err());
+        assert!(
+            db.replace_entries_checked(
+                id,
+                &[entry("/music/c.flac"), entry("reject")],
+                Some(&updated)
+            )
+            .is_err()
+        );
         assert_eq!(db.playlist_entries(id).unwrap(), updated);
         db.delete_playlist(id).unwrap();
         assert!(db.replace_entries_checked(id, &original, None).is_err());

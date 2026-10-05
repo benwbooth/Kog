@@ -10,6 +10,9 @@ TestCase {
 
     QtObject {
         id: playback
+        property var preferences: ({})
+        function load_ui_setting(key, legacy) { return preferences[key] === undefined ? legacy : preferences[key] }
+        function save_ui_setting(key, value) { preferences[key] = value; return true }
         property string now_title: "A very long Japanese title 日本語 <Live> & music"
         property string now_artist: "Artist"
         property string current_album: "Album"

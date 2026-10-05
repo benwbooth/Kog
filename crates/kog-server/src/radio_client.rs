@@ -310,10 +310,9 @@ impl<T: Send + 'static> SessionRadioPort<T> {
         mut present: impl FnMut(RadioEntry) -> Result<T, String> + Send + 'static,
     ) -> Result<Self, String> {
         use kog_audio::playback_order::session::{Effect, IoResult};
-        let radio = Radio::new(
-            None,
-            kog_audio::playback_order::session_path(id, "radio"),
-            false,
+        let radio = Radio::persistent(
+            None, kog_core::db::LibraryDb::open()?, id,
+            kog_audio::playback_order::session_path(id, "radio"), false,
         );
         let (requests, jobs) = mpsc::channel();
         let (results, responses) = mpsc::channel();

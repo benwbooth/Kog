@@ -38,6 +38,21 @@ struct KogAPI {
     var sessionID: String = ""
     var radioRequest: [String: Any]? = nil
 
+    /// Small on-device checkpoint operations go through the shared SQLite API.
+    func localState(_ namespace: String, id: String, value: Any? = nil, revision: Int64 = 0) throws -> [String: Any] {
+        #if KOG_NATIVE_AUDIO
+        guard let deviceRoot, let deviceStorage else { throw KogError.response("Device storage is unavailable") }
+        var components = URLComponents()
+        components.path = "/api/state/\(namespace)/\(id)"
+        let body = try value.map { try JSONSerialization.data(withJSONObject: ["expected_revision": revision, "value": $0]) }
+        let data = try NativeAudioCatalog.request(root: deviceRoot, storage: deviceStorage,
+            uri: components.string ?? components.path, method: value == nil ? "GET" : "PUT", body: body)
+        return try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+        #else
+        throw KogError.response("Kog's shared storage backend is unavailable")
+        #endif
+    }
+
     func url(_ endpoint: String, _ query: [String: String] = [:]) throws -> URL {
         let origin = server.contains("://") ? server : "http://\(server)"
         guard var components = URLComponents(string: origin.trimmingCharacters(in: .whitespacesAndNewlines)),
@@ -216,8 +231,8 @@ struct KogAPI {
         let rows = (try JSONSerialization.jsonObject(with: data) as? [String: Any])?["entries"] ?? []
         return try await metadata(decodeTracks(rows))
     }
-    func createPlaylist(_ name: String) async throws -> Int64 {
-        let data = try await request("/api/playlists", method: "POST", body: ["name": name])
+    func createPlaylist(_ name: String, tracks: [Track] = []) async throws -> Int64 {
+        let data = try await request("/api/playlists", method: "POST", body: ["name": name, "entries": tracks.map(\.locator)])
         guard let id = (try JSONSerialization.jsonObject(with: data) as? [String: Any])?["id"] as? Int64 else {
             throw KogError.response("Playlist ID is missing")
         }

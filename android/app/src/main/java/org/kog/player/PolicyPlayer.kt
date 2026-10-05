@@ -29,11 +29,15 @@ internal class PolicyPlayer(
     sessionID: String? = null,
     private val publish: (JSONObject) -> Unit,
 ) : ForwardingSimpleBasePlayer(output) {
-    private val prefs = context.getSharedPreferences("kog", Context.MODE_PRIVATE)
+    private val prefs = KogPreferences(context)
+    private val legacy = context.getSharedPreferences("kog", Context.MODE_PRIVATE)
     private val session = SharedBackendSession(sessionID ?: SharedBackendSession.defaultID(context))
     private val storageKey = "backend_session.${session.id}"
     private val api = KogApi(context).apply { this.sessionID = session.id }
     private val deviceApi = KogApi(context, onDevice = true).apply { this.sessionID = session.id }
+    private var storageRevision: Long? = null
+    private var storageError: String? = null
+    private var lastSavedCheckpoint: String? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val handler = Handler(output.applicationLooper)
     private var applyingOutput = false
@@ -57,16 +61,26 @@ internal class PolicyPlayer(
         output.pauseAtEndOfMediaItems = true
         output.repeatMode = Player.REPEAT_MODE_OFF
         output.shuffleModeEnabled = false
-        val saved = prefs.getString(storageKey, null)
+        val stored = runCatching { deviceApi.localState("sessions", session.id) }
+            .onSuccess { storageRevision = it.getLong("revision") }
+            .onFailure { storageError = it.message ?: "Cannot load the saved session" }.getOrNull()
+        val saved = stored?.optJSONObject("value")?.toString() ?: if (storageRevision == 0L) legacy.getString(storageKey, null) else null
+        if (stored != null && storageRevision != 0L && stored.optJSONObject("value") == null) {
+            storageError = "Invalid saved session; the original has been preserved"
+            storageRevision = null
+        }
         if (saved != null) {
-            apply(session.send(restore = JSONObject(saved)))
-        } else {
-            send(command("replace").put("tracks", if (sessionID == null) JSONArray(prefs.getString("queue", "[]")) else JSONArray())
+            runCatching { apply(session.send(restore = JSONObject(saved))) }.onFailure {
+                storageError = it.message ?: "Invalid saved session; the original has been preserved"
+                storageRevision = null
+            }
+        } else if (storageRevision == 0L) {
+            send(command("replace").put("tracks", if (sessionID == null) JSONArray(legacy.getString("queue", "[]")) else JSONArray())
                 .put("current", if (sessionID == null) prefs.getInt("index", 0) else JSONObject.NULL))
             if (sessionID == null) {
                 send(command("shuffle").put("mode", prefs.getString("shuffle_mode", if (prefs.getBoolean("shuffle", false)) "all" else "off")))
                 send(command("repeat").put("mode", prefs.getString("repeat_mode", if (prefs.getBoolean("repeat", false)) "all" else "off")))
-                prefs.getString("playlist_workspace", null)?.let { send(command("workspace_restore").put("value", JSONObject(it))) }
+                legacy.getString("playlist_workspace", null)?.let { send(command("workspace_restore").put("value", JSONObject(it))) }
             }
         }
         updateScopes()
@@ -87,6 +101,7 @@ internal class PolicyPlayer(
             }
         })
         val checkpoint = session.send().getJSONObject("checkpoint")
+        persistCheckpoint(checkpoint)
         radioRoot = checkpoint.optString("radio_root")
         radioOnDevice = checkpoint.optString("radio_scope") == "device"
         if (session.snapshot.optBoolean("radio_enabled")) send(command("radio").put("enabled", true)
@@ -105,12 +120,27 @@ internal class PolicyPlayer(
     private fun apply(reply: JSONObject) {
         val effects = reply.optJSONArray("effects") ?: JSONArray()
         // Persist before output callbacks can re-enter the session.
-        for (i in 0 until effects.length()) if (effects.getJSONObject(i).optString("action") == "persist")
-            prefs.edit().putString(storageKey, effects.getJSONObject(i).getJSONObject("value").toString()).apply()
+        for (i in 0 until effects.length()) if (effects.getJSONObject(i).optString("action") == "persist") {
+            persistCheckpoint(effects.getJSONObject(i).getJSONObject("value"))
+        }
         mirrorTimeline()
-        publish(session.snapshot)
+        publishSnapshot()
         invalidateState()
         for (i in 0 until effects.length()) execute(effects.getJSONObject(i))
+    }
+    private fun persistCheckpoint(value: JSONObject) {
+        val text = value.toString()
+        if (text == lastSavedCheckpoint) return
+        storageRevision?.let { revision ->
+            runCatching { deviceApi.localState("sessions", session.id, value, revision) }
+                .onSuccess { storageRevision = it.getLong("revision"); lastSavedCheckpoint = text; storageError = null }
+                .onFailure { storageError = it.message ?: "Cannot save the session" }
+        }
+    }
+    private fun publishSnapshot() {
+        val view = JSONObject(session.snapshot.toString())
+        storageError?.let { view.put("error", it) }
+        publish(view)
     }
     private inline fun outputMutation(block: () -> Unit) {
         val previous = applyingOutput; applyingOutput = true
@@ -138,7 +168,7 @@ internal class PolicyPlayer(
     fun dispatch(request: JSONObject): JSONObject {
         updateScopes()
         when (request.getString("op")) {
-            "sync" -> { publish(session.snapshot); invalidateState() }
+            "sync" -> { publishSnapshot(); invalidateState() }
             "radio_toggle", "radio_reshuffle", "radio_root" -> {
                 val op = request.getString("op")
                 val root = request.optString("root", radioRoot)

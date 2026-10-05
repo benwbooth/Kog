@@ -1,12 +1,12 @@
 //! Server configuration: what to bind, how to secure it, and how to log in.
 //!
-//! Stored as a small JSON file beside Kog's other settings so the desktop
-//! Preferences pane and the server agree on one source of truth. Defaults are
+//! Stored in the application SQLite database so the desktop Preferences pane
+//! and the server agree on one source of truth. Defaults are
 //! deliberately closed: the server is off, and when enabled it listens on
 //! loopback with token auth until the user says otherwise.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
@@ -148,47 +148,19 @@ impl ServerConfig {
     }
 }
 
-fn settings_path(file_name: &str) -> Option<PathBuf> {
-    kog_audio::settings::setting_path(file_name)
-}
-
 const CONFIG_FILE: &str = "server.json";
 
-/// Load the saved configuration, falling back to defaults.
+/// Load SQLite state, importing the old private configuration file once.
 pub fn load_config() -> ServerConfig {
-    settings_path(CONFIG_FILE)
-        .and_then(|path| std::fs::read_to_string(path).ok())
+    kog_audio::settings::load_text(CONFIG_FILE)
         .and_then(|text| serde_json::from_str(&text).ok())
         .unwrap_or_default()
 }
 
 pub fn save_config(config: &ServerConfig) -> Result<(), String> {
-    let path = settings_path(CONFIG_FILE)
-        .ok_or_else(|| "Kog's settings directory is unavailable".to_owned())?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| format!("creating {}: {error}", parent.display()))?;
-    }
-    let text = serde_json::to_string_pretty(config)
+    let text = serde_json::to_string(config)
         .map_err(|error| format!("encoding the server configuration: {error}"))?;
-    write_private(&path, text.as_bytes())
-}
-
-/// Write with owner-only permissions: the file can hold a token or password.
-fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    use std::io::Write;
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options
-        .open(path)
-        .map_err(|error| format!("writing {}: {error}", path.display()))?;
-    file.write_all(bytes)
-        .map_err(|error| format!("writing {}: {error}", path.display()))
+    kog_audio::settings::save_text(CONFIG_FILE, &text)
 }
 
 #[cfg(test)]

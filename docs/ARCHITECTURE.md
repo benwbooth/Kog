@@ -208,7 +208,7 @@ and Windows/macOS runtime gates remain separate work.
 
 Decoder settings are shared between the probe registry and playback registry.
 The MIDI engine, current SF2 path, SC-55 ROM directory, and MT-32 ROM directory
-are persisted in the platform configuration directory; the SF2 is validated before it is accepted
+are persisted as preference rows in the shared SQLite store; the SF2 is validated before it is accepted
 and cached by path and modification time. RustySynth and OPL3Windows render
 interleaved 48 kHz stereo floating-point PCM. The OPL3 path uses a small C ABI around Cog's
 GPL-compatible native engine; Midly merges format-0/1 tracks and schedules
@@ -222,9 +222,8 @@ Repeat One is evaluated before the explicit queue, while manual Next ignores
 Repeat One and consumes the queue, matching Cog's controller. Stop After is an
 entry marker checked only at natural end-of-stream. Queue and Stop After indices
 are remapped across playlist moves/removals, and status-column markers expose
-their state without adding a parallel playlist model. These transient entry
-states will move into session persistence when Kog gains Cog's persisted
-playlist store.
+their state without adding a parallel playlist model. These markers are part of
+the shared application checkpoint, stored with the queue and drafts in SQLite.
 
 The Lyrics window follows Cog's read-only, resizable scrolling-text surface.
 The current playing track exposes lyrics through CXX-Qt; Lofty maps ID3v2 USLT

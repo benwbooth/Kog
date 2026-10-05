@@ -23,6 +23,7 @@ static RUNTIME: OnceLock<Result<tokio::runtime::Runtime, String>> = OnceLock::ne
 
 fn router(root: &std::path::Path, storage: &std::path::Path) -> Result<Router, String> {
     std::fs::create_dir_all(root).map_err(|e| e.to_string())?;
+    kog_core::db::configure_device_database(&storage.join("library.sqlite"))?;
     let db = kog_core::db::LibraryDb::open_at(&storage.join("library.sqlite"))?;
     rebase_library(&db, root, storage)?;
     let library = Library::new(Some(root.to_owned()), db);
@@ -37,10 +38,10 @@ fn router(root: &std::path::Path, storage: &std::path::Path) -> Result<Router, S
         env!("CARGO_PKG_VERSION"),
         streams,
         library,
-        crate::radio::Radio::new(
+        crate::radio::Radio::persistent(
             Some(root.to_owned()),
-            Some(storage.join("radio.json")),
-            false,
+            kog_core::db::LibraryDb::open_at(&storage.join("library.sqlite"))?,
+            "legacy", Some(storage.join("radio.json")), false,
         ),
     );
     Ok(crate::api::router()
@@ -55,8 +56,10 @@ fn rebase_library(
     root: &std::path::Path,
     storage: &std::path::Path,
 ) -> Result<(), String> {
+    db.write_transaction(|db| {
     let marker = storage.join("imports-root.txt");
-    if let Ok(previous) = std::fs::read_to_string(&marker) {
+    if let Some(previous) = kog_core::state::load_or_import(db, "internal", "imports-root", Some(&marker))? {
+        let previous = previous.value;
         let previous = std::path::Path::new(&previous);
         if previous != root {
             let rebase = |entry: &mut kog_core::db::StoredEntry| {
@@ -98,7 +101,8 @@ fn rebase_library(
             }
         }
     }
-    std::fs::write(marker, root.to_string_lossy().as_bytes()).map_err(|e| e.to_string())
+    db.put_state("internal", "imports-root", &root.to_string_lossy())
+    })
 }
 
 pub fn request(input: Value) -> Result<Value, String> {
@@ -138,6 +142,7 @@ pub fn request(input: Value) -> Result<Value, String> {
         "/api/playlists",
         "/api/stars",
         "/api/radio",
+        "/api/state",
     ]
     .iter()
     .any(|prefix| {
@@ -160,7 +165,7 @@ pub fn request(input: Value) -> Result<Value, String> {
     runtime.block_on(async {
         let response = router.oneshot(request).await.map_err(|e| e.to_string())?;
         let status = response.status().as_u16();
-        let bytes = to_bytes(response.into_body(), 32 * 1024 * 1024)
+        let bytes = to_bytes(response.into_body(), 64 * 1024 * 1024)
             .await
             .map_err(|e| e.to_string())?;
         let body: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;

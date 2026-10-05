@@ -1,6 +1,5 @@
-use std::fs;
 
-use kog_audio::settings::{AppSettings, setting_path};
+use kog_audio::settings::AppSettings;
 
 const TUI_LAYOUT_FILE: &str = "tui-column-layout";
 
@@ -49,7 +48,7 @@ impl Columns {
     }
 
     pub fn load(settings: &AppSettings) -> Self {
-        let tui = setting_path(TUI_LAYOUT_FILE).and_then(|path| fs::read_to_string(path).ok());
+        let tui = kog_audio::settings::load_text(TUI_LAYOUT_FILE);
         if let Some(layout) = tui.as_deref().and_then(|value| Self::parse(value, false)) {
             return layout;
         }
@@ -101,10 +100,6 @@ impl Columns {
     }
 
     pub fn save(&self) -> Result<(), String> {
-        let path = setting_path(TUI_LAYOUT_FILE).ok_or("No settings directory")?;
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-        }
         let encoded = self
             .entries
             .iter()
@@ -118,7 +113,7 @@ impl Columns {
             })
             .collect::<Vec<_>>()
             .join(";");
-        fs::write(path, encoded).map_err(|error| error.to_string())
+        kog_audio::settings::save_text(TUI_LAYOUT_FILE, &encoded)
     }
 
     pub fn index(&self, id: &str) -> Option<usize> {

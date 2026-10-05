@@ -227,45 +227,15 @@ impl AppSettings {
     }
 
     pub fn save_soundfont_path(path: Option<&Path>) -> Result<(), String> {
-        let setting_path = setting_path(SOUNDFONT_SETTING_FILE)
-            .ok_or_else(|| "The platform configuration directory is unavailable".to_owned())?;
-        let parent = setting_path
-            .parent()
-            .ok_or_else(|| "The Kog configuration directory is unavailable".to_owned())?;
-        std::fs::create_dir_all(parent)
-            .map_err(|error| format!("creating {}: {error}", parent.display()))?;
-        let value = path
-            .map(|path| path.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        std::fs::write(&setting_path, value)
-            .map_err(|error| format!("writing {}: {error}", setting_path.display()))
+        save_text(SOUNDFONT_SETTING_FILE, &path.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default())
     }
 
     pub fn save_midi_engine(engine: MidiEngine) -> Result<(), String> {
-        let setting_path = setting_path(MIDI_ENGINE_SETTING_FILE)
-            .ok_or_else(|| "The platform configuration directory is unavailable".to_owned())?;
-        let parent = setting_path
-            .parent()
-            .ok_or_else(|| "The Kog configuration directory is unavailable".to_owned())?;
-        std::fs::create_dir_all(parent)
-            .map_err(|error| format!("creating {}: {error}", parent.display()))?;
-        std::fs::write(&setting_path, engine.setting_value())
-            .map_err(|error| format!("writing {}: {error}", setting_path.display()))
+        save_text(MIDI_ENGINE_SETTING_FILE, engine.setting_value())
     }
 
     pub fn save_sc55_rom_path(path: Option<&Path>) -> Result<(), String> {
-        let setting_path = setting_path(SC55_ROM_SETTING_FILE)
-            .ok_or_else(|| "The platform configuration directory is unavailable".to_owned())?;
-        let parent = setting_path
-            .parent()
-            .ok_or_else(|| "The Kog configuration directory is unavailable".to_owned())?;
-        std::fs::create_dir_all(parent)
-            .map_err(|error| format!("creating {}: {error}", parent.display()))?;
-        let value = path
-            .map(|path| path.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        std::fs::write(&setting_path, value)
-            .map_err(|error| format!("writing {}: {error}", setting_path.display()))
+        save_text(SC55_ROM_SETTING_FILE, &path.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default())
     }
 
     pub fn save_mt32_rom_path(path: Option<&Path>) -> Result<(), String> {
@@ -467,23 +437,18 @@ fn validate_playlist_column_layout(value: &str) -> bool {
     visible > 0
 }
 
-fn save_text(file_name: &str, value: &str) -> Result<(), String> {
-    let path = setting_path(file_name)
-        .ok_or_else(|| "The platform configuration directory is unavailable".to_owned())?;
-    let parent = path
-        .parent()
-        .ok_or_else(|| "The Kog configuration directory is unavailable".to_owned())?;
-    std::fs::create_dir_all(parent)
-        .map_err(|error| format!("creating {}: {error}", parent.display()))?;
-    std::fs::write(&path, value).map_err(|error| format!("writing {}: {error}", path.display()))
+/// All desktop settings share the application SQLite database. The path is
+/// consulted only when importing an older installation.
+pub fn save_text(file_name: &str, value: &str) -> Result<(), String> {
+    kog_core::state::save_preference(file_name, value)
 }
 
 fn save_bool(file_name: &str, enabled: bool) -> Result<(), String> {
     save_text(file_name, if enabled { "true" } else { "false" })
 }
 
-fn load_text(file_name: &str) -> Option<String> {
-    let value = std::fs::read_to_string(setting_path(file_name)?).ok()?;
+pub fn load_text(file_name: &str) -> Option<String> {
+    let value = kog_core::state::load_preference(file_name, setting_path(file_name).as_deref()).ok()??;
     let value = value.trim();
     (!value.is_empty()).then(|| value.to_owned())
 }
@@ -505,23 +470,15 @@ fn parse_bool(value: &str) -> Option<bool> {
 }
 
 fn load_persisted_soundfont() -> Option<PathBuf> {
-    let setting_path = setting_path(SOUNDFONT_SETTING_FILE)?;
-    let value = std::fs::read_to_string(setting_path).ok()?;
-    let value = value.trim();
-    (!value.is_empty()).then(|| PathBuf::from(value))
+    load_path(SOUNDFONT_SETTING_FILE)
 }
 
 fn load_persisted_midi_engine() -> Option<MidiEngine> {
-    let setting_path = setting_path(MIDI_ENGINE_SETTING_FILE)?;
-    let value = std::fs::read_to_string(setting_path).ok()?;
-    MidiEngine::from_setting(&value)
+    MidiEngine::from_setting(&load_text(MIDI_ENGINE_SETTING_FILE)?)
 }
 
 fn load_persisted_sc55_rom_path() -> Option<PathBuf> {
-    let setting_path = setting_path(SC55_ROM_SETTING_FILE)?;
-    let value = std::fs::read_to_string(setting_path).ok()?;
-    let value = value.trim();
-    (!value.is_empty()).then(|| PathBuf::from(value))
+    load_path(SC55_ROM_SETTING_FILE)
 }
 
 pub fn setting_path(file_name: &str) -> Option<PathBuf> {

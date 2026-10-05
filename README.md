@@ -179,7 +179,7 @@ need Apple Silicon and may require the first-launch approval described above.
 <details>
 <summary><strong>Android: APK</strong></summary>
 
-1. On an **arm64 Android 9+** device, download `Kog-0.10.0-android-arm64.apk`
+1. On an **arm64 Android 9+** device, download `Kog-0.10.1-android-arm64.apk`
    from the [release page](https://github.com/benwbooth/Kog/releases/latest).
 2. Open the download. If prompted, allow your browser or file manager to
    **install unknown apps**, then tap **Install**.
@@ -243,7 +243,7 @@ The web player needs the Kog server running.
 With Nix and flakes enabled, install the tagged package into your user profile:
 
 ```sh
-nix profile add 'git+https://github.com/benwbooth/Kog?ref=refs/tags/v0.10.0&submodules=1#default'
+nix profile add 'git+https://github.com/benwbooth/Kog?ref=refs/tags/v0.10.1&submodules=1#default'
 kog --gui
 ```
 

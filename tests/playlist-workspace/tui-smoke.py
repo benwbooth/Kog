@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Exercise the actual terminal UI in a private PTY and settings directory."""
 import fcntl
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -50,8 +49,9 @@ with tempfile.TemporaryDirectory(prefix="kog-playlist-tui-") as directory:
         os.write(terminal, keys)
         drain()
     def checkpoint():
-        path=root / "config/kog/sessions" / (hashlib.sha256(b"tui:default").hexdigest()+".session.json")
-        return json.loads(path.read_text()) if path.exists() else None
+        with sqlite3.connect(database) as db:
+            row = db.execute("SELECT value FROM app_state WHERE namespace='sessions' AND key='tui:default'").fetchone()
+        return json.loads(row[0]) if row else None
     def state():
         value=checkpoint()
         return value["workspace"] if value else None

@@ -130,12 +130,3 @@ pub fn session_path(id: &str, suffix: &str) -> Option<std::path::PathBuf> {
     let key = format!("{:x}", Sha256::digest(id.as_bytes()));
     crate::settings::setting_path(&format!("sessions/{key}.{suffix}.json"))
 }
-pub fn save_session(id: &str, value: &serde_json::Value) -> Result<(), String> {
-    let path = session_path(id, "session").ok_or("No session storage directory")?;
-    let parent = path.parent().ok_or("No session storage parent")?;
-    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    let temporary = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
-    serde_json::to_writer(temporary.as_file(), value).map_err(|e| e.to_string())?;
-    temporary.persist(path).map_err(|e| e.to_string())?;
-    Ok(())
-}

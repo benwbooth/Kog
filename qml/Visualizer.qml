@@ -1,7 +1,6 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import Qt.labs.settings
 
 ApplicationWindow {
     id: root
@@ -28,10 +27,12 @@ ApplicationWindow {
         raise()
         requestActivate()
     }
-    Settings {
+    SqliteSettings {
+        app: root.app
         category: "Visualizer"
         fileName: root.settingsFile
         property alias mode: mode.currentIndex
+        values: ({mode})
     }
     Shortcut { sequence: "Escape"; onActivated: root.visibility === Window.FullScreen ? root.showNormal() : root.hide() }
     Shortcut { sequence: "F11"; onActivated: root.visibility === Window.FullScreen ? root.showNormal() : root.showFullScreen() }

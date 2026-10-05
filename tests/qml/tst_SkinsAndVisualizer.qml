@@ -8,6 +8,9 @@ TestCase {
     width: 880; height: 670
     QtObject {
         id: app
+        property var preferences: ({})
+        function load_ui_setting(key, legacy) { return preferences[key] === undefined ? legacy : preferences[key] }
+        function save_ui_setting(key, value) { preferences[key] = value; return true }
         property string now_title: "音楽 <Live>"
         property string now_artist: "Artist"
         property string playback_state: "playing"

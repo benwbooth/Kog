@@ -36,7 +36,7 @@ class KogState(private val context: Context) {
     val deviceApi = KogApi(context, onDevice = true)
     private val deviceLibrary = DeviceLibrary(context)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private val prefs = context.getSharedPreferences("kog", Context.MODE_PRIVATE)
+    private val prefs = KogPreferences(context)
     private var controllerFuture: ListenableFuture<MediaController>? = null
     private var controller: MediaController? = null
     private var searchJob: Job? = null

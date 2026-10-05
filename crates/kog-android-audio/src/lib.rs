@@ -33,6 +33,22 @@ fn fail(env: &mut JNIEnv, message: impl AsRef<str>) {
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_org_kog_player_NativeAudio_nativePreferences(
+    mut env: JNIEnv, _receiver: JObject, input: JString,
+) -> jni::sys::jstring {
+    let result = (|| {
+        let input: String = env.get_string(&input).map_err(|e| e.to_string())?.into();
+        let request = serde_json::from_str(&input).map_err(|e| e.to_string())?;
+        let reply = kog_core::state::preferences_request(request)?;
+        env.new_string(reply.to_string()).map_err(|e| e.to_string())
+    })();
+    match result {
+        Ok(reply) => reply.into_raw(),
+        Err(error) => { fail(&mut env, error); std::ptr::null_mut() }
+    }
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_org_kog_player_NativeAudio_nativeLibrary(
     mut env: JNIEnv, _receiver: JObject, input: JString,
 ) -> jni::sys::jstring {

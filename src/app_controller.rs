@@ -149,6 +149,10 @@ pub mod qobject {
         #[qinvokable]
         fn cursor_pos(self: &AppController) -> QString;
         #[qinvokable]
+        fn load_ui_setting(self: &AppController, key: QString, legacy: QString) -> QString;
+        #[qinvokable]
+        fn save_ui_setting(self: Pin<&mut AppController>, key: QString, value: QString) -> bool;
+        #[qinvokable]
         fn choose_server_music_folder(self: Pin<&mut AppController>);
         #[qinvokable]
         fn save_playlist(self: Pin<&mut AppController>);
@@ -1673,9 +1677,7 @@ struct RestoredSession {
     current_index: i32,
 }
 
-fn load_session() -> Option<RestoredSession> {
-    let path = kog_audio::settings::setting_path(SESSION_FILE)?;
-    let contents = std::fs::read_to_string(path).ok()?;
+fn load_session(contents: &str) -> Option<RestoredSession> {
     if contents.len() > 64 * 1024 * 1024 {
         return None;
     }
@@ -1723,22 +1725,6 @@ fn load_session() -> Option<RestoredSession> {
     })
 }
 
-/// Write session.json atomically: a temp file beside it, then a rename, so a
-/// kill during the write can never leave a truncated file behind.
-fn write_session_atomic(contents: &str) -> Result<(), String> {
-    let path = kog_audio::settings::setting_path(SESSION_FILE)
-        .ok_or_else(|| "The platform configuration directory is unavailable".to_owned())?;
-    let parent = path
-        .parent()
-        .ok_or_else(|| "The Kog configuration directory is unavailable".to_owned())?;
-    std::fs::create_dir_all(parent)
-        .map_err(|error| format!("creating {}: {error}", parent.display()))?;
-    let temp = parent.join(format!(".session-{}.tmp", std::process::id()));
-    std::fs::write(&temp, contents)
-        .map_err(|error| format!("writing {}: {error}", temp.display()))?;
-    std::fs::rename(&temp, &path).map_err(|error| format!("replacing {}: {error}", path.display()))
-}
-
 #[cfg(test)]
 fn sort_visible_indices(
     tracks: &[Track],
@@ -1782,6 +1768,8 @@ pub struct AppControllerRust {
     playlists_revision: i32,
     workspace_revision: i32,
     session: Session<Track>,
+    session_store: kog_core::state::StateCursor,
+    session_ui_store: kog_core::state::StateCursor,
     session_effects: std::collections::VecDeque<SessionEffect>,
     session_jobs: Vec<(Token, Receiver<IoResult<Track>>)>,
     playlist_sort_column: QString,
@@ -1975,14 +1963,26 @@ impl Default for AppControllerRust {
                 .map(|device| device.id.clone()),
         );
         playback.set_volume(app_settings.output_volume as f32);
-        let restored_session = load_session();
+        let library_db = kog_core::db::LibraryDb::open().unwrap_or_else(|error| {
+            eprintln!("Kog could not open its database: {error}");
+            kog_core::db::LibraryDb::open_in_memory().expect("in-memory database")
+        });
+        let session_id = std::env::var("KOG_SESSION_ID").unwrap_or_else(|_| "qt:default".into());
+        let session_store = kog_core::state::StateCursor::open(&library_db, "sessions", &session_id,
+            kog_audio::playback_order::session_path(&session_id, "session").as_deref());
+        let legacy_ui = (session_id == "qt:default").then(|| kog_audio::settings::setting_path(SESSION_FILE)).flatten();
+        let mut session_ui_store = kog_core::state::StateCursor::open(&library_db, "session-ui", &session_id, legacy_ui.as_deref());
+        let restored_session = session_ui_store.value().and_then(load_session);
+        if session_ui_store.value().is_some() && restored_session.is_none() {
+            session_ui_store.reject("Saved UI state could not be read; the original has been preserved".into());
+        }
         let mut controller = Self {
             playlist_count: 0,
             playlist_revision: 0,
             playlists_revision: 0,
             workspace_revision: 0,
             session: Session::new(
-                std::env::var("KOG_SESSION_ID").unwrap_or_else(|_| "qt:default".into()),
+                session_id,
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
@@ -1990,6 +1990,8 @@ impl Default for AppControllerRust {
                 shuffle_mode,
                 repeat_mode,
             ),
+            session_store,
+            session_ui_store,
             session_effects: Default::default(),
             session_jobs: Vec::new(),
             playlist_sort_column: qstring(PlaylistSortColumn::Index.identifier()),
@@ -2084,10 +2086,7 @@ impl Default for AppControllerRust {
             visible_indices: Vec::new(),
             sort_column: PlaylistSortColumn::Index,
             filter: String::new(),
-            library_db: kog_core::db::LibraryDb::open().unwrap_or_else(|_| {
-                kog_core::db::LibraryDb::open_in_memory()
-                    .expect("in-memory library database always opens")
-            }),
+            library_db,
             starred: HashSet::new(),
             directory,
             decoder_settings,
@@ -2118,10 +2117,9 @@ impl Default for AppControllerRust {
         }
 
         // Rehydrate the session stopped, then append files requested on launch.
-        let restored = kog_audio::playback_order::session_path(controller.session.id(), "session")
-            .and_then(|p| std::fs::read(p).ok())
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .is_some_and(|value| {
+        let restore = controller.session_store.value()
+            .map(|text| serde_json::from_str(text).map_err(|e| format!("Invalid saved session: {e}")))
+            .map(|value| value.and_then(|value| {
                 controller
                     .session
                     .restore(value, |value| {
@@ -2134,8 +2132,15 @@ impl Default for AppControllerRust {
                             .map(|source| Track::from_source(source, &controller.decoders))
                             .ok_or_else(|| "Unavailable queue entry".to_owned())
                     })
-                    .is_ok()
-            });
+            }));
+        let restored = match restore {
+            Some(Ok(_)) => true,
+            Some(Err(error)) => { controller.session_store.reject(error); true }
+            None => controller.session_store.error().is_some(),
+        };
+        if let Some(error) = controller.session_store.error().or(controller.session_ui_store.error()) {
+            controller.status = qstring(error);
+        }
         if !restored {
             if std::env::var_os("KOG_SESSION_ID").is_none() {
                 if let Some(session) = restored_session {
@@ -2499,8 +2504,7 @@ impl AppControllerRust {
         result
     }
 
-    /// JSON body persisted to session.json: the pane rows, the current row,
-    /// the tree root, and the expanded folders QML handed in.
+    /// Tree-only UI state. Queue and drafts live in the session checkpoint.
     fn session_snapshot(&self, expanded: &[String]) -> String {
         serde_json::json!({"directory":self.directory_path.to_string(),"expanded":expanded})
             .to_string()
@@ -2638,6 +2642,19 @@ fn json_result(result: Result<serde_json::Value, String>) -> QString {
 }
 
 impl qobject::AppController {
+    pub fn load_ui_setting(&self, key: QString, legacy: QString) -> QString {
+        match self.library_db.import_state("preferences", &key.to_string(), &legacy.to_string()) {
+            Ok(saved) => qstring(saved.value),
+            Err(error) => { eprintln!("Cannot load UI preference: {error}"); legacy }
+        }
+    }
+
+    pub fn save_ui_setting(mut self: Pin<&mut Self>, key: QString, value: QString) -> bool {
+        match self.as_ref().rust().library_db.put_state("preferences", &key.to_string(), &value.to_string()) {
+            Ok(()) => true,
+            Err(error) => { self.as_mut().set_status(qstring(error)); false }
+        }
+    }
     pub fn open_audio_files(mut self: Pin<&mut Self>) {
         let directory = self.as_ref().rust().directory.clone();
         let Some(paths) = rfd::FileDialog::new()
@@ -4141,17 +4158,22 @@ impl qobject::AppController {
     }
 
     /// Snapshot the pane, current row, tree root, and the expanded folders
-    /// QML collected, then write session.json only when the snapshot changed.
-    /// Runs periodically and on quit, so a signal kill loses at most one
-    /// interval and never a half-written file.
+    /// QML collected, then save its separate UI state in SQLite when changed.
+    /// The queue and drafts are persisted by the shared session effects.
     pub fn flush_session(mut self: Pin<&mut Self>, expanded: QString) {
         let expanded = parse_session_expanded(&expanded.to_string());
         let snapshot = self.as_ref().rust().session_snapshot(&expanded);
         if self.as_ref().rust().session_last_written == snapshot {
             return;
         }
-        if write_session_atomic(&snapshot).is_ok() {
-            self.as_mut().rust_mut().session_last_written = snapshot;
+        let result = {
+            let mut this = self.as_mut().rust_mut();
+            let this = &mut *this;
+            this.session_ui_store.save(&this.library_db, &snapshot)
+        };
+        match result {
+            Ok(()) => self.as_mut().rust_mut().session_last_written = snapshot,
+            Err(error) => self.as_mut().set_status(qstring(error)),
         }
     }
 
@@ -4159,16 +4181,11 @@ impl qobject::AppController {
     pub fn save_pane_as_playlist(mut self: Pin<&mut Self>, name: QString) -> QString {
         let name = name.to_string();
         let outcome: Result<serde_json::Value, String> = (|| {
-            let id = self.as_ref().rust().library_db.create_playlist(&name)?;
             let (entries, skipped) = collect_stored_entries(&self.as_ref().rust().tracks);
             if entries.is_empty() {
-                let _ = self.as_ref().rust().library_db.delete_playlist(id);
                 return Err("The current pane has no savable tracks".to_owned());
             }
-            self.as_ref()
-                .rust()
-                .library_db
-                .append_entries(id, &entries)?;
+            let id = self.as_ref().rust().library_db.create_playlist_with_entries(&name, &entries)?;
             let mut value = serde_json::json!({
                 "ok": true,
                 "id": id,
@@ -4208,7 +4225,6 @@ impl qobject::AppController {
             if rows.is_empty() {
                 return Err("No rows are selected".to_owned());
             }
-            let id = self.as_ref().rust().library_db.create_playlist(&name)?;
             let tracks: Vec<Track> = {
                 let this = self.as_ref();
                 let rust = this.rust();
@@ -4223,13 +4239,9 @@ impl qobject::AppController {
             };
             let (entries, skipped) = collect_stored_entries(&tracks);
             if entries.is_empty() {
-                let _ = self.as_ref().rust().library_db.delete_playlist(id);
                 return Err("The selection has no savable tracks".to_owned());
             }
-            self.as_ref()
-                .rust()
-                .library_db
-                .append_entries(id, &entries)?;
+            let id = self.as_ref().rust().library_db.create_playlist_with_entries(&name, &entries)?;
             let mut value = serde_json::json!({
                 "ok": true,
                 "id": id,
@@ -6313,10 +6325,12 @@ impl qobject::AppController {
             };
             match effect {
                 SessionEffect::Persist { value } => {
-                    if let Err(error) = kog_audio::playback_order::save_session(
-                        self.as_ref().rust().session.id(),
-                        &value,
-                    ) {
+                    let result = {
+                        let mut this = self.as_mut().rust_mut();
+                        let this = &mut *this;
+                        this.session_store.save(&this.library_db, &value.to_string())
+                    };
+                    if let Err(error) = result {
                         self.as_mut().set_status(qstring(error));
                     }
                 }

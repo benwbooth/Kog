@@ -34,7 +34,7 @@ c++ -std=c++17 -fPIC -pthread -I"$repo_dir/native" \
   "$repo_dir/tests/native/window_state.cpp" \
   "$repo_dir/native/kog_desktop_integration.cpp" \
   "$repo_dir/native/kog_modern_skin.cpp" "$test_dir/moc_kog_modern_skin.cpp" \
-  "$repo_dir/native/kog_window_state.cpp" \
+  "$repo_dir/native/kog_window_state.cpp" "$repo_dir/native/kog_settings.cpp" \
   $(pkg-config --libs Qt6Widgets Qt6Test Qt6WebChannel Qt6WebEngineQuick Qt6WebEngineCore) \
   "${webengine_rpath_link[@]}" -o "$test_dir/window-state"
 XDG_CONFIG_HOME="$test_dir/config" QT_QPA_PLATFORM=offscreen "$test_dir/window-state"

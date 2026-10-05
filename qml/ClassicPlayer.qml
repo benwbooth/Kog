@@ -1,7 +1,6 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import Qt.labs.settings
 
 ApplicationWindow {
     id: root
@@ -16,11 +15,13 @@ ApplicationWindow {
     property bool toolbarVisible: false
     property bool playlistVisible: true
     property string settingsFile: ""
-    Settings {
+    SqliteSettings {
+        app: root.app
         category: "ClassicPlayer"
         fileName: root.settingsFile
         property alias toolbarVisible: root.toolbarVisible
         property alias playlistVisible: root.playlistVisible
+        values: ({toolbarVisible, playlistVisible})
     }
     readonly property var assets: skin.assets || ({})
     readonly property var textColors: (skin.textColors || "#000000,#71f5b0").split(",")

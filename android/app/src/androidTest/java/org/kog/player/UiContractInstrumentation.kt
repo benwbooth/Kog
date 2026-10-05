@@ -16,6 +16,7 @@ class UiContractInstrumentation : Instrumentation() {
         }
         sendStatus(1, status)
         try {
+            persistenceContract()
             librarySessionContract()
             sessionContract()
             mediaPortContract()
@@ -53,6 +54,30 @@ class UiContractInstrumentation : Instrumentation() {
             status.putString("stack", error.stackTraceToString()); status.putString("stream", error.stackTraceToString())
             sendStatus(-2, status); finish(Activity.RESULT_CANCELED, status)
         }
+    }
+    private fun persistenceContract() {
+        val key = "contract:${java.util.UUID.randomUUID()}"
+        val legacy = targetContext.getSharedPreferences("kog", android.content.Context.MODE_PRIVATE)
+        legacy.edit().putString(key, "legacy").commit()
+        val first = KogPreferences(targetContext)
+        val second = KogPreferences(targetContext)
+        check(first.getString(key, null) == "legacy")
+        second.edit().putString(key, "sqlite").apply()
+        check(first.getString(key, null) == "sqlite")
+        check(legacy.getString(key, null) == "legacy")
+        first.edit().remove(key).apply()
+        check(second.getString(key, null) == null)
+        legacy.edit().remove(key).commit()
+
+        val api = KogApi(targetContext, onDevice = true)
+        check(api.localState("sessions", key).getLong("revision") == 0L)
+        val checkpoint = JSONObject().put("version", 1).put("session_id", key).put("queue", JSONArray())
+        check(api.localState("sessions", key, checkpoint).getLong("revision") == 1L)
+        check(api.localState("sessions", key, checkpoint).getLong("revision") == 1L)
+        checkpoint.put("queue", JSONArray().put("stale"))
+        check(runCatching { api.localState("sessions", key, checkpoint) }.isFailure)
+        check(KogApi(targetContext, onDevice = true).localState("sessions", key)
+            .getJSONObject("value").getJSONArray("queue").length() == 0)
     }
     private fun sessionContract() {
         val fixture = JSONObject(context.assets.open("session.json").bufferedReader().use { it.readText() })

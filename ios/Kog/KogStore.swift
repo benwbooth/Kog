@@ -7,16 +7,16 @@ import UserNotifications
 
 @MainActor
 final class KogStore: ObservableObject {
-    @Published var server = UserDefaults.standard.string(forKey: "server") ?? ""
-    @Published var username = UserDefaults.standard.string(forKey: "username") ?? ""
+    @Published var server = KogPreferences.standard.string(forKey: "server") ?? ""
+    @Published var username = KogPreferences.standard.string(forKey: "username") ?? ""
     @Published var token = Secrets.read("token")
     @Published var password = Secrets.read("password")
-    @Published var codec = UserDefaults.standard.string(forKey: "codec") ?? "aac"
-    @Published var midiEngine = UserDefaults.standard.string(forKey: "midi_engine") ?? "opl3windows"
-    @Published var localMidiEngine = UserDefaults.standard.string(forKey: "local_midi_engine") ?? "opl3windows"
-    @Published var soundfontPath = UserDefaults.standard.string(forKey: "midi_soundfont") ?? ""
-    @Published var sc55RomPath = UserDefaults.standard.string(forKey: "midi_sc55_roms") ?? ""
-    @Published var mt32RomPath = UserDefaults.standard.string(forKey: "midi_mt32_roms") ?? ""
+    @Published var codec = KogPreferences.standard.string(forKey: "codec") ?? "aac"
+    @Published var midiEngine = KogPreferences.standard.string(forKey: "midi_engine") ?? "opl3windows"
+    @Published var localMidiEngine = KogPreferences.standard.string(forKey: "local_midi_engine") ?? "opl3windows"
+    @Published var soundfontPath = KogPreferences.standard.string(forKey: "midi_soundfont") ?? ""
+    @Published var sc55RomPath = KogPreferences.standard.string(forKey: "midi_sc55_roms") ?? ""
+    @Published var mt32RomPath = KogPreferences.standard.string(forKey: "midi_mt32_roms") ?? ""
     @Published var connected = false
     @Published var listing: Listing?
     @Published var libraryRoot = ""
@@ -31,24 +31,24 @@ final class KogStore: ObservableObject {
     @Published var playing = false
     @Published var position = 0.0
     @Published var duration = 0.0
-    @Published private(set) var shuffle = ShuffleMode(rawValue: UserDefaults.standard.string(forKey: "shuffle_mode") ?? "") ?? (UserDefaults.standard.bool(forKey: "shuffle") ? .all : .off)
-    @Published private(set) var repeatMode = RepeatMode(rawValue: UserDefaults.standard.string(forKey: "repeat_mode") ?? "") ?? (UserDefaults.standard.bool(forKey: "repeat") ? .all : .off) {
-        didSet { UserDefaults.standard.set(repeatMode.rawValue, forKey: "repeat_mode") }
+    @Published private(set) var shuffle = ShuffleMode(rawValue: KogPreferences.standard.string(forKey: "shuffle_mode") ?? "") ?? (KogPreferences.standard.bool(forKey: "shuffle") ? .all : .off)
+    @Published private(set) var repeatMode = RepeatMode(rawValue: KogPreferences.standard.string(forKey: "repeat_mode") ?? "") ?? (KogPreferences.standard.bool(forKey: "repeat") ? .all : .off) {
+        didSet { KogPreferences.standard.set(repeatMode.rawValue, forKey: "repeat_mode") }
     }
-    @Published var volume = UserDefaults.standard.object(forKey: "player_volume") as? Double ?? 1.0 {
+    @Published var volume = KogPreferences.standard.object(forKey: "player_volume") as? Double ?? 1.0 {
         didSet { if !applyingSession { sessionCommand(["op": "volume", "value": volume]) } }
     }
     @Published var muted = false { didSet { applyVolume() } }
     @Published var libraryOnDevice = false { didSet { search("") } }
-    @Published var playlistOnDevice = (UserDefaults.standard.string(forKey: "server") ?? "").isEmpty { didSet { selectedPlaylist = nil; Task { await loadPlaylists() } } }
+    @Published var playlistOnDevice = (KogPreferences.standard.string(forKey: "server") ?? "").isEmpty { didSet { selectedPlaylist = nil; Task { await loadPlaylists() } } }
     @Published var localStars = Set<String>()
     @Published var searchPaused = false
     @Published var radioBusy = false
-    @Published var notifyTracks = UserDefaults.standard.bool(forKey: "track_notifications")
+    @Published var notifyTracks = KogPreferences.standard.bool(forKey: "track_notifications")
     @Published var queueFilter = "" { didSet { if !applyingSession { sessionCommand(["op": "filter", "query": queueFilter]) } } }
     @Published var sortKey = "title"
     @Published var sortDescending = false
-    @Published var deviceTreeRoot = UserDefaults.standard.string(forKey: "device_tree_root") ?? ""
+    @Published var deviceTreeRoot = KogPreferences.standard.string(forKey: "device_tree_root") ?? ""
     private var radioOnDevice = false
     private var interruptedPlayback = false
     private var audioObservers = [NSObjectProtocol]()
@@ -86,6 +86,8 @@ final class KogStore: ObservableObject {
     private var applyingSession = false
     private var outputToken: [String: Any]?
     private var sessionStorageKey: String { "backend_session.\(session.id)" }
+    private var storageRevision: Int64?
+    private var lastSavedCheckpoint: Data?
     @Published private(set) var queueSelection = Set<Int>()
     @Published private(set) var workspace = PlaylistWorkspaceSnapshot.empty
     @Published private(set) var queuedIndices = [Int]()
@@ -116,15 +118,21 @@ final class KogStore: ObservableObject {
     }
 
     init(sessionID: String? = nil) {
-        let defaults = UserDefaults.standard
-        let identifier = sessionID ?? defaults.string(forKey: "backend_session_id") ?? "ios:\(UUID().uuidString)"
-        if sessionID == nil { defaults.set(identifier, forKey: "backend_session_id") }
+        let defaults = KogPreferences.standard
+        let identifier = sessionID ?? defaults.getOrCreateString("backend_session_id", default: "ios:\(UUID().uuidString)")
         session = SharedBackendSession(id: identifier)
         soundfontPath = rebaseDevicePath(soundfontPath)
         sc55RomPath = rebaseDevicePath(sc55RomPath)
         mt32RomPath = rebaseDevicePath(mt32RomPath)
         do {
-            if let data = defaults.data(forKey: sessionStorageKey), var saved = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            let stored = try deviceAPI.localState("sessions", id: session.id)
+            storageRevision = (stored["revision"] as? NSNumber)?.int64Value
+            var checkpoint = stored["value"] as? [String: Any]
+            if storageRevision == nil || (storageRevision != 0 && checkpoint == nil) { throw KogError.response("Invalid saved session; the original has been preserved") }
+            if checkpoint == nil, storageRevision == 0, let data = UserDefaults.standard.data(forKey: sessionStorageKey) {
+                checkpoint = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            }
+            if var saved = checkpoint {
                 let tracks = try workspaceTracks(saved["queue"]).map(rebaseDeviceTrack)
                 saved["queue"] = try trackValues(tracks)
                 if let workspace = saved["workspace"] { saved["workspace"] = rebaseWorkspace(workspace) }
@@ -132,22 +140,24 @@ final class KogStore: ObservableObject {
             } else {
                 // Import the old frontend format once; it is never authoritative again.
                 let legacyShuffle = shuffle, legacyRepeat = repeatMode, legacyVolume = volume
-                let legacy = sessionID == nil ? defaults.data(forKey: "queue") : nil
+                let legacy = sessionID == nil ? UserDefaults.standard.data(forKey: "queue") : nil
                 let tracks = try legacy.map { try JSONDecoder().decode([Track].self, from: $0) }.map { $0.map(rebaseDeviceTrack) } ?? []
                 sessionCommand(["op": "replace", "tracks": try trackValues(tracks), "current": SharedPlaybackPolicy.index(tracks.isEmpty ? -1 : defaults.integer(forKey: "index"))])
                 sessionCommand(["op": "shuffle", "mode": legacyShuffle.rawValue])
                 sessionCommand(["op": "repeat", "mode": legacyRepeat.rawValue])
                 sessionCommand(["op": "volume", "value": legacyVolume])
-                if sessionID == nil, let data = defaults.data(forKey: "playlist_workspace"), let value = try? JSONSerialization.jsonObject(with: data) {
+                if sessionID == nil, let data = UserDefaults.standard.data(forKey: "playlist_workspace"), let value = try? JSONSerialization.jsonObject(with: data) {
                     sessionCommand(["op": "workspace_restore", "value": rebaseWorkspace(value)])
                 }
             }
-        } catch { report(error) }
+        } catch { storageRevision = nil; report(error) }
         updateSessionScopes()
+        if let checkpoint = try? session.send()["checkpoint"] { persistCheckpoint(checkpoint) }
         if let saved = try? session.send()["checkpoint"] as? [String: Any], radio {
             radioOnDevice = saved["radio_scope"] as? String == "device"
             sessionCommand(["op": "radio", "enabled": true, "scope": saved["radio_scope"] ?? "device", "root": saved["radio_root"] ?? ""])
         }
+        if let failure = KogPreferences.standard.lastError { self.error = failure }
         scanImports()
         Task { if let saved = try? await deviceAPI.stars() { localStars = saved; updateSessionMetadata() } }
         do {
@@ -161,9 +171,9 @@ final class KogStore: ObservableObject {
 
     func saveSettings() {
         server = server.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        UserDefaults.standard.set(server, forKey: "server")
-        UserDefaults.standard.set(username, forKey: "username")
-        UserDefaults.standard.set(codec, forKey: "codec")
+        KogPreferences.standard.set(server, forKey: "server")
+        KogPreferences.standard.set(username, forKey: "username")
+        KogPreferences.standard.set(codec, forKey: "codec")
         Secrets.write("token", token)
         Secrets.write("password", password)
         updateSessionScopes()
@@ -183,7 +193,7 @@ final class KogStore: ObservableObject {
 
     func selectMidiEngine(_ engine: String) {
         midiEngine = engine
-        UserDefaults.standard.set(engine, forKey: "midi_engine")
+        KogPreferences.standard.set(engine, forKey: "midi_engine")
         if connected {
             Task {
                 do {
@@ -198,7 +208,7 @@ final class KogStore: ObservableObject {
         guard ["opl3windows", "rustysynth-sf2", "nuked-sc55", "munt-mt32"].contains(engine) else { return }
         guard engine != localMidiEngine else { return }
         localMidiEngine = engine
-        UserDefaults.standard.set(engine, forKey: "local_midi_engine")
+        KogPreferences.standard.set(engine, forKey: "local_midi_engine")
         if current?.isDevice == true { restartCurrentMidi() }
     }
 
@@ -231,7 +241,7 @@ final class KogStore: ObservableObject {
             case "sc55": sc55RomPath = destination.path
             default: mt32RomPath = destination.path
             }
-            UserDefaults.standard.set(destination.path, forKey: "midi_\(kind == "soundfont" ? "soundfont" : kind + "_roms")")
+            KogPreferences.standard.set(destination.path, forKey: "midi_\(kind == "soundfont" ? "soundfont" : kind + "_roms")")
             if current?.isDevice == true { restartCurrentMidi() }
         } catch { report(error) }
     }
@@ -254,9 +264,7 @@ final class KogStore: ObservableObject {
     }
 
     private func rememberTreeRoot() {
-        var roots = UserDefaults.standard.dictionary(forKey: "server_tree_roots") as? [String: String] ?? [:]
-        roots[serverKey] = treeRoot.isEmpty ? nil : treeRoot
-        UserDefaults.standard.set(roots, forKey: "server_tree_roots")
+        KogPreferences.standard.set(treeRoot, forKey: "server_tree_root.\(serverKey)")
     }
 
     @discardableResult
@@ -289,8 +297,7 @@ final class KogStore: ObservableObject {
             guard client.server == server else { return }
             self.listing = listing
             libraryRoot = listing.path
-            let roots = UserDefaults.standard.dictionary(forKey: "server_tree_roots") as? [String: String] ?? [:]
-            treeRoot = roots[serverKey] ?? ""
+            treeRoot = KogPreferences.standard.treeRoot(for: serverKey)
             if !treeRoot.isEmpty {
                 do { self.listing = try await client.browse(treeRoot) }
                 catch let failure as KogError {
@@ -304,7 +311,7 @@ final class KogStore: ObservableObject {
             updateSessionMetadata()
             if let serverEngine = try? await client.serverMidiEngine(), serverEngine != midiEngine {
                 midiEngine = serverEngine
-                UserDefaults.standard.set(serverEngine, forKey: "midi_engine")
+                KogPreferences.standard.set(serverEngine, forKey: "midi_engine")
                 if current?.isDevice == false { restartCurrentMidi() }
             }
             connected = true
@@ -390,9 +397,21 @@ final class KogStore: ObservableObject {
         for effect in reply["effects"] as? [[String: Any]] ?? [] { executeSessionEffect(effect) }
         updateNowPlaying()
     }
+    private func persistCheckpoint(_ value: Any) {
+        guard let revision = storageRevision else { return }
+        do {
+            let data = try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
+            if data == lastSavedCheckpoint { return }
+            let reply = try deviceAPI.localState("sessions", id: session.id, value: value, revision: revision)
+            guard let next = (reply["revision"] as? NSNumber)?.int64Value else { throw KogError.response("Missing checkpoint revision") }
+            storageRevision = next
+            lastSavedCheckpoint = data
+        } catch { report(error) }
+    }
+
     private func executeSessionEffect(_ effect: [String: Any]) {
         switch effect["action"] as? String {
-        case "persist": if let value = effect["value"], let data = try? JSONSerialization.data(withJSONObject: value) { UserDefaults.standard.set(data, forKey: sessionStorageKey) }
+        case "persist": if let value = effect["value"] { persistCheckpoint(value) }
         case "play":
             outputToken = effect["token"] as? [String: Any]
             startPlayer(resumeAt: effect["seconds"] as? Double ?? 0, shouldPlay: effect["playing"] as? Bool ?? true)
@@ -707,8 +726,7 @@ final class KogStore: ObservableObject {
     func createPlaylist(_ name: String, saveQueue: Bool = false) async {
         do {
             if saveQueue { try checkPlaylistSource(queue) }
-            let id = try await playlistAPI.createPlaylist(name)
-            if saveQueue && !queue.isEmpty { try await playlistAPI.appendPlaylist(id, tracks: queue) }
+            _ = try await playlistAPI.createPlaylist(name, tracks: saveQueue ? queue : [])
             await loadPlaylists()
         } catch { report(error) }
     }
@@ -928,7 +946,7 @@ extension KogStore {
     }
     func selectCodec(_ value: String) {
         guard value != codec else { return }
-        codec = value; UserDefaults.standard.set(value, forKey: "codec")
+        codec = value; KogPreferences.standard.set(value, forKey: "codec")
         if current?.isDevice == false { sessionCommand(["op": "reload_output"]) }
     }
     func toggleSearchPause() async {
@@ -945,7 +963,7 @@ extension KogStore {
     func setDeviceRoot(_ path: String) {
         guard path == importsURL.path || path.hasPrefix(importsURL.path + "/") else { return }
         deviceTreeRoot = path == importsURL.path ? "" : String(path.dropFirst(importsURL.path.count + 1))
-        UserDefaults.standard.set(deviceTreeRoot, forKey: "device_tree_root")
+        KogPreferences.standard.set(deviceTreeRoot, forKey: "device_tree_root")
         if radio && radioOnDevice { prepareRadio() }
         search(""); browseDevice(path)
     }
@@ -961,7 +979,7 @@ extension KogStore {
             do { notifyTracks = try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert]) }
             catch { report(error); notifyTracks = false }
         } else { notifyTracks = false }
-        UserDefaults.standard.set(notifyTracks, forKey: "track_notifications")
+        KogPreferences.standard.set(notifyTracks, forKey: "track_notifications")
     }
     private func postTrackNotification(_ track: Track) {
         guard notifyTracks, UIApplication.shared.applicationState != .active else { return }

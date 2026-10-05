@@ -75,9 +75,21 @@ class KogApi(private val context: Context, val onDevice: Boolean = false) {
             "password" to password, "codec" to codec, "midi_engine" to midiEngine)
     }
     val deviceRoot get() = File(context.filesDir, "Kog Imports").absolutePath
+    /** Small, synchronous on-device state operations use the shared SQLite API. */
+    fun localState(namespace: String, id: String, value: JSONObject? = null, revision: Long = 0): JSONObject {
+        val request = JSONObject().put("root", deviceRoot)
+            .put("storage", File(context.filesDir, "kog-library").absolutePath)
+            .put("method", if (value == null) "GET" else "PUT")
+            .put("uri", "/api/state/${Uri.encode(namespace)}/${Uri.encode(id)}")
+        if (value != null) request.put("body", JSONObject().put("expected_revision", revision).put("value", value))
+        val response = JSONObject(NativeAudio.nativeLibrary(request.toString()))
+        val result = response.getJSONObject("body")
+        check(response.getInt("status") in 200..299) { result.optString("error", "Cannot save the session") }
+        return result
+    }
     private fun parseTrack(row: JSONObject): Track = Track.parse(row).let { if (onDevice && it.kind != "remote") it.copy(kind = "device") else it }
 
-    private val prefs = context.getSharedPreferences("kog", Context.MODE_PRIVATE)
+    private val prefs = KogPreferences(context)
     var server: String
         get() = captured?.get("server") ?: (prefs.getString("server", "") ?: "")
         set(value) {

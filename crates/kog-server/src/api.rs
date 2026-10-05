@@ -171,6 +171,8 @@ pub struct StarRequest {
 #[derive(Debug, Deserialize)]
 pub struct CreatePlaylistRequest {
     pub name: String,
+    #[serde(default)]
+    pub entries: Vec<EntryRequest>,
 }
 
 /// One entry as a client sends it. Optional fields default, so a minimal
@@ -2197,7 +2199,7 @@ pub async fn playlist_entries(
     }
 }
 
-/// `POST /api/playlists` — create an empty playlist.
+/// `POST /api/playlists` — atomically create a playlist and its optional entries.
 pub async fn create_playlist(
     State(state): State<AppState>,
     axum::Json(request): axum::Json<CreatePlaylistRequest>,
@@ -2206,7 +2208,8 @@ pub async fn create_playlist(
     let name = request.name.clone();
     let result = tokio::task::spawn_blocking(move || {
         let db = library.db();
-        db.create_playlist(&name)
+        let entries: Vec<_> = request.entries.into_iter().map(EntryRequest::into_stored).collect();
+        db.create_playlist_with_entries(&name, &entries)
             .map(|id| serde_json::json!({ "id": id, "name": name.trim() }))
     })
     .await
@@ -2638,6 +2641,8 @@ pub async fn set_midi_setting(
 pub fn router() -> axum::Router<AppState> {
     use axum::routing::{get, post};
     axum::Router::new()
+        .route("/api/state/{namespace}/{id}", get(crate::persistence::load).put(crate::persistence::save)
+            .layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024)))
         .route("/api/library", get(browse))
         .route("/api/library/collect", get(collect_folder_http))
         .route("/api/library/search", get(search))

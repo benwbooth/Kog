@@ -19,10 +19,46 @@ pub struct Controller {
     pub base: Callback<(), String>,
     pub auth: Callback<(), Option<String>>,
     pub saved: StoredValue<Option<Callback<()>>>,
+    pub persistence: persistence::Writer,
+    pub error: Callback<String>,
+    pub loaded_scope: StoredValue<Option<String>>,
 }
 impl Controller {
+    pub async fn connect(self) -> Result<(), String> {
+        let base = self.base.run(());
+        let id = self.model.with_value(|s| s.id().to_owned());
+        let loaded = self.persistence.connect(base.clone(), id.clone(), self.auth.run(())).await?;
+        let Some(value) = loaded else { return Ok(()); };
+        if self.base.run(()) != base { self.persistence.disable(); return Err("Connection changed while loading the session".into()); }
+        let mut model = if self.loaded_scope.get_value().is_none() {
+            self.model.get_value()
+        } else {
+            Session::new(id, js_sys::Date::now() as u64, ShuffleMode::Off, RepeatMode::Off)
+        };
+        if let Some(value) = value {
+            if let Err(error) = model.restore(value, |value| serde_json::from_value(value.clone())
+                .or_else(|_| Ok::<Entry, String>(entry_from_json(value)))) {
+                self.persistence.disable();
+                return Err(format!("Cannot restore the saved session: {error}"));
+            }
+        }
+        if let Some(port) = self.output.get_value() { port.run(SessionEffect::Stop); }
+        self.model.set_value(model);
+        self.loaded_scope.set_value(Some(base));
+        self.changed.run((true, false));
+        self.revision.update(|revision| *revision += 1);
+        self.persistence.save(self.model.with_value(Session::checkpoint));
+        Ok(())
+    }
+
     pub fn send(self, command: SessionCommand<Entry>) {
         let scope = self.base.run(());
+        if !self.persistence.ready(&scope) {
+            if !matches!(&command, SessionCommand::Metadata { .. } | SessionCommand::Output { .. } | SessionCommand::Complete { .. }) {
+                self.error.run("Connect to load the saved session before editing it".into());
+            }
+            return;
+        }
         let progress = matches!(
             &command,
             SessionCommand::Output {
@@ -49,8 +85,7 @@ impl Controller {
         for effect in effects {
             match effect {
                 SessionEffect::Persist { value } => {
-                    let id = self.model.with_value(|s| s.id().to_owned());
-                    store(&format!("kog.backend-session.{id}"), &value.to_string());
+                    self.persistence.save(value);
                 }
                 SessionEffect::QueueChanged { .. } => {}
                 SessionEffect::Load { .. }
@@ -249,7 +284,7 @@ async fn expand(
     }
     Ok(tracks)
 }
-async fn request(
+pub(super) async fn request(
     method: &str,
     url: String,
     header: Option<String>,

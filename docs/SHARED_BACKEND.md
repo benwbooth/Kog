@@ -41,23 +41,42 @@ shuffle/repeat traversal is disabled.
   independent named session (`web:NAME`) without changing the browser default.
 - iOS and Android use persistent per-installation UUIDs. Their session owners
   also accept an explicit session ID for embedded use and integration tests.
-- Native checkpoints are stored as `sessions/<SHA-256 of ID>.session.json` in
-  Kog's configuration directory. Web and mobile use per-ID storage keys.
+- Sessions, radio rounds, UI state, and preferences share the library SQLite
+  database: `kog.db` on desktop/server and `library.sqlite` in each mobile
+  app's private storage. Checkpoint JSON is a versioned value inside SQLite,
+  not another authoritative file. iOS credentials remain in the Keychain.
+- Web reads and writes session/UI records through authenticated
+  `GET/PUT /api/state/{namespace}/{id}`. Only the server address, login bootstrap
+  and device/session identifiers stay in browser storage. Host preferences and
+  credentials cannot be read through this API.
 - The common versioned checkpoint includes queue locators, row IDs, order,
   selection, filter/sort, volume and playlist drafts. Restore always stops
   output and discards pending I/O; an old callback cannot restart playback.
 - The default session imports the previous frontend queue and draft format
-  once. New explicitly named sessions start with an empty queue. Tree layout,
-  window geometry, decoder settings and connection preferences remain UI or
-  platform settings.
+  once. Existing JSON/text files, browser storage, SharedPreferences, and
+  UserDefaults are migration inputs and are left untouched for recovery. New
+  explicitly named sessions start with an empty queue. A corrupt checkpoint
+  disables its writer so starting the app cannot replace it with an empty one.
 
 A session ID is a persistence and service namespace, not a live synchronization
 protocol. Use distinct IDs for independent players. Two concurrent players
-using the same ID do not merge their queues or checkpoints.
+using the same ID do not merge their queues or checkpoints. Saves carry the
+revision that was restored. A stale writer gets an explicit conflict (HTTP 409)
+and preserves the newer saved record; its current edits remain in memory.
+Reloading uses the saved record. Distinct IDs can save independently.
+
+SQLite uses WAL, foreign keys, and a five-second busy timeout. Compound playlist
+operations use immediate transactions, including create-with-entries, append,
+duplicate, reorder, and checked replacement. Preference changes update only
+their own keys. No application-wide reader/writer lock is needed across
+processes: SQLite handles writer serialization and readers see committed
+snapshots. Browser writes are serialized and coalesced; a lost response retries
+the same revision/value before newer edits. Unsaved state blocks automatic
+reload and server switching, and warns when leaving the page.
 
 Named HTTP search and radio requests have independent server state. Pausing or
 cancelling one search does not affect another session. Radio rounds use separate
-files and do not write the legacy global enabled preference. Requests without a
+SQLite records and do not write the legacy global enabled preference. Requests without a
 session ID retain the legacy API behavior. Radio request serials prevent a late
 request from reversing a newer root or enabled-state change.
 

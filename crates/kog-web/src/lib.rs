@@ -43,6 +43,7 @@ use wasm_bindgen::prelude::wasm_bindgen;
 mod selection;
 mod session;
 mod workspace;
+mod persistence;
 
 /// The desktop transport's SVG icons (`qml/icons/`), inlined verbatim. CSS
 /// tints them with the button's text color where the desktop picks the
@@ -1101,9 +1102,8 @@ fn device_id() -> String {
     generated
 }
 
-/// Everything the web player remembers across a reload, in one localStorage
-/// value. Deliberately client-side: the desktop's session.json is shared by
-/// every client, so a phone must never overwrite the desktop's pane.
+/// Legacy browser session import and the session's current SQLite UI record.
+/// The application checkpoint is stored under its independent session ID.
 struct RestoredSession {
     queue: Vec<Entry>,
     current: usize,
@@ -1198,26 +1198,6 @@ fn play_audio(audio: &web_sys::HtmlAudioElement) {
         leptos::task::spawn_local(async move {
             let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
         });
-    }
-}
-
-/// The session's writer. Writes are deduplicated against the last value, so
-/// restoring the pane and the auto-refresh reload can never fight over the
-/// stored value, and a change that does not alter the snapshot never rewrites
-/// localStorage.
-#[derive(Clone, Default)]
-struct SessionPersist {
-    last: Rc<RefCell<Option<String>>>,
-}
-
-impl SessionPersist {
-    fn save(&self, snapshot: String) {
-        let mut last = self.last.borrow_mut();
-        if last.as_deref() == Some(snapshot.as_str()) {
-            return;
-        }
-        *last = Some(snapshot.clone());
-        store("kog.session", &snapshot);
     }
 }
 
@@ -1461,7 +1441,6 @@ fn set_track_notifications_pref(
     set_message: leptos::prelude::WriteSignal<String>,
 ) {
     if !enabled {
-        store("kog.track_notifications", "0");
         set_enabled.set(false);
         return;
     }
@@ -1477,7 +1456,6 @@ fn set_track_notifications_pref(
             Err(_) => false,
         };
         if granted {
-            store("kog.track_notifications", "1");
             set_enabled.set(true);
         } else {
             set_message.set("Notifications were blocked by the browser".to_owned());
@@ -2250,8 +2228,10 @@ fn App() -> impl IntoView {
     // While this is true the session effect ignores signal changes, so the
     // empty defaults never overwrite the saved session before the restore has
     // run.
-    let restoring = Rc::new(RefCell::new(true));
-    let persist = SessionPersist::default();
+    let restoring = RwSignal::new(true);
+    let persist = persistence::Writer::new("session-ui", Callback::new(move |error| set_message.set(error)));
+    let ui_loaded_scope = StoredValue::new(None::<String>);
+    let restored_tree = RwSignal::new(Some((restored.tree_root.clone(), restored.expanded.clone())));
     let (queue, set_queue) = signal(restored.queue.clone());
     let (list_name, set_list_name) = signal(restored.list_name.clone());
     let (current, set_current) = signal(restored.current);
@@ -2402,6 +2382,9 @@ fn App() -> impl IntoView {
         revision: RwSignal::new(0),
         output: StoredValue::new(None),
         saved: StoredValue::new(None),
+        persistence: persistence::Writer::new("sessions", Callback::new(move |error| set_message.set(error))),
+        error: Callback::new(move |error| set_message.set(error)),
+        loaded_scope: StoredValue::new(None),
         base: Callback::new(move |()| base()),
         auth: Callback::new(move |()| auth().header()),
         changed: Callback::new(move |(queue_changed, progress): (bool, bool)| {
@@ -2444,6 +2427,17 @@ fn App() -> impl IntoView {
         }),
     };
     backend.changed.run((true, false));
+    if let Some(window) = web_sys::window() {
+        let callback = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+            if backend.persistence.dirty() || persist.dirty() {
+                event.prevent_default();
+                let _ = js_sys::Reflect::set(event.as_ref(), &"returnValue".into(), &"".into());
+            }
+        });
+        let _ = window.add_event_listener_with_callback("beforeunload", callback.as_ref().unchecked_ref());
+        callback.forget();
+    }
+
     let select_row = move |index: usize, shift: bool, toggle: bool| {
         use kog_playback_policy::selection::{Command, Gesture};
         let gesture = match (shift, toggle) {
@@ -2998,14 +2992,10 @@ fn App() -> impl IntoView {
     // already correct while the tree is still filling in.
     {
         let load_dir = load_dir.clone();
-        let root = restored.tree_root.clone();
-        let targets = restored.expanded.clone();
         let restore_flag = restoring.clone();
-        let done = Rc::new(RefCell::new(false));
         Effect::new(move |_| {
-            if *done.borrow() {
-                return;
-            }
+            if !connected.get() { return; }
+            let Some((root, targets)) = restored_tree.get() else { return; };
             let loaded = children.get();
             if !loaded.contains_key(&root) {
                 // The library root ("") is loaded by `connect`; a deeper root
@@ -3028,8 +3018,8 @@ fn App() -> impl IntoView {
                 return;
             }
             set_expanded.set(targets.iter().cloned().collect());
-            *restore_flag.borrow_mut() = false;
-            *done.borrow_mut() = true;
+            restore_flag.set(false);
+            restored_tree.set(None);
         });
         // A stored root that the server will not browse must not leave the
         // session permanently unpersisted: after a grace period the restore is
@@ -3037,7 +3027,7 @@ fn App() -> impl IntoView {
         let restoring = restoring.clone();
         if let Some(window) = web_sys::window() {
             let callback = Closure::<dyn FnMut()>::new(move || {
-                *restoring.borrow_mut() = false;
+                restoring.set(false);
             });
             let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
                 callback.as_ref().unchecked_ref(),
@@ -3050,7 +3040,7 @@ fn App() -> impl IntoView {
     // Persist the session whenever a remembered value changes. The effect reads
     // every persisted signal, so a change to any of them schedules a write;
     // `restoring` keeps the pre-restore defaults from overwriting the saved
-    // session, and `SessionPersist` drops writes that do not change the value.
+    // session, and the SQLite writer drops writes that do not change the value.
     {
         let restoring = restoring.clone();
         let persist = persist.clone();
@@ -3058,14 +3048,19 @@ fn App() -> impl IntoView {
             let list_name = list_name.get();
             let tree_root = tree_root.get();
             let expanded = expanded.get();
-            if *restoring.borrow() {
-                return;
-            }
+            let codec = codec.get();
+            let sidebar_width = sidebar_width.get();
+            let sidebar_visible = sidebar_visible.get();
+            let columns = encode_columns(&columns.get());
+            let notifications = track_notifications.get();
+            let connected = connected.get();
+            if restoring.get() || !connected { return; }
             let mut expanded = expanded.into_iter().collect::<Vec<_>>();
             expanded.sort();
             persist.save(
-                serde_json::json!({"listName":list_name,"treeRoot":tree_root,"expanded":expanded})
-                    .to_string(),
+                serde_json::json!({"listName":list_name,"treeRoot":tree_root,"expanded":expanded,
+                    "codec":codec,"sidebar_width":sidebar_width,"sidebar_visible":sidebar_visible,
+                    "columns":columns,"track_notifications":notifications}),
             );
         });
     }
@@ -3124,7 +3119,6 @@ fn App() -> impl IntoView {
                     let layout = value["layout"].as_str().unwrap_or_default().to_owned();
                     if !layout.trim().is_empty() {
                         set_columns.set(decode_columns(&layout));
-                        store("kog.columns", &layout);
                     }
                 }
             });
@@ -3215,17 +3209,20 @@ fn App() -> impl IntoView {
     };
 
     let connect = {
+        let restoring = restoring.clone();
         let load_dir = load_dir.clone();
         let load_playlists = load_playlists.clone();
         let load_stars = load_stars.clone();
         let load_midi = load_midi.clone();
         let load_shared_columns = load_shared_columns.clone();
         move || {
+            let restoring = restoring.clone();
             let header = auth().header();
             // A protected endpoint: the version call is open to everyone, so it
             // cannot tell a missing token from a working connection — and with
             // token auth on, that silence left the tree quietly empty.
-            let url = format!("{}/api/codecs", base());
+            let connection_base = base();
+            let url = format!("{connection_base}/api/codecs");
             let basic = use_basic.get();
             store("kog.server", &server.get());
             if !basic {
@@ -3243,6 +3240,51 @@ fn App() -> impl IntoView {
                 }
                 match request.send().await {
                     Ok(response) if response.ok() => {
+                        if base() != connection_base { return; }
+                        if (backend.persistence.dirty() || persist.dirty()) && !backend.persistence.ready(&connection_base) {
+                            set_message.set("Wait for the current session to save before changing servers".into());
+                            return;
+                        }
+                        set_connected.set(false);
+                        let id = session_model.with_value(|s| s.id().to_owned());
+                        let initialized = async {
+                            backend.connect().await?;
+                            persist.connect(base(), id, auth().header()).await
+                        }.await;
+                        match initialized {
+                            Err(error) => { set_message.set(error); return; }
+                            Ok(Some(Some(value))) => {
+                                if base() != connection_base { return; }
+                                if ui_loaded_scope.get_value().as_ref() != Some(&connection_base) {
+                                    set_children.set(HashMap::new());
+                                    set_expanded.set(HashSet::new());
+                                }
+                                let tree = decode_session(&value.to_string());
+                                set_list_name.set(tree.list_name);
+                                set_tree_root.set(tree.tree_root.clone());
+                                restoring.set(true);
+                                restored_tree.set(Some((tree.tree_root, tree.expanded)));
+                                if let Some(value) = value["codec"].as_str() { set_codec.set(value.into()); }
+                                if let Some(value) = value["sidebar_width"].as_f64() { set_sidebar_width.set(value.clamp(180.0, 600.0)); }
+                                if let Some(value) = value["sidebar_visible"].as_bool() { set_sidebar_visible.set(value); }
+                                if let Some(value) = value["columns"].as_str() { set_columns.set(decode_columns(value)); }
+                                if let Some(value) = value["track_notifications"].as_bool() { set_track_notifications.set(value); }
+                            }
+                            Ok(Some(None)) if ui_loaded_scope.get_value().is_some() => {
+                                set_children.set(HashMap::new());
+                                set_expanded.set(HashSet::new());
+                                set_tree_root.set(String::new());
+                                set_list_name.set(String::new());
+                                restored_tree.set(Some((String::new(), Vec::new())));
+                                restoring.set(true);
+                                set_codec.set("aac".into());
+                                set_columns.set(default_columns());
+                                set_track_notifications.set(false);
+                            }
+                            _ => {}
+                        }
+                        if base() != connection_base { return; }
+                        ui_loaded_scope.set_value(Some(connection_base));
                         set_connected.set(true);
                         set_settings_open.set(false);
                         set_message.set(String::new());
@@ -3767,6 +3809,7 @@ fn App() -> impl IntoView {
                         // force-applies after the grace period, even mid-song.
                         if let Some(since) = update_since.get_untracked()
                             && now - since > 45_000.0
+                            && !backend.persistence.dirty() && !persist.dirty()
                             && let Some(window) = web_sys::window()
                         {
                             let _ = window.location().reload();
@@ -3791,7 +3834,7 @@ fn App() -> impl IntoView {
     poll_interval.forget();
 
     Effect::new(move |_| {
-        if update_ready.get() && !playing.get() {
+        if update_ready.get() && !playing.get() && !backend.persistence.dirty() && !persist.dirty() {
             if let Some(window) = web_sys::window() {
                 let _ = window.location().reload();
             }
@@ -4661,7 +4704,6 @@ fn App() -> impl IntoView {
 
     let persist_columns = move |columns: &[Column]| {
         let layout = encode_columns(columns);
-        store("kog.columns", &layout);
         // Share the layout so every client - and the desktop - agrees.
         let url = format!("{}/api/columns", base());
         let header = auth().header();
@@ -4879,36 +4921,12 @@ fn App() -> impl IntoView {
                 .map(|(_, entry)| entry)
                 .collect();
             leptos::task::spawn_local(async move {
-                match post_json(url, header.clone(), serde_json::json!({ "name": name })).await {
-                    Ok(value) => {
-                        let id = value["id"].as_i64().unwrap_or_default();
-                        if !entries.is_empty() {
-                            let payload = serde_json::json!({
-                                "entries": entries
-                                    .iter()
-                                    .map(|entry| {
-                                        serde_json::json!({
-                                            "kind": entry.kind,
-                                            "path": entry.path,
-                                            "entry": entry.entry,
-                                            "fragment": entry
-                                                .fragment
-                                                .clone()
-                                                .unwrap_or_default(),
-                                        })
-                                    })
-                                    .collect::<Vec<_>>(),
-                            });
-                            if let Err(error) = post_json(
-                                format!("{}/api/playlists/{id}/entries", base()),
-                                header,
-                                payload,
-                            )
-                            .await
-                            {
-                                set_message.set(error);
-                            }
-                        }
+                let payload = serde_json::json!({ "name": name, "entries": entries.iter().map(|entry| {
+                    serde_json::json!({ "kind": entry.kind, "path": entry.path, "entry": entry.entry,
+                        "fragment": entry.fragment.clone().unwrap_or_default() })
+                }).collect::<Vec<_>>() });
+                match post_json(url, header, payload).await {
+                    Ok(_) => {
                         set_status_note.set(format!("Saved {name} as a new playlist"));
                         load_playlists();
                     }
@@ -5171,7 +5189,6 @@ fn App() -> impl IntoView {
         let next = !open;
         set_sidebar_visible.set(next);
         set_sidebar_open.set(next);
-        store("kog.sidebar", if next { "1" } else { "0" });
     };
     let sidebar_shown = move || {
         let mobile = web_sys::window()
@@ -5707,7 +5724,6 @@ fn App() -> impl IntoView {
                         prop:value=move || codec.get()
                         on:change=move |event| {
                             let value = event_target_value(&event);
-                            store("kog.codec", &value);
                             set_codec.set(value);
                         }
                     >
@@ -7374,8 +7390,7 @@ fn App() -> impl IntoView {
                                 prop:value=move || codec.get()
                                 on:change=move |event| {
                                     let value = event_target_value(&event);
-                                    store("kog.codec", &value);
-                                    set_codec.set(value);
+                                            set_codec.set(value);
                                 }
                             >
                                 <option value="aac">"AAC"</option>

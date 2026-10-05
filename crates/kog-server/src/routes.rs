@@ -1203,6 +1203,33 @@ mod tests {
         (status, json)
     }
 
+    #[tokio::test]
+    async fn sqlite_client_state_is_authenticated_private_and_revision_checked() {
+        use serde_json::json;
+        let protected = state(AuthMode::Token, "test-token");
+        assert_eq!(get_json(protected.clone(), "/api/state/sessions/web:test", None).await.0, StatusCode::UNAUTHORIZED);
+        assert_eq!(get_json(protected, "/api/state/preferences/server-config", Some("Bearer test-token")).await.0, StatusCode::BAD_REQUEST);
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("kog.db");
+        let first = state_with(AuthMode::None, "", crate::api::Library::new(None, kog_core::db::LibraryDb::open_at(&path).unwrap()));
+        let second = state_with(AuthMode::None, "", crate::api::Library::new(None, kog_core::db::LibraryDb::open_at(&path).unwrap()));
+        let uri = "/api/state/sessions/web:test";
+        assert_eq!(get_json(first.clone(), uri, None).await.1, json!({"revision":0,"value":null}));
+        let checkpoint = json!({"version":1,"session_id":"web:test","queue":[]});
+        let body = json!({"expected_revision":0,"value":checkpoint});
+        assert_eq!(request_json(first.clone(), "PUT", uri, Some(body.clone())).await.1["revision"], 1);
+        // A lost HTTP reply is safe to retry through another connection.
+        assert_eq!(request_json(second.clone(), "PUT", uri, Some(body)).await.1["revision"], 1);
+        let stale = json!({"expected_revision":0,"value":{"version":1,"session_id":"web:test","queue":["stale"]}});
+        let reply = request_json(second, "PUT", uri, Some(stale)).await;
+        assert_eq!(reply.0, StatusCode::CONFLICT);
+        assert_eq!(reply.1["code"], "state_conflict");
+        assert_eq!(get_json(first, uri, None).await.1["value"], checkpoint);
+        let restarted = state_with(AuthMode::None, "", crate::api::Library::new(None, kog_core::db::LibraryDb::open_at(&path).unwrap()));
+        assert_eq!(get_json(restarted, uri, None).await.1["revision"], 1);
+    }
+
     /// Send a request with an optional JSON body and read the JSON reply.
     async fn request_json(
         state: AppState,

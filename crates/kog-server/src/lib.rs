@@ -12,6 +12,7 @@ pub mod config;
 mod cover_network;
 pub mod devices;
 pub mod media_filter;
+pub mod persistence;
 pub mod radio;
 pub mod radio_client;
 pub mod routes;

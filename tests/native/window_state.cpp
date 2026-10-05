@@ -1,4 +1,6 @@
 #include "kog_desktop_integration.h"
+#include "kog_settings.h"
+#include <QtCore/QHash>
 
 #include <QtCore/QSettings>
 #include <QtCore/QTemporaryDir>
@@ -36,11 +38,16 @@ int main(int argc, char **argv)
     QSettings::setDefaultFormat(QSettings::IniFormat);
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, config.path());
     QSettings::setPath(QSettings::NativeFormat, QSettings::UserScope, config.path());
-    QSettings settings("Kog", "Kog");
+    QHash<QString, QString> stored;
+    kogSetSettingsPort([&](const QString &key, const QString &value, bool write) {
+        if (write || (!stored.contains(key) && !value.isEmpty())) stored.insert(key, value);
+        return stored.value(key);
+    });
+    KogSettings settings("MainWindow");
     const QRect initial(55, 65, 420, 260);
     const QRect moved(100, 130, 500, 320);
-    settings.setValue("MainWindow/normalGeometry", initial);
-    settings.sync();
+    settings.setValue("normalGeometry", initial);
+
 
     {
         MainWindow window;
@@ -49,7 +56,7 @@ int main(int argc, char **argv)
         require(window.geometry() == initial, "restored initial geometry");
         window.setGeometry(moved);
         window.close(); // Also cover closing before the debounce timeout.
-        require(settings.value("MainWindow/normalGeometry").toRect() == moved, "saved moved geometry on close");
+        require(settings.value("normalGeometry").toRect() == moved, "saved moved geometry on close");
     }
     {
         MainWindow window;
@@ -59,14 +66,14 @@ int main(int argc, char **argv)
         window.showMinimized();
         QTest::qWait(250);
         window.hide();
-        require(settings.value("MainWindow/normalGeometry").toRect() == moved, "minimize preserved normal geometry");
-        require(!settings.value("MainWindow/maximized").toBool(), "minimize is not remembered as maximized");
+        require(settings.value("normalGeometry").toRect() == moved, "minimize preserved normal geometry");
+        require(!settings.value("maximized").toBool(), "minimize is not remembered as maximized");
         window.showNormal();
         QTest::qWait(250);
         window.showMaximized();
         QTest::qWait(250);
-        require(settings.value("MainWindow/maximized").toBool(), "saved maximized state");
-        require(settings.value("MainWindow/normalGeometry").toRect() == moved, "maximize preserved normal geometry");
+        require(settings.value("maximized").toBool(), "saved maximized state");
+        require(settings.value("normalGeometry").toRect() == moved, "maximize preserved normal geometry");
         window.hide();
         require(window.property("restoreMaximized").toBool(), "tray restore keeps maximized state");
     }
@@ -77,10 +84,10 @@ int main(int argc, char **argv)
         require(window.windowState() == Qt::WindowMaximized, "restored maximized window");
         window.close();
     }
-    settings.setValue("MainWindow/maximized", false);
-    settings.setValue("MainWindow/screen", "disconnected-display");
-    settings.setValue("MainWindow/normalGeometry", QRect(-5000, 9000, 3000, 2000));
-    settings.sync();
+    settings.setValue("maximized", false);
+    settings.setValue("screen", "disconnected-display");
+    settings.setValue("normalGeometry", QRect(-5000, 9000, 3000, 2000));
+
     {
         MainWindow window;
         kogRestoreMainWindow();
@@ -92,9 +99,9 @@ int main(int argc, char **argv)
         // A normal geometry covering almost the whole screen restores
         // invisibly, so it must be neither saved nor loaded (live report: a
         // persisted 3938x1618 normalGeometry on a 3938x1662 work area).
-        settings.setValue("MainWindow/maximized", false);
-        settings.setValue("MainWindow/normalGeometry", moved);
-        settings.sync();
+        settings.setValue("maximized", false);
+        settings.setValue("normalGeometry", moved);
+
         MainWindow window;
         window.resize(500, 320);
         kogRestoreMainWindow();
@@ -106,18 +113,18 @@ int main(int argc, char **argv)
         const QRect nearlyFullscreen = screen->availableGeometry().adjusted(0, 0, 0, -44);
         window.setGeometry(nearlyFullscreen);
         window.close();
-        require(settings.value("MainWindow/normalGeometry").toRect() != nearlyFullscreen,
+        require(settings.value("normalGeometry").toRect() != nearlyFullscreen,
             "near-fullscreen normal geometry is not saved");
-        require(settings.value("MainWindow/normalGeometry").toRect() == moved,
+        require(settings.value("normalGeometry").toRect() == moved,
             "sane normal geometry survives a near-fullscreen stint");
     }
     {
         QScreen *screen = QGuiApplication::primaryScreen();
         require(screen, "test screen exists");
-        settings.setValue("MainWindow/maximized", false);
-        settings.setValue("MainWindow/normalGeometry",
+        settings.setValue("maximized", false);
+        settings.setValue("normalGeometry",
             screen->availableGeometry().adjusted(0, 0, 0, -44));
-        settings.sync();
+
         MainWindow window;
         window.resize(500, 320);
         kogRestoreMainWindow();

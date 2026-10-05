@@ -1,7 +1,7 @@
 #include "kog_desktop_integration.h"
 
 #include <QtCore/QEvent>
-#include <QtCore/QSettings>
+#include "kog_settings.h"
 #include <QtCore/QTimer>
 #include <QtGui/QScreen>
 #include <QtGui/QWindow>
@@ -42,9 +42,8 @@ bool coversAvailableScreen(const QWindow *window, const QRect &geometry)
 class MainWindowState final : public QObject {
 public:
     explicit MainWindowState(QWindow *window)
-        : QObject(window), m_window(window), m_settings("Kog", "Kog")
+        : QObject(window), m_window(window), m_settings("MainWindow")
     {
-        m_settings.beginGroup("MainWindow");
         const QString screenName = m_settings.value("screen").toString();
         QScreen *screen = window->screen();
         for (QScreen *candidate : QGuiApplication::screens()) {
@@ -144,11 +143,10 @@ private:
         m_settings.setValue("maximized", m_maximized);
         if (m_window->screen())
             m_settings.setValue("screen", m_window->screen()->name());
-        m_settings.sync();
     }
 
     QWindow *m_window;
-    QSettings m_settings;
+    KogSettings m_settings;
     QTimer m_timer;
     QRect m_normal;
     bool m_maximized = false;

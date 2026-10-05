@@ -1,7 +1,6 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import Qt.labs.settings
 
 Window {
     id: root
@@ -34,11 +33,13 @@ Window {
     // A notification must also work while the main player is hidden to tray.
     transientParent: null
 
-    Settings {
+    SqliteSettings {
+        app: root.app
         id: placement
         category: "NowPlayingNotification"
         property real rightMargin: 16
         property real bottomMargin: 16
+        values: ({rightMargin, bottomMargin})
     }
 
     Component.onCompleted: {
@@ -109,11 +110,9 @@ Window {
     function savePosition() {
         placement.rightMargin = rightMargin
         placement.bottomMargin = bottomMargin
-        // Settings batches property writes; persist immediately so quitting
-        // straight after a drag does not lose the new position.
+        // Commit both changed margins before returning from the drag.
         placement.setValue("rightMargin", rightMargin)
         placement.setValue("bottomMargin", bottomMargin)
-        placement.sync()
     }
 
     function timeLabel(seconds) {

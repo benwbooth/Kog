@@ -371,7 +371,7 @@ impl RadioRound {
     /// ages, and dead keys as JSON. Best-effort by design; callers ignore
     /// failures and keep playing memory-only. Atomic write (temp + rename)
     /// so a crash never leaves a half-written round behind.
-    pub fn save(&self, path: &Path, root: &Path, dead: &HashSet<String>) {
+    pub fn checkpoint(&self, root: &Path, dead: &HashSet<String>) -> serde_json::Value {
         let mut cursors = serde_json::Map::with_capacity(self.cursors.len());
         for (node, cursor) in &self.cursors {
             cursors.insert(
@@ -390,7 +390,7 @@ impl RadioRound {
         let mut dead_keys: Vec<&String> = dead.iter().collect();
         dead_keys.sort();
         dead_keys.truncate(MAX_PERSISTED_DEAD);
-        let document = serde_json::Value::Object(serde_json::Map::from_iter([
+        serde_json::Value::Object(serde_json::Map::from_iter([
             ("v".to_owned(), serde_json::Value::from(ROUND_FILE_VERSION)),
             (
                 "root".to_owned(),
@@ -408,8 +408,12 @@ impl RadioRound {
                         .collect(),
                 ),
             ),
-        ]));
-        let text = match serde_json::to_string(&document) {
+        ]))
+    }
+
+    /// Legacy round-file export, retained for migration tests and tooling.
+    pub fn save(&self, path: &Path, root: &Path, dead: &HashSet<String>) {
+        let text = match serde_json::to_string(&self.checkpoint(root, dead)) {
             Ok(text) => text,
             Err(_) => return,
         };
@@ -431,6 +435,10 @@ impl RadioRound {
     pub fn load(path: &Path, root: &Path) -> Option<RoundInitial> {
         let text = std::fs::read_to_string(path).ok()?;
         let document: serde_json::Value = serde_json::from_str(&text).ok()?;
+        Self::from_checkpoint(&document, root)
+    }
+
+    pub fn from_checkpoint(document: &serde_json::Value, root: &Path) -> Option<RoundInitial> {
         let object = document.as_object()?;
         if object.get("v")?.as_u64()? != ROUND_FILE_VERSION {
             return None;

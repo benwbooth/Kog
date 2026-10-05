@@ -27,6 +27,7 @@ void kog_audio_close(KogAudioHandle *handle);
 
 // JSON library operations shared with the server. Free with kog_audio_string_free.
 char *kog_library_request(const char *request, char *error, size_t error_capacity);
+char *kog_preferences_request(const char *request, char *error, size_t error_capacity);
 char *kog_audio_browse(const char *root, const char *path, char *error, size_t error_capacity);
 char *kog_audio_expand(const char *path, char *error, size_t error_capacity);
 void kog_audio_string_free(char *json);

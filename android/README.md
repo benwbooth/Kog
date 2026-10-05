@@ -8,7 +8,7 @@ in the background and receives system and Bluetooth media controls.
 
 ## Build and install
 
-For a ready-made signed arm64 release APK, download `Kog-0.10.0-android-arm64.apk`
+For a ready-made signed arm64 release APK, download `Kog-0.10.1-android-arm64.apk`
 from the [release page](https://github.com/benwbooth/Kog/releases/latest).
 Android uses the same package workflow as desktop and iOS.
 The Kotlin app and Rust decoder backend both use release builds. R8 shrinks the app and resources,

@@ -33,7 +33,7 @@ ApplicationWindow {
     property alias sidebarWidth: mainWindowSettings.sidebarWidth
     property alias treeSectionExpanded: mainWindowSettings.treeSectionExpanded
     property alias playlistsSectionExpanded: mainWindowSettings.playlistsSectionExpanded
-    MainWindowSettings { id: mainWindowSettings }
+    MainWindowSettings { id: mainWindowSettings; app: appController }
     property string playlistHighlightQuery: ""
     // A track can outlive the pane: clearing the playlist detaches what is
     // playing, so transport that acts on the loaded track must not be gated

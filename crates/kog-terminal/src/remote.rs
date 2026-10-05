@@ -1,8 +1,6 @@
 //! Small client for browsing another Kog server from the terminal frontend.
 //! Requests run on the TUI's remote worker, never on its input thread.
 
-use std::fs;
-use std::io::Write;
 use std::path::Path;
 use std::time::Duration;
 
@@ -82,41 +80,14 @@ pub struct RemoteListing {
 
 impl RemoteSettings {
     pub fn load() -> Self {
-        kog_audio::settings::setting_path("tui-remote-server.json")
-            .and_then(|path| fs::read_to_string(path).ok())
+        kog_audio::settings::load_text("tui-remote-server.json")
             .and_then(|text| serde_json::from_str(&text).ok())
             .unwrap_or_default()
     }
 
     pub fn save(&self) -> Result<(), String> {
-        let path = kog_audio::settings::setting_path("tui-remote-server.json")
-            .ok_or_else(|| "The Kog configuration directory is unavailable".to_owned())?;
-        let parent = path
-            .parent()
-            .ok_or_else(|| "The Kog configuration directory is unavailable".to_owned())?;
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("creating {}: {error}", parent.display()))?;
-        let encoded = serde_json::to_vec(self).map_err(|error| error.to_string())?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if path.exists() {
-                fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
-                    .map_err(|error| format!("protecting {}: {error}", path.display()))?;
-            }
-        }
-        let mut options = fs::OpenOptions::new();
-        options.create(true).truncate(true).write(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        options
-            .open(&path)
-            .and_then(|mut file| file.write_all(&encoded))
-            .map_err(|error| format!("writing {}: {error}", path.display()))?;
-        Ok(())
+        let encoded = serde_json::to_string(self).map_err(|error| error.to_string())?;
+        kog_audio::settings::save_text("tui-remote-server.json", &encoded)
     }
 
     pub fn validate(&self) -> Result<(), String> {

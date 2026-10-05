@@ -1,7 +1,7 @@
 //! Random radio selection and persistence shared by native, browser and mobile.
 //!
 //! Each named session has its own round and enabled state. The legacy endpoint
-//! without a session ID keeps the historical desktop round-file behavior.
+//! without a session ID keeps the shared desktop round identity.
 //! Picks use the shared hierarchical RadioRound, decoder expansion, playable
 //! validation and blacklist policy; output and ready buffering live in Session.
 
@@ -110,6 +110,7 @@ struct Inner {
     enabled: bool,
     root: Option<PathBuf>,
     save_path: Option<PathBuf>,
+    storage: Option<RoundStorage>,
     round: Option<RadioRound>,
     /// A playable pick has been served in this round. Incremental terminal
     /// calls must preserve this across one-track refill requests.
@@ -118,6 +119,24 @@ struct Inner {
     /// Unplayable locators remembered across reshuffles, as the desktop does.
     dead: HashSet<String>,
     entries: Vec<RadioEntry>,
+}
+
+struct RoundStorage {
+    db: LibraryDb,
+    cursor: kog_core::state::StateCursor,
+}
+
+impl RoundStorage {
+    fn new(db: LibraryDb, id: &str, legacy: Option<&Path>) -> Self {
+        let mut cursor = kog_core::state::StateCursor::open(&db, "radio", id, legacy);
+        if let Some(error) = cursor.value().and_then(|value| serde_json::from_str::<serde_json::Value>(value).err()) {
+            cursor.reject(format!("Invalid saved radio round: {error}"));
+        }
+        Self { db, cursor }
+    }
+    fn value(&self) -> Option<serde_json::Value> {
+        self.cursor.value().and_then(|v| serde_json::from_str(v).ok())
+    }
 }
 
 /// The server's random-radio session. Cheap to clone through `Arc`; all
@@ -141,26 +160,24 @@ impl Sessions {
             return Err("Invalid radio session ID".into());
         }
         let mut sessions = lock(&self.0);
-        Ok(sessions
-            .entry(id.to_owned())
-            .or_insert_with(|| {
-                let inner = lock(&legacy.inner);
-                let base = inner.save_path.clone().or_else(|| {
-                    if inner.configured {
-                        kog_audio::settings::setting_path(ROUND_FILE)
-                    } else {
-                        None
-                    }
-                });
-                let save = base
-                    .and_then(|p| p.parent().map(|p| p.join("sessions")))
-                    .map(|directory| {
-                        let _ = std::fs::create_dir_all(&directory);
-                        directory.join(format!("{:x}.radio.json", Sha256::digest(id.as_bytes())))
-                    });
-                Arc::new(Radio::new(inner.root.clone(), save, false))
-            })
-            .clone())
+        if let Some(session) = sessions.get(id) { return Ok(session.clone()); }
+        let inner = lock(&legacy.inner);
+        let base = inner.save_path.clone().or_else(|| inner.configured.then(|| kog_audio::settings::setting_path(ROUND_FILE)).flatten());
+        let save = base.and_then(|p| p.parent().map(|p| p.join("sessions")))
+            .map(|directory| directory.join(format!("{:x}.radio.json", Sha256::digest(id.as_bytes()))));
+        let radio = if let Some(storage) = &inner.storage {
+            match storage.db.path() {
+                Some(path) => Radio::persistent(inner.root.clone(), LibraryDb::open_at(&path)?, id, save, false),
+                None => Radio::persistent(inner.root.clone(), LibraryDb::open_in_memory()?, id, None, false),
+            }
+        } else if inner.configured {
+            Radio::persistent(inner.root.clone(), LibraryDb::open()?, id, save, false)
+        } else {
+            Radio::new(inner.root.clone(), save, false)
+        };
+        let radio = Arc::new(radio);
+        sessions.insert(id.into(), radio.clone());
+        Ok(radio)
     }
 }
 
@@ -176,6 +193,7 @@ impl Radio {
                 enabled: false,
                 root: None,
                 save_path: None,
+                storage: None,
                 round: None,
                 round_live: false,
                 seed: 0,
@@ -196,6 +214,7 @@ impl Radio {
                 enabled: false,
                 root: None,
                 save_path: None,
+                storage: None,
                 round: None,
                 round_live: false,
                 seed: 0,
@@ -217,6 +236,7 @@ impl Radio {
                 enabled,
                 root,
                 save_path,
+                storage: None,
                 round: None,
                 round_live: false,
                 seed: 0,
@@ -224,6 +244,19 @@ impl Radio {
                 entries: Vec::new(),
             }),
         }
+    }
+
+    pub fn persistent(root: Option<PathBuf>, db: LibraryDb, id: &str, legacy: Option<PathBuf>, enabled: bool) -> Self {
+        let storage = RoundStorage::new(db, id, legacy.as_deref());
+        let stored_root = storage.value().and_then(|v| v["root"].as_str().map(str::to_owned));
+        let root = resolve_stored_root(stored_root, root.as_deref());
+        let radio = Self::new(root, None, enabled);
+        {
+            let mut inner = lock(&radio.inner);
+            inner.storage = Some(storage);
+            inner.save_path = legacy;
+        }
+        radio
     }
 
     /// Current state, materializing the first round window when radio is on.
@@ -299,7 +332,7 @@ impl Radio {
                 Self::persist_enabled(&inner, true);
             }
         } else if inner.enabled {
-            Self::save(&inner);
+            Self::save(&mut inner);
             inner.enabled = false;
             inner.round = None;
             inner.round_live = false;
@@ -396,7 +429,15 @@ impl Radio {
         let settings = AppSettings::load();
         inner.enabled = settings.radio_enabled;
         inner.save_path = kog_audio::settings::setting_path(ROUND_FILE);
-        inner.root = resolve_root(inner.save_path.as_deref(), library_root);
+        match LibraryDb::open() {
+            Ok(db) => {
+                inner.storage = Some(RoundStorage::new(db, "legacy", inner.save_path.as_deref()));
+                let stored_root = inner.storage.as_ref().and_then(RoundStorage::value)
+                    .and_then(|value| value["root"].as_str().map(str::to_owned));
+                inner.root = resolve_stored_root(stored_root, library_root);
+            }
+            Err(error) => { eprintln!("Cannot load radio state: {error}"); inner.root = library_root.map(Path::to_owned); }
+        }
     }
 
     /// Adopt a changed scope: when the client explicitly requested a tree
@@ -424,11 +465,11 @@ impl Radio {
             inner.round = None;
             return;
         };
-        let initial = inner
-            .save_path
-            .as_deref()
-            .and_then(|path| RadioRound::load(path, &root))
-            .unwrap_or_else(|| RoundInitial::fresh(random_seed()));
+        let initial = if let Some(storage) = &inner.storage {
+            storage.value().and_then(|value| RadioRound::from_checkpoint(&value, &root))
+        } else if !inner.configured {
+            inner.save_path.as_deref().and_then(|path| RadioRound::load(path, &root))
+        } else { None }.unwrap_or_else(|| RoundInitial::fresh(random_seed()));
         inner.seed = initial.seed;
         inner.dead = initial.dead.iter().cloned().collect();
         inner.round = Some(RadioRound::restore(initial));
@@ -450,9 +491,12 @@ impl Radio {
             return;
         };
         let settings = AppSettings::load();
-        let blacklist = if inner.configured {
-            LibraryDb::open()
-                .and_then(|db| db.list_blacklist())
+        let blacklist_rows = if let Some(storage) = &inner.storage {
+            storage.db.list_blacklist()
+        } else if inner.configured {
+            LibraryDb::open().and_then(|db| db.list_blacklist())
+        } else { Ok(Vec::new()) };
+        let blacklist = blacklist_rows
                 .map(|rows| {
                     Blacklist::from_rows(
                         &rows
@@ -461,10 +505,7 @@ impl Radio {
                             .collect::<Vec<_>>(),
                     )
                 })
-                .unwrap_or_default()
-        } else {
-            Blacklist::default()
-        };
+                .unwrap_or_default();
         let decoders = Arc::new(DecoderRegistry::new(settings.decoder_settings()));
         let audio_exts = decoders.audio_extensions();
         let nested_cache = kog_audio::archive::nested_cache_dir();
@@ -536,23 +577,17 @@ impl Radio {
             }
         }
         inner.round = Some(round);
-        if let Some(path) = inner.save_path.clone() {
-            if let Some(round) = inner.round.as_ref() {
-                round.save(&path, &root, &inner.dead);
-            }
-        }
+        Self::save(inner);
     }
 
-    /// Persist the in-memory round. Best-effort, like the desktop.
-    fn save(inner: &Inner) {
-        let (Some(path), Some(root), Some(round)) = (
-            inner.save_path.clone(),
-            inner.root.clone(),
-            inner.round.as_ref(),
-        ) else {
-            return;
-        };
-        round.save(&path, &root, &inner.dead);
+    fn save(inner: &mut Inner) {
+        let (Some(root), Some(round)) = (inner.root.as_ref(), inner.round.as_ref()) else { return; };
+        if let Some(storage) = &mut inner.storage {
+            let value = round.checkpoint(root, &inner.dead).to_string();
+            if let Err(error) = storage.cursor.save(&storage.db, &value) { eprintln!("Cannot save radio state: {error}"); }
+        } else if !inner.configured {
+            if let Some(path) = &inner.save_path { round.save(path, root, &inner.dead); }
+        }
     }
 
     /// Write the on/off flag to the desktop's setting, so both clients agree.
@@ -573,11 +608,12 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// The round root: the persisted root when it is a real directory inside the
 /// library, otherwise the library root.
 fn resolve_root(save_path: Option<&Path>, library_root: Option<&Path>) -> Option<PathBuf> {
+    resolve_stored_root(save_path.and_then(persisted_root), library_root)
+}
+
+fn resolve_stored_root(persisted: Option<String>, library_root: Option<&Path>) -> Option<PathBuf> {
     let fallback = library_root.map(Path::to_path_buf);
-    let Some(save_path) = save_path else {
-        return fallback;
-    };
-    let Some(persisted) = persisted_root(save_path) else {
+    let Some(persisted) = persisted else {
         return fallback;
     };
     let candidate = PathBuf::from(persisted);
@@ -913,6 +949,26 @@ mod tests {
     use super::*;
     use axum::http::StatusCode;
     use std::sync::Arc;
+
+    #[test]
+    fn sqlite_radio_imports_legacy_once_and_rejects_stale_rounds() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().to_owned();
+        let legacy = root.join("radio.json");
+        let database = root.join("kog.db");
+        RadioRound::new(42).save(&legacy, &root, &HashSet::new());
+        let original = std::fs::read(&legacy).unwrap();
+        let first = Radio::persistent(Some(root.clone()), LibraryDb::open_at(&database).unwrap(), "same", Some(legacy.clone()), false);
+        let stale = Radio::persistent(Some(root.clone()), LibraryDb::open_at(&database).unwrap(), "same", Some(legacy.clone()), false);
+        for (radio, seed) in [(&first, 44), (&stale, 99)] {
+            let mut inner = lock(&radio.inner);
+            inner.round = Some(RadioRound::new(seed));
+            Radio::save(&mut inner);
+        }
+        let restart = Radio::persistent(Some(root), LibraryDb::open_at(&database).unwrap(), "same", Some(legacy.clone()), false);
+        assert_eq!(lock(&restart.inner).storage.as_ref().unwrap().value().unwrap()["seed"], 44);
+        assert_eq!(std::fs::read(legacy).unwrap(), original);
+    }
 
     /// A pick whose probe never returns is declared unplayable by deadline,
     /// not by eternity: one miniusf in the wild hangs the native probe

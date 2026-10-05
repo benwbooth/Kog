@@ -3,7 +3,6 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import Qt.labs.settings
 
 // Browse another Kog instance's library and queue its streams.
 //
@@ -134,7 +133,8 @@ Window {
     visible: false
     color: palette.window
 
-    Settings {
+    SqliteSettings {
+        app: root.app
         id: connection
         category: "RemoteServer"
         property string serverUrl: ""
@@ -144,6 +144,7 @@ Window {
         property string authMode: "token"
         property string codec: "aac"
         property string tlsMode: "off"
+        values: ({serverUrl, token, username, password, authMode, codec, tlsMode})
     }
 
     ColumnLayout {

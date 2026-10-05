@@ -714,7 +714,7 @@ dependencies = [
 
 [[package]]
 name = "kog-playback-policy"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -722,7 +722,7 @@ dependencies = [
 
 [[package]]
 name = "kog-web"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "console_error_panic_hook",
  "gloo-net 0.7.0",

@@ -1,6 +1,9 @@
 #[cxx::bridge]
 mod ffi {
     unsafe extern "C++" {
+        include!("kog/kog_settings_bridge.h");
+        #[cxx_name = "kogConfigureSettings"]
+        fn configure_settings(port: fn(key: &QString, value: &QString, write: bool) -> QString);
         include!("kog/kog_tree_archive_bridge.h");
         #[cxx_name = "kogConfigureArchiveDecoder"]
         fn configure_archive_decoder(decoder: fn(bytes: &[u8]) -> String);
@@ -52,6 +55,7 @@ pub struct DesktopApplication(cxx::UniquePtr<ffi::QApplication>);
 
 impl DesktopApplication {
     pub fn new() -> Self {
+        ffi::configure_settings(settings_port);
         ffi::configure_archive_decoder(kog_core::text_encoding::decode);
         Self(ffi::application_new())
     }
@@ -73,6 +77,37 @@ impl DesktopApplication {
             .as_mut()
             .map(ffi::application_exec)
             .unwrap_or_default()
+    }
+}
+
+fn settings_port(
+    key: &cxx_qt_lib::QString,
+    value: &cxx_qt_lib::QString,
+    write: bool,
+) -> cxx_qt_lib::QString {
+    let result = (|| {
+        let db = kog_core::db::LibraryDb::open()?;
+        let key = key.to_string();
+        let value = value.to_string();
+        if write {
+            db.put_state("preferences", &key, &value)?;
+            return Ok(value);
+        }
+        if let Some(saved) = db.load_state("preferences", &key)? {
+            return Ok(saved.value);
+        }
+        if value.is_empty() {
+            return Ok(String::new());
+        }
+        db.import_state("preferences", &key, &value)
+            .map(|saved| saved.value)
+    })();
+    match result {
+        Ok(value) => cxx_qt_lib::QString::from(value),
+        Err(error) => {
+            eprintln!("Kog settings: {error}");
+            cxx_qt_lib::QString::default()
+        }
     }
 }
 

@@ -24,6 +24,7 @@ internal object NativeAudio {
     external fun nativePolicy(input: String): String
     external fun nativeSession(input: String): String
     external fun nativeLibrary(input: String): String
+    external fun nativePreferences(input: String): String
     external fun nativeOpen(path: String, subsong: Int, midiEngine: String,
         soundfontPath: String, sc55RomPath: String, mt32RomPath: String): Long
     external fun nativeDurationMs(handle: Long): Long
@@ -68,7 +69,7 @@ internal class NativePcmDataSource(private val context: Context) : BaseDataSourc
             .appendQueryParameter("archive", file.absolutePath).appendQueryParameter("entry", entry)
             .appendQueryParameter("directory", "0").build().toString()
         val fragment = uri.getQueryParameter("fragment")?.toIntOrNull() ?: -1
-        val preferences = context.getSharedPreferences("kog", Context.MODE_PRIVATE)
+        val preferences = KogPreferences(context)
         val opened = NativeAudio.nativeOpen(path, fragment,
             preferences.getString("local_midi_engine", "opl3windows") ?: "opl3windows",
             preferences.getString("midi_soundfont", "").orEmpty(),
