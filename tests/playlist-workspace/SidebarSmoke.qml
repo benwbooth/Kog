@@ -49,6 +49,12 @@ Item {
             const row = smoke.find(w.contentItem, "sidebarPlaylist_" + smoke.sourceId)
             if (!row || row.entryCount !== 3) return
             const bar = smoke.find(w.contentItem, "playlistTabBar")
+            smoke.check(bar && bar.count === w.playlistWorkspace.tabs.length, "visible tab count " + (bar ? bar.count : "missing") + " differs from workspace " + w.playlistWorkspace.tabs.length + " at stage " + smoke.stage)
+            smoke.check(bar.visible && bar.height > 20, "tab bar disappeared")
+            for (let i = 0; i < bar.count; ++i) {
+                const tab = bar.itemAt(i)
+                smoke.check(tab.visible && tab.width > 20 && tab.height > 20, "tab button disappeared")
+            }
             if (smoke.stage === 1) {
                 row.selectedWithModifiers(Qt.NoModifier)
                 smoke.check(w.playlistWorkspace.active === "queue", "single click changed the pane")
@@ -82,6 +88,9 @@ Item {
                 w.appendPlaylists(w.orderedSelectedPlaylistIds(), w.playlistWorkspace.active)
                 smoke.check(w.playlistWorkspace.entries.length === 6, "context append routing")
                 smoke.send({op:"undo"}); smoke.check(w.playlistWorkspace.entries.length === 3, "context append undo")
+                smoke.stage=3
+            } else if (smoke.stage === 3) {
+                smoke.check(bar.count === 4, "opening Favorites should retain all tabs")
                 smoke.check(JSON.parse(app.create_playlist("Sidebar routing complete")).ok, "completion marker")
                 Qt.quit()
             }

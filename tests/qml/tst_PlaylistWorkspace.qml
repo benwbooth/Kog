@@ -11,6 +11,7 @@ TestCase {
     visible: true
     when: windowShown
     SystemPalette { id: theme }
+    property bool applyClose: false
     property var state: ({active:"local:1", tabs:[{key:"queue",name:"Play Queue"},{key:"local:1",name:"test"}],
         entries:[{path:"one.flac"},{path:"two.flac"}], selected:[],
         actions:{append:true,queue:true,remove:false,save:false,select_all:true}})
@@ -30,7 +31,13 @@ TestCase {
         function workspace_command(value) {
             const command = JSON.parse(value)
             commands.push(command)
-            if (command.op === "focus") test.state = Object.assign({}, test.state, {active:command.key})
+            if (command.op === "focus") test.state = JSON.parse(JSON.stringify(Object.assign({}, test.state, {active:command.key})))
+            if (command.op === "close" && test.applyClose) {
+                const next = JSON.parse(JSON.stringify(test.state))
+                next.tabs = next.tabs.filter(entry => entry.key !== command.key)
+                if (next.active === command.key) next.active = "queue"
+                test.state = next
+            }
             if (command.op === "selection") test.state = Object.assign({}, test.state, {selected:[command.command.index]})
         }
         function workspace_track_value_at(row, column) {
@@ -59,6 +66,21 @@ TestCase {
                 Layout.fillWidth: true; Layout.fillHeight: true
                 app: backend; workspaceState: test.state; theme: theme
             }
+        }
+    }
+    Kog.PlaylistSidebarRow {
+        id: source
+        x: 20; y: 250; width: 300; height: 30
+        visible: false
+        pid: 2; name: "Playlist " + pid; entryCount: 1
+        theme: theme
+        onOpened: {
+            const next = JSON.parse(JSON.stringify(test.state))
+            const key = "local:" + pid
+            if (!next.tabs.some(entry => entry.key === key))
+                next.tabs.push({key:key,name:name})
+            next.active = key
+            test.state = next
         }
     }
     function test_native_labels_and_shared_table() {
@@ -109,5 +131,63 @@ TestCase {
         tryCompare(tabs, "visible", false)
         compare(tabs.implicitHeight, 0)
         wait(0)
+    }
+    function test_repeated_double_click_close_and_reopen() {
+        const native = findChild(tabs, "playlistTabBar")
+        test.state = {active:"queue",tabs:[{key:"queue",name:"Play Queue"}],entries:[],selected:[],actions:{}}
+        source.visible = true
+        test.applyClose = true
+        for (let pid = 2; pid <= 4; ++pid) {
+            source.pid = pid
+            mouseDoubleClickSequence(source, 80, 15)
+            tryCompare(native, "count", pid)
+            compare(native.currentIndex, pid - 1)
+            verify(tabs.visible && tabs.height > 20)
+            const added = native.itemAt(pid - 1)
+            mouseDoubleClickSequence(source, 80, 15)
+            compare(native.count, pid, "Reopening the playlist must focus its existing tab")
+            compare(native.itemAt(pid - 1), added, "Snapshot refresh must retain the native control")
+        }
+        const retained = native.itemAt(3)
+        const close = findChild(native.itemAt(2), "closePlaylistTab")
+        mouseClick(close, close.width / 2, close.height / 2)
+        tryCompare(native, "count", 3)
+        compare(native.itemAt(2), retained, "Closing a middle tab must keep neighboring controls")
+        compare(test.state.active, "local:4")
+        source.pid = 3
+        mouseDoubleClickSequence(source, 80, 15)
+        tryCompare(native, "count", 4)
+        compare(native.itemAt(2), retained)
+        compare(native.currentIndex, 3)
+        const renamed = JSON.parse(JSON.stringify(test.state))
+        renamed.tabs[3].name = "Renamed playlist"
+        renamed.tabs[3].dirty = true
+        test.state = renamed
+        compare(native.itemAt(3).text, "Renamed playlist •")
+        source.visible = false
+        test.applyClose = false
+    }
+    function test_snapshot_replacement_keeps_tabs_visible() {
+        const native = findChild(tabs, "playlistTabBar")
+        const entries = [{key:"queue",name:"Play Queue"}]
+        for (let index = 1; index <= 6; ++index) {
+            entries.push({key:"local:" + index,name:"Playlist " + index})
+            // Native workspace_json returns a fresh array on every revision.
+            test.state = {active:"local:" + index,tabs:JSON.parse(JSON.stringify(entries)),entries:[],selected:[],actions:{}}
+            wait(20)
+            tryCompare(native, "count", entries.length)
+            verify(tabs.visible && tabs.height > 20, "New tab collapsed the tab strip: " + tabs.height)
+            for (let tabIndex = 0; tabIndex < native.count; ++tabIndex) {
+                const item = native.itemAt(tabIndex)
+                verify(item.visible && item.width > 20 && item.height > 20)
+            }
+            for (let refresh = 0; refresh < 3; ++refresh) {
+                test.state = JSON.parse(JSON.stringify(test.state))
+                tryCompare(native, "count", entries.length)
+                wait(20)
+                verify(tabs.height > 20, "Snapshot refresh collapsed the tab strip: " + tabs.height)
+            }
+        }
+        grabImage(panel).save("/tmp/kog-playlist-refreshed-tabs.png")
     }
 }

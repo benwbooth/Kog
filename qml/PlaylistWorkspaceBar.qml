@@ -20,9 +20,42 @@ Item {
             const item = tabs.itemAt(index)
             const local = from.mapToItem(item, x, y)
             if (local.x >= 0 && local.x < item.width && local.y >= 0 && local.y < item.height)
-                return item.modelData.key
+                return item.tabKey
         }
         return ""
+    }
+    // Workspace snapshots replace their array on every revision. Reconcile
+    // native controls by key so TabBar keeps ownership of existing buttons.
+    function syncTabs() {
+        if (!tabs) return
+        for (let index = 0; index < entries.length; ++index) {
+            const entry = entries[index]
+            let existing = index
+            while (existing < tabs.count && tabs.itemAt(existing).tabKey !== entry.key)
+                ++existing
+            if (existing === tabs.count)
+                tabs.insertItem(index, tabButton.createObject(bar, {
+                    tabKey: entry.key, title: entry.name, dirty: !!entry.dirty
+                }))
+            else {
+                if (existing !== index) tabs.moveItem(existing, index)
+                const item = tabs.itemAt(index)
+                item.title = entry.name
+                item.dirty = !!entry.dirty
+            }
+        }
+        while (tabs.count > entries.length) {
+            const item = tabs.takeItem(tabs.count - 1)
+            item.destroy()
+        }
+    }
+    onEntriesChanged: syncTabs()
+    Component.onCompleted: syncTabs()
+    TabButton {
+        id: tabMetrics
+        visible: false
+        text: qsTr("Play Queue")
+        font: tabs.font
     }
     TabBar {
         id: tabs
@@ -30,11 +63,11 @@ Item {
         anchors.fill: parent
         clip: true
         currentIndex: Math.max(0, bar.entries.findIndex(tab => tab.key === bar.workspaceState.active))
-        // KDE's default ListView dereferences item zero while a Repeater is
-        // being rebuilt. Keep its native buttons but allow an empty model.
+        // Keep native styling with a stable height even while tabs are added
+        // or removed; KDE's default view assumes item zero already exists.
         contentItem: ListView {
             implicitWidth: contentWidth
-            implicitHeight: tabs.count > 0 && tabs.itemAt(0) ? tabs.itemAt(0).implicitHeight : 0
+            implicitHeight: tabMetrics.implicitHeight
             model: tabs.contentModel
             currentIndex: tabs.currentIndex
             orientation: ListView.Horizontal
@@ -55,47 +88,49 @@ Item {
                     && entry.key !== bar.workspaceState.active)
                 bar.send({op: "focus", key: entry.key})
         })
-        Repeater {
-            model: bar.entries
-            TabButton {
-                id: tab
-                required property var modelData
-                text: modelData.name + (modelData.dirty ? " •" : "")
-                // Keep the style's own label. KDE paints its text in the
-                // background, so replacing contentItem draws it twice.
-                width: implicitWidth + (closeButton.visible ? closeButton.width : 0)
-                rightPadding: leftPadding + (closeButton.visible ? closeButton.width + 6 : 0)
-                onClicked: bar.send({op: "focus", key: modelData.key})
-                Rectangle {
-                    anchors.fill: parent
-                    color: "transparent"
-                    border.width: 2
-                    border.color: tab.palette.highlight
-                    visible: bar.appendTarget === tab.modelData.key
-                    radius: 3
-                }
-                Accessible.name: text + (modelData.dirty ? qsTr("; unsaved changes") : "")
+    }
+    Component {
+        id: tabButton
+        TabButton {
+            id: tab
+            required property string tabKey
+            required property string title
+            required property bool dirty
+            text: title + (dirty ? " •" : "")
+            // Keep the style's own label. KDE paints its text in the
+            // background, so replacing contentItem draws it twice.
+            width: implicitWidth + (tabKey !== "queue" ? closeButton.width : 0)
+            rightPadding: leftPadding + (tabKey !== "queue" ? closeButton.width + 6 : 0)
+            onClicked: bar.send({op: "focus", key: tab.tabKey})
+            Rectangle {
+                anchors.fill: parent
+                color: "transparent"
+                border.width: 2
+                border.color: tab.palette.highlight
+                visible: bar.appendTarget === tab.tabKey
+                radius: 3
+            }
+            Accessible.name: text + (tab.dirty ? qsTr("; unsaved changes") : "")
+            ToolTip.visible: hovered
+            ToolTip.delay: 700
+            ToolTip.text: text
+            ToolButton {
+                id: closeButton
+                objectName: "closePlaylistTab"
+                visible: tab.tabKey !== "queue"
+                anchors.right: parent.right
+                anchors.rightMargin: 5
+                anchors.verticalCenter: parent.verticalCenter
+                width: 24; height: 24
+                text: "×"
+                font.pixelSize: 16
+                display: AbstractButton.TextOnly
+                flat: true
+                Accessible.name: qsTr("Close %1").arg(tab.title)
                 ToolTip.visible: hovered
                 ToolTip.delay: 700
-                ToolTip.text: text
-                ToolButton {
-                    id: closeButton
-                    objectName: "closePlaylistTab"
-                    visible: tab.modelData.key !== "queue"
-                    anchors.right: parent.right
-                    anchors.rightMargin: 5
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: 24; height: 24
-                    text: "×"
-                    font.pixelSize: 16
-                    display: AbstractButton.TextOnly
-                    flat: true
-                    Accessible.name: qsTr("Close %1").arg(tab.modelData.name)
-                    ToolTip.visible: hovered
-                    ToolTip.delay: 700
-                    ToolTip.text: Accessible.name
-                    onClicked: bar.send({op: "close", key: tab.modelData.key})
-                }
+                ToolTip.text: Accessible.name
+                onClicked: bar.send({op: "close", key: tab.tabKey})
             }
         }
     }

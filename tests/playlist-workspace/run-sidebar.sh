@@ -20,7 +20,7 @@ source=source[:i]+'\n    Checks.SidebarSmoke { window: root; app: appController;
 (out/'qml/Main.qml').write_text(source)
 PREPARE
 XDG_CONFIG_HOME="$test_dir/config" XDG_DATA_HOME="$test_dir/data" XDG_CACHE_HOME="$test_dir/cache" \
-XDG_RUNTIME_DIR="$test_dir/runtime" XDG_CURRENT_DESKTOP= QT_QUICK_CONTROLS_STYLE=Basic QT_QPA_PLATFORM=offscreen QT_QPA_PLATFORMTHEME=basic QT_QUICK_BACKEND=software \
+XDG_RUNTIME_DIR="$test_dir/runtime" XDG_CURRENT_DESKTOP= QT_QUICK_CONTROLS_STYLE="${QT_QUICK_CONTROLS_STYLE:-Basic}" QT_QPA_PLATFORM=offscreen QT_QPA_PLATFORMTHEME="${QT_QPA_PLATFORMTHEME:-basic}" QT_QUICK_BACKEND=software \
 KOG_QML_DIR="$test_dir/qml" QTWEBENGINE_DISABLE_SANDBOX=1 unshare --user --map-root-user dbus-run-session -- timeout 30 "$repo_dir/target/debug/kog" --gui > "$test_dir/run.log" 2>&1
 python3 - "$test_dir/data/kog/kog.db" <<'CHECK'
 import json,sqlite3,sys
