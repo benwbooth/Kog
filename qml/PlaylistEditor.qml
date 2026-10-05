@@ -65,9 +65,6 @@ FocusScope {
     }
     onSearchQueryChanged: if (visible) send({op: "selection", command: {op: "clear"}})
     Keys.onDeletePressed: send({op: "remove"})
-    Shortcut { sequences: [StandardKey.Save]; enabled: editor.visible; onActivated: editor.send({op: "save"}) }
-    Shortcut { sequences: [StandardKey.Undo]; enabled: editor.visible; onActivated: editor.send({op: "undo"}) }
-    Shortcut { sequences: [StandardKey.Redo]; enabled: editor.visible; onActivated: editor.send({op: "redo"}) }
 
     // The same row and column controls as the play queue, backed by draft
     // metadata. Editing this model never changes the playback queue.

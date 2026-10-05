@@ -550,6 +550,316 @@
         "snapshot.current": null,
         "snapshot.transport": "stopped"
       }
+    },
+    {
+      "session": "edit-menu",
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "open",
+          "key": "local:edit",
+          "scope": "local",
+          "playlist_id": 21,
+          "name": "Edit menu",
+          "readonly": false
+        }
+      },
+      "expect": {
+        "snapshot.workspace.active": "local:edit"
+      },
+      "capture": {
+        "edit_load": "effects.1.token"
+      }
+    },
+    {
+      "session": "edit-menu",
+      "command": {
+        "op": "complete",
+        "token": "@edit_load",
+        "result": {
+          "kind": "loaded",
+          "entries": [
+            {
+              "kind": "local",
+              "path": "/menu-a.wav",
+              "title": "Menu A"
+            },
+            {
+              "kind": "local",
+              "path": "/menu-b.wav",
+              "title": "Menu B"
+            },
+            {
+              "kind": "local",
+              "path": "/menu-a.wav",
+              "title": "Menu A"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "snapshot.workspace.actions.clear": true
+      }
+    },
+    {
+      "session": "edit-menu",
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "select",
+          "indices": [
+            0
+          ]
+        }
+      },
+      "expect": {}
+    },
+    {
+      "session": "edit-menu",
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "nudge",
+          "delta": 1
+        }
+      },
+      "expect": {
+        "snapshot.workspace.selected": [
+          1
+        ],
+        "snapshot.workspace.entries.0.title": "Menu B"
+      }
+    },
+    {
+      "session": "edit-menu",
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "clear"
+        }
+      },
+      "expect": {
+        "snapshot.workspace.entries": [],
+        "snapshot.workspace.actions.undo": true,
+        "snapshot.workspace.actions.clear": false
+      }
+    },
+    {
+      "session": "edit-menu",
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "undo"
+        }
+      },
+      "expect": {
+        "snapshot.workspace.selected": [
+          1
+        ],
+        "snapshot.workspace.entries.0.title": "Menu B",
+        "snapshot.workspace.actions.redo": true
+      }
+    },
+    {
+      "session": "edit-menu",
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "selection",
+          "command": {
+            "op": "all"
+          }
+        }
+      },
+      "expect": {}
+    },
+    {
+      "session": "edit-menu",
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "queue",
+          "action": "add_to_queue"
+        }
+      },
+      "expect": {},
+      "capture": {
+        "edit_expand": "effects.1.token"
+      }
+    },
+    {
+      "session": "edit-menu",
+      "command": {
+        "op": "complete",
+        "token": "@edit_expand",
+        "result": {
+          "kind": "expanded",
+          "tracks": [
+            {
+              "kind": "local",
+              "path": "/menu-b.wav",
+              "title": "Menu B"
+            },
+            {
+              "kind": "local",
+              "path": "/menu-a.wav",
+              "title": "Menu A"
+            },
+            {
+              "kind": "local",
+              "path": "/menu-a.wav",
+              "title": "Menu A"
+            }
+          ]
+        }
+      },
+      "expect": {}
+    },
+    {
+      "session": "edit-menu",
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "focus",
+          "key": "queue"
+        }
+      },
+      "expect": {
+        "snapshot.workspace.actions.undo": true,
+        "snapshot.workspace.actions.select_all": true
+      }
+    },
+    {
+      "session": "edit-menu",
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "undo"
+        }
+      },
+      "expect": {
+        "snapshot.queue": [],
+        "snapshot.workspace.actions.redo": true
+      }
+    },
+    {
+      "session": "edit-menu",
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "redo"
+        }
+      },
+      "expect": {},
+      "capture": {
+        "edit_redo": "effects.1.token"
+      }
+    },
+    {
+      "session": "edit-menu",
+      "command": {
+        "op": "complete",
+        "token": "@edit_redo",
+        "result": {
+          "kind": "expanded",
+          "tracks": [
+            {
+              "kind": "local",
+              "path": "/menu-b.wav",
+              "title": "Menu B"
+            },
+            {
+              "kind": "local",
+              "path": "/menu-a.wav",
+              "title": "Menu A"
+            },
+            {
+              "kind": "local",
+              "path": "/menu-a.wav",
+              "title": "Menu A"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "snapshot.queue.0.title": "Menu B"
+      }
+    },
+    {
+      "session": "edit-menu",
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "select",
+          "indices": [
+            0
+          ]
+        }
+      },
+      "expect": {}
+    },
+    {
+      "session": "edit-menu",
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "nudge",
+          "delta": 1
+        }
+      },
+      "expect": {
+        "snapshot.workspace.selected": [
+          1
+        ],
+        "snapshot.queue.0.title": "Menu A"
+      }
+    },
+    {
+      "session": "edit-menu",
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "selection",
+          "command": {
+            "op": "all"
+          }
+        }
+      },
+      "expect": {
+        "snapshot.workspace.selected": [
+          0,
+          1,
+          2
+        ],
+        "snapshot.workspace.actions.move_up": false
+      }
+    },
+    {
+      "session": "edit-menu",
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "remove"
+        }
+      },
+      "expect": {
+        "snapshot.queue": [],
+        "snapshot.workspace.actions.remove": false,
+        "snapshot.workspace.actions.clear": false
+      }
+    },
+    {
+      "session": "edit-menu",
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "focus",
+          "key": "local:edit"
+        }
+      },
+      "expect": {
+        "snapshot.workspace.entries.0.title": "Menu B"
+      }
     }
   ]
 }

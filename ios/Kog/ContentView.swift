@@ -38,6 +38,7 @@ struct ContentView: View {
     @State private var showURL = false
     @State private var urlText = ""
     @State private var showAbout = false
+    @State private var confirmEditClear = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -151,6 +152,9 @@ struct ContentView: View {
         .alert("Kog", isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.error = nil } })) {
             Button("OK") { store.error = nil }
         } message: { Text(store.error ?? "") }
+        .confirmationDialog("Clear all tracks from the queue?", isPresented: $confirmEditClear, titleVisibility: .visible) {
+            Button("Clear Play Queue", role: .destructive) { store.workspaceCommand(["op": "clear"]) }
+        }
     }
 
     private var header: some View {
@@ -166,6 +170,13 @@ struct ContentView: View {
                 Button("Add URL…", systemImage: "link") { showURL = true }
                 Button("Import files…", systemImage: "square.and.arrow.down") { showFilePicker = true }
                 Button("Import folder…", systemImage: "folder.badge.plus") { showFolderPicker = true }
+                Divider()
+                Menu("Edit", systemImage: "pencil") {
+                    PlaylistEditCommands {
+                        if store.workspace.active == "queue" { confirmEditClear = true }
+                        else { store.workspaceCommand(["op": "clear"]) }
+                    }
+                }.disabled(tab != .queue)
                 Divider()
                 Button(store.playing ? "Pause" : "Play", systemImage: store.playing ? "pause.fill" : "play.fill") { store.togglePlayback() }
                 Button("Stop", systemImage: "stop.fill") { store.stop() }

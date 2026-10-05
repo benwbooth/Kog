@@ -354,6 +354,7 @@ enum VisualizerMode {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MenuPage {
     Main,
+    Edit,
     View,
     Playback,
     Preferences,
@@ -383,6 +384,7 @@ impl MenuPage {
     fn title(self) -> &'static str {
         match self {
             Self::Main => "Kog",
+            Self::Edit => "Edit",
             Self::View => "View",
             Self::Playback => "Playback",
             Self::Preferences => "Preferences",
@@ -401,6 +403,7 @@ impl MenuPage {
     fn labels(self) -> &'static [&'static str] {
         match self {
             Self::Main => &MAIN_MENU,
+            Self::Edit => &EDIT_MENU,
             Self::View => &VIEW_MENU,
             Self::Playback => &PLAYBACK_MENU,
             Self::Preferences => &PREFERENCES_MENU,
@@ -419,16 +422,15 @@ impl MenuPage {
     }
 }
 
-const MAIN_MENU_SHORTCUTS: [Option<char>; 16] = [
+const MAIN_MENU_SHORTCUTS: [Option<char>; 15] = [
     Some('A'),
     Some('U'),
     Some('M'),
     None,
     Some('S'),
-    Some('E'),
-    Some('R'),
-    Some('C'),
+    Some('L'),
     None,
+    Some('E'),
     Some('V'),
     Some('B'),
     Some('P'),
@@ -2317,11 +2319,16 @@ impl Ui {
     }
 
     fn activate_menu(&mut self, index: usize, size: (usize, usize)) {
-        if self.menu_page.labels().get(index) == Some(&"") {
+        if self.menu_page.labels().get(index) == Some(&"")
+            || !self.menu_item_enabled(self.menu_page, index) {
             return;
         }
         let page = self.menu_page;
         self.menu_open = false;
+        if page == MenuPage::Edit {
+            self.activate_edit_menu(index);
+            return;
+        }
         if page == MenuPage::ColumnContext && index == 12 {
             if let Some(column) = self.context_column
                 && self
@@ -2351,13 +2358,12 @@ impl Ui {
             ),
             (MenuPage::Main, 4) => self.begin_prompt(PromptKind::SavePlaylist, String::new()),
             (MenuPage::Main, 5) => self.begin_prompt(PromptKind::SaveSelection, String::new()),
-            (MenuPage::Main, 6) => self.remove_selected(),
-            (MenuPage::Main, 7) => self.clear_playlist(),
-            (MenuPage::Main, 9) => self.open_child_menu(MenuPage::View, size),
-            (MenuPage::Main, 10) => self.open_child_menu(MenuPage::Playback, size),
-            (MenuPage::Main, 11) => self.open_child_menu(MenuPage::Preferences, size),
-            (MenuPage::Main, 13) => self.open_child_menu(MenuPage::Remote, size),
-            (MenuPage::Main, 14) => {
+            (MenuPage::Main, 7) => self.open_child_menu(MenuPage::Edit, size),
+            (MenuPage::Main, 8) => self.open_child_menu(MenuPage::View, size),
+            (MenuPage::Main, 9) => self.open_child_menu(MenuPage::Playback, size),
+            (MenuPage::Main, 10) => self.open_child_menu(MenuPage::Preferences, size),
+            (MenuPage::Main, 12) => self.open_child_menu(MenuPage::Remote, size),
+            (MenuPage::Main, 13) => {
                 self.info_modal = false;
                 self.artwork_modal = false;
                 self.modal = Some(format!(
@@ -2368,7 +2374,7 @@ impl Ui {
                         .map_or_else(|| "None".to_owned(), |p| p.display().to_string())
                 ))
             }
-            (MenuPage::Main, 15) => self.request_exit(),
+            (MenuPage::Main, 14) => self.request_exit(),
             (MenuPage::View, 0) => {
                 self.sidebar_visible = !self.sidebar_visible;
                 if !self.sidebar_visible {
@@ -9267,9 +9273,14 @@ impl Ui {
                     true,
                 );
                 for (row, index) in (layer.offset..labels.len()).take(page).enumerate() {
-                    let label = labels[index];
-                    let selected = index == layer.selected;
-                    let surface = if selected {
+                    let label = if layer.page == MenuPage::Edit && !self.is_draft() {
+                        match index { 0 => "Undo Append", 1 => "Redo Append", _ => labels[index] }
+                    } else { labels[index] };
+                    let enabled = self.menu_item_enabled(layer.page, index);
+                    let selected = index == layer.selected && enabled;
+                    let surface = if !enabled && !label.is_empty() {
+                        Surface::Muted
+                    } else if selected {
                         Surface::MenuSelected
                     } else if label.is_empty() {
                         Surface::MenuSeparator
@@ -10325,16 +10336,15 @@ fn glyph(entry: &StoredEntry) -> &'static str {
     }
 }
 
-const MAIN_MENU: [&str; 16] = [
+const MAIN_MENU: [&str; 15] = [
     "Add Files or Folder…",
     "Add URL…",
     "Choose Music Folder…",
     "",
     "Save Current Playlist…",
     "Save Selection As…",
-    "Remove Selected",
-    "Clear Playlist",
     "",
+    "Edit                     ›",
     "View                     ›",
     "Playback                 ›",
     "Preferences              ›",
@@ -10342,6 +10352,11 @@ const MAIN_MENU: [&str; 16] = [
     "Connect to Server        ›",
     "About Kog",
     "Quit",
+];
+const EDIT_MENU: [&str; 16] = [
+    "Undo", "Redo", "", "Select All", "Clear Selection", "Remove Selected",
+    "Clear Playlist", "Move Up", "Move Down", "", "Save Changes",
+    "Reload Saved Playlist", "Add Play Queue", "Add Queue Selection", "", "Edit Tags…",
 ];
 const REMOTE_MENU: [&str; 9] = [
     "Server Address…",
@@ -12622,6 +12637,7 @@ mod tests {
     fn every_menu_item_has_a_unique_visible_mnemonic() {
         for page in [
             MenuPage::Main,
+            MenuPage::Edit,
             MenuPage::View,
             MenuPage::Playback,
             MenuPage::Preferences,
@@ -12659,8 +12675,9 @@ mod tests {
                 }
             }
         }
-        assert_eq!(menu_shortcut_index(MenuPage::Main, 'v'), Some(9));
-        assert_eq!(menu_shortcut_index(MenuPage::Main, 'p'), Some(11));
+        assert_eq!(menu_shortcut_index(MenuPage::Main, 'e'), Some(7));
+        assert_eq!(menu_shortcut_index(MenuPage::Main, 'v'), Some(8));
+        assert_eq!(menu_shortcut_index(MenuPage::Main, 'p'), Some(10));
         assert_eq!(MenuPage::Columns.labels().len(), 12);
         assert_eq!(MenuPage::ColumnContext.labels()[12], "Hide This Column");
         assert_eq!(

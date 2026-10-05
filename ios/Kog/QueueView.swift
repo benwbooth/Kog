@@ -19,6 +19,7 @@ struct QueueView: View {
             if store.workspace.active == "queue" { queueContent }
             else { PlaylistWorkspaceEditor(queueSelection: selected.sorted().compactMap { store.queue.indices.contains($0) ? store.queue[$0] : nil }) }
         }
+        .onChange(of: store.queueSelection) { _, selection in if !selection.isEmpty { selecting = true } }
     }
     private var queueContent: some View {
         VStack(spacing: 0) {
@@ -38,23 +39,15 @@ struct QueueView: View {
                 Button(selecting ? "Done" : "Select") { selecting.toggle(); store.selectQueue(["op": "clear"]) }.frame(minHeight: 44)
                 if !selecting && store.queueFilter.isEmpty { EditButton().frame(minHeight: 44) }
                 Menu {
-                    if selecting {
-                        Button("Select all results", systemImage: "checkmark.circle") { store.selectQueue(["op": "set", "indices": rows, "anchor": rows.first.map { $0 as Any } ?? NSNull()]) }
-                        Button("Add selected to playlist…", systemImage: "text.badge.plus") { playlistTracks = selected.sorted().map { store.queue[$0] } }.disabled(selected.isEmpty)
-                        Button("Remove selected", systemImage: "trash", role: .destructive) { store.remove(IndexSet(selected)); store.selectQueue(["op": "clear"]) }
-                            .disabled(selected.isEmpty)
+                    Menu("Edit", systemImage: "pencil") {
+                        PlaylistEditCommands { confirmClear = true }
                     }
-                    Menu("Sort", systemImage: "arrow.up.arrow.down") {
-                        ForEach(TrackSort.all) { field in
-                            Button { store.sortQueue(field.key) } label: {
-                                Label(field.label, systemImage: store.sortKey == field.key ? (store.sortDescending ? "arrow.down" : "arrow.up") : "arrow.up.arrow.down")
-                            }
-                        }
+                    if selecting {
+                        Button("Add selected to playlist…", systemImage: "text.badge.plus") { playlistTracks = selected.sorted().map { store.queue[$0] } }.disabled(selected.isEmpty)
                     }
                     Button("Save queue as playlist…", systemImage: "square.and.arrow.down") {
                         saveOnDevice = store.queue.allSatisfy(\.isDevice); showSave = true
                     }.disabled(store.queue.isEmpty)
-                    Button("Clear queue", systemImage: "trash", role: .destructive) { confirmClear = true }.disabled(store.queue.isEmpty)
                 } label: { Image(systemName: "ellipsis.circle").frame(width: 44, height: 44) }.accessibilityLabel("Queue actions")
             }.padding(.horizontal, 12).background(Palette.panel)
             if store.queue.isEmpty {

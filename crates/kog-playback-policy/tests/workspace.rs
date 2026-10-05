@@ -36,6 +36,49 @@ fn loaded() -> Workspace {
 }
 
 #[test]
+fn clearing_a_draft_is_one_undoable_edit_and_readonly_lists_reject_it() {
+    let mut w = loaded();
+    w.apply(C::Select {
+        indices: vec![0, 2],
+    })
+    .unwrap();
+    let before = serde_json::to_value(&w).unwrap();
+    w.apply_ui(C::Clear, 0, 0).unwrap();
+    assert!(w.snapshot().entries.is_empty());
+    assert!(!w.snapshot().actions.clear);
+    assert!(w.snapshot().actions.undo);
+    w.apply_ui(C::Undo, 0, 0).unwrap();
+    assert_eq!(w.snapshot().selected, vec![0, 2]);
+    assert_eq!(w.snapshot().entries.len(), 3);
+    assert_eq!(
+        serde_json::to_value(&w).unwrap()["tabs"][0]["draft"],
+        before["tabs"][0]["draft"]
+    );
+    let generation = match w
+        .apply(C::Open {
+            key: "favorites".into(),
+            scope: "test".into(),
+            playlist_id: 0,
+            name: "Favorites".into(),
+            readonly: true,
+        })
+        .unwrap()
+    {
+        Effect::Load { generation, .. } => generation,
+        _ => panic!("load"),
+    };
+    w.apply(C::Loaded {
+        key: "favorites".into(),
+        generation,
+        entries: vec![json!({"path":"favorite"})],
+    })
+    .unwrap();
+    assert!(!w.snapshot().actions.clear);
+    w.apply_ui(C::Clear, 0, 0).unwrap();
+    assert_eq!(w.snapshot().entries.len(), 1);
+}
+
+#[test]
 fn dragging_draft_rows_preserves_selection_and_undo() {
     let mut workspace = loaded();
     workspace

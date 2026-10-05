@@ -3685,6 +3685,17 @@ fn App() -> impl IntoView {
                         || element.is_content_editable()
                 })
                 .unwrap_or(false);
+            if !in_text && (ev.ctrl_key() || ev.meta_key()) && !ev.alt_key()
+                && matches!(ev.key().to_lowercase().as_str(), "z" | "y") {
+                use kog_playback_policy::workspace::Command;
+                ev.prevent_default();
+                if let Some(dispatch) = workspace_dispatch.get_value() {
+                    dispatch.run(if ev.key().eq_ignore_ascii_case("y") || ev.shift_key() {
+                        Command::Redo
+                    } else { Command::Undo });
+                }
+                return;
+            }
             if !in_text
                 && session_model
                     .with_value(|model| model.workspace_model().snapshot().active != "queue")
@@ -8250,7 +8261,7 @@ fn App() -> impl IntoView {
                         <div class="menu-separator"></div>
                         <button
                             class="menu-item"
-                            disabled=move || queue.get().is_empty()
+                            disabled=move || playlist_workspace.snapshot().active != "queue" || queue.get().is_empty()
                             on:click=move |_| {
                                 set_menu_open.set(false);
                                 open_create_playlist_dialog();
@@ -8259,20 +8270,7 @@ fn App() -> impl IntoView {
                             "Save Playlist…"
                         </button>
                         <div class="menu-separator"></div>
-                        <button
-                            class="menu-item"
-                            disabled=move || selected.get().is_empty()
-                            on:click=move |_| remove_selected()
-                        >
-                            "Remove Selected"
-                        </button>
-                        <button
-                            class="menu-item"
-                            disabled=move || queue.get().is_empty()
-                            on:click=move |_| clear_pane()
-                        >
-                            {if touch_mode { "Clear Queue" } else { "Clear Play Queue" }}
-                        </button>
+                        <workspace::EditMenu controller=playlist_workspace on_action=Callback::new(move |_| set_menu_open.set(false)) />
                         <div class="menu-separator"></div>
                         <div class="menu-group">"View"</div>
                         <button class="menu-item" on:click=move |_| {

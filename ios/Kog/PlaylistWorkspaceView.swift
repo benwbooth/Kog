@@ -1,5 +1,39 @@
 import SwiftUI
 
+/// Shared contents for the application's Edit section and playlist menus.
+struct PlaylistEditCommands: View {
+    @EnvironmentObject private var store: KogStore
+    var clearPlaylist: () -> Void
+    private var isQueue: Bool { store.workspace.active == "queue" }
+    private func enabled(_ action: String) -> Bool { store.workspace.actions[action] == true }
+    private func send(_ op: String) { store.workspaceCommand(["op": op]) }
+    var body: some View {
+        Button(isQueue ? "Undo Append" : "Undo", systemImage: "arrow.uturn.backward") { send("undo") }.disabled(!enabled("undo"))
+        Button(isQueue ? "Redo Append" : "Redo", systemImage: "arrow.uturn.forward") { send("redo") }.disabled(!enabled("redo"))
+        Divider()
+        Button("Select All", systemImage: "checkmark.circle") { store.workspaceCommand(["op": "selection", "command": ["op": "all"]]) }.disabled(!enabled("select_all"))
+        Button("Clear Selection") { store.workspaceCommand(["op": "selection", "command": ["op": "clear"]]) }.disabled(!enabled("clear_selection"))
+        Button("Remove Selected", systemImage: "minus.circle", role: .destructive) { send("remove") }.disabled(!enabled("remove"))
+        Button(isQueue ? "Clear Play Queue" : "Clear Playlist", systemImage: "trash", role: .destructive, action: clearPlaylist).disabled(!enabled("clear"))
+        Button("Move Up", systemImage: "arrow.up") { store.workspaceCommand(["op": "nudge", "delta": -1]) }.disabled(!enabled("move_up"))
+        Button("Move Down", systemImage: "arrow.down") { store.workspaceCommand(["op": "nudge", "delta": 1]) }.disabled(!enabled("move_down"))
+        if isQueue {
+            Menu("Sort", systemImage: "arrow.up.arrow.down") {
+                ForEach(TrackSort.all) { field in
+                    Button { store.sortQueue(field.key) } label: {
+                        Label(field.label, systemImage: store.sortKey == field.key ? (store.sortDescending ? "arrow.down" : "arrow.up") : "arrow.up.arrow.down")
+                    }
+                }
+            }.disabled(store.queue.isEmpty)
+        }
+        Divider()
+        Button("Save Changes", systemImage: "square.and.arrow.down") { send("save") }.disabled(!enabled("save"))
+        Button("Reload Saved Playlist", systemImage: "arrow.clockwise") { send("reload") }.disabled(!enabled("reload"))
+        Button("Add Play Queue") { store.workspaceAppendQueue() }.disabled(!enabled("add_play_queue"))
+        Button("Add Queue Selection") { store.workspaceAppendQueue(selectedOnly: true) }.disabled(!enabled("add_queue_selection"))
+    }
+}
+
 struct PlaylistWorkspaceTabs: View {
     @EnvironmentObject private var store: KogStore
     var body: some View {
@@ -55,19 +89,8 @@ struct PlaylistWorkspaceEditor: View {
                 Button(tab?.saving == true ? "Saving…" : "Save") { send("save") }
                     .disabled(store.workspace.actions["save"] != true)
                 Menu {
-                    Button("Select all") { store.workspaceCommand(["op": "selection", "command": ["op": "all"]]) }.disabled(store.workspace.actions["select_all"] != true)
-                    Button("Clear selection") { store.workspaceCommand(["op": "selection", "command": ["op": "clear"]]) }.disabled(store.workspace.actions["clear_selection"] != true)
-                    if tab?.readonly != true {
-                        Button("Add Play Queue") { store.workspaceAppendQueue() }.disabled(store.workspace.actions["add_play_queue"] != true)
-                        Button("Add Queue Selection") { store.workspaceAppendQueue(selectedOnly: true) }.disabled(store.workspace.actions["add_queue_selection"] != true)
-                        Button("Remove selected", role: .destructive) { send("remove") }.disabled(store.workspace.actions["remove"] != true)
-                        Button("Move Up") { store.workspaceCommand(["op": "nudge", "delta": -1]) }.disabled(store.workspace.actions["move_up"] != true)
-                        Button("Move Down") { store.workspaceCommand(["op": "nudge", "delta": 1]) }.disabled(store.workspace.actions["move_down"] != true)
-                        Button("Undo") { send("undo") }.disabled(store.workspace.actions["undo"] != true)
-                        Button("Redo") { send("redo") }.disabled(store.workspace.actions["redo"] != true)
-                    }
-                    Button("Reload") { send("reload") }.disabled(store.workspace.actions["reload"] != true)
-                } label: { Image(systemName: "ellipsis.circle").frame(width: 44, height: 44) }.accessibilityLabel("Playlist editor actions")
+                    PlaylistEditCommands { send("clear") }
+                } label: { Label("Edit", systemImage: "pencil").frame(minHeight: 44) }.accessibilityLabel("Edit playlist")
             }.padding(.horizontal, 12).background(Palette.panel)
             if let error = store.workspace.error { Text(error).font(.caption).foregroundStyle(.red).padding(10) }
             if tab?.loading == true { ProgressView("Loading playlist…").padding() }

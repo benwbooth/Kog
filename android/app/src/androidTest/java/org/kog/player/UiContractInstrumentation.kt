@@ -18,7 +18,7 @@ class UiContractInstrumentation : Instrumentation() {
         try {
             persistenceContract()
             librarySessionContract()
-            sessionContract()
+            val sessionSteps = sessionContract()
             mediaPortContract()
             val fixture = JSONObject(context.assets.open("playlist.json").bufferedReader().use { it.readText() })
             val policy = SharedPlaybackPolicy()
@@ -47,7 +47,7 @@ class UiContractInstrumentation : Instrumentation() {
                     check(equalJson(actual, expected.get(path))) { "Kotlin UI contract step $index $path: expected ${expected.get(path)}, got $actual" }
                 }
             }
-            status.putString("stream", "Kotlin contracts: 33 application-session steps, two Media3 sessions with restore and native audio EOS, and ${steps.length()} UI steps passed through production JNI and workspace decoder\n")
+            status.putString("stream", "Kotlin contracts: $sessionSteps application-session steps, two Media3 sessions with restore and native audio EOS, and ${steps.length()} UI steps passed through production JNI and workspace decoder\n")
             sendStatus(0, status)
             finish(Activity.RESULT_OK, Bundle().apply { putString("stream", status.getString("stream")) })
         } catch (error: Throwable) {
@@ -79,7 +79,7 @@ class UiContractInstrumentation : Instrumentation() {
         check(KogApi(targetContext, onDevice = true).localState("sessions", key)
             .getJSONObject("value").getJSONArray("queue").length() == 0)
     }
-    private fun sessionContract() {
+    private fun sessionContract(): Int {
         val fixture = JSONObject(context.assets.open("session.json").bufferedReader().use { it.readText() })
         val sessions = mutableMapOf<String, SharedBackendSession>()
         val captures = mutableMapOf<String, Any>()
@@ -104,6 +104,7 @@ class UiContractInstrumentation : Instrumentation() {
             } }
             step.optJSONObject("capture")?.let { values -> values.keys().forEach { name -> captures[name] = lookup(reply, values.getString(name))!! } }
         }
+        return steps.length()
     }
     private fun librarySessionContract() {
         val api = KogApi(targetContext, onDevice = true)

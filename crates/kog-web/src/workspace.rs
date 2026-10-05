@@ -53,6 +53,42 @@ pub fn Tabs(controller: Controller) -> impl IntoView {
     }
 }
 #[component]
+pub fn EditMenu(controller: Controller, on_action: Callback<()>) -> impl IntoView {
+    use kog_playback_policy::selection::Command as Select;
+    let send = move |command| {
+        controller.send(command);
+        on_action.run(());
+    };
+    view! {
+        <div class="menu-group">"Edit"</div>
+        <button class="menu-item" disabled=move || !controller.snapshot().actions.undo on:click=move |_| send(Command::Undo)>
+            {move || if controller.snapshot().active == "queue" { "Undo Append" } else { "Undo" }}
+        </button>
+        <button class="menu-item" disabled=move || !controller.snapshot().actions.redo on:click=move |_| send(Command::Redo)>
+            {move || if controller.snapshot().active == "queue" { "Redo Append" } else { "Redo" }}
+        </button>
+        <div class="menu-separator"></div>
+        <button class="menu-item" disabled=move || !controller.snapshot().actions.select_all on:click=move |_| send(Command::Selection {command:Select::All})>"Select All"</button>
+        <button class="menu-item" disabled=move || !controller.snapshot().actions.clear_selection on:click=move |_| send(Command::Selection {command:Select::Clear})>"Clear Selection"</button>
+        <button class="menu-item" disabled=move || !controller.snapshot().actions.remove on:click=move |_| send(Command::Remove)>"Remove Selected"</button>
+        <button class="menu-item" disabled=move || !controller.snapshot().actions.clear on:click=move |_| send(Command::Clear)>
+            {move || if controller.snapshot().active == "queue" { "Clear Play Queue" } else { "Clear Playlist" }}
+        </button>
+        <button class="menu-item" disabled=move || !controller.snapshot().actions.move_up on:click=move |_| send(Command::Nudge {delta:-1})>"Move Up"</button>
+        <button class="menu-item" disabled=move || !controller.snapshot().actions.move_down on:click=move |_| send(Command::Nudge {delta:1})>"Move Down"</button>
+        <div class="menu-separator"></div>
+        <button class="menu-item" disabled=move || !controller.snapshot().actions.save on:click=move |_| send(Command::Save)>"Save Changes"</button>
+        <button class="menu-item" disabled=move || !controller.snapshot().actions.reload on:click=move |_| send(Command::Reload)>"Reload Saved Playlist"</button>
+        <button class="menu-item" disabled=move || !controller.snapshot().actions.add_play_queue on:click=move |_| {
+            controller.backend.send(SessionCommand::AppendQueueToWorkspace {selected_only:false}); on_action.run(());
+        }>"Add Play Queue"</button>
+        <button class="menu-item" disabled=move || !controller.snapshot().actions.add_queue_selection on:click=move |_| {
+            controller.backend.send(SessionCommand::AppendQueueToWorkspace {selected_only:true}); on_action.run(());
+        }>"Add Queue Selection"</button>
+    }
+}
+
+#[component]
 pub fn Editor(
     controller: Controller,
     queue: ReadSignal<Vec<Entry>>,

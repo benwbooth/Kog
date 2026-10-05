@@ -1663,6 +1663,7 @@ ApplicationWindow {
 
     Action {
         id: removeSelectedAction
+        objectName: "editRemoveAction"
         text: qsTr("Remove Selected")
         shortcut: StandardKey.Delete
         enabled: root.playlistWorkspace.active === "queue" ? root.selectedRows.length > 0 : !!root.playlistWorkspace.actions.remove
@@ -1674,9 +1675,10 @@ ApplicationWindow {
 
     Action {
         id: selectAllAction
+        objectName: "editSelectAllAction"
         text: qsTr("Select All")
         shortcut: StandardKey.SelectAll
-        enabled: root.playlistWorkspace.active === "queue" ? playlistView.activeFocus && appController.playlist_count > 0 : !!root.playlistWorkspace.actions.select_all
+        enabled: root.playlistWorkspace.active === "queue" ? appController.playlist_count > 0 : !!root.playlistWorkspace.actions.select_all
         onTriggered: {
             if (root.playlistWorkspace.active !== "queue") { playlistEditor.selectAll(); return }
             const rows = []
@@ -1749,29 +1751,31 @@ ApplicationWindow {
 
     Action {
         id: clearPlaylistAction
-        text: qsTr("Clear Play Queue")
+        objectName: "editClearAction"
+        text: root.playlistWorkspace.active === "queue" ? qsTr("Clear Play Queue") : qsTr("Clear Playlist")
         icon.name: "edit-clear-list"
-        enabled: appController.playlist_count > 0
+        enabled: !!root.playlistWorkspace.actions.clear
         onTriggered: {
-            appController.clear_playlist()
-            root.clearPlaylistSelection()
+            appController.workspace_command(JSON.stringify({op: "clear"}))
         }
     }
 
     Action {
         id: undoQueueAppendAction
-        text: qsTr("Undo Append")
+        objectName: "editUndoAction"
+        text: root.playlistWorkspace.active === "queue" ? qsTr("Undo Append") : qsTr("Undo")
         icon.name: "edit-undo"
         shortcut: StandardKey.Undo
-        enabled: root.playlistWorkspace.active === "queue" && !!root.playlistWorkspace.actions.undo
+        enabled: !!root.playlistWorkspace.actions.undo
         onTriggered: appController.workspace_command(JSON.stringify({op: "undo"}))
     }
     Action {
         id: redoQueueAppendAction
-        text: qsTr("Redo Append")
+        objectName: "editRedoAction"
+        text: root.playlistWorkspace.active === "queue" ? qsTr("Redo Append") : qsTr("Redo")
         icon.name: "edit-redo"
         shortcut: StandardKey.Redo
-        enabled: root.playlistWorkspace.active === "queue" && !!root.playlistWorkspace.actions.redo
+        enabled: !!root.playlistWorkspace.actions.redo
         onTriggered: appController.workspace_command(JSON.stringify({op: "redo"}))
     }
 
@@ -1944,6 +1948,7 @@ ApplicationWindow {
 
     Menu {
         id: hamburgerMenu
+        objectName: "applicationMenu"
 
         Action {
             text: qsTr("Add Files…")
@@ -1974,11 +1979,72 @@ ApplicationWindow {
         MenuSeparator {}
         MenuItem { action: savePlaylistAction }
         MenuItem { action: saveSelectionAction }
-        MenuItem { action: editTagsAction }
         MenuSeparator {}
-        MenuItem { action: removeSelectedAction; icon.name: "edit-delete" }
-        MenuItem { action: clearPlaylistAction }
-        MenuSeparator {}
+
+        Menu {
+            id: editMenu
+            objectName: "editMenu"
+            title: qsTr("Edit")
+            icon.name: "document-edit"
+            MenuItem { action: undoQueueAppendAction }
+            MenuItem { action: redoQueueAppendAction }
+            MenuSeparator {}
+            MenuItem { action: selectAllAction; icon.name: "edit-select-all" }
+            MenuItem {
+                id: editClearSelection
+                objectName: "editClearSelection"
+                text: qsTr("Clear Selection")
+                enabled: !!root.playlistWorkspace.actions.clear_selection
+                onTriggered: appController.workspace_command(JSON.stringify({op:"selection", command:{op:"clear"}}))
+            }
+            MenuItem { action: removeSelectedAction; icon.name: "edit-delete" }
+            MenuItem { action: clearPlaylistAction }
+            MenuItem {
+                id: editMoveUp
+                objectName: "editMoveUp"
+                text: qsTr("Move Up")
+                icon.name: "go-up"
+                enabled: !!root.playlistWorkspace.actions.move_up
+                onTriggered: appController.workspace_command(JSON.stringify({op:"nudge", delta:-1}))
+            }
+            MenuItem {
+                id: editMoveDown
+                objectName: "editMoveDown"
+                text: qsTr("Move Down")
+                icon.name: "go-down"
+                enabled: !!root.playlistWorkspace.actions.move_down
+                onTriggered: appController.workspace_command(JSON.stringify({op:"nudge", delta:1}))
+            }
+            MenuItem { action: editTagsAction }
+            MenuSeparator {}
+            Action {
+                id: editSaveAction
+                objectName: "editSaveAction"
+                text: qsTr("Save Changes")
+                icon.name: "document-save"
+                shortcut: StandardKey.Save
+                enabled: root.playlistWorkspace.active !== "queue" && !!root.playlistWorkspace.actions.save
+                onTriggered: appController.workspace_command(JSON.stringify({op:"save"}))
+            }
+            MenuItem {
+                id: editReload
+                objectName: "editReload"
+                text: qsTr("Reload Saved Playlist")
+                icon.name: "view-refresh"
+                enabled: !!root.playlistWorkspace.actions.reload
+                onTriggered: appController.workspace_command(JSON.stringify({op:"reload"}))
+            }
+            MenuItem {
+                text: qsTr("Add Play Queue")
+                enabled: !!root.playlistWorkspace.actions.add_play_queue
+                onTriggered: appController.workspace_add_queue_selection("all")
+            }
+            MenuItem {
+                text: qsTr("Add Queue Selection")
+                enabled: !!root.playlistWorkspace.actions.add_queue_selection
+                onTriggered: appController.workspace_add_queue_selection(root.selectedRows.join(","))
+            }
+        }
 
         Menu {
             title: qsTr("View")

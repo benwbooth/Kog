@@ -133,6 +133,7 @@ pub enum Command {
         entries: Vec<Value>,
     },
     Remove,
+    Clear,
     Nudge {
         delta: i32,
     },
@@ -243,6 +244,7 @@ pub struct Actions {
     pub add_play_queue: bool,
     pub add_queue_selection: bool,
     pub remove: bool,
+    pub clear: bool,
     pub move_up: bool,
     pub move_down: bool,
     pub undo: bool,
@@ -259,6 +261,7 @@ impl Actions {
             Reload => self.reload,
             Append { .. } | Sort { .. } => self.append,
             Remove | Move { .. } => self.remove,
+            Clear => self.clear,
             Nudge { delta } => {
                 if *delta < 0 {
                     self.move_up
@@ -296,6 +299,7 @@ impl Workspace {
                     add_play_queue: editable && queue_count > 0,
                     add_queue_selection: editable && queue_selected > 0,
                     remove: editable && !selected.is_empty(),
+                    clear: editable && !tab.draft.rows.is_empty(),
                     move_up: editable
                         && selected
                             .iter()
@@ -579,6 +583,13 @@ impl Workspace {
                 tab.draft.selected = rows.iter().map(|r| r.id).collect();
                 tab.draft.anchor = rows.first().map(|r| r.id);
                 tab.draft.rows.extend(rows);
+            }
+            Clear => {
+                let tab = self.active_mut()?;
+                if !tab.draft.rows.is_empty() {
+                    tab.edit()?;
+                    tab.draft = Draft::default();
+                }
             }
             Remove => {
                 let tab = self.active_mut()?;

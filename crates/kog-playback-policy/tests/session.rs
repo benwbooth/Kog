@@ -1,6 +1,68 @@
 use kog_playback_policy::{NavigationEvent, RepeatMode, ShuffleMode, session::*, workspace};
 use serde_json::{Value, json};
 
+#[test]
+fn edit_commands_target_the_active_queue_and_preserve_row_identity() {
+    use kog_playback_policy::selection::Command as Select;
+    let mut s = session("edit");
+    s.dispatch(Command::Append {
+        tracks: vec![
+            json!({"path":"a"}),
+            json!({"path":"b"}),
+            json!({"path":"a"}),
+        ],
+        action: workspace::QueueAction::AddToQueue,
+    });
+    let ids = s.snapshot().row_ids.to_vec();
+    s.dispatch(Command::Play { index: 2 });
+    workspace_action(
+        &mut s,
+        workspace::Command::Selection {
+            command: Select::Set {
+                indices: vec![2],
+                anchor: Some(2),
+            },
+        },
+    );
+    assert!(s.workspace().actions.move_up);
+    assert!(!s.workspace().actions.move_down);
+    let effects = workspace_action(&mut s, workspace::Command::Nudge { delta: -1 });
+    assert_eq!(s.snapshot().row_ids, &[ids[0], ids[2], ids[1]]);
+    assert_eq!(s.snapshot().current, Some(1));
+    assert_eq!(s.workspace().selected, vec![1]);
+    assert!(
+        !effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::Play { .. } | Effect::Stop))
+    );
+    s.dispatch(Command::Filter { query: "b".into() });
+    workspace_action(
+        &mut s,
+        workspace::Command::Selection {
+            command: Select::All,
+        },
+    );
+    assert_eq!(s.workspace().selected, vec![2]);
+    workspace_action(&mut s, workspace::Command::Remove);
+    assert_eq!(s.queue().len(), 2);
+    assert_eq!(s.snapshot().current, Some(1));
+    assert!(!s.workspace().actions.select_all);
+    workspace_action(
+        &mut s,
+        workspace::Command::Selection {
+            command: Select::All,
+        },
+    );
+    assert!(
+        s.workspace().selected.is_empty(),
+        "Empty search results must not select hidden rows"
+    );
+    assert!(s.workspace().actions.clear);
+    workspace_action(&mut s, workspace::Command::Clear);
+    assert!(s.queue().is_empty());
+    assert!(!s.workspace().actions.clear);
+    assert!(!s.workspace().actions.remove);
+}
 fn session(id: &str) -> Session<Value> {
     Session::new(id, 17, ShuffleMode::Off, RepeatMode::Off)
 }

@@ -51,6 +51,33 @@ data class PlaylistWorkspaceSnapshot(
 }
 
 @Composable
+internal fun EditMenuItems(state: KogState, dismiss: () -> Unit) {
+    val actions = state.workspace.actions
+    val queue = state.workspace.active == "queue"
+    fun send(op: String, fields: JSONObject = JSONObject()) { state.workspaceCommand(op, fields); dismiss() }
+    DropdownMenuItem(text = { Text(if (queue) "Undo Append" else "Undo") }, enabled = actions["undo"] == true, onClick = { send("undo") })
+    DropdownMenuItem(text = { Text(if (queue) "Redo Append" else "Redo") }, enabled = actions["redo"] == true, onClick = { send("redo") })
+    HorizontalDivider()
+    DropdownMenuItem(text = { Text("Select All") }, enabled = actions["select_all"] == true, onClick = {
+        send("selection", JSONObject().put("command", JSONObject().put("op", "all")))
+    })
+    DropdownMenuItem(text = { Text("Clear Selection") }, enabled = actions["clear_selection"] == true, onClick = {
+        send("selection", JSONObject().put("command", JSONObject().put("op", "clear")))
+    })
+    DropdownMenuItem(text = { Text("Remove Selected") }, enabled = actions["remove"] == true, onClick = { send("remove") })
+    DropdownMenuItem(text = { Text(if (queue) "Clear Play Queue" else "Clear Playlist") }, enabled = actions["clear"] == true, onClick = { send("clear") })
+    listOf("Move Up" to -1, "Move Down" to 1).forEach { (label, delta) ->
+        DropdownMenuItem(text = { Text(label) }, enabled = actions[if (delta < 0) "move_up" else "move_down"] == true,
+            onClick = { send("nudge", JSONObject().put("delta", delta)) })
+    }
+    HorizontalDivider()
+    DropdownMenuItem(text = { Text("Save Changes") }, enabled = actions["save"] == true, onClick = { send("save") })
+    DropdownMenuItem(text = { Text("Reload Saved Playlist") }, enabled = actions["reload"] == true, onClick = { send("reload") })
+    DropdownMenuItem(text = { Text("Add Play Queue") }, enabled = actions["add_play_queue"] == true, onClick = { state.workspaceAppendQueue(); dismiss() })
+    DropdownMenuItem(text = { Text("Add Queue Selection") }, enabled = actions["add_queue_selection"] == true, onClick = { state.workspaceAppendQueue(true); dismiss() })
+}
+
+@Composable
 internal fun PlaylistWorkspaceTabs(state: KogState) {
     if (state.workspace.tabs.size > 1) PrimaryScrollableTabRow(
         selectedTabIndex = state.workspace.tabs.indexOfFirst { it.key == state.workspace.active }.coerceAtLeast(0),
@@ -102,27 +129,10 @@ internal fun PlaylistWorkspaceEditor(state: KogState) {
             TextButton(enabled = workspace.actions["save"] == true,
                 onClick = { state.workspaceCommand("save") }) { Text(if (tab?.saving == true) "Saving…" else "Save") }
             Box {
-                IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "Playlist editor actions") }
+                TextButton(onClick = { menu = true }) { Text("Edit") }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                    DropdownMenuItem(text = { Text("Select all") }, enabled = workspace.actions["select_all"] == true, onClick = {
-                        state.workspaceCommand("selection", JSONObject().put("command", JSONObject().put("op", "all"))); menu = false
-                    })
-                    DropdownMenuItem(text = { Text("Clear selection") }, enabled = workspace.actions["clear_selection"] == true, onClick = {
-                        state.workspaceCommand("selection", JSONObject().put("command", JSONObject().put("op", "clear"))); menu = false
-                    })
-                    if (tab?.readonly != true) {
-                        DropdownMenuItem(text = { Text("Add Play Queue") }, enabled = workspace.actions["add_play_queue"] == true, onClick = { state.workspaceAppendQueue(); menu = false })
-                        DropdownMenuItem(text = { Text("Add Queue Selection") }, enabled = workspace.actions["add_queue_selection"] == true, onClick = { state.workspaceAppendQueue(true); menu = false })
-                        DropdownMenuItem(text = { Text("Remove selected") }, enabled = workspace.actions["remove"] == true, onClick = { state.workspaceCommand("remove"); menu = false })
-                        listOf("Move Up" to -1, "Move Down" to 1).forEach { (label, delta) ->
-                            DropdownMenuItem(text = { Text(label) }, enabled = workspace.actions[if (delta < 0) "move_up" else "move_down"] == true, onClick = {
-                                state.workspaceCommand("nudge", JSONObject().put("delta", delta)); menu = false
-                            })
-                        }
-                        DropdownMenuItem(text = { Text("Undo") }, enabled = workspace.actions["undo"] == true, onClick = { state.workspaceCommand("undo"); menu = false })
-                        DropdownMenuItem(text = { Text("Redo") }, enabled = workspace.actions["redo"] == true, onClick = { state.workspaceCommand("redo"); menu = false })
-                    }
-                    DropdownMenuItem(text = { Text("Reload") }, enabled = workspace.actions["reload"] == true, onClick = { state.workspaceCommand("reload"); menu = false })
+                    Text("Edit", Modifier.padding(horizontal = 12.dp, vertical = 8.dp), style = MaterialTheme.typography.labelLarge)
+                    EditMenuItems(state) { menu = false }
                 }
             }
         }

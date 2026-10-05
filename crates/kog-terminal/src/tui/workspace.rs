@@ -9,6 +9,64 @@ pub(super) fn restore() -> Option<serde_json::Value> {
         .and_then(|b| serde_json::from_slice(&b).ok())
 }
 impl Ui {
+    pub(super) fn menu_item_enabled(&self, page: MenuPage, index: usize) -> bool {
+        let state = self.session.workspace();
+        let actions = &state.actions;
+        match (page, index) {
+            (MenuPage::Main, 4) => !self.is_draft() && !self.tracks.is_empty(),
+            (MenuPage::Main, 5) => !self.is_draft() && !self.selected_tracks.is_empty(),
+            (MenuPage::Edit, 0) => actions.undo,
+            (MenuPage::Edit, 1) => actions.redo,
+            (MenuPage::Edit, 3) => actions.select_all && self.table_visible_count() > 0,
+            (MenuPage::Edit, 4) => actions.clear_selection,
+            (MenuPage::Edit, 5) => actions.remove,
+            (MenuPage::Edit, 6) => actions.clear,
+            (MenuPage::Edit, 7) => actions.move_up,
+            (MenuPage::Edit, 8) => actions.move_down,
+            (MenuPage::Edit, 10) => actions.save,
+            (MenuPage::Edit, 11) => actions.reload,
+            (MenuPage::Edit, 12) => actions.add_play_queue,
+            (MenuPage::Edit, 13) => actions.add_queue_selection,
+            (MenuPage::Edit, 15) => !self.is_draft() && !self.selected_tracks.is_empty(),
+            _ => true,
+        }
+    }
+    pub(super) fn activate_edit_menu(&mut self, index: usize) {
+        self.focus = Focus::Tracks;
+        let command = match index {
+            0 => Command::Undo,
+            1 => Command::Redo,
+            3 | 4 => {
+                let command = if index == 3 {
+                    Select::All
+                } else {
+                    Select::Clear
+                };
+                if self.is_draft() {
+                    self.workspace_select(command);
+                } else {
+                    self.workspace_command(Command::Selection { command });
+                }
+                return;
+            }
+            5 => Command::Remove,
+            6 => Command::Clear,
+            7 => Command::Nudge { delta: -1 },
+            8 => Command::Nudge { delta: 1 },
+            10 => Command::Save,
+            11 => Command::Reload,
+            12 | 13 => {
+                self.workspace_append_queue(index == 12);
+                return;
+            }
+            15 => {
+                self.open_tag_editor();
+                return;
+            }
+            _ => return,
+        };
+        self.workspace_command(command);
+    }
     pub(super) fn workspace_command(&mut self, command: Command) {
         self.session_command(SessionCommand::Workspace { command });
     }
@@ -102,6 +160,14 @@ impl Ui {
             }
             Key::CtrlW if self.focus == Focus::Tracks => {
                 self.workspace_command(Command::Close { key: state.active });
+                return true;
+            }
+            Key::CtrlZ | Key::CtrlY if self.focus == Focus::Tracks => {
+                self.workspace_command(if key == Key::CtrlZ {
+                    Command::Undo
+                } else {
+                    Command::Redo
+                });
                 return true;
             }
             _ => {}

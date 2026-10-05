@@ -521,6 +521,20 @@ impl<T: Item> Session<T> {
             view.can_redo = !self.append_redo.is_empty();
             view.actions.undo = view.can_undo;
             view.actions.redo = view.can_redo;
+            view.selected = self.selection.indices.clone();
+            view.actions.select_all = !self.visible.is_empty();
+            view.actions.clear_selection = !self.selection.indices.is_empty();
+            view.actions.remove = !self.selection.indices.is_empty();
+            view.actions.clear = !self.queue.is_empty();
+            view.actions.move_up = self
+                .selection
+                .indices
+                .iter()
+                .any(|i| *i > 0 && !self.selection.indices.contains(&(i - 1)));
+            view.actions.move_down =
+                self.selection.indices.iter().any(|i| {
+                    i + 1 < self.queue.len() && !self.selection.indices.contains(&(i + 1))
+                });
         }
         view
     }
@@ -866,6 +880,59 @@ impl<T: Item> Session<T> {
     }
     fn workspace_command(&mut self, command: workspace::Command, effects: &mut Vec<Effect>) {
         if self.workspace().active == workspace::QUEUE_TAB {
+            // The Edit menus use the same commands for a queue and a saved
+            // draft. Keep command eligibility and selection in the session.
+            if matches!(
+                &command,
+                workspace::Command::Selection { .. }
+                    | workspace::Command::Select { .. }
+                    | workspace::Command::Remove
+                    | workspace::Command::Clear
+                    | workspace::Command::Nudge { .. }
+            ) {
+                if !self.workspace().actions.allows(&command) {
+                    return;
+                }
+                match command {
+                    workspace::Command::Selection { command } => {
+                        self.selection
+                            .apply(command, self.queue.len(), &self.visible);
+                    }
+                    workspace::Command::Select { indices } => {
+                        let anchor = indices.first().copied();
+                        self.selection.apply(
+                            crate::selection::Command::Set { indices, anchor },
+                            self.queue.len(),
+                            &self.visible,
+                        );
+                    }
+                    workspace::Command::Remove => {
+                        self.remove(self.selection.indices.clone(), effects)
+                    }
+                    workspace::Command::Clear => self.clear(effects),
+                    workspace::Command::Nudge { delta } => {
+                        let selected = &self.selection.indices;
+                        let mut order: Vec<_> = (0..self.queue.len()).collect();
+                        if delta < 0 {
+                            for &index in selected {
+                                if index > 0 && !selected.contains(&order[index - 1]) {
+                                    order.swap(index, index - 1);
+                                }
+                            }
+                        } else if delta > 0 {
+                            for &index in selected.iter().rev() {
+                                if index + 1 < order.len() && !selected.contains(&order[index + 1])
+                                {
+                                    order.swap(index, index + 1);
+                                }
+                            }
+                        }
+                        self.reorder(order, effects);
+                    }
+                    _ => unreachable!(),
+                }
+                return;
+            }
             if matches!(command, workspace::Command::Undo | workspace::Command::Redo) {
                 if self.workspace().pending_close.is_none() {
                     self.undo_append(matches!(command, workspace::Command::Redo), effects);
@@ -945,7 +1012,14 @@ impl<T: Item> Session<T> {
                 mode,
                 entries,
                 scope,
-            }) => self.expand(scope, entries, mode, effects),
+            }) => {
+                if mode == workspace::QueueAction::AddToQueue && !entries.is_empty() {
+                    self.append_redo.clear();
+                    self.begin_append(scope, entries, effects);
+                } else {
+                    self.expand(scope, entries, mode, effects);
+                }
+            }
             Ok(workspace::Effect::None) => (),
             Err(error) => self.error = Some(error),
         }

@@ -23,6 +23,7 @@ Press `?` inside the TUI for the scrollable shortcut guide. Every TUI action exp
 | Playback controls | Space play/pause, `s` stop, `<`/`>` previous/next, `G` seek to an exact time, `h`/`l` seek by ten seconds with Tracks focused, `+`/`-` volume, `R`/`S` repeat/shuffle |
 | Other transport and views | Playback menu for mute and radio; View menu for artwork, info, lyrics, equalizer, and spectrum; `C` enters or leaves compact view |
 | Edit a prompt | Ctrl+A select all, Ctrl+W delete word, Ctrl+U clear, Ctrl+Left/Right move by word or path component |
+| Edit the active playlist | `m`, then Alt+E opens Edit: Undo/Redo, selection, remove, clear, move, save/reload, and add queue contents. Ctrl+Z/Ctrl+Y undo/redo with Tracks focused. Queue history is labelled Undo Append/Redo Append. |
 
 The printable alternatives for range selection, context actions, resizing, reordering, and refreshing work when a terminal does not forward modified keys.
 
@@ -34,6 +35,7 @@ The printable alternatives for range selection, context actions, resizing, reord
 - [x] Mouse drag resizes the file tree divider and keeps the chosen width on resize.
 - [x] Files and Playlists section headers expand and collapse.
 - [x] Hamburger opens a structured, keyboard and mouse operable menu with working commands.
+- [x] The Edit section targets the active queue or saved-playlist draft and disables unavailable actions. Qt, Web, iOS, and Android expose the same shared editing commands. `tests/playlist-workspace/run-edit-menu.sh` and `uv run --with pyte python tests/playlist-workspace/tui-edit-menu-smoke.py` exercise the real Qt and terminal menus; the shared session contract covers the mobile adapters.
 - [x] Right click opens context menus for tree items, playlist rows, saved playlists, and columns.
 - [x] The same context actions open from the keyboard, including at narrow terminal sizes; `?` shows the shortcut guide.
 - [x] Every main, submenu, and context-menu action has a unique displayed Alt shortcut within its menu; PTY and unit tests check dispatch and the shortcut labels.

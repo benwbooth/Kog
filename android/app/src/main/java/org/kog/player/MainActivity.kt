@@ -167,6 +167,7 @@ private fun KogApp(state: KogState, pickFiles: () -> Unit, pickFolder: () -> Uni
     var playerExpanded by remember { mutableStateOf(false) }
     var createPlaylist by remember { mutableStateOf(false) }
     var sortMenu by remember { mutableStateOf(false) }
+    var editMenu by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         while (true) { delay(500); state.tick() }
@@ -185,6 +186,19 @@ private fun KogApp(state: KogState, pickFiles: () -> Unit, pickFolder: () -> Uni
                     Text(state.selectedPlaylist?.name ?: "Playlists", Modifier.weight(1f),
                         fontSize = 21.sp, fontWeight = FontWeight.Bold, maxLines = 1,
                         overflow = TextOverflow.Ellipsis)
+                }
+            }
+            if (tab == Tab.Queue) {
+                Box {
+                    IconButton(onClick = { editMenu = true }) { Icon(Icons.Default.MoreVert, "Player menu") }
+                    DropdownMenu(expanded = editMenu, onDismissRequest = { editMenu = false }) {
+                        Text("Edit", Modifier.padding(horizontal = 12.dp, vertical = 8.dp), style = MaterialTheme.typography.labelLarge)
+                        EditMenuItems(state) { editMenu = false }
+                        if (state.workspace.active == "queue") {
+                            HorizontalDivider()
+                            DropdownMenuItem(text = { Text("Sort…") }, enabled = state.queue.isNotEmpty(), onClick = { editMenu = false; sortMenu = true })
+                        }
+                    }
                 }
             }
             if (tab == Tab.Queue && state.workspace.active == "queue") {
@@ -413,6 +427,7 @@ private fun QueueView(state: KogState, openLibrary: () -> Unit) {
 private fun QueueContents(state: KogState, openLibrary: () -> Unit) {
     val rows = state.queue.toList()
     var selecting by remember { mutableStateOf(false) }
+    LaunchedEffect(state.queueSelection) { if (state.queueSelection.isNotEmpty()) selecting = true }
     val visibleRows = state.filteredQueueIndices()
     if (rows.isEmpty()) {
         EmptyPanel("Your queue is empty", "Browse your library or add files from this device.") {
