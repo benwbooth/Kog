@@ -905,10 +905,11 @@ ApplicationWindow {
         }
     }
 
-    function playlistDropIndex(y) {        const contentPosition = y + playlistView.contentY
+    function playlistDropIndex(y) {
+        const contentPosition = y + playlistView.contentY
         const row = playlistView.indexAt(1, contentPosition)
         if (row < 0)
-            return contentPosition <= 0 ? 0 : appController.playlist_count
+            return contentPosition <= playlistView.originY ? 0 : appController.playlist_count
         const item = playlistView.itemAtIndex(row)
         return item && contentPosition >= item.y + item.height / 2 ? row + 1 : row
     }
@@ -3414,7 +3415,9 @@ ApplicationWindow {
 
                 CountPreservingListView {
                     id: playlistView
+                    objectName: "queuePlaylistView"
                     visible: root.playlistWorkspace.active === "queue"
+                    onVisibleChanged: if (!visible) root.playlistDropTarget = -1
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     clip: true
@@ -3566,26 +3569,21 @@ ApplicationWindow {
                 }
             }
 
-            Rectangle {
-                z: 20
-                x: 6
-                width: parent.width - 12
-                height: 2
-                radius: 1
+            PlaylistDropIndicator {
+                objectName: "queueDropIndicator"
+                view: playlistView
+                target: root.playlistDropTarget
                 color: root.palette.highlight
-                visible: root.playlistDropTarget >= 0
-                y: Math.max(playlistHeaderViewport.height,
-                    Math.min(parent.height - height,
-                        playlistHeaderViewport.height + root.playlistDropTarget * 24
-                            - playlistView.contentY))
+                rightInset: playlistView.verticalScrollGutter
+                bottomInset: playlistView.horizontalScrollGutter
             }
 
             DropArea {
                 enabled: root.playlistWorkspace.active === "queue"
                 x: 0
-                y: playlistHeaderViewport.height
+                y: playlistView.y
                 width: parent.width
-                height: parent.height - y
+                height: playlistView.height
                 onEntered: drag => {
                     if (drag.hasUrls
                             || drag.formats.indexOf("text/uri-list") !== -1)

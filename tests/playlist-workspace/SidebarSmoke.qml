@@ -73,7 +73,22 @@ Item {
                 smoke.stage=2
             } else if (smoke.stage === 2 && app.playlist_count === 3) {
                 smoke.check(app.playback_state === "stopped", "append started playback")
-                smoke.send({op:"focus",key:"queue"}); smoke.send({op:"undo"})
+                smoke.send({op:"focus",key:"queue"})
+                smoke.stage=20
+            } else if (smoke.stage === 20) {
+                const view = smoke.find(w.contentItem, "queuePlaylistView")
+                const marker = smoke.find(view, "queueDropIndicator")
+                const line = smoke.find(marker, "insertionLine")
+                const track = view.itemAtIndex(0)
+                smoke.check(!!track, "queue row missing")
+                track.dragStarted(0); track.dragMoved(200, 38)
+                smoke.check(marker.visible && marker.target === 2, "queue insertion marker missing")
+                const position = line.mapToItem(w.contentItem, 0, 0)
+                const origin = view.mapToItem(w.contentItem, 0, 0)
+                smoke.check(Math.abs(position.y - (origin.y + 48 - line.height / 2)) < 1, "queue marker offset by tabs or header")
+                track.dragCanceled()
+                smoke.check(!marker.visible, "queue marker remained after cancel")
+                smoke.send({op:"undo"})
                 smoke.check(app.playlist_count === 0, "queue append undo")
                 smoke.send({op:"focus",key:smoke.destinationKey})
                 smoke.drag(row, smoke.find(w.contentItem, "playlistPane"))

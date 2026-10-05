@@ -1,5 +1,6 @@
 import "../../../native/webamp/packages/webamp-modern/src/css/webamp.css";
 import "./runtime.css";
+import { bindPlaylistReorder } from "./playlist-reorder.js";
 
 import { UIRoot } from "../../../native/webamp/packages/webamp-modern/src/UIRoot";
 import SkinEngineWAL from "../../../native/webamp/packages/webamp-modern/src/skin/SkinEngine_WAL";
@@ -347,18 +348,6 @@ class SafePlayListGui extends PlayListGui {
         event.dataTransfer?.setData("text/x-kog-playlist", "selection");
         if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
       });
-      line.addEventListener("dragover", (event) => {
-        if (Array.from(event.dataTransfer?.types || []).includes("text/x-kog-playlist")) {
-          event.preventDefault();
-          event.dataTransfer.dropEffect = "move";
-        }
-      });
-      line.addEventListener("drop", (event) => {
-        event.preventDefault();
-        const indices = [...(playlist._selection || [])].sort((a, b) => a - b);
-        const target = moveTargetAfterRemoval(indices, index);
-        gateway?.send("move", { indices, target });
-      });
 
       const title = document.createElement("span");
       title.textContent = `${index + 1}. ${playlist.gettitle(index)}`;
@@ -371,6 +360,12 @@ class SafePlayListGui extends PlayListGui {
 
   init() {
     super.init();
+    bindPlaylistReorder(this._contentPanel, (insertionIndex: number) => {
+      const playlist = this._uiRoot.playlist as any;
+      const indices = [...(playlist._selection || [])].sort((a, b) => a - b);
+      const target = moveTargetAfterRemoval(indices, insertionIndex);
+      gateway?.send("move", { indices, target });
+    });
     this._div.addEventListener("keydown", (event) => {
       const playlist = this._uiRoot.playlist as any;
       if (event.key === "Delete" && playlist._selection?.length) {

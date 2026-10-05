@@ -819,7 +819,10 @@ button:focus-visible {
 
 /* The insertion point while a queue row is dragged to a new position. */
 .track.reorder-above {
-  box-shadow: 0 -2px 0 0 var(--highlight);
+  box-shadow: inset 0 3px 0 0 var(--highlight);
+}
+.track.reorder-below {
+  box-shadow: inset 0 -3px 0 0 var(--highlight);
 }
 
 /* Touch reorder handle: press and drag to move the row. Hidden on mouse

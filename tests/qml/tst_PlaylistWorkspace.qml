@@ -190,4 +190,65 @@ TestCase {
         }
         grabImage(panel).save("/tmp/kog-playlist-refreshed-tabs.png")
     }
+    function test_track_drag_insertion_marker() {
+        const view = findChild(editor, "workspacePlaylistView")
+        const marker = findChild(editor, "workspaceDropIndicator")
+        const line = findChild(marker, "insertionLine")
+        test.state = {active:"local:1",tabs:[{key:"queue",name:"Play Queue"},{key:"local:1",name:"Mix"}],
+            entries:Array.from({length:20}, (_, i) => ({path:"track" + i + ".flac"})),selected:[0,1],actions:{append:true}}
+        tryCompare(view, "count", 20)
+        view.positionViewAtBeginning()
+        wait(20)
+        const first = view.itemAtIndex(0)
+        backend.commands = []
+        mousePress(first, 200, 12)
+        mouseMove(first, 200, 62, 20)
+        compare(marker.target, 3)
+        verify(marker.visible)
+        fuzzyCompare(line.mapToItem(view, 0, 0).y, 72 - line.height / 2, 0.5)
+        compare(test.state.selected.length, 2, "Dragging selected rows preserves the multi-selection")
+        grabImage(panel).save("/tmp/kog-playlist-insertion-marker.png")
+        mouseRelease(first, 200, 62)
+        compare(marker.visible, false)
+        compare(backend.commands[backend.commands.length - 1].op, "move")
+        compare(backend.commands[backend.commands.length - 1].target, 3)
+
+        view.positionViewAtEnd()
+        wait(20)
+        const last = view.itemAtIndex(19)
+        mousePress(last, 200, 4)
+        const end = view.mapToItem(last, 200, view.height - view.horizontalScrollGutter - 2)
+        mouseMove(last, end.x, end.y, 20)
+        compare(marker.target, 20)
+        verify(marker.visible)
+        verify(line.y + line.height <= marker.height)
+        const x = line.mapToItem(view, 0, 0).x
+        view.contentX = 80
+        compare(line.mapToItem(view, 0, 0).x, x, "Marker stays across the viewport while columns scroll")
+        mouseMove(last, -30, end.y, 20)
+        compare(marker.visible, false, "Leaving the pane removes the marker")
+        backend.commands = []
+        mouseRelease(last, -30, end.y)
+        compare(backend.commands.length, 0, "Dropping outside must not reorder")
+        view.contentX = 0
+
+        // Filtered visual gaps must point to the matching underlying entry.
+        editor.searchQuery = "Second"
+        tryCompare(view, "count", 19)
+        view.positionViewAtBeginning()
+        wait(20)
+        const filtered = view.itemAtIndex(0)
+        mousePress(filtered, 200, 18)
+        mouseMove(filtered, 200, 1, 20)
+        compare(marker.target, 0)
+        compare(line.y, 0, "The first insertion line must not be clipped")
+        mouseRelease(filtered, 200, 1)
+        compare(backend.commands[backend.commands.length - 1].target, 1)
+        test.state = Object.assign({}, test.state, {actions:{append:false}})
+        filtered.dragMoved(200, 60)
+        compare(marker.visible, false, "Read-only playlists have no reorder marker")
+        filtered.dragCanceled()
+        editor.searchQuery = ""
+    }
+
 }

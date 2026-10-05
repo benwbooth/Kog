@@ -39,6 +39,8 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::wasm_bindgen;
 
+mod drag;
+use drag::{clear_track_drop_marker, track_drop_target};
 #[cfg(test)]
 mod selection;
 mod session;
@@ -3386,9 +3388,7 @@ fn App() -> impl IntoView {
             move || {
                 set_dragging_track.set(None);
                 set_reorder_to.set(None);
-                let _ = js_sys::eval(
-                    "document.querySelectorAll('.track.reorder-above').forEach(t => t.classList.remove('reorder-above'))",
-                );
+                clear_track_drop_marker();
             }
         };
 
@@ -3558,16 +3558,11 @@ fn App() -> impl IntoView {
                     }
                     TouchPress::Dragging { from, .. } => {
                         event.prevent_default();
-                        // The same midpoint rule the mouse drag uses: drop
-                        // above a row's centre line, with the marker drawn.
-                        let y = touch.client_y();
-                        let marker = js_sys::eval(&format!(
-                            "(() => {{ const rows = [...document.querySelectorAll('.track')]; const y = {y}; let index = rows.length; for (let i = 0; i < rows.length; i++) {{ const r = rows[i].getBoundingClientRect(); if (y < r.top + r.height / 2) {{ index = i; break; }} }} rows.forEach(r => r.classList.remove('reorder-above')); if (index < rows.length) rows[index].classList.add('reorder-above'); return index; }})()",
-                        ));
-                        let to = marker
-                            .ok()
-                            .and_then(|value| value.as_f64())
-                            .map(|v| v as usize);
+                        let to = track_drop_target(
+                            touch.client_x(),
+                            touch.client_y(),
+                            queue.get_untracked().len(),
+                        );
                         set_reorder_to.set(to);
                         *press.borrow_mut() = TouchPress::Dragging { from, to };
                     }
@@ -3609,9 +3604,7 @@ fn App() -> impl IntoView {
                     TouchPress::Dragging { from, to } => {
                         set_dragging_track.set(None);
                         set_reorder_to.set(None);
-                        let _ = js_sys::eval(
-                            "document.querySelectorAll('.track.reorder-above').forEach(t => t.classList.remove('reorder-above'))",
-                        );
+                        clear_track_drop_marker();
                         if let Some(to) = to {
                             move_track(from, to);
                         }
@@ -5264,9 +5257,7 @@ fn App() -> impl IntoView {
                     move || {
                         set_dragging_track.set(None);
                         set_reorder_to.set(None);
-                        let _ = js_sys::eval(
-                            "document.querySelectorAll('.track.reorder-above').forEach(t => t.classList.remove('reorder-above'))",
-                        );
+                        clear_track_drop_marker();
                     }
                 };
 
@@ -5308,40 +5299,15 @@ fn App() -> impl IntoView {
                     Closure::<dyn FnMut(web_sys::DragEvent)>::new(move |ev: web_sys::DragEvent| {
                         let current = dragging_track.get_untracked();
                         ev.prevent_default();
-                        if let Some(from) = current {
-                            // Reordering a queue row: highlight the insertion point
-                            // under the cursor.
-                            let client_y = ev.client_y();
-                            let marker = js_sys::eval(&format!(
-                                "(() => {{
-                            const rows = document.querySelector('.rows');
-                            const tracks = [...rows.querySelectorAll('.track')];
-                            tracks.forEach(t => t.classList.remove('reorder-above'));
-                            const y = {client_y};
-                            const from = {from};
-                            let index = tracks.length;
-                            for (let i = 0; i < tracks.length; i++) {{
-                                const r = tracks[i].getBoundingClientRect();
-                                if (y < r.top + r.height / 2) {{
-                                    index = i;
-                                    if (i !== from && i !== from + 1)
-                                        tracks[i].classList.add('reorder-above');
-                                    break;
-                                }}
-                            }}
-                            return index;
-                        }})()"
+                        if current.is_some() {
+                            set_reorder_to.set(track_drop_target(
+                                ev.client_x(),
+                                ev.client_y(),
+                                queue.get_untracked().len(),
                             ));
-                            let marker_result = match marker {
-                                Ok(value) => match value.as_f64() {
-                                    Some(index) => {
-                                        set_reorder_to.set(Some(index as usize));
-                                        String::new()
-                                    }
-                                    None => "eval returned non-number".to_owned(),
-                                },
-                                Err(error) => format!("eval threw: {error:?}"),
-                            };
+                            if let Some(transfer) = ev.data_transfer() {
+                                transfer.set_drop_effect("move");
+                            }
                             return;
                         }
                         if let Some(transfer) = ev.data_transfer() {
@@ -5358,8 +5324,15 @@ fn App() -> impl IntoView {
 
                 let on_dragleave = {
                     let set_playlist_drop_active = set_playlist_drop_active.clone();
-                    Closure::<dyn FnMut(web_sys::DragEvent)>::new(move |_| {
+                    Closure::<dyn FnMut(web_sys::DragEvent)>::new(move |ev: web_sys::DragEvent| {
                         set_playlist_drop_active.set(false);
+                        if dragging_track.get_untracked().is_some() {
+                            set_reorder_to.set(track_drop_target(
+                                ev.client_x(),
+                                ev.client_y(),
+                                queue.get_untracked().len(),
+                            ));
+                        }
                     })
                 };
                 let _ = rows.add_event_listener_with_callback(
@@ -5393,9 +5366,7 @@ fn App() -> impl IntoView {
                         set_dragging_playlist.set(None);
                         set_dragging_track.set(None);
                         set_reorder_to.set(None);
-                        let _ = js_sys::eval(
-                            "document.querySelectorAll('.track.reorder-above').forEach(t => t.classList.remove('reorder-above'))",
-                        );
+                        clear_track_drop_marker();
                     })
                 };
                 let _ =
@@ -6993,13 +6964,8 @@ fn App() -> impl IntoView {
                                                     if dragging_track.get_untracked() != Some(index) {
                                                         return;
                                                     }
-                                                    let client_y = ev.client_y();
-                                                    let marker = js_sys::eval(&format!(
-                                                        "(() => {{ const rows = [...document.querySelectorAll('.track')]; const y = {client_y}; let index = rows.length; for (let i = 0; i < rows.length; i++) {{ const r = rows[i].getBoundingClientRect(); if (y < r.top + r.height / 2) {{ index = i; break; }} }} return index; }})()",
-                                                    ));
-                                                    if let Ok(value) = marker && let Some(index) = value.as_f64() {
-                                                        set_reorder_to.set(Some(index as usize));
-                                                    }
+                                                    set_reorder_to.set(track_drop_target(
+                                                        ev.client_x(), ev.client_y(), queue.get_untracked().len()));
                                                 }
                                                 on:pointerup=move |ev: web_sys::PointerEvent| {
                                                     if dragging_track.get_untracked() == Some(index)
@@ -7009,9 +6975,12 @@ fn App() -> impl IntoView {
                                                     }
                                                     set_dragging_track.set(None);
                                                     set_reorder_to.set(None);
-                                                    let _ = js_sys::eval(
-                                                        "document.querySelectorAll('.track.reorder-above').forEach(t => t.classList.remove('reorder-above'))",
-                                                    );
+                                                    clear_track_drop_marker();
+                                                }
+                                                on:pointercancel=move |_| {
+                                                    set_dragging_track.set(None);
+                                                    set_reorder_to.set(None);
+                                                    clear_track_drop_marker();
                                                 }
                                                 on:click=move |ev: web_sys::MouseEvent| ev.stop_propagation()
                                             >"⠿"</span>

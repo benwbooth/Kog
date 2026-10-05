@@ -31,6 +31,12 @@ text span {
 .pl.list .current {
   color: var(--color-wasabi-list-text-current, inherit);
 }
+.pl.list .kog-reorder-before {
+  box-shadow: inset 0 3px 0 var(--color-wasabi-list-text-current, #70c8ff);
+}
+.pl.list .kog-reorder-after {
+  box-shadow: inset 0 -3px 0 var(--color-wasabi-list-text-current, #70c8ff);
+}
 
 /* Wasabi widths include their frame. HTML borders must not enlarge controls
    or consume text space that the skin measured with Text.getAutoWidth(). */

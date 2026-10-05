@@ -33,6 +33,8 @@
           album: "Browser smoke test",
           duration: 185,
         },
+        { id: "two", title: "Second track", artist: "Kog", duration: 142 },
+        { id: "three", title: "Third track", artist: "Kog", duration: 206 },
       ],
       shuffle: "off",
       repeat: "off",

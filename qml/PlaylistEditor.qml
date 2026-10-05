@@ -13,6 +13,10 @@ FocusScope {
     property string searchQuery: ""
     property string sortColumn: "index"
     property bool sortAscending: true
+    property int dropTarget: -1
+    readonly property string activeKey: workspaceState.active || ""
+    onActiveKeyChanged: dropTarget = -1
+    onVisibleChanged: if (!visible) dropTarget = -1
     signal openVisualizer()
     readonly property var tab: (workspaceState.tabs || []).find(item => item.key === workspaceState.active) || ({})
     readonly property var actions: workspaceState.actions || ({})
@@ -28,6 +32,13 @@ FocusScope {
         })
     }
     function send(command) { app.workspace_command(JSON.stringify(command)) }
+    function dropIndex(x, y) {
+        if (!actions.append || x < 0 || x >= list.width - list.verticalScrollGutter
+                || y < 0 || y >= list.height - list.horizontalScrollGutter)
+            return -1
+        return Math.max(0, Math.min(rows.length,
+            Math.floor((y + list.contentY - list.originY + 12) / 24)))
+    }
     function choose(index, modifiers) {
         const range = !!(modifiers & Qt.ShiftModifier)
         const toggle = !!(modifiers & (Qt.ControlModifier | Qt.MetaModifier))
@@ -202,14 +213,26 @@ FocusScope {
             }
             onActivated: row => editor.activate(editor.rows[row])
             onDragStarted: row => {
-                if (editor.selection.indexOf(editor.rows[row]) < 0) editor.choose(editor.rows[row], Qt.NoModifier)
+                if (editor.actions.append && editor.selection.indexOf(editor.rows[row]) < 0)
+                    editor.choose(editor.rows[row], Qt.NoModifier)
             }
+            onDragMoved: (viewX, viewY) => editor.dropTarget = editor.dropIndex(viewX, viewY)
             onDragFinished: (viewX, viewY) => {
-                if (viewX < 0 || viewX > list.width || viewY < 0 || viewY > list.height) return
-                const target = Math.max(0, Math.min(list.count, Math.floor((viewY + list.contentY + 12) / 24)))
+                const target = editor.dropIndex(viewX, viewY)
+                editor.dropTarget = -1
+                if (target < 0) return
                 editor.app.workspace_move(target === editor.rows.length ? editor.workspaceState.entries.length : editor.rows[target])
             }
+            onDragCanceled: editor.dropTarget = -1
         }
+    }
+    PlaylistDropIndicator {
+        objectName: "workspaceDropIndicator"
+        view: list
+        target: editor.dropTarget
+        color: editor.theme.highlight
+        rightInset: list.verticalScrollGutter
+        bottomInset: list.horizontalScrollGutter
     }
     Component {
         id: classicRow
