@@ -4724,11 +4724,53 @@ fn App() -> impl IntoView {
         playlist_workspace.send(command)
     })));
     let append_playlist = move |id: i64| {
-        backend.send(SessionCommand::Expand {
-            scope: base(),
-            entries: vec![serde_json::json!({"playlist_id":id})],
-            action: QueueAction::AddToQueue,
-        })
+        let destination = playlist_workspace.snapshot();
+        if !destination.actions.append {
+            return;
+        }
+        let key = destination.active;
+        let scope = base();
+        if key == "queue" {
+            backend.send(SessionCommand::AppendToTab {
+                key,
+                scope,
+                entries: vec![serde_json::json!({"playlist_id":id})],
+            });
+        } else {
+            let header = auth().header();
+            leptos::task::spawn_local(async move {
+                match session::request("GET", format!("{scope}/api/playlists/{id}"), header, None)
+                    .await
+                {
+                    Ok(value) if base() == scope => {
+                        let entries = value["entries"].as_array().cloned().unwrap_or_default();
+                        if !entries.is_empty() {
+                            backend.send(SessionCommand::AppendToTab {
+                                key,
+                                scope,
+                                entries,
+                            });
+                        }
+                    }
+                    Ok(_) => set_message.set("Connect to the original playlist server".into()),
+                    Err(error) => set_message.set(error),
+                }
+            });
+        }
+    };
+    let playlist_append_title = move || {
+        let state = playlist_workspace.snapshot();
+        let name = state
+            .tabs
+            .iter()
+            .find(|tab| tab.key == state.active)
+            .map(|tab| tab.name.as_str())
+            .unwrap_or("Play Queue");
+        if state.actions.append {
+            format!("Append to “{name}”")
+        } else {
+            format!("“{name}” cannot be edited")
+        }
     };
 
     let commit_rename = {
@@ -6256,8 +6298,19 @@ fn App() -> impl IntoView {
                                                     }
                                                 >"⋯"</span>
                                                 <span
-                                                    class="tree-add"
-                                                    title=if touch_mode { "Add to queue" } else { "Add to playlist" }
+                                                    class="tree-add playlist-add"
+                                                    role="button"
+                                                    tabindex="0"
+                                                    aria-label=playlist_append_title
+                                                    aria-disabled=move || !playlist_workspace.snapshot().actions.append
+                                                    on:keydown=move |ev: web_sys::KeyboardEvent| {
+                                                        if ev.key() == "Enter" || ev.key() == " " {
+                                                            ev.prevent_default();
+                                                            ev.stop_propagation();
+                                                            append_playlist(0);
+                                                        }
+                                                    }
+                                                    title=playlist_append_title
                                                     on:click={
                                                         let append_playlist = append_playlist.clone();
                                                         move |ev: web_sys::MouseEvent| {
@@ -6367,8 +6420,19 @@ fn App() -> impl IntoView {
                                                             }
                                                         >"⋯"</span>
                                                         <span
-                                                            class="tree-add"
-                                                            title=if touch_mode { "Add to queue" } else { "Add to playlist" }
+                                                            class="tree-add playlist-add"
+                                                            role="button"
+                                                            tabindex="0"
+                                                            aria-label=playlist_append_title
+                                                            aria-disabled=move || !playlist_workspace.snapshot().actions.append
+                                                            on:keydown=move |ev: web_sys::KeyboardEvent| {
+                                                                if ev.key() == "Enter" || ev.key() == " " {
+                                                                    ev.prevent_default();
+                                                                    ev.stop_propagation();
+                                                                    append_playlist(drag_id);
+                                                                }
+                                                            }
+                                                            title=playlist_append_title
                                                             on:click={
                                                                 let append_playlist =
                                                                     append_playlist.clone();

@@ -868,6 +868,27 @@ button:focus-visible {
   border-color: var(--highlight);
 }
 
+/* Playlist append is available with mouse, keyboard, and touch. */
+.tree-row .playlist-add {
+  display: block;
+  margin-left: 6px;
+  cursor: pointer;
+}
+
+.favorite-row .playlist-add {
+  margin-left: auto;
+}
+
+.playlist-add[aria-disabled="true"] {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.playlist-add:focus-visible {
+  outline: 2px solid var(--highlight);
+  outline-offset: 1px;
+}
+
 /* Keyed off the body class the app sets for detected (pointer: coarse) or
  * forced (?touch=1) touch mode, never off the media query directly: the
  * mode and its affordances must always agree. */
