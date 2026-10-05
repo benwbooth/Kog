@@ -21,6 +21,7 @@ pub struct Writer {
     namespace: &'static str,
     state: StoredValue<Pending>,
     error: Callback<String>,
+    pub warning: RwSignal<String>,
 }
 
 impl Writer {
@@ -29,6 +30,7 @@ impl Writer {
             namespace,
             state: StoredValue::new(Pending::default()),
             error,
+            warning: RwSignal::new(String::new()),
         }
     }
 
@@ -75,7 +77,7 @@ impl Writer {
             header,
             None,
         )
-        .await?;
+        .await.inspect_err(|error| self.warning.set(error.clone()))?;
         if self.state.with_value(|s| s.epoch != epoch) {
             return Err("Connection changed while loading the session".into());
         }
@@ -88,6 +90,7 @@ impl Writer {
             s.saved = value.clone();
             s.ready = true;
         });
+        self.warning.set(String::new());
         Ok(Some(value))
     }
 
@@ -175,6 +178,7 @@ impl Writer {
                     }
                     match &result {
                         Err((false, error)) => {
+                            self.warning.set(format!("Changes are not saved yet. Retrying: {error}"));
                             self.error.run(error.clone());
                             let _ = sleep_ms(5000).await;
                         }
@@ -185,10 +189,13 @@ impl Writer {
                     return;
                 }
                 match result {
-                    Ok(revision) => self.state.update_value(|s| {
-                        s.revision = revision;
-                        s.saved = Some(value);
-                    }),
+                    Ok(revision) => {
+                        self.state.update_value(|s| {
+                            s.revision = revision;
+                            s.saved = Some(value);
+                        });
+                        self.warning.set(String::new());
+                    }
                     Err((conflict, error)) => {
                         self.state.update_value(|s| {
                             if s.latest.is_none() {
@@ -197,6 +204,7 @@ impl Writer {
                             s.running = false;
                             s.conflict = conflict;
                         });
+                        self.warning.set(error.clone());
                         self.error.run(error);
                         return;
                     }

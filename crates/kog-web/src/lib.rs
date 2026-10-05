@@ -3252,7 +3252,7 @@ fn App() -> impl IntoView {
                             persist.connect(base(), id, auth().header()).await
                         }.await;
                         match initialized {
-                            Err(error) => { set_message.set(error); return; }
+                            Err(error) => { backend.persistence.warning.set(error.clone()); set_message.set(error); return; }
                             Ok(Some(Some(value))) => {
                                 if base() != connection_base { return; }
                                 if ui_loaded_scope.get_value().as_ref() != Some(&connection_base) {
@@ -6413,6 +6413,17 @@ fn App() -> impl IntoView {
                     </aside>
 
                     <main class="playlist">
+                        <Show when=move || !backend.persistence.warning.get().is_empty() || !persist.warning.get().is_empty()>
+                            <div class="persistence-warning" role="alert">
+                                {move || {
+                                    let session = backend.persistence.warning.get();
+                                    let ui = persist.warning.get();
+                                    if session.is_empty() { ui }
+                                    else if ui.is_empty() || ui == session { session }
+                                    else { format!("{session} {ui}") }
+                                }}
+                            </div>
+                        </Show>
                         <workspace::Tabs controller=playlist_workspace />
                         <Show when=move || playlist_workspace.snapshot().active != "queue">
                             <workspace::Editor controller=playlist_workspace queue=queue selected=selected />

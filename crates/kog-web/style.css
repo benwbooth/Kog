@@ -3417,3 +3417,4 @@ body.touch .track .index-cell {
 
 .playlist { display:flex; flex-direction:column; }
 .playlist > .rows { flex:1; min-height:0; }
+.persistence-warning { flex:none; padding:10px 12px; border-bottom:1px solid #b57b18; background:#fff0c7; color:#573700; font-size:13px; line-height:1.4; }
