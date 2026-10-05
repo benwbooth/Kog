@@ -6472,7 +6472,7 @@ fn App() -> impl IntoView {
                         </Show>
                         <workspace::Tabs controller=playlist_workspace />
                         <Show when=move || playlist_workspace.snapshot().active != "queue">
-                            <workspace::Editor controller=playlist_workspace queue=queue selected=selected />
+                            <workspace::Editor controller=playlist_workspace />
                         </Show>
                         <div
                             style:display=move || if playlist_workspace.snapshot().active == "queue" { "" } else { "none" }
@@ -8334,6 +8334,7 @@ fn App() -> impl IntoView {
                             "Save Playlist…"
                         </button>
                         <div class="menu-separator"></div>
+                        <workspace::PlaybackMenu controller=playlist_workspace on_action=Callback::new(move |_| set_menu_open.set(false)) />
                         <workspace::EditMenu controller=playlist_workspace on_action=Callback::new(move |_| set_menu_open.set(false)) />
                         <div class="menu-separator"></div>
                         <div class="menu-group">"View"</div>

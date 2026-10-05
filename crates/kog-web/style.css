@@ -3429,9 +3429,8 @@ body.touch .track .index-cell {
 .playlist-tab button:not([role="tab"]):hover { background:var(--border); }
 .playlist-tab button:focus-visible { outline:2px solid var(--highlight); outline-offset:-3px; }
 .playlist-editor { display:flex; flex-direction:column; flex:1; min-height:0; overflow:hidden; padding:8px; gap:8px; }
-.workspace-actions,.workspace-close { display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
-.workspace-actions button,.workspace-close button { color:inherit; background:#738fb31a; border:1px solid #80808060; border-radius:4px; padding:7px 10px; }
-.workspace-actions button:disabled { opacity:.4; }
+.workspace-close { display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
+.workspace-close button { color:inherit; background:#738fb31a; border:1px solid #80808060; border-radius:4px; padding:7px 10px; }
 .workspace-close { padding:10px; border:1px solid #d9a343; }
 .workspace-status { margin:0; font-size:12px; }
 .workspace-entries { display:flex; flex-direction:column; overflow:auto; min-height:0; flex:1; }

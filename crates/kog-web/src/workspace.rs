@@ -53,6 +53,22 @@ pub fn Tabs(controller: Controller) -> impl IntoView {
     }
 }
 #[component]
+pub fn PlaybackMenu(controller: Controller, on_action: Callback<()>) -> impl IntoView {
+    let send = move |action| {
+        controller.send(Command::Queue { action });
+        on_action.run(());
+    };
+    view! {
+        <Show when=move || controller.snapshot().active != "queue">
+            <div class="menu-group">"Playlist"</div>
+            <button class="menu-item" disabled=move || !controller.snapshot().actions.queue on:click=move |_| send(QueueAction::PlayNow)>"Play Now"</button>
+            <button class="menu-item" disabled=move || !controller.snapshot().actions.queue on:click=move |_| send(QueueAction::PlayNext)>"Play Next"</button>
+            <button class="menu-item" disabled=move || !controller.snapshot().actions.queue on:click=move |_| send(QueueAction::AddToQueue)>"Add to Queue"</button>
+            <div class="menu-separator"></div>
+        </Show>
+    }
+}
+#[component]
 pub fn EditMenu(controller: Controller, on_action: Callback<()>) -> impl IntoView {
     use kog_playback_policy::selection::Command as Select;
     let send = move |command| {
@@ -89,11 +105,7 @@ pub fn EditMenu(controller: Controller, on_action: Callback<()>) -> impl IntoVie
 }
 
 #[component]
-pub fn Editor(
-    controller: Controller,
-    queue: ReadSignal<Vec<Entry>>,
-    selected: ReadSignal<HashSet<usize>>,
-) -> impl IntoView {
+pub fn Editor(controller: Controller) -> impl IntoView {
     view! {
         <div class="playlist-editor" on:keydown=move |event:web_sys::KeyboardEvent| {
             if event.ctrl_key() || event.meta_key() {
@@ -101,25 +113,6 @@ pub fn Editor(
                 if let Some(command)=command { event.prevent_default(); event.stop_propagation(); controller.send(command); }
             } else if event.key()=="Delete" { event.prevent_default(); event.stop_propagation(); controller.send(Command::Remove); }
         }>
-            <div class="workspace-actions">
-                <button disabled=move || !controller.snapshot().actions.queue on:click=move |_| controller.send(Command::Queue { action:QueueAction::PlayNow })>"Play Now"</button>
-                <button disabled=move || !controller.snapshot().actions.queue on:click=move |_| controller.send(Command::Queue { action:QueueAction::PlayNext })>"Play Next"</button>
-                <button disabled=move || !controller.snapshot().actions.queue on:click=move |_| controller.send(Command::Queue { action:QueueAction::AddToQueue })>"Add to Queue"</button>
-                <button disabled=move || !controller.snapshot().actions.save
-                    on:click=move |_| controller.send(Command::Save)>"Save"</button>
-                <button disabled=move || !controller.snapshot().actions.reload on:click=move |_| controller.send(Command::Reload)>"Reload"</button>
-            </div>
-            <div class="workspace-actions">
-                <button disabled=move || !controller.snapshot().actions.add_play_queue on:click=move |_| controller.backend.send(SessionCommand::AppendQueueToWorkspace {selected_only:false})>"Add Play Queue"</button>
-                <button disabled=move || !controller.snapshot().actions.add_queue_selection on:click=move |_| controller.backend.send(SessionCommand::AppendQueueToWorkspace {selected_only:true})>"Add Queue Selection"</button>
-                <button disabled=move || !controller.snapshot().actions.remove on:click=move |_| controller.send(Command::Remove)>"Remove"</button>
-                <button disabled=move || !controller.snapshot().actions.move_up on:click=move |_| controller.send(Command::Nudge { delta:-1 })>"Move Up"</button>
-                <button disabled=move || !controller.snapshot().actions.move_down on:click=move |_| controller.send(Command::Nudge { delta:1 })>"Move Down"</button>
-                <button disabled=move || !controller.snapshot().actions.undo on:click=move |_| controller.send(Command::Undo)>"Undo"</button>
-                <button disabled=move || !controller.snapshot().actions.redo on:click=move |_| controller.send(Command::Redo)>"Redo"</button>
-                <button disabled=move || !controller.snapshot().actions.select_all on:click=move |_| controller.send(Command::Selection { command:kog_playback_policy::selection::Command::All })>"Select All"</button>
-                <button disabled=move || !controller.snapshot().actions.clear_selection on:click=move |_| controller.send(Command::Selection { command:kog_playback_policy::selection::Command::Clear })>"Clear Selection"</button>
-            </div>
             <p class="workspace-status">{move || {let state=controller.snapshot(); state.error.unwrap_or_else(||format!("{} tracks · {} selected · Play Now uses {}",state.entries.len(),state.selected.len(),match state.selected.len(){0=>"the whole playlist",1=>"the playlist starting at the selected track",_=>"the selected tracks"}))}}</p>
             <div class="workspace-entries" role="listbox" aria-multiselectable="true">
                 <For each={move || controller.snapshot().entries.into_iter().enumerate().collect::<Vec<_>>()} key=|(i,entry)|format!("{i}:{entry}") let:row>
