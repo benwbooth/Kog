@@ -191,14 +191,26 @@ impl LibraryDb {
         #[cfg(unix)]
         {
             use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-            let file = std::fs::OpenOptions::new()
+            // Closing any raw descriptor for an existing SQLite file releases
+            // this process's POSIX locks, including those of other connections.
+            // Only create a new inode ourselves; chmod existing files by path.
+            // Serialize creation so another opener cannot establish SQLite
+            // locks before the new file's initial descriptor has been closed.
+            static CREATE_PRIVATE_DATABASE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+            let _creation = CREATE_PRIVATE_DATABASE
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            match std::fs::OpenOptions::new()
                 .write(true)
-                .create(true)
-                .truncate(false)
+                .create_new(true)
                 .mode(0o600)
                 .open(path)
-                .map_err(|e| format!("opening private database: {e}"))?;
-            file.set_permissions(std::fs::Permissions::from_mode(0o600))
+            {
+                Ok(file) => drop(file),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(format!("creating private database: {error}")),
+            }
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
                 .map_err(|e| format!("protecting database: {e}"))?;
             for suffix in ["-wal", "-shm"] {
                 let mut sibling = path.as_os_str().to_owned();
@@ -870,6 +882,67 @@ mod tests {
 
     fn memory_db() -> LibraryDb {
         LibraryDb::open_in_memory().expect("memory database")
+    }
+
+    #[test]
+    #[ignore = "subprocess helper for checkpoint visibility"]
+    fn checkpoint_reader_subprocess() {
+        let path = std::env::var_os("KOG_TEST_CHECKPOINT_PATH").unwrap();
+        let expected = std::env::var("KOG_TEST_CHECKPOINT_VALUE").unwrap();
+        let connection = Connection::open(path).unwrap();
+        connection.busy_timeout(std::time::Duration::ZERO).unwrap();
+        let exclusive = connection.execute_batch("PRAGMA locking_mode=EXCLUSIVE; BEGIN EXCLUSIVE;");
+        assert!(
+            matches!(&exclusive, Err(rusqlite::Error::SqliteFailure(error, _)) if error.code == rusqlite::ErrorCode::DatabaseBusy),
+            "Another process acquired an exclusive lock while the writer was open: {exclusive:?}"
+        );
+        connection
+            .execute_batch("PRAGMA locking_mode=NORMAL;")
+            .unwrap();
+        let value: String = connection
+            .query_row(
+                "SELECT value FROM app_state WHERE namespace='sessions' AND key='lock-test'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(value, expected);
+    }
+
+    #[test]
+    fn additional_connections_keep_checkpoints_visible_to_other_processes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("kog.db");
+        let writer = LibraryDb::open_at(&path).unwrap();
+        writer
+            .save_state_checked("sessions", "lock-test", "first", 0)
+            .unwrap();
+        // Opening preferences/metadata connections must not release this
+        // process's SQLite locks or let an external reader remove its WAL.
+        let _second = LibraryDb::open_at(&path).unwrap();
+        let read_from_another_process = |expected: &str| {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "db::tests::checkpoint_reader_subprocess",
+                    "--ignored",
+                ])
+                .env("KOG_TEST_CHECKPOINT_PATH", &path)
+                .env("KOG_TEST_CHECKPOINT_VALUE", expected)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        read_from_another_process("first");
+        writer
+            .save_state_checked("sessions", "lock-test", "second", 1)
+            .unwrap();
+        read_from_another_process("second");
     }
 
     #[test]
