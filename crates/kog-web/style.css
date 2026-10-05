@@ -868,15 +868,32 @@ button:focus-visible {
   border-color: var(--highlight);
 }
 
-/* Playlist append is available with mouse, keyboard, and touch. */
+/* Match the Qt sidebar: reveal append on hover, selection, or focus.
+ * Reserve its space so labels and counts do not move. Touch has no hover. */
 .tree-row .playlist-add {
   display: block;
+  visibility: hidden;
   margin-left: 6px;
   cursor: pointer;
 }
 
+.tree-row:hover .playlist-add,
+.tree-row.selected .playlist-add,
+.tree-row:focus-within .playlist-add,
+body.touch .tree-row .playlist-add {
+  visibility: visible;
+}
+
+.tree-row.renaming .playlist-add {
+  visibility: hidden;
+}
+
 .favorite-row .playlist-add {
   margin-left: auto;
+}
+
+.tree-row.selected .playlist-add {
+  color: var(--highlight-text);
 }
 
 .playlist-add[aria-disabled="true"] {
@@ -3428,15 +3445,9 @@ body.touch .track .index-cell {
 .playlist-tab button:not([role="tab"]) { min-height:24px; width:24px; padding:0; margin-right:5px; border-radius:4px; font-size:16px; }
 .playlist-tab button:not([role="tab"]):hover { background:var(--border); }
 .playlist-tab button:focus-visible { outline:2px solid var(--highlight); outline-offset:-3px; }
-.playlist-editor { display:flex; flex-direction:column; flex:1; min-height:0; overflow:hidden; padding:8px; gap:8px; }
 .workspace-close { display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
 .workspace-close button { color:inherit; background:#738fb31a; border:1px solid #80808060; border-radius:4px; padding:7px 10px; }
 .workspace-close { padding:10px; border:1px solid #d9a343; }
-.workspace-status { margin:0; font-size:12px; }
-.workspace-entries { display:flex; flex-direction:column; overflow:auto; min-height:0; flex:1; }
-.workspace-entries button { text-align:left; flex:none; padding:10px; border:0; background:transparent; color:inherit; }
-.workspace-entries button:nth-child(even) { background:#80808010; }
-.workspace-entries button.selected { background:#4877b960; }
 
 .playlist { display:flex; flex-direction:column; }
 .playlist > .rows { flex:1; min-height:0; }

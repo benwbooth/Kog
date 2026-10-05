@@ -251,7 +251,7 @@ impl Controller {
         });
     }
 }
-async fn expand(
+pub(super) async fn expand(
     scope: &str,
     header: Option<String>,
     entries: Vec<Value>,

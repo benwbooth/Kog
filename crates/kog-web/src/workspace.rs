@@ -69,7 +69,7 @@ pub fn PlaybackMenu(controller: Controller, on_action: Callback<()>) -> impl Int
     }
 }
 #[component]
-pub fn EditMenu(controller: Controller, on_action: Callback<()>) -> impl IntoView {
+pub fn EditMenu(controller: Controller, on_action: Callback<()>, on_select_all: Callback<()>) -> impl IntoView {
     use kog_playback_policy::selection::Command as Select;
     let send = move |command| {
         controller.send(command);
@@ -84,7 +84,7 @@ pub fn EditMenu(controller: Controller, on_action: Callback<()>) -> impl IntoVie
             {move || if controller.snapshot().active == "queue" { "Redo Append" } else { "Redo" }}
         </button>
         <div class="menu-separator"></div>
-        <button class="menu-item" disabled=move || !controller.snapshot().actions.select_all on:click=move |_| send(Command::Selection {command:Select::All})>"Select All"</button>
+        <button class="menu-item" disabled=move || !controller.snapshot().actions.select_all on:click=move |_| { on_select_all.run(()); on_action.run(()); }>"Select All"</button>
         <button class="menu-item" disabled=move || !controller.snapshot().actions.clear_selection on:click=move |_| send(Command::Selection {command:Select::Clear})>"Clear Selection"</button>
         <button class="menu-item" disabled=move || !controller.snapshot().actions.remove on:click=move |_| send(Command::Remove)>"Remove Selected"</button>
         <button class="menu-item" disabled=move || !controller.snapshot().actions.clear on:click=move |_| send(Command::Clear)>
@@ -101,35 +101,5 @@ pub fn EditMenu(controller: Controller, on_action: Callback<()>) -> impl IntoVie
         <button class="menu-item" disabled=move || !controller.snapshot().actions.add_queue_selection on:click=move |_| {
             controller.backend.send(SessionCommand::AppendQueueToWorkspace {selected_only:true}); on_action.run(());
         }>"Add Queue Selection"</button>
-    }
-}
-
-#[component]
-pub fn Editor(controller: Controller) -> impl IntoView {
-    view! {
-        <div class="playlist-editor" on:keydown=move |event:web_sys::KeyboardEvent| {
-            if event.ctrl_key() || event.meta_key() {
-                let command = match event.key().as_str() { "s" => Some(Command::Save), "z" if event.shift_key()=>Some(Command::Redo), "z"=>Some(Command::Undo), "y"=>Some(Command::Redo), "a"=>Some(Command::Select {indices:(0..controller.snapshot().entries.len()).collect()}), _=>None };
-                if let Some(command)=command { event.prevent_default(); event.stop_propagation(); controller.send(command); }
-            } else if event.key()=="Delete" { event.prevent_default(); event.stop_propagation(); controller.send(Command::Remove); }
-        }>
-            <p class="workspace-status">{move || {let state=controller.snapshot(); state.error.unwrap_or_else(||format!("{} tracks · {} selected · Play Now uses {}",state.entries.len(),state.selected.len(),match state.selected.len(){0=>"the whole playlist",1=>"the playlist starting at the selected track",_=>"the selected tracks"}))}}</p>
-            <div class="workspace-entries" role="listbox" aria-multiselectable="true">
-                <For each={move || controller.snapshot().entries.into_iter().enumerate().collect::<Vec<_>>()} key=|(i,entry)|format!("{i}:{entry}") let:row>
-                    {let (index,entry)=row; let label=entry["title"].as_str().or_else(||entry["name"].as_str()).filter(|value|!value.is_empty()).map(str::to_owned).unwrap_or_else(||last_segment(entry["entry"].as_str().filter(|value|!value.is_empty()).or_else(||entry["path"].as_str()).unwrap_or_default()));
-                     view! { <button role="option" class:selected=move || controller.snapshot().selected.contains(&index)
-                       aria-selected=move || controller.snapshot().selected.contains(&index)
-                       on:click=move |event:web_sys::MouseEvent| {
-                         use kog_playback_policy::selection::{Command as Select, Gesture};
-                         let gesture = match (event.shift_key(), event.ctrl_key() || event.meta_key()) {
-                             (true,true)=>Gesture::AddRange, (true,false)=>Gesture::Range,
-                             (false,true)=>Gesture::Toggle, _=>Gesture::Replace,
-                         };
-                         controller.send(Command::Selection { command:Select::Choose {index,gesture} });
-                       }>{format!("{}. {label}",index+1)}</button> }
-                    }
-                </For>
-            </div>
-        </div>
     }
 }

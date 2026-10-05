@@ -283,6 +283,22 @@ impl Actions {
 }
 
 impl Workspace {
+    /// Stable draft selection projected into the current row order for views
+    /// that apply gestures to a filtered subset of the playlist.
+    pub fn selection(&self) -> crate::selection::Selection {
+        self.tabs
+            .iter()
+            .find(|tab| tab.key == self.active)
+            .map(|tab| crate::selection::Selection {
+                indices: tab.selected_indices(),
+                anchor: tab
+                    .draft
+                    .anchor
+                    .and_then(|id| tab.draft.rows.iter().position(|row| row.id == id)),
+            })
+            .unwrap_or_default()
+    }
+
     pub fn snapshot(&self) -> Snapshot {
         self.snapshot_for(0, 0)
     }

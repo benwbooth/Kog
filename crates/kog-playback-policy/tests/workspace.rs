@@ -86,6 +86,7 @@ fn dragging_draft_rows_preserves_selection_and_undo() {
             indices: vec![0, 2],
         })
         .unwrap();
+    assert_eq!(workspace.selection().anchor, Some(0));
     workspace
         .apply_ui(C::Move { target: usize::MAX }, 0, 0)
         .unwrap();
@@ -98,8 +99,13 @@ fn dragging_draft_rows_preserves_selection_and_undo() {
         ]
     );
     assert_eq!(workspace.snapshot().selected, vec![1, 2]);
+    // A filtered view must recover the moved anchor by row identity even
+    // when two entries refer to the same track.
+    assert_eq!(workspace.selection().indices, vec![1, 2]);
+    assert_eq!(workspace.selection().anchor, Some(1));
     workspace.apply(C::Undo).unwrap();
     assert_eq!(workspace.snapshot().selected, vec![0, 2]);
+    assert_eq!(workspace.selection().anchor, Some(0));
     assert!(!workspace.snapshot().tabs[1].dirty);
     // Dropping an already contiguous selection back into itself is a no-op.
     workspace

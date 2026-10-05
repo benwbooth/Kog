@@ -41,7 +41,6 @@ use wasm_bindgen::prelude::wasm_bindgen;
 
 mod drag;
 use drag::{clear_track_drop_marker, track_drop_target};
-#[cfg(test)]
 mod selection;
 mod session;
 mod workspace;
@@ -2440,16 +2439,82 @@ fn App() -> impl IntoView {
         callback.forget();
     }
 
+    let playlist_workspace = workspace::Controller { backend };
+    // One table renders either the live queue or the active saved-playlist
+    // draft. Transport continues to read `queue`; pane actions use these views.
+    let pane_key = Memo::new(move |_| playlist_workspace.snapshot().active);
+    let pane_entries = Memo::new(move |_| {
+        if pane_key.get() == "queue" {
+            queue.get()
+        } else {
+            playlist_workspace.snapshot().entries.iter().map(entry_from_json).collect()
+        }
+    });
+    let pane_selected = Memo::new(move |_| {
+        playlist_workspace.snapshot().selected.into_iter().collect::<HashSet<_>>()
+    });
+    let pane_current = Memo::new(move |_| {
+        let index = current.get();
+        if pane_key.get() == "queue" {
+            (index < queue.get().len()).then_some(index)
+        } else {
+            queue.get().get(index).and_then(|playing| {
+                let locator = entry_star_locator(playing);
+                pane_entries.get().iter().position(|entry| entry_star_locator(entry) == locator)
+            })
+        }
+    });
+    let draft_filters = RwSignal::new(HashMap::<String, String>::new());
+    let draft_sorts = RwSignal::new(HashMap::<String, (SortKey, bool)>::new());
+    let pane_filter = Memo::new(move |_| {
+        let key = pane_key.get();
+        if key == "queue" { filter.get() }
+        else { draft_filters.with(|filters| filters.get(&key).cloned().unwrap_or_default()) }
+    });
+    let pane_visible = Memo::new(move |_| {
+        if pane_key.get() == "queue" {
+            backend.revision.track();
+            session_model.with_value(|model| model.visible().to_vec())
+        } else {
+            let cache = metadata.get();
+            let starred = stars.get();
+            let query = pane_filter.get();
+            pane_entries.get().iter().enumerate()
+                .filter_map(|(index, entry)| entry_sort_row(index, entry, &cache, &starred)
+                    .matches(&query).then_some(index))
+                .collect()
+        }
+    });
+    let filter_pane = move |query: String| {
+        let key = pane_key.get_untracked();
+        if key == "queue" {
+            backend.send(SessionCommand::Filter { query });
+        } else {
+            draft_filters.update(|filters| { filters.insert(key, query); });
+            playlist_workspace.send(kog_playback_policy::workspace::Command::Selection {
+                command: kog_playback_policy::selection::Command::Clear,
+            });
+        }
+    };
+    Effect::new(move |_| {
+        pane_key.track();
+        set_song_menu.set(None);
+        set_dragging_track.set(None);
+        set_reorder_to.set(None);
+        clear_track_drop_marker();
+    });
     let select_row = move |index: usize, shift: bool, toggle: bool| {
-        use kog_playback_policy::selection::{Command, Gesture};
-        let gesture = match (shift, toggle) {
-            (true, true) => Gesture::AddRange,
-            (true, false) => Gesture::Range,
-            (false, true) => Gesture::Toggle,
-            _ => Gesture::Replace,
-        };
-        backend.send(SessionCommand::Select {
-            command: Command::Choose { index, gesture },
+        use kog_playback_policy::selection::Command;
+        let selection = session_model.with_value(|model| {
+            if pane_key.get_untracked() == "queue" { model.selection().clone() }
+            else { model.workspace_model().selection() }
+        });
+        let (indices, anchor) = selection::click_selection(
+            &selection.indices.into_iter().collect(), selection.anchor,
+            &pane_visible.get_untracked(), index, shift, toggle,
+        );
+        playlist_workspace.send(kog_playback_policy::workspace::Command::Selection {
+            command: Command::Set { indices: indices.into_iter().collect(), anchor },
         });
     };
 
@@ -3094,10 +3159,15 @@ fn App() -> impl IntoView {
     };
 
     let move_track = move |from: usize, to: usize| {
-        backend.send(SessionCommand::Move {
-            indices: vec![from],
-            target: to,
-        })
+        if !playlist_workspace.snapshot().actions.append { return; }
+        if !pane_selected.get_untracked().contains(&from) { select_row(from, false, false); }
+        if pane_key.get_untracked() == "queue" {
+            backend.send(SessionCommand::Move {
+                indices: pane_selected.get_untracked().into_iter().collect(), target: to,
+            });
+        } else {
+            playlist_workspace.send(kog_playback_policy::workspace::Command::Move { target: to });
+        }
     };
 
     let open_create_playlist_dialog = move || {
@@ -3561,7 +3631,7 @@ fn App() -> impl IntoView {
                         let to = track_drop_target(
                             touch.client_x(),
                             touch.client_y(),
-                            queue.get_untracked().len(),
+                            pane_entries.get_untracked().len(),
                         );
                         set_reorder_to.set(to);
                         *press.borrow_mut() = TouchPress::Dragging { from, to };
@@ -3657,16 +3727,14 @@ fn App() -> impl IntoView {
     // Remove the selected rows from the pane. The pane is client-owned, so
     // neither the menu nor the Delete key needs a server request.
     let remove_selected = move || {
-        backend.send(SessionCommand::Remove {
-            indices: selected.get_untracked().into_iter().collect(),
-        });
+        playlist_workspace.send(kog_playback_policy::workspace::Command::Remove);
         set_menu_open.set(false);
         set_song_menu.set(None);
     };
     let select_all_results = move || {
-        backend.send(SessionCommand::Select {
-            command: kog_playback_policy::selection::Command::All,
-        })
+        playlist_workspace.send(kog_playback_policy::workspace::Command::Select {
+            indices: pane_visible.get_untracked(),
+        });
     };
 
     // Global keys, from anywhere on the page. Escape dismisses any open menu
@@ -3708,12 +3776,7 @@ fn App() -> impl IntoView {
                             key: session_model
                                 .with_value(|model| model.workspace_model().snapshot().active),
                         }),
-                        "a" => Some(Command::Select {
-                            indices: (0..session_model.with_value(|model| {
-                                model.workspace_model().snapshot().entries.len()
-                            }))
-                                .collect(),
-                        }),
+                        "a" => Some(Command::Select { indices: pane_visible.get_untracked() }),
                         "z" if ev.shift_key() => Some(Command::Redo),
                         "z" => Some(Command::Undo),
                         "y" => Some(Command::Redo),
@@ -3752,7 +3815,7 @@ fn App() -> impl IntoView {
                 && !add_url_open.get_untracked()
                 && track_details.get_untracked().is_none()
                 && playlist_dialog.get_untracked().is_none()
-                && !selected.get_untracked().is_empty()
+                && !pane_selected.get_untracked().is_empty()
             {
                 ev.prevent_default();
                 remove_selected();
@@ -4262,14 +4325,17 @@ fn App() -> impl IntoView {
         levels_poll.forget();
     }
 
-    // One batched tag lookup for everything in the queue. The cache
+    // One batched tag lookup for the queue and displayed playlist. The cache
     // is read untracked so a successful fetch does not immediately schedule the
     // same request again; a re-render of the rows is the only effect.
     Effect::new(move |_| {
         if !connected.get() {
             return;
         }
-        let entries = queue.get();
+        let mut entries = queue.get();
+        entries.extend(pane_entries.get());
+        let mut seen = HashSet::new();
+        entries.retain(|entry| seen.insert(meta_key(entry)));
         if entries.is_empty() {
             return;
         }
@@ -4332,7 +4398,14 @@ fn App() -> impl IntoView {
         }
     });
 
-    let play_row = move |index: usize| backend.send(SessionCommand::Play { index });
+    let play_row = move |index: usize| {
+        if pane_key.get_untracked() == "queue" {
+            backend.send(SessionCommand::Play { index });
+        } else {
+            select_row(index, false, false);
+            playlist_workspace.send(kog_playback_policy::workspace::Command::Queue { action: QueueAction::PlayNow });
+        }
+    };
 
     // Album art for the transport thumbnail: the current track's embedded
     // or sibling cover through the server, falling back to a neutral cover when a
@@ -4581,26 +4654,24 @@ fn App() -> impl IntoView {
         }
     };
 
-    // Sorting supplies the same playback sequence as the other frontends;
-    // filtering changes only visibility and preserves stable row identities.
-    let activate_row = move |index| backend.send(SessionCommand::Activate { index });
+    // Every tab shares the queue's rows, columns, metadata, and input handling.
+    // Only the source of entries and the destination of edits changes.
+    let activate_row = move |index| {
+        if pane_key.get_untracked() == "queue" {
+            backend.send(SessionCommand::Activate { index });
+        } else {
+            select_row(index, false, false);
+            playlist_workspace.send(kog_playback_policy::workspace::Command::Queue { action: QueueAction::PlayNow });
+        }
+    };
     let view_rows = move || {
-        backend.revision.track();
-        let entries = queue.get();
+        let entries = pane_entries.get();
         let cache = metadata.get();
         let failed = metadata_failed.get();
-        session_model.with_value(|model| {
-            model
-                .visible()
-                .iter()
-                .filter_map(|index| {
-                    entries
-                        .get(*index)
-                        .filter(|entry| metadata_ready(&cache, &failed, entry))
-                        .map(|entry| (*index, entry.clone()))
-                })
-                .collect::<Vec<_>>()
-        })
+        pane_visible.get().into_iter().filter_map(|index| {
+            entries.get(index).filter(|entry| metadata_ready(&cache, &failed, entry))
+                .map(|entry| (index, entry.clone()))
+        }).collect::<Vec<_>>()
     };
 
     // The pane's status line, shared by the header and the transport: how many
@@ -4609,7 +4680,7 @@ fn App() -> impl IntoView {
     let status_line = move || -> String {
         let cache = metadata.get();
         let failed = metadata_failed.get();
-        let total = queue
+        let total = pane_entries
             .get()
             .iter()
             .filter(|entry| metadata_ready(&cache, &failed, entry))
@@ -4651,26 +4722,32 @@ fn App() -> impl IntoView {
             .unwrap_or_default()
     };
 
+    let pane_sort = Memo::new(move |_| {
+        let key = pane_key.get();
+        if key == "queue" { (sort_key.get(), sort_asc.get()) }
+        else { draft_sorts.with(|sorts| sorts.get(&key).copied().unwrap_or((SortKey::Index, true))) }
+    });
     let toggle_sort = move |key: SortKey| {
-        let column = ColumnId::ALL
-            .into_iter()
-            .find(|c| c.sort_key() == key)
-            .unwrap_or(ColumnId::Index)
-            .key()
-            .to_owned();
-        let descending = sort_key.get_untracked() == key && sort_asc.get_untracked();
-        backend.send(SessionCommand::Sort {
-            column,
-            descending,
-            physical: true,
-        });
+        if !playlist_workspace.snapshot().actions.append { return; }
+        let column = ColumnId::ALL.into_iter().find(|c| c.sort_key() == key)
+            .unwrap_or(ColumnId::Index).key().to_owned();
+        let previous = pane_sort.get_untracked();
+        let descending = previous.0 == key && previous.1;
+        let tab = pane_key.get_untracked();
+        if tab == "queue" {
+            backend.send(SessionCommand::Sort { column, descending, physical: true });
+        } else {
+            let cache = metadata.get_untracked();
+            let starred = stars.get_untracked();
+            let rows = pane_entries.get_untracked().iter().enumerate()
+                .map(|(index, entry)| entry_sort_row(index, entry, &cache, &starred)).collect();
+            playlist_workspace.send(kog_playback_policy::workspace::Command::Sort { rows, column, descending });
+            draft_sorts.update(|sorts| { sorts.insert(tab, (key, !descending)); });
+        }
     };
     let sort_arrow = move |key: SortKey| -> &'static str {
-        if sort_key.get() == key {
-            if sort_asc.get() { " ▲" } else { " ▼" }
-        } else {
-            ""
-        }
+        let (sorted, ascending) = pane_sort.get();
+        if sorted == key { if ascending { " ▲" } else { " ▼" } } else { "" }
     };
 
     let visible_columns = move || -> Vec<Column> {
@@ -4716,7 +4793,6 @@ fn App() -> impl IntoView {
         });
     };
 
-    let playlist_workspace = workspace::Controller { backend };
     backend
         .saved
         .set_value(Some(Callback::new(move |()| load_playlists())));
@@ -5257,16 +5333,41 @@ fn App() -> impl IntoView {
     // contributes playable files throughout its subtree, including folders
     // inside archives.
     let add_row_to_playlist = move |row: TreeRow| {
-        if row.is_dir {
-            backend.send(SessionCommand::Collect {
-                scope: base(),
-                path: row.path,
-                query: tree_search.get_untracked(),
-                root: tree_root.get_untracked(),
-                action: QueueAction::AddToQueue,
-            });
+        let destination = playlist_workspace.snapshot();
+        if !destination.actions.append { return; }
+        let scope = base();
+        let entries = vec![serde_json::json!({"kind":row.kind,"path":row.path,"entry":row.entry,"fragment":row.fragment,"name":row.name})];
+        if destination.active == "queue" {
+            if row.is_dir {
+                backend.send(SessionCommand::Collect {
+                    scope, path: row.path, query: tree_search.get_untracked(),
+                    root: tree_root.get_untracked(), action: QueueAction::AddToQueue,
+                });
+            } else {
+                backend.send(SessionCommand::AppendToTab {key:destination.active, scope, entries});
+            }
         } else {
-            backend.send(SessionCommand::Expand {scope:base(),entries:vec![serde_json::json!({"kind":row.kind,"path":row.path,"entry":row.entry,"fragment":row.fragment,"name":row.name})],action:QueueAction::AddToQueue});
+            let header = auth().header();
+            let query = tree_search.get_untracked();
+            let root = tree_root.get_untracked();
+            leptos::task::spawn_local(async move {
+                let resolved = if row.is_dir {
+                    session::request("GET", format!("{scope}/api/library/collect?path={}&q={}&root={}",
+                        url_encode(&row.path), url_encode(&query), url_encode(&root)), header, None)
+                        .await.map(|value| value["tracks"].as_array()
+                            .map(|items| items.iter().map(browse_file_entry).collect()).unwrap_or_default())
+                } else {
+                    session::expand(&scope, header, entries).await
+                };
+                match resolved {
+                    Ok(entries) if base() == scope => backend.send(SessionCommand::AppendToTab {
+                        key:destination.active, scope,
+                        entries:entries.iter().map(|entry| serde_json::to_value(entry).expect("serializable entry")).collect(),
+                    }),
+                    Ok(_) => set_message.set("Connect to the original playlist server".into()),
+                    Err(error) => set_message.set(error),
+                }
+            });
         }
     };
 
@@ -5331,6 +5432,8 @@ fn App() -> impl IntoView {
                         else {
                             return;
                         };
+                        if !playlist_workspace.snapshot().actions.append { ev.prevent_default(); return; }
+                        if !pane_selected.get_untracked().contains(&index) { select_row(index, false, false); }
                         set_dragging_track.set(Some(index));
                         set_reorder_to.set(None);
                         if let Some(transfer) = ev.data_transfer() {
@@ -5356,7 +5459,7 @@ fn App() -> impl IntoView {
                             set_reorder_to.set(track_drop_target(
                                 ev.client_x(),
                                 ev.client_y(),
-                                queue.get_untracked().len(),
+                                pane_entries.get_untracked().len(),
                             ));
                             if let Some(transfer) = ev.data_transfer() {
                                 transfer.set_drop_effect("move");
@@ -5383,7 +5486,7 @@ fn App() -> impl IntoView {
                             set_reorder_to.set(track_drop_target(
                                 ev.client_x(),
                                 ev.client_y(),
-                                queue.get_untracked().len(),
+                                pane_entries.get_untracked().len(),
                             ));
                         }
                     })
@@ -5717,14 +5820,14 @@ fn App() -> impl IntoView {
                             type="search"
                             placeholder="Search"
                             aria-label="Search playlist"
-                            prop:value=move || filter.get()
-                            on:input=move |event| backend.send(SessionCommand::Filter {query:event_target_value(&event)})
+                            prop:value=move || pane_filter.get()
+                            on:input=move |event| filter_pane(event_target_value(&event))
                         />
-                        <Show when=move || !filter.get().is_empty() fallback=|| ()>
+                        <Show when=move || !pane_filter.get().is_empty() fallback=|| ()>
                             <button
                                 class="flat search-clear"
                                 title="Clear playlist search"
-                                on:click=move |_| backend.send(SessionCommand::Filter {query:String::new()})
+                                on:click=move |_| filter_pane(String::new())
                             >"×"</button>
                         </Show>
                     </div>
@@ -6251,6 +6354,7 @@ fn App() -> impl IntoView {
                                             view! {
                                             <button
                                                 class="tree-row favorite-row"
+                                                class:selected=move || pane_key.get() == format!("{}:0", base())
                                                 title="Open Favorites in a tab"
                                                 draggable="true"
                                                 on:click=move |_| {
@@ -6341,6 +6445,8 @@ fn App() -> impl IntoView {
                                                 view! {
                                                     <button
                                                         class="tree-row playlist-row"
+                                                        class:selected=move || pane_key.get() == format!("{}:{drag_id}", base())
+                                                        class:renaming=move || renaming_playlist.get() == Some(drag_id)
                                                         title="Open playlist in a tab"
                                                         draggable="true"
                                                         on:click=move |_| {
@@ -6424,12 +6530,12 @@ fn App() -> impl IntoView {
                                                             role="button"
                                                             tabindex="0"
                                                             aria-label=playlist_append_title
-                                                            aria-disabled=move || !playlist_workspace.snapshot().actions.append
+                                                            aria-disabled=move || count == 0 || !playlist_workspace.snapshot().actions.append
                                                             on:keydown=move |ev: web_sys::KeyboardEvent| {
                                                                 if ev.key() == "Enter" || ev.key() == " " {
                                                                     ev.prevent_default();
                                                                     ev.stop_propagation();
-                                                                    append_playlist(drag_id);
+                                                                    if count > 0 { append_playlist(drag_id); }
                                                                 }
                                                             }
                                                             title=playlist_append_title
@@ -6438,7 +6544,7 @@ fn App() -> impl IntoView {
                                                                     append_playlist.clone();
                                                                 move |ev: web_sys::MouseEvent| {
                                                                     ev.stop_propagation();
-                                                                    append_playlist(drag_id);
+                                                                    if count > 0 { append_playlist(drag_id); }
                                                                     set_sidebar_open.set(false);
                                                                     if touch_mode { set_mobile_view.set(MobileView::Queue); }
                                                                 }
@@ -6471,11 +6577,10 @@ fn App() -> impl IntoView {
                             </div>
                         </Show>
                         <workspace::Tabs controller=playlist_workspace />
-                        <Show when=move || playlist_workspace.snapshot().active != "queue">
-                            <workspace::Editor controller=playlist_workspace />
+                        <Show when=move || playlist_workspace.snapshot().error.is_some()>
+                            <p class="empty" role="alert">{move || playlist_workspace.snapshot().error.unwrap_or_default()}</p>
                         </Show>
                         <div
-                            style:display=move || if playlist_workspace.snapshot().active == "queue" { "" } else { "none" }
                             class="rows"
                             id="playlist-rows"
                             class:drop-active=move || playlist_drop_active.get()
@@ -6613,17 +6718,18 @@ fn App() -> impl IntoView {
                             <Show
                                 when=move || !view_rows().is_empty()
                                 fallback=move || view! {
-                                    <Show when=move || !connected.get() || queue.get().is_empty()>
+                                    <Show when=move || !connected.get() || pane_entries.get().is_empty()>
                                         <p class="empty">
                                             {move || if connected.get() {
-                                                "Pick a folder in the file tree, or a playlist."
+                                                if pane_key.get() == "queue" { "Pick a folder in the file tree, or a playlist." }
+                                                else { "This playlist is empty." }
                                             } else {
                                                 "Open the server settings to connect."
                                             }}
                                         </p>
                                         <div class="mobile-queue-empty">
                                             <span class="mobile-empty-icon" inner_html=icons::FMT_PLAYLIST></span>
-                                            <h2>{move || if connected.get() { "Your queue is empty" } else { "Connect to Kog" }}</h2>
+                                            <h2>{move || if !connected.get() { "Connect to Kog" } else if pane_key.get() == "queue" { "Your queue is empty" } else { "This playlist is empty" }}</h2>
                                             <p>{move || if connected.get() { "Choose music from your Library or Playlists." } else { "Connect to your Kog server to browse and play music." }}</p>
                                             <button
                                                 type="button"
@@ -6642,7 +6748,7 @@ fn App() -> impl IntoView {
                             >
                                 <For
                                     each=view_rows
-                                    key=|(index, entry)| format!("{index}:{}::{}", entry.path, entry.entry)
+                                    key=move |(index, entry)| format!("{}:{index}:{}", pane_key.get(), meta_key(entry))
                                     let:row
                                 >
                                     {
@@ -6652,14 +6758,14 @@ fn App() -> impl IntoView {
                                         view! {
                                             <button
                                                 class="track"
-                                                draggable="true"
+                                                draggable=move || if playlist_workspace.snapshot().actions.append { "true" } else { "false" }
                                                 style="position: relative"
                                                 data-index=move || index.to_string()
-                                                class:current=move || current.get() == index
-                                                class:selected=move || selected.get().contains(&index)
+                                                class:current=move || pane_current.get() == Some(index)
+                                                class:selected=move || pane_selected.get().contains(&index)
                                                 on:contextmenu=move |ev: web_sys::MouseEvent| {
                                                     ev.prevent_default();
-                                                    if !selected.get_untracked().contains(&index) {
+                                                    if !pane_selected.get_untracked().contains(&index) {
                                                         select_row(index,false,false);
                                                     }
                                                     set_song_menu.set(Some((
@@ -6679,6 +6785,13 @@ fn App() -> impl IntoView {
                                                     // like the desktop: a song starts
                                                     // on double click.
                                                     select_row(index,ev.shift_key(),ev.ctrl_key()||ev.meta_key());
+                                                }
+                                                on:keydown=move |ev: web_sys::KeyboardEvent| {
+                                                    if ev.key() == "Enter" && !ev.ctrl_key() && !ev.meta_key() && !ev.alt_key() {
+                                                        ev.prevent_default(); ev.stop_propagation();
+                                                        select_row(index, false, false);
+                                                        activate_row(index);
+                                                    }
                                                 }
                                                 on:dblclick=move |ev: web_sys::MouseEvent| {
                                                     ev.prevent_default();
@@ -6737,7 +6850,7 @@ fn App() -> impl IntoView {
                                                         let text = move || {
                                                             let cache = metadata.get();
                                                             let meta = meta_for(&cache, &entry);
-                                                            let live = if current.get() == index
+                                                            let live = if pane_current.get() == Some(index)
                                                                 && duration.get() > 0.0
                                                             {
                                                                 Some(duration.get())
@@ -6747,7 +6860,7 @@ fn App() -> impl IntoView {
                                                             let starred = stars
                                                                 .get()
                                                                 .contains(&entry_star_locator(&entry));
-                                                            let status = if current.get() == index {
+                                                            let status = if pane_current.get() == Some(index) {
                                                                 if playing.get() {
                                                                     "▶"
                                                                 } else if !stopped.get() {
@@ -6759,6 +6872,7 @@ fn App() -> impl IntoView {
                                                                 ""
                                                             };
                                                             if id == ColumnId::Status {
+                                                                if pane_key.get() != "queue" { return status.to_owned(); }
                                                                 policy_revision.track();
                                                                 let policy = session_model.read_value();
                                                                 let queued = policy.order().queue_position(index).map(|position| format!(" {}", position + 1)).unwrap_or_default();
@@ -6794,7 +6908,7 @@ fn App() -> impl IntoView {
                                                                     | ColumnId::Artist
                                                                     | ColumnId::Album
                                                             ) {
-                                                                highlight_label(raw, filter.get())
+                                                                highlight_label(raw, pane_filter.get())
                                                             } else {
                                                                 raw.into_any()
                                                             }
@@ -6804,12 +6918,12 @@ fn App() -> impl IntoView {
                                                                 class=format!("cell {}", id.class())
                                                                 class:visualizer-trigger=move || {
                                                                     id == ColumnId::Status
-                                                                        && current.get() == index
+                                                                        && pane_current.get() == Some(index)
                                                                         && !stopped.get()
                                                                 }
                                                                 title=move || {
                                                                     if id == ColumnId::Status
-                                                                        && current.get() == index
+                                                                        && pane_current.get() == Some(index)
                                                                         && !stopped.get()
                                                                     {
                                                                         "Open audio visualizer".to_owned()
@@ -6819,7 +6933,7 @@ fn App() -> impl IntoView {
                                                                 }
                                                                 on:click=move |ev: web_sys::MouseEvent| {
                                                                     if id == ColumnId::Status
-                                                                        && current.get_untracked() == index
+                                                                        && pane_current.get_untracked() == Some(index)
                                                                         && !stopped.get_untracked()
                                                                     {
                                                                         ev.stop_propagation();
@@ -6840,7 +6954,7 @@ fn App() -> impl IntoView {
                                                                 }
                                                                 on:dblclick=move |ev: web_sys::MouseEvent| {
                                                                     if id == ColumnId::Status
-                                                                        && current.get_untracked() == index
+                                                                        && pane_current.get_untracked() == Some(index)
                                                                         && !stopped.get_untracked()
                                                                     {
                                                                         ev.stop_propagation();
@@ -6860,7 +6974,7 @@ fn App() -> impl IntoView {
                                                                 <Show
                                                                     when=move || {
                                                                         id == ColumnId::Status
-                                                                            && current.get() == index
+                                                                            && pane_current.get() == Some(index)
                                                                             && playing.get()
                                                                     }
                                                                     fallback=|| ()
@@ -6946,7 +7060,7 @@ fn App() -> impl IntoView {
                                                                         tabindex="0"
                                                                         aria-label="Open audio visualizer"
                                                                         on:click=move |ev: web_sys::MouseEvent| {
-                                                                            if current.get_untracked() == index && !stopped.get_untracked() {
+                                                                            if pane_current.get_untracked() == Some(index) && !stopped.get_untracked() {
                                                                                 ev.stop_propagation();
                                                                                 set_visualizer_spectrum_mode.set(false);
                                                                                 set_visualizer_open.set(true);
@@ -6956,13 +7070,13 @@ fn App() -> impl IntoView {
                                                                             if ev.key() == "Enter" || ev.key() == " " {
                                                                                 ev.prevent_default();
                                                                                 ev.stop_propagation();
-                                                                                if current.get_untracked() == index && !stopped.get_untracked() {
+                                                                                if pane_current.get_untracked() == Some(index) && !stopped.get_untracked() {
                                                                                     set_visualizer_spectrum_mode.set(false);
                                                                                     set_visualizer_open.set(true);
                                                                                 }
                                                                             }
                                                                         }
-                                                                    >{move || if current.get() == index && !stopped.get() { if playing.get() { "▶" } else { "Ⅱ" } } else { "" }}</span>
+                                                                    >{move || if pane_current.get() == Some(index) && !stopped.get() { if playing.get() { "▶" } else { "Ⅱ" } } else { "" }}</span>
                                                                     <span class="mobile-track-title">
                                                                         {move || display_title(&metadata.get(), &metadata_failed.get(), &mobile_title_entry).unwrap_or_default()}
                                                                     </span>
@@ -7040,7 +7154,7 @@ fn App() -> impl IntoView {
                                                         return;
                                                     }
                                                     set_reorder_to.set(track_drop_target(
-                                                        ev.client_x(), ev.client_y(), queue.get_untracked().len()));
+                                                        ev.client_x(), ev.client_y(), pane_entries.get_untracked().len()));
                                                 }
                                                 on:pointerup=move |ev: web_sys::PointerEvent| {
                                                     if dragging_track.get_untracked() == Some(index)
@@ -7782,6 +7896,7 @@ fn App() -> impl IntoView {
                         >
                             "Play"
                         </button>
+                        <Show when=move || pane_key.get() == "queue">
                         <button class="menu-item" on:click=move |_| {
                             if let Some((_, _, index, _)) = song_menu.get_untracked() {
                                 let indices = if selected.get_untracked().contains(&index) { let mut indices: Vec<_> = selected.get_untracked().into_iter().collect(); indices.sort_unstable(); indices } else { vec![index] };
@@ -7798,6 +7913,17 @@ fn App() -> impl IntoView {
                                 set_song_menu.set(None);
                             }
                         }>"Toggle Stop After"</button>
+                        </Show>
+                        <Show when=move || pane_key.get() != "queue">
+                            <button class="menu-item" disabled=move || !playlist_workspace.snapshot().actions.queue on:click=move |_| {
+                                playlist_workspace.send(kog_playback_policy::workspace::Command::Queue { action: QueueAction::PlayNext });
+                                set_song_menu.set(None);
+                            }>"Play Next"</button>
+                            <button class="menu-item" disabled=move || !playlist_workspace.snapshot().actions.queue on:click=move |_| {
+                                playlist_workspace.send(kog_playback_policy::workspace::Command::Queue { action: QueueAction::AddToQueue });
+                                set_song_menu.set(None);
+                            }>"Add to Queue"</button>
+                        </Show>
                         <button
                             class="menu-item"
                             on:click=move |_| {
@@ -7821,6 +7947,7 @@ fn App() -> impl IntoView {
                         </Show>
                         <button
                             class="menu-item"
+                            disabled=move || !playlist_workspace.snapshot().actions.remove
                             on:click=move |_| {
                                 set_song_menu.set(None);
                                 remove_selected();
@@ -7839,12 +7966,13 @@ fn App() -> impl IntoView {
                         </button>
                         <button
                             class="menu-item"
+                            disabled=move || !playlist_workspace.snapshot().actions.clear
                             on:click=move |_| {
                                 set_song_menu.set(None);
-                                clear_pane();
+                                playlist_workspace.send(kog_playback_policy::workspace::Command::Clear);
                             }
                         >
-                            {if touch_mode { "Clear Queue" } else { "Clear Play Queue" }}
+                            {move || if pane_key.get() == "queue" { "Clear Play Queue" } else { "Clear Playlist" }}
                         </button>
                         <div class="menu-separator"></div>
                         <button
@@ -8255,7 +8383,7 @@ fn App() -> impl IntoView {
                                     set_mobile_sort_open.set(false);
                                 }
                             >
-                                <span class="menu-check">{move || if sort_key.get() == id.sort_key() { "✓" } else { "" }}</span>
+                                <span class="menu-check">{move || if pane_sort.get().0 == id.sort_key() { "✓" } else { "" }}</span>
                                 {id.menu_label()}
                                 <span class="mobile-sort-direction">{move || sort_arrow(id.sort_key())}</span>
                             </button>
@@ -8335,7 +8463,7 @@ fn App() -> impl IntoView {
                         </button>
                         <div class="menu-separator"></div>
                         <workspace::PlaybackMenu controller=playlist_workspace on_action=Callback::new(move |_| set_menu_open.set(false)) />
-                        <workspace::EditMenu controller=playlist_workspace on_action=Callback::new(move |_| set_menu_open.set(false)) />
+                        <workspace::EditMenu controller=playlist_workspace on_action=Callback::new(move |_| set_menu_open.set(false)) on_select_all=Callback::new(move |_| select_all_results()) />
                         <div class="menu-separator"></div>
                         <div class="menu-group">"View"</div>
                         <button class="menu-item" on:click=move |_| {
