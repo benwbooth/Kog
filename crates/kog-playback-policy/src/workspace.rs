@@ -132,6 +132,9 @@ pub enum Command {
     Nudge {
         delta: i32,
     },
+    Move {
+        target: usize,
+    },
     Sort {
         rows: Vec<crate::sort::SortRow>,
         column: String,
@@ -251,7 +254,7 @@ impl Actions {
             Save => self.save,
             Reload => self.reload,
             Append { .. } | Sort { .. } => self.append,
-            Remove => self.remove,
+            Remove | Move { .. } => self.remove,
             Nudge { delta } => {
                 if *delta < 0 {
                     self.move_up
@@ -592,6 +595,29 @@ impl Workspace {
                         }
                     }
                 }
+                if next != tab.draft.rows {
+                    tab.edit()?;
+                    tab.draft.rows = next;
+                }
+            }
+            Move { target } => {
+                let tab = self.active_mut()?;
+                let indices = tab.selected_indices();
+                if indices.is_empty() {
+                    return Ok(Effect::None);
+                }
+                let mut order: Vec<_> = (0..tab.draft.rows.len())
+                    .filter(|i| !indices.contains(i))
+                    .collect();
+                let slot = target
+                    .min(tab.draft.rows.len())
+                    .saturating_sub(indices.iter().filter(|i| **i < target).count())
+                    .min(order.len());
+                order.splice(slot..slot, indices);
+                let next: Vec<_> = order
+                    .into_iter()
+                    .map(|i| tab.draft.rows[i].clone())
+                    .collect();
                 if next != tab.draft.rows {
                     tab.edit()?;
                     tab.draft.rows = next;

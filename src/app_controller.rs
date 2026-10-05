@@ -187,6 +187,16 @@ pub mod qobject {
         #[qinvokable]
         fn workspace_json_for_selection(self: &AppController, selected: i32) -> QString;
         #[qinvokable]
+        fn workspace_track_value_at(self: &AppController, index: i32, column: QString) -> QString;
+        #[qinvokable]
+        fn workspace_current_index(self: &AppController) -> i32;
+        #[qinvokable]
+        fn workspace_toggle_stars(self: Pin<&mut AppController>, indices: QString);
+        #[qinvokable]
+        fn workspace_sort(self: Pin<&mut AppController>, column: QString, descending: bool);
+        #[qinvokable]
+        fn workspace_move(self: Pin<&mut AppController>, target: i32);
+        #[qinvokable]
         fn selection_json(
             self: Pin<&mut AppController>,
             state: QString,
@@ -1527,6 +1537,48 @@ fn track_filename(track: &Track) -> String {
         .unwrap_or_default()
 }
 
+fn formatted_track_value(track: &Track, column: &str) -> QString {
+    match column {
+        "rating" | "playcount" => QString::default(),
+        "title" => qstring(&track.title),
+        "albumartist" => qstring(&track.album_artist),
+        "artist" => qstring(&track.artist),
+        "composer" => qstring(&track.composer),
+        "album" => qstring(&track.album),
+        "length" => qstring(track.duration_label()),
+        "filesizebytes" => track
+            .file_size_bytes
+            .map(|bytes| qstring(bytes.to_string()))
+            .unwrap_or_default(),
+        "filesize" => track
+            .file_size_bytes
+            .map(|bytes| qstring(kog_audio::track::file_size_label(bytes)))
+            .unwrap_or_default(),
+        "date" => track
+            .year
+            .map(|year| qstring(year.to_string()))
+            .unwrap_or_default(),
+        "genre" => qstring(&track.genre),
+        "track" => track
+            .track_number
+            .map(|number| qstring(number.to_string()))
+            .unwrap_or_default(),
+        "path" => qstring(track_path(track)),
+        "filename" => qstring(track_filename(track)),
+        "codec" => qstring(&track.codec),
+        "samplerate" => qstring(sample_rate_label(track.sample_rate)),
+        "bitspersample" => track
+            .bits_per_sample
+            .map(|bits| qstring(bits.to_string()))
+            .unwrap_or_default(),
+        "bitrate" => track
+            .bitrate
+            .map(|bitrate| qstring(format!("{bitrate} kbps")))
+            .unwrap_or_default(),
+        _ => QString::default(),
+    }
+}
+
 fn sample_rate_label(sample_rate: Option<u32>) -> String {
     let Some(sample_rate) = sample_rate else {
         return String::new();
@@ -1850,6 +1902,7 @@ pub struct AppControllerRust {
     equalizer_revision: i32,
     tracks: Vec<Track>,
     visible_indices: Vec<usize>,
+    workspace_tracks: crate::workspace_tracks::WorkspaceTracks,
     sort_column: PlaylistSortColumn,
     filter: String,
     library_db: kog_core::db::LibraryDb,
@@ -2084,6 +2137,7 @@ impl Default for AppControllerRust {
             equalizer_revision: 0,
             tracks: Vec::new(),
             visible_indices: Vec::new(),
+            workspace_tracks: crate::workspace_tracks::WorkspaceTracks::default(),
             sort_column: PlaylistSortColumn::Index,
             filter: String::new(),
             library_db,
@@ -2244,6 +2298,7 @@ impl Default for AppControllerRust {
             controller.duration_seconds = track.duration.unwrap_or_default().as_secs_f64();
         }
         controller.mpris.publish(mpris_snapshot(&controller));
+        controller.refresh_workspace_tracks();
         controller
     }
 }
@@ -2474,6 +2529,13 @@ fn midi_status(
 }
 
 impl AppControllerRust {
+    fn refresh_workspace_tracks(&mut self) {
+        let entries = self.session.workspace_model().snapshot().entries;
+        self.workspace_tracks.refresh(entries, &self.tracks, || {
+            self.decoders.background_worker(self.decoder_settings.clone())
+        });
+    }
+
     fn add_path(&mut self, path: PathBuf) -> Result<AddPathResult, String> {
         let path = canonical_path(&path)?;
         if !path.is_file() {
@@ -3604,6 +3666,168 @@ impl qobject::AppController {
             .unwrap_or_default(),
         )
     }
+    pub fn workspace_track_value_at(&self, index: i32, column: QString) -> QString {
+        let Some(row) = usize::try_from(index)
+            .ok()
+            .and_then(|index| self.rust().workspace_tracks.rows.get(index))
+        else {
+            return QString::default();
+        };
+        let column = column.to_string();
+        match column.as_str() {
+            "index" => qstring((index + 1).to_string()),
+            "star" => qstring(
+                if row.entry.as_ref().is_some_and(|entry| {
+                    self.rust()
+                        .starred
+                        .contains(&crate::workspace_tracks::entry_key(entry))
+                }) {
+                    "★"
+                } else {
+                    ""
+                },
+            ),
+            "status_message" => qstring(
+                row.error
+                    .as_deref()
+                    .or_else(|| {
+                        row.track
+                            .as_ref()
+                            .and_then(|track| track.decoder_warning.as_deref())
+                    })
+                    .unwrap_or_default(),
+            ),
+            "missing" => qstring(
+                row.track
+                    .as_ref()
+                    .is_some_and(|track| track.missing)
+                    .to_string(),
+            ),
+            "path" => qstring(row.locator()),
+            "filename" => qstring(row.locator().rsplit(['/', '\\']).next().unwrap_or_default()),
+            _ => row
+                .track
+                .as_ref()
+                .map(|track| formatted_track_value(track, &column))
+                .unwrap_or_else(|| {
+                    if column == "title" {
+                        qstring(row.fallback_title())
+                    } else {
+                        QString::default()
+                    }
+                }),
+        }
+    }
+
+    pub fn workspace_current_index(&self) -> i32 {
+        let Some(entry) = usize::try_from(self.rust().current_index)
+            .ok()
+            .and_then(|index| self.rust().tracks.get(index))
+            .and_then(stored_entry_for_track)
+        else {
+            return -1;
+        };
+        self.rust()
+            .workspace_tracks
+            .rows
+            .iter()
+            .position(|row| row.entry.as_ref() == Some(&entry))
+            .map(saturating_i32)
+            .unwrap_or(-1)
+    }
+
+    pub fn workspace_toggle_stars(mut self: Pin<&mut Self>, indices: QString) {
+        let entries: Vec<_> = parse_row_indices(
+            &indices.to_string(),
+            self.as_ref().rust().workspace_tracks.rows.len(),
+        )
+        .into_iter()
+        .filter_map(|index| {
+            self.as_ref().rust().workspace_tracks.rows[index]
+                .entry
+                .clone()
+        })
+        .collect();
+        for entry in entries {
+            let key = crate::workspace_tracks::entry_key(&entry);
+            let starring = !self.as_ref().rust().starred.contains(&key);
+            if let Err(error) = self.as_ref().rust().library_db.set_star(
+                &key,
+                &entry.kind,
+                &entry.path,
+                &entry.entry,
+                entry.fragment.as_deref(),
+                starring,
+            ) {
+                self.as_mut().set_status(qstring(error));
+                return;
+            }
+            if starring {
+                self.as_mut().rust_mut().starred.insert(key);
+            } else {
+                self.as_mut().rust_mut().starred.remove(&key);
+            }
+        }
+        self.as_mut().bump_playlist_revision();
+        self.as_mut().bump_playlists_revision();
+        let snapshot = self.as_ref().rust().session.workspace_model().snapshot();
+        if snapshot
+            .tabs
+            .iter()
+            .any(|tab| tab.key == snapshot.active && tab.readonly)
+        {
+            self.as_mut().dispatch_workspace(WorkspaceCommand::Reload);
+        } else {
+            self.as_mut().workspace_changed();
+        }
+    }
+
+    pub fn workspace_sort(mut self: Pin<&mut Self>, column: QString, descending: bool) {
+        let rows = self
+            .as_ref()
+            .rust()
+            .workspace_tracks
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(index, row)| {
+                let mut value = row
+                    .track
+                    .as_ref()
+                    .map(kog_audio::playback_order::sort_row)
+                    .unwrap_or_else(|| kog_audio::playback_order::sort::SortRow {
+                        title: row.fallback_title(),
+                        path: row.locator(),
+                        filename: row
+                            .locator()
+                            .rsplit(['/', '\\'])
+                            .next()
+                            .unwrap_or_default()
+                            .to_owned(),
+                        ..Default::default()
+                    });
+                value.original = Some(index as f64);
+                value.star = row.entry.as_ref().is_some_and(|entry| {
+                    self.as_ref()
+                        .rust()
+                        .starred
+                        .contains(&crate::workspace_tracks::entry_key(entry))
+                });
+                value
+            })
+            .collect();
+        self.as_mut().dispatch_workspace(WorkspaceCommand::Sort {
+            rows,
+            column: column.to_string(),
+            descending,
+        });
+    }
+
+    pub fn workspace_move(mut self: Pin<&mut Self>, target: i32) {
+        self.as_mut().dispatch_workspace(WorkspaceCommand::Move {
+            target: target.max(0) as usize,
+        });
+    }
     pub fn selection_json(
         mut self: Pin<&mut Self>,
         _state: QString,
@@ -3650,6 +3874,7 @@ impl qobject::AppController {
     }
 
     fn workspace_changed(mut self: Pin<&mut Self>) {
+        self.as_mut().rust_mut().refresh_workspace_tracks();
         let next = self.as_ref().rust().workspace_revision.wrapping_add(1);
         self.as_mut().set_workspace_revision(next);
     }
@@ -3705,6 +3930,9 @@ impl qobject::AppController {
 
     pub fn poll_workspace(mut self: Pin<&mut Self>) {
         self.as_mut().poll_session_ports();
+        if self.as_mut().rust_mut().workspace_tracks.poll() {
+            self.as_mut().workspace_changed();
+        }
     }
 
     /// Resolve a stored playlist (or Favorites at id 0) to entries.
@@ -5394,51 +5622,9 @@ impl qobject::AppController {
         };
         match column.to_string().as_str() {
             "index" => qstring((source_index + 1).to_string()),
-            "star" => {
-                if self.rust().starred.contains(&star_key_for_track(track)) {
-                    qstring("★")
-                } else {
-                    QString::default()
-                }
-            }
+            "star" => qstring(if self.rust().starred.contains(&star_key_for_track(track)) { "★" } else { "" }),
             "status" => self.track_status_at(index),
-            "rating" | "playcount" => QString::default(),
-            "title" => qstring(&track.title),
-            "albumartist" => qstring(&track.album_artist),
-            "artist" => qstring(&track.artist),
-            "composer" => qstring(&track.composer),
-            "album" => qstring(&track.album),
-            "length" => qstring(track.duration_label()),
-            "filesizebytes" => track
-                .file_size_bytes
-                .map(|bytes| qstring(bytes.to_string()))
-                .unwrap_or_default(),
-            "filesize" => track
-                .file_size_bytes
-                .map(|bytes| qstring(kog_audio::track::file_size_label(bytes)))
-                .unwrap_or_default(),
-            "date" => track
-                .year
-                .map(|year| qstring(year.to_string()))
-                .unwrap_or_default(),
-            "genre" => qstring(&track.genre),
-            "track" => track
-                .track_number
-                .map(|number| qstring(number.to_string()))
-                .unwrap_or_default(),
-            "path" => qstring(track_path(track)),
-            "filename" => qstring(track_filename(track)),
-            "codec" => qstring(&track.codec),
-            "samplerate" => qstring(sample_rate_label(track.sample_rate)),
-            "bitspersample" => track
-                .bits_per_sample
-                .map(|bits| qstring(bits.to_string()))
-                .unwrap_or_default(),
-            "bitrate" => track
-                .bitrate
-                .map(|bitrate| qstring(format!("{bitrate} kbps")))
-                .unwrap_or_default(),
-            _ => QString::default(),
+            column => formatted_track_value(track, column),
         }
     }
 

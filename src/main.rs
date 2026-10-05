@@ -4,6 +4,7 @@ mod file_tree_model;
 mod rom_import;
 mod skin_library;
 mod tag_editor;
+mod workspace_tracks;
 
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QString, QUrl};
 use std::io::IsTerminal;

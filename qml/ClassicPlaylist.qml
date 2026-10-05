@@ -18,7 +18,9 @@ Item {
         return JSON.parse(app.playlists_json()).playlists || []
     }
     readonly property var editorTheme: ({text: root.normal, base: root.normalBg,
-        alternateBase: root.normalBg, highlight: root.selectedBg, highlightedText: root.current})
+        window: root.normalBg, mid: root.normal, button: root.normalBg, buttonText: root.normal,
+        placeholderText: root.normal, alternateBase: root.normalBg,
+        highlight: root.selectedBg, highlightedText: root.current})
     readonly property string sheet: (skin.assets || {}).pledit || ""
     readonly property var colors: skin.playlistColors || ({})
     readonly property color normal: colors.normal || "#00ff00"

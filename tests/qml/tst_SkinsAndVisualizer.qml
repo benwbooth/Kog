@@ -23,6 +23,14 @@ TestCase {
         property int playlist_revision: 0
         property int workspace_revision: 0
         property int playlists_revision: 0
+        property string playlist_column_layout: ""
+        property string queue_selection: '{"indices":[],"anchor":null}'
+        property real audio_level_low: 0
+        property real audio_level_low_mid: 0
+        property real audio_level_mid: 0
+        property real audio_level_high_mid: 0
+        property real audio_level_high: 0
+        function workspace_current_index() { return -1 }
         function workspace_json_for_selection(count) {
             return JSON.stringify({active:"queue",tabs:[{key:"queue",name:"Play Queue",dirty:false}],entries:[],selected:[],actions:{queue:false,save:false,reload:false,append:false,add_play_queue:false,add_queue_selection:false,remove:false,move_up:false,move_down:false,undo:false,redo:false,select_all:false,clear_selection:false}})
         }

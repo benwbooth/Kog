@@ -36,6 +36,39 @@ fn loaded() -> Workspace {
 }
 
 #[test]
+fn dragging_draft_rows_preserves_selection_and_undo() {
+    let mut workspace = loaded();
+    workspace
+        .apply(C::Select {
+            indices: vec![0, 2],
+        })
+        .unwrap();
+    workspace
+        .apply_ui(C::Move { target: usize::MAX }, 0, 0)
+        .unwrap();
+    assert_eq!(
+        workspace.snapshot().entries,
+        vec![
+            json!({"path":"middle"}),
+            json!({"path":"same"}),
+            json!({"path":"same"})
+        ]
+    );
+    assert_eq!(workspace.snapshot().selected, vec![1, 2]);
+    workspace.apply(C::Undo).unwrap();
+    assert_eq!(workspace.snapshot().selected, vec![0, 2]);
+    assert!(!workspace.snapshot().tabs[1].dirty);
+    // Dropping an already contiguous selection back into itself is a no-op.
+    workspace
+        .apply(C::Select {
+            indices: vec![0, 1],
+        })
+        .unwrap();
+    workspace.apply_ui(C::Move { target: 1 }, 0, 0).unwrap();
+    assert!(!workspace.snapshot().tabs[1].dirty);
+}
+
+#[test]
 fn opening_focuses_once_and_never_queues_or_starts_playback() {
     let mut w = loaded();
     assert_eq!(w.snapshot().tabs[0].key, QUEUE_TAB);

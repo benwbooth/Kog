@@ -75,8 +75,18 @@ ApplicationWindow {
             controller.poll_playback()
             root.attempts++
             root.check(root.attempts < 150, "async queue timeout: " + controller.status)
-            if (root.stage === 1 && controller.playlist_count === 1) {
+            if (root.stage === 1 && controller.playlist_count === 1 && controller.workspace_track_value_at(0, "length").length > 0) {
                 root.check(controller.playback_state !== "playing", "add should not play")
+                root.check(controller.workspace_track_value_at(0, "title") === controller.track_value_at(0, "title"), "draft and queue use the same metadata")
+                root.check(controller.workspace_track_value_at(0, "length") === controller.track_value_at(0, "length"), "draft and queue use the same duration formatting")
+                root.check(childNamed(editor, "workspacePlaylistHeader") !== null, "draft uses the queue column header")
+                controller.workspace_toggle_stars("0")
+                root.check(controller.workspace_track_value_at(1, "star") === "★" && controller.track_value_at(0, "star") === "★", "draft star shares song identity with queue and duplicates")
+                controller.workspace_toggle_stars("0")
+                controller.workspace_move(3)
+                root.check(root.snapshot.selected.join(",") === "2" && controller.playlist_count === 1, "draft drag changes only the draft")
+                root.send({op:"undo"})
+                root.check(root.snapshot.selected.join(",") === "0" && !root.snapshot.tabs[1].dirty, "draft drag undo restores selection")
                 root.send({op:"select",indices:[0]}); root.send({op:"remove"})
                 root.check(controller.playlist_count === 1 && root.snapshot.entries.length === 2, "draft must not change queue")
                 root.send({op:"close",key:root.snapshot.active}); root.check(!!root.snapshot.pending_close,"dirty close confirmation")

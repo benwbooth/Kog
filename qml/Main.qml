@@ -59,6 +59,13 @@ ApplicationWindow {
         appController.playlist_revision
         try { return JSON.parse(appController.workspace_json_for_selection(root.selectedRows.length)) } catch (_) { return { active: "queue", tabs: [], entries: [], selected: [] } }
     }
+    property string previousWorkspaceTab: ""
+    readonly property string workspaceTabKey: playlistWorkspace.active
+    onWorkspaceTabKeyChanged: {
+        if (previousWorkspaceTab.length > 0 && workspaceTabKey === "queue")
+            appController.filter_playlist(root.playlistHighlightQuery)
+        previousWorkspaceTab = workspaceTabKey
+    }
     property int playlistDropTarget: -1
     property var selectedPlaylistIds: []
     property int playlistSelectionAnchor: -1
@@ -1026,9 +1033,11 @@ ApplicationWindow {
         interval: 90
         repeat: false
         onTriggered: {
-            appController.filter_playlist(searchField.text)
+            if (root.playlistWorkspace.active === "queue") {
+                appController.filter_playlist(searchField.text)
+                root.clearPlaylistSelection()
+            }
             root.playlistHighlightQuery = searchField.text
-            root.clearPlaylistSelection()
         }
     }
 
@@ -1639,7 +1648,7 @@ ApplicationWindow {
         shortcut: StandardKey.SelectAll
         enabled: root.playlistWorkspace.active === "queue" ? playlistView.activeFocus && appController.playlist_count > 0 : !!root.playlistWorkspace.actions.select_all
         onTriggered: {
-            if (root.playlistWorkspace.active !== "queue") { appController.workspace_command(JSON.stringify({op:"selection",command:{op:"all"}})); return }
+            if (root.playlistWorkspace.active !== "queue") { playlistEditor.selectAll(); return }
             const rows = []
             for (let index = 0; index < appController.playlist_count; ++index)
                 rows.push(index)
@@ -2166,9 +2175,11 @@ ApplicationWindow {
                             onTextChanged: {
                                 if (text.length === 0) {
                                     playlistSearchTimer.stop()
-                                    appController.filter_playlist("")
+                                    if (root.playlistWorkspace.active === "queue") {
+                                        appController.filter_playlist("")
+                                        root.clearPlaylistSelection()
+                                    }
                                     root.playlistHighlightQuery = ""
-                                    root.clearPlaylistSelection()
                                 } else {
                                     playlistSearchTimer.restart()
                                 }
@@ -3418,6 +3429,7 @@ ApplicationWindow {
                     workspaceState: root.playlistWorkspace
                 }
                 PlaylistEditor {
+                    id: playlistEditor
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     visible: root.playlistWorkspace.active !== "queue"
@@ -3425,6 +3437,9 @@ ApplicationWindow {
                     workspaceState: root.playlistWorkspace
                     theme: root.palette
                     queueSelection: root.selectedRows
+                    searchModel: fileTreeModel
+                    searchQuery: root.playlistHighlightQuery
+                    onOpenVisualizer: visualizerWindow.openWaveform()
                 }
 
                 Item {

@@ -17,6 +17,23 @@ Item {
         anchors.fill: parent
         clip: true
         currentIndex: Math.max(0, bar.entries.findIndex(tab => tab.key === bar.workspaceState.active))
+        // KDE's default ListView dereferences item zero while a Repeater is
+        // being rebuilt. Keep its native buttons but allow an empty model.
+        contentItem: ListView {
+            implicitWidth: contentWidth
+            implicitHeight: tabs.count > 0 && tabs.itemAt(0) ? tabs.itemAt(0).implicitHeight : 0
+            model: tabs.contentModel
+            currentIndex: tabs.currentIndex
+            orientation: ListView.Horizontal
+            spacing: tabs.spacing
+            boundsBehavior: Flickable.StopAtBounds
+            flickableDirection: Flickable.AutoFlickIfNeeded
+            snapMode: ListView.SnapToItem
+            highlightMoveDuration: 0
+            highlightRangeMode: ListView.ApplyRange
+            preferredHighlightBegin: 40
+            preferredHighlightEnd: width - 40
+        }
         onCurrentIndexChanged: Qt.callLater(function() {
             // Model updates can change the current index while bindings are
             // evaluating. Dispatch keyboard navigation after they settle.
@@ -31,20 +48,10 @@ Item {
                 id: tab
                 required property var modelData
                 text: modelData.name + (modelData.dirty ? " •" : "")
-                width: Math.min(280, Math.max(112, implicitWidth))
-                implicitHeight: Math.max(32, implicitBackgroundHeight, implicitContentHeight + 12)
-                leftPadding: 12
-                topPadding: 6
-                bottomPadding: 6
-                rightPadding: closeButton.visible ? closeButton.width + 12 : leftPadding
-                contentItem: Label {
-                    text: tab.text
-                    textFormat: Text.PlainText
-                    font: tab.font
-                    color: tab.palette.buttonText
-                    verticalAlignment: Text.AlignVCenter
-                    elide: Text.ElideRight
-                }
+                // Keep the style's own label. KDE paints its text in the
+                // background, so replacing contentItem draws it twice.
+                width: implicitWidth + (closeButton.visible ? closeButton.width : 0)
+                rightPadding: leftPadding + (closeButton.visible ? closeButton.width + 6 : 0)
                 onClicked: bar.send({op: "focus", key: modelData.key})
                 Accessible.name: text + (modelData.dirty ? qsTr("; unsaved changes") : "")
                 ToolTip.visible: hovered
@@ -60,6 +67,8 @@ Item {
                     width: 24; height: 24
                     text: "×"
                     font.pixelSize: 16
+                    display: AbstractButton.TextOnly
+                    flat: true
                     Accessible.name: qsTr("Close %1").arg(tab.modelData.name)
                     ToolTip.visible: hovered
                     ToolTip.delay: 700
