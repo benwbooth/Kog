@@ -96,16 +96,22 @@ impl Ui {
         if self.focus != Focus::Tracks || state.active == "queue" {
             return false;
         }
-        let last = state.entries.len().saturating_sub(1);
-        self.workspace_cursor = self.workspace_cursor.min(last);
+        if self.keyboard_column.is_some() {
+            return false;
+        }
+        let visible = self.table_visible_tracks();
+        let last = visible.len().saturating_sub(1);
+        if !visible.contains(&self.workspace_cursor) {
+            self.workspace_cursor = visible.first().copied().unwrap_or(0);
+        }
         let command = match key {
             Key::CtrlS | Key::Char('s') => Some(Command::Save),
             Key::CtrlZ | Key::Char('u') => Some(Command::Undo),
             Key::CtrlY | Key::Char('r') => Some(Command::Redo),
             Key::Char('R') => Some(Command::Reload),
             Key::Delete | Key::Char('d') => Some(Command::Remove),
-            Key::Char('K') => Some(Command::Nudge { delta: -1 }),
-            Key::Char('J') => Some(Command::Nudge { delta: 1 }),
+            Key::Char('K') | Key::AltUp => Some(Command::Nudge { delta: -1 }),
+            Key::Char('J') | Key::AltDown => Some(Command::Nudge { delta: 1 }),
             Key::Char('p') => Some(Command::Queue {
                 action: QueueAction::PlayNow,
             }),
@@ -145,15 +151,19 @@ impl Ui {
             | Key::End
             | Key::ShiftUp
             | Key::ShiftDown => {
-                let old = self.workspace_cursor;
-                self.workspace_cursor = match key {
+                let old = visible
+                    .iter()
+                    .position(|&index| index == self.workspace_cursor)
+                    .unwrap_or(0);
+                let position = match key {
                     Key::Home => 0,
                     Key::End => last,
                     Key::Up | Key::Char('k') | Key::ShiftUp => old.saturating_sub(1),
-                    Key::PageUp => old.saturating_sub(size.1.saturating_sub(9)),
-                    Key::PageDown => old.saturating_add(size.1.saturating_sub(9)).min(last),
+                    Key::PageUp => old.saturating_sub(self.layout(size).track_page),
+                    Key::PageDown => old.saturating_add(self.layout(size).track_page).min(last),
                     _ => (old + 1).min(last),
                 };
+                self.workspace_cursor = visible.get(position).copied().unwrap_or(0);
                 Some(Command::Selection {
                     command: Select::Choose {
                         index: self.workspace_cursor,
@@ -166,12 +176,14 @@ impl Ui {
                 })
             }
             // Queue-only operations must not silently act on the hidden queue.
-            Key::Backspace | Key::CtrlUp | Key::CtrlDown | Key::Char('D') | Key::Char('H') => {
+            Key::Backspace | Key::CtrlUp | Key::CtrlDown | Key::Char('D') => {
                 return true;
             }
             _ => return false,
         };
-        if let Some(command) = command {
+        if let Some(Command::Selection { command }) = command {
+            self.workspace_select(command);
+        } else if let Some(command) = command {
             self.workspace_command(command);
         }
         true
@@ -182,9 +194,6 @@ impl Ui {
             .workspace_model()
             .snapshot_for(self.tracks.len(), self.selected_tracks.len());
         let mut cells = Vec::new();
-        if state.tabs.len() < 2 {
-            return cells;
-        }
         let mut x = 0;
         let active = state
             .tabs
@@ -195,7 +204,12 @@ impl Ui {
         let start = active.saturating_sub(max_tabs - 1);
         for tab in state.tabs.into_iter().skip(start) {
             let name: String = tab.name.chars().take(19).collect();
-            let label = format!(" {}{} ", name, if tab.dirty { "*" } else { "" });
+            let label = format!(
+                "[ {}{}{} ]",
+                name,
+                if tab.dirty { "*" } else { "" },
+                if tab.key == "queue" { "" } else { " ×" }
+            );
             let len = cell_width(&label).min(width.saturating_sub(x));
             if len == 0 {
                 break;
@@ -205,6 +219,28 @@ impl Ui {
         }
         cells
     }
+    fn workspace_controls(&self) -> Vec<(&'static str, Key, bool)> {
+        let state = self.session.workspace_model().snapshot();
+        if state.pending_close.is_some() {
+            return vec![
+                ("Unsaved changes: ", Key::Esc, false),
+                ("[s] Save ", Key::Char('s'), true),
+                ("[d] Discard ", Key::Char('d'), true),
+                ("[c] Cancel ", Key::Char('c'), true),
+            ];
+        }
+        if !self.is_draft() {
+            return Vec::new();
+        }
+        vec![
+            ("[p] Play Now ", Key::Char('p'), state.actions.queue),
+            ("[n] Play Next ", Key::Char('n'), state.actions.queue),
+            ("[a] Add ", Key::Char('a'), state.actions.queue),
+            ("[s] Save ", Key::CtrlS, state.actions.save),
+            ("[W] Close ", Key::CtrlW, true),
+        ]
+    }
+
     pub(super) fn workspace_mouse(
         &mut self,
         button: u16,
@@ -214,86 +250,105 @@ impl Ui {
     ) -> bool {
         let layout = self.layout(size);
         let left = layout.playlist_left();
-        if self.compact_mode || (!layout.show_sidebar && self.focus != Focus::Tracks) {
+        if self.compact_mode
+            || (!layout.show_sidebar && self.focus != Focus::Tracks)
+            || x < left
+            || y == 0
+            || y >= layout.footer_top
+        {
             return false;
         }
-        let state = self
-            .session
-            .workspace_model()
-            .snapshot_for(self.tracks.len(), self.selected_tracks.len());
+        // Existing column/scrollbar gestures retain ownership when crossing rows.
+        if self.column_drag.is_some()
+            || self.column_scroll_drag.is_some()
+            || self.vertical_scroll_drag.is_some()
+            || self.split_drag
+            || self.volume_drag
+        {
+            return false;
+        }
+        let state = self.session.workspace_model().snapshot();
+        if y == layout.tab_row && state.pending_close.is_none() {
+            if button & 3 == 0 && button & (32 | 64 | 128) == 0 {
+                if let Some((start, len, key, label, _)) = self
+                    .workspace_tab_cells(size.0.saturating_sub(left))
+                    .into_iter()
+                    .find(|(start, len, ..)| (left + start..left + start + len).contains(&x))
+                {
+                    if key != "queue"
+                        && cell_width(&label) == len
+                        && x == left + start + len.saturating_sub(3)
+                    {
+                        self.workspace_command(Command::Close { key });
+                    } else {
+                        self.workspace_command(Command::Focus { key });
+                    }
+                    self.focus = Focus::Tracks;
+                }
+            }
+            return true;
+        }
+        if y == layout.footer_top - 1 {
+            if button & 3 == 0 && button & (32 | 64 | 128) == 0 {
+                let mut start = left;
+                for (label, key, enabled) in self.workspace_controls() {
+                    let end = start + cell_width(label);
+                    if enabled && (start..end).contains(&x) {
+                        self.focus = Focus::Tracks;
+                        self.workspace_key(key, size);
+                        break;
+                    }
+                    start = end;
+                }
+            }
+            return true;
+        }
         if state.pending_close.is_some() {
             return true;
         }
-        if x < left || y >= layout.footer_top {
+        if !self.is_draft()
+            || y == layout.track_header
+            || self.vertical_scrollbar_at(&layout, size, x, y).is_some()
+            || (self.scrollbar(&layout, size).is_some() && y == layout.footer_top - 2)
+        {
             return false;
         }
-        if state.tabs.len() > 1 && y == layout.footer_top.saturating_sub(1) {
-            if button & 3 == 0 && button & 32 == 0 {
-                if let Some((_, _, key, _, _)) = self
-                    .workspace_tab_cells(size.0.saturating_sub(left))
-                    .into_iter()
-                    .find(|(start, len, _, _, _)| (left + start..left + start + len).contains(&x))
-                {
-                    self.workspace_command(Command::Focus { key });
-                    self.focus = Focus::Tracks;
-                    self.workspace_offset = 0;
-                    self.workspace_cursor = 0;
-                }
-            }
+        if !(layout.track_top..layout.track_top + layout.track_page).contains(&y) {
             return true;
-        }
-        if state.active == "queue" {
-            return false;
-        }
-        if y == 0 {
-            return false;
         }
         self.focus = Focus::Tracks;
         if button & 0b1100_0000 == 64 {
-            self.workspace_cursor = self
-                .workspace_cursor
-                .saturating_add_signed(if button & 1 == 0 { -3 } else { 3 })
-                .min(state.entries.len().saturating_sub(1));
-            return true;
-        }
-        if button & 3 != 0 || button & 32 != 0 {
-            return true;
-        }
-        if y == 1 {
-            let relative = x - left;
-            let actions = [
-                ("[p] Play Now ", Key::Char('p')),
-                ("[n] Play Next ", Key::Char('n')),
-                ("[a] Add to Queue ", Key::Char('a')),
-                ("[s] Save ", Key::Char('s')),
-                ("[W] Close", Key::CtrlW),
-            ];
-            let mut start = 0;
-            for (label, key) in actions {
-                let end = start + cell_width(label);
-                if (start..end).contains(&relative) {
-                    self.workspace_key(key, size);
-                    break;
-                }
-                start = end;
+            if button & 3 >= 2 || button & (4 | 16) != 0 {
+                return false;
             }
-        } else if y >= 4 {
-            let index = self.workspace_offset + y - 4;
-            if index < state.entries.len() {
+            let maximum = self
+                .table_visible_tracks()
+                .len()
+                .saturating_sub(layout.track_page);
+            self.set_pane_scroll(
+                2,
+                self.workspace_offset
+                    .saturating_add_signed(if button & 1 == 0 { -3 } else { 3 })
+                    .min(maximum),
+            );
+            return true;
+        }
+        if button & 3 == 0 && button & 32 == 0 {
+            let visible = self.table_visible_tracks();
+            if let Some(&index) = visible.get(self.workspace_offset + y - layout.track_top) {
                 self.workspace_cursor = index;
-                let gesture = match (button & 4 != 0, button & 16 != 0) {
+                let gesture = match (button & (4 | 8) != 0, button & 16 != 0) {
                     (true, true) => Gesture::AddRange,
                     (true, false) => Gesture::Range,
                     (false, true) => Gesture::Toggle,
                     _ => Gesture::Replace,
                 };
-                self.workspace_command(Command::Selection {
-                    command: Select::Choose { index, gesture },
-                });
+                self.workspace_select(Select::Choose { index, gesture });
             }
         }
         true
     }
+
     pub(super) fn draw_workspace(
         &mut self,
         screen: &mut String,
@@ -305,125 +360,9 @@ impl Ui {
         }
         let left = layout.playlist_left() + 1;
         let width = size.0.saturating_sub(left - 1);
-        let state = self
-            .session
-            .workspace_model()
-            .snapshot_for(self.tracks.len(), self.selected_tracks.len());
-        if state.tabs.len() < 2 {
-            return;
-        }
-        if state.active != "queue" {
-            let page = layout.footer_top.saturating_sub(5).max(1);
-            self.workspace_cursor = self
-                .workspace_cursor
-                .min(state.entries.len().saturating_sub(1));
-            if self.workspace_cursor < self.workspace_offset {
-                self.workspace_offset = self.workspace_cursor;
-            }
-            if self.workspace_cursor >= self.workspace_offset + page {
-                self.workspace_offset = self.workspace_cursor + 1 - page;
-            }
-            for y in 1..layout.footer_top {
-                paint(screen, y + 1, left, "", width, Surface::Main, false);
-            }
-            for (row, actions) in [
-                (
-                    2,
-                    vec![
-                        ("[p] Play Now ", state.actions.queue),
-                        ("[n] Play Next ", state.actions.queue),
-                        ("[a] Add to Queue ", state.actions.queue),
-                        ("[s] Save ", state.actions.save),
-                        ("[W] Close", true),
-                    ],
-                ),
-                (
-                    3,
-                    vec![
-                        ("x select · ", state.actions.select_all),
-                        ("d remove · ", state.actions.remove),
-                        ("K up · ", state.actions.move_up),
-                        ("J down · ", state.actions.move_down),
-                        ("u undo · ", state.actions.undo),
-                        ("r redo · ", state.actions.redo),
-                        ("A add queue · ", state.actions.add_play_queue),
-                        ("C add selection", state.actions.add_queue_selection),
-                    ],
-                ),
-            ] {
-                let mut offset = 0;
-                for (label, enabled) in actions {
-                    let length = cell_width(label).min(width.saturating_sub(offset));
-                    paint(
-                        screen,
-                        row,
-                        left + offset,
-                        label,
-                        length,
-                        if enabled {
-                            Surface::Header
-                        } else {
-                            Surface::Muted
-                        },
-                        enabled && row == 2,
-                    );
-                    offset += length;
-                }
-            }
-            let info = state.error.clone().unwrap_or_else(|| {
-                format!(
-                    "{} tracks · {} selected · Alt+[ / Alt+] tabs · Ctrl+W close",
-                    state.entries.len(),
-                    state.selected.len()
-                )
-            });
-            paint(screen, 4, left, &info, width, Surface::Main, false);
-            for (index, entry) in state
-                .entries
-                .iter()
-                .enumerate()
-                .skip(self.workspace_offset)
-                .take(page)
-            {
-                let track = kog_server::api::stored_entries_from_json(std::slice::from_ref(entry))
-                    .ok()
-                    .and_then(|rows| rows.into_iter().next())
-                    .map(track_from_entry);
-                let label = track
-                    .map(|track| {
-                        format!(
-                            "{} {:>4}  {}",
-                            if state.selected.contains(&index) {
-                                "*"
-                            } else {
-                                " "
-                            },
-                            index + 1,
-                            track.name
-                        )
-                    })
-                    .unwrap_or_default();
-                let surface = if index == self.workspace_cursor || state.selected.contains(&index) {
-                    Surface::Selected
-                } else if index % 2 == 1 {
-                    Surface::MainAlt
-                } else {
-                    Surface::Main
-                };
-                paint(
-                    screen,
-                    index - self.workspace_offset + 5,
-                    left,
-                    &label,
-                    width,
-                    surface,
-                    false,
-                );
-            }
-        }
         paint(
             screen,
-            layout.footer_top,
+            layout.tab_row + 1,
             left,
             "",
             width,
@@ -433,7 +372,7 @@ impl Ui {
         for (x, len, _, label, active) in self.workspace_tab_cells(width) {
             paint(
                 screen,
-                layout.footer_top,
+                layout.tab_row + 1,
                 left + x,
                 &label,
                 len,
@@ -445,16 +384,53 @@ impl Ui {
                 active,
             );
         }
-        if state.pending_close.is_some() {
+        paint(
+            screen,
+            layout.footer_top,
+            left,
+            "",
+            width,
+            Surface::Header,
+            false,
+        );
+        let controls = self.workspace_controls();
+        if controls.is_empty() {
+            let info = format!(
+                "{} tracks · {} selected",
+                self.tracks.len(),
+                self.selected_tracks.len()
+            );
             paint(
                 screen,
-                4,
+                layout.footer_top,
                 left,
-                "Unsaved changes: [s] Save  [d] Discard  [c/Esc] Cancel",
+                &info,
                 width,
-                Surface::Selected,
-                true,
+                Surface::Muted,
+                false,
             );
+        } else {
+            let mut x = 0;
+            for (label, _, enabled) in controls {
+                let length = cell_width(label).min(width.saturating_sub(x));
+                if length == 0 {
+                    break;
+                }
+                paint(
+                    screen,
+                    layout.footer_top,
+                    left + x,
+                    label,
+                    length,
+                    if enabled {
+                        Surface::Header
+                    } else {
+                        Surface::Muted
+                    },
+                    enabled,
+                );
+                x += length;
+            }
         }
     }
 }

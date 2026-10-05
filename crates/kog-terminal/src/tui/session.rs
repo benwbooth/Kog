@@ -126,6 +126,7 @@ impl Ui {
             self.status = error.to_owned();
         }
         self.selected[2] = self.selected[2].min(self.tracks.len().saturating_sub(1));
+        self.sync_workspace_view();
     }
     pub(super) fn flush_session_effects(&mut self) {
         self.apply_session_view();

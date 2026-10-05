@@ -108,63 +108,63 @@ with tempfile.TemporaryDirectory(prefix="kog-tui-drag-") as directory:
         expect_order(names)
         drain(1)
 
-        mouse(0, 3)  # first track
-        mouse(32, 6)  # before fourth track
-        expect_marker(6)
-        mouse(32, 6)  # repeated motion must not move the gap
-        expect_marker(6)
-        assert names[3][:-4] in screen.display[6], "Target row was overwritten by marker"
+        mouse(0, 4)  # first track
+        mouse(32, 7)  # before fourth track
+        expect_marker(7)
+        mouse(32, 7)  # repeated motion must not move the gap
+        expect_marker(7)
+        assert names[3][:-4] in screen.display[7], "Target row was overwritten by marker"
         unchanged(names)
-        mouse(0, 6, release=True)
+        mouse(0, 7, release=True)
         names.insert(2, names.pop(0))
         expect_order(names)
         assert not markers(), "Marker survived successful drop"
 
-        mouse(0, 6)
-        mouse(32, 3)
-        expect_marker(3)
-        mouse(0, 3, release=True)
+        mouse(0, 7)
+        mouse(32, 4)
+        expect_marker(4)
+        mouse(0, 4, release=True)
         names.insert(0, names.pop(3))
         expect_order(names)
 
-        mouse(0, 3)
-        mouse(32, 18)  # blank space after last track
-        expect_marker(15)
-        mouse(0, 18, release=True)
+        mouse(0, 4)
+        mouse(32, 19)  # blank space after last track
+        expect_marker(16)
+        mouse(0, 19, release=True)
         names.append(names.pop(0))
         expect_order(names)
 
-        mouse(0, 3)
-        mouse(32, 7)
-        expect_marker(7)
+        mouse(0, 4)
+        mouse(32, 8)
+        expect_marker(8)
         send(b"\x1b")
         drain(0.4)
         assert not markers(), "Escape did not clear preview"
         assert "Exit Kog" not in "\n".join(screen.display), "Escape opened exit confirmation"
-        mouse(0, 7, release=True)
+        mouse(0, 8, release=True)
         unchanged(names)
 
-        mouse(0, 3)
-        mouse(32, 7)
-        mouse(32, 7, col=4)  # leave queue for sidebar
+        mouse(0, 4)
+        mouse(32, 8)
+        mouse(32, 8, col=4)  # leave queue for sidebar
         assert not markers(), "Outside motion kept preview"
-        mouse(0, 7, col=4, release=True)
+        mouse(0, 8, col=4, release=True)
         unchanged(names)
 
-        mouse(0, 3)
-        mouse(32, 7)
-        mouse(0, 30, release=True)  # directly release on the tab strip
+        mouse(0, 4)
+        mouse(32, 8)
+        mouse(0, 2, release=True)  # directly release on the top tab strip
         assert not markers()
         unchanged(names)
 
         # Filtered row positions must map to the complete queue's insertion gap.
         send(b"Fkeep\r")
         filtered = [name for name in names if name.startswith("keep")]
-        mouse(0, 3)
-        mouse(32, 5)
-        expect_marker(5)
+        mouse(0, 4)
+        mouse(32, 6)
+        expect_marker(6)
         unchanged(names)
-        mouse(0, 5, release=True)
+        mouse(0, 6, release=True)
         source = names.index(filtered[0])
         target = names.index(filtered[2])
         names.insert(target - 1, names.pop(source))
@@ -176,8 +176,10 @@ with tempfile.TemporaryDirectory(prefix="kog-tui-drag-") as directory:
         screen.resize(lines=14, columns=120)
         fcntl.ioctl(terminal, termios.TIOCSWINSZ, struct.pack("HHHH", 14, 120, 0, 0))
         drain(0.5)
-        bottom = next(i for i, line in enumerate(screen.display) if "Play Queue" in line)
-        mouse(0, 3)
+        bottom = next(i for i, line in enumerate(screen.display) if "tracks ·" in line)
+        if "‹" in screen.display[bottom - 1]:
+            bottom -= 1
+        mouse(0, 4)
         mouse(32, bottom)
         for _ in range(5):
             mouse(65, bottom)  # wheel down while holding track

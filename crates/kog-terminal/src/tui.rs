@@ -35,6 +35,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 mod queue_drag;
 mod session;
+mod table;
 mod workspace;
 use crate::columns::Columns;
 use crate::cover_preview::{self, COVER_HEIGHT, COVER_WIDTH, CoverPreview};
@@ -82,7 +83,10 @@ const PLAYLIST_PAUSE: &str = "❚❚";
 const STATUS_WAVEFORM_WIDTH: usize = 4;
 
 fn load_sidebar_width() -> Option<usize> {
-    kog_audio::settings::load_text(SIDEBAR_WIDTH_FILE)?.parse::<usize>().ok().filter(|width| *width >= 18)
+    kog_audio::settings::load_text(SIDEBAR_WIDTH_FILE)?
+        .parse::<usize>()
+        .ok()
+        .filter(|width| *width >= 18)
 }
 
 fn save_sidebar_width(width: usize) -> Result<(), String> {
@@ -157,7 +161,10 @@ fn save_tree_state(
     if contents.len() > TREE_STATE_MAX_BYTES {
         return Err("the expanded tree is too large to save".to_owned());
     }
-    kog_audio::settings::save_text(TREE_STATE_FILE, std::str::from_utf8(&contents).map_err(|e| e.to_string())?)
+    kog_audio::settings::save_text(
+        TREE_STATE_FILE,
+        std::str::from_utf8(&contents).map_err(|e| e.to_string())?,
+    )
 }
 
 struct RestoredPlaylist {
@@ -961,6 +968,12 @@ struct Ui {
     session_jobs: Vec<(Token, Receiver<IoResult<Track>>)>,
     workspace_cursor: usize,
     workspace_offset: usize,
+    workspace_manual_scroll: Option<usize>,
+    workspace_anchor: Option<usize>,
+    workspace_active: String,
+    workspace_entries: Vec<serde_json::Value>,
+    workspace_tracks: Vec<Track>,
+    workspace_query: String,
     library: Arc<Library>,
     decoder_settings: DecoderSettings,
     decoders: DecoderRegistry,
@@ -1081,6 +1094,7 @@ struct Ui {
     sort_ascending: bool,
     columns: Columns,
     auto_fit_cache: Option<AutoFitCache>,
+    auto_fit_enabled: bool,
     context_column: Option<usize>,
     keyboard_column: Option<usize>,
     column_viewport_width: usize,
@@ -1326,8 +1340,12 @@ impl Ui {
             .iter()
             .map(metadata_key)
             .collect();
-        let session_store = kog_core::state::StateCursor::open(&library.db(), "sessions", &session_id,
-            kog_audio::playback_order::session_path(&session_id, "session").as_deref());
+        let session_store = kog_core::state::StateCursor::open(
+            &library.db(),
+            "sessions",
+            &session_id,
+            kog_audio::playback_order::session_path(&session_id, "session").as_deref(),
+        );
         let mut ui = Self {
             library,
             session_store,
@@ -1355,6 +1373,12 @@ impl Ui {
             session_jobs: Vec::new(),
             workspace_cursor: 0,
             workspace_offset: 0,
+            workspace_manual_scroll: None,
+            workspace_anchor: None,
+            workspace_active: "queue".into(),
+            workspace_entries: Vec::new(),
+            workspace_tracks: Vec::new(),
+            workspace_query: String::new(),
             tracks: Vec::new(),
             selected_tracks: HashSet::new(),
             selection_anchor: None,
@@ -1460,20 +1484,30 @@ impl Ui {
             sort_ascending: true,
             columns,
             auto_fit_cache: None,
+            auto_fit_enabled: true,
             context_column: None,
             keyboard_column: None,
             column_viewport_width: 40,
             starred_keys,
         };
-        let restore = ui.session_store.value()
-            .map(|text| serde_json::from_str(text).map_err(|e| format!("Invalid saved session: {e}")))
+        let restore = ui
+            .session_store
+            .value()
+            .map(|text| {
+                serde_json::from_str(text).map_err(|e| format!("Invalid saved session: {e}"))
+            })
             .map(|value| value.and_then(|value| ui.session.restore(value, session::decode_track)));
         let restored = match restore {
             Some(Ok(_)) => true,
-            Some(Err(error)) => { ui.session_store.reject(error); true }
+            Some(Err(error)) => {
+                ui.session_store.reject(error);
+                true
+            }
             None => ui.session_store.error().is_some(),
         };
-        if let Some(error) = ui.session_store.error() { ui.status = error.to_owned(); }
+        if let Some(error) = ui.session_store.error() {
+            ui.status = error.to_owned();
+        }
         if !restored {
             if std::env::var_os("KOG_SESSION_ID").is_none() {
                 if let Some(legacy) = kog_audio::settings::setting_path(SESSION_FILE)
@@ -1656,7 +1690,8 @@ impl Ui {
 
     fn flush_session(&mut self) -> Result<(), String> {
         if self.session_dirty {
-            self.session_store.save(&self.library.db(), &self.session.checkpoint().to_string())?;
+            self.session_store
+                .save(&self.library.db(), &self.session.checkpoint().to_string())?;
             self.session_dirty = false;
         }
         Ok(())
@@ -1965,7 +2000,7 @@ impl Ui {
     }
 
     fn layout(&self, size: (usize, usize)) -> Layout {
-        self.layout_for_track_count(size, self.visible_track_count())
+        self.layout_for_track_count(size, self.table_visible_count())
     }
 
     fn visible_track_count(&self) -> usize {
@@ -1992,7 +2027,10 @@ impl Ui {
                 layout.first = width.clamp(18, size.0.saturating_sub(30).max(18));
             }
         }
-        layout.track_page = layout.track_page.saturating_sub(1).max(1);
+        layout.track_page = layout
+            .footer_top
+            .saturating_sub(layout.track_top + 1)
+            .max(1);
         let track_width = size.0.saturating_sub(layout.playlist_left());
         let vertical =
             track_count + usize::from(self.track_drop_target.is_some()) > layout.track_page;
@@ -2005,7 +2043,7 @@ impl Ui {
     }
 
     fn scrollbar(&self, layout: &Layout, size: (usize, usize)) -> Option<HorizontalScrollbar> {
-        self.scrollbar_for_track_count(layout, size, self.visible_track_count())
+        self.scrollbar_for_track_count(layout, size, self.table_visible_count())
     }
 
     fn scrollbar_for_track_count(
@@ -2068,7 +2106,7 @@ impl Ui {
     }
 
     fn track_scrollbar(&self, layout: &Layout, size: (usize, usize)) -> Option<VerticalScrollbar> {
-        self.track_scrollbar_for_count(layout, size, self.visible_track_count())
+        self.track_scrollbar_for_count(layout, size, self.table_visible_count())
     }
 
     fn track_scrollbar_for_count(
@@ -2082,10 +2120,10 @@ impl Ui {
         }
         VerticalScrollbar::new(
             size.0.saturating_sub(1),
-            2,
+            layout.track_top,
             layout.track_page,
             count + usize::from(self.track_drop_target.is_some()),
-            self.offsets[2],
+            self.table_offset(),
         )
     }
 
@@ -2116,8 +2154,7 @@ impl Ui {
         y: usize,
         grip: usize,
     ) {
-        self.offsets[pane] = bar.offset_at(y, grip);
-        self.manual_scroll_selection[pane] = Some(self.selected[pane]);
+        self.set_pane_scroll(pane, bar.offset_at(y, grip));
     }
 
     fn scroll_columns_to_mouse(&mut self, bar: HorizontalScrollbar, x: usize, grip: usize) {
@@ -2130,6 +2167,7 @@ impl Ui {
     }
 
     fn auto_fit_columns(&mut self) {
+        self.auto_fit_enabled = true;
         self.auto_fit_cache = None;
         self.ensure_auto_fit_columns();
         self.status = "Columns fitted to playlist content".to_owned();
@@ -2158,7 +2196,7 @@ impl Ui {
                 .iter()
                 .map(|column| {
                     if column.visible {
-                        vec![0; self.tracks.len()]
+                        vec![0; self.table_tracks().len()]
                     } else {
                         Vec::new()
                     }
@@ -2166,7 +2204,7 @@ impl Ui {
                 .collect(),
             width_counts: vec![BTreeMap::new(); self.columns.entries.len()],
         };
-        for (row, track) in self.tracks.iter().enumerate() {
+        for (row, track) in self.table_tracks().iter().enumerate() {
             cache
                 .rows_by_key
                 .entry(metadata_key(&track.entry))
@@ -2176,7 +2214,7 @@ impl Ui {
                 if !column.visible {
                     continue;
                 }
-                let width = cell_width(&self.column_value(row, track, column.id));
+                let width = cell_width(&self.table_column_value(row, track, column.id));
                 cache.row_widths[column_index][row] = width;
                 *cache.width_counts[column_index].entry(width).or_default() += 1;
             }
@@ -2206,14 +2244,14 @@ impl Ui {
                 continue;
             };
             for row in rows {
-                let Some(track) = self.tracks.get(row) else {
+                let Some(track) = self.table_tracks().get(row) else {
                     continue;
                 };
                 for (column_index, column) in self.columns.entries.iter().enumerate() {
                     if !column.visible {
                         continue;
                     }
-                    let width = cell_width(&self.column_value(row, track, column.id));
+                    let width = cell_width(&self.table_column_value(row, track, column.id));
                     let previous = &mut cache.row_widths[column_index][row];
                     if *previous == width {
                         continue;
@@ -2235,6 +2273,9 @@ impl Ui {
     }
 
     fn apply_auto_fit_widths(&mut self, cache: &AutoFitCache) {
+        if !self.auto_fit_enabled {
+            return;
+        }
         for (column, counts) in self.columns.entries.iter_mut().zip(&cache.width_counts) {
             if column.visible {
                 column.width = counts
@@ -3106,6 +3147,15 @@ impl Ui {
             true
         };
         self.sort_column = Some(column);
+        if self.is_draft() {
+            let rows = self.track_sort_metadata(&self.workspace_tracks, false);
+            self.workspace_command(kog_audio::playback_order::workspace::Command::Sort {
+                rows,
+                column: self.columns.entries[column].id.into(),
+                descending: !self.sort_ascending,
+            });
+            return;
+        }
         self.refresh_session_metadata();
         self.session_command(SessionCommand::Sort {
             column: self.columns.entries[column].id.into(),
@@ -3114,13 +3164,20 @@ impl Ui {
         });
     }
     fn session_metadata(&self) -> Vec<SortRow> {
-        self.tracks
+        self.track_sort_metadata(&self.tracks, true)
+    }
+    fn track_sort_metadata(&self, tracks: &[Track], queue: bool) -> Vec<SortRow> {
+        tracks
             .iter()
             .enumerate()
             .map(|(index, track)| {
                 let meta = self.metadata_for(track);
                 SortRow {
-                    original: Some(self.session.order().original_position(index) as f64),
+                    original: Some(if queue {
+                        self.session.order().original_position(index)
+                    } else {
+                        index
+                    } as f64),
                     title: self.title_for(track).to_owned(),
                     artist: meta.map(|m| m.artist.clone()).unwrap_or_default(),
                     album: meta.map(|m| m.album.clone()).unwrap_or_default(),
@@ -4303,7 +4360,7 @@ impl Ui {
                 }) => Some(track.clone()),
                 _ => None,
             },
-            Focus::Tracks => self.tracks.get(self.selected[2]).cloned(),
+            Focus::Tracks => self.table_tracks().get(self.table_cursor()).cloned(),
             Focus::Playlists => None,
         };
         let Some(track) = track else {
@@ -4320,12 +4377,12 @@ impl Ui {
         let result = db.write_transaction(|db| {
             let starred = !db.is_starred(&locator);
             db.set_star(
-            &locator,
-            &track.entry.kind,
-            &track.entry.path,
-            &track.entry.entry,
-            track.entry.fragment.as_deref(),
-            starred,
+                &locator,
+                &track.entry.kind,
+                &track.entry.path,
+                &track.entry.entry,
+                track.entry.fragment.as_deref(),
+                starred,
             )?;
             Ok(starred)
         });
@@ -4813,13 +4870,7 @@ impl Ui {
                 }
             }
             PromptKind::PlaylistSearch => {
-                self.session_command(SessionCommand::Filter {
-                    query: value.to_lowercase(),
-                });
-                self.offsets[2] = 0;
-                if let Some(first) = self.visible_tracks().first() {
-                    self.selected[2] = *first;
-                }
+                self.filter_table(value.to_lowercase());
             }
             _ => {}
         }
@@ -5026,13 +5077,7 @@ impl Ui {
                 self.run_file_search(value);
             }
             PromptKind::PlaylistSearch => {
-                self.session_command(SessionCommand::Filter {
-                    query: value.to_lowercase(),
-                });
-                self.offsets[2] = 0;
-                if let Some(first) = self.visible_tracks().first() {
-                    self.selected[2] = *first;
-                }
+                self.filter_table(value.to_lowercase());
             }
             PromptKind::AddFile => {
                 let path = PathBuf::from(value);
@@ -5091,11 +5136,16 @@ impl Ui {
                     self.status = "Select tracks to save".to_owned();
                     return;
                 }
-                let created = self.library.db().create_playlist_with_entries(value, &entries);
+                let created = self
+                    .library
+                    .db()
+                    .create_playlist_with_entries(value, &entries);
                 match created {
                     Ok(id) => {
                         self.reload_lists();
-                        if let Some(index) = self.lists.iter().position(|(list_id, _)| *list_id == id) {
+                        if let Some(index) =
+                            self.lists.iter().position(|(list_id, _)| *list_id == id)
+                        {
                             self.select_list(index);
                             self.offsets[0] = index.saturating_sub(5);
                         }
@@ -5930,7 +5980,12 @@ impl Ui {
         let layout = self.layout(size);
         if let Some(column) = self.keyboard_column {
             self.context_column = Some(column);
-            self.open_context(MenuPage::ColumnContext, layout.playlist_left() + 1, 1, size);
+            self.open_context(
+                MenuPage::ColumnContext,
+                layout.playlist_left() + 1,
+                layout.track_header,
+                size,
+            );
             return;
         }
         match self.focus {
@@ -5968,9 +6023,13 @@ impl Ui {
             Focus::Tracks if !self.tracks.is_empty() => (
                 MenuPage::Tracks,
                 layout.playlist_left() + 1,
-                2 + self.selected[2].saturating_sub(self.offsets[2]),
+                layout.track_top + self.selected[2].saturating_sub(self.offsets[2]),
             ),
-            Focus::Tracks => (MenuPage::Playlist, layout.playlist_left() + 1, 2),
+            Focus::Tracks => (
+                MenuPage::Playlist,
+                layout.playlist_left() + 1,
+                layout.track_top,
+            ),
         };
         self.open_context(page, x, y, size);
     }
@@ -6248,9 +6307,7 @@ impl Ui {
                             self.browse(None);
                         }
                     } else if kind == PromptKind::PlaylistSearch {
-                        self.session_command(SessionCommand::Filter {
-                            query: String::new(),
-                        });
+                        self.filter_table(String::new());
                     } else if kind == PromptKind::TrashSelected {
                         self.pending_delete_paths.clear();
                     } else if matches!(kind, PromptKind::TagField(_) | PromptKind::TagArtwork) {
@@ -6449,6 +6506,7 @@ impl Ui {
                     }
                 }
                 Key::Char('+') | Key::Char('=') | Key::Char('-') => {
+                    self.auto_fit_enabled = false;
                     let width = &mut self.columns.entries[column].width;
                     *width = width
                         .saturating_add_signed(if key == Key::Char('-') { -1 } else { 1 })
@@ -6550,7 +6608,7 @@ impl Ui {
             Key::AltDown | Key::Char('J') => self.move_cursor_only(1, page),
             Key::Char('/') => self.begin_prompt(PromptKind::Search, self.search_query.clone()),
             Key::Char('F') => {
-                self.begin_prompt(PromptKind::PlaylistSearch, self.playlist_query.clone())
+                self.begin_prompt(PromptKind::PlaylistSearch, self.table_query().to_owned())
             }
             Key::Char('c') => self.show_queue(),
             Key::Char('v') => self.toggle_range_click(),
@@ -6915,10 +6973,17 @@ impl Ui {
                 } else {
                     Focus::Tracks
                 };
-                self.offsets[pane] = self.offsets[pane]
-                    .saturating_add_signed(if wheel & 1 == 0 { 3 } else { -3 })
-                    .min(bar.max_scroll);
-                self.manual_scroll_selection[pane] = Some(self.selected[pane]);
+                let offset = if pane == 2 {
+                    self.table_offset()
+                } else {
+                    self.offsets[pane]
+                };
+                self.set_pane_scroll(
+                    pane,
+                    offset
+                        .saturating_add_signed(if wheel & 1 == 0 { -3 } else { 3 })
+                        .min(bar.max_scroll),
+                );
                 return;
             }
             if let Some(bar) = self.scrollbar(&layout, size)
@@ -7127,7 +7192,7 @@ impl Ui {
                 }
             } else if (layout.show_sidebar || self.focus == Focus::Tracks)
                 && x >= layout.playlist_left()
-                && y == 1
+                && y == layout.track_header
             {
                 let relative = x.saturating_sub(layout.playlist_left()) + self.columns.scroll;
                 self.context_column = self
@@ -7143,15 +7208,18 @@ impl Ui {
                 self.open_context(page, x, y, size);
             } else if (layout.show_sidebar || self.focus == Focus::Tracks)
                 && x >= layout.playlist_left()
-                && y >= 2
-                && y < layout.footer_top
+                && y >= layout.track_top
+                && y < layout.track_top + layout.track_page
             {
                 self.focus = Focus::Tracks;
                 if self.scrollbar(&layout, size).is_some() && y == layout.footer_top - 2 {
                     self.open_context(MenuPage::Playlist, x, y, size);
                     return;
                 }
-                if let Some(&index) = self.visible_tracks().get(self.offsets[2] + y - 2) {
+                if let Some(&index) = self
+                    .visible_tracks()
+                    .get(self.offsets[2] + y - layout.track_top)
+                {
                     if !self.selected_tracks.contains(&index) {
                         self.select_track(index, false, false);
                     }
@@ -7175,11 +7243,16 @@ impl Ui {
             } else {
                 Focus::Tracks
             };
-            self.manual_scroll_selection[pane] = Some(self.selected[pane]);
+            let offset = if pane == 2 {
+                self.table_offset()
+            } else {
+                self.offsets[pane]
+            };
+            self.set_pane_scroll(pane, offset);
             if y == bar.top {
-                self.offsets[pane] = self.offsets[pane].saturating_sub(1);
+                self.set_pane_scroll(pane, offset.saturating_sub(1));
             } else if y == bar.top + bar.height - 1 {
-                self.offsets[pane] = (self.offsets[pane] + 1).min(bar.max_scroll);
+                self.set_pane_scroll(pane, (offset + 1).min(bar.max_scroll));
             } else if bar.travel == 0 {
                 return;
             } else {
@@ -7234,7 +7307,7 @@ impl Ui {
                 };
                 let populated = match kind {
                     PromptKind::Search => !self.search_query.is_empty(),
-                    PromptKind::PlaylistSearch => !self.playlist_query.is_empty(),
+                    PromptKind::PlaylistSearch => !self.table_query().is_empty(),
                     _ => false,
                 };
                 if populated {
@@ -7272,7 +7345,7 @@ impl Ui {
                 if !layout.show_sidebar && self.focus == Focus::Library {
                     self.begin_prompt(PromptKind::Search, self.search_query.clone());
                 } else {
-                    self.begin_prompt(PromptKind::PlaylistSearch, self.playlist_query.clone());
+                    self.begin_prompt(PromptKind::PlaylistSearch, self.table_query().to_owned());
                 }
             }
             return;
@@ -7620,7 +7693,7 @@ impl Ui {
             }
             return;
         }
-        if y == 1 && x >= layout.playlist_left() {
+        if y == layout.track_header && x >= layout.playlist_left() {
             let relative = x.saturating_sub(layout.playlist_left()) + self.columns.scroll;
             let boundary_column = self
                 .columns
@@ -7641,6 +7714,7 @@ impl Ui {
                     self.auto_fit_columns();
                 } else {
                     self.column_drag = Some(column);
+                    self.auto_fit_enabled = false;
                 }
                 return;
             }
@@ -7654,10 +7728,13 @@ impl Ui {
             }
             return;
         }
-        if y >= 2 && x >= layout.playlist_left() {
+        if y >= layout.track_top
+            && y < layout.track_top + layout.track_page
+            && x >= layout.playlist_left()
+        {
             self.focus = Focus::Tracks;
             let visible = self.visible_tracks();
-            let Some(&index) = visible.get(self.offsets[2] + y - 2) else {
+            let Some(&index) = visible.get(self.offsets[2] + y - layout.track_top) else {
                 return;
             };
             let relative = x.saturating_sub(layout.playlist_left()) + self.columns.scroll;
@@ -7835,7 +7912,8 @@ impl Ui {
                 .filter(|_| self.hover_since.elapsed() >= Duration::from_millis(450)),
             label: None,
         };
-        let visible_tracks = self.visible_tracks();
+        let visible_tracks = self.table_visible_tracks();
+        let draft = self.is_draft();
         let layout = self.layout_for_track_count(size, visible_tracks.len());
         let tree_page = self.tree_page(&layout);
         let pages = [
@@ -7849,6 +7927,9 @@ impl Ui {
             .into_iter()
             .enumerate()
         {
+            if pane == 2 && draft {
+                continue;
+            }
             if len == 0 {
                 self.selected[pane] = 0;
                 self.offsets[pane] = 0;
@@ -7877,26 +7958,40 @@ impl Ui {
             }
         }
 
-        let probe_range = if self.playlist_query.is_empty() {
-            self.offsets[2].min(self.tracks.len())
-                ..self
-                    .tracks
-                    .len()
-                    .min(self.offsets[2] + layout.track_page + 1)
+        if draft {
+            self.keep_draft_cursor_visible(&visible_tracks, layout.track_page);
+        }
+        let table_offset = self.table_offset();
+        let table_selected: HashSet<_> = if draft {
+            self.session
+                .workspace_model()
+                .snapshot()
+                .selected
+                .into_iter()
+                .collect()
         } else {
-            0..self.tracks.len()
+            self.selected_tracks.clone()
         };
-        let mut to_probe: Vec<_> = [self.playing, Some(self.selected[2])]
-            .into_iter()
-            .flatten()
-            .filter_map(|index| self.tracks.get(index))
+        let table_cursor = self.table_cursor();
+        let mut to_probe: Vec<_> = self
+            .playing
+            .and_then(|index| self.tracks.get(index))
             .map(|track| track.entry.clone())
+            .into_iter()
             .collect();
-        to_probe.extend(
-            self.tracks[probe_range]
-                .iter()
-                .map(|track| track.entry.clone()),
-        );
+        let tracks = self.table_tracks();
+        if self.table_query().is_empty() {
+            to_probe.extend(
+                visible_tracks
+                    .iter()
+                    .skip(table_offset)
+                    .take(layout.track_page + 1)
+                    .filter_map(|&index| tracks.get(index))
+                    .map(|track| track.entry.clone()),
+            );
+        } else {
+            to_probe.extend(tracks.iter().map(|track| track.entry.clone()));
+        }
         for entry in &to_probe {
             self.request_metadata(entry);
         }
@@ -7936,7 +8031,7 @@ impl Ui {
         } else if top_file_search {
             &self.search_query
         } else {
-            &self.playlist_query
+            self.table_query()
         };
         let playlist_search = search_box_label(
             top_query,
@@ -8356,7 +8451,7 @@ impl Ui {
         } else {
             paint(
                 &mut screen,
-                2,
+                layout.track_header + 1,
                 right_x,
                 "",
                 content_width,
@@ -8364,14 +8459,22 @@ impl Ui {
                 true,
             );
             if track_scrollbar.is_some() {
-                paint(&mut screen, 2, width, "", 1, Surface::Header, false);
+                paint(
+                    &mut screen,
+                    layout.track_header + 1,
+                    width,
+                    "",
+                    1,
+                    Surface::Header,
+                    false,
+                );
             }
             for &(column_index, start, column_width) in &column_positions {
                 let selected = self.keyboard_column == Some(column_index);
                 paint_playlist_cell(
                     &mut screen,
                     &mut hover_labels,
-                    2,
+                    layout.track_header + 1,
                     right_x,
                     content_width,
                     start,
@@ -8389,7 +8492,7 @@ impl Ui {
             }
             paint_playlist_separators(
                 &mut screen,
-                2,
+                layout.track_header + 1,
                 right_x,
                 content_width,
                 self.columns.scroll,
@@ -8398,12 +8501,16 @@ impl Ui {
                 self.keyboard_column,
             );
             let mut status_waveform = None::<Vec<char>>;
-            for y in 2..layout
-                .footer_top
-                .saturating_sub(1 + usize::from(scrollbar.is_some()))
+            for y in layout.track_top
+                ..layout
+                    .footer_top
+                    .saturating_sub(1 + usize::from(scrollbar.is_some()))
             {
-                let position =
-                    queue_drag::queue_row(self.offsets[2], y - 2, self.track_drop_target);
+                let position = queue_drag::queue_row(
+                    table_offset,
+                    y - layout.track_top,
+                    self.track_drop_target,
+                );
                 if position.is_none() {
                     let marker = format!(
                         "▶ Insert here {}",
@@ -8423,8 +8530,8 @@ impl Ui {
                 let index = position
                     .and_then(|position| visible_tracks.get(position))
                     .copied();
-                let surface = if index.is_some_and(|index| self.selected_tracks.contains(&index))
-                    || index == Some(self.selected[2]) && self.focus == Focus::Tracks
+                let surface = if index.is_some_and(|index| table_selected.contains(&index))
+                    || index == Some(table_cursor) && self.focus == Focus::Tracks
                 {
                     Surface::Selected
                 } else if y % 2 == 1 {
@@ -8441,12 +8548,12 @@ impl Ui {
                     surface,
                     false,
                 );
-                if let Some((index, track)) =
-                    index.and_then(|index| self.tracks.get(index).map(|track| (index, track)))
+                if let Some((index, track)) = index
+                    .and_then(|index| self.table_tracks().get(index).map(|track| (index, track)))
                 {
                     if self.metadata_ready(track) {
                         for &(column_index, start, column_width) in &column_positions {
-                            let value = self.column_value(
+                            let value = self.table_column_value(
                                 index,
                                 track,
                                 self.columns.entries[column_index].id,
@@ -8465,7 +8572,8 @@ impl Ui {
                                 surface,
                                 false,
                             );
-                            if self.columns.entries[column_index].id == "status"
+                            if !draft
+                                && self.columns.entries[column_index].id == "status"
                                 && self.playing == Some(index)
                                 && self.player.state() == PlaybackState::Playing
                             {
@@ -10556,6 +10664,9 @@ struct Layout {
     list_top: usize,
     footer_top: usize,
     list_page: usize,
+    tab_row: usize,
+    track_header: usize,
+    track_top: usize,
     track_page: usize,
 }
 impl Layout {
@@ -10607,6 +10718,9 @@ impl Layout {
             list_top,
             footer_top,
             list_page,
+            tab_row: 1,
+            track_header: 2,
+            track_top: 3,
             track_page: footer_top.saturating_sub(2).max(1),
         }
     }

@@ -43,13 +43,18 @@ impl Ui {
         let right = size
             .0
             .saturating_sub(usize::from(self.track_scrollbar(&layout, size).is_some()));
-        if !(layout.playlist_left()..right).contains(&x) || !(2..2 + layout.track_page).contains(&y)
+        if !(layout.playlist_left()..right).contains(&x)
+            || !(layout.track_top..layout.track_top + layout.track_page).contains(&y)
         {
             return None;
         }
-        queue_row(self.offsets[2], y - 2, self.track_drop_target)
-            .or(self.track_drop_target)
-            .map(|gap| gap.min(self.visible_track_count()))
+        queue_row(
+            self.offsets[2],
+            y - layout.track_top,
+            self.track_drop_target,
+        )
+        .or(self.track_drop_target)
+        .map(|gap| gap.min(self.visible_track_count()))
     }
 
     pub(super) fn finish_track_drag(&mut self, x: usize, y: usize, size: (usize, usize)) {
