@@ -27,6 +27,10 @@ impl TreeFilter {
         }
     }
 
+    pub fn query(&self) -> String {
+        self.words.join(" ")
+    }
+
     pub fn is_empty(&self) -> bool {
         self.words.is_empty()
     }

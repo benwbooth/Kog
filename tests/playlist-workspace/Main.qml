@@ -26,6 +26,15 @@ ApplicationWindow {
         return null
     }
     Component.onCompleted: {
+        if (controller.playlist_count === 2) {
+            check(controller.playback_state === "stopped", "restored session must stay stopped")
+            check(controller.current_index === 1, "restored current row")
+            check(controller.volume === 0, "restored session volume")
+            check(snapshot.tabs.length === 2, "restored playlist draft")
+            check(JSON.parse(controller.create_playlist("Session restore complete")).ok, "restore marker")
+            Qt.quit()
+            return
+        }
         const created = JSON.parse(controller.create_playlist("Workspace smoke")); check(created.ok, "create"); playlistId = created.id
         controller.open_playlist_tab(playlistId, "Workspace smoke")
         check(snapshot.tabs.length === 2 && controller.playlist_count === 0, "open must leave queue alone")
@@ -53,6 +62,7 @@ ApplicationWindow {
         interval: 100; running: true; repeat: true
         onTriggered: {
             controller.poll_workspace()
+            controller.poll_playback()
             root.attempts++
             root.check(root.attempts < 150, "async queue timeout: " + controller.status)
             if (root.stage === 1 && controller.playlist_count === 1) {
@@ -70,9 +80,18 @@ ApplicationWindow {
                 root.send({op:"focus",key:"queue"}); root.check(root.snapshot.active === "queue","pinned queue")
                 controller.open_playlist_tab(root.playlistId,"Renamed smoke")
                 root.check(root.snapshot.tabs.length === 2,"focus existing tab")
+                controller.set_volume_level(0)
+                controller.activate_playlist_index(0)
+                root.check(controller.playback_state === "playing", "native audio starts: " + controller.status)
+                controller.play_pause()
+                root.check(controller.playback_state === "paused", "native pause")
+                controller.seek(0.1)
+                controller.play_pause()
+                root.check(controller.playback_state === "playing", "native resume")
                 root.stage=3
+            } else if (root.stage === 3 && controller.current_index === 1 && controller.playback_state === "stopped") {
                 root.check(JSON.parse(controller.create_playlist("Workspace smoke complete")).ok, "completion marker")
-                console.warn("WORKSPACE PASS: open/edit/save/queue/close/undo/rename/focus")
+                console.warn("WORKSPACE PASS: editor, native playback, pause, seek, resume, end of stream")
                 Qt.quit()
             }
         }

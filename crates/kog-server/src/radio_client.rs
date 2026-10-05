@@ -295,3 +295,84 @@ mod tests {
         );
     }
 }
+
+/// I/O-only radio port. Session owns buffering, ordering, cancellation and play.
+pub struct SessionRadioPort<T> {
+    requests: mpsc::Sender<kog_audio::playback_order::session::Effect>,
+    responses: mpsc::Receiver<(
+        kog_audio::playback_order::session::Token,
+        kog_audio::playback_order::session::IoResult<T>,
+    )>,
+}
+impl<T: Send + 'static> SessionRadioPort<T> {
+    pub fn new(
+        id: &str,
+        mut present: impl FnMut(RadioEntry) -> Result<T, String> + Send + 'static,
+    ) -> Result<Self, String> {
+        use kog_audio::playback_order::session::{Effect, IoResult};
+        let radio = Radio::new(
+            None,
+            kog_audio::playback_order::session_path(id, "radio"),
+            false,
+        );
+        let (requests, jobs) = mpsc::channel();
+        let (results, responses) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("kog-session-radio".into())
+            .spawn(move || {
+                while let Ok(Effect::Radio {
+                    token,
+                    root,
+                    enabled,
+                    reshuffle,
+                    reset,
+                    ..
+                }) = jobs.recv()
+                {
+                    let root = (!root.is_empty()).then(|| std::path::Path::new(&root));
+                    let (entries, exhausted) = if reshuffle {
+                        let status = radio.reshuffle_incremental(root, root);
+                        let empty = status.entries.is_empty();
+                        (status.entries, empty)
+                    } else if reset {
+                        let status = radio.set_enabled_incremental(enabled, root, root);
+                        let empty = status.entries.is_empty();
+                        (status.entries, empty)
+                    } else {
+                        let result = radio.advance_incremental(root, root);
+                        (result.entries, result.exhausted)
+                    };
+                    let result = match entries
+                        .into_iter()
+                        .map(&mut present)
+                        .collect::<Result<Vec<_>, _>>()
+                    {
+                        Ok(tracks) => IoResult::Radio { tracks, exhausted },
+                        Err(error) => IoResult::Failed { error },
+                    };
+                    if results.send((token, result)).is_err() {
+                        break;
+                    }
+                }
+            })
+            .map_err(|e| e.to_string())?;
+        Ok(Self {
+            requests,
+            responses,
+        })
+    }
+    pub fn request(
+        &self,
+        effect: kog_audio::playback_order::session::Effect,
+    ) -> Result<(), String> {
+        self.requests.send(effect).map_err(|e| e.to_string())
+    }
+    pub fn poll(
+        &self,
+    ) -> Vec<(
+        kog_audio::playback_order::session::Token,
+        kog_audio::playback_order::session::IoResult<T>,
+    )> {
+        self.responses.try_iter().collect()
+    }
+}

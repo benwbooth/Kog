@@ -43,6 +43,13 @@ internal class SharedPlaybackPolicy {
 
 /** One opaque Rust application session; this class has no queue or policy logic. */
 internal class SharedBackendSession(val id: String) {
+    companion object {
+        @Synchronized fun defaultID(context: android.content.Context): String {
+            val prefs = context.getSharedPreferences("kog", android.content.Context.MODE_PRIVATE)
+            return prefs.getString("backend_session_id", null)
+                ?: "android:${java.util.UUID.randomUUID()}".also { prefs.edit().putString("backend_session_id", it).apply() }
+        }
+    }
     private var state: String? = null
     private val incarnation = System.currentTimeMillis()
     var snapshot = JSONObject()

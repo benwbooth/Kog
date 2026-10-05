@@ -16,6 +16,7 @@ class UiContractInstrumentation : Instrumentation() {
         }
         sendStatus(1, status)
         try {
+            librarySessionContract()
             sessionContract()
             mediaPortContract()
             val fixture = JSONObject(context.assets.open("playlist.json").bufferedReader().use { it.readText() })
@@ -77,6 +78,16 @@ class UiContractInstrumentation : Instrumentation() {
                 "Kotlin session step $index $path: expected ${expected.get(path)}, got ${lookup(reply,path)}"
             } }
             step.optJSONObject("capture")?.let { values -> values.keys().forEach { name -> captures[name] = lookup(reply, values.getString(name))!! } }
+        }
+    }
+    private fun librarySessionContract() {
+        val api = KogApi(targetContext, onDevice = true)
+        check(api.sessionID.isNotBlank() && api.sessionID == KogApi(targetContext).sessionID)
+        java.io.File(api.deviceRoot).mkdirs()
+        kotlinx.coroutines.runBlocking {
+            val result = api.search("kog-contract-no-such-track")
+            check(result.generation > 0)
+            check(api.more(result.generation, 0).tracks.isEmpty())
         }
     }
     private fun mediaPortContract() {

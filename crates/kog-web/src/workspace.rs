@@ -1,37 +1,17 @@
-//! Browser I/O and presentation for the shared playlist workspace.
+//! Browser presentation for the session-owned playlist workspace.
 use super::*;
-use kog_playback_policy::workspace::{
-    CloseChoice, Command, Effect as WorkspaceEffect, QueueAction, Workspace,
-};
-
-#[derive(Default)]
-pub struct QueueJobs {
-    issued: u64,
-    next: u64,
-    ready: std::collections::BTreeMap<u64, Option<(u64, String, QueueAction, Vec<Entry>)>>,
-}
-
+use kog_playback_policy::workspace::{CloseChoice, Command, QueueAction};
 #[derive(Clone, Copy)]
 pub struct Controller {
-    pub model: StoredValue<Workspace>,
-    pub revision: RwSignal<u64>,
-    pub queue: ReadSignal<Vec<Entry>>,
-    pub selected: ReadSignal<HashSet<usize>>,
-    pub queue_generation: StoredValue<u64>,
-    pub queue_jobs: StoredValue<QueueJobs>,
-    pub base: Callback<(), String>,
-    pub auth: Callback<(), Option<String>>,
-    pub queued: Callback<(QueueAction, Vec<Entry>)>,
-    pub saved: Callback<()>,
-    pub error: WriteSignal<String>,
+    pub backend: session::Controller,
 }
 impl Controller {
     pub fn snapshot(self) -> kog_playback_policy::workspace::Snapshot {
-        self.revision.get();
-        self.model.with_value(|model| model.snapshot_for(self.queue.get().len(), self.selected.get().len()))
+        self.backend.revision.track();
+        self.backend.model.with_value(|model| model.workspace())
     }
     pub fn open(self, id: i64, name: String) {
-        let scope = self.base.run(());
+        let scope = self.backend.base.run(());
         self.send(Command::Open {
             key: format!("{scope}:{id}"),
             scope,
@@ -40,185 +20,10 @@ impl Controller {
             readonly: id == 0,
         });
     }
-    fn queue_finished(self, ticket: u64, result: Option<(u64, String, QueueAction, Vec<Entry>)>) {
-        let mut ready = Vec::new();
-        {
-            let mut jobs = self.queue_jobs.write_value();
-            jobs.ready.insert(ticket, result);
-            loop {
-                let next = jobs.next;
-                let Some(result) = jobs.ready.remove(&next) else {
-                    break;
-                };
-                jobs.next += 1;
-                if let Some(result) = result {
-                    ready.push(result);
-                }
-            }
-        }
-        for (generation, source, action, entries) in ready {
-            if self.queue_generation.get_value() == generation && self.base.run(()) == source {
-                self.queued.run((action, entries));
-            }
-        }
-    }
     pub fn send(self, command: Command) {
-        let effect = self.model.write_value().apply_ui(command, self.queue.get_untracked().len(), self.selected.get_untracked().len());
-        if let Ok(value) = self.model.with_value(serde_json::to_string) {
-            store("kog.playlist-tabs", &value);
-        }
-        self.revision.update(|value| *value += 1);
-        let effect = match effect {
-            Ok(effect) => effect,
-            Err(error) => {
-                self.error.set(error);
-                return;
-            }
-        };
-        let ticket = if matches!(effect, WorkspaceEffect::Queue { .. }) {
-            let mut jobs = self.queue_jobs.write_value();
-            let ticket = jobs.issued;
-            jobs.issued += 1;
-            ticket
-        } else {
-            0
-        };
-        let header = self.auth.run(());
-        let base = self.base.run(());
-        let generation = self.queue_generation.get_value();
-        leptos::task::spawn_local(async move {
-            match effect {
-                WorkspaceEffect::None => {}
-                WorkspaceEffect::Load {
-                    key,
-                    scope,
-                    playlist_id,
-                    generation,
-                } => {
-                    let result = if scope != base {
-                        Err("Connect to this playlist's server to reload it".into())
-                    } else {
-                        request(
-                            "GET",
-                            format!("{scope}/api/playlists/{playlist_id}"),
-                            header,
-                            None,
-                        )
-                        .await
-                    };
-                    self.send(match result {
-                        Ok(value) => Command::Loaded {
-                            key,
-                            generation,
-                            entries: value["entries"].as_array().cloned().unwrap_or_default(),
-                        },
-                        Err(error) => Command::LoadFailed {
-                            key,
-                            generation,
-                            error,
-                        },
-                    });
-                }
-                WorkspaceEffect::Save {
-                    key,
-                    scope,
-                    playlist_id,
-                    revision,
-                    mut entries,
-                    expected_entries,
-                } => {
-                    // The existing append API accepts an empty string for no fragment.
-                    for entry in &mut entries {
-                        if entry["fragment"].is_null() {
-                            entry["fragment"] = serde_json::json!("");
-                        }
-                    }
-                    let result = if scope != base {
-                        Err("Connect to this playlist's server to save it".into())
-                    } else {
-                        request("PUT", format!("{scope}/api/playlists/{playlist_id}/entries"), header,
-                            Some(serde_json::json!({"entries":entries,"expected_entries":expected_entries}))).await
-                    };
-                    self.send(match result {
-                        Ok(_) => {
-                            self.saved.run(());
-                            Command::Saved { key, revision }
-                        }
-                        Err(error) => Command::SaveFailed {
-                            key,
-                            revision,
-                            error,
-                        },
-                    });
-                }
-                WorkspaceEffect::Queue {
-                    mode,
-                    entries,
-                    scope,
-                } => {
-                    if scope != base {
-                        self.error
-                            .set("Connect to this playlist's server to queue it".into());
-                        self.queue_finished(ticket, None);
-                        return;
-                    }
-                    let mut tracks = Vec::new();
-                    for chunk in entries.chunks(200) {
-                        match post_json(
-                            format!("{scope}/api/expand"),
-                            header.clone(),
-                            serde_json::json!(chunk),
-                        )
-                        .await
-                        {
-                            Ok(value) => {
-                                if let Some(lists) = value["tracks"].as_array() {
-                                    for list in lists {
-                                        if let Some(items) = list.as_array() {
-                                            tracks.extend(items.iter().map(browse_file_entry));
-                                        }
-                                    }
-                                }
-                            }
-                            Err(error) => {
-                                self.error.set(error);
-                                self.queue_finished(ticket, None);
-                                return;
-                            }
-                        }
-                    }
-                    self.queue_finished(ticket, Some((generation, base, mode, tracks)));
-                }
-            }
-        });
+        self.backend.send(SessionCommand::Workspace { command });
     }
 }
-async fn request(
-    method: &str,
-    url: String,
-    header: Option<String>,
-    body: Option<serde_json::Value>,
-) -> Result<serde_json::Value, String> {
-    let mut builder = if method == "PUT" {
-        Request::put(&url)
-    } else {
-        Request::get(&url)
-    };
-    if let Some(header) = header {
-        builder = builder.header("Authorization", &header);
-    }
-    builder = builder.header("X-Kog-Device", &device_id());
-    let result = match body {
-        Some(body) => builder.json(&body).map_err(|e| e.to_string())?.send().await,
-        None => builder.send().await,
-    };
-    let response = result.map_err(|e| e.to_string())?;
-    if !response.ok() {
-        return Err(error_text(response).await);
-    }
-    response.json().await.map_err(|e| e.to_string())
-}
-
 #[component]
 pub fn Tabs(controller: Controller) -> impl IntoView {
     view! {
@@ -267,8 +72,8 @@ pub fn Editor(
                 <button disabled=move || !controller.snapshot().actions.reload on:click=move |_| controller.send(Command::Reload)>"Reload"</button>
             </div>
             <div class="workspace-actions">
-                <button disabled=move || !controller.snapshot().actions.add_play_queue on:click=move |_| controller.send(Command::Append { entries:queue.get_untracked().iter().map(|entry|serde_json::to_value(entry).unwrap()).collect() })>"Add Play Queue"</button>
-                <button disabled=move || !controller.snapshot().actions.add_queue_selection on:click=move |_| controller.send(Command::Append { entries:queue.get_untracked().iter().enumerate().filter(|(i,_)|selected.get_untracked().contains(i)).map(|(_,entry)|serde_json::to_value(entry).unwrap()).collect() })>"Add Queue Selection"</button>
+                <button disabled=move || !controller.snapshot().actions.add_play_queue on:click=move |_| controller.backend.send(SessionCommand::AppendQueueToWorkspace {selected_only:false})>"Add Play Queue"</button>
+                <button disabled=move || !controller.snapshot().actions.add_queue_selection on:click=move |_| controller.backend.send(SessionCommand::AppendQueueToWorkspace {selected_only:true})>"Add Queue Selection"</button>
                 <button disabled=move || !controller.snapshot().actions.remove on:click=move |_| controller.send(Command::Remove)>"Remove"</button>
                 <button disabled=move || !controller.snapshot().actions.move_up on:click=move |_| controller.send(Command::Nudge { delta:-1 })>"Move Up"</button>
                 <button disabled=move || !controller.snapshot().actions.move_down on:click=move |_| controller.send(Command::Nudge { delta:1 })>"Move Down"</button>

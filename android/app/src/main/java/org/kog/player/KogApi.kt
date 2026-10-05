@@ -65,32 +65,40 @@ data class SearchPage(val tracks: List<Track>, val folders: List<Folder>, val ge
 
 /** The mobile client uses the same HTTP endpoints and locator shape as Kog Web. */
 class KogApi(private val context: Context, val onDevice: Boolean = false) {
-    var sessionID: String = ""
+    var sessionID: String = SharedBackendSession.defaultID(context)
+    var radioRequest: JSONObject? = null
+    private var captured: Map<String, String>? = null
+    /** Freeze connection credentials for a complete asynchronous operation. */
+    fun snapshot(): KogApi = KogApi(context, onDevice).also {
+        it.sessionID = sessionID
+        it.captured = mapOf("server" to server, "token" to token, "username" to username,
+            "password" to password, "codec" to codec, "midi_engine" to midiEngine)
+    }
     val deviceRoot get() = File(context.filesDir, "Kog Imports").absolutePath
     private fun parseTrack(row: JSONObject): Track = Track.parse(row).let { if (onDevice && it.kind != "remote") it.copy(kind = "device") else it }
 
     private val prefs = context.getSharedPreferences("kog", Context.MODE_PRIVATE)
     var server: String
-        get() = prefs.getString("server", "") ?: ""
+        get() = captured?.get("server") ?: (prefs.getString("server", "") ?: "")
         set(value) {
             val address = value.trim().trimEnd('/')
             prefs.edit().putString("server", if (address.isNotBlank() && "://" !in address)
                 "http://$address" else address).apply()
         }
     var token: String
-        get() = prefs.getString("token", "") ?: ""
+        get() = captured?.get("token") ?: (prefs.getString("token", "") ?: "")
         set(value) { prefs.edit().putString("token", value.trim()).apply() }
     var username: String
-        get() = prefs.getString("username", "") ?: ""
+        get() = captured?.get("username") ?: (prefs.getString("username", "") ?: "")
         set(value) { prefs.edit().putString("username", value).apply() }
     var password: String
-        get() = prefs.getString("password", "") ?: ""
+        get() = captured?.get("password") ?: (prefs.getString("password", "") ?: "")
         set(value) { prefs.edit().putString("password", value).apply() }
     var codec: String
-        get() = prefs.getString("codec", "aac") ?: "aac"
+        get() = captured?.get("codec") ?: (prefs.getString("codec", "aac") ?: "aac")
         set(value) { prefs.edit().putString("codec", value).apply() }
     var midiEngine: String
-        get() = prefs.getString("midi_engine", "opl3windows") ?: "opl3windows"
+        get() = captured?.get("midi_engine") ?: (prefs.getString("midi_engine", "opl3windows") ?: "opl3windows")
         set(value) { prefs.edit().putString("midi_engine", value).apply() }
 
     fun uri(endpoint: String, vararg params: Pair<String, String>): String {
@@ -213,9 +221,9 @@ class KogApi(private val context: Context, val onDevice: Boolean = false) {
         }
     }
 
-    suspend fun search(query: String): SearchPage = searchPage("/api/library/search", "q" to query)
+    suspend fun search(query: String): SearchPage = searchPage("/api/library/search", "q" to query, "session" to sessionID)
     suspend fun more(generation: Long, offset: Int): SearchPage = searchPage(
-        "/api/library/search/more", "g" to generation.toString(), "offset" to offset.toString())
+        "/api/library/search/more", "g" to generation.toString(), "offset" to offset.toString(), "session" to sessionID)
 
     private suspend fun searchPage(path: String, vararg params: Pair<String, String>): SearchPage {
         val response = JSONObject(request(uri(path, *params)))
@@ -267,15 +275,21 @@ class KogApi(private val context: Context, val onDevice: Boolean = false) {
         request(uri("/api/stars"), "POST", track.locator().put("starred", starred))
     }
 
+    private fun radioUri(endpoint: String, root: String): String {
+        val values = mutableListOf("incremental" to "true", "session" to sessionID)
+        if (root.isNotEmpty()) values += "root" to root
+        radioRequest?.let { values += "incarnation" to it.getLong("incarnation").toString(); values += "serial" to it.getLong("serial").toString() }
+        return uri(endpoint, *values.toTypedArray())
+    }
     suspend fun radio(enabled: Boolean, root: String): RadioBatch = radioBatch(
-        JSONObject(request(uri("/api/radio/enabled", "root" to root, "incremental" to "true", "session" to sessionID), "POST",
+        JSONObject(request(radioUri("/api/radio/enabled", root), "POST",
             JSONObject().put("enabled", enabled))))
 
     suspend fun radioAdvance(root: String): RadioBatch = radioBatch(
-        JSONObject(request(uri("/api/radio/advance", "root" to root, "incremental" to "true", "session" to sessionID), "POST")))
+        JSONObject(request(radioUri("/api/radio/advance", root), "POST")))
 
     suspend fun reshuffleRadio(root: String): RadioBatch = radioBatch(
-        JSONObject(request(uri("/api/radio/reshuffle", "root" to root, "incremental" to "true", "session" to sessionID), "POST")))
+        JSONObject(request(radioUri("/api/radio/reshuffle", root), "POST")))
 
     private suspend fun radioBatch(reply: JSONObject): RadioBatch {
         val tracks = withMetadata(reply.optJSONArray("entries").objects().map(::parseTrack))

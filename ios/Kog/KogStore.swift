@@ -98,7 +98,7 @@ final class KogStore: ObservableObject {
     var deviceAPI: KogAPI {
         KogAPI(server: "", token: "", username: "", password: "", codec: codec,
                deviceRoot: importsURL.path,
-               deviceStorage: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Kog").path)
+               deviceStorage: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Kog").path, sessionID: session.id)
     }
     var playlistAPI: KogAPI { playlistOnDevice ? deviceAPI : api }
     var searchAPI: KogAPI { libraryOnDevice ? deviceAPI : api }
@@ -109,7 +109,7 @@ final class KogStore: ObservableObject {
     var sc55RomsReady: Bool { !sc55RomPath.isEmpty && FileManager.default.fileExists(atPath: sc55RomPath) }
     var mt32RomsReady: Bool { !mt32RomPath.isEmpty && FileManager.default.fileExists(atPath: mt32RomPath) }
     var api: KogAPI { KogAPI(server: server, token: token, username: username,
-                            password: password, codec: codec, midiEngine: midiEngine) }
+                            password: password, codec: codec, midiEngine: midiEngine, sessionID: session.id) }
     var importsURL: URL {
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         return documents.appendingPathComponent("Kog Imports", isDirectory: true)
@@ -417,6 +417,7 @@ final class KogStore: ObservableObject {
                 do {
                     var client = try workspaceAPI(effect["scope"] as? String ?? "")
                     client.sessionID = session.id
+                    client.radioRequest = token
                     var result: [String: Any]
                     switch effect["action"] as? String {
                     case "load": result = ["kind": "loaded", "entries": try trackValues(await client.playlist((effect["playlist_id"] as? NSNumber)?.int64Value ?? 0))]

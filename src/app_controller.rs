@@ -62,6 +62,7 @@ pub mod qobject {
         #[qproperty(QString, shuffle_mode)]
         #[qproperty(QString, repeat_mode)]
         #[qproperty(i32, queue_count)]
+        #[qproperty(QString, queue_selection)]
         #[qproperty(QString, total_duration)]
         #[qproperty(QString, directory_path)]
         #[qproperty(QString, music_directory_path)]
@@ -182,7 +183,12 @@ pub mod qobject {
         #[qinvokable]
         fn workspace_json_for_selection(self: &AppController, selected: i32) -> QString;
         #[qinvokable]
-        fn selection_json(self: &AppController, state: QString, command: QString, count: i32) -> QString;
+        fn selection_json(
+            self: Pin<&mut AppController>,
+            state: QString,
+            command: QString,
+            count: i32,
+        ) -> QString;
         #[qinvokable]
         fn workspace_command(self: Pin<&mut AppController>, command: QString);
         #[qinvokable]
@@ -424,14 +430,13 @@ pub mod qobject {
 }
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use cxx_qt::CxxQtType;
 use cxx_qt_lib::{QString, QUrl};
@@ -442,12 +447,16 @@ use kog_audio::decoder::{
     DecoderRegistry, DecoderSettings, ExpansionResult, PlaybackSource, validate_soundfont,
 };
 use kog_audio::playback::{OutputDevice, PlaybackEngine, PlaybackState, available_output_devices};
-use kog_audio::playback_order::{NavigationEvent, PlaybackDecision, PlaybackOrder, SelectionState};
+use kog_audio::playback_order::session::{
+    Command as SessionCommand, Effect as SessionEffect, IoResult, OutputEvent, Session, Token,
+    Transport,
+};
 use kog_audio::playback_order::sort::compare_values;
 #[cfg(test)]
 use kog_audio::playback_order::sort::natural_compare;
-use kog_audio::playback_order::workspace::{Workspace, Command as WorkspaceCommand, Effect as WorkspaceEffect, QueueAction};
-use kog_audio::playlist::{Playlist, PlaylistEntry, PlaylistLocation};
+use kog_audio::playback_order::workspace::{Command as WorkspaceCommand, QueueAction};
+use kog_audio::playback_order::{NavigationEvent, SelectionState};
+use kog_audio::playlist::{Playlist, PlaylistEntry};
 use kog_audio::settings::{
     AppSettings, MidiEngine, OpeningFilesBehavior, OutputDevicePreference, RepeatMode, ShuffleMode,
 };
@@ -481,12 +490,9 @@ struct DirectoryScanState {
     receiver: Receiver<DirectoryScanEvent>,
     cancel: Arc<AtomicBool>,
     cancel_requested: bool,
-    behavior: OpeningFilesBehavior,
-    first_new_source_index: usize,
+    token: Token,
+    prepared_tracks: Vec<Track>,
     combined: AddPathResult,
-    known_sources: HashSet<PlaybackSource>,
-    playlist_dirty: bool,
-    last_playlist_refresh: Instant,
 }
 
 enum TreeDeleteEvent {
@@ -506,13 +512,15 @@ struct TreeDeleteState {
     failures: Vec<String>,
 }
 
-type RadioState = kog_server::radio_client::RadioClient<Track>;
+type RadioState = kog_server::radio_client::SessionRadioPort<Track>;
 
-fn make_radio_client(decoders: &DecoderRegistry, settings: DecoderSettings) -> Result<RadioState, String> {
+fn make_radio_client(
+    id: &str,
+    decoders: &DecoderRegistry,
+    settings: DecoderSettings,
+) -> Result<RadioState, String> {
     let decoders = decoders.background_worker(settings);
-    kog_server::radio_client::RadioClient::new(kog_server::radio::Radio::from_settings(), move |entry| {
-        entry.audio_track(&decoders)
-    })
+    RadioState::new(id, move |entry| entry.audio_track(&decoders))
 }
 
 /// One blacklist row, with the path resolved best-effort so keys match
@@ -598,6 +606,7 @@ fn rom_import_status(
     status
 }
 
+#[cfg(test)]
 fn ordered_directory_files(directory: &Path) -> Result<Vec<PathBuf>, String> {
     let mut files = Vec::new();
     let mut pending = vec![(directory.to_owned(), true)];
@@ -1297,32 +1306,7 @@ fn cover_art_key(artist: &str, tagged_album: &str, album: &str, file: &Path) -> 
 }
 
 fn playlist_entry_for_track(track: &Track) -> Result<PlaylistEntry, String> {
-    let location = if let Some(origin) = &track.source.archive_origin {
-        PlaylistLocation::Archive {
-            archive_path: origin.archive_path.clone(),
-            entry_name: origin.entry_name.clone(),
-        }
-    } else if let Some(url) = &track.source.remote_url {
-        PlaylistLocation::Remote(url.clone())
-    } else {
-        PlaylistLocation::Local(track.source.path.clone())
-    };
-    let fragment = match track.source.subsong {
-        None => None,
-        Some(_) if track.backend_id == "cuesheet" => Some(
-            track
-                .track_number
-                .ok_or_else(|| {
-                    format!(
-                        "CueSheet track {} has no declared track number",
-                        track.source.display_label()
-                    )
-                })?
-                .to_string(),
-        ),
-        Some(subsong) => Some(subsong.to_string()),
-    };
-    Ok(PlaylistEntry { location, fragment })
+    kog_audio::playback_order::playlist_entry_for_track(track)
 }
 
 fn normalize_playlist_save_path(mut path: PathBuf) -> Result<PathBuf, String> {
@@ -1345,6 +1329,7 @@ fn normalize_playlist_save_path(mut path: PathBuf) -> Result<PathBuf, String> {
     }
 }
 
+#[cfg(test)]
 fn move_selected_items<T>(
     items: &mut Vec<T>,
     selected_indices: &[usize],
@@ -1554,6 +1539,7 @@ fn sample_rate_label(sample_rate: Option<u32>) -> String {
     }
 }
 
+#[cfg(test)]
 fn compare_tracks(
     left: &Track,
     right: &Track,
@@ -1596,15 +1582,6 @@ fn collect_stored_entries(tracks: &[Track]) -> (Vec<kog_core::db::StoredEntry>, 
     (entries, skipped)
 }
 
-/// Outcome of attempting playback at one pane index: Started plays or
-/// keeps the existing stop-with-error behavior, while Skipped means the
-/// file was verifiably gone and the caller should move on.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum PlayOutcome {
-    Started,
-    Skipped,
-}
-
 /// True when a playback source points at a file that is gone. Archives
 /// only need their outer file, and remotes are never checked: transient
 /// network failures must not read as missing files.
@@ -1633,31 +1610,7 @@ fn stored_entry_is_missing(entry: &kog_core::db::StoredEntry) -> bool {
 /// be addressed on its own (e.g. a cue sheet entry without a track number).
 /// Shared by starring and by saving panes and selections as playlists.
 fn stored_entry_for_track(track: &Track) -> Option<kog_core::db::StoredEntry> {
-    let entry = playlist_entry_for_track(track).ok()?;
-    let (kind, path, name) = match entry.location {
-        kog_audio::playlist::PlaylistLocation::Local(path) => (
-            kog_core::db::KIND_LOCAL.to_owned(),
-            path.to_string_lossy().into_owned(),
-            String::new(),
-        ),
-        kog_audio::playlist::PlaylistLocation::Archive {
-            archive_path,
-            entry_name,
-        } => (
-            kog_core::db::KIND_ARCHIVE.to_owned(),
-            archive_path.to_string_lossy().into_owned(),
-            entry_name,
-        ),
-        kog_audio::playlist::PlaylistLocation::Remote(url) => {
-            (kog_core::db::KIND_REMOTE.to_owned(), url, String::new())
-        }
-    };
-    Some(kog_core::db::StoredEntry {
-        kind,
-        path,
-        entry: name,
-        fragment: entry.fragment,
-    })
+    kog_audio::playback_order::stored_entry_for_track(track)
 }
 
 /// Playlist entries back out of database rows. Remote entries keep their
@@ -1770,19 +1723,6 @@ fn load_session() -> Option<RestoredSession> {
     })
 }
 
-/// Stage remembered entries as a cache `.m3u` so the normal playlist
-/// expansion path (`add_path` -> `expand_playlist`) rebuilds them with the
-/// same archive, subsong, cue, and remote handling as any saved playlist.
-fn stage_session_playlist(entries: &[PlaylistEntry]) -> Result<PathBuf, String> {
-    let cache_file = playlist_cache_dir().join("session-restore.m3u");
-    if let Some(parent) = cache_file.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|_| "Could not stage the session playlist".to_owned())?;
-    }
-    Playlist::save(&cache_file, entries)?;
-    Ok(cache_file)
-}
-
 /// Write session.json atomically: a temp file beside it, then a rename, so a
 /// kill during the write can never leave a truncated file behind.
 fn write_session_atomic(contents: &str) -> Result<(), String> {
@@ -1799,6 +1739,7 @@ fn write_session_atomic(contents: &str) -> Result<(), String> {
     std::fs::rename(&temp, &path).map_err(|error| format!("replacing {}: {error}", path.display()))
 }
 
+#[cfg(test)]
 fn sort_visible_indices(
     tracks: &[Track],
     visible_indices: &mut [usize],
@@ -1808,9 +1749,13 @@ fn sort_visible_indices(
 ) {
     visible_indices.sort_by(|left, right| {
         let ordering = if column == PlaylistSortColumn::Index {
-            compare_values(&kog_audio::playback_order::sort::SortValue::Number(Some(*left as f64)),
-                &kog_audio::playback_order::sort::SortValue::Number(Some(*right as f64)))
-        } else { compare_tracks(&tracks[*left], &tracks[*right], column, starred) };
+            compare_values(
+                &kog_audio::playback_order::sort::SortValue::Number(Some(*left as f64)),
+                &kog_audio::playback_order::sort::SortValue::Number(Some(*right as f64)),
+            )
+        } else {
+            compare_tracks(&tracks[*left], &tracks[*right], column, starred)
+        };
         if ascending {
             ordering
         } else {
@@ -1836,8 +1781,9 @@ pub struct AppControllerRust {
     playlist_revision: i32,
     playlists_revision: i32,
     workspace_revision: i32,
-    workspace: Workspace,
-    workspace_jobs: std::collections::VecDeque<(QueueAction, Receiver<Result<Vec<Track>, String>>)>,
+    session: Session<Track>,
+    session_effects: std::collections::VecDeque<SessionEffect>,
+    session_jobs: Vec<(Token, Receiver<IoResult<Track>>)>,
     playlist_sort_column: QString,
     playlist_sort_ascending: bool,
     playlist_column_layout: QString,
@@ -1876,6 +1822,7 @@ pub struct AppControllerRust {
     shuffle_mode: QString,
     repeat_mode: QString,
     queue_count: i32,
+    queue_selection: QString,
     total_duration: QString,
     directory_path: QString,
     music_directory_path: QString,
@@ -1916,7 +1863,6 @@ pub struct AppControllerRust {
     tracks: Vec<Track>,
     visible_indices: Vec<usize>,
     sort_column: PlaylistSortColumn,
-    playback_order: PlaybackOrder,
     filter: String,
     library_db: kog_core::db::LibraryDb,
     starred: HashSet<String>,
@@ -1925,7 +1871,7 @@ pub struct AppControllerRust {
     decoders: DecoderRegistry,
     playback: PlaybackEngine,
     equalizer_settings: EqualizerSettings,
-    directory_scan: Option<DirectoryScanState>,
+    directory_scans: Vec<DirectoryScanState>,
     tree_delete: Option<TreeDeleteState>,
     mpris: MprisService,
     api_server: Option<ApiServerHandle>,
@@ -2035,9 +1981,17 @@ impl Default for AppControllerRust {
             playlist_revision: 0,
             playlists_revision: 0,
             workspace_revision: 0,
-            workspace: kog_audio::settings::setting_path("playlist-tabs-qt.json").and_then(|path| std::fs::read(path).ok())
-                .and_then(|bytes| serde_json::from_slice(&bytes).ok()).and_then(|value| Workspace::restore(value).ok()).unwrap_or_default(),
-            workspace_jobs: std::collections::VecDeque::new(),
+            session: Session::new(
+                std::env::var("KOG_SESSION_ID").unwrap_or_else(|_| "qt:default".into()),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos() as u64,
+                shuffle_mode,
+                repeat_mode,
+            ),
+            session_effects: Default::default(),
+            session_jobs: Vec::new(),
             playlist_sort_column: qstring(PlaylistSortColumn::Index.identifier()),
             playlist_sort_ascending: true,
             playlist_column_layout,
@@ -2079,6 +2033,7 @@ impl Default for AppControllerRust {
             shuffle_mode: qstring(shuffle_mode.setting_value()),
             repeat_mode: qstring(repeat_mode.setting_value()),
             queue_count: 0,
+            queue_selection: qstring("{\"indices\":[],\"anchor\":null}"),
             total_duration: qstring("Total duration: 0 seconds"),
             directory_path: qstring(directory.to_string_lossy()),
             // The server's music folder starts from the settings value; it is
@@ -2128,11 +2083,6 @@ impl Default for AppControllerRust {
             tracks: Vec::new(),
             visible_indices: Vec::new(),
             sort_column: PlaylistSortColumn::Index,
-            playback_order: PlaybackOrder::new(
-                shuffle_mode,
-                repeat_mode,
-                0x4b6f_672d_7368_7566 ^ u64::from(std::process::id()),
-            ),
             filter: String::new(),
             library_db: kog_core::db::LibraryDb::open().unwrap_or_else(|_| {
                 kog_core::db::LibraryDb::open_in_memory()
@@ -2144,7 +2094,7 @@ impl Default for AppControllerRust {
             decoders,
             playback,
             equalizer_settings,
-            directory_scan: None,
+            directory_scans: Vec::new(),
             tree_delete: None,
             mpris: MprisService::default(),
             api_server: None,
@@ -2167,22 +2117,41 @@ impl Default for AppControllerRust {
             }
         }
 
-        if app_settings.radio_enabled && controller.directory.is_dir() {
-            match make_radio_client(&controller.decoders, controller.decoder_settings.clone()) {
-                Ok(mut radio) => {
-                    let root = Some(controller.directory.clone());
-                    radio.set_enabled(true, root.clone(), root);
-                    controller.playback_order.set_radio_enabled(true, &controller.tracks, None);
-                    controller.repeat_mode = qstring(RepeatMode::Off.setting_value());
-                    controller.shuffle_mode = qstring(ShuffleMode::Off.setting_value());
-                    controller.radio = Some(radio);
-                    controller.radio_active = true;
-                    controller.status = qstring("Random Radio on");
+        // Rehydrate the session stopped, then append files requested on launch.
+        let restored = kog_audio::playback_order::session_path(controller.session.id(), "session")
+            .and_then(|p| std::fs::read(p).ok())
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .is_some_and(|value| {
+                controller
+                    .session
+                    .restore(value, |value| {
+                        let entry = stored_entry_from_json(value).ok_or("Invalid queue entry")?;
+                        controller
+                            .decoders
+                            .expand_queue_entry(&entry)
+                            .into_iter()
+                            .next()
+                            .map(|source| Track::from_source(source, &controller.decoders))
+                            .ok_or_else(|| "Unavailable queue entry".to_owned())
+                    })
+                    .is_ok()
+            });
+        if !restored {
+            if std::env::var_os("KOG_SESSION_ID").is_none() {
+                if let Some(session) = restored_session {
+                    controller.restore_session_tracks(session);
                 }
-                Err(error) => controller.status = qstring(error),
+                if let Some(value) = kog_audio::settings::setting_path("playlist-tabs-qt.json")
+                    .and_then(|p| std::fs::read(p).ok())
+                    .and_then(|b| serde_json::from_slice(&b).ok())
+                {
+                    controller.queue_session(SessionCommand::WorkspaceRestore { value });
+                }
             }
+            controller.queue_session(SessionCommand::Volume {
+                value: app_settings.output_volume,
+            });
         }
-
         if let Some(paths) = std::env::var_os("KOG_OPEN_FILES") {
             let mut open_result = AddPathResult::default();
             for path in std::env::split_paths(&paths) {
@@ -2204,20 +2173,70 @@ impl Default for AppControllerRust {
                 controller.status = qstring(add_path_status(&open_result));
             }
         }
-        {
-            let (playback_order, tracks) = (&mut controller.playback_order, &controller.tracks);
-            playback_order.tracks_changed(tracks, None);
-        }
-        // Restore the remembered playlist pane last, after any KOG_OPEN_FILES
-        // additions, without touching playback: the current row is selected,
-        // the engine stays stopped, and a later play press resumes there.
-        if let Some(session) = restored_session {
-            controller.restore_session_tracks(session);
+        controller.playback.set_volume(
+            controller.session.checkpoint()["volume"]
+                .as_f64()
+                .unwrap_or(1.0) as f32,
+        );
+        controller.tracks = controller.session.queue().to_vec();
+        controller.visible_indices = controller.session.visible().to_vec();
+        controller.current_index = controller
+            .session
+            .current()
+            .map(saturating_i32)
+            .unwrap_or(-1);
+        controller.queue_session(SessionCommand::Scopes {
+            scopes: vec!["local".into()],
+        });
+        let checkpoint = controller.session.checkpoint();
+        let radio = checkpoint["radio_enabled"].as_bool().unwrap_or(false)
+            || (!restored && app_settings.radio_enabled);
+        if radio {
+            let root = checkpoint["radio_root"]
+                .as_str()
+                .filter(|r| !r.is_empty())
+                .map(str::to_owned)
+                .unwrap_or_else(|| controller.directory.to_string_lossy().into_owned());
+            controller.queue_session(SessionCommand::Radio {
+                enabled: true,
+                scope: "local".into(),
+                root,
+                reshuffle: false,
+            });
         }
         // In-memory star cache for column display and star sorting; the
         // database stays the source of truth on every toggle.
         if let Ok(locators) = controller.library_db.starred_locators() {
             controller.starred.extend(locators);
+        }
+        controller.rebuild_visible_indices();
+        // QML reads these properties during Component.onCompleted, before
+        // the first polling tick. Initialize the projection from the session.
+        let view = controller.session.snapshot();
+        controller.current_index = view.current.map(saturating_i32).unwrap_or(-1);
+        controller.volume = view.volume;
+        controller.shuffle_mode = qstring(view.shuffle.setting_value());
+        controller.repeat_mode = qstring(view.repeat.setting_value());
+        controller.queue_count = saturating_i32(view.queued.len());
+        controller.radio_active = view.radio_enabled;
+        controller.filter = view.filter.to_owned();
+        controller.sort_column =
+            PlaylistSortColumn::from_identifier(view.sort_column).unwrap_or_default();
+        controller.playlist_sort_column = qstring(view.sort_column);
+        controller.playlist_sort_ascending = !view.descending;
+        controller.queue_selection=qstring(serde_json::json!({"indices":view.selection.indices.iter().filter_map(|i|view.visible.iter().position(|v|v==i)).collect::<Vec<_>>(),"anchor":view.selection.anchor.and_then(|i|view.visible.iter().position(|v|*v==i))}).to_string());
+        controller.playlist_count = saturating_i32(controller.visible_indices.len());
+        controller.total_duration = controller.total_duration_value();
+        if let Some(track) = controller
+            .session
+            .current()
+            .and_then(|i| controller.tracks.get(i))
+        {
+            controller.now_title = qstring(&track.title);
+            controller.now_artist = qstring(&track.artist);
+            controller.current_album = qstring(&track.album);
+            controller.current_file = qstring(track.source.display_label());
+            controller.duration_seconds = track.duration.unwrap_or_default().as_secs_f64();
         }
         controller.mpris.publish(mpris_snapshot(&controller));
         controller
@@ -2243,7 +2262,7 @@ fn mpris_snapshot(controller: &AppControllerRust) -> MprisSnapshot {
         PlaybackState::Paused => MprisPlaybackStatus::Paused,
         PlaybackState::Stopped => MprisPlaybackStatus::Stopped,
     };
-    let loop_status = match controller.playback_order.repeat_mode() {
+    let loop_status = match controller.session.order().repeat_mode() {
         RepeatMode::Off => MprisLoopStatus::None,
         RepeatMode::One => MprisLoopStatus::Track,
         RepeatMode::Album | RepeatMode::All => MprisLoopStatus::Playlist,
@@ -2263,7 +2282,7 @@ fn mpris_snapshot(controller: &AppControllerRust) -> MprisSnapshot {
     MprisSnapshot {
         playback_status,
         loop_status,
-        shuffle: controller.playback_order.shuffle_mode() != ShuffleMode::Off,
+        shuffle: controller.session.order().shuffle_mode() != ShuffleMode::Off,
         volume: controller.volume,
         position_seconds: controller.position_seconds,
         duration_seconds: controller.duration_seconds,
@@ -2459,132 +2478,79 @@ impl AppControllerRust {
         Ok(self.add_expansion(expansion))
     }
 
-    fn add_remote_url(&mut self, url: &str) -> Result<AddPathResult, String> {
-        let expansion = self.decoders.expand_remote_url(url)?;
-        Ok(self.add_expansion(expansion))
-    }
-
     fn add_expansion(&mut self, expansion: ExpansionResult) -> AddPathResult {
         let mut result = AddPathResult::default();
+        let mut tracks = Vec::new();
         for warning in expansion.warnings {
             result.push_warning(warning);
         }
         for source in expansion.sources {
-            if self.tracks.iter().any(|track| track.source == source) {
-                continue;
-            }
             let track = Track::from_source(source, &self.decoders);
             if let Some(warning) = &track.decoder_warning {
                 result.push_warning(warning.clone());
             }
-            self.tracks.push(track);
-            result.added += 1;
+            tracks.push(track);
         }
+        result.added = tracks.len();
+        self.queue_session(SessionCommand::Append {
+            tracks,
+            action: QueueAction::AddToQueue,
+        });
         result
     }
 
     /// JSON body persisted to session.json: the pane rows, the current row,
     /// the tree root, and the expanded folders QML handed in.
     fn session_snapshot(&self, expanded: &[String]) -> String {
-        let (entries, _) = collect_stored_entries(&self.tracks);
-        let tracks = entries
-            .iter()
-            .map(|entry| {
-                serde_json::json!({
-                    "kind": entry.kind,
-                    "path": entry.path,
-                    "entry": entry.entry,
-                    "fragment": entry.fragment,
-                })
-            })
-            .collect::<Vec<_>>();
-        serde_json::json!({
-            "tracks": tracks,
-            "currentIndex": self.current_index,
-            "directory": self.directory_path.to_string(),
-            "expanded": expanded,
-        })
-        .to_string()
+        serde_json::json!({"directory":self.directory_path.to_string(),"expanded":expanded})
+            .to_string()
     }
 
     /// Rebuild the pane from a remembered session without starting playback.
     /// The current row is selected so a later play press resumes there.
-    fn restore_session_tracks(&mut self, session: RestoredSession) {
-        if !session.entries.is_empty()
-            && let Ok(cache_file) = stage_session_playlist(&session.entries)
-        {
-            let _ = self.add_path(cache_file);
-        }
-        self.rebuild_visible_indices();
-        self.playlist_count = saturating_i32(self.visible_indices.len());
-        self.playlist_revision = self.playlist_revision.wrapping_add(1);
-        self.total_duration = self.total_duration_value();
-        self.current_index = if self.tracks.is_empty() || session.current_index < 0 {
-            -1
-        } else {
-            saturating_i32(
-                usize::try_from(session.current_index)
+    fn restore_session_tracks(&mut self, legacy: RestoredSession) {
+        let tracks = legacy
+            .entries
+            .iter()
+            .flat_map(|entry| {
+                self.decoders
+                    .expand_entry(entry)
+                    .map(|result| result.sources)
                     .unwrap_or_default()
-                    .min(self.tracks.len() - 1),
-            )
-        };
-        let current = usize::try_from(self.current_index).ok();
-        {
-            let (playback_order, tracks) = (&mut self.playback_order, &self.tracks);
-            playback_order.tracks_changed(tracks, current);
-        }
-        self.queue_count = saturating_i32(self.playback_order.queue_count());
-    }
-
-    fn add_directory(&mut self, directory: &Path) -> Result<AddPathResult, String> {
-        let directory = canonical_path(directory)?;
-        if !directory.is_dir() {
-            return Err(format!("{} is not a folder", directory.display()));
-        }
-
-        let mut result = AddPathResult::default();
-        for path in ordered_directory_files(&directory)? {
-            match self.add_scanned_file(path) {
-                Ok(added) => {
-                    result.added += added.added;
-                    if let Some(warning) = added.warning {
-                        result.push_warning(warning);
-                    }
-                }
-                Err(error) => result.push_warning(error),
-            }
-        }
-        Ok(result)
-    }
-
-    fn add_scanned_file(&mut self, path: PathBuf) -> Result<AddPathResult, String> {
-        if !self.decoders.accepts_path(&path) {
-            return Ok(AddPathResult::default());
-        }
-        if !kog_audio::library_policy::include_discovered_file(
-            &path,
-            self.read_cue_sheets_in_folders,
-            self.read_playlists_in_folders,
-            false,
-        ) {
-            return Ok(AddPathResult::default());
-        }
-        self.add_path(path)
+            })
+            .map(|source| Track::from_source(source, &self.decoders))
+            .collect::<Vec<_>>();
+        let current = usize::try_from(legacy.current_index)
+            .ok()
+            .filter(|i| *i < tracks.len());
+        self.queue_session(SessionCommand::Replace { tracks, current });
     }
 
     fn rebuild_visible_indices(&mut self) {
-        let mut sorted: Vec<_> = (0..self.tracks.len()).collect();
-        if self.sort_column != PlaylistSortColumn::Index {
-            sort_visible_indices(&self.tracks, &mut sorted, self.sort_column, self.playlist_sort_ascending, &self.starred);
-        }
-        self.playback_order.set_sequence(sorted.clone(), self.tracks.len());
-        self.visible_indices = sorted.into_iter().filter(|index| self.tracks[*index].matches(&self.filter)).collect();
+        let rows = self
+            .session
+            .queue()
+            .iter()
+            .map(|track| {
+                let mut row = kog_audio::playback_order::sort_row(track);
+                row.star = self.starred.contains(&star_key_for_track(track));
+                row
+            })
+            .collect();
+        self.queue_session(SessionCommand::Metadata { rows });
     }
-
-    fn sync_tracks_in_playback_order(&mut self) -> usize {
-        let current = usize::try_from(self.current_index).ok();
-        self.playback_order.tracks_changed(&self.tracks, current);
-        self.playback_order.queue_count()
+    fn queue_session(&mut self, command: SessionCommand<Track>) {
+        let update_item = matches!(&command, SessionCommand::UpdateItem { .. });
+        let effects = self.session.dispatch(command);
+        if update_item
+            || effects
+                .iter()
+                .any(|effect| matches!(effect, SessionEffect::QueueChanged { .. }))
+        {
+            self.tracks = self.session.queue().to_vec();
+        }
+        self.visible_indices = self.session.visible().to_vec();
+        self.session_effects.extend(effects);
     }
 
     fn total_duration_value(&self) -> QString {
@@ -2929,10 +2895,6 @@ impl qobject::AppController {
         };
         if query.to_string().trim().is_empty() {
             self.as_mut().add_local_paths(paths, behavior);
-        } else if self.as_ref().rust().directory_scan_active {
-            self.as_mut().set_status(qstring(
-                "A folder scan is already running; cancel it before adding more files",
-            ));
         } else if !paths.is_empty() {
             let filter = kog_audio::library_policy::TreeFilter::new(
                 &query.to_string(),
@@ -2944,10 +2906,13 @@ impl qobject::AppController {
     }
 
     pub fn set_radio_enabled(mut self: Pin<&mut Self>, enabled: bool) {
-        if enabled == self.as_ref().rust().radio_active { return; }
+        if enabled == self.as_ref().rust().radio_active {
+            return;
+        }
         if enabled {
             let root = self.as_ref().rust().directory.clone();
-            self.as_mut().begin_radio_session(root, false, "Random Radio on");
+            self.as_mut()
+                .begin_radio_session(root, false, "Random Radio on");
         } else {
             self.as_mut().teardown_radio();
             self.as_mut().set_status(qstring("Random Radio off"));
@@ -2955,237 +2920,126 @@ impl qobject::AppController {
     }
 
     fn refresh_radio_blacklist(mut self: Pin<&mut Self>) {
-        if let Some(radio) = self.as_mut().rust_mut().radio.as_mut() {
-            radio.refresh();
+        if self.as_ref().rust().radio_active {
+            let root = self.as_ref().rust().directory.clone();
+            self.as_mut()
+                .begin_radio_session(root, false, "Random Radio refreshed");
         }
     }
 
     fn begin_radio_session(mut self: Pin<&mut Self>, root: PathBuf, reshuffle: bool, status: &str) {
-        if !root.is_dir() {
-            self.as_mut().set_status(qstring(format!("Music folder {} is unavailable", root.display())));
-            return;
-        }
-        if self.as_ref().rust().radio.is_none() {
-            let radio = {
-                let pinned = self.as_ref();
-                let rust = pinned.rust();
-                make_radio_client(&rust.decoders, rust.decoder_settings.clone())
-            };
-            match radio {
-                Ok(radio) => self.as_mut().rust_mut().radio = Some(radio),
-                Err(error) => { self.as_mut().set_status(qstring(error)); return; }
-            }
-        }
-        self.as_mut().apply_repeat_mode(RepeatMode::Off);
-        self.as_mut().apply_shuffle_mode(ShuffleMode::Off);
-        {
-            let mut rust = self.as_mut().rust_mut();
-            let tracks = rust.tracks.clone();
-            let current = usize::try_from(rust.current_index).ok();
-            rust.playback_order.set_radio_enabled(true, &tracks, current);
-            let radio = rust.radio.as_mut().expect("radio initialized above");
-            if reshuffle { radio.reshuffle(Some(root.clone()), Some(root)); }
-            else { radio.set_enabled(true, Some(root.clone()), Some(root)); }
-        }
-        self.as_mut().set_radio_active(true);
+        self.as_mut().session_command(SessionCommand::Radio {
+            enabled: true,
+            scope: "local".into(),
+            root: root.to_string_lossy().into_owned(),
+            reshuffle,
+        });
         self.as_mut().set_status(qstring(status));
     }
 
     pub fn reshuffle_radio(mut self: Pin<&mut Self>) {
         let root = self.as_ref().rust().directory.clone();
-        self.as_mut().begin_radio_session(root, true, "Random Radio — fresh shuffle");
+        self.as_mut()
+            .begin_radio_session(root, true, "Random Radio — fresh shuffle");
     }
 
     pub fn poll_radio(mut self: Pin<&mut Self>) {
-        let (pending, error) = {
-            let mut rust = self.as_mut().rust_mut();
-            let Some(radio) = rust.radio.as_mut() else { return; };
-            radio.poll();
-            (radio.take_pending(), radio.take_error())
-        };
-        if let Some(error) = error { self.as_mut().set_status(qstring(error)); }
-        if let Some(track) = pending {
-            let index = self.as_mut().append_radio_track(track);
-            self.as_mut().play_shifted_radio_track(index);
-        }
+        self.as_mut().poll_session_ports();
     }
 
     fn teardown_radio(mut self: Pin<&mut Self>) {
-        let mut rust = self.as_mut().rust_mut();
-        if let Some(radio) = rust.radio.as_mut() {
-            radio.set_enabled(false, None, None);
-        }
-        let tracks = rust.tracks.clone();
-        let current = usize::try_from(rust.current_index).ok();
-        rust.playback_order.set_radio_enabled(false, &tracks, current);
-        drop(rust);
-        self.as_mut().set_radio_active(false);
-    }
-
-    fn append_radio_track(mut self: Pin<&mut Self>, track: Track) -> usize {
-        let index = self.as_ref().rust().tracks.len();
-        self.as_mut().rust_mut().tracks.push(track);
-        self.as_mut().refresh_playback_order();
-        self.as_mut().rebuild_playlist();
-        index
-    }
-
-    fn shift_radio_track(mut self: Pin<&mut Self>) -> Option<usize> {
-        let track = self.as_mut().rust_mut().radio.as_mut()?.request_next()?;
-        Some(self.as_mut().append_radio_track(track))
+        self.as_mut().session_command(SessionCommand::Radio {
+            enabled: false,
+            scope: "local".into(),
+            root: String::new(),
+            reshuffle: false,
+        });
     }
 
     pub fn poll_directory_scan(mut self: Pin<&mut Self>) {
-        if !self.as_ref().rust().directory_scan_active {
-            return;
-        }
-
-        let cancel_requested = self
-            .as_ref()
-            .rust()
-            .directory_scan
-            .as_ref()
-            .is_some_and(|scan| scan.cancel_requested);
-        let limit = if cancel_requested { 256 } else { 128 };
-        let mut events = Vec::new();
-        let mut disconnected = false;
-        if let Some(scan) = self.as_ref().rust().directory_scan.as_ref() {
-            for _ in 0..limit {
+        let scans = std::mem::take(&mut self.as_mut().rust_mut().directory_scans);
+        let mut pending = Vec::new();
+        let mut completed = Vec::new();
+        let mut scanned = 0;
+        let mut prepared = 0;
+        let mut current_path = None;
+        for mut scan in scans {
+            let mut done = None;
+            for _ in 0..128 {
                 match scan.receiver.try_recv() {
-                    Ok(event) => {
-                        let complete = matches!(event, DirectoryScanEvent::Complete { .. });
-                        events.push(event);
-                        if complete {
-                            break;
+                    Ok(DirectoryScanEvent::Prepared(file)) => {
+                        scanned += 1;
+                        current_path = Some(file.path);
+                        if !scan.cancel_requested {
+                            prepared += file.tracks.len();
+                            scan.combined.added += file.tracks.len();
+                            scan.prepared_tracks.extend(file.tracks);
+                            for warning in file.warnings {
+                                scan.combined.push_warning(warning);
+                            }
                         }
+                    }
+                    Ok(DirectoryScanEvent::Warning(warning)) => scan.combined.push_warning(warning),
+                    Ok(DirectoryScanEvent::Complete { cancelled }) => {
+                        done = Some(cancelled);
+                        break;
                     }
                     Err(TryRecvError::Empty) => break,
                     Err(TryRecvError::Disconnected) => {
-                        disconnected = true;
+                        done = Some(true);
                         break;
                     }
                 }
             }
-        }
-
-        let mut completion = None;
-        let mut scanned_increment = 0_i32;
-        let mut last_scanned_path = None;
-        let mut last_added_count = None;
-        // Staged playlist imports live here: duplicates are legitimate
-        // playlist content, so they bypass the known-source filter below.
-        // Compare canonical paths since prepared paths are canonicalized.
-        let staged_dir = kog_audio::track::canonical_path(&playlist_cache_dir())
-            .unwrap_or_else(|_| playlist_cache_dir());
-        for event in events {
-            match event {
-                DirectoryScanEvent::Prepared(prepared) => {
-                    let skip = self
-                        .as_ref()
-                        .rust()
-                        .directory_scan
-                        .as_ref()
-                        .is_none_or(|scan| scan.cancel_requested);
-                    if skip {
-                        continue;
+            if let Some(cancelled) = done {
+                let result = if cancelled || scan.cancel_requested {
+                    IoResult::Failed {
+                        error: "Music load cancelled".into(),
                     }
-                    scanned_increment = scanned_increment.saturating_add(1);
-                    let staged_import = prepared.path.starts_with(&staged_dir);
-                    last_scanned_path = Some(prepared.path);
-                    let (new_tracks, added_count) = {
-                        let mut rust = self.as_mut().rust_mut();
-                        let Some(scan) = rust.directory_scan.as_mut() else {
-                            continue;
-                        };
-                        let new_tracks = prepared
-                            .tracks
-                            .into_iter()
-                            .filter(|track| {
-                                staged_import || scan.known_sources.insert(track.source.clone())
-                            })
-                            .collect::<Vec<_>>();
-                        let newly_added = new_tracks.len();
-                        scan.combined.added += newly_added;
-                        scan.playlist_dirty |= newly_added > 0;
-                        for warning in prepared.warnings {
-                            scan.combined.push_warning(warning);
-                        }
-                        (new_tracks, scan.combined.added)
-                    };
-                    if !new_tracks.is_empty() {
-                        self.as_mut().rust_mut().tracks.extend(new_tracks);
+                } else {
+                    IoResult::Expanded {
+                        tracks: scan.prepared_tracks,
                     }
-                    last_added_count = Some(added_count);
-                }
-                DirectoryScanEvent::Warning(warning) => {
-                    if let Some(scan) = self.as_mut().rust_mut().directory_scan.as_mut() {
-                        scan.combined.push_warning(warning);
-                    }
-                }
-                DirectoryScanEvent::Complete { cancelled } => completion = Some(cancelled),
+                };
+                completed.push((scan.token, result));
+            } else {
+                pending.push(scan);
             }
         }
-
-        if scanned_increment > 0 {
-            let scanned = self
-                .as_ref()
-                .rust()
-                .directory_scan_files_scanned
-                .saturating_add(scanned_increment);
-            self.as_mut().set_directory_scan_files_scanned(scanned);
-        }
-        if let Some(path) = last_scanned_path {
+        let active = !pending.is_empty();
+        self.as_mut().rust_mut().directory_scans = pending;
+        let total = self
+            .as_ref()
+            .rust()
+            .directory_scan_files_scanned
+            .saturating_add(scanned);
+        self.as_mut().set_directory_scan_files_scanned(total);
+        let total = self
+            .as_ref()
+            .rust()
+            .directory_scan_tracks_added
+            .saturating_add(saturating_i32(prepared));
+        self.as_mut().set_directory_scan_tracks_added(total);
+        if let Some(path) = current_path {
             self.as_mut()
                 .set_directory_scan_current_path(qstring(path.to_string_lossy()));
         }
-        if let Some(added_count) = last_added_count {
+        self.as_mut().set_directory_scan_active(active);
+        for (token, result) in completed {
             self.as_mut()
-                .set_directory_scan_tracks_added(saturating_i32(added_count));
+                .session_command(SessionCommand::Complete { token, result });
         }
-        if disconnected && completion.is_none() {
-            if !cancel_requested
-                && let Some(scan) = self.as_mut().rust_mut().directory_scan.as_mut()
-            {
-                scan.combined
-                    .push_warning("The folder scanner stopped unexpectedly");
-            }
-            completion = Some(cancel_requested);
-        }
-        let refresh_playlist = self
-            .as_mut()
-            .rust_mut()
-            .directory_scan
-            .as_mut()
-            .is_some_and(|scan| {
-                let due = scan.playlist_dirty
-                    && (completion.is_some()
-                        || scan.last_playlist_refresh.elapsed() >= Duration::from_millis(150));
-                if due {
-                    scan.playlist_dirty = false;
-                    scan.last_playlist_refresh = Instant::now();
-                }
-                due
-            });
-        if refresh_playlist {
-            self.as_mut().refresh_playback_order();
-            self.as_mut().rebuild_playlist();
-        }
-        if let Some(cancelled) = completion {
-            self.as_mut().finish_directory_scan(cancelled);
+        if !active {
+            self.as_mut()
+                .set_directory_scan_current_path(QString::default());
         }
     }
 
     pub fn cancel_directory_scan(mut self: Pin<&mut Self>) {
-        {
-            let mut rust = self.as_mut().rust_mut();
-            let Some(scan) = rust.directory_scan.as_mut() else {
-                return;
-            };
+        for scan in &mut self.as_mut().rust_mut().directory_scans {
             scan.cancel_requested = true;
             scan.cancel.store(true, AtomicOrdering::Relaxed);
         }
-        self.as_mut()
-            .set_directory_scan_current_path(qstring("Cancelling…"));
         self.as_mut().set_status(qstring("Cancelling music load…"));
     }
 
@@ -3441,27 +3295,17 @@ impl qobject::AppController {
             return;
         }
         if behavior.clears_playlist() {
-            self.as_mut().clear_playlist();
+            self.as_mut().session_command(SessionCommand::Clear);
         }
-        let first_new_source_index = self.as_ref().rust().tracks.len();
-        let result = match self.as_mut().rust_mut().add_remote_url(&value) {
-            Ok(result) => result,
-            Err(error) => {
-                self.as_mut().set_status(qstring(error));
-                return;
-            }
-        };
-        if result.added == 0 {
-            self.as_mut()
-                .set_status(qstring("The URL is already in the playlist"));
-            return;
-        }
-        self.as_mut().refresh_playback_order();
-        self.as_mut().rebuild_playlist();
-        self.as_mut().set_status(qstring(add_path_status(&result)));
-        if behavior.starts_playback() {
-            self.as_mut().play_source_index(first_new_source_index);
-        }
+        self.as_mut().session_command(SessionCommand::Expand {
+            scope: "local".into(),
+            entries: vec![serde_json::json!({"kind":"remote","path":value,"entry":""})],
+            action: if behavior.starts_playback() {
+                QueueAction::PlayNow
+            } else {
+                QueueAction::AddToQueue
+            },
+        });
     }
 
     pub fn remove_track(mut self: Pin<&mut Self>, index: i32) {
@@ -3469,145 +3313,69 @@ impl qobject::AppController {
     }
 
     pub fn remove_tracks(mut self: Pin<&mut Self>, indices: QString) -> i32 {
-        let visible_indices = parse_row_indices(
+        let rows = parse_row_indices(
             &indices.to_string(),
             self.as_ref().rust().visible_indices.len(),
         );
-        if visible_indices.is_empty() {
-            return -1;
-        }
-
-        let first_visible_index = visible_indices[0];
-        let mut source_indices = visible_indices
+        let first = rows.first().copied().unwrap_or_default();
+        let indices = rows
             .iter()
-            .filter_map(|&index| self.as_ref().rust().visible_indices.get(index).copied())
-            .collect::<Vec<_>>();
-        source_indices.sort_unstable();
-        source_indices.dedup();
-
-        let old_count = self.as_ref().rust().tracks.len();
-        let old_current = usize::try_from(self.as_ref().rust().current_index).ok();
-        let mut next_index = 0;
-        let old_to_new = (0..old_count)
-            .map(|index| {
-                if source_indices.binary_search(&index).is_ok() {
-                    None
-                } else {
-                    let mapped = next_index;
-                    next_index += 1;
-                    Some(mapped)
-                }
-            })
-            .collect::<Vec<_>>();
-        let removed_current = old_current.is_some_and(|index| old_to_new[index].is_none());
-
-        if removed_current {
-            self.as_mut().stop();
-        }
-        {
-            let mut rust = self.as_mut().rust_mut();
-            rust.playback_order.remap_tracks(&old_to_new);
-            for &source_index in source_indices.iter().rev() {
-                rust.tracks.remove(source_index);
-            }
-        }
-
-        if removed_current {
-            self.as_mut().set_current_index(-1);
-            self.as_mut().reset_now_playing();
-        } else if let Some(current) = old_current.and_then(|index| old_to_new[index]) {
-            self.as_mut().set_current_index(saturating_i32(current));
-        }
-        self.as_mut().refresh_playback_order();
-        self.as_mut().rebuild_playlist();
-        self.as_mut().set_status(qstring(format!(
-            "Removed {} track{}",
-            source_indices.len(),
-            if source_indices.len() == 1 { "" } else { "s" }
-        )));
-
-        let remaining = self.as_ref().rust().visible_indices.len();
-        if remaining == 0 {
+            .filter_map(|i| self.as_ref().rust().visible_indices.get(*i).copied())
+            .collect();
+        self.as_mut()
+            .session_command(SessionCommand::Remove { indices });
+        let count = self.as_ref().rust().visible_indices.len();
+        if count == 0 {
             -1
         } else {
-            saturating_i32(first_visible_index.min(remaining - 1))
+            saturating_i32(first.min(count - 1))
         }
     }
 
     pub fn move_tracks(mut self: Pin<&mut Self>, indices: QString, target_index: i32) -> QString {
-        if !self.as_ref().rust().filter.is_empty() {
-            self.as_mut().set_status(qstring(
-                "Clear the playlist search before reordering tracks",
-            ));
-            return indices;
-        }
-        if self.as_ref().rust().sort_column != PlaylistSortColumn::Index {
-            self.as_mut()
-                .set_status(qstring("Restore playlist order before reordering tracks"));
-            return indices;
-        }
-
-        let row_count = self.as_ref().rust().tracks.len();
-        let selected_indices = parse_row_indices(&indices.to_string(), row_count);
-        if selected_indices.is_empty() {
-            return QString::default();
-        }
-        let target_slot = usize::try_from(target_index)
-            .unwrap_or_default()
-            .min(row_count);
-        let old_current = usize::try_from(self.as_ref().rust().current_index).ok();
-        let mut old_indices = (0..row_count).collect::<Vec<_>>();
-        let new_indices = move_selected_items(
-            &mut self.as_mut().rust_mut().tracks,
-            &selected_indices,
-            target_slot,
-        );
-        move_selected_items(&mut old_indices, &selected_indices, target_slot);
-        let mut old_to_new = vec![None; row_count];
-        for (new_index, old_index) in old_indices.into_iter().enumerate() {
-            old_to_new[old_index] = Some(new_index);
-        }
+        let indices = selected_source_indices(self.as_ref().get_ref(), &indices.to_string());
+        let selected = self
+            .as_ref()
+            .rust()
+            .session
+            .snapshot()
+            .row_ids
+            .iter()
+            .enumerate()
+            .filter_map(|(i, id)| indices.contains(&i).then_some(*id))
+            .collect::<Vec<_>>();
+        let target = self
+            .as_ref()
+            .rust()
+            .visible_indices
+            .get(target_index.max(0) as usize)
+            .copied()
+            .unwrap_or(self.as_ref().rust().tracks.len());
         self.as_mut()
-            .rust_mut()
-            .playback_order
-            .remap_tracks(&old_to_new);
-
-        if let Some(current) = old_current.and_then(|index| old_to_new[index]) {
-            self.as_mut().set_current_index(saturating_i32(current));
-        }
-        self.as_mut().refresh_playback_order();
-        self.as_mut().rebuild_playlist();
-        self.as_mut().set_status(qstring(format!(
-            "Moved {} track{}",
-            new_indices.len(),
-            if new_indices.len() == 1 { "" } else { "s" }
-        )));
-        encode_row_indices(&new_indices)
+            .session_command(SessionCommand::Move { indices, target });
+        let indices = self
+            .as_ref()
+            .rust()
+            .session
+            .snapshot()
+            .row_ids
+            .iter()
+            .enumerate()
+            .filter_map(|(i, id)| selected.contains(id).then_some(i))
+            .collect::<Vec<_>>();
+        encode_row_indices(&indices)
     }
 
     /// Clearing the queue stops transport and invalidates pending starts.
     pub fn clear_playlist(mut self: Pin<&mut Self>) {
-        self.as_mut().rust_mut().workspace_jobs.clear();
-        self.as_mut().stop();
-        {
-            let mut rust = self.as_mut().rust_mut();
-            rust.tracks.clear();
-            rust.playback_order.clear_tracks();
-        }
-        self.as_mut().set_queue_count(0);
-        self.as_mut().set_current_index(-1);
-        self.as_mut().reset_now_playing();
-        self.as_mut().rebuild_playlist();
+        self.as_mut().session_command(SessionCommand::Clear);
         self.as_mut().set_status(qstring("Playlist cleared"));
     }
 
     pub fn filter_playlist(mut self: Pin<&mut Self>, query: QString) {
-        let query = query.to_string().trim().to_lowercase();
-        if self.as_ref().rust().filter == query {
-            return;
-        }
-        self.as_mut().rust_mut().filter = query;
-        self.as_mut().rebuild_playlist();
+        self.as_mut().session_command(SessionCommand::Filter {
+            query: query.to_string(),
+        });
     }
 
     pub fn sort_playlist(
@@ -3615,64 +3383,38 @@ impl qobject::AppController {
         column: QString,
         selected_indices: QString,
     ) -> QString {
-        let Some(column) = PlaylistSortColumn::from_identifier(column.to_string().trim()) else {
-            self.as_mut()
-                .set_status(qstring("That playlist column cannot be sorted"));
-            return selected_indices;
-        };
-        let selected_sources = {
-            let model = self.as_ref();
-            let rows = parse_row_indices(
-                &selected_indices.to_string(),
-                model.rust().visible_indices.len(),
-            );
-            rows.iter()
-                .filter_map(|row| model.rust().visible_indices.get(*row))
-                .filter_map(|source_index| model.rust().tracks.get(*source_index))
-                .map(|track| track.source.clone())
-                .collect::<Vec<_>>()
-        };
-        let ascending = if column == PlaylistSortColumn::Index {
-            true
-        } else if self.as_ref().rust().sort_column == column {
-            !self.as_ref().rust().playlist_sort_ascending
-        } else {
-            true
-        };
-
-        self.as_mut().rust_mut().sort_column = column;
-        self.as_mut()
-            .set_playlist_sort_column(qstring(column.identifier()));
-        self.as_mut().set_playlist_sort_ascending(ascending);
-        self.as_mut().rebuild_playlist();
-
-        let selected_rows = {
-            let model = self.as_ref();
-            model
-                .rust()
-                .visible_indices
-                .iter()
-                .enumerate()
-                .filter_map(|(row, source_index)| {
-                    let source = &model.rust().tracks[*source_index].source;
-                    selected_sources
-                        .iter()
-                        .any(|selected| selected == source)
-                        .then_some(row)
-                })
-                .collect::<Vec<_>>()
-        };
-        if column == PlaylistSortColumn::Index {
-            self.as_mut()
-                .set_status(qstring("Restored original playlist order"));
-        } else {
-            self.as_mut().set_status(qstring(format!(
-                "Sorted by {} {}",
-                column.display_name(),
-                if ascending { "ascending" } else { "descending" }
-            )));
-        }
-        encode_row_indices(&selected_rows)
+        let indices =
+            selected_source_indices(self.as_ref().get_ref(), &selected_indices.to_string());
+        self.as_mut().session_command(SessionCommand::Select {
+            command: kog_audio::playback_order::selection::Command::Set {
+                anchor: indices.first().copied(),
+                indices,
+            },
+        });
+        let descending = self.as_ref().rust().session.snapshot().sort_column == column.to_string()
+            && !self.as_ref().rust().session.snapshot().descending;
+        self.as_mut().session_command(SessionCommand::Sort {
+            column: column.to_string(),
+            descending,
+            physical: true,
+        });
+        let rows = self
+            .as_ref()
+            .rust()
+            .visible_indices
+            .iter()
+            .enumerate()
+            .filter_map(|(i, source)| {
+                self.as_ref()
+                    .rust()
+                    .session
+                    .selection()
+                    .indices
+                    .contains(source)
+                    .then_some(i)
+            })
+            .collect::<Vec<_>>();
+        encode_row_indices(&rows)
     }
 
     /// Custom playlists (plus the virtual Favorites at id 0) for the
@@ -3760,7 +3502,12 @@ impl qobject::AppController {
                     "name": name.trim(),
                 })
             });
-        if outcome.is_ok() { self.as_mut().dispatch_workspace(WorkspaceCommand::Renamed {key:format!("local:{id}"),name:name.trim().into()}); }
+        if outcome.is_ok() {
+            self.as_mut().dispatch_workspace(WorkspaceCommand::Renamed {
+                key: format!("local:{id}"),
+                name: name.trim().into(),
+            });
+        }
         self.playlist_result(outcome, None)
     }
 
@@ -3792,7 +3539,9 @@ impl qobject::AppController {
         }
         match self.as_ref().rust().library_db.delete_playlist(id as i64) {
             Ok(()) => {
-                self.as_mut().dispatch_workspace(WorkspaceCommand::Deleted {key:format!("local:{id}")});
+                self.as_mut().dispatch_workspace(WorkspaceCommand::Deleted {
+                    key: format!("local:{id}"),
+                });
                 self.as_mut().bump_playlists_revision();
                 self.as_mut().set_status(qstring("Deleted playlist"));
             }
@@ -3827,32 +3576,75 @@ impl qobject::AppController {
         self.workspace_json_for_selection(0)
     }
     pub fn workspace_json_for_selection(&self, selected: i32) -> QString {
-        qstring(serde_json::to_string(&self.rust().workspace.snapshot_for(self.rust().tracks.len(), selected.max(0) as usize)).unwrap_or_default())
+        qstring(
+            serde_json::to_string(
+                &self
+                    .rust()
+                    .session
+                    .workspace_model()
+                    .snapshot_for(self.rust().tracks.len(), selected.max(0) as usize),
+            )
+            .unwrap_or_default(),
+        )
     }
-    pub fn selection_json(&self, state: QString, command: QString, count: i32) -> QString {
-        use kog_audio::playback_order::selection::{Selection, Command};
-        let mut state: Selection = serde_json::from_str(&state.to_string()).unwrap_or_default();
+    pub fn selection_json(
+        mut self: Pin<&mut Self>,
+        _state: QString,
+        command: QString,
+        _count: i32,
+    ) -> QString {
+        use kog_audio::playback_order::selection::{Command, Selection};
+        let visible = self.as_ref().rust().visible_indices.clone();
         if let Ok(command) = serde_json::from_str::<Command>(&command.to_string()) {
-            state.apply(command, count.max(0) as usize, &[]);
+            let command = match command {
+                Command::Choose { index, gesture } => {
+                    visible.get(index).map(|index| Command::Choose {
+                        index: *index,
+                        gesture,
+                    })
+                }
+                Command::Set { indices, anchor } => Some(Command::Set {
+                    indices: indices
+                        .iter()
+                        .filter_map(|i| visible.get(*i).copied())
+                        .collect(),
+                    anchor: anchor.and_then(|i| visible.get(i).copied()),
+                }),
+                command => Some(command),
+            };
+            if let Some(command) = command {
+                self.as_mut()
+                    .session_command(SessionCommand::Select { command });
+            }
         }
-        qstring(serde_json::to_string(&state).unwrap_or_default())
+        let this = self.as_ref();
+        let selection = this.rust().session.selection();
+        let view = Selection {
+            indices: selection
+                .indices
+                .iter()
+                .filter_map(|i| visible.iter().position(|v| v == i))
+                .collect(),
+            anchor: selection
+                .anchor
+                .and_then(|i| visible.iter().position(|v| *v == i)),
+        };
+        qstring(serde_json::to_string(&view).unwrap_or_default())
     }
 
     fn workspace_changed(mut self: Pin<&mut Self>) {
-        if let Some(path) = kog_audio::settings::setting_path("playlist-tabs-qt.json") {
-            if let Ok(value) = serde_json::to_vec(&self.as_ref().rust().workspace) {
-                if let Some(parent) = path.parent() { let _ = std::fs::create_dir_all(parent); }
-                let temporary = path.with_extension("json.tmp");
-                if std::fs::write(&temporary, value).is_ok() { let _ = std::fs::rename(temporary, path); }
-            }
-        }
         let next = self.as_ref().rust().workspace_revision.wrapping_add(1);
         self.as_mut().set_workspace_revision(next);
     }
 
     pub fn open_playlist_tab(mut self: Pin<&mut Self>, id: i32, name: QString) {
-        self.as_mut().dispatch_workspace(WorkspaceCommand::Open { key: format!("local:{id}"), scope: "local".into(),
-            playlist_id: i64::from(id), name: name.to_string(), readonly: id == 0 });
+        self.as_mut().dispatch_workspace(WorkspaceCommand::Open {
+            key: format!("local:{id}"),
+            scope: "local".into(),
+            playlist_id: i64::from(id),
+            name: name.to_string(),
+            readonly: id == 0,
+        });
     }
 
     pub fn workspace_command(mut self: Pin<&mut Self>, command: QString) {
@@ -3864,86 +3656,38 @@ impl qobject::AppController {
 
     pub fn workspace_add_queue_selection(mut self: Pin<&mut Self>, indices: QString) {
         let entries = {
-            let pinned = self.as_ref(); let rust = pinned.rust();
-            let tracks = if indices.to_string() == "all" { rust.tracks.clone() } else {
-                parse_row_indices(&indices.to_string(), rust.visible_indices.len()).into_iter()
-                    .filter_map(|row| rust.visible_indices.get(row).and_then(|index| rust.tracks.get(*index)))
-                    .cloned().collect::<Vec<_>>()
+            let pinned = self.as_ref();
+            let rust = pinned.rust();
+            let tracks = if indices.to_string() == "all" {
+                rust.tracks.clone()
+            } else {
+                parse_row_indices(&indices.to_string(), rust.visible_indices.len())
+                    .into_iter()
+                    .filter_map(|row| {
+                        rust.visible_indices
+                            .get(row)
+                            .and_then(|index| rust.tracks.get(*index))
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>()
             };
-            collect_stored_entries(&tracks).0.into_iter().map(kog_server::api::entry_json).collect()
+            collect_stored_entries(&tracks)
+                .0
+                .into_iter()
+                .map(kog_server::api::entry_json)
+                .collect()
         };
-        self.as_mut().dispatch_workspace(WorkspaceCommand::Append { entries });
+        self.as_mut()
+            .dispatch_workspace(WorkspaceCommand::Append { entries });
     }
 
     fn dispatch_workspace(mut self: Pin<&mut Self>, command: WorkspaceCommand) {
-        let queue_count = self.as_ref().rust().tracks.len();
-        let effect = self.as_mut().rust_mut().workspace.apply_ui(command, queue_count, 0);
-        self.as_mut().workspace_changed();
-        match effect {
-            Ok(WorkspaceEffect::None) => {},
-            Ok(WorkspaceEffect::Load { key, playlist_id, generation, .. }) => {
-                let command = match self.as_ref().playlist_stored_entries(playlist_id) {
-                    Ok(entries) => WorkspaceCommand::Loaded { key, generation, entries: entries.into_iter().map(kog_server::api::entry_json).collect() },
-                    Err(error) => WorkspaceCommand::LoadFailed { key, generation, error },
-                };
-                self.as_mut().dispatch_workspace(command);
-            }
-            Ok(WorkspaceEffect::Save { key, playlist_id, revision, entries, expected_entries, .. }) => {
-                let result = kog_server::api::stored_entries_from_json(&entries).and_then(|entries| {
-                    let expected = kog_server::api::stored_entries_from_json(&expected_entries)?;
-                    self.as_ref().rust().library_db.replace_entries_checked(playlist_id, &entries, Some(&expected))
-                });
-                let command = match result {
-                    Ok(()) => { self.as_mut().bump_playlists_revision(); WorkspaceCommand::Saved { key, revision } },
-                    Err(error) => WorkspaceCommand::SaveFailed { key, revision, error },
-                };
-                self.as_mut().dispatch_workspace(command);
-            }
-            Ok(WorkspaceEffect::Queue { mode, entries, .. }) => {
-                let entries = kog_server::api::queue_entries_from_json(&entries);
-                let decoders = self.as_ref().rust().decoders.background_worker(self.as_ref().rust().decoder_settings.clone());
-                let (sender, receiver) = std::sync::mpsc::channel();
-                std::thread::spawn(move || {
-                    let mut tracks = Vec::new();
-                    for stored in entries {
-                        tracks.extend(decoders.expand_queue_entry(&stored).into_iter().map(|source| Track::from_source(source, &decoders)));
-                    }
-                    let _ = sender.send(Ok(tracks));
-                });
-                self.as_mut().rust_mut().workspace_jobs.push_back((mode, receiver));
-                self.as_mut().set_status(qstring("Preparing playlist tracks…"));
-            }
-            Err(error) => self.as_mut().set_status(qstring(error)),
-        }
+        self.as_mut()
+            .session_command(SessionCommand::Workspace { command });
     }
 
     pub fn poll_workspace(mut self: Pin<&mut Self>) {
-        loop {
-            let next = {
-                let mut rust = self.as_mut().rust_mut();
-                let Some((mode, receiver)) = rust.workspace_jobs.front() else { break; };
-                match receiver.try_recv() {
-                    Ok(result) => { let mode = *mode; rust.workspace_jobs.pop_front(); Some((mode, result)) },
-                    Err(std::sync::mpsc::TryRecvError::Empty) => None,
-                    Err(std::sync::mpsc::TryRecvError::Disconnected) => { rust.workspace_jobs.pop_front(); Some((QueueAction::AddToQueue, Err("Playlist preparation stopped".into()))) },
-                }
-            };
-            let Some((mode, result)) = next else { break; };
-            match result {
-                Ok(tracks) => {
-                    let start = self.as_ref().rust().tracks.len(); let count = tracks.len();
-                    self.as_mut().rust_mut().tracks.extend(tracks);
-                    self.as_mut().refresh_playback_order(); self.as_mut().rebuild_playlist();
-                    let decision = self.as_mut().rust_mut().playback_order.apply_queue_action(mode, start, count);
-                    if let Some(PlaybackDecision::Play(index)) = decision {
-                        if let Some(radio) = self.as_mut().rust_mut().radio.as_mut() { radio.cancel_waiting(); }
-                        self.as_mut().play_source_index(index);
-                    }
-                    self.as_mut().set_status(qstring(format!("Added {count} tracks to Play Queue")));
-                }
-                Err(error) => self.as_mut().set_status(qstring(error)),
-            }
-        }
+        self.as_mut().poll_session_ports();
     }
 
     /// Resolve a stored playlist (or Favorites at id 0) to entries.
@@ -4636,7 +4380,7 @@ impl qobject::AppController {
                 .is_some_and(|current| sources.iter().any(|source| source == &current.source))
         };
         let prior_state = self.as_ref().rust().playback.state();
-        let prior_position = self.as_ref().rust().playback.position();
+        self.as_mut().report_output_progress();
         if current_selected && prior_state != PlaybackState::Stopped {
             self.as_mut().rust_mut().playback.stop();
         }
@@ -4660,35 +4404,22 @@ impl qobject::AppController {
             for index in matching_indices {
                 let source = self.as_ref().rust().tracks[index].source.clone();
                 let refreshed = Track::from_source(source, &self.as_ref().rust().decoders);
-                self.as_mut().rust_mut().tracks[index] = refreshed;
+                self.as_mut().session_command(SessionCommand::UpdateItem {
+                    index,
+                    track: refreshed,
+                });
             }
         }
         if !outcome.updated_paths.is_empty() {
             self.as_mut().rebuild_playlist();
         }
 
-        let mut resume_warning = None;
+        let resume_warning: Option<String> = None;
         if current_selected && let Some(index) = current_index {
             if prior_state == PlaybackState::Stopped {
                 self.as_mut().populate_now_playing(index);
             } else {
-                self.as_mut().play_source_index(index);
-                if self.as_ref().rust().playback.state() == PlaybackState::Stopped {
-                    resume_warning = Some("playback could not be resumed".to_owned());
-                } else {
-                    if !prior_position.is_zero()
-                        && let Err(error) = self.as_ref().rust().playback.seek(prior_position)
-                    {
-                        resume_warning = Some(format!("restoring position failed: {error}"));
-                    } else {
-                        self.as_mut()
-                            .set_position_seconds(prior_position.as_secs_f64());
-                    }
-                    if prior_state == PlaybackState::Paused {
-                        self.as_mut().rust_mut().playback.play_pause();
-                    }
-                    self.as_mut().sync_playback_state();
-                }
+                self.as_mut().session_command(SessionCommand::ReloadOutput);
             }
         }
 
@@ -4717,53 +4448,21 @@ impl qobject::AppController {
     }
 
     pub fn play_index(mut self: Pin<&mut Self>, index: i32) {
-        let Some(source_index) = visible_source_index(self.as_ref().get_ref(), index) else {
-            return;
-        };
-        self.as_mut().rust_mut().playback_order.cancel_navigation();
-        if let Some(radio) = self.as_mut().rust_mut().radio.as_mut() { radio.cancel_waiting(); }
-        self.as_mut().play_source_index(source_index);
+        if let Some(index) = visible_source_index(self.as_ref().get_ref(), index) {
+            self.as_mut()
+                .session_command(SessionCommand::Play { index });
+        }
     }
 
     pub fn activate_playlist_index(mut self: Pin<&mut Self>, index: i32) {
-        let Some(source_index) = visible_source_index(self.as_ref().get_ref(), index) else {
-            return;
-        };
-        use kog_audio::playback_order::selection::{activate, Activation};
-        match activate(source_index, usize::try_from(self.as_ref().rust().current_index).ok(), self.as_ref().rust().tracks.len()) {
-            Some(Activation::TogglePlayback) => self.as_mut().play_pause(),
-            Some(Activation::Play { index }) => {
-                self.as_mut().rust_mut().playback_order.cancel_navigation();
-                if let Some(radio) = self.as_mut().rust_mut().radio.as_mut() { radio.cancel_waiting(); }
-                self.as_mut().play_source_index(index);
-            }
-            None => {}
+        if let Some(index) = visible_source_index(self.as_ref().get_ref(), index) {
+            self.as_mut()
+                .session_command(SessionCommand::Activate { index });
         }
     }
 
     pub fn play_pause(mut self: Pin<&mut Self>) {
-        if self.as_ref().rust().radio.as_ref().is_some_and(|radio| radio.waiting()) {
-            self.as_mut().stop();
-            return;
-        }
-        // A track can outlive the pane: clearing the playlist detaches what is
-        // playing, and pause/resume must keep working for it.
-        let loaded = self.as_ref().rust().playback.state() != PlaybackState::Stopped;
-        if self.as_ref().rust().tracks.is_empty() && !loaded {
-            if self.as_ref().rust().radio_active {
-                self.as_mut().advance_past_end();
-            }
-            return;
-        }
-        if self.as_ref().rust().playback.state() == PlaybackState::Stopped {
-            let source_index = usize::try_from(self.as_ref().rust().current_index)
-                .unwrap_or_default()
-                .min(self.as_ref().rust().tracks.len() - 1);
-            self.as_mut().play_source_index(source_index);
-            return;
-        }
-        self.as_mut().rust_mut().playback.play_pause();
-        self.as_mut().sync_playback_state();
+        self.as_mut().session_command(SessionCommand::Toggle);
     }
 
     /// Best-effort shutdown for background synth helpers (currently the
@@ -5078,18 +4777,7 @@ impl qobject::AppController {
     }
 
     pub fn stop(mut self: Pin<&mut Self>) {
-        self.as_mut().rust_mut().playback_order.cancel_navigation();
-        if let Some(radio) = self.as_mut().rust_mut().radio.as_mut() { radio.cancel_waiting(); }
-        self.as_mut().rust_mut().playback.stop();
-        self.as_mut().set_position_seconds(0.0);
-        self.as_mut().set_status(qstring("Stopped"));
-        // Cancel any in-flight artwork lookup so a late download cannot
-        // repaint the thumbnail after the stop cleared it.
-        if let Some(job) = self.as_mut().rust_mut().cover_art.take() {
-            job.cancel.store(true, AtomicOrdering::Relaxed);
-        }
-        self.as_mut().set_current_artwork_path(QString::default());
-        self.as_mut().sync_playback_state();
+        self.as_mut().session_command(SessionCommand::Stop);
     }
 
     pub fn previous(mut self: Pin<&mut Self>) {
@@ -5101,29 +4789,13 @@ impl qobject::AppController {
     }
 
     pub fn seek(mut self: Pin<&mut Self>, seconds: f64) {
-        let seconds = seconds.clamp(0.0, self.as_ref().rust().duration_seconds.max(0.0));
-        match self
-            .as_ref()
-            .rust()
-            .playback
-            .seek(Duration::from_secs_f64(seconds))
-        {
-            Ok(()) => {
-                self.as_mut().set_position_seconds(seconds);
-                self.as_ref().rust().mpris.seeked(seconds);
-            }
-            Err(error) => self.as_mut().set_status(qstring(error)),
-        }
+        self.as_mut()
+            .session_command(SessionCommand::Seek { seconds });
     }
 
-    pub fn set_volume_level(mut self: Pin<&mut Self>, volume: f64) {
-        let volume = volume.clamp(0.0, 1.0);
-        if let Err(error) = AppSettings::save_output_volume(volume) {
-            self.as_mut().set_status(qstring(error));
-            return;
-        }
-        self.as_mut().rust_mut().playback.set_volume(volume as f32);
-        self.as_mut().set_volume(volume);
+    pub fn set_volume_level(mut self: Pin<&mut Self>, value: f64) {
+        self.as_mut()
+            .session_command(SessionCommand::Volume { value });
     }
 
     pub fn refresh_output_devices(mut self: Pin<&mut Self>) {
@@ -5191,7 +4863,7 @@ impl qobject::AppController {
     }
 
     pub fn cycle_shuffle_mode(mut self: Pin<&mut Self>) {
-        let mode = self.as_ref().rust().playback_order.shuffle_mode().next();
+        let mode = self.as_ref().rust().session.order().shuffle_mode().next();
         self.as_mut().apply_shuffle_mode(mode);
     }
 
@@ -5205,7 +4877,7 @@ impl qobject::AppController {
     }
 
     pub fn cycle_repeat_mode(mut self: Pin<&mut Self>) {
-        let mode = self.as_ref().rust().playback_order.repeat_mode().next();
+        let mode = self.as_ref().rust().session.order().repeat_mode().next();
         self.as_mut().apply_repeat_mode(mode);
     }
 
@@ -5219,61 +4891,37 @@ impl qobject::AppController {
     }
 
     pub fn toggle_queue(mut self: Pin<&mut Self>, indices: QString) {
-        let source_indices = selected_source_indices(self.as_ref().get_ref(), &indices.to_string());
-        if source_indices.is_empty() {
-            return;
-        }
+        let indices = selected_source_indices(self.as_ref().get_ref(), &indices.to_string());
         self.as_mut()
-            .rust_mut()
-            .playback_order
-            .toggle_queue(&source_indices);
-        let count = self.as_ref().rust().playback_order.queue_count();
-        self.as_mut().set_queue_count(saturating_i32(count));
-        self.as_mut().bump_playlist_revision();
-        self.as_mut().set_status(qstring(format!(
-            "Playback queue now contains {count} track{}",
-            if count == 1 { "" } else { "s" }
-        )));
+            .session_command(SessionCommand::ToggleQueued { indices });
     }
 
     pub fn clear_queue(mut self: Pin<&mut Self>) {
-        self.as_mut().rust_mut().playback_order.clear_queue();
-        self.as_mut().set_queue_count(0);
-        self.as_mut().bump_playlist_revision();
-        self.as_mut().set_status(qstring("Playback queue cleared"));
+        self.as_mut().session_command(SessionCommand::ClearQueued);
     }
 
     pub fn queue_selection_state(&self, indices: QString) -> QString {
         let source_indices = selected_source_indices(self, &indices.to_string());
         qstring(selection_state_name(
             self.rust()
-                .playback_order
+                .session
+                .order()
                 .queue_selection_state(&source_indices),
         ))
     }
 
     pub fn toggle_stop_after(mut self: Pin<&mut Self>, indices: QString) {
-        let source_indices = selected_source_indices(self.as_ref().get_ref(), &indices.to_string());
-        if source_indices.is_empty() {
-            return;
-        }
+        let indices = selected_source_indices(self.as_ref().get_ref(), &indices.to_string());
         self.as_mut()
-            .rust_mut()
-            .playback_order
-            .toggle_stop_after(&source_indices);
-        self.as_mut().bump_playlist_revision();
-        self.as_mut().set_status(qstring(format!(
-            "Toggled Stop After for {} track{}",
-            source_indices.len(),
-            if source_indices.len() == 1 { "" } else { "s" }
-        )));
+            .session_command(SessionCommand::ToggleStopAfter { indices });
     }
 
     pub fn stop_after_selection_state(&self, indices: QString) -> QString {
         let source_indices = selected_source_indices(self, &indices.to_string());
         qstring(selection_state_name(
             self.rust()
-                .playback_order
+                .session
+                .order()
                 .stop_after_selection_state(&source_indices),
         ))
     }
@@ -5355,6 +5003,7 @@ impl qobject::AppController {
     }
 
     pub fn poll_playback(mut self: Pin<&mut Self>) {
+        self.as_mut().poll_session_ports();
         let mut handled_mpris_command = false;
         while let Some(command) = self.as_ref().rust().mpris.try_command() {
             self.as_mut().handle_mpris_command(command);
@@ -5371,7 +5020,19 @@ impl qobject::AppController {
             self.as_mut().set_status(qstring(error));
         }
         if self.as_ref().rust().playback.finished() {
-            self.as_mut().advance_playback(true);
+            if let Some(token) = self
+                .as_ref()
+                .rust()
+                .session
+                .snapshot()
+                .output_token
+                .cloned()
+            {
+                self.as_mut().session_command(SessionCommand::Output {
+                    token,
+                    event: OutputEvent::Ended,
+                });
+            }
             self.as_ref()
                 .rust()
                 .mpris
@@ -5386,7 +5047,23 @@ impl qobject::AppController {
             return;
         }
         let position = self.as_ref().rust().playback.position().as_secs_f64();
-        self.as_mut().set_position_seconds(position);
+        if let Some(token) = self
+            .as_ref()
+            .rust()
+            .session
+            .snapshot()
+            .output_token
+            .cloned()
+        {
+            let duration = self.as_ref().rust().duration_seconds;
+            self.as_mut().session_command(SessionCommand::Output {
+                token,
+                event: OutputEvent::Progress {
+                    seconds: position,
+                    duration,
+                },
+            });
+        }
         self.as_ref()
             .rust()
             .mpris
@@ -5607,7 +5284,7 @@ impl qobject::AppController {
         let Some(source_index) = visible_source_index(self, index) else {
             return QString::default();
         };
-        if self.rust().playback_order.should_stop_after(source_index) {
+        if self.rust().session.order().should_stop_after(source_index) {
             qstring("■")
         } else if self.rust().current_index == saturating_i32(source_index) {
             match self.rust().playback.state() {
@@ -5617,7 +5294,8 @@ impl qobject::AppController {
             }
         } else if self
             .rust()
-            .playback_order
+            .session
+            .order()
             .queue_position(source_index)
             .is_some()
         {
@@ -5631,7 +5309,7 @@ impl qobject::AppController {
         let Some(source_index) = visible_source_index(self, index) else {
             return QString::default();
         };
-        if self.rust().playback_order.should_stop_after(source_index) {
+        if self.rust().session.order().should_stop_after(source_index) {
             qstring("Playback will stop after this track")
         } else if self.rust().current_index == saturating_i32(source_index) {
             qstring(match self.rust().playback.state() {
@@ -5639,7 +5317,7 @@ impl qobject::AppController {
                 PlaybackState::Paused => "Paused",
                 PlaybackState::Stopped => "Current track",
             })
-        } else if let Some(position) = self.rust().playback_order.queue_position(source_index) {
+        } else if let Some(position) = self.rust().session.order().queue_position(source_index) {
             qstring(format!("Queued at position {}", position + 1))
         } else {
             QString::default()
@@ -6208,24 +5886,9 @@ impl qobject::AppController {
             MidiEngine::Sc55 => "MIDI engine changed to Nuked SC-55",
             MidiEngine::Mt32 => "MIDI engine changed to Munt MT-32/CM-32L",
         }));
-        if let Some((index, position, state)) = resume {
-            self.as_mut().play_source_index(index);
-            if self.as_ref().rust().playback.state() != PlaybackState::Stopped {
-                if !position.is_zero() {
-                    if let Err(error) = self.as_ref().rust().playback.seek(position) {
-                        self.as_mut().set_status(qstring(format!(
-                            "MIDI synth changed; restoring position failed: {error}"
-                        )));
-                    } else {
-                        self.as_mut()
-                            .set_position_seconds(position.as_secs_f64());
-                    }
-                }
-                if state == PlaybackState::Paused {
-                    self.as_mut().rust_mut().playback.play_pause();
-                }
-                self.as_mut().sync_playback_state();
-            }
+        if resume.is_some() {
+            self.as_mut().report_output_progress();
+            self.as_mut().session_command(SessionCommand::ReloadOutput);
         }
     }
 
@@ -6506,15 +6169,7 @@ impl qobject::AppController {
             return;
         }
 
-        let (previous_state, source_index, position) = {
-            let this = self.as_ref();
-            let rust = this.rust();
-            (
-                rust.playback.state(),
-                usize::try_from(rust.current_index).ok(),
-                rust.playback.position(),
-            )
-        };
+        self.as_mut().report_output_progress();
         if let Err(error) = self
             .as_mut()
             .rust_mut()
@@ -6535,27 +6190,7 @@ impl qobject::AppController {
         let save_error = AppSettings::save_output_device(preference.as_ref()).err();
         let mut status = success_status.to_owned();
 
-        if previous_state != PlaybackState::Stopped
-            && let Some(source_index) = source_index
-        {
-            self.as_mut().play_source_index(source_index);
-            if self.as_ref().rust().playback.state() == PlaybackState::Stopped {
-                status.push_str("; playback could not be resumed");
-            } else {
-                if !position.is_zero() {
-                    match self.as_ref().rust().playback.seek(position) {
-                        Ok(()) => self.as_mut().set_position_seconds(position.as_secs_f64()),
-                        Err(error) => {
-                            status.push_str(&format!("; restoring position failed: {error}"));
-                        }
-                    }
-                }
-                if previous_state == PlaybackState::Paused {
-                    self.as_mut().rust_mut().playback.play_pause();
-                }
-                self.as_mut().sync_playback_state();
-            }
-        }
+        self.as_mut().session_command(SessionCommand::ReloadOutput);
         if let Some(error) = save_error {
             status.push_str(&format!("; the selection could not be saved: {error}"));
         }
@@ -6563,8 +6198,351 @@ impl qobject::AppController {
         self.as_mut().set_status(qstring(status));
     }
 
+    fn session_command(mut self: Pin<&mut Self>, command: SessionCommand<Track>) {
+        let progress = matches!(
+            &command,
+            SessionCommand::Output {
+                event: OutputEvent::Progress { .. },
+                ..
+            }
+        );
+        self.as_mut().rust_mut().queue_session(command);
+        if progress {
+            let position = self.as_ref().rust().session.snapshot().position;
+            self.as_mut().set_position_seconds(position);
+        } else {
+            self.as_mut().flush_session_effects();
+        }
+    }
+    fn report_output_progress(mut self: Pin<&mut Self>) {
+        if let Some(token) = self
+            .as_ref()
+            .rust()
+            .session
+            .snapshot()
+            .output_token
+            .cloned()
+        {
+            let seconds = self.as_ref().rust().playback.position().as_secs_f64();
+            let duration = self.as_ref().rust().duration_seconds;
+            self.as_mut().session_command(SessionCommand::Output {
+                token,
+                event: OutputEvent::Progress { seconds, duration },
+            });
+        }
+    }
+    fn apply_session_view(mut self: Pin<&mut Self>) {
+        let (
+            current,
+            transport,
+            position,
+            volume,
+            shuffle,
+            repeat,
+            queued,
+            radio,
+            filter,
+            column,
+            descending,
+            error,
+        ) = {
+            let this = self.as_ref();
+            let view = this.rust().session.snapshot();
+            (
+                view.current,
+                view.transport,
+                view.position,
+                view.volume,
+                view.shuffle,
+                view.repeat,
+                view.queued.len(),
+                view.radio_enabled,
+                view.filter.to_owned(),
+                view.sort_column.to_owned(),
+                view.descending,
+                view.error.map(str::to_owned),
+            )
+        };
+        let previous = self.as_ref().rust().current_index;
+        let current = current.map(saturating_i32).unwrap_or(-1);
+        self.as_mut().set_current_index(current);
+        if current < 0 && previous >= 0 {
+            self.as_mut().reset_now_playing();
+        }
+        self.as_mut().set_playback_state(qstring(match transport {
+            Transport::Playing => "playing",
+            Transport::Paused => "paused",
+            Transport::Starting | Transport::Stopped => "stopped",
+        }));
+        self.as_mut().set_position_seconds(position);
+        self.as_mut().set_volume(volume);
+        self.as_mut()
+            .set_shuffle_mode(qstring(shuffle.setting_value()));
+        self.as_mut()
+            .set_repeat_mode(qstring(repeat.setting_value()));
+        self.as_mut().set_queue_count(saturating_i32(queued));
+        self.as_mut().set_radio_active(radio);
+        self.as_mut().rust_mut().filter = filter;
+        self.as_mut().rust_mut().sort_column =
+            PlaylistSortColumn::from_identifier(&column).unwrap_or_default();
+        self.as_mut().set_playlist_sort_column(qstring(column));
+        self.as_mut().set_playlist_sort_ascending(!descending);
+        let count = self.as_ref().rust().visible_indices.len();
+        let duration = self.as_ref().rust().total_duration_value();
+        self.as_mut().set_playlist_count(saturating_i32(count));
+        self.as_mut().set_total_duration(duration);
+        let selected = {
+            let this = self.as_ref();
+            let r = this.rust();
+            let selection = r.session.selection();
+            serde_json::json!({"indices":selection.indices.iter().filter_map(|i|r.visible_indices.iter().position(|v|v==i)).collect::<Vec<_>>(),
+                "anchor":selection.anchor.and_then(|i|r.visible_indices.iter().position(|v|*v==i))}).to_string()
+        };
+        self.as_mut().set_queue_selection(qstring(selected));
+        self.as_mut().bump_playlist_revision();
+        self.as_mut().workspace_changed();
+        if let Some(error) = error {
+            self.as_mut().set_status(qstring(error));
+        }
+    }
+    fn flush_session_effects(mut self: Pin<&mut Self>) {
+        loop {
+            let effect = self.as_mut().rust_mut().session_effects.pop_front();
+            let Some(effect) = effect else {
+                break;
+            };
+            match effect {
+                SessionEffect::Persist { value } => {
+                    if let Err(error) = kog_audio::playback_order::save_session(
+                        self.as_ref().rust().session.id(),
+                        &value,
+                    ) {
+                        self.as_mut().set_status(qstring(error));
+                    }
+                }
+                SessionEffect::QueueChanged { .. } => {}
+                SessionEffect::Play {
+                    token,
+                    index,
+                    seconds,
+                    playing,
+                } => {
+                    self.as_mut().apply_session_view();
+                    self.as_mut()
+                        .start_session_output(token, index, seconds, playing);
+                }
+                SessionEffect::Pause => {
+                    if self.as_ref().rust().playback.state() == PlaybackState::Playing {
+                        self.as_mut().rust_mut().playback.play_pause();
+                    }
+                }
+                SessionEffect::Resume => {
+                    if self.as_ref().rust().playback.state() == PlaybackState::Paused {
+                        self.as_mut().rust_mut().playback.play_pause();
+                    }
+                }
+                SessionEffect::Stop => {
+                    self.as_mut().rust_mut().playback.stop();
+                    if let Some(job) = self.as_mut().rust_mut().cover_art.take() {
+                        job.cancel.store(true, AtomicOrdering::Relaxed);
+                    }
+                    self.as_mut().set_current_artwork_path(QString::default());
+                }
+                SessionEffect::Seek { seconds } => match self
+                    .as_ref()
+                    .rust()
+                    .playback
+                    .seek(Duration::from_secs_f64(seconds))
+                {
+                    Ok(()) => self.as_ref().rust().mpris.seeked(seconds),
+                    Err(error) => self.as_mut().set_status(qstring(error)),
+                },
+                SessionEffect::Volume { value } => {
+                    self.as_mut().rust_mut().playback.set_volume(value as f32)
+                }
+                SessionEffect::Load {
+                    token, playlist_id, ..
+                } => {
+                    let result = match self.as_ref().playlist_stored_entries(playlist_id) {
+                        Ok(entries) => IoResult::Loaded {
+                            entries: entries
+                                .into_iter()
+                                .map(kog_server::api::entry_json)
+                                .collect(),
+                        },
+                        Err(error) => IoResult::Failed { error },
+                    };
+                    self.as_mut()
+                        .rust_mut()
+                        .queue_session(SessionCommand::Complete { token, result });
+                }
+                SessionEffect::Save {
+                    token,
+                    playlist_id,
+                    entries,
+                    expected_entries,
+                    ..
+                } => {
+                    let result =
+                        kog_server::api::stored_entries_from_json(&entries).and_then(|entries| {
+                            let expected =
+                                kog_server::api::stored_entries_from_json(&expected_entries)?;
+                            self.as_ref().rust().library_db.replace_entries_checked(
+                                playlist_id,
+                                &entries,
+                                Some(&expected),
+                            )
+                        });
+                    let result = match result {
+                        Ok(()) => {
+                            self.as_mut().bump_playlists_revision();
+                            IoResult::Saved
+                        }
+                        Err(error) => IoResult::Failed { error },
+                    };
+                    self.as_mut()
+                        .rust_mut()
+                        .queue_session(SessionCommand::Complete { token, result });
+                }
+                SessionEffect::Expand { token, entries, .. } => {
+                    let paths = entries
+                        .iter()
+                        .filter_map(|v| {
+                            v.get("scan_path")
+                                .and_then(serde_json::Value::as_str)
+                                .map(PathBuf::from)
+                        })
+                        .collect::<Vec<_>>();
+                    if !paths.is_empty() {
+                        let filter = entries.first().and_then(|v| {
+                            v.get("scan_query")
+                                .and_then(serde_json::Value::as_str)
+                                .map(|query| {
+                                    kog_audio::library_policy::TreeFilter::new(
+                                        query,
+                                        PathBuf::from(v["scan_root"].as_str().unwrap_or_default()),
+                                    )
+                                })
+                        });
+                        self.as_mut().start_directory_port(token, paths, filter);
+                    } else {
+                        let entries = kog_server::api::queue_entries_from_json(&entries);
+                        let decoders = self
+                            .as_ref()
+                            .rust()
+                            .decoders
+                            .background_worker(self.as_ref().rust().decoder_settings.clone());
+                        let (sender, receiver) = std::sync::mpsc::channel();
+                        std::thread::spawn(move || {
+                            let tracks = entries
+                                .iter()
+                                .flat_map(|entry| decoders.expand_queue_entry(entry))
+                                .map(|source| Track::from_source(source, &decoders))
+                                .collect();
+                            let _ = sender.send(IoResult::Expanded { tracks });
+                        });
+                        self.as_mut()
+                            .rust_mut()
+                            .session_jobs
+                            .push((token, receiver));
+                    }
+                }
+                SessionEffect::Collect {
+                    token,
+                    path,
+                    query,
+                    root,
+                    ..
+                } => {
+                    let filter = (!query.is_empty()).then(|| {
+                        kog_audio::library_policy::TreeFilter::new(&query, PathBuf::from(root))
+                    });
+                    self.as_mut()
+                        .start_directory_port(token, vec![PathBuf::from(path)], filter);
+                }
+                effect @ SessionEffect::Radio { .. } => {
+                    if self.as_ref().rust().radio.is_none() {
+                        let result = {
+                            let this = self.as_ref();
+                            let r = this.rust();
+                            make_radio_client(
+                                r.session.id(),
+                                &r.decoders,
+                                r.decoder_settings.clone(),
+                            )
+                        };
+                        match result {
+                            Ok(port) => self.as_mut().rust_mut().radio = Some(port),
+                            Err(error) => {
+                                if let SessionEffect::Radio { token, .. } = effect {
+                                    self.as_mut().rust_mut().queue_session(
+                                        SessionCommand::Complete {
+                                            token,
+                                            result: IoResult::Failed { error },
+                                        },
+                                    );
+                                }
+                                continue;
+                            }
+                        }
+                    }
+                    let token = match &effect {
+                        SessionEffect::Radio { token, .. } => token.clone(),
+                        _ => unreachable!(),
+                    };
+                    if let Err(error) = self.as_ref().rust().radio.as_ref().unwrap().request(effect)
+                    {
+                        self.as_mut()
+                            .rust_mut()
+                            .queue_session(SessionCommand::Complete {
+                                token,
+                                result: IoResult::Failed { error },
+                            });
+                    }
+                }
+            }
+        }
+        self.as_mut().apply_session_view();
+    }
+    fn poll_session_ports(mut self: Pin<&mut Self>) {
+        let ready = {
+            let mut r = self.as_mut().rust_mut();
+            let mut ready = Vec::new();
+            r.session_jobs
+                .retain(|(token, receiver)| match receiver.try_recv() {
+                    Ok(result) => {
+                        ready.push((token.clone(), result));
+                        false
+                    }
+                    Err(TryRecvError::Empty) => true,
+                    Err(TryRecvError::Disconnected) => {
+                        ready.push((
+                            token.clone(),
+                            IoResult::Failed {
+                                error: "Playlist preparation stopped".into(),
+                            },
+                        ));
+                        false
+                    }
+                });
+            if let Some(radio) = &r.radio {
+                ready.extend(radio.poll());
+            }
+            ready
+        };
+        for (token, result) in ready {
+            self.as_mut()
+                .rust_mut()
+                .queue_session(SessionCommand::Complete { token, result });
+        }
+        if !self.as_ref().rust().session_effects.is_empty() {
+            self.as_mut().flush_session_effects();
+        }
+    }
+
     fn rebuild_playlist(mut self: Pin<&mut Self>) {
         self.as_mut().rust_mut().rebuild_visible_indices();
+        self.as_mut().flush_session_effects();
         let count = saturating_i32(self.as_ref().rust().visible_indices.len());
         let revision = self.as_ref().rust().playlist_revision.wrapping_add(1);
         let duration = self.as_ref().rust().total_duration_value();
@@ -6578,16 +6556,9 @@ impl qobject::AppController {
         paths: Vec<PathBuf>,
         behavior: OpeningFilesBehavior,
     ) {
-        if paths.is_empty() {
-            return;
+        if !paths.is_empty() {
+            self.as_mut().begin_directory_scan(paths, behavior, None);
         }
-        if self.as_ref().rust().directory_scan_active {
-            self.as_mut().set_status(qstring(
-                "A folder scan is already running; cancel it before adding more files",
-            ));
-            return;
-        }
-        self.as_mut().begin_directory_scan(paths, behavior, None);
     }
 
     fn begin_directory_scan(
@@ -6597,9 +6568,36 @@ impl qobject::AppController {
         filter: Option<kog_audio::library_policy::TreeFilter>,
     ) {
         if behavior.clears_playlist() {
-            self.as_mut().clear_playlist();
+            self.as_mut().session_command(SessionCommand::Clear);
         }
-        let first_new_source_index = self.as_ref().rust().tracks.len();
+        let entries = paths
+            .into_iter()
+            .map(|path| {
+                let mut entry = serde_json::json!({"scan_path":path.to_string_lossy()});
+                if let Some(filter) = &filter {
+                    entry["scan_query"] = serde_json::Value::String(filter.query());
+                    entry["scan_root"] =
+                        serde_json::Value::String(filter.root.to_string_lossy().into_owned());
+                }
+                entry
+            })
+            .collect();
+        self.as_mut().session_command(SessionCommand::Expand {
+            scope: "local".into(),
+            entries,
+            action: if behavior.starts_playback() {
+                QueueAction::PlayNow
+            } else {
+                QueueAction::AddToQueue
+            },
+        });
+    }
+    fn start_directory_port(
+        mut self: Pin<&mut Self>,
+        token: Token,
+        paths: Vec<PathBuf>,
+        filter: Option<kog_audio::library_policy::TreeFilter>,
+    ) {
         let (sender, receiver) = std::sync::mpsc::sync_channel(64);
         let cancel = Arc::new(AtomicBool::new(false));
         let decoder_settings = self.as_ref().rust().decoder_settings.clone();
@@ -6608,28 +6606,23 @@ impl qobject::AppController {
             .rust()
             .decoders
             .background_worker(decoder_settings.clone());
-        let known_sources = self
-            .as_ref()
-            .rust()
-            .tracks
-            .iter()
-            .map(|track| track.source.clone())
-            .collect();
         let read_cue_sheets = self.as_ref().rust().read_cue_sheets_in_folders;
         let read_playlists = self.as_ref().rust().read_playlists_in_folders;
-        self.as_mut().rust_mut().directory_scan = Some(DirectoryScanState {
-            receiver,
-            cancel: Arc::clone(&cancel),
-            cancel_requested: false,
-            behavior,
-            first_new_source_index,
-            combined: AddPathResult::default(),
-            known_sources,
-            playlist_dirty: false,
-            last_playlist_refresh: Instant::now(),
-        });
-        self.as_mut().set_directory_scan_files_scanned(0);
-        self.as_mut().set_directory_scan_tracks_added(0);
+        self.as_mut()
+            .rust_mut()
+            .directory_scans
+            .push(DirectoryScanState {
+                receiver,
+                cancel: Arc::clone(&cancel),
+                cancel_requested: false,
+                token: token.clone(),
+                prepared_tracks: Vec::new(),
+                combined: AddPathResult::default(),
+            });
+        if self.as_ref().rust().directory_scans.len() == 1 {
+            self.as_mut().set_directory_scan_files_scanned(0);
+            self.as_mut().set_directory_scan_tracks_added(0);
+        }
         self.as_mut()
             .set_directory_scan_current_path(qstring("Finding files…"));
         self.as_mut().set_directory_scan_active(true);
@@ -6650,245 +6643,106 @@ impl qobject::AppController {
                 )
             })
         {
-            self.as_mut().rust_mut().directory_scan = None;
+            self.as_mut()
+                .rust_mut()
+                .directory_scans
+                .retain(|scan| scan.token != token);
             self.as_mut().set_directory_scan_active(false);
             self.as_mut()
-                .set_status(qstring(format!("Starting the folder scanner: {error}")));
+                .rust_mut()
+                .queue_session(SessionCommand::Complete {
+                    token,
+                    result: IoResult::Failed {
+                        error: format!("Starting the folder scanner: {error}"),
+                    },
+                });
         }
-    }
-
-    fn finish_directory_scan(mut self: Pin<&mut Self>, worker_cancelled: bool) {
-        let Some(scan) = self.as_mut().rust_mut().directory_scan.take() else {
-            return;
-        };
-        let cancelled = worker_cancelled || scan.cancel_requested;
-        let files_scanned = self.as_ref().rust().directory_scan_files_scanned;
-        let tracks_added = scan.combined.added;
-        self.as_mut().set_directory_scan_active(false);
-        self.as_mut()
-            .set_directory_scan_current_path(QString::default());
-
-        let mut status = if cancelled {
-            format!(
-                "Music load cancelled — {files_scanned} files scanned, {tracks_added} tracks added"
-            )
-        } else {
-            format!(
-                "Music load complete — {files_scanned} files scanned, {tracks_added} tracks added"
-            )
-        };
-        if let Some(warning) = scan.combined.warning {
-            status.push_str("; ");
-            status.push_str(&warning);
-        }
-        self.as_mut().set_status(qstring(status));
-
-        if !cancelled && tracks_added > 0 && scan.behavior.starts_playback() {
-            self.as_mut().play_source_index(scan.first_new_source_index);
-        }
-    }
-
-    fn refresh_playback_order(mut self: Pin<&mut Self>) {
-        let queue_count = self.as_mut().rust_mut().sync_tracks_in_playback_order();
-        self.as_mut().set_queue_count(saturating_i32(queue_count));
     }
 
     fn advance_playback(mut self: Pin<&mut Self>, honor_repeat_one: bool) {
-        self.as_mut().navigate_playback(if honor_repeat_one { NavigationEvent::Ended } else { NavigationEvent::Next });
+        self.as_mut().navigate_playback(if honor_repeat_one {
+            NavigationEvent::Ended
+        } else {
+            NavigationEvent::Next
+        });
     }
 
-    fn navigate_playback(mut self: Pin<&mut Self>, mut event: NavigationEvent) {
-        let tracks = self.as_ref().rust().tracks.clone();
-        loop {
-            let current = usize::try_from(self.as_ref().rust().current_index).ok();
-            let (decision, queued) = {
-                let mut rust = self.as_mut().rust_mut();
-                let decision = rust.playback_order.navigate(&tracks, current, event);
-                (decision, rust.playback_order.queue_count())
-            };
-            self.as_mut().set_queue_count(saturating_i32(queued));
-            match decision {
-                PlaybackDecision::Play(index) => {
-                    if matches!(self.as_mut().play_source_index(index), PlayOutcome::Started) { return; }
-                    event = NavigationEvent::Failed;
-                }
-                PlaybackDecision::Radio => { self.as_mut().advance_past_end(); return; }
-                PlaybackDecision::Stop => { self.as_mut().stop(); return; }
-            }
-        }
-    }
-
-    fn advance_past_end(mut self: Pin<&mut Self>) {
-        if self.as_ref().rust().radio_active {
-            if let Some(index) = self.as_mut().shift_radio_track() {
-                self.as_mut().play_shifted_radio_track(index);
-            } else {
-                self.as_mut().rust_mut().playback.stop();
-                self.as_mut().sync_playback_state();
-                let waiting = self.as_ref().rust().radio.as_ref().is_some_and(|radio| radio.waiting());
-                self.as_mut().set_status(qstring(if waiting {
-                    "Random Radio — finding a track…"
-                } else {
-                    "Random Radio — no playable tracks found"
-                }));
-            }
-        } else { self.as_mut().stop(); }
+    fn navigate_playback(mut self: Pin<&mut Self>, event: NavigationEvent) {
+        self.as_mut()
+            .session_command(SessionCommand::Navigate { event });
     }
 
     fn apply_shuffle_mode(mut self: Pin<&mut Self>, mode: ShuffleMode) {
-        if self.as_ref().rust().playback_order.shuffle_mode() == mode {
-            return;
-        }
-        if let Err(error) = AppSettings::save_shuffle_mode(mode) {
-            self.as_mut().set_status(qstring(error));
-            return;
-        }
-        let tracks = self.as_ref().rust().tracks.clone();
-        let current = usize::try_from(self.as_ref().rust().current_index).ok();
-        {
-            self.as_mut()
-                .rust_mut()
-                .playback_order
-                .set_shuffle_mode(mode, &tracks, current);
-        }
         self.as_mut()
-            .set_shuffle_mode(qstring(mode.setting_value()));
-        if self.as_ref().rust().radio_active && !self.as_ref().rust().playback_order.radio_enabled() {
-            self.as_mut().teardown_radio();
-        }
-        self.as_mut().set_status(qstring(match mode {
-            ShuffleMode::Off => "Shuffle off",
-            ShuffleMode::Albums => "Shuffle albums",
-            ShuffleMode::All => "Shuffle all tracks",
-        }));
+            .session_command(SessionCommand::Shuffle { mode });
     }
 
     fn apply_repeat_mode(mut self: Pin<&mut Self>, mode: RepeatMode) {
-        if self.as_ref().rust().playback_order.repeat_mode() == mode {
-            return;
-        }
-        if let Err(error) = AppSettings::save_repeat_mode(mode) {
-            self.as_mut().set_status(qstring(error));
-            return;
-        }
         self.as_mut()
-            .rust_mut()
-            .playback_order
-            .set_repeat_mode(mode);
-        self.as_mut().set_repeat_mode(qstring(mode.setting_value()));
-        if self.as_ref().rust().radio_active && !self.as_ref().rust().playback_order.radio_enabled() {
-            self.as_mut().teardown_radio();
-            if let Err(error) = AppSettings::save_radio_enabled(false) {
-                self.as_mut().set_status(qstring(error));
-                return;
-            }
-            self.as_mut()
-                .set_status(qstring("Random Radio off — repeat on"));
+            .session_command(SessionCommand::Repeat { mode });
+    }
+
+    fn start_session_output(
+        mut self: Pin<&mut Self>,
+        token: Token,
+        index: usize,
+        seconds: f64,
+        playing: bool,
+    ) {
+        let Some(track) = self.as_ref().rust().tracks.get(index).cloned() else {
             return;
-        }
-        self.as_mut().set_status(qstring(match mode {
-            RepeatMode::Off => "Repeat off",
-            RepeatMode::One => "Repeat one track",
-            RepeatMode::Album => "Repeat album",
-            RepeatMode::All => "Repeat all tracks",
-        }));
-    }
-
-    fn play_shifted_radio_track(mut self: Pin<&mut Self>, index: usize) {
-        self.as_mut().rust_mut().playback_order.radio_candidate(index);
-        if matches!(self.as_mut().play_source_index(index), PlayOutcome::Skipped) {
-            self.as_mut().navigate_playback(NavigationEvent::Failed);
-        }
-    }
-
-    fn play_source_index(mut self: Pin<&mut Self>, source_index: usize) -> PlayOutcome {
-        let Some((source, genre, notification)) = self
-            .as_ref()
-            .get_ref()
-            .rust()
-            .tracks
-            .get(source_index)
-            .map(|track| {
-                let rust = self.as_ref().get_ref().rust();
-                let is_new_start = rust.playback.state() == PlaybackState::Stopped
-                    || usize::try_from(rust.current_index).ok() != Some(source_index);
-                let notification = rust.track_notifications && is_new_start;
-                (track.source.clone(), track.genre.clone(), notification)
-            })
-        else {
-            return PlayOutcome::Started;
         };
         if self.as_ref().rust().equalizer_settings.track_genre {
             let mut settings = self.as_ref().rust().equalizer_settings.clone();
-            apply_preset(&mut settings, preset_for_genre(&genre));
-            let preset_name = settings.preset_name.clone();
-            self.as_mut().commit_equalizer_settings(
-                settings,
-                &format!("Equalizer matched genre with {preset_name}"),
-            );
+            apply_preset(&mut settings, preset_for_genre(&track.genre));
+            self.as_mut()
+                .commit_equalizer_settings(settings, "Equalizer matched track genre");
         }
-        match self.as_mut().rust_mut().playback.play_source(&source) {
+        let result = self.as_mut().rust_mut().playback.play_source(&track.source);
+        match result {
             Ok(backend) => {
-                let previous = usize::try_from(self.as_ref().rust().current_index).ok();
+                self.as_mut().populate_now_playing(index);
+                if seconds > 0.0 {
+                    if let Err(error) = self
+                        .as_ref()
+                        .rust()
+                        .playback
+                        .seek(Duration::from_secs_f64(seconds))
+                    {
+                        self.as_mut().set_status(qstring(error));
+                    }
+                }
+                if !playing {
+                    self.as_mut().rust_mut().playback.play_pause();
+                }
+                self.as_mut().set_status(qstring(format!(
+                    "Playing with {} ({})",
+                    backend.display_name, backend.id
+                )));
                 self.as_mut()
                     .rust_mut()
-                    .playback_order
-                    .started(previous, source_index);
-                self.as_mut()
-                    .set_current_index(saturating_i32(source_index));
-                self.as_mut().populate_now_playing(source_index);
-                let capability_summary = backend.capability_summary();
-                let status = if capability_summary.is_empty() {
-                    format!("Playing with {} ({})", backend.display_name, backend.id)
-                } else {
-                    format!(
-                        "Playing with {} ({}) — {capability_summary}",
-                        backend.display_name, backend.id
-                    )
-                };
-                self.as_mut().set_status(qstring(status));
-                self.as_mut().sync_playback_state();
-                self.as_mut().bump_playlist_revision();
-                if notification {
+                    .queue_session(SessionCommand::Output {
+                        token,
+                        event: OutputEvent::Started,
+                    });
+                if self.as_ref().rust().track_notifications {
                     self.as_mut().show_now_playing_notification();
                 }
-                PlayOutcome::Started
             }
             Err(error) => {
-                // Mark missing entries for presentation. The shared transport
-                // policy decides whether a failed open advances or stops.
-                let title = self
-                    .as_ref()
-                    .rust()
-                    .tracks
-                    .get(source_index)
-                    .map(|track| track.title.clone())
-                    .unwrap_or_default();
-                let gone = self
-                    .as_ref()
-                    .rust()
-                    .tracks
-                    .get(source_index)
-                    .is_some_and(|track| playback_source_is_missing(&track.source));
-                if gone {
-                    self.as_mut().rust_mut().playback.stop();
-                    self.as_mut().sync_playback_state();
-                    if let Some(track) = self.as_mut().rust_mut().tracks.get_mut(source_index) {
-                        track.missing = true;
-                    }
-                    self.as_mut().bump_playlist_revision();
-                    let trimmed = title.trim();
-                    self.as_mut().set_status(qstring(if trimmed.is_empty() {
-                        "Skipping missing file".to_owned()
-                    } else {
-                        format!("Skipping missing file: {trimmed}")
-                    }));
-                    return PlayOutcome::Skipped;
+                if playback_source_is_missing(&track.source) {
+                    let mut track = track;
+                    track.missing = true;
+                    self.as_mut()
+                        .rust_mut()
+                        .queue_session(SessionCommand::UpdateItem { index, track });
                 }
-                self.as_mut().set_status(qstring(error));
-                self.as_mut().rust_mut().playback.stop();
-                self.as_mut().sync_playback_state();
-                PlayOutcome::Skipped
+                self.as_mut()
+                    .rust_mut()
+                    .queue_session(SessionCommand::Output {
+                        token,
+                        event: OutputEvent::Failed { error },
+                    });
             }
         }
     }
@@ -6986,12 +6840,6 @@ impl qobject::AppController {
         self.as_mut().set_current_artwork_path(QString::default());
     }
 
-    fn sync_playback_state(mut self: Pin<&mut Self>) {
-        let state = self.as_ref().rust().playback.state();
-        self.as_mut().set_playback_state(qstring(state.as_str()));
-        self.as_mut().bump_playlist_revision();
-    }
-
     fn bump_playlist_revision(mut self: Pin<&mut Self>) {
         let revision = self.as_ref().rust().playlist_revision.wrapping_add(1);
         self.as_mut().set_playlist_revision(revision);
@@ -7018,7 +6866,8 @@ impl qobject::AppController {
         self.as_mut()
             .set_directory_path(qstring(path.to_string_lossy()));
         if self.as_ref().rust().radio_active {
-            self.as_mut().begin_radio_session(path, false, "Random Radio — new folder");
+            self.as_mut()
+                .begin_radio_session(path, false, "Random Radio — new folder");
         }
     }
 }
@@ -7828,7 +7677,13 @@ mod tests {
             &HashSet::new(),
         );
         assert_eq!(original, [2, 1, 0]);
-        sort_visible_indices(&tracks, &mut original, PlaylistSortColumn::Index, true, &HashSet::new());
+        sort_visible_indices(
+            &tracks,
+            &mut original,
+            PlaylistSortColumn::Index,
+            true,
+            &HashSet::new(),
+        );
         assert_eq!(original, [0, 1, 2]);
     }
 }

@@ -241,6 +241,7 @@ class KogState(private val context: Context) {
     private fun applyPolicy(extras: Bundle) {
         extras.getString("error")?.let { error = it }
         val snapshot = extras.getString("kog_policy")?.let(::JSONObject) ?: return
+        snapshot.optString("session_id").takeIf(String::isNotEmpty)?.let { api.sessionID = it; deviceApi.sessionID = it }
         snapshot.optJSONArray("queue")?.let { rows ->
             val tracks = (0 until rows.length()).map { Track.parse(rows.getJSONObject(it)) }
             if (tracks != queue.toList()) queue.replaceWith(tracks)

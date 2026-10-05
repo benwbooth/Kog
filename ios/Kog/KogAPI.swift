@@ -36,6 +36,7 @@ struct KogAPI {
     var deviceRoot: String?
     var deviceStorage: String?
     var sessionID: String = ""
+    var radioRequest: [String: Any]? = nil
 
     func url(_ endpoint: String, _ query: [String: String] = [:]) throws -> URL {
         let origin = server.contains("://") ? server : "http://\(server)"
@@ -199,10 +200,10 @@ struct KogAPI {
     }
 
     func search(_ term: String, root: String) async throws -> SearchPage {
-        try JSONDecoder().decode(SearchPage.self, from: await request("/api/library/search", query: ["q": term, "root": root]))
+        try JSONDecoder().decode(SearchPage.self, from: await request("/api/library/search", query: ["q": term, "root": root, "session": sessionID]))
     }
     func more(_ generation: Int64, offset: Int) async throws -> SearchPage {
-        try JSONDecoder().decode(SearchPage.self, from: await request("/api/library/search/more", query: ["g": "\(generation)", "offset": "\(offset)"]))
+        try JSONDecoder().decode(SearchPage.self, from: await request("/api/library/search/more", query: ["g": "\(generation)", "offset": "\(offset)", "session": sessionID]))
     }
     func playlists() async throws -> [SavedPlaylist] {
         let data = try await request("/api/playlists")
@@ -240,10 +241,14 @@ struct KogAPI {
         _ = try await request("/api/playlists/\(id)/entries", method: "PUT", body: body)
     }
     func pauseSearch(_ paused: Bool) async throws {
-        _ = try await request("/api/library/search/pause", method: "POST", body: ["paused": paused])
+        _ = try await request("/api/library/search/pause", query: ["session": sessionID], method: "POST", body: ["paused": paused])
     }
     private func radioQuery(_ root: String) -> [String: String] {
         var query = ["incremental": "true", "session": sessionID]
+        if let token = radioRequest {
+            query["incarnation"] = (token["incarnation"] as? NSNumber)?.stringValue
+            query["serial"] = (token["serial"] as? NSNumber)?.stringValue
+        }
         if !root.isEmpty { query["root"] = root }
         return query
     }

@@ -118,7 +118,9 @@ impl Library {
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 #[derive(Debug, Deserialize)]
@@ -128,6 +130,7 @@ pub struct BrowseQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct SearchQuery {
+    pub session: Option<String>,
     pub q: String,
     pub root: Option<String>,
 }
@@ -147,6 +150,7 @@ pub struct DownloadQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct MoreQuery {
+    pub session: Option<String>,
     pub g: Option<u64>,
     /// Where the client wants matches from in the shared buffer: the walk
     /// runs on its own thread, so a poll only reads what has accumulated.
@@ -336,9 +340,12 @@ fn probe_metadata(
         entry,
         (!fragment.trim().is_empty()).then(|| fragment.trim().to_owned()),
     )?;
-    Ok(streams.probe_entry_with_size(source).ok().map(
-        |(properties, file_size_bytes)| MetadataRow::from_properties(properties, file_size_bytes),
-    ))
+    Ok(streams
+        .probe_entry_with_size(source)
+        .ok()
+        .map(|(properties, file_size_bytes)| {
+            MetadataRow::from_properties(properties, file_size_bytes)
+        }))
 }
 
 /// Cache-first lookup. Failures are cached too, so a broken entry is not
@@ -354,8 +361,8 @@ fn lookup_metadata(
     if let Some(cached) = lock(&library.metadata).get(&key) {
         return cached;
     }
-    let row = probe_metadata(streams, &request.kind, &request.path, &entry, &fragment)
-        .unwrap_or(None);
+    let row =
+        probe_metadata(streams, &request.kind, &request.path, &entry, &fragment).unwrap_or(None);
     lock(&library.metadata).insert(key, row.clone());
     row
 }
@@ -487,16 +494,28 @@ fn expand_locator(
     request: &ExpandEntry,
 ) -> Vec<BrowseFile> {
     let stored = StoredEntry {
-        kind: request.kind.clone(), path: request.path.clone(),
-        entry: request.entry.clone().unwrap_or_default(), fragment: request.fragment.clone(),
+        kind: request.kind.clone(),
+        path: request.path.clone(),
+        entry: request.entry.clone().unwrap_or_default(),
+        fragment: request.fragment.clone(),
     };
-    decoders.expand_queue_entry(&stored).iter().map(|source| {
-        let mut row = expand_source_browse_file(decoders, source, root);
-        if request.fragment.as_ref().is_some_and(|s| !s.trim().is_empty()) {
-            if let Some(name) = request.name.as_ref().filter(|s| !s.is_empty()) { row.name = name.clone(); }
-        }
-        row
-    }).collect()
+    decoders
+        .expand_queue_entry(&stored)
+        .iter()
+        .map(|source| {
+            let mut row = expand_source_browse_file(decoders, source, root);
+            if request
+                .fragment
+                .as_ref()
+                .is_some_and(|s| !s.trim().is_empty())
+            {
+                if let Some(name) = request.name.as_ref().filter(|s| !s.is_empty()) {
+                    row.name = name.clone();
+                }
+            }
+            row
+        })
+        .collect()
 }
 
 /// Reuse the HTTP expansion rules in native frontends. A multi-song locator
@@ -544,8 +563,7 @@ fn expand_source_browse_file(
         return file;
     };
     if decoders.selected_backend_id(source) == Some("cuesheet") {
-        if let Some(number) = kog_audio::cuesheet_decoder::cue_track_number(&source.path, subsong)
-        {
+        if let Some(number) = kog_audio::cuesheet_decoder::cue_track_number(&source.path, subsong) {
             file.fragment = Some(number.to_string());
         }
     }
@@ -557,9 +575,10 @@ fn expand_source_browse_file(
 pub async fn browse(State(state): State<AppState>, Query(query): Query<BrowseQuery>) -> Response {
     let library = state.library.clone();
     let requested = query.path.clone();
-    let result = tokio::task::spawn_blocking(move || browse_blocking(&library, requested.as_deref(), false))
-        .await
-        .unwrap_or_else(|error| Err(format!("library browse failed: {error}")));
+    let result =
+        tokio::task::spawn_blocking(move || browse_blocking(&library, requested.as_deref(), false))
+            .await
+            .unwrap_or_else(|error| Err(format!("library browse failed: {error}")));
     match result {
         Ok(value) => axum::Json(value).into_response(),
         Err(error) => bad_request(&error),
@@ -1200,7 +1219,11 @@ fn browse_blocking(
     files.retain(|file| {
         let bare = file.fragment.as_deref().map_or(true, str::is_empty);
         !bare
-            || !subsong_targets.contains(&(file.kind.clone(), file.path.clone(), file.entry.clone()))
+            || !subsong_targets.contains(&(
+                file.kind.clone(),
+                file.path.clone(),
+                file.entry.clone(),
+            ))
     });
     files.sort_by(|left, right| {
         left.path
@@ -1243,7 +1266,17 @@ fn browse_blocking(
 /// shared buffer. The client polls: the first response arrives after a short
 /// beat, further matches come from [`search_more`], and a newer query
 /// cancels the older walk, exactly like the desktop's superseded scan.
-pub async fn search(State(state): State<AppState>, Query(query): Query<SearchQuery>) -> Response {
+pub async fn search(
+    State(mut state): State<AppState>,
+    Query(query): Query<SearchQuery>,
+) -> Response {
+    state.search = match state
+        .search_sessions
+        .get(query.session.as_deref(), &state.search)
+    {
+        Ok(search) => search,
+        Err(error) => return bad_request(&error),
+    };
     let needle = query.q.trim().to_lowercase();
     let tokens: Vec<String> = needle.split_whitespace().map(str::to_owned).collect();
     let generation = state.search.generation.fetch_add(1, Ordering::Relaxed) + 1;
@@ -1286,41 +1319,40 @@ pub async fn media_download(
     let kind = query.kind.clone().unwrap_or_else(|| "local".to_owned());
     let library = state.library.clone();
     let cache_dir = kog_audio::archive::nested_cache_dir();
-    let job = tokio::task::spawn_blocking(move || -> Result<(std::path::PathBuf, String), String> {
-        match kind.as_str() {
-            "archive" => {
-                let entry = query.entry.clone().unwrap_or_default();
-                if entry.trim().is_empty() {
-                    return Err("an archive member name is required".to_owned());
+    let job =
+        tokio::task::spawn_blocking(move || -> Result<(std::path::PathBuf, String), String> {
+            match kind.as_str() {
+                "archive" => {
+                    let entry = query.entry.clone().unwrap_or_default();
+                    if entry.trim().is_empty() {
+                        return Err("an archive member name is required".to_owned());
+                    }
+                    let archive = library.resolve(Some(&query.path))?;
+                    let member = kog_audio::archive::materialize_archive_member(
+                        &archive, &entry, &cache_dir,
+                    )?;
+                    let name = std::path::Path::new(&entry)
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| entry.clone());
+                    Ok((member, name))
                 }
-                let archive = library.resolve(Some(&query.path))?;
-                let member = kog_audio::archive::materialize_archive_member(
-                    &archive,
-                    &entry,
-                    &cache_dir,
-                )?;
-                let name = std::path::Path::new(&entry)
-                    .file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| entry.clone());
-                Ok((member, name))
-            }
-            "local" => {
-                let file = library.resolve(Some(&query.path))?;
-                if !file.is_file() {
-                    return Err(format!("{} is not a file", file.display()));
+                "local" => {
+                    let file = library.resolve(Some(&query.path))?;
+                    if !file.is_file() {
+                        return Err(format!("{} is not a file", file.display()));
+                    }
+                    let name = file
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "media".to_owned());
+                    Ok((file, name))
                 }
-                let name = file
-                    .file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| "media".to_owned());
-                Ok((file, name))
+                other => Err(format!("unknown track kind: {other}")),
             }
-            other => Err(format!("unknown track kind: {other}")),
-        }
-    })
-    .await
-    .unwrap_or_else(|error| Err(error.to_string()));
+        })
+        .await
+        .unwrap_or_else(|error| Err(error.to_string()));
 
     match job {
         Ok((file, name)) => match tokio::fs::File::open(&file).await {
@@ -1382,9 +1414,17 @@ pub async fn media_download(
 /// Pausing idles the worker where it is; results already gathered stay
 /// readable, and a new query always starts unpaused.
 pub async fn pause_search(
-    State(state): State<AppState>,
+    State(mut state): State<AppState>,
+    Query(query): Query<SearchSessionQuery>,
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> Response {
+    state.search = match state
+        .search_sessions
+        .get(query.session.as_deref(), &state.search)
+    {
+        Ok(search) => search,
+        Err(error) => return bad_request(&error),
+    };
     let paused = body["paused"].as_bool().unwrap_or(false);
     if let Some(job) = state.search.job.lock().unwrap().as_ref() {
         if body["generation"]
@@ -1401,9 +1441,17 @@ pub async fn pause_search(
 /// Cancel only the requesting client's search, so a stale client cannot stop
 /// a newer query started by another frontend.
 pub async fn cancel_search(
-    State(state): State<AppState>,
+    State(mut state): State<AppState>,
+    Query(query): Query<SearchSessionQuery>,
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> Response {
+    state.search = match state
+        .search_sessions
+        .get(query.session.as_deref(), &state.search)
+    {
+        Ok(search) => search,
+        Err(error) => return bad_request(&error),
+    };
     if let Some(job) = state.search.job.lock().unwrap().as_ref() {
         if body["generation"].as_u64() != Some(job.generation) {
             return (axum::http::StatusCode::CONFLICT, "Search superseded").into_response();
@@ -1439,10 +1487,16 @@ fn cached_or_downloaded_cover(
     if !may_download || !allow_download {
         return None;
     }
-    cover_art::download_cover(artist, &album, fetch, || false, |bytes| {
-        let _ = cover_art::store_cache(cache_dir, &key, &bytes);
-        Some(bytes)
-    })
+    cover_art::download_cover(
+        artist,
+        &album,
+        fetch,
+        || false,
+        |bytes| {
+            let _ = cover_art::store_cache(cache_dir, &key, &bytes);
+            Some(bytes)
+        },
+    )
 }
 
 /// `GET /api/art` — local, cached, or downloaded cover art for one library
@@ -1465,12 +1519,13 @@ pub async fn art(State(state): State<AppState>, Query(query): Query<ArtQuery>) -
             return None;
         }
         use kog_audio::cover_art;
-        if let Some(bytes) = cover_art::embedded_cover_bytes(&file)
-            .or_else(|| cover_art::sibling_cover_bytes(&file))
+        if let Some(bytes) =
+            cover_art::embedded_cover_bytes(&file).or_else(|| cover_art::sibling_cover_bytes(&file))
         {
             return Some(bytes);
         }
-        let source = PlaylistEntry::from_locator("local", &file.to_string_lossy(), "", None).ok()?;
+        let source =
+            PlaylistEntry::from_locator("local", &file.to_string_lossy(), "", None).ok()?;
         let properties = streams.probe_entry(source).ok()?;
         let artist = properties.artist.unwrap_or_default();
         let tagged_album = properties.album.unwrap_or_default();
@@ -1502,10 +1557,7 @@ pub async fn art(State(state): State<AppState>, Query(query): Query<ArtQuery>) -
     Response::builder()
         .status(StatusCode::OK)
         .header(axum::http::header::CONTENT_TYPE, content_type)
-        .header(
-            axum::http::header::CACHE_CONTROL,
-            "private, max-age=86400",
-        )
+        .header(axum::http::header::CACHE_CONTROL, "private, max-age=86400")
         .body(axum::body::Body::from(bytes))
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
@@ -1515,9 +1567,16 @@ pub async fn art(State(state): State<AppState>, Query(query): Query<ArtQuery>) -
 /// generation older than the current one means the query was superseded and
 /// the walk is gone: done, with nothing.
 pub async fn search_more(
-    State(state): State<AppState>,
+    State(mut state): State<AppState>,
     Query(query): Query<MoreQuery>,
 ) -> Response {
+    state.search = match state
+        .search_sessions
+        .get(query.session.as_deref(), &state.search)
+    {
+        Ok(search) => search,
+        Err(error) => return bad_request(&error),
+    };
     let generation = query.g.unwrap_or_default();
     let offset = query.offset.unwrap_or(0);
     search_snapshot(&state, generation, offset)
@@ -1688,9 +1747,13 @@ fn search_snapshot(state: &AppState, generation: u64, offset: usize) -> Response
     } else {
         (Vec::new(), 0, true, false)
     };
-    let progress = state.search.job.lock().unwrap().as_ref().map_or(
-        (0, 0, 0, 0, false),
-        |job| {
+    let progress = state
+        .search
+        .job
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map_or((0, 0, 0, 0, false), |job| {
             (
                 job.shared.scanned.load(Ordering::Relaxed),
                 job.shared.archive_count.load(Ordering::Relaxed),
@@ -1698,8 +1761,7 @@ fn search_snapshot(state: &AppState, generation: u64, offset: usize) -> Response
                 job.shared.unreadable_archives.load(Ordering::Relaxed),
                 job.shared.scanning_archives.load(Ordering::Relaxed),
             )
-        },
-    );
+        });
     axum::Json(serde_json::json!({
         "results": slice
             .into_iter()
@@ -1964,7 +2026,11 @@ fn walk_library_for_search(
             }
         });
     }
-    finish(&mut matches, limited || shared.limited.load(Ordering::Relaxed), &shared);
+    finish(
+        &mut matches,
+        limited || shared.limited.load(Ordering::Relaxed),
+        &shared,
+    );
 }
 
 /// The longest existing ancestor of `path` that is an archive file, with the
@@ -2050,6 +2116,30 @@ fn archive_listing_from_names(
     })
 }
 
+#[derive(Debug, Deserialize)]
+pub struct SearchSessionQuery {
+    pub session: Option<String>,
+}
+#[derive(Default)]
+pub struct SearchSessions(Mutex<HashMap<String, Arc<SearchState>>>);
+impl SearchSessions {
+    fn get(&self, id: Option<&str>, legacy: &Arc<SearchState>) -> Result<Arc<SearchState>, String> {
+        let Some(id) = id else {
+            return Ok(legacy.clone());
+        };
+        if id.is_empty() || id.len() > 256 {
+            return Err("Invalid search session ID".into());
+        }
+        Ok(self
+            .0
+            .lock()
+            .unwrap()
+            .entry(id.to_owned())
+            .or_default()
+            .clone())
+    }
+}
+
 #[derive(Default)]
 pub struct SearchState {
     generation: AtomicU64,
@@ -2116,9 +2206,8 @@ pub async fn create_playlist(
     let name = request.name.clone();
     let result = tokio::task::spawn_blocking(move || {
         let db = library.db();
-        db.create_playlist(&name).map(|id| {
-            serde_json::json!({ "id": id, "name": name.trim() })
-        })
+        db.create_playlist(&name)
+            .map(|id| serde_json::json!({ "id": id, "name": name.trim() }))
     })
     .await
     .unwrap_or_else(|error| Err(format!("creating the playlist failed: {error}")));
@@ -2181,10 +2270,19 @@ pub async fn replace_playlist_entries(
             .map(EntryRequest::into_stored)
             .collect();
         let count = entries.len();
-        let expected = request.expected_entries.map(|rows| rows.into_iter().map(|row| StoredEntry {
-            kind: row.kind, path: row.path, entry: row.entry.unwrap_or_default(), fragment: row.fragment.filter(|s| !s.is_empty()),
-        }).collect::<Vec<_>>());
-        library.db().replace_entries_checked(id, &entries, expected.as_deref())?;
+        let expected = request.expected_entries.map(|rows| {
+            rows.into_iter()
+                .map(|row| StoredEntry {
+                    kind: row.kind,
+                    path: row.path,
+                    entry: row.entry.unwrap_or_default(),
+                    fragment: row.fragment.filter(|s| !s.is_empty()),
+                })
+                .collect::<Vec<_>>()
+        });
+        library
+            .db()
+            .replace_entries_checked(id, &entries, expected.as_deref())?;
         Ok::<_, String>(serde_json::json!({ "ok": true, "id": id, "count": count }))
     })
     .await
@@ -2205,7 +2303,10 @@ pub async fn delete_playlist(
     }
     let library = state.library.clone();
     let result = tokio::task::spawn_blocking(move || {
-        library.db().delete_playlist(id).map(|()| serde_json::json!({ "ok": true, "id": id }))
+        library
+            .db()
+            .delete_playlist(id)
+            .map(|()| serde_json::json!({ "ok": true, "id": id }))
     })
     .await
     .unwrap_or_else(|error| Err(format!("deleting the playlist failed: {error}")));
@@ -2336,11 +2437,18 @@ pub async fn export_playlist(
     let library = state.library.clone();
     let result = tokio::task::spawn_blocking(move || {
         let entries = library.db().playlist_entries(id)?;
-        let entries = entries.iter().map(kog_audio::playlist::PlaylistEntry::try_from)
+        let entries = entries
+            .iter()
+            .map(kog_audio::playlist::PlaylistEntry::try_from)
             .collect::<Result<Vec<_>, _>>()?;
-        let text = kog_audio::playlist::Playlist::portable_text(std::path::Path::new("Kog.m3u8"), &entries)?;
+        let text = kog_audio::playlist::Playlist::portable_text(
+            std::path::Path::new("Kog.m3u8"),
+            &entries,
+        )?;
         Ok::<_, String>(serde_json::json!({ "text": text }))
-    }).await.unwrap_or_else(|error| Err(format!("exporting the playlist failed: {error}")));
+    })
+    .await
+    .unwrap_or_else(|error| Err(format!("exporting the playlist failed: {error}")));
     match result {
         Ok(value) => axum::Json(value).into_response(),
         Err(error) => bad_request(&error),
@@ -2362,8 +2470,10 @@ pub async fn prune_missing_playlist_entries(
         let doomed: Vec<i64> = rows
             .iter()
             .filter(|(_, entry)| {
-                matches!(entry.kind.as_str(), kog_core::db::KIND_LOCAL | kog_core::db::KIND_ARCHIVE)
-                    && !std::path::Path::new(&entry.path).exists()
+                matches!(
+                    entry.kind.as_str(),
+                    kog_core::db::KIND_LOCAL | kog_core::db::KIND_ARCHIVE
+                ) && !std::path::Path::new(&entry.path).exists()
             })
             .map(|(row_id, _)| *row_id)
             .collect();
@@ -2446,36 +2556,53 @@ pub fn entry_json(entry: StoredEntry) -> serde_json::Value {
 
 /// Decode draft entries using the same locator validation used by playback.
 pub fn queue_entries_from_json(entries: &[serde_json::Value]) -> Vec<StoredEntry> {
-    entries.iter().flat_map(|entry| stored_entries_from_json(std::slice::from_ref(entry)).unwrap_or_default()).collect()
+    entries
+        .iter()
+        .flat_map(|entry| stored_entries_from_json(std::slice::from_ref(entry)).unwrap_or_default())
+        .collect()
 }
 
 pub fn stored_entries_from_json(entries: &[serde_json::Value]) -> Result<Vec<StoredEntry>, String> {
-    entries.iter().map(|value| {
-        let entry: MetadataEntry = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
-        let stored = StoredEntry { kind: entry.kind, path: entry.path, entry: entry.entry.unwrap_or_default(), fragment: entry.fragment.filter(|s| !s.is_empty()) };
-        kog_audio::playlist::PlaylistEntry::try_from(&stored)?;
-        Ok(stored)
-    }).collect()
+    entries
+        .iter()
+        .map(|value| {
+            let entry: MetadataEntry =
+                serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+            let stored = StoredEntry {
+                kind: entry.kind,
+                path: entry.path,
+                entry: entry.entry.unwrap_or_default(),
+                fragment: entry.fragment.filter(|s| !s.is_empty()),
+            };
+            kog_audio::playlist::PlaylistEntry::try_from(&stored)?;
+            Ok(stored)
+        })
+        .collect()
 }
 
 /// Router fragment for the library endpoints, so `routes` stays readable.
 /// The synthesizer choices, labeled like the desktop's Preferences combo.
 fn midi_options() -> Vec<serde_json::Value> {
     use kog_audio::settings::MidiEngine;
-    [MidiEngine::RustySynth, MidiEngine::Opl3Windows, MidiEngine::Sc55, MidiEngine::Mt32]
-        .into_iter()
-        .map(|engine| {
-            serde_json::json!({
-                "value": engine.setting_value(),
-                "label": match engine {
-                    MidiEngine::RustySynth => "RustySynth (SF2)",
-                    MidiEngine::Opl3Windows => "OPL3Windows (Nuked OPL3)",
-                    MidiEngine::Sc55 => "Nuked SC-55",
-                    MidiEngine::Mt32 => "Munt (MT-32 / CM-32L)",
-                },
-            })
+    [
+        MidiEngine::RustySynth,
+        MidiEngine::Opl3Windows,
+        MidiEngine::Sc55,
+        MidiEngine::Mt32,
+    ]
+    .into_iter()
+    .map(|engine| {
+        serde_json::json!({
+            "value": engine.setting_value(),
+            "label": match engine {
+                MidiEngine::RustySynth => "RustySynth (SF2)",
+                MidiEngine::Opl3Windows => "OPL3Windows (Nuked OPL3)",
+                MidiEngine::Sc55 => "Nuked SC-55",
+                MidiEngine::Mt32 => "Munt (MT-32 / CM-32L)",
+            },
         })
-        .collect()
+    })
+    .collect()
 }
 
 /// `GET /api/settings/midi` — the active MIDI synthesizer and the choices.
@@ -2539,7 +2666,10 @@ pub fn router() -> axum::Router<AppState> {
             post(prune_missing_playlist_entries),
         )
         .route("/api/stars", get(list_stars).post(set_star))
-        .route("/api/settings/midi", get(midi_settings).post(set_midi_setting))
+        .route(
+            "/api/settings/midi",
+            get(midi_settings).post(set_midi_setting),
+        )
         .route("/api/columns", get(get_columns).post(set_columns))
 }
 
@@ -2639,6 +2769,90 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn named_searches_keep_results_and_controls_independent() {
+        use axum::{body::Body, http::Request};
+        use tower::ServiceExt;
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("alpha.wav"), []).unwrap();
+        std::fs::write(directory.path().join("beta.wav"), []).unwrap();
+        let state = AppState::new(
+            crate::config::ServerConfig::default(),
+            "test",
+            crate::service::StreamService::new(
+                crate::stream::StreamCache::new(directory.path().join("cache"), 1 << 20),
+                kog_audio::decoder::DecoderSettings::default(),
+                directory.path().join("scratch"),
+            ),
+            Library::new(
+                Some(directory.path().to_path_buf()),
+                LibraryDb::open_in_memory().unwrap(),
+            ),
+        );
+        let app = router().with_state(state.clone());
+        for (session, query) in [("phone", "alpha"), ("web", "beta")] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/api/library/search?session={session}&q={query}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200);
+        }
+        let phone = state
+            .search_sessions
+            .get(Some("phone"), &state.search)
+            .unwrap();
+        let web = state
+            .search_sessions
+            .get(Some("web"), &state.search)
+            .unwrap();
+        let phone_job = phone.job.lock().unwrap().as_ref().unwrap().shared.clone();
+        let web_job = web.job.lock().unwrap().as_ref().unwrap().shared.clone();
+        assert!(!phone_job.cancel.load(Ordering::Relaxed));
+        assert_eq!(phone_job.matches.lock().unwrap().len(), 1);
+        assert_eq!(web_job.matches.lock().unwrap().len(), 1);
+        assert_eq!(state.search.generation.load(Ordering::Relaxed), 0);
+        for (session, action) in [("phone", "pause"), ("web", "cancel")] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(format!("/api/library/search/{action}?session={session}"))
+                        .header("content-type", "application/json")
+                        .body(Body::from(r#"{"generation":1,"paused":true}"#))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200);
+        }
+        assert!(phone_job.paused.load(Ordering::Relaxed));
+        assert!(!phone_job.cancel.load(Ordering::Relaxed));
+        assert!(web_job.cancel.load(Ordering::Relaxed));
+        assert!(!web_job.paused.load(Ordering::Relaxed));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/library/search/more?session=phone&g=1&offset=0")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value["total"], 1);
+        assert_eq!(value["results"][0]["name"], "alpha.wav");
+    }
+
+    #[tokio::test]
     async fn search_controls_reject_stale_generations() {
         use tower::ServiceExt;
         let directory = tempfile::tempdir().unwrap();
@@ -2733,14 +2947,9 @@ mod tests {
             Some(jpeg),
         );
         assert_eq!(
-            cached_or_downloaded_cover(
-                &file,
-                "",
-                "",
-                directory.path(),
-                true,
-                |_, _| panic!("untagged files should not request the network"),
-            ),
+            cached_or_downloaded_cover(&file, "", "", directory.path(), true, |_, _| panic!(
+                "untagged files should not request the network"
+            ),),
             None,
         );
     }
@@ -2788,12 +2997,16 @@ mod tests {
         let local = browse_local_unrestricted(&library, sibling.to_str()).unwrap();
         assert_eq!(local["path"], sibling.to_string_lossy().as_ref());
         assert_eq!(local["directories"][0]["name"], "outside.zip");
-        assert!(browse_local(&library, sibling.to_str())
-            .unwrap_err()
-            .contains("outside the music directory"));
-        assert!(browse_local(&library, sibling.join("outside.zip").to_str())
-            .unwrap_err()
-            .contains("outside the music directory"));
+        assert!(
+            browse_local(&library, sibling.to_str())
+                .unwrap_err()
+                .contains("outside the music directory")
+        );
+        assert!(
+            browse_local(&library, sibling.join("outside.zip").to_str())
+                .unwrap_err()
+                .contains("outside the music directory")
+        );
     }
 
     fn row(title: &str) -> MetadataRow {
@@ -2827,7 +3040,11 @@ mod tests {
     #[test]
     fn metadata_cache_remembers_positives_and_negatives() {
         let mut cache = MetadataCache::default();
-        assert_eq!(cache.get("k"), None, "a miss is distinct from a cached null");
+        assert_eq!(
+            cache.get("k"),
+            None,
+            "a miss is distinct from a cached null"
+        );
         cache.insert("k".to_owned(), Some(row("a")));
         assert_eq!(
             cache.get("k").flatten().unwrap().title.as_deref(),
@@ -2845,7 +3062,11 @@ mod tests {
         }
         assert_eq!(cache.rows.len(), METADATA_CACHE_CAPACITY);
         assert_eq!(cache.get("key-0"), None, "oldest evicted");
-        assert!(cache.get(&format!("key-{METADATA_CACHE_CAPACITY}")).is_some());
+        assert!(
+            cache
+                .get(&format!("key-{METADATA_CACHE_CAPACITY}"))
+                .is_some()
+        );
     }
 
     #[test]
@@ -2959,16 +3180,32 @@ mod tests {
             kog_audio::settings::AppSettings::load().decoder_settings(),
         );
         let valid = serde_json::json!({"kind":"local", "path":wav});
-        let entries = vec![valid.clone(), serde_json::json!({"kind":"bogus", "path":"invalid"}),
-            serde_json::json!({"kind":"local", "path":""}), valid];
-        assert!(stored_entries_from_json(&entries).is_err(), "saving must reject malformed entries");
+        let entries = vec![
+            valid.clone(),
+            serde_json::json!({"kind":"bogus", "path":"invalid"}),
+            serde_json::json!({"kind":"local", "path":""}),
+            valid,
+        ];
+        assert!(
+            stored_entries_from_json(&entries).is_err(),
+            "saving must reject malformed entries"
+        );
         let rows = queue_entries_from_json(&entries);
-        let native: Vec<_> = rows.iter().flat_map(|row| decoders.expand_queue_entry(row)).collect();
-        let service: Vec<_> = rows.iter().flat_map(|row| expand_stored_entry(&decoders, None, row, "song")).collect();
+        let native: Vec<_> = rows
+            .iter()
+            .flat_map(|row| decoders.expand_queue_entry(row))
+            .collect();
+        let service: Vec<_> = rows
+            .iter()
+            .flat_map(|row| expand_stored_entry(&decoders, None, row, "song"))
+            .collect();
         assert_eq!(native.len(), 2);
         assert_eq!(service.len(), 2);
         assert_eq!(service[0].1.path, wav.to_string_lossy());
-        assert_eq!(service[0].1, service[1].1, "duplicates are independent queue rows");
+        assert_eq!(
+            service[0].1, service[1].1,
+            "duplicates are independent queue rows"
+        );
     }
 
     #[test]

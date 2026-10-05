@@ -27,8 +27,9 @@ pub struct AppState {
     pub streams: Arc<crate::service::StreamService>,
     /// Library browsing and the playlist/star store.
     pub library: Arc<crate::api::Library>,
-    /// The single resumable library-search walk.
+    /// Legacy search plus independent named frontend searches.
     pub search: Arc<crate::api::SearchState>,
+    pub search_sessions: Arc<crate::api::SearchSessions>,
     /// Server-owned random radio, sharing the desktop's round file.
     pub radio: Arc<crate::radio::Radio>,
     pub radio_sessions: Arc<crate::radio::Sessions>,
@@ -66,18 +67,19 @@ impl AppState {
             streams: Arc::new(streams),
             library: Arc::new(library),
             search: Arc::new(crate::api::SearchState::default()),
+            search_sessions: Arc::new(crate::api::SearchSessions::default()),
             radio: Arc::new(radio),
             radio_sessions: Arc::new(crate::radio::Sessions::default()),
         }
     }
 
     /// Build the streaming service from the running configuration.
-    pub fn stream_service(config: &ServerConfig, decoder_settings: DecoderSettings) -> crate::service::StreamService {
+    pub fn stream_service(
+        config: &ServerConfig,
+        decoder_settings: DecoderSettings,
+    ) -> crate::service::StreamService {
         crate::service::StreamService::new(
-            crate::stream::StreamCache::new(
-                crate::service::cache_root(),
-                config.cache_bytes,
-            ),
+            crate::stream::StreamCache::new(crate::service::cache_root(), config.cache_bytes),
             decoder_settings,
             crate::service::scratch_root(),
         )
@@ -130,9 +132,9 @@ async fn log_request(request: Request, next: Next) -> Response {
         .map(str::to_owned)
         .or_else(|| {
             request.uri().query().and_then(|query| {
-                query.split('&').find_map(|pair| {
-                    pair.strip_prefix("device=").map(str::to_owned)
-                })
+                query
+                    .split('&')
+                    .find_map(|pair| pair.strip_prefix("device=").map(str::to_owned))
             })
         })
         .unwrap_or_else(|| format!("agent:{agent}"));
@@ -171,16 +173,13 @@ async fn list_devices() -> impl IntoResponse {
 }
 
 /// `POST /api/devices/block` — cut a device off, or let it back in.
-async fn set_device_blocked(
-    axum::Json(body): axum::Json<serde_json::Value>,
-) -> Response {
+async fn set_device_blocked(axum::Json(body): axum::Json<serde_json::Value>) -> Response {
     let Some(id) = body["id"].as_str() else {
         return bad_request("a device id is required");
     };
     let blocked = body["blocked"].as_bool().unwrap_or(true);
     if crate::devices::registry().set_blocked(id, blocked) {
-        axum::Json(serde_json::json!({ "ok": true, "id": id, "blocked": blocked }))
-            .into_response()
+        axum::Json(serde_json::json!({ "ok": true, "id": id, "blocked": blocked })).into_response()
     } else {
         bad_request(&format!("no device {id} has been seen"))
     }
@@ -356,13 +355,14 @@ async fn stream_audio(
         Ok(crate::service::StreamSource::Encoding { receiver }) => {
             // Progressive: no Range support until the cache entry exists, but
             // playback starts immediately instead of waiting for the encode.
-            let body = axum::body::Body::from_stream(
-                tokio_stream::wrappers::ReceiverStream::new(receiver),
-            );
+            let body = axum::body::Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(
+                receiver,
+            ));
             let mut response = Response::new(body);
-            response
-                .headers_mut()
-                .insert(header::CONTENT_TYPE, HeaderValue::from_static(codec.content_type()));
+            response.headers_mut().insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static(codec.content_type()),
+            );
             response
                 .headers_mut()
                 .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -402,9 +402,7 @@ async fn serve_file(
     let (start, end) = match range {
         Some(range) => range,
         None => {
-            let body = axum::body::Body::from_stream(
-                tokio_util::io::ReaderStream::new(file),
-            );
+            let body = axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(file));
             let mut response = Response::new(body);
             response
                 .headers_mut()
@@ -415,10 +413,9 @@ async fn serve_file(
             response
                 .headers_mut()
                 .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-            response.headers_mut().insert(
-                header::CONTENT_LENGTH,
-                HeaderValue::from(total),
-            );
+            response
+                .headers_mut()
+                .insert(header::CONTENT_LENGTH, HeaderValue::from(total));
             return response;
         }
     };
@@ -427,9 +424,7 @@ async fn serve_file(
     if file.seek(std::io::SeekFrom::Start(start)).await.is_err() {
         return bad_request("the stream file could not be read");
     }
-    let body = axum::body::Body::from_stream(
-        tokio_util::io::ReaderStream::new(file.take(length)),
-    );
+    let body = axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(file.take(length)));
     let mut response = Response::new(body);
     response
         .headers_mut()
@@ -444,9 +439,7 @@ async fn serve_file(
         .headers_mut()
         .insert(header::CONTENT_LENGTH, HeaderValue::from(length));
     if let Ok(value) = HeaderValue::from_str(&format!("bytes {start}-{end}/{total}")) {
-        response
-            .headers_mut()
-            .insert(header::CONTENT_RANGE, value);
+        response.headers_mut().insert(header::CONTENT_RANGE, value);
     }
     *response.status_mut() = StatusCode::PARTIAL_CONTENT;
     response
@@ -472,7 +465,10 @@ pub fn parse_range(value: &str, total: u64) -> Option<(u64, u64)> {
             (total.saturating_sub(suffix), total - 1)
         }
         (start, "") => (start.parse().ok()?, total.checked_sub(1)?),
-        (start, end) => (start.parse().ok()?, end.parse::<u64>().ok()?.min(total.checked_sub(1)?)),
+        (start, end) => (
+            start.parse().ok()?,
+            end.parse::<u64>().ok()?.min(total.checked_sub(1)?),
+        ),
     };
     (start <= end && start < total).then_some((start, end))
 }
@@ -480,8 +476,7 @@ pub fn parse_range(value: &str, total: u64) -> Option<(u64, u64)> {
 /// The frontend built by `crates/kog-web/build.sh`, embedded so the server is
 /// a single artifact and the UI can never version-skew from the API it talks
 /// to. A placeholder page ships when the frontend has not been built.
-static WEB_ASSETS: include_dir::Dir<'_> =
-    include_dir::include_dir!("$CARGO_MANIFEST_DIR/web");
+static WEB_ASSETS: include_dir::Dir<'_> = include_dir::include_dir!("$CARGO_MANIFEST_DIR/web");
 
 async fn web_asset(uri: axum::http::Uri, headers: HeaderMap) -> Response {
     let path = uri.path().trim_start_matches('/');
@@ -529,7 +524,9 @@ async fn web_asset(uri: axum::http::Uri, headers: HeaderMap) -> Response {
             let etag = build_etag();
             let version = format!(
                 "?v={}",
-                etag.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>()
+                etag.chars()
+                    .filter(|c| c.is_ascii_alphanumeric())
+                    .collect::<String>()
             );
             let versioned = |body: String| {
                 body.replace("kog_web_bg.wasm", &format!("kog_web_bg.wasm{version}"))
@@ -564,14 +561,12 @@ async fn web_asset(uri: axum::http::Uri, headers: HeaderMap) -> Response {
                 };
                 let mut response = Response::new(body);
                 if gz {
-                    response.headers_mut().insert(
-                        header::CONTENT_ENCODING,
-                        HeaderValue::from_static("gzip"),
-                    );
-                    response.headers_mut().insert(
-                        header::VARY,
-                        HeaderValue::from_static("Accept-Encoding"),
-                    );
+                    response
+                        .headers_mut()
+                        .insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+                    response
+                        .headers_mut()
+                        .insert(header::VARY, HeaderValue::from_static("Accept-Encoding"));
                 }
                 response
                     .headers_mut()
@@ -646,11 +641,7 @@ pub(crate) fn bad_request(message: &str) -> Response {
 }
 
 /// Reject unauthenticated requests before they reach a handler.
-async fn require_auth(
-    State(state): State<AppState>,
-    request: Request,
-    next: Next,
-) -> Response {
+async fn require_auth(State(state): State<AppState>, request: Request, next: Next) -> Response {
     let (mode, token, credentials) = {
         let config = state.config.read().await;
         (
@@ -670,14 +661,11 @@ async fn require_auth(
     // The browser's audio element cannot set headers; it carries the token as
     // a query parameter on stream URLs instead.
     let query_token = if header.is_none() && mode == crate::AuthMode::Token {
-        request
-            .uri()
-            .query()
-            .and_then(|query| {
-                url::form_urlencoded::parse(query.as_bytes())
-                    .find(|(key, _)| key == "token")
-                    .map(|(_, value)| format!("Bearer {value}"))
-            })
+        request.uri().query().and_then(|query| {
+            url::form_urlencoded::parse(query.as_bytes())
+                .find(|(key, _)| key == "token")
+                .map(|(_, value)| format!("Bearer {value}"))
+        })
     } else {
         None
     };
@@ -730,7 +718,11 @@ pub async fn serve_with_shutdown(
         .await
         .map_err(|error| format!("binding {address}: {error}"))?;
     let app = router(state);
-    let scheme = if config.tls.mode == crate::TlsMode::Off { "http" } else { "https" };
+    let scheme = if config.tls.mode == crate::TlsMode::Off {
+        "http"
+    } else {
+        "https"
+    };
     eprintln!("kog-server: listening on {scheme}://{address}");
     if config.tls.mode == crate::TlsMode::Off {
         return axum::serve(
@@ -764,8 +756,8 @@ async fn serve_tls(
             result = listener.accept() => result,
             () = &mut shutdown => return Ok(()),
         };
-        let (stream, peer) = accepted
-            .map_err(|error| format!("accepting on {address}: {error}"))?;
+        let (stream, peer) =
+            accepted.map_err(|error| format!("accepting on {address}: {error}"))?;
         let acceptor = acceptor.clone();
         let app = app.clone();
         tokio::spawn(async move {
@@ -921,7 +913,10 @@ mod tests {
         let response = router(state_with(AuthMode::None, "", library))
             .oneshot(
                 HttpRequest::builder()
-                    .uri(format!("/api/media/download?kind=local&path={}", source.display()))
+                    .uri(format!(
+                        "/api/media/download?kind=local&path={}",
+                        source.display()
+                    ))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1027,7 +1022,8 @@ mod tests {
                 start_ms: 0,
             };
             let sf2 = stream_key_for_request(&query, StreamCodec::Aac, 192, MidiEngine::RustySynth);
-            let opl3 = stream_key_for_request(&query, StreamCodec::Aac, 192, MidiEngine::Opl3Windows);
+            let opl3 =
+                stream_key_for_request(&query, StreamCodec::Aac, 192, MidiEngine::Opl3Windows);
             assert_ne!(sf2.stem(), opl3.stem());
         }
         let non_midi = StreamQuery {
@@ -1077,7 +1073,11 @@ mod tests {
     #[tokio::test]
     async fn a_cached_track_streams_with_range_support() {
         let state = state(AuthMode::None, "");
-        let key = StreamKey::new("/music/cached.flac", StreamCodec::Aac, crate::stream::DEFAULT_BITRATE_KBPS);
+        let key = StreamKey::new(
+            "/music/cached.flac",
+            StreamCodec::Aac,
+            crate::stream::DEFAULT_BITRATE_KBPS,
+        );
         let entry = state.streams.cache().entry_path(&key);
         std::fs::create_dir_all(entry.parent().unwrap()).unwrap();
         std::fs::write(&entry, b"0123456789").unwrap();
@@ -1338,10 +1338,12 @@ mod tests {
         names.sort_unstable();
         assert_eq!(names, ["one.wav", "two.wav"]);
         // Files carry their absolute path, which is what clients then stream.
-        assert!(body["files"][0]["path"]
-            .as_str()
-            .unwrap()
-            .starts_with(&root.to_string_lossy().into_owned()));
+        assert!(
+            body["files"][0]["path"]
+                .as_str()
+                .unwrap()
+                .starts_with(&root.to_string_lossy().into_owned())
+        );
 
         // Leaving the music directory is refused: the web tree roots there
         // and cannot climb past it.
@@ -1427,12 +1429,20 @@ mod tests {
         let wav = kog_audio::archive::tests::wav_bytes(100);
         kog_audio::archive::tests::write_stored_zip(
             &archive,
-            &[("Disc", b""), ("Disc/song.wav", &wav), ("Disc/cover.jpg", b"image")],
+            &[
+                ("Disc", b""),
+                ("Disc/song.wav", &wav),
+                ("Disc/cover.jpg", b"image"),
+            ],
         );
         let native = kog_audio::decoder::DecoderRegistry::default()
             .expand_detailed(archive.clone())
             .unwrap();
-        assert_eq!(native.sources.len(), 1, "Qt's decoder sees one playable archive member");
+        assert_eq!(
+            native.sources.len(),
+            1,
+            "Qt's decoder sees one playable archive member"
+        );
         let state = state_with(AuthMode::None, "", library);
         let (status, body) = get_json(
             state.clone(),
@@ -1442,13 +1452,20 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         let tracks = body["tracks"].as_array().unwrap();
-        assert_eq!(tracks.len(), 2, "only playable tracks are collected: {tracks:?}");
+        assert_eq!(
+            tracks.len(),
+            2,
+            "only playable tracks are collected: {tracks:?}"
+        );
         assert!(tracks.iter().any(|entry| entry["name"] == "one.wav"));
         assert!(tracks.iter().any(|entry| entry["entry"] == "Disc/song.wav"));
 
         let (status, _) = get_json(
             state,
-            &format!("/api/library/collect?path={}", root.parent().unwrap().display()),
+            &format!(
+                "/api/library/collect?path={}",
+                root.parent().unwrap().display()
+            ),
             None,
         )
         .await;
@@ -1522,7 +1539,11 @@ mod tests {
         );
         std::fs::write(folder.join("Unrelated-broken.zip"), b"not an archive").unwrap();
         let (status, body) = get_json(state, &route, None).await;
-        assert_eq!(status, StatusCode::OK, "an unreadable unrelated archive must not block matches: {body}");
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "an unreadable unrelated archive must not block matches: {body}"
+        );
         assert_eq!(body["tracks"].as_array().unwrap().len(), 7);
     }
 
@@ -1548,7 +1569,11 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         let files = body["files"].as_array().unwrap();
-        assert_eq!(files.len(), 1, "playlist expanded and deduplicated: {files:?}");
+        assert_eq!(
+            files.len(),
+            1,
+            "playlist expanded and deduplicated: {files:?}"
+        );
         assert_eq!(files[0]["name"].as_str(), Some("one.wav"));
         assert_eq!(files[0]["kind"].as_str(), Some("local"));
         assert_eq!(files[0]["entry"].as_str(), Some(""));
@@ -1653,27 +1678,39 @@ mod tests {
             state.clone(),
             &format!("/api/library/search?q=one&root={}", selected.display()),
             None,
-        ).await;
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
         let generation = body["generation"].as_u64().unwrap();
         let mut results = body["results"].as_array().unwrap().clone();
         while body["done"].as_bool() != Some(true) {
             let (_, page) = get_json(
                 state.clone(),
-                &format!("/api/library/search/more?g={generation}&offset={}", results.len()),
+                &format!(
+                    "/api/library/search/more?g={generation}&offset={}",
+                    results.len()
+                ),
                 None,
-            ).await;
+            )
+            .await;
             results.extend(page["results"].as_array().unwrap().clone());
             body = page;
         }
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0]["path"], selected.join("one.wav").to_string_lossy().as_ref());
+        assert_eq!(
+            results[0]["path"],
+            selected.join("one.wav").to_string_lossy().as_ref()
+        );
         let outside = tempfile::tempdir().unwrap();
         let (status, _) = get_json(
             state,
-            &format!("/api/library/search?q=one&root={}", outside.path().display()),
+            &format!(
+                "/api/library/search?q=one&root={}",
+                outside.path().display()
+            ),
             None,
-        ).await;
+        )
+        .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
@@ -1681,8 +1718,7 @@ mod tests {
     async fn searching_finds_files_by_name() {
         let (library, _root) = library_with(&["Album/one.wav", "Other/two.wav"]);
         let state = state_with(AuthMode::None, "", library);
-        let (status, mut body) =
-            get_json(state.clone(), "/api/library/search?q=one", None).await;
+        let (status, mut body) = get_json(state.clone(), "/api/library/search?q=one", None).await;
         assert_eq!(status, StatusCode::OK);
         // The walk is sliced; pull batches until it reports done.
         let generation = body["generation"].as_u64().unwrap();
@@ -1740,8 +1776,7 @@ mod tests {
         );
         let _ = &library;
         let state = state_with(AuthMode::None, "", library);
-        let (status, mut body) =
-            get_json(state.clone(), "/api/library/search?q=sonic", None).await;
+        let (status, mut body) = get_json(state.clone(), "/api/library/search?q=sonic", None).await;
         assert_eq!(status, StatusCode::OK);
         let generation = body["generation"].as_u64().unwrap();
         let mut results: Vec<(String, String, bool)> = body["results"]
@@ -1764,27 +1799,29 @@ mod tests {
             )
             .await;
             assert_eq!(status, StatusCode::OK);
-            results.extend(
-                more["results"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|r| {
-                        (
-                            r["name"].as_str().unwrap().to_string(),
-                            r["entry"].as_str().unwrap_or_default().to_string(),
-                            r["is_dir"].as_bool().unwrap_or(false),
-                        )
-                    }),
-            );
+            results.extend(more["results"].as_array().unwrap().iter().map(|r| {
+                (
+                    r["name"].as_str().unwrap().to_string(),
+                    r["entry"].as_str().unwrap_or_default().to_string(),
+                    r["is_dir"].as_bool().unwrap_or(false),
+                )
+            }));
             body = more;
         }
         // The archive container matches its own name, and the member inside
         // it matches too; the unsupported "other.txt" stays out.
-        assert!(results.iter().any(|(name, _, dir)| name == "Sonic pack.zip" && *dir));
-        assert!(results.iter().any(|(name, entry, dir)| name == "sonic theme.wav"
-            && entry == "Disc/sonic theme.wav"
-            && !dir));
+        assert!(
+            results
+                .iter()
+                .any(|(name, _, dir)| name == "Sonic pack.zip" && *dir)
+        );
+        assert!(
+            results
+                .iter()
+                .any(|(name, entry, dir)| name == "sonic theme.wav"
+                    && entry == "Disc/sonic theme.wav"
+                    && !dir)
+        );
         assert!(!results.iter().any(|(name, _, _)| name == "other.txt"));
     }
 
@@ -1793,8 +1830,7 @@ mod tests {
         // "Audiobooks" matches the folder's own name, so everything inside it
         // counts as a match even though the files' names share no word with
         // the query. Files outside the matched folder stay out.
-        let (library, _root) =
-            library_with(&["Audiobooks/Novel/chapter1.wav", "Other/thing.wav"]);
+        let (library, _root) = library_with(&["Audiobooks/Novel/chapter1.wav", "Other/thing.wav"]);
         let state = state_with(AuthMode::None, "", library);
         let (status, mut body) =
             get_json(state.clone(), "/api/library/search?q=audiobooks", None).await;
@@ -1874,11 +1910,18 @@ mod tests {
         assert_eq!(rows.len(), 2, "one row per entry, in order");
         assert_eq!(rows[0]["sampleRate"], 8000);
         assert_eq!(rows[0]["channels"], 1);
-        assert!(rows[0]["duration"].as_f64().is_some(), "a WAV has a known duration");
+        assert!(
+            rows[0]["duration"].as_f64().is_some(),
+            "a WAV has a known duration"
+        );
         assert_eq!(rows[0]["title"], serde_json::Value::Null);
         assert_eq!(rows[0]["albumArtist"], serde_json::Value::Null);
         assert_eq!(rows[0]["composer"], serde_json::Value::Null);
-        assert_eq!(rows[1], serde_json::Value::Null, "unprobeable entries are null");
+        assert_eq!(
+            rows[1],
+            serde_json::Value::Null,
+            "unprobeable entries are null"
+        );
 
         // The single-entry GET shares the shape, and distinguishes 400 from 404.
         let (status, body) = get_json(
@@ -1890,9 +1933,15 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["sampleRate"], 8000);
 
-        let (status, _) = get_json(state.clone(), "/api/metadata?kind=local&path=/nope.wav", None).await;
+        let (status, _) = get_json(
+            state.clone(),
+            "/api/metadata?kind=local&path=/nope.wav",
+            None,
+        )
+        .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
-        let (status, _) = get_json(state.clone(), "/api/metadata?kind=ftp&path=/nope.wav", None).await;
+        let (status, _) =
+            get_json(state.clone(), "/api/metadata?kind=ftp&path=/nope.wav", None).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
 
         // Oversized batches are refused rather than pinning a worker.
@@ -1992,11 +2041,13 @@ mod tests {
         assert_eq!(entries[1]["fragment"], "2");
 
         let (_, body) = get_json(state.clone(), "/api/playlists", None).await;
-        assert!(body["playlists"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|playlist| playlist["id"] == id && playlist["entryCount"] == 2));
+        assert!(
+            body["playlists"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|playlist| playlist["id"] == id && playlist["entryCount"] == 2)
+        );
 
         // Favorites is managed through stars, not by appending.
         let (status, _) = request_json(
@@ -2017,11 +2068,13 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         let (_, body) = get_json(state, "/api/playlists", None).await;
-        assert!(!body["playlists"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|playlist| playlist["id"] == id));
+        assert!(
+            !body["playlists"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|playlist| playlist["id"] == id)
+        );
     }
 
     #[tokio::test]
@@ -2073,7 +2126,8 @@ mod tests {
         assert_eq!(status, StatusCode::UNAUTHORIZED);
         assert_eq!(body["ok"], false);
 
-        let (status, _) = get_json(state(AuthMode::Token, "t"), "/api/codecs", Some("Bearer t")).await;
+        let (status, _) =
+            get_json(state(AuthMode::Token, "t"), "/api/codecs", Some("Bearer t")).await;
         assert_eq!(status, StatusCode::OK);
 
         let (status, _) = get_json(
@@ -2120,9 +2174,17 @@ mod tests {
 
     #[tokio::test]
     async fn the_running_config_never_leaks_the_token() {
-        let (_, body) = get_json(state(AuthMode::Token, "super-secret"), "/api/config", Some("Bearer super-secret")).await;
+        let (_, body) = get_json(
+            state(AuthMode::Token, "super-secret"),
+            "/api/config",
+            Some("Bearer super-secret"),
+        )
+        .await;
         let text = body.to_string();
-        assert!(!text.contains("super-secret"), "config response leaked the token: {text}");
+        assert!(
+            !text.contains("super-secret"),
+            "config response leaked the token: {text}"
+        );
         assert_eq!(body["auth"], "token");
     }
 }

@@ -136,12 +136,19 @@ impl RemoteSettings {
 
     fn endpoint(&self, endpoint: &str) -> Result<Url, String> {
         self.validate()?;
-        Url::parse(&format!(
+        let mut url = Url::parse(&format!(
             "{}{}",
             self.server_url.trim_end_matches('/'),
             endpoint
         ))
-        .map_err(|error| format!("Invalid server address: {error}"))
+        .map_err(|error| format!("Invalid server address: {error}"))?;
+        if endpoint.starts_with("/api/library/search") {
+            url.query_pairs_mut().append_pair(
+                "session",
+                &std::env::var("KOG_SESSION_ID").unwrap_or_else(|_| "tui:default".into()),
+            );
+        }
+        Ok(url)
     }
 
     pub fn browse(&self, path: Option<&str>) -> Result<RemoteListing, String> {
@@ -353,9 +360,13 @@ impl RemoteSettings {
 
     pub fn collect_folder(&self, start: &Path, query: &str) -> Result<Vec<RemoteFile>, String> {
         #[derive(Deserialize)]
-        struct Collected { tracks: Vec<RemoteFile> }
+        struct Collected {
+            tracks: Vec<RemoteFile>,
+        }
         let mut url = self.endpoint("/api/library/collect")?;
-        url.query_pairs_mut().append_pair("path", &start.to_string_lossy()).append_pair("q", query);
+        url.query_pairs_mut()
+            .append_pair("path", &start.to_string_lossy())
+            .append_pair("q", query);
         let result: Collected = self.get_json(url)?;
         Ok(result.tracks)
     }
@@ -459,34 +470,38 @@ mod tests {
         first["results"] = json!([{"name":"Phantasy Star.mp3","path":"/music/Phantasy Star.mp3"}]);
         let (settings, server) = search_server(vec![
             ("GET /api/library HTTP/", None, json!({"path":"/music"})),
-            ("GET /api/library/search?q=Phantasy+Star HTTP/", None, first),
             (
-                "GET /api/library/search/more?g=7&offset=1 HTTP/",
+                "GET /api/library/search?session=tui%3Adefault&q=Phantasy+Star HTTP/",
+                None,
+                first,
+            ),
+            (
+                "GET /api/library/search/more?session=tui%3Adefault&g=7&offset=1 HTTP/",
                 None,
                 page.clone(),
             ),
             (
-                "POST /api/library/search/pause HTTP/",
+                "POST /api/library/search/pause?session=tui%3Adefault HTTP/",
                 Some(json!({"generation":7,"paused":true})),
                 json!({"ok":true}),
             ),
             (
-                "GET /api/library/search/more?g=7&offset=1 HTTP/",
+                "GET /api/library/search/more?session=tui%3Adefault&g=7&offset=1 HTTP/",
                 None,
                 page.clone(),
             ),
             (
-                "POST /api/library/search/pause HTTP/",
+                "POST /api/library/search/pause?session=tui%3Adefault HTTP/",
                 Some(json!({"generation":7,"paused":false})),
                 json!({"ok":true}),
             ),
             (
-                "GET /api/library/search/more?g=7&offset=1 HTTP/",
+                "GET /api/library/search/more?session=tui%3Adefault&g=7&offset=1 HTTP/",
                 None,
                 page,
             ),
             (
-                "POST /api/library/search/cancel HTTP/",
+                "POST /api/library/search/cancel?session=tui%3Adefault HTTP/",
                 Some(json!({"generation":7,"paused":false})),
                 json!({"ok":true}),
             ),
@@ -525,12 +540,12 @@ mod tests {
         let (settings, server) = search_server(vec![
             ("GET /api/library HTTP/", None, json!({"path":"/music"})),
             (
-                "GET /api/library/search?q=Star HTTP/",
+                "GET /api/library/search?session=tui%3Adefault&q=Star HTTP/",
                 None,
                 page("Star 1.mp3"),
             ),
             (
-                "GET /api/library/search/more?g=7&offset=1 HTTP/",
+                "GET /api/library/search/more?session=tui%3Adefault&g=7&offset=1 HTTP/",
                 None,
                 page("Star 2.mp3"),
             ),

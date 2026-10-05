@@ -29,19 +29,22 @@ backends may use safe Rust, C, or C++ libraries.
 
 Qt, TUI, Web, iOS, and Android keep separate playback sessions so each device
 can listen on its own. Their business rules belong to the Rust backend.
-`kog-playback-policy` owns navigation (including failed opens and end of stream),
-queue overrides, stop-after markers, all shuffle/repeat modes, radio buffering
-and cancellation, playlist sorting, and playlist filtering. Qt and TUI call it
+`kog-playback-policy::session::Session` owns the queue, current row, transport,
+selection, drafts and persistence schema, as well as navigation (including failed
+opens and end of stream), queue overrides, stop-after markers, shuffle/repeat,
+radio buffering, sorting and filtering. It owns asynchronous request identities,
+FIFO expansion completion and cancellation. Each frontend sends commands and
+renders snapshots; output and storage effects return tokened completions. Qt and TUI call it
 through `kog-audio`; Web compiles it to WebAssembly. Swift and Kotlin send
 commands through the crate's JSON bridge, linked through the mobile audio
 libraries. The bridge serializes the same Rust types and does not reimplement
-their algorithms. Android's playback service owns the policy, so background
+their algorithms. Android's playback service owns the session, so background
 playback and headset commands use it even when the activity is closed.
 
 Radio selection, playable-track validation, blacklists, round persistence, and
-subsong selection live in `kog-server::radio`. Qt and TUI use `RadioClient` to
+subsong selection live in `kog-server::radio`. Qt and TUI use `SessionRadioPort` to
 schedule that service; HTTP and the on-device API expose the same service to
-Web and mobile. All use `RadioBuffer` for the ten-song ready buffer, request
+Web and mobile. Their common session uses `RadioBuffer` for the ten-song ready buffer, request
 generations, and deferred starts. Enabling or reshuffling radio stages music;
 it does not issue a playback command.
 Saved and streamed track locators are validated by `PlaylistEntry::from_locator`

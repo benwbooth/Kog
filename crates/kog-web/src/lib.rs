@@ -1,8 +1,8 @@
 //! Kog's web player.
 //!
-//! A client, not a second server: with per-client streams the browser is the
-//! player, so this app owns its queue and plays the API's stream URLs through
-//! an `<audio>` element.
+//! The shared Rust Session owns this browser player's queue and transport.
+//! Leptos renders its snapshots; browser ports play API stream URLs through
+//! an `<audio>` element and return tokened lifecycle events.
 //!
 //! The layout mirrors the desktop window: a 48px toolbar, a sidebar holding the
 //! file tree and the playlists, the playlist pane with a column header, and a
@@ -26,18 +26,23 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use gloo_net::http::Request;
-use kog_playback_policy::{NavigationEvent, OrderTrack, PlaybackDecision, PlaybackOrder, RepeatMode, ShuffleMode};
-use kog_playback_policy::radio::RadioBuffer;
-use kog_playback_policy::sort::{SortRow, sorted_rows};
+use kog_playback_policy::session::{
+    Command as SessionCommand, Effect as SessionEffect, IoResult, OutputEvent, Session, Token,
+    Transport,
+};
+use kog_playback_policy::sort::SortRow;
+use kog_playback_policy::workspace::QueueAction;
+use kog_playback_policy::{NavigationEvent, RepeatMode, ShuffleMode};
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
+use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::wasm_bindgen;
-use wasm_bindgen::JsCast;
 
+#[cfg(test)]
 mod selection;
+mod session;
 mod workspace;
-use selection::click_selection;
 
 /// The desktop transport's SVG icons (`qml/icons/`), inlined verbatim. CSS
 /// tints them with the button's text color where the desktop picks the
@@ -139,26 +144,24 @@ fn format_key(suffix: &str) -> Option<&'static str> {
         "sid" => "c64",
         "hvl" | "ahx" => "amiga",
         "vgm" | "vgz" | "gym" | "s98" | "dro" | "sfm" => "chip",
-        "mptm" | "mod" | "s3m" | "xm" | "it" | "667" | "669" | "amf" | "ams"
-        | "c67" | "cba" | "dbm" | "digi" | "dmf" | "dsm" | "dsym" | "dtm"
-        | "etx" | "far" | "fc" | "fc13" | "fc14" | "fmt" | "fst" | "ftm"
-        | "imf" | "ims" | "ice" | "j2b" | "m15" | "mdl" | "med" | "mms"
-        | "mt2" | "mtm" | "nst" | "okt" | "plm" | "psm" | "pt36" | "ptm"
-        | "puma" | "rtm" | "sfx" | "sfx2" | "smod" | "st26" | "stk" | "stm"
-        | "stx" | "stp" | "symmod" | "tcb" | "gmc" | "gtk" | "gt2" | "ult"
-        | "unic" | "wow" | "gdm" | "mo3" | "oxm" | "umx" | "xpk" | "ppm"
-        | "mmcmp" | "org" | "jxs" => "tracker",
-        "kar" | "mid" | "midi" | "rmi" | "mids" | "mds" | "lds" | "xmf"
-        | "mxmf" | "hmi" | "hmp" | "hmq" | "mus" | "xmi" => "midi",
-        "aac" | "adts" | "aif" | "aifc" | "aiff" | "alac" | "caf" | "flac"
-        | "m4a" | "m4b" | "mka" | "mkv" | "mp1" | "mp2" | "mp3" | "mp4"
-        | "oga" | "ogg" | "ogv" | "opus" | "wav" | "wave" | "webm" | "wma"
-        | "asf" | "tak" | "m4r" | "m2a" | "mpa" | "ape" | "ac3" | "dts"
-        | "dtshd" | "tta" | "vqf" | "vqe" | "vql" | "ra" | "rm" | "rmj"
-        | "weba" | "dsdiff" | "dff" | "wsd" | "wv" | "wvp" | "mpc" | "shn"
-        | "iff" | "apl" => "audio",
-        "zip" | "rar" | "7z" | "rsn" | "vgm7z" | "gz" | "mdz" | "mdr"
-        | "s3z" | "xmz" | "itz" | "mptmz" => "archive",
+        "mptm" | "mod" | "s3m" | "xm" | "it" | "667" | "669" | "amf" | "ams" | "c67" | "cba"
+        | "dbm" | "digi" | "dmf" | "dsm" | "dsym" | "dtm" | "etx" | "far" | "fc" | "fc13"
+        | "fc14" | "fmt" | "fst" | "ftm" | "imf" | "ims" | "ice" | "j2b" | "m15" | "mdl"
+        | "med" | "mms" | "mt2" | "mtm" | "nst" | "okt" | "plm" | "psm" | "pt36" | "ptm"
+        | "puma" | "rtm" | "sfx" | "sfx2" | "smod" | "st26" | "stk" | "stm" | "stx" | "stp"
+        | "symmod" | "tcb" | "gmc" | "gtk" | "gt2" | "ult" | "unic" | "wow" | "gdm" | "mo3"
+        | "oxm" | "umx" | "xpk" | "ppm" | "mmcmp" | "org" | "jxs" => "tracker",
+        "kar" | "mid" | "midi" | "rmi" | "mids" | "mds" | "lds" | "xmf" | "mxmf" | "hmi"
+        | "hmp" | "hmq" | "mus" | "xmi" => "midi",
+        "aac" | "adts" | "aif" | "aifc" | "aiff" | "alac" | "caf" | "flac" | "m4a" | "m4b"
+        | "mka" | "mkv" | "mp1" | "mp2" | "mp3" | "mp4" | "oga" | "ogg" | "ogv" | "opus"
+        | "wav" | "wave" | "webm" | "wma" | "asf" | "tak" | "m4r" | "m2a" | "mpa" | "ape"
+        | "ac3" | "dts" | "dtshd" | "tta" | "vqf" | "vqe" | "vql" | "ra" | "rm" | "rmj"
+        | "weba" | "dsdiff" | "dff" | "wsd" | "wv" | "wvp" | "mpc" | "shn" | "iff" | "apl" => {
+            "audio"
+        }
+        "zip" | "rar" | "7z" | "rsn" | "vgm7z" | "gz" | "mdz" | "mdr" | "s3z" | "xmz" | "itz"
+        | "mptmz" => "archive",
         "m3u" | "m3u8" | "pls" => "playlist",
         "cue" => "cue",
         _ => return None,
@@ -664,7 +667,15 @@ impl ColumnId {
     fn default_visible(self) -> bool {
         matches!(
             self,
-            Self::Index | Self::Star | Self::Status | Self::Title | Self::Artist | Self::Album | Self::Length | Self::FileSize | Self::Track
+            Self::Index
+                | Self::Star
+                | Self::Status
+                | Self::Title
+                | Self::Artist
+                | Self::Album
+                | Self::Length
+                | Self::FileSize
+                | Self::Track
         )
     }
 }
@@ -779,13 +790,11 @@ fn content_width(id: ColumnId, texts: &[String]) -> f64 {
     // fallback symbol font that canvas measuring under-reports, so the
     // button's own element measures the label-with-arrow exactly.
     let head_text = format!("{} ▲", id.label());
-    let mut widest = dom_text_width(".columns .col-sort", &head_text)
-        .unwrap_or_else(|| {
-            let head_font = styled_font(".columns .col-sort", "11px system-ui, sans-serif");
-            context.set_font(&head_font);
-            measured(&context, &head_text)
-        })
-        + 16.0
+    let mut widest = dom_text_width(".columns .col-sort", &head_text).unwrap_or_else(|| {
+        let head_font = styled_font(".columns .col-sort", "11px system-ui, sans-serif");
+        context.set_font(&head_font);
+        measured(&context, &head_text)
+    }) + 16.0
         + 3.0;
     context.set_font(&cell_font);
     for text in texts {
@@ -897,7 +906,9 @@ fn column_text(
         ColumnId::Title => meta
             .and_then(|meta| meta.title.clone())
             .unwrap_or_else(|| entry.name.clone()),
-        ColumnId::Artist => meta.and_then(|meta| meta.artist.clone()).unwrap_or_default(),
+        ColumnId::Artist => meta
+            .and_then(|meta| meta.artist.clone())
+            .unwrap_or_default(),
         ColumnId::Album => meta.and_then(|meta| meta.album.clone()).unwrap_or_default(),
         ColumnId::Genre => meta.and_then(|meta| meta.genre.clone()).unwrap_or_default(),
         ColumnId::Year => meta
@@ -1001,63 +1012,6 @@ fn file_size_label(bytes: u64) -> String {
 
 type Repeat = RepeatMode;
 
-/// Each browser owns its queue, while ordering decisions use the same policy
-/// engine as the native players. The locator list detects additions, removals,
-/// and reordering without resetting a shuffle round on every transport press.
-struct WebPlaybackOrder {
-    order: PlaybackOrder,
-    locators: Vec<String>,
-    metadata: Vec<OrderTrack>,
-}
-
-impl WebPlaybackOrder {
-    fn new() -> Self {
-        Self {
-            order: PlaybackOrder::new(ShuffleMode::Off, RepeatMode::Off, js_sys::Date::now() as u64),
-            locators: Vec::new(),
-            metadata: Vec::new(),
-        }
-    }
-
-    fn remap(&mut self, queue: &[Entry], old_to_new: &[Option<usize>]) {
-        self.order.remap_tracks(old_to_new);
-        self.locators = queue.iter().map(meta_key).collect();
-        self.metadata.clear();
-    }
-
-    fn tracks(
-        &mut self,
-        queue: &[Entry],
-        cache: &HashMap<String, Option<MetaRow>>,
-        current: usize,
-        shuffle: ShuffleMode,
-        repeat: Repeat,
-    ) -> Vec<OrderTrack> {
-        let tracks: Vec<_> = queue.iter().map(|entry| {
-            let meta = meta_for(cache, entry);
-            OrderTrack {
-                album: meta.as_ref().and_then(|meta| meta.album.clone()).unwrap_or_default(),
-                disc_number: meta.as_ref().and_then(|meta| meta.disc_number),
-                track_number: meta.as_ref().and_then(|meta| meta.track_number),
-            }
-        }).collect();
-        let locators: Vec<_> = queue.iter().map(meta_key).collect();
-        if locators != self.locators {
-            self.order.remap_tracks(&kog_playback_policy::remap_track_ids(&self.locators, &locators));
-            self.locators = locators;
-            self.order.tracks_changed(&tracks, Some(current));
-        } else if tracks != self.metadata {
-            self.order.album_metadata_changed(&tracks, Some(current));
-        }
-        self.metadata = tracks.clone();
-        if self.order.shuffle_mode() != shuffle {
-            self.order.set_shuffle_mode(shuffle, &tracks, Some(current));
-        }
-        self.order.set_repeat_mode(repeat);
-        tracks
-    }
-}
-
 #[derive(Clone, Debug)]
 enum Auth {
     None,
@@ -1083,7 +1037,11 @@ fn base64(bytes: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::new();
     for chunk in bytes.chunks(3) {
-        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
         let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
         out.push(TABLE[((n >> 18) & 63) as usize] as char);
         out.push(TABLE[((n >> 12) & 63) as usize] as char);
@@ -1118,7 +1076,8 @@ fn load(key: &str) -> Option<String> {
 /// Yield to the event loop for `ms` milliseconds (waiting on lazy tree loads).
 fn sleep_ms(ms: i32) -> wasm_bindgen_futures::JsFuture {
     let promise = js_sys::Promise::new(&mut |resolve, _| {
-        let _ = web_sys::window().expect("window")
+        let _ = web_sys::window()
+            .expect("window")
             .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms);
     });
     wasm_bindgen_futures::JsFuture::from(promise)
@@ -1159,9 +1118,17 @@ struct RestoredSession {
 
 impl Default for RestoredSession {
     fn default() -> Self {
-        Self { queue: Vec::new(), current: usize::MAX, list_name: String::new(),
-            tree_root: String::new(), expanded: Vec::new(), volume: None,
-            shuffle: ShuffleMode::Off, repeat: Repeat::Off, radio_on: false }
+        Self {
+            queue: Vec::new(),
+            current: usize::MAX,
+            list_name: String::new(),
+            tree_root: String::new(),
+            expanded: Vec::new(),
+            volume: None,
+            shuffle: ShuffleMode::Off,
+            repeat: Repeat::Off,
+            radio_on: false,
+        }
     }
 }
 
@@ -1188,8 +1155,11 @@ fn decode_session(raw: &str) -> RestoredSession {
             })
             .collect();
     }
-    session.current = value["current"].as_u64().map(|index| index as usize)
-        .filter(|index| *index < session.queue.len()).unwrap_or(usize::MAX);
+    session.current = value["current"]
+        .as_u64()
+        .map(|index| index as usize)
+        .filter(|index| *index < session.queue.len())
+        .unwrap_or(usize::MAX);
     session.list_name = value["listName"].as_str().unwrap_or_default().to_owned();
     session.tree_root = value["treeRoot"].as_str().unwrap_or_default().to_owned();
     session.expanded = value["expanded"]
@@ -1203,55 +1173,32 @@ fn decode_session(raw: &str) -> RestoredSession {
         })
         .unwrap_or_default();
     session.volume = value["volume"].as_f64().filter(|volume| volume.is_finite());
-    session.shuffle = value["shuffle"].as_str().and_then(ShuffleMode::from_setting)
-        .unwrap_or_else(|| if value["shuffle"].as_bool().unwrap_or(false) { ShuffleMode::All } else { ShuffleMode::Off });
-    session.repeat = value["repeat"].as_str().and_then(RepeatMode::from_setting).unwrap_or_default();
+    session.shuffle = value["shuffle"]
+        .as_str()
+        .and_then(ShuffleMode::from_setting)
+        .unwrap_or_else(|| {
+            if value["shuffle"].as_bool().unwrap_or(false) {
+                ShuffleMode::All
+            } else {
+                ShuffleMode::Off
+            }
+        });
+    session.repeat = value["repeat"]
+        .as_str()
+        .and_then(RepeatMode::from_setting)
+        .unwrap_or_default();
     session.radio_on = value["radioOn"].as_bool().unwrap_or(false);
     session
 }
 
-/// Encode a session the way `decode_session` reads it. Only the locator fields
-/// of an entry are stored; the display name and location are derived on load.
-fn encode_session(
-    queue: &[Entry],
-    current: usize,
-    list_name: &str,
-    tree_root: &str,
-    expanded: &HashSet<String>,
-    volume: f64,
-    shuffle: ShuffleMode,
-    repeat: Repeat,
-    radio_on: bool,
-) -> String {
-    let entries: Vec<serde_json::Value> = queue
-        .iter()
-        .map(|entry| {
-            serde_json::json!({
-                "kind": entry.kind,
-                "path": entry.path,
-                "entry": entry.entry,
-                "fragment": entry.fragment,
-            })
-        })
-        .collect();
-    // A stable order keeps the value identical between saves, so an unchanged
-    // session never rewrites localStorage.
-    let mut expanded: Vec<&String> = expanded.iter().collect();
-    expanded.sort();
-    let repeat = repeat.setting_value();
-    let shuffle = shuffle.setting_value();
-    serde_json::json!({
-        "queue": entries,
-        "current": (current < queue.len()).then_some(current),
-        "listName": list_name,
-        "treeRoot": tree_root,
-        "expanded": expanded,
-        "volume": volume,
-        "shuffle": shuffle,
-        "repeat": repeat,
-        "radioOn": radio_on,
-    })
-    .to_string()
+// Source replacement or Stop can legitimately cancel an outstanding play
+// promise. Media failures still arrive through the tokened `error` callback.
+fn play_audio(audio: &web_sys::HtmlAudioElement) {
+    if let Ok(promise) = audio.play() {
+        leptos::task::spawn_local(async move {
+            let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+        });
+    }
 }
 
 /// The session's writer. Writes are deduplicated against the last value, so
@@ -1327,7 +1274,12 @@ fn media_session_album<'a>(meta: Option<&'a MetaRow>, entry: &'a Entry) -> &'a s
         .filter(|album| !album.trim().is_empty())
         .or_else(|| {
             (entry.kind == "local")
-                .then(|| std::path::Path::new(&entry.path).parent()?.file_name()?.to_str())
+                .then(|| {
+                    std::path::Path::new(&entry.path)
+                        .parent()?
+                        .file_name()?
+                        .to_str()
+                })
                 .flatten()
         })
         .unwrap_or_default()
@@ -1370,7 +1322,10 @@ fn media_session_action(
     };
     let callback = Closure::<dyn FnMut(wasm_bindgen::JsValue)>::new(handler);
     // Some browsers expose Media Session but reject individual actions.
-    if method.call2(session, &name.into(), callback.as_ref()).is_ok() {
+    if method
+        .call2(session, &name.into(), callback.as_ref())
+        .is_ok()
+    {
         callback.forget();
     }
 }
@@ -1585,7 +1540,11 @@ impl BandState {
             let rms = (self.energy[index] / frames).sqrt() as f32 * GAINS[index];
             let decibels = 20.0 * rms.max(0.000_001).log10();
             let target = ((decibels + 60.0) / 60.0).clamp(0.0, 1.0);
-            let smoothing = if target > self.smoothed[index] { 0.72 } else { 0.16 };
+            let smoothing = if target > self.smoothed[index] {
+                0.72
+            } else {
+                0.16
+            };
             self.smoothed[index] += smoothing * (target - self.smoothed[index]);
             if self.smoothed[index] < 0.004 {
                 self.smoothed[index] = 0.0;
@@ -1687,24 +1646,35 @@ fn meta_key(entry: &Entry) -> String {
 }
 
 /// A cached metadata row for an entry, if one has been fetched.
-fn entry_sort_row(index: usize, entry: &Entry, cache: &HashMap<String, Option<MetaRow>>, starred: &HashSet<String>) -> SortRow {
+fn entry_sort_row(
+    index: usize,
+    entry: &Entry,
+    cache: &HashMap<String, Option<MetaRow>>,
+    starred: &HashSet<String>,
+) -> SortRow {
     let meta = meta_for(cache, entry).unwrap_or_default();
     SortRow {
-        original: Some(index as f64), title: meta.title.unwrap_or_else(|| entry.name.clone()),
-        artist: meta.artist.unwrap_or_default(), album: meta.album.unwrap_or_default(),
-        album_artist: meta.album_artist.unwrap_or_default(), composer: meta.composer.unwrap_or_default(), genre: meta.genre.unwrap_or_default(),
-        year: meta.year.map(f64::from), disc_number: meta.disc_number.map(f64::from), track_number: meta.track_number.map(f64::from),
-        duration: meta.duration, file_size_bytes: meta.file_size_bytes.map(|value| value as f64),
-        sample_rate: meta.sample_rate.map(f64::from), bits_per_sample: meta.bits_per_sample.map(f64::from),
-        bitrate: meta.bitrate.map(f64::from), channels: meta.channels.map(f64::from), codec: meta.codec.unwrap_or_default(),
-        path: entry_path(entry), filename: entry_filename(entry), star: starred.contains(&entry_star_locator(entry)),
+        original: Some(index as f64),
+        title: meta.title.unwrap_or_else(|| entry.name.clone()),
+        artist: meta.artist.unwrap_or_default(),
+        album: meta.album.unwrap_or_default(),
+        album_artist: meta.album_artist.unwrap_or_default(),
+        composer: meta.composer.unwrap_or_default(),
+        genre: meta.genre.unwrap_or_default(),
+        year: meta.year.map(f64::from),
+        disc_number: meta.disc_number.map(f64::from),
+        track_number: meta.track_number.map(f64::from),
+        duration: meta.duration,
+        file_size_bytes: meta.file_size_bytes.map(|value| value as f64),
+        sample_rate: meta.sample_rate.map(f64::from),
+        bits_per_sample: meta.bits_per_sample.map(f64::from),
+        bitrate: meta.bitrate.map(f64::from),
+        channels: meta.channels.map(f64::from),
+        codec: meta.codec.unwrap_or_default(),
+        path: entry_path(entry),
+        filename: entry_filename(entry),
+        star: starred.contains(&entry_star_locator(entry)),
     }
-}
-
-fn sorted_queue_indices(entries: &[Entry], cache: &HashMap<String, Option<MetaRow>>, starred: &HashSet<String>, key: SortKey, descending: bool) -> Vec<usize> {
-    let rows = entries.iter().enumerate().map(|(index, entry)| entry_sort_row(index, entry, cache, starred)).collect::<Vec<_>>();
-    let column = ColumnId::ALL.into_iter().find(|column| column.sort_key() == key).unwrap_or(ColumnId::Index);
-    sorted_rows(&rows, column.key(), descending)
 }
 
 fn meta_for(cache: &HashMap<String, Option<MetaRow>>, entry: &Entry) -> Option<MetaRow> {
@@ -2028,12 +1998,6 @@ fn browse_file_entry(file: &serde_json::Value) -> Entry {
 }
 
 /// The playable files in a library response.
-fn library_files(value: &serde_json::Value) -> Vec<Entry> {
-    library_entries(value)
-        .into_iter()
-        .filter(|entry| !entry.is_dir())
-        .collect()
-}
 
 fn visualizer_spectrum_bins(frequencies: &[u8], sample_rate: f32, fft_size: usize) -> Vec<f32> {
     if frequencies.is_empty() || sample_rate <= 0.0 {
@@ -2043,8 +2007,7 @@ fn visualizer_spectrum_bins(frequencies: &[u8], sample_rate: f32, fft_size: usiz
     (0..40)
         .map(|band| {
             let edge = |step: usize| {
-                ((30.0 * (top / 30.0).powf(step as f32 / 40.0) * fft_size as f32
-                    / sample_rate)
+                ((30.0 * (top / 30.0).powf(step as f32 / 40.0) * fft_size as f32 / sample_rate)
                     .round() as usize)
                     .min(frequencies.len() - 1)
             };
@@ -2183,8 +2146,11 @@ fn App() -> impl IntoView {
             .unwrap_or(260.0),
     );
     let (resizing_sidebar, set_resizing_sidebar) = signal(false);
-    let (sidebar_visible, set_sidebar_visible) =
-        signal(load("kog.sidebar").map(|value| value != "0").unwrap_or(true));
+    let (sidebar_visible, set_sidebar_visible) = signal(
+        load("kog.sidebar")
+            .map(|value| value != "0")
+            .unwrap_or(true),
+    );
     let (files_expanded, set_files_expanded) = signal(true);
     let (playlists_expanded, set_playlists_expanded) = signal(true);
 
@@ -2211,8 +2177,7 @@ fn App() -> impl IntoView {
     // with no bucket yet — an archive container, whose members the walk never
     // entered — fetches its listing when expanded, like the desktop's lazy
     // browse nodes.
-    let (search_children, set_search_children) =
-        signal(HashMap::<String, Vec<Entry>>::new());
+    let (search_children, set_search_children) = signal(HashMap::<String, Vec<Entry>>::new());
     // Which search folders are expanded. Ancestors of matches start expanded,
     // a folder that matched by name starts collapsed, exactly like the
     // desktop's TreeSearchLayout.
@@ -2240,8 +2205,7 @@ fn App() -> impl IntoView {
     // Right-click on a playlist row in the sidebar: the desktop's playlist
     // context menu. `renaming_playlist` swaps that row's label for an edit
     // field.
-    let (playlist_menu, set_playlist_menu) =
-        signal(Option::<(f64, f64, i64, String)>::None);
+    let (playlist_menu, set_playlist_menu) = signal(Option::<(f64, f64, i64, String)>::None);
     let (renaming_playlist, set_renaming_playlist) = signal(Option::<i64>::None);
     let (rename_text, set_rename_text) = signal(String::new());
     let rename_input = NodeRef::<leptos::html::Input>::new();
@@ -2250,8 +2214,7 @@ fn App() -> impl IntoView {
     let (cover_open, set_cover_open) = signal(false);
     // Modal prompts where the desktop opens dialogs: naming a new playlist
     // (the + button), naming a duplicate, and confirming a delete.
-    let (playlist_dialog, set_playlist_dialog) =
-        signal(Option::<PlaylistDialog>::None);
+    let (playlist_dialog, set_playlist_dialog) = signal(Option::<PlaylistDialog>::None);
     let playlist_dialog_input = NodeRef::<leptos::html::Input>::new();
     // Bumped only when a dialog opens: the focus effect must not re-run
     // while the visitor types (re-selecting the text would overwrite it).
@@ -2338,7 +2301,11 @@ fn App() -> impl IntoView {
     // The stylesheet keys the touch affordances (+ buttons) off this class,
     // so the forced mode and the detected mode look the same.
     if touch_mode {
-        if let Some(body) = web_sys::window().and_then(|window| window.document()).map(|document| document.body()).flatten() {
+        if let Some(body) = web_sys::window()
+            .and_then(|window| window.document())
+            .map(|document| document.body())
+            .flatten()
+        {
             let _ = body.class_list().add_1("touch");
         }
     }
@@ -2357,24 +2324,17 @@ fn App() -> impl IntoView {
     let (media_duration, set_media_duration) = signal(Option::<f64>::None);
     let (shuffle, set_shuffle) = signal(restored.shuffle);
     let (repeat_mode, set_repeat_mode) = signal(restored.repeat);
-    let mut restored_radio = RadioBuffer::<Entry>::default();
-    restored_radio.reset(restored.radio_on);
-    let (radio_buffer, set_radio_buffer) = signal(restored_radio);
-    let radio_on = Memo::new(move |_| radio_buffer.with(|radio| radio.enabled()));
-    let radio_waiting = Memo::new(move |_| radio_buffer.with(|radio| radio.waiting()));
+    let (radio_on, set_radio_on) = signal(restored.radio_on);
+    let (radio_waiting, set_radio_waiting) = signal(false);
     // Tag cache keyed by locator. An `Rc` so reading it clones a pointer, not
     // the map, on every cell render.
-    let (metadata, set_metadata) =
-        signal_local(Rc::new(HashMap::<String, Option<MetaRow>>::new()));
+    let (metadata, set_metadata) = signal_local(Rc::new(HashMap::<String, Option<MetaRow>>::new()));
     // A failed request uses the filename until another queue change retries
     // the lookup. Keep failures separate from cached "no tags" results.
-    let (metadata_failed, set_metadata_failed) =
-        signal_local(Rc::new(HashSet::<String>::new()));
+    let (metadata_failed, set_metadata_failed) = signal_local(Rc::new(HashSet::<String>::new()));
     let audio_ref = NodeRef::<leptos::html::Audio>::new();
-    let web_order = StoredValue::new(WebPlaybackOrder::new());
-    let workspace_model = StoredValue::new(load("kog.playlist-tabs").and_then(|raw| serde_json::from_str(&raw).ok())
-        .and_then(|value| kog_playback_policy::workspace::Workspace::restore(value).ok()).unwrap_or_default());
-    let workspace_dispatch = StoredValue::new(None::<Callback<kog_playback_policy::workspace::Command>>);
+    let workspace_dispatch =
+        StoredValue::new(None::<Callback<kog_playback_policy::workspace::Command>>);
 
     let (policy_revision, set_policy_revision) = signal(0u64);
     // Starred locators from `GET /api/stars`, in the same scheme the server
@@ -2392,10 +2352,135 @@ fn App() -> impl IntoView {
         }
     };
 
+    let named_session = web_sys::window()
+        .and_then(|w| w.location().search().ok())
+        .and_then(|query| web_sys::UrlSearchParams::new_with_str(&query).ok())
+        .and_then(|query| query.get("session"))
+        .filter(|id| !id.is_empty() && id.len() <= 240)
+        .map(|id| format!("web:{id}"));
+    let session_id = named_session.clone().unwrap_or_else(|| {
+        load("kog.backend-session-id").unwrap_or_else(|| format!("web:{}", device_id()))
+    });
+    if named_session.is_none() {
+        store("kog.backend-session-id", &session_id);
+    }
+    let mut application = Session::new(
+        session_id.clone(),
+        js_sys::Date::now() as u64,
+        restored.shuffle,
+        restored.repeat,
+    );
+    let resumed = load(&format!("kog.backend-session.{session_id}"))
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .is_some_and(|saved| {
+            application
+                .restore(saved, |value| {
+                    serde_json::from_value(value.clone())
+                        .or_else(|_| Ok::<Entry, String>(entry_from_json(value)))
+                })
+                .is_ok()
+        });
+    if !resumed && named_session.is_none() {
+        let _ = application.dispatch(SessionCommand::Replace {
+            tracks: restored.queue.clone(),
+            current: (restored.current < restored.queue.len()).then_some(restored.current),
+        });
+        let _ = application.dispatch(SessionCommand::Volume {
+            value: restored.volume.unwrap_or(0.9),
+        });
+        if let Some(value) =
+            load("kog.playlist-tabs").and_then(|raw| serde_json::from_str(&raw).ok())
+        {
+            let _ = application.dispatch(SessionCommand::WorkspaceRestore { value });
+        }
+    }
+    let session_model = StoredValue::new(application);
+    let output_token = RwSignal::new(None::<Token>);
+    let output_start = StoredValue::new(0.0_f64);
+    let backend = session::Controller {
+        model: session_model,
+        revision: RwSignal::new(0),
+        output: StoredValue::new(None),
+        saved: StoredValue::new(None),
+        base: Callback::new(move |()| base()),
+        auth: Callback::new(move |()| auth().header()),
+        changed: Callback::new(move |(queue_changed, progress): (bool, bool)| {
+            session_model.with_value(|model| {
+                let v = model.snapshot();
+                if progress {
+                    set_position.set(v.position);
+                    return;
+                }
+                if queue_changed {
+                    set_queue.set(v.queue.to_vec());
+                }
+                set_current.set(v.current.unwrap_or(usize::MAX));
+                set_playing.set(matches!(
+                    v.transport,
+                    Transport::Playing | Transport::Starting
+                ));
+                set_stopped.set(v.transport == Transport::Stopped);
+                set_position.set(v.position);
+                set_volume.set(v.volume);
+                set_selected.set(v.selection.indices.iter().copied().collect());
+                set_selection_anchor.set(v.selection.anchor);
+                set_radio_on.set(v.radio_enabled);
+                set_radio_waiting.set(v.radio_waiting);
+                set_shuffle.set(v.shuffle);
+                set_repeat_mode.set(v.repeat);
+                set_filter.set(v.filter.to_owned());
+                set_sort_asc.set(!v.descending);
+                let key = ColumnId::ALL
+                    .into_iter()
+                    .find(|c| c.key() == v.sort_column)
+                    .map(|c| c.sort_key())
+                    .unwrap_or(SortKey::Index);
+                set_sort_key.set(key);
+                if let Some(error) = v.error {
+                    set_message.set(error.to_owned());
+                }
+                set_policy_revision.set(v.revision);
+            })
+        }),
+    };
+    backend.changed.run((true, false));
+    let select_row = move |index: usize, shift: bool, toggle: bool| {
+        use kog_playback_policy::selection::{Command, Gesture};
+        let gesture = match (shift, toggle) {
+            (true, true) => Gesture::AddRange,
+            (true, false) => Gesture::Range,
+            (false, true) => Gesture::Toggle,
+            _ => Gesture::Replace,
+        };
+        backend.send(SessionCommand::Select {
+            command: Command::Choose { index, gesture },
+        });
+    };
+
+    Effect::new(move |_| {
+        let entries = queue.get();
+        let cache = metadata.get();
+        let starred = stars.get();
+        let rows = entries
+            .iter()
+            .enumerate()
+            .map(|(i, e)| entry_sort_row(i, e, &cache, &starred))
+            .collect();
+        backend.send(SessionCommand::Metadata { rows });
+    });
+
     // One place that talks to the API, so every call carries the same auth and
     // reports the same failures.
     let get_json = move |route: String| {
-        let url = format!("{}{route}", base());
+        let mut url = format!("{}{route}", base());
+        if route.starts_with("/api/library/search") {
+            let id = session_model.with_value(|s| s.id().to_owned());
+            url.push_str(&format!(
+                "{}session={}",
+                if route.contains('?') { "&" } else { "?" },
+                url_encode(&id)
+            ));
+        }
         let header = auth().header();
         let device = device_id();
         async move {
@@ -2471,10 +2556,7 @@ fn App() -> impl IntoView {
                             let kind = if is_dir {
                                 "dir".to_owned()
                             } else {
-                                item["kind"]
-                                    .as_str()
-                                    .unwrap_or("local")
-                                    .to_owned()
+                                item["kind"].as_str().unwrap_or("local").to_owned()
                             };
                             rows.push(Entry {
                                 name,
@@ -2504,13 +2586,9 @@ fn App() -> impl IntoView {
                     SearchProgress {
                         scanned: value["scanned"].as_u64().unwrap_or(0),
                         archive_count: value["archive_count"].as_u64().unwrap_or(0),
-                        archives_scanned: value["archives_scanned"]
-                            .as_u64()
-                            .unwrap_or(0),
+                        archives_scanned: value["archives_scanned"].as_u64().unwrap_or(0),
                         unreadable: value["unreadable_archives"].as_u64().unwrap_or(0),
-                        scanning_archives: value["scanning_archives"]
-                            .as_bool()
-                            .unwrap_or(false),
+                        scanning_archives: value["scanning_archives"].as_bool().unwrap_or(false),
                     }
                 };
                 let publish = |rows: &[Entry], progress: SearchProgress| {
@@ -2530,12 +2608,7 @@ fn App() -> impl IntoView {
                     set_search_count.set(rows.len());
                     set_search_progress.set(progress);
                 };
-                match get_json(format!(
-                    "/api/library/search?q={}",
-                    url_encode(&trimmed)
-                ))
-                .await
-                {
+                match get_json(format!("/api/library/search?q={}", url_encode(&trimmed))).await {
                     Ok(value) => {
                         // The walk runs on its own thread and matches
                         // accumulate in the shared buffer; the client pulls
@@ -2613,87 +2686,24 @@ fn App() -> impl IntoView {
     // Shared buffering policy; HTTP is only this client's transport adapter.
     let radio_scope = move || {
         let root = tree_root.get();
-        if root.is_empty() { library_root.get() } else { root }
-    };
-    let radio_root = move || {
-        let root = radio_scope();
-        if root.is_empty() { String::new() } else { format!("?incremental=true&root={}", url_encode(&root)) }
-    };
-    let apply_radio = move |generation: u64, value: &serde_json::Value| {
-        if radio_buffer.with_untracked(|radio| radio.generation()) != generation { return; }
-        let enabled = value["enabled"].as_bool().unwrap_or(false);
-        let entries = radio_entries(value);
-        let exhausted = entries.is_empty();
-        set_radio_buffer.update(|radio| {
-            if enabled != radio.enabled() { radio.reset(enabled); }
-            radio.accept(radio.generation(), entries, exhausted);
-        });
-        let mut policy = web_order.write_value();
-        let tracks = policy.tracks(&queue.get_untracked(), &metadata.get_untracked(), current.get_untracked(), shuffle.get_untracked(), repeat_mode.get_untracked());
-        policy.order.set_radio_enabled(enabled, &tracks, Some(current.get_untracked()));
-        if enabled {
-            set_repeat_mode.set(policy.order.repeat_mode());
-            set_shuffle.set(policy.order.shuffle_mode());
-            set_list_name.set("Random Radio".to_owned());
+        if root.is_empty() {
+            library_root.get()
+        } else {
+            root
         }
-    };
-    let load_radio = move || {
-        let mut generation = 0;
-        set_radio_buffer.update(|radio| { generation = radio.begin_request(); });
-        let route = format!("/api/radio{}", radio_root());
-        leptos::task::spawn_local(async move {
-            match get_json(route).await {
-                Ok(value) => apply_radio(generation, &value),
-                Err(error) => {
-                    let mut accepted = false;
-                    set_radio_buffer.update(|radio| { accepted = radio.fail(generation); });
-                    if accepted { set_message.set(error); }
-                }
-            }
-        });
     };
     let change_radio = move |enabled: bool, reshuffle: bool| {
-        let root = radio_root();
-        if root.is_empty() { return; }
-        let mut generation = 0;
-        set_radio_buffer.update(|radio| { radio.reset(enabled); generation = radio.begin_request(); });
-        {
-            let mut policy = web_order.write_value();
-            let tracks = policy.tracks(&queue.get_untracked(), &metadata.get_untracked(), current.get_untracked(), shuffle.get_untracked(), repeat_mode.get_untracked());
-            policy.order.set_radio_enabled(enabled, &tracks, Some(current.get_untracked()));
-            set_shuffle.set(policy.order.shuffle_mode());
-            set_repeat_mode.set(policy.order.repeat_mode());
-        }
-        let endpoint = if reshuffle { "reshuffle" } else { "enabled" };
-        let url = format!("{}/api/radio/{endpoint}{root}", base());
-        let header = auth().header();
-        leptos::task::spawn_local(async move {
-            match post_json(url, header, serde_json::json!({"enabled": enabled})).await {
-                Ok(value) => apply_radio(generation, &value),
-                Err(error) => {
-                    let mut accepted = false;
-                    set_radio_buffer.update(|radio| { accepted = radio.fail(generation); });
-                    if accepted { set_message.set(error); }
-                }
-            }
-        });
+        backend.send(SessionCommand::Radio {
+            enabled,
+            scope: base(),
+            root: radio_scope(),
+            reshuffle,
+        })
     };
     let set_radio = move |enabled| change_radio(enabled, false);
     let reshuffle_radio = move || change_radio(true, true);
-    let select_shuffle = move |mode: ShuffleMode| {
-        let mut policy = web_order.write_value();
-        let tracks = policy.tracks(&queue.get_untracked(), &metadata.get_untracked(), current.get_untracked(), shuffle.get_untracked(), repeat_mode.get_untracked());
-        policy.order.set_shuffle_mode(mode, &tracks, Some(current.get_untracked()));
-        let disable_radio = radio_on.get_untracked() && !policy.order.radio_enabled();
-        drop(policy);
-        if disable_radio { set_radio(false); }
-        set_shuffle.set(mode);
-    };
-    let select_repeat = move |mode: RepeatMode| {
-        web_order.write_value().order.set_repeat_mode(mode);
-        if radio_on.get_untracked() && !web_order.read_value().order.radio_enabled() { set_radio(false); }
-        set_repeat_mode.set(mode);
-    };
+    let select_shuffle = move |mode| backend.send(SessionCommand::Shuffle { mode });
+    let select_repeat = move |mode| backend.send(SessionCommand::Repeat { mode });
 
     // Load one directory level. The library root is keyed as "". When the load
     // was a re-root, a rejection puts the previous root back instead of leaving
@@ -2710,8 +2720,7 @@ fn App() -> impl IntoView {
                 match get_json(route).await {
                     Ok(value) => {
                         if directory.is_empty() {
-                            let relative =
-                                value["path"].as_str().unwrap_or_default().to_owned();
+                            let relative = value["path"].as_str().unwrap_or_default().to_owned();
                             set_library_root.set(relative);
                         }
                         let items = library_entries(&value);
@@ -2812,10 +2821,7 @@ fn App() -> impl IntoView {
             // ceiling: the tree climbs within it, never past it.
             let library = library_root.get();
             let parent = parent_path(&current);
-            let target = if parent.is_empty()
-                || parent == library
-                || !is_under(&parent, &library)
-            {
+            let target = if parent.is_empty() || parent == library || !is_under(&parent, &library) {
                 String::new()
             } else {
                 parent
@@ -2852,11 +2858,7 @@ fn App() -> impl IntoView {
                         }
                     }
                     set_picker_entries.set(entries);
-                    set_picker_parent.set(
-                        value["parent"]
-                            .as_str()
-                            .map(str::to_owned),
-                    );
+                    set_picker_parent.set(value["parent"].as_str().map(str::to_owned));
                 }
             });
         });
@@ -3053,29 +3055,18 @@ fn App() -> impl IntoView {
         let restoring = restoring.clone();
         let persist = persist.clone();
         Effect::new(move |_| {
-            let queue = queue.get();
-            let current = current.get();
             let list_name = list_name.get();
             let tree_root = tree_root.get();
             let expanded = expanded.get();
-            let volume = volume.get();
-            let shuffle = shuffle.get();
-            let repeat = repeat_mode.get();
-            let radio_on = radio_on.get();
             if *restoring.borrow() {
                 return;
             }
-            persist.save(encode_session(
-                &queue,
-                current,
-                &list_name,
-                &tree_root,
-                &expanded,
-                volume,
-                shuffle,
-                repeat,
-                radio_on,
-            ));
+            let mut expanded = expanded.into_iter().collect::<Vec<_>>();
+            expanded.sort();
+            persist.save(
+                serde_json::json!({"listName":list_name,"treeRoot":tree_root,"expanded":expanded})
+                    .to_string(),
+            );
         });
     }
 
@@ -3105,49 +3096,13 @@ fn App() -> impl IntoView {
         }
     };
 
-    // Move one queued row to another position, keeping the current track
-    // playing and its index pointing at the same song.
     let move_track = move |from: usize, to: usize| {
-        let total = queue.get_untracked().len();
-        if from >= total {
-            return;
-        }
-        let to = to.min(total);
-        // A row dropped on itself or on its lower edge is a no-op.
-        if to == from || to == from + 1 {
-            return;
-        }
-        let insert_at = if to < from { to } else { to - 1 };
-        let current_index = current.get_untracked();
-        let mut identities: Vec<_> = (0..total).collect();
-        let moved = identities.remove(from);
-        identities.insert(insert_at, moved);
-        let remap: Vec<_> = (0..total).map(|old| identities.iter().position(|index| *index == old)).collect();
-        set_queue.update(|items| {
-            let moved = items.remove(from);
-            items.insert(insert_at.min(items.len()), moved);
-        });
-        web_order.write_value().remap(&queue.get_untracked(), &remap);
-        let new_current = if current_index >= total { usize::MAX } else if from == current_index {
-            insert_at
-        } else {
-            let adjusted = if from < current_index {
-                current_index - 1
-            } else {
-                current_index
-            };
-            if insert_at <= adjusted {
-                adjusted + 1
-            } else {
-                adjusted
-            }
-        };
-        set_current.set(new_current);
+        backend.send(SessionCommand::Move {
+            indices: vec![from],
+            target: to,
+        })
     };
 
-    // The playlists header's "+", as the desktop sidebar offers.
-    // The + button opens the desktop's Save Playlist dialog: the visitor
-    // names it, and the pane (or just the selection) is saved into it.
     let open_create_playlist_dialog = move || {
         set_playlist_dialog_opened.update(|epoch| *epoch += 1);
         set_playlist_dialog.set(Some(PlaylistDialog {
@@ -3298,8 +3253,7 @@ fn App() -> impl IntoView {
                             .await
                         {
                             if let Ok(value) = reply.json::<serde_json::Value>().await {
-                                if let Some(version) =
-                                    value["version"].as_str().map(str::to_owned)
+                                if let Some(version) = value["version"].as_str().map(str::to_owned)
                                 {
                                     set_version.set(version);
                                 }
@@ -3329,12 +3283,18 @@ fn App() -> impl IntoView {
     {
         let last_scope = Rc::new(RefCell::new(None::<String>));
         Effect::new(move |_| {
-            let scope = connected.get().then(radio_scope).filter(|root| !root.is_empty());
-            if *last_scope.borrow() == scope { return; }
+            let scope = connected
+                .get()
+                .then(radio_scope)
+                .filter(|root| !root.is_empty());
+            if *last_scope.borrow() == scope {
+                return;
+            }
             *last_scope.borrow_mut() = scope.clone();
-            let enabled = radio_on.get_untracked();
-            set_radio_buffer.update(|radio| { radio.reset(enabled); });
-            if scope.is_some() { load_radio(); }
+            let enabled = radio_on.get_untracked() || (!resumed && restored.radio_on);
+            if scope.is_some() {
+                change_radio(enabled, false);
+            }
         });
     }
 
@@ -3417,7 +3377,14 @@ fn App() -> impl IntoView {
             let fire_menu = fire_menu.clone();
             Closure::<dyn FnMut()>::new(move || {
                 let taken = std::mem::replace(&mut *press.borrow_mut(), TouchPress::Idle);
-                if let TouchPress::Pending { row, x, y, is_track, .. } = taken {
+                if let TouchPress::Pending {
+                    row,
+                    x,
+                    y,
+                    is_track,
+                    ..
+                } = taken
+                {
                     if is_track {
                         // A queued track waits for the lift: menu if the
                         // finger stays, drag if it moves.
@@ -3467,7 +3434,10 @@ fn App() -> impl IntoView {
                         {
                             return None;
                         }
-                        target.closest(".tree-row, .track, .col-head").ok().flatten()
+                        target
+                            .closest(".tree-row, .track, .col-head")
+                            .ok()
+                            .flatten()
                     });
                 let Some(row) = row else {
                     cancel_touch_press(&press, &window, &|| cleanup_drag());
@@ -3476,10 +3446,7 @@ fn App() -> impl IntoView {
                 cancel_touch_press(&press, &window, &|| cleanup_drag());
                 let is_track = row.class_list().contains("track");
                 let timer = window
-                    .set_timeout_with_callback_and_timeout_and_arguments_0(
-                        &timer_callback,
-                        550,
-                    )
+                    .set_timeout_with_callback_and_timeout_and_arguments_0(&timer_callback, 550)
                     .unwrap_or_default();
                 *press.borrow_mut() = TouchPress::Pending {
                     row,
@@ -3491,10 +3458,7 @@ fn App() -> impl IntoView {
             })
         };
         document
-            .add_event_listener_with_callback(
-                "touchstart",
-                on_touch_start.as_ref().unchecked_ref(),
-            )
+            .add_event_listener_with_callback("touchstart", on_touch_start.as_ref().unchecked_ref())
             .expect("touchstart listener");
         on_touch_start.forget();
 
@@ -3512,20 +3476,30 @@ fn App() -> impl IntoView {
                 let taken = std::mem::replace(&mut *press.borrow_mut(), TouchPress::Idle);
                 match taken {
                     TouchPress::Idle => {}
-                    TouchPress::Pending { row, x, y, is_track, timer } => {
-                        let moved = (touch.client_x() - x).abs() + (touch.client_y() - y).abs()
-                            > 10;
+                    TouchPress::Pending {
+                        row,
+                        x,
+                        y,
+                        is_track,
+                        timer,
+                    } => {
+                        let moved =
+                            (touch.client_x() - x).abs() + (touch.client_y() - y).abs() > 10;
                         if moved {
                             window.clear_timeout_with_handle(timer);
                         } else {
-                            *press.borrow_mut() =
-                                TouchPress::Pending { row, x, y, is_track, timer };
+                            *press.borrow_mut() = TouchPress::Pending {
+                                row,
+                                x,
+                                y,
+                                is_track,
+                                timer,
+                            };
                         }
                     }
                     TouchPress::Armed { row, x, y } => {
                         event.prevent_default();
-                        let moved = (touch.client_x() - x).abs() + (touch.client_y() - y).abs()
-                            > 6;
+                        let moved = (touch.client_x() - x).abs() + (touch.client_y() - y).abs() > 6;
                         if moved {
                             let _ = row.class_list().remove_1("drag-armed");
                             if let Some(from) = row
@@ -3548,7 +3522,10 @@ fn App() -> impl IntoView {
                         let marker = js_sys::eval(&format!(
                             "(() => {{ const rows = [...document.querySelectorAll('.track')]; const y = {y}; let index = rows.length; for (let i = 0; i < rows.length; i++) {{ const r = rows[i].getBoundingClientRect(); if (y < r.top + r.height / 2) {{ index = i; break; }} }} rows.forEach(r => r.classList.remove('reorder-above')); if (index < rows.length) rows[index].classList.add('reorder-above'); return index; }})()",
                         ));
-                        let to = marker.ok().and_then(|value| value.as_f64()).map(|v| v as usize);
+                        let to = marker
+                            .ok()
+                            .and_then(|value| value.as_f64())
+                            .map(|v| v as usize);
                         set_reorder_to.set(to);
                         *press.borrow_mut() = TouchPress::Dragging { from, to };
                     }
@@ -3642,122 +3619,116 @@ fn App() -> impl IntoView {
         on_click.forget();
     }
 
-
     // Remove the selected rows from the pane. The pane is client-owned, so
     // neither the menu nor the Delete key needs a server request.
     let remove_selected = move || {
-        let mut indices: Vec<usize> = selected.get_untracked().into_iter().collect();
-        if indices.is_empty() {
-            return;
-        }
-        indices.sort_unstable();
-        let current_index = current.get_untracked();
-        if indices.contains(&current_index) {
-            web_order.write_value().order.cancel_navigation();
-            set_radio_buffer.update(|radio| radio.cancel_waiting());
-            set_playing.set(false);
-            set_stopped.set(true);
-            set_position.set(0.0);
-            if let Some(audio) = audio_ref.get() { let _ = audio.pause(); audio.set_current_time(0.0); }
-        }
-        let remap: Vec<_> = (0..queue.get_untracked().len()).map(|old| {
-            (!indices.contains(&old)).then(|| old - indices.iter().filter(|index| **index < old).count())
-        }).collect();
-        set_queue.update(|items| {
-            for index in indices.iter().rev() {
-                if *index < items.len() {
-                    items.remove(*index);
-                }
-            }
+        backend.send(SessionCommand::Remove {
+            indices: selected.get_untracked().into_iter().collect(),
         });
-        web_order.write_value().remap(&queue.get_untracked(), &remap);
-        let next = remap.get(current_index).copied().flatten().unwrap_or(usize::MAX);
-        if next != current_index {
-            set_current.set(next);
-        }
-        set_selected.set(HashSet::new());
-        set_selection_anchor.set(None);
         set_menu_open.set(false);
         set_song_menu.set(None);
     };
-
     let select_all_results = move || {
-        use kog_playback_policy::selection::{Command, Selection};
-        let entries = queue.get_untracked(); let cache = metadata.get_untracked();
-        let failed = metadata_failed.get_untracked(); let starred = stars.get_untracked();
-        let query = filter.get_untracked();
-        let indices:Vec<_> = sorted_queue_indices(&entries, &cache, &starred, sort_key.get_untracked(), !sort_asc.get_untracked()).into_iter()
-            .filter(|i| metadata_ready(&cache, &failed, &entries[*i]) && entry_sort_row(*i, &entries[*i], &cache, &starred).matches(&query)).collect();
-        let anchor = indices.first().copied(); let mut selection = Selection::default();
-        selection.apply(Command::Set { indices, anchor }, entries.len(), &[]);
-        set_selected.set(selection.indices.into_iter().collect()); set_selection_anchor.set(selection.anchor);
+        backend.send(SessionCommand::Select {
+            command: kog_playback_policy::selection::Command::All,
+        })
     };
 
     // Global keys, from anywhere on the page. Escape dismisses any open menu
     // or dialog; Ctrl/Cmd+A selects the whole pane like the desktop's
     // Select All — except inside a text field, where it keeps selecting text.
-    let key_handle = window_event_listener(leptos::ev::keydown, move |ev: web_sys::KeyboardEvent| {
-        let in_text = ev
-            .target()
-            .and_then(|target| target.dyn_into::<web_sys::HtmlElement>().ok())
-            .map(|element| {
-                let tag = element.tag_name().to_ascii_lowercase();
-                tag == "input" || tag == "textarea" || tag == "select"
-                    || element.is_content_editable()
-            })
-            .unwrap_or(false);
-        if !in_text && workspace_model.with_value(|model| model.snapshot().active != "queue") {
-            use kog_playback_policy::workspace::Command;
-            let command = if ev.ctrl_key() || ev.meta_key() { match ev.key().to_lowercase().as_str() {
-                "s" => Some(Command::Save), "w" => Some(Command::Close {key:workspace_model.with_value(|model|model.snapshot().active)}),
-                "a" => Some(Command::Select {indices:(0..workspace_model.with_value(|model|model.snapshot().entries.len())).collect()}),
-                "z" if ev.shift_key() => Some(Command::Redo), "z" => Some(Command::Undo), "y"=>Some(Command::Redo), _=>None
-            }} else if ev.key()=="Delete" {Some(Command::Remove)} else {None};
-            if let Some(command)=command { ev.prevent_default(); if let Some(dispatch)=workspace_dispatch.get_value(){dispatch.run(command);} return; }
-        }
-        if (ev.ctrl_key() || ev.meta_key())
-            && !ev.alt_key()
-            && ev.key().eq_ignore_ascii_case("a")
-        {
-            if !in_text && !queue.get_untracked().is_empty() {
-                ev.prevent_default();
-                select_all_results();
+    let key_handle =
+        window_event_listener(leptos::ev::keydown, move |ev: web_sys::KeyboardEvent| {
+            let in_text = ev
+                .target()
+                .and_then(|target| target.dyn_into::<web_sys::HtmlElement>().ok())
+                .map(|element| {
+                    let tag = element.tag_name().to_ascii_lowercase();
+                    tag == "input"
+                        || tag == "textarea"
+                        || tag == "select"
+                        || element.is_content_editable()
+                })
+                .unwrap_or(false);
+            if !in_text
+                && session_model
+                    .with_value(|model| model.workspace_model().snapshot().active != "queue")
+            {
+                use kog_playback_policy::workspace::Command;
+                let command = if ev.ctrl_key() || ev.meta_key() {
+                    match ev.key().to_lowercase().as_str() {
+                        "s" => Some(Command::Save),
+                        "w" => Some(Command::Close {
+                            key: session_model
+                                .with_value(|model| model.workspace_model().snapshot().active),
+                        }),
+                        "a" => Some(Command::Select {
+                            indices: (0..session_model.with_value(|model| {
+                                model.workspace_model().snapshot().entries.len()
+                            }))
+                                .collect(),
+                        }),
+                        "z" if ev.shift_key() => Some(Command::Redo),
+                        "z" => Some(Command::Undo),
+                        "y" => Some(Command::Redo),
+                        _ => None,
+                    }
+                } else if ev.key() == "Delete" {
+                    Some(Command::Remove)
+                } else {
+                    None
+                };
+                if let Some(command) = command {
+                    ev.prevent_default();
+                    if let Some(dispatch) = workspace_dispatch.get_value() {
+                        dispatch.run(command);
+                    }
+                    return;
+                }
             }
-            return;
-        }
-        if ev.key() == "Delete"
-            && !in_text
-            && !ev.ctrl_key()
-            && !ev.meta_key()
-            && !ev.alt_key()
-            && !settings_open.get_untracked()
-            && !picker_open.get_untracked()
-            && !add_url_open.get_untracked()
-            && track_details.get_untracked().is_none()
-            && playlist_dialog.get_untracked().is_none()
-            && !selected.get_untracked().is_empty()
-        {
-            ev.prevent_default();
-            remove_selected();
-            return;
-        }
-        if ev.key() == "Escape" {
-            set_visualizer_open.set(false);
-            set_cover_open.set(false);
-            set_menu_open.set(false);
-            set_mobile_sort_open.set(false);
-            set_track_details.set(None);
-            set_add_url_open.set(false);
-            set_column_menu.set(None);
-            set_tree_menu.set(None);
-            set_about_open.set(false);
-            set_settings_open.set(false);
-            set_picker_open.set(false);
-            set_song_menu.set(None);
-            set_playlist_menu.set(None);
-            set_renaming_playlist.set(None);
-        }
-    });
+            if (ev.ctrl_key() || ev.meta_key())
+                && !ev.alt_key()
+                && ev.key().eq_ignore_ascii_case("a")
+            {
+                if !in_text && !queue.get_untracked().is_empty() {
+                    ev.prevent_default();
+                    select_all_results();
+                }
+                return;
+            }
+            if ev.key() == "Delete"
+                && !in_text
+                && !ev.ctrl_key()
+                && !ev.meta_key()
+                && !ev.alt_key()
+                && !settings_open.get_untracked()
+                && !picker_open.get_untracked()
+                && !add_url_open.get_untracked()
+                && track_details.get_untracked().is_none()
+                && playlist_dialog.get_untracked().is_none()
+                && !selected.get_untracked().is_empty()
+            {
+                ev.prevent_default();
+                remove_selected();
+                return;
+            }
+            if ev.key() == "Escape" {
+                set_visualizer_open.set(false);
+                set_cover_open.set(false);
+                set_menu_open.set(false);
+                set_mobile_sort_open.set(false);
+                set_track_details.set(None);
+                set_add_url_open.set(false);
+                set_column_menu.set(None);
+                set_tree_menu.set(None);
+                set_about_open.set(false);
+                set_settings_open.set(false);
+                set_picker_open.set(false);
+                set_song_menu.set(None);
+                set_playlist_menu.set(None);
+                set_renaming_playlist.set(None);
+            }
+        });
     on_cleanup(move || key_handle.remove());
 
     // ------------------------------------------------------------ live reload
@@ -3866,7 +3837,11 @@ fn App() -> impl IntoView {
     };
 
     let current_entry = move || queue.get().get(current.get()).cloned();
-    let audio_src = move || current_entry().map(|entry| stream_url(&entry)).unwrap_or_default();
+    let audio_src = move || {
+        current_entry()
+            .map(|entry| stream_url(&entry))
+            .unwrap_or_default()
+    };
 
     // The transport's duration: the element's value when it is finite, else the
     // current track's tag duration from the metadata cache. Reactive, so the
@@ -3903,60 +3878,65 @@ fn App() -> impl IntoView {
         }
     };
 
-    // Keep the element in step with the transport button, and roll on when a
-    // track ends.
-    Effect::new(move |_| {
-        let index = current.get();
-        let playing = playing.get();
-        if let Some(audio) = audio_ref.get() {
-            if playing && index < queue.get().len() {
-                let _ = audio.play();
-            } else {
-                let _ = audio.pause();
-            }
-        }
-    });
-
     // The element's src is written only when it actually changes. Assigning
     // even the same URL restarts the media load algorithm, and the URL is
     // derived from the whole queue — so an append (dragging a song in),
     // a reorder, or a removal would reload the element mid-song and restart
     // it from zero. Only a change of the row at `current`, or of the token
     // baked into the stream URL, may reload.
-    let applied_src = Rc::new(std::cell::RefCell::new(String::new()));
     // Loading another track can pause the element before its replacement is
     // ready. That pause is not a remote transport command.
-    let source_changing = Rc::new(std::cell::Cell::new(false));
+    let source_changing = RwSignal::new(false);
     {
-        let applied_src = applied_src.clone();
         let source_changing = source_changing.clone();
         Effect::new(move |_| {
             let desired = audio_src();
-            if applied_src.borrow().as_str() == desired {
+            let Some(output) = output_token.get() else {
                 return;
-            }
+            };
             if let Some(audio) = audio_ref.get() {
+                if audio.get_attribute("data-output").as_deref() != Some(&output.serial.to_string())
+                {
+                    return;
+                }
+                if let Some(applied) = audio.get_attribute("data-loaded-source") {
+                    if applied == desired {
+                        return;
+                    }
+                    backend.send(SessionCommand::Output {
+                        token: output.clone(),
+                        event: OutputEvent::Progress {
+                            seconds: audio.current_time(),
+                            duration: duration.get_untracked(),
+                        },
+                    });
+                    backend.send(SessionCommand::ReloadOutput);
+                    return;
+                }
                 source_changing.set(true);
                 audio.set_src(&desired);
-                *applied_src.borrow_mut() = desired;
+                let _ = audio.set_attribute("data-loaded-source", &desired);
             }
         });
     }
 
-    // Starting a row sets `current` and `playing` together. The src effect
-    // then rewrites the element's source, which aborts a `play()`
-    // issued in the same tick and leaves the track paused. Re-issue play once
-    // the new source is actually ready, so a row click always starts playback.
-    // The transport button is unaffected: it does not change the source, so the
-    // effect above is the only thing that runs.
+    // A new output request creates a new element. Start it once the source is
+    // ready; explicit Resume acts directly on the existing element.
     let resume_when_ready = {
         let refresh_media_duration = refresh_media_duration.clone();
         let source_changing = source_changing.clone();
         move |event: web_sys::Event| {
             refresh_media_duration(event);
+            if let Some(audio) = audio_ref.get() {
+                let seconds = output_start.get_value();
+                if seconds > 0.0 {
+                    audio.set_current_time(seconds);
+                    output_start.set_value(0.0);
+                }
+            }
             if playing.get_untracked() {
                 if let Some(audio) = audio_ref.get() {
-                    let _ = audio.play();
+                    play_audio(&audio);
                 }
             }
             source_changing.set(false);
@@ -3968,6 +3948,45 @@ fn App() -> impl IntoView {
             audio.set_volume(volume.get());
         }
     });
+
+    backend
+        .output
+        .set_value(Some(Callback::new(move |effect| match effect {
+            SessionEffect::Play { token, seconds, .. } => {
+                output_start.set_value(seconds);
+                set_media_duration.set(None);
+                output_token.set(Some(token));
+            }
+            SessionEffect::Stop => {
+                if let Some(audio) = audio_ref.get() {
+                    let _ = audio.pause();
+                    audio.remove_attribute("src").ok();
+                    audio.load();
+                }
+                output_token.set(None);
+            }
+            SessionEffect::Pause => {
+                if let Some(audio) = audio_ref.get() {
+                    let _ = audio.pause();
+                }
+            }
+            SessionEffect::Resume => {
+                if let Some(audio) = audio_ref.get() {
+                    play_audio(&audio);
+                }
+            }
+            SessionEffect::Seek { seconds } => {
+                if let Some(audio) = audio_ref.get() {
+                    audio.set_current_time(seconds);
+                }
+            }
+            SessionEffect::Volume { value } => {
+                if let Some(audio) = audio_ref.get() {
+                    audio.set_volume(value);
+                }
+            }
+            _ => {}
+        })));
 
     // A stream request that fails around a track change — the server
     // restarting, a flaky network — leaves the element errored or paused
@@ -3986,13 +4005,14 @@ fn App() -> impl IntoView {
             let Some(audio) = audio_ref.get() else {
                 return;
             };
-            if !playing.get_untracked() || current.get_untracked() >= queue.get_untracked().len()
-            {
+            if !playing.get_untracked() || current.get_untracked() >= queue.get_untracked().len() {
                 return;
             }
-            if audio.error().is_some() { return; }
+            if audio.error().is_some() || source_changing.get_untracked() {
+                return;
+            }
             if audio.paused() && !audio.ended() {
-                let _ = audio.play();
+                play_audio(&audio);
             }
         });
         window
@@ -4019,8 +4039,7 @@ fn App() -> impl IntoView {
         let graph: Rc<RefCell<Option<(web_sys::AudioContext, web_sys::AnalyserNode)>>> =
             Rc::new(RefCell::new(None));
         // Warmed context, ready before the tap exists.
-        let context_slot: Rc<RefCell<Option<web_sys::AudioContext>>> =
-            Rc::new(RefCell::new(None));
+        let context_slot: Rc<RefCell<Option<web_sys::AudioContext>>> = Rc::new(RefCell::new(None));
         // Band analysis state, mirroring the desktop's per-stream state.
         let analysis = Rc::new(RefCell::new(BandState::default()));
         // Consecutive silent reads while audibly playing: a stale tap.
@@ -4046,10 +4065,8 @@ fn App() -> impl IntoView {
             let document = web_sys::window()
                 .and_then(|window| window.document())
                 .expect("document for the meter warmer");
-            let _ = document.add_event_listener_with_callback(
-                "pointerdown",
-                warm.as_ref().unchecked_ref(),
-            );
+            let _ = document
+                .add_event_listener_with_callback("pointerdown", warm.as_ref().unchecked_ref());
             warm.forget();
         }
 
@@ -4093,9 +4110,9 @@ fn App() -> impl IntoView {
                 // Tap the element's output without diverting it. web-sys
                 // has no captureStream binding, so call it on the element
                 // itself (the page's only audio element, class-marked).
-                let Ok(stream_value) = js_sys::eval(
-                    "document.querySelector('audio.audio').captureStream()",
-                ) else {
+                let Ok(stream_value) =
+                    js_sys::eval("document.querySelector('audio.audio').captureStream()")
+                else {
                     return;
                 };
                 let Ok(stream) = stream_value.dyn_into::<web_sys::MediaStream>() else {
@@ -4112,7 +4129,9 @@ fn App() -> impl IntoView {
                 sink.gain().set_value(0.0);
                 if source.connect_with_audio_node(&analyser).is_err()
                     || analyser.connect_with_audio_node(&sink).is_err()
-                    || sink.connect_with_audio_node(&context.destination()).is_err()
+                    || sink
+                        .connect_with_audio_node(&context.destination())
+                        .is_err()
                 {
                     return;
                 }
@@ -4266,44 +4285,21 @@ fn App() -> impl IntoView {
         }
     });
 
-    let starting_previous = StoredValue::new(None::<usize>);
-    let jump = move |index: usize| {
-        starting_previous.set_value(Some(current.get_untracked()));
-        set_radio_buffer.update(|radio| radio.cancel_waiting());
-        if index == current.get_untracked() {
-            if let Some(audio) = audio_ref.get() {
-                if audio.error().is_some() { audio.load(); }
-                else { audio.set_current_time(0.0); }
-                let _ = audio.play();
-            }
-        }
-        set_current.set(index);
-        set_position.set(0.0);
-        set_media_duration.set(None);
-        set_stopped.set(false);
-        set_playing.set(true);
-    };
-
-    let play_row = move |index: usize| {
-        web_order.write_value().order.cancel_navigation();
-        jump(index);
-    };
+    let play_row = move |index: usize| backend.send(SessionCommand::Play { index });
 
     // Album art for the transport thumbnail: the current track's embedded
     // or sibling cover through the server, falling back to a neutral cover when a
     // track has none (the img swaps itself back on a load error, and the
     // src changes with the track so the fallback does not stick).
-    let art_src = move || {
-        match queue.with_untracked(|q| q.get(current.get()).cloned()) {
-            Some(entry) if !entry.is_dir() => format!(
-                "{}/api/art?kind={}&path={}&token={}",
-                base(),
-                url_encode(&entry.kind),
-                url_encode(&entry.path),
-                url_encode(&token.get()),
-            ),
-            _ => "/icons/cover-placeholder.svg".to_owned(),
-        }
+    let art_src = move || match queue.with_untracked(|q| q.get(current.get()).cloned()) {
+        Some(entry) if !entry.is_dir() => format!(
+            "{}/api/art?kind={}&path={}&token={}",
+            base(),
+            url_encode(&entry.kind),
+            url_encode(&entry.path),
+            url_encode(&token.get()),
+        ),
+        _ => "/icons/cover-placeholder.svg".to_owned(),
     };
 
     // Now-playing notifications: when the playing track changes while the
@@ -4334,12 +4330,14 @@ fn App() -> impl IntoView {
             .as_ref()
             .and_then(|meta| meta.title.clone())
             .unwrap_or_else(|| entry.name.clone());
-        let detail = [meta.as_ref().and_then(|meta| meta.artist.clone()),
-            meta.as_ref().and_then(|meta| meta.album.clone())]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join("  ·  ");
+        let detail = [
+            meta.as_ref().and_then(|meta| meta.artist.clone()),
+            meta.as_ref().and_then(|meta| meta.album.clone()),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("  ·  ");
         let body = if detail.is_empty() {
             "Local music · Kog".to_owned()
         } else {
@@ -4377,96 +4375,16 @@ fn App() -> impl IntoView {
         });
     });
 
-    let play_radio_entry = move |entry: Entry| {
-        let index = queue.get_untracked().len();
-        set_queue.update(|items| items.push(entry));
-        {
-            let mut policy = web_order.write_value();
-            policy.tracks(&queue.get_untracked(), &metadata.get_untracked(), current.get_untracked(), shuffle.get_untracked(), repeat_mode.get_untracked());
-            policy.order.radio_candidate(index);
-        }
-        jump(index);
-    };
-    let refill_radio_pool = move || {
-        if !radio_buffer.with_untracked(|radio| radio.needs_refill()) { return; }
-        let root = radio_root();
-        if root.is_empty() { return; }
-        let mut generation = 0;
-        set_radio_buffer.update(|radio| { generation = radio.begin_request(); });
-        let url = format!("{}/api/radio/advance{root}", base());
-        let header = auth().header();
-        leptos::task::spawn_local(async move {
-            match post_json(url, header, serde_json::json!({})).await {
-                Ok(value) => {
-                    let entries = radio_entries(&value);
-                    let exhausted = value["exhausted"].as_bool().unwrap_or(entries.is_empty());
-                    set_radio_buffer.update(|radio| { radio.accept(generation, entries, exhausted); });
-                }
-                Err(error) => {
-                    let mut accepted = false;
-                    set_radio_buffer.update(|radio| { accepted = radio.fail(generation); });
-                    if accepted { set_message.set(error); }
-                }
-            }
-        });
-    };
-    let advance_radio = move || {
-        let mut entry = None;
-        set_radio_buffer.update(|radio| { entry = radio.request_next(); });
-        if let Some(entry) = entry { play_radio_entry(entry); }
-        else {
-            set_playing.set(false);
-            set_stopped.set(true);
-            set_position.set(0.0);
-            if let Some(audio) = audio_ref.get() { let _ = audio.pause(); audio.set_current_time(0.0); }
-        }
-        refill_radio_pool();
-    };
-    Effect::new(move |_| {
-        if !connected.get() { return; }
-        let radio = radio_buffer.get();
-        if radio.waiting() && radio.ready_len() > 0 {
-            let mut entry = None;
-            set_radio_buffer.update(|radio| { entry = radio.take_pending(); });
-            if let Some(entry) = entry { play_radio_entry(entry); }
-        }
-        if radio.needs_refill() { refill_radio_pool(); }
-    });
-    let stop_playback = move || {
-        set_radio_buffer.update(|radio| radio.cancel_waiting());
-        web_order.write_value().order.cancel_navigation();
-        set_playing.set(false);
-        set_stopped.set(true);
-        set_position.set(0.0);
-        if let Some(audio) = audio_ref.get() { let _ = audio.pause(); audio.set_current_time(0.0); }
-    };
-    let toggle_play = move || {
-        if radio_waiting.get_untracked() { stop_playback(); }
-        else if queue.get_untracked().is_empty() {
-            if radio_on.get_untracked() { advance_radio(); }
-        } else if current.get_untracked() >= queue.get_untracked().len() {
-            play_row(0);
+    let stop_playback = move || backend.send(SessionCommand::Stop);
+    let toggle_play = move || backend.send(SessionCommand::Toggle);
+    let navigate = move |event| backend.send(SessionCommand::Navigate { event });
+    let step = move |delta: i64| {
+        navigate(if delta < 0 {
+            NavigationEvent::Previous
         } else {
-            set_playing.update(|value| *value = !*value);
-            set_stopped.set(false);
-        }
+            NavigationEvent::Next
+        })
     };
-    let navigate = move |event: NavigationEvent| {
-        let decision = {
-            let mut policy = web_order.write_value();
-            let index = current.get_untracked();
-            let tracks = policy.tracks(&queue.get_untracked(), &metadata.get_untracked(), index, shuffle.get_untracked(), repeat_mode.get_untracked());
-            policy.order.set_sequence(sorted_queue_indices(&queue.get_untracked(), &metadata.get_untracked(), &stars.get_untracked(), sort_key.get_untracked(), !sort_asc.get_untracked()), tracks.len());
-            policy.order.navigate(&tracks, Some(index), event)
-        };
-        set_policy_revision.update(|value| *value = value.wrapping_add(1));
-        match decision {
-            PlaybackDecision::Play(index) => jump(index),
-            PlaybackDecision::Radio => advance_radio(),
-            PlaybackDecision::Stop => stop_playback(),
-        }
-    };
-    let step = move |delta: i64| navigate(if delta < 0 { NavigationEvent::Previous } else { NavigationEvent::Next });
 
     // Publish the same resolved tags as the visible transport. A track change
     // clears the previous song immediately, then publishes the new song only
@@ -4480,11 +4398,13 @@ fn App() -> impl IntoView {
         let cache = metadata.get();
         let failed = metadata_failed.get();
         let Some(entry) = entry.filter(|_| !stopped) else {
-            let _ = js_sys::Reflect::set(&session, &"metadata".into(), &wasm_bindgen::JsValue::NULL);
+            let _ =
+                js_sys::Reflect::set(&session, &"metadata".into(), &wasm_bindgen::JsValue::NULL);
             return;
         };
         let Some(title) = display_title(&cache, &failed, &entry) else {
-            let _ = js_sys::Reflect::set(&session, &"metadata".into(), &wasm_bindgen::JsValue::NULL);
+            let _ =
+                js_sys::Reflect::set(&session, &"metadata".into(), &wasm_bindgen::JsValue::NULL);
             return;
         };
         let meta = meta_for(&cache, &entry);
@@ -4529,24 +4449,10 @@ fn App() -> impl IntoView {
 
     if let Some(session) = media_session() {
         media_session_action(&session, "play", move |_| {
-            if queue.get_untracked().is_empty() && radio_on.get_untracked() {
-                advance_radio();
-            } else if !queue.get_untracked().is_empty() {
-                set_stopped.set(false);
-                set_playing.set(true);
-                // Keep play() inside the media-key callback. On mobile the
-                // browser can require that activation for remote playback.
-                if let Some(audio) = audio_ref.get() {
-                    let _ = audio.play();
-                }
-            }
+            backend.send(SessionCommand::Resume)
         });
         media_session_action(&session, "pause", move |_| {
-            set_radio_buffer.update(|radio| radio.cancel_waiting());
-            set_playing.set(false);
-            if let Some(audio) = audio_ref.get() {
-                let _ = audio.pause();
-            }
+            backend.send(SessionCommand::Pause)
         });
         media_session_action(&session, "stop", move |_| stop_playback());
         media_session_action(&session, "previoustrack", move |_| step(-1));
@@ -4572,8 +4478,7 @@ fn App() -> impl IntoView {
                 } else {
                     requested.max(0.0)
                 };
-                audio.set_current_time(target);
-                set_position.set(target);
+                backend.send(SessionCommand::Seek { seconds: target });
             }
         });
     }
@@ -4581,10 +4486,12 @@ fn App() -> impl IntoView {
     let toggle_mute = move |_| {
         if volume.get() > 0.0 {
             set_volume_before_mute.set(volume.get());
-            set_volume.set(0.0);
+            backend.send(SessionCommand::Volume { value: 0.0 });
         } else {
             let restored = volume_before_mute.get();
-            set_volume.set(if restored > 0.0 { restored } else { 0.75 });
+            backend.send(SessionCommand::Volume {
+                value: if restored > 0.0 { restored } else { 0.75 },
+            });
         }
     };
 
@@ -4629,24 +4536,24 @@ fn App() -> impl IntoView {
 
     // Sorting supplies the same playback sequence as the other frontends;
     // filtering changes only visibility and preserves stable row identities.
-    let activate_row = move |index:usize| {
-        use kog_playback_policy::selection::{activate, Activation};
-        match activate(index, (current.get_untracked() < queue.get_untracked().len()).then_some(current.get_untracked()), queue.get_untracked().len()) {
-            Some(Activation::TogglePlayback) => toggle_play(),
-            Some(Activation::Play { index }) => play_row(index),
-            None => (),
-        }
-    };
-
+    let activate_row = move |index| backend.send(SessionCommand::Activate { index });
     let view_rows = move || {
+        backend.revision.track();
         let entries = queue.get();
         let cache = metadata.get();
         let failed = metadata_failed.get();
-        let starred = stars.get();
-        let query = filter.get();
-        sorted_queue_indices(&entries, &cache, &starred, sort_key.get(), !sort_asc.get()).into_iter()
-            .filter(|index| metadata_ready(&cache, &failed, &entries[*index]) && entry_sort_row(*index, &entries[*index], &cache, &starred).matches(&query))
-            .map(|index| (index, entries[index].clone())).collect::<Vec<_>>()
+        session_model.with_value(|model| {
+            model
+                .visible()
+                .iter()
+                .filter_map(|index| {
+                    entries
+                        .get(*index)
+                        .filter(|entry| metadata_ready(&cache, &failed, entry))
+                        .map(|entry| (*index, entry.clone()))
+                })
+                .collect::<Vec<_>>()
+        })
     };
 
     // The pane's status line, shared by the header and the transport: how many
@@ -4687,17 +4594,29 @@ fn App() -> impl IntoView {
         children
             .get()
             .get(directory)
-            .map(|items| items.iter().filter(|item| !item.is_dir()).cloned().collect())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter(|item| !item.is_dir())
+                    .cloned()
+                    .collect()
+            })
             .unwrap_or_default()
     };
 
     let toggle_sort = move |key: SortKey| {
-        if sort_key.get() == key {
-            set_sort_asc.update(|asc| *asc = !*asc);
-        } else {
-            set_sort_key.set(key);
-            set_sort_asc.set(true);
-        }
+        let column = ColumnId::ALL
+            .into_iter()
+            .find(|c| c.sort_key() == key)
+            .unwrap_or(ColumnId::Index)
+            .key()
+            .to_owned();
+        let descending = sort_key.get_untracked() == key && sort_asc.get_untracked();
+        backend.send(SessionCommand::Sort {
+            column,
+            descending,
+            physical: true,
+        });
     };
     let sort_arrow = move |key: SortKey| -> &'static str {
         if sort_key.get() == key {
@@ -4751,64 +4670,19 @@ fn App() -> impl IntoView {
         });
     };
 
-    // Append to the pane without ever touching the transport: the current song
-    // keeps playing, exactly as the desktop tree's "Add to Playlist" does. The
-    // same song may appear twice — adds always append, and the count that
-    // landed is reported so the outcome is never a silent nothing.
-    let append_entries = move |entries: Vec<Entry>| -> usize {
-        if entries.is_empty() {
-            return 0;
-        }
-        let mut added = 0_usize;
-        set_queue.update(|items| {
-            for entry in entries {
-                items.push(entry);
-                added += 1;
-            }
-        });
-        added
-    };
-
-    let playlist_workspace = workspace::Controller {
-        model: workspace_model, queue, selected,
-        revision: RwSignal::new(0), queue_generation: StoredValue::new(0), queue_jobs: StoredValue::new(workspace::QueueJobs::default()),
-        base: Callback::new(move |()| base()), auth: Callback::new(move |()| auth().header()),
-        saved: Callback::new(move |()| load_playlists()), error: set_message,
-        queued: Callback::new(move |(mode, entries): (kog_playback_policy::workspace::QueueAction, Vec<Entry>)| {
-            let start = queue.get_untracked().len(); let count = entries.len();
-            append_entries(entries);
-            let decision = {
-                let mut policy = web_order.write_value();
-                policy.tracks(&queue.get_untracked(), &metadata.get_untracked(), current.get_untracked(), shuffle.get_untracked(), repeat_mode.get_untracked());
-                policy.order.apply_queue_action(mode, start, count)
-            };
-            set_policy_revision.update(|value| *value += 1);
-            if let Some(PlaybackDecision::Play(index)) = decision { play_row(index); }
-            set_status_note.set(format!("Added {count} tracks to Play Queue"));
-        }),
-    };
-
-    workspace_dispatch.set_value(Some(Callback::new(move |command| playlist_workspace.send(command))));
-
-    // Opening a playlist appends its tracks to the pane - like the desktop's
-    // tree, where adding a playlist never throws away what is queued.
-    let append_playlist = {
-        let get_json = get_json;
-        let append_entries = append_entries;
-        move |id: i64| {
-            leptos::task::spawn_local(async move {
-                match get_json(format!("/api/playlists/{id}")).await {
-                    Ok(value) => {
-                        let entries: Vec<Entry> = value["entries"]
-                            .as_array()
-                            .map(|items| items.iter().map(entry_from_json).collect())
-                            .unwrap_or_default();
-                        append_entries(entries);
-                    }
-                    Err(error) => set_message.set(error),
-                }
-            });
-        }
+    let playlist_workspace = workspace::Controller { backend };
+    backend
+        .saved
+        .set_value(Some(Callback::new(move |()| load_playlists())));
+    workspace_dispatch.set_value(Some(Callback::new(move |command| {
+        playlist_workspace.send(command)
+    })));
+    let append_playlist = move |id: i64| {
+        backend.send(SessionCommand::Expand {
+            scope: base(),
+            entries: vec![serde_json::json!({"playlist_id":id})],
+            action: QueueAction::AddToQueue,
+        })
     };
 
     let commit_rename = {
@@ -4826,7 +4700,12 @@ fn App() -> impl IntoView {
                 let header = auth().header();
                 leptos::task::spawn_local(async move {
                     match post_json(url, header, serde_json::json!({ "name": name })).await {
-                        Ok(_) => playlist_workspace.send(kog_playback_policy::workspace::Command::Renamed {key:format!("{}:{id}",base()),name:name.clone()}),
+                        Ok(_) => playlist_workspace.send(
+                            kog_playback_policy::workspace::Command::Renamed {
+                                key: format!("{}:{id}", base()),
+                                name: name.clone(),
+                            },
+                        ),
                         Err(error) => set_message.set(error),
                     }
                     load_playlists();
@@ -4850,7 +4729,12 @@ fn App() -> impl IntoView {
                     Ok(response) if !response.ok() => {
                         set_message.set(format!("Request failed ({})", response.status()))
                     }
-                    Ok(_) => { playlist_workspace.send(kog_playback_policy::workspace::Command::Deleted { key:format!("{}:{id}",base()) }); load_playlists(); },
+                    Ok(_) => {
+                        playlist_workspace.send(kog_playback_policy::workspace::Command::Deleted {
+                            key: format!("{}:{id}", base()),
+                        });
+                        load_playlists();
+                    }
                     Err(error) => set_message.set(error.to_string()),
                 }
             });
@@ -4859,29 +4743,12 @@ fn App() -> impl IntoView {
 
     // The desktop sidebar's Play: append the playlist's tracks and start
     // playing the first of them.
-    let play_playlist = {
-        let get_json = get_json;
-        let jump = play_row.clone();
-        move |id: i64| {
-            leptos::task::spawn_local(async move {
-                match get_json(format!("/api/playlists/{id}")).await {
-                    Ok(value) => {
-                        let entries: Vec<Entry> = value["entries"]
-                            .as_array()
-                            .map(|items| items.iter().map(entry_from_json).collect())
-                            .unwrap_or_default();
-                        if entries.is_empty() {
-                            set_status_note.set("Playlist is empty".to_owned());
-                            return;
-                        }
-                        let start = queue.get_untracked().len();
-                        set_queue.update(|items| items.extend(entries));
-                        jump(start);
-                    }
-                    Err(error) => set_message.set(error),
-                }
-            });
-        }
+    let play_playlist = move |id: i64| {
+        backend.send(SessionCommand::Expand {
+            scope: base(),
+            entries: vec![serde_json::json!({"playlist_id":id})],
+            action: QueueAction::PlayNow,
+        })
     };
 
     let replace_pane_with_playlist = move |id: i64, name: String| playlist_workspace.open(id, name);
@@ -4950,10 +4817,8 @@ fn App() -> impl IntoView {
                         let mut m3u = String::from("#EXTM3U\n");
                         for entry in &entries {
                             let meta = meta_for(&cache, entry);
-                            let duration = meta
-                                .as_ref()
-                                .and_then(|meta| meta.duration)
-                                .unwrap_or(0.0) as i64;
+                            let duration =
+                                meta.as_ref().and_then(|meta| meta.duration).unwrap_or(0.0) as i64;
                             let artist = meta
                                 .as_ref()
                                 .and_then(|meta| meta.artist.clone())
@@ -4972,14 +4837,10 @@ fn App() -> impl IntoView {
                         parts.push(&bytes);
                         match web_sys::Blob::new_with_u8_slice_sequence(&parts.into()) {
                             Ok(blob) => {
-                                let staged =
-                                    web_sys::Url::create_object_url_with_blob(&blob);
+                                let staged = web_sys::Url::create_object_url_with_blob(&blob);
                                 match staged {
                                     Ok(url) => {
-                                        trigger_browser_download(
-                                            &url,
-                                            &format!("{name}.m3u"),
-                                        );
+                                        trigger_browser_download(&url, &format!("{name}.m3u"));
                                         set_status_note.set(format!(
                                             "Exported {} tracks to {}.m3u",
                                             entries.len(),
@@ -4987,15 +4848,11 @@ fn App() -> impl IntoView {
                                         ));
                                     }
                                     Err(_) => {
-                                        set_message.set(
-                                            "could not stage the m3u file".to_owned(),
-                                        )
+                                        set_message.set("could not stage the m3u file".to_owned())
                                     }
                                 }
                             }
-                            Err(_) => {
-                                set_message.set("could not build the m3u file".to_owned())
-                            }
+                            Err(_) => set_message.set("could not build the m3u file".to_owned()),
                         }
                     }
                     Err(error) => set_message.set(error),
@@ -5022,9 +4879,7 @@ fn App() -> impl IntoView {
                 .map(|(_, entry)| entry)
                 .collect();
             leptos::task::spawn_local(async move {
-                match post_json(url, header.clone(), serde_json::json!({ "name": name }))
-                    .await
-                {
+                match post_json(url, header.clone(), serde_json::json!({ "name": name })).await {
                     Ok(value) => {
                         let id = value["id"].as_i64().unwrap_or_default();
                         if !entries.is_empty() {
@@ -5054,8 +4909,7 @@ fn App() -> impl IntoView {
                                 set_message.set(error);
                             }
                         }
-                        set_status_note
-                            .set(format!("Saved {name} as a new playlist"));
+                        set_status_note.set(format!("Saved {name} as a new playlist"));
                         load_playlists();
                     }
                     Err(error) => set_message.set(error),
@@ -5105,8 +4959,7 @@ fn App() -> impl IntoView {
                 };
                 match sent {
                     Ok(response) if response.ok() => {
-                        set_status_note
-                            .set(format!("Overwrote {name} with {count} tracks"));
+                        set_status_note.set(format!("Overwrote {name} with {count} tracks"));
                         load_playlists();
                     }
                     Ok(response) => set_message.set(error_text(response).await),
@@ -5136,7 +4989,11 @@ fn App() -> impl IntoView {
     let toggle_search_paused = move || {
         let paused = !search_paused.get_untracked();
         set_search_paused.set(paused);
-        let url = format!("{}/api/library/search/pause", base());
+        let url = format!(
+            "{}/api/library/search/pause?session={}",
+            base(),
+            url_encode(&session_model.with_value(|s| s.id().to_owned()))
+        );
         let header = auth().header();
         leptos::task::spawn_local(async move {
             if let Err(error) =
@@ -5167,7 +5024,11 @@ fn App() -> impl IntoView {
     let toggle_search_paused = move || {
         let paused = !search_paused.get_untracked();
         set_search_paused.set(paused);
-        let url = format!("{}/api/library/search/pause", base());
+        let url = format!(
+            "{}/api/library/search/pause?session={}",
+            base(),
+            url_encode(&session_model.with_value(|s| s.id().to_owned()))
+        );
         let header = auth().header();
         leptos::task::spawn_local(async move {
             if let Err(error) =
@@ -5253,7 +5114,11 @@ fn App() -> impl IntoView {
             name: last_segment(&url),
             location: url,
         };
-        set_queue.update(|items| items.push(entry));
+        backend.send(SessionCommand::Expand {
+            scope: base(),
+            entries: vec![serde_json::to_value(entry).unwrap()],
+            action: QueueAction::AddToQueue,
+        });
         set_add_url_open.set(false);
         if touch_mode {
             set_mobile_view.set(MobileView::Queue);
@@ -5267,18 +5132,7 @@ fn App() -> impl IntoView {
 
     // Clear the web queue and reset its playback state.
     let clear_pane = move || {
-        playlist_workspace.queue_generation.update_value(|value| *value += 1);
-        stop_playback();
-        web_order.write_value().order.clear_tracks();
-        set_queue.set(Vec::new());
-        set_current.set(usize::MAX);
-        set_position.set(0.0);
-        set_media_duration.set(None);
-        set_radio_buffer.update(|radio| radio.cancel_waiting());
-        set_stopped.set(true);
-        set_playing.set(false);
-        set_selected.set(HashSet::new());
-        set_selection_anchor.set(None);
+        backend.send(SessionCommand::Clear);
         set_list_name.set(String::new());
         set_menu_open.set(false);
     };
@@ -5297,7 +5151,12 @@ fn App() -> impl IntoView {
     // on a phone it switches to the Library view.
     let toggle_sidebar = move || {
         let mobile = web_sys::window()
-            .and_then(|window| window.match_media("(max-width: 820px), (pointer: coarse) and (max-width: 1200px)").ok().flatten())
+            .and_then(|window| {
+                window
+                    .match_media("(max-width: 820px), (pointer: coarse) and (max-width: 1200px)")
+                    .ok()
+                    .flatten()
+            })
             .map(|media| media.matches())
             .unwrap_or(false);
         if mobile {
@@ -5316,7 +5175,12 @@ fn App() -> impl IntoView {
     };
     let sidebar_shown = move || {
         let mobile = web_sys::window()
-            .and_then(|window| window.match_media("(max-width: 820px), (pointer: coarse) and (max-width: 1200px)").ok().flatten())
+            .and_then(|window| {
+                window
+                    .match_media("(max-width: 820px), (pointer: coarse) and (max-width: 1200px)")
+                    .ok()
+                    .flatten()
+            })
             .map(|media| media.matches())
             .unwrap_or(false);
         if mobile {
@@ -5329,127 +5193,17 @@ fn App() -> impl IntoView {
     // Add one tree row: a file expands to its playable tracks, and a folder
     // contributes playable files throughout its subtree, including folders
     // inside archives.
-    let add_row_to_playlist = {
-        let get_json = get_json;
-        let queue_files = queue_files.clone();
-        let append_entries = append_entries;
-        // Mirror the desktop's add-path status so an add is never a silent
-        // no-op from the visitor's point of view.
-        let report_add = {
-            let set_status_note = set_status_note.clone();
-            move |added: usize| {
-                set_status_note.set(match added {
-                    0 => "No tracks added".to_owned(),
-                    1 => "Added to playlist".to_owned(),
-                    count => format!("Added {count} tracks to playlist"),
-                });
-                if let Some(window) = web_sys::window() {
-                    let note = set_status_note.clone();
-                    let clear =
-                        Closure::<dyn FnMut()>::new(move || note.set(String::new()));
-                    let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
-                        clear.as_ref().unchecked_ref(),
-                        4000,
-                    );
-                    clear.forget();
-                }
-            }
-        };
-        let append_folder_entries = append_entries;
-        // Expand through the server before appending, like the desktop's add
-        // path: a multi-song file contributes one row per song instead of
-        // only its first track. Chunked to the endpoint's batch cap.
-        let expand_and_append = {
-            let append_entries = append_entries;
-            let report_add = report_add.clone();
-            move |entries: Vec<Entry>| {
-                if entries.is_empty() {
-                    report_add(0);
-                    return;
-                }
-                let url = format!("{}/api/expand", base());
-                let header = auth().header();
-                leptos::task::spawn_local(async move {
-                    let mut expanded: Vec<Entry> = Vec::new();
-                    let mut first_error = None;
-                    for chunk in entries.chunks(200) {
-                        let body: Vec<serde_json::Value> = chunk
-                            .iter()
-                            .map(|entry| {
-                                serde_json::json!({
-                                    "kind": entry.kind,
-                                    "path": entry.path,
-                                    "entry": entry.entry,
-                                    "fragment": entry.fragment,
-                                    "name": entry.name,
-                                })
-                            })
-                            .collect();
-                        let url = url.clone();
-                        let header = header.clone();
-                        let value = match post_json(url, header, serde_json::json!(body)).await {
-                            Ok(value) => value,
-                            Err(error) => {
-                                first_error.get_or_insert(error);
-                                continue;
-                            }
-                        };
-                        let Some(lists) = value["tracks"].as_array() else {
-                            continue;
-                        };
-                        for list in lists {
-                            if let Some(tracks) = list.as_array() {
-                                expanded.extend(tracks.iter().map(browse_file_entry));
-                            }
-                        }
-                    }
-                    if let Some(error) = first_error {
-                        set_message.set(error);
-                    }
-                    report_add(append_entries(expanded));
-                });
-            }
-        };
-        move |row: TreeRow| {
-            if !row.is_dir {
-                // Match the whole locator, not just the path: a subsong
-                // playlist lists several rows for one file. Rows the loaded
-                // tree does not know (search results, a stale listing) still
-                // append, built straight from the row.
-                let known = queue_files(&row.parent).into_iter().find(|item| {
-                    item.kind == row.kind
-                        && item.path == row.path
-                        && item.entry == row.entry
-                        && item.fragment == row.fragment
-                });
-                let entry = known.unwrap_or_else(|| Entry {
-                    kind: row.kind.clone(),
-                    path: row.path.clone(),
-                    entry: row.entry.clone(),
-                    fragment: row.fragment.clone(),
-                    name: row.name.clone(),
-                    location: row.path.clone(),
-                });
-                expand_and_append(vec![entry]);
-                return;
-            }
-            let report_add = report_add.clone();
-            let query = tree_search.get_untracked();
-            let search_root = tree_root.get_untracked();
-            leptos::task::spawn_local(async move {
-                let route = format!("/api/library/collect?path={}&q={}&root={}",
-                    url_encode(&row.path), url_encode(&query), url_encode(&search_root));
-                match get_json(route).await {
-                    Ok(value) => {
-                        let entries = value["tracks"]
-                            .as_array()
-                            .map(|tracks| tracks.iter().map(browse_file_entry).collect())
-                            .unwrap_or_default();
-                        report_add(append_folder_entries(entries));
-                    }
-                    Err(error) => set_message.set(error),
-                }
+    let add_row_to_playlist = move |row: TreeRow| {
+        if row.is_dir {
+            backend.send(SessionCommand::Collect {
+                scope: base(),
+                path: row.path,
+                query: tree_search.get_untracked(),
+                root: tree_root.get_untracked(),
+                action: QueueAction::AddToQueue,
             });
+        } else {
+            backend.send(SessionCommand::Expand {scope:base(),entries:vec![serde_json::json!({"kind":row.kind,"path":row.path,"entry":row.entry,"fragment":row.fragment,"name":row.name})],action:QueueAction::AddToQueue});
         }
     };
 
@@ -5462,88 +5216,87 @@ fn App() -> impl IntoView {
     // exists once the view has rendered, hence the effect.
     {
         let drag_bound = Rc::new(std::cell::Cell::new(false));
-        let interval_cell: Rc<std::cell::Cell<Option<i32>>> =
-            Rc::new(std::cell::Cell::new(None));
+        let interval_cell: Rc<std::cell::Cell<Option<i32>>> = Rc::new(std::cell::Cell::new(None));
         let bind = {
             let drag_bound = drag_bound.clone();
             let interval_cell = interval_cell.clone();
-        Closure::<dyn FnMut()>::new(move || {
-            if drag_bound.get() {
+            Closure::<dyn FnMut()>::new(move || {
+                if drag_bound.get() {
+                    if let Some(id) = interval_cell.get() {
+                        if let Some(window) = web_sys::window() {
+                            window.clear_interval_with_handle(id);
+                        }
+                    }
+                    return;
+                }
+                let Some(rows) = web_sys::window()
+                    .and_then(|window| window.document())
+                    .and_then(|document| document.get_element_by_id("playlist-rows"))
+                else {
+                    return; // The pane has not rendered yet; poll again.
+                };
                 if let Some(id) = interval_cell.get() {
                     if let Some(window) = web_sys::window() {
                         window.clear_interval_with_handle(id);
                     }
                 }
-                return;
-            }
-            let Some(rows) = web_sys::window()
-                .and_then(|window| window.document())
-                .and_then(|document| document.get_element_by_id("playlist-rows"))
-            else {
-                return; // The pane has not rendered yet; poll again.
-            };
-            if let Some(id) = interval_cell.get() {
-                if let Some(window) = web_sys::window() {
-                    window.clear_interval_with_handle(id);
-                }
-            }
-            drag_bound.set(true);
-        let cleanup_drag = {
-            let set_dragging_track = set_dragging_track.clone();
-            let set_reorder_to = set_reorder_to.clone();
-            move || {
-                set_dragging_track.set(None);
-                set_reorder_to.set(None);
-                let _ = js_sys::eval(
-                    "document.querySelectorAll('.track.reorder-above').forEach(t => t.classList.remove('reorder-above'))",
+                drag_bound.set(true);
+                let cleanup_drag = {
+                    let set_dragging_track = set_dragging_track.clone();
+                    let set_reorder_to = set_reorder_to.clone();
+                    move || {
+                        set_dragging_track.set(None);
+                        set_reorder_to.set(None);
+                        let _ = js_sys::eval(
+                            "document.querySelectorAll('.track.reorder-above').forEach(t => t.classList.remove('reorder-above'))",
+                        );
+                    }
+                };
+
+                let on_dragstart = {
+                    let set_dragging_track = set_dragging_track.clone();
+                    let set_reorder_to = set_reorder_to.clone();
+                    Closure::<dyn FnMut(web_sys::DragEvent)>::new(move |ev: web_sys::DragEvent| {
+                        let row = ev
+                            .target()
+                            .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+                            .and_then(|target| target.closest(".track").ok().flatten());
+                        let Some(row) = row else {
+                            return;
+                        };
+                        let Some(index) = row
+                            .get_attribute("data-index")
+                            .and_then(|value| value.parse::<usize>().ok())
+                        else {
+                            return;
+                        };
+                        set_dragging_track.set(Some(index));
+                        set_reorder_to.set(None);
+                        if let Some(transfer) = ev.data_transfer() {
+                            let _ = transfer.set_data("text/plain", &index.to_string());
+                            let _ = transfer.set_effect_allowed("move");
+                        }
+                    })
+                };
+                let _ = rows.add_event_listener_with_callback(
+                    "dragstart",
+                    on_dragstart.as_ref().unchecked_ref(),
                 );
-            }
-        };
+                on_dragstart.forget();
 
-        let on_dragstart = {
-            let set_dragging_track = set_dragging_track.clone();
-            let set_reorder_to = set_reorder_to.clone();
-            Closure::<dyn FnMut(web_sys::DragEvent)>::new(move |ev: web_sys::DragEvent| {
-                let row = ev
-                    .target()
-                    .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
-                    .and_then(|target| target.closest(".track").ok().flatten());
-                let Some(row) = row else {
-                    return;
-                };
-                let Some(index) = row
-                    .get_attribute("data-index")
-                    .and_then(|value| value.parse::<usize>().ok())
-                else {
-                    return;
-                };
-                set_dragging_track.set(Some(index));
-                set_reorder_to.set(None);
-                if let Some(transfer) = ev.data_transfer() {
-                    let _ = transfer.set_data("text/plain", &index.to_string());
-                    let _ = transfer.set_effect_allowed("move");
-                }
-            })
-        };
-        let _ = rows.add_event_listener_with_callback(
-            "dragstart",
-            on_dragstart.as_ref().unchecked_ref(),
-        );
-        on_dragstart.forget();
-
-        let on_dragover = {
-            let dragging_track = dragging_track.clone();
-            let set_reorder_to = set_reorder_to.clone();
-            let set_playlist_drop_active = set_playlist_drop_active.clone();
-            Closure::<dyn FnMut(web_sys::DragEvent)>::new(move |ev: web_sys::DragEvent| {
-                let current = dragging_track.get_untracked();
-                ev.prevent_default();
-                if let Some(from) = current {
-                    // Reordering a queue row: highlight the insertion point
-                    // under the cursor.
-                    let client_y = ev.client_y();
-                    let marker = js_sys::eval(&format!(
-                        "(() => {{
+                let on_dragover = {
+                    let dragging_track = dragging_track.clone();
+                    let set_reorder_to = set_reorder_to.clone();
+                    let set_playlist_drop_active = set_playlist_drop_active.clone();
+                    Closure::<dyn FnMut(web_sys::DragEvent)>::new(move |ev: web_sys::DragEvent| {
+                        let current = dragging_track.get_untracked();
+                        ev.prevent_default();
+                        if let Some(from) = current {
+                            // Reordering a queue row: highlight the insertion point
+                            // under the cursor.
+                            let client_y = ev.client_y();
+                            let marker = js_sys::eval(&format!(
+                                "(() => {{
                             const rows = document.querySelector('.rows');
                             const tracks = [...rows.querySelectorAll('.track')];
                             tracks.forEach(t => t.classList.remove('reorder-above'));
@@ -5561,87 +5314,88 @@ fn App() -> impl IntoView {
                             }}
                             return index;
                         }})()"
-                    ));
-                    let marker_result = match marker {
-                        Ok(value) => match value.as_f64() {
-                            Some(index) => {
-                                set_reorder_to.set(Some(index as usize));
-                                String::new()
-                            }
-                            None => "eval returned non-number".to_owned(),
-                        },
-                        Err(error) => format!("eval threw: {error:?}"),
-                    };
-                    return;
-                }
-                if let Some(transfer) = ev.data_transfer() {
-                    let _ = transfer.set_drop_effect("copy");
-                }
-                set_playlist_drop_active.set(true);
-            })
-        };
-        let _ = rows.add_event_listener_with_callback(
-            "dragover",
-            on_dragover.as_ref().unchecked_ref(),
-        );
-        on_dragover.forget();
-
-        let on_dragleave = {
-            let set_playlist_drop_active = set_playlist_drop_active.clone();
-            Closure::<dyn FnMut(web_sys::DragEvent)>::new(move |_| {
-                set_playlist_drop_active.set(false);
-            })
-        };
-        let _ = rows.add_event_listener_with_callback(
-            "dragleave",
-            on_dragleave.as_ref().unchecked_ref(),
-        );
-        on_dragleave.forget();
-
-        let on_drop = {
-            let dragging_tree = dragging_tree.clone();
-            let dragging_playlist = dragging_playlist.clone();
-            let dragging_track = dragging_track.clone();
-            let reorder_to = reorder_to.clone();
-            let set_playlist_drop_active = set_playlist_drop_active.clone();
-            let add_row_to_playlist = add_row_to_playlist.clone();
-            let append_playlist = append_playlist.clone();
-            let move_track = move_track.clone();
-            Closure::<dyn FnMut(web_sys::DragEvent)>::new(move |ev: web_sys::DragEvent| {
-                ev.prevent_default();
-                set_playlist_drop_active.set(false);
-                if let Some(row) = dragging_tree.get_untracked() {
-                    add_row_to_playlist(row);
-                } else if let Some(id) = dragging_playlist.get_untracked() {
-                    append_playlist(id);
-                } else if let Some(from) = dragging_track.get_untracked()
-                    && let Some(to) = reorder_to.get_untracked()
-                {
-                    move_track(from, to);
-                }
-                set_dragging_tree.set(None);
-                set_dragging_playlist.set(None);
-                set_dragging_track.set(None);
-                set_reorder_to.set(None);
-                let _ = js_sys::eval(
-                    "document.querySelectorAll('.track.reorder-above').forEach(t => t.classList.remove('reorder-above'))",
+                            ));
+                            let marker_result = match marker {
+                                Ok(value) => match value.as_f64() {
+                                    Some(index) => {
+                                        set_reorder_to.set(Some(index as usize));
+                                        String::new()
+                                    }
+                                    None => "eval returned non-number".to_owned(),
+                                },
+                                Err(error) => format!("eval threw: {error:?}"),
+                            };
+                            return;
+                        }
+                        if let Some(transfer) = ev.data_transfer() {
+                            let _ = transfer.set_drop_effect("copy");
+                        }
+                        set_playlist_drop_active.set(true);
+                    })
+                };
+                let _ = rows.add_event_listener_with_callback(
+                    "dragover",
+                    on_dragover.as_ref().unchecked_ref(),
                 );
-            })
-        };
-        let _ = rows.add_event_listener_with_callback("drop", on_drop.as_ref().unchecked_ref());
-        on_drop.forget();
+                on_dragover.forget();
 
-        let on_dragend = {
-            let cleanup_drag = cleanup_drag.clone();
-            Closure::<dyn FnMut(web_sys::DragEvent)>::new(move |_| {
-                cleanup_drag();
-            })
-        };
-        let _ = rows.add_event_listener_with_callback(
-            "dragend",
-            on_dragend.as_ref().unchecked_ref(),
-        );
-        on_dragend.forget();
+                let on_dragleave = {
+                    let set_playlist_drop_active = set_playlist_drop_active.clone();
+                    Closure::<dyn FnMut(web_sys::DragEvent)>::new(move |_| {
+                        set_playlist_drop_active.set(false);
+                    })
+                };
+                let _ = rows.add_event_listener_with_callback(
+                    "dragleave",
+                    on_dragleave.as_ref().unchecked_ref(),
+                );
+                on_dragleave.forget();
+
+                let on_drop = {
+                    let dragging_tree = dragging_tree.clone();
+                    let dragging_playlist = dragging_playlist.clone();
+                    let dragging_track = dragging_track.clone();
+                    let reorder_to = reorder_to.clone();
+                    let set_playlist_drop_active = set_playlist_drop_active.clone();
+                    let add_row_to_playlist = add_row_to_playlist.clone();
+                    let append_playlist = append_playlist.clone();
+                    let move_track = move_track.clone();
+                    Closure::<dyn FnMut(web_sys::DragEvent)>::new(move |ev: web_sys::DragEvent| {
+                        ev.prevent_default();
+                        set_playlist_drop_active.set(false);
+                        if let Some(row) = dragging_tree.get_untracked() {
+                            add_row_to_playlist(row);
+                        } else if let Some(id) = dragging_playlist.get_untracked() {
+                            append_playlist(id);
+                        } else if let Some(from) = dragging_track.get_untracked()
+                            && let Some(to) = reorder_to.get_untracked()
+                        {
+                            move_track(from, to);
+                        }
+                        set_dragging_tree.set(None);
+                        set_dragging_playlist.set(None);
+                        set_dragging_track.set(None);
+                        set_reorder_to.set(None);
+                        let _ = js_sys::eval(
+                            "document.querySelectorAll('.track.reorder-above').forEach(t => t.classList.remove('reorder-above'))",
+                        );
+                    })
+                };
+                let _ =
+                    rows.add_event_listener_with_callback("drop", on_drop.as_ref().unchecked_ref());
+                on_drop.forget();
+
+                let on_dragend = {
+                    let cleanup_drag = cleanup_drag.clone();
+                    Closure::<dyn FnMut(web_sys::DragEvent)>::new(move |_| {
+                        cleanup_drag();
+                    })
+                };
+                let _ = rows.add_event_listener_with_callback(
+                    "dragend",
+                    on_dragend.as_ref().unchecked_ref(),
+                );
+                on_dragend.forget();
             })
         };
         if let Ok(handle) = web_sys::window()
@@ -5691,7 +5445,11 @@ fn App() -> impl IntoView {
         let auto_fit_column = auto_fit_column.clone();
         move || {
             for id in ColumnId::ALL {
-                if columns.get_untracked().iter().any(|column| column.id == id && column.visible) {
+                if columns
+                    .get_untracked()
+                    .iter()
+                    .any(|column| column.id == id && column.visible)
+                {
                     auto_fit_column(id);
                 }
             }
@@ -5728,7 +5486,10 @@ fn App() -> impl IntoView {
             .filter(|column| column.visible)
             .map(|column| column.id)
             .collect();
-        match visible.iter().position(|candidate| *candidate == menu_column()) {
+        match visible
+            .iter()
+            .position(|candidate| *candidate == menu_column())
+        {
             Some(position) => {
                 let target = position as i64 + direction;
                 target >= 0 && (target as usize) < visible.len()
@@ -5772,24 +5533,30 @@ fn App() -> impl IntoView {
 
     // Leave the transport title empty until its metadata lookup completes.
     // A finished lookup without a title falls back to the filename.
-    let now_title = move || {
-        match current_entry() {
-            Some(entry) => display_title(&metadata.get(), &metadata_failed.get(), &entry)
-                .unwrap_or_default(),
-            None => "Kog".to_owned(),
+    let now_title = move || match current_entry() {
+        Some(entry) => {
+            display_title(&metadata.get(), &metadata_failed.get(), &entry).unwrap_or_default()
         }
+        None => "Kog".to_owned(),
     };
     let now_subtitle = move || {
         let entry = current_entry();
         let cache = metadata.get();
-        if entry.as_ref().is_some_and(|entry| {
-            !metadata_ready(&cache, &metadata_failed.get(), entry)
-        }) {
+        if entry
+            .as_ref()
+            .is_some_and(|entry| !metadata_ready(&cache, &metadata_failed.get(), entry))
+        {
             return String::new();
         }
         let meta = entry.as_ref().and_then(|entry| meta_for(&cache, entry));
-        let artist = meta.as_ref().and_then(|meta| meta.artist.clone()).unwrap_or_default();
-        let album = meta.as_ref().and_then(|meta| meta.album.clone()).unwrap_or_default();
+        let artist = meta
+            .as_ref()
+            .and_then(|meta| meta.artist.clone())
+            .unwrap_or_default();
+        let album = meta
+            .as_ref()
+            .and_then(|meta| meta.album.clone())
+            .unwrap_or_default();
         match (artist.is_empty(), album.is_empty()) {
             (false, false) => format!("{artist}  •  {album}"),
             (false, true) => artist,
@@ -5812,8 +5579,14 @@ fn App() -> impl IntoView {
             return String::new();
         }
         let meta = meta_for(&cache, &entry);
-        let artist = meta.as_ref().and_then(|row| row.artist.as_deref()).unwrap_or("");
-        let album = meta.as_ref().and_then(|row| row.album.as_deref()).unwrap_or("");
+        let artist = meta
+            .as_ref()
+            .and_then(|row| row.artist.as_deref())
+            .unwrap_or("");
+        let album = meta
+            .as_ref()
+            .and_then(|row| row.album.as_deref())
+            .unwrap_or("");
         if !artist.trim().is_empty() && !album.trim().is_empty() {
             return format!("{artist} · {album}");
         }
@@ -5855,480 +5628,755 @@ fn App() -> impl IntoView {
     };
 
     view! {
-        <div
-            class="app"
-            class:transport-compact=move || transport_compact.get()
-            class:mobile-library=move || mobile_view.get() == MobileView::Library
-            class:mobile-queue=move || mobile_view.get() == MobileView::Queue
-            class:mobile-playlists=move || mobile_view.get() == MobileView::Playlists
-            on:pointermove=move |ev: web_sys::PointerEvent| {
-                if let Some((id, start_x, start_width)) = resizing.get_untracked() {
-                    apply_width(id, start_width + (ev.client_x() as f64 - start_x));
-                }
-            }
-            on:pointerup=move |_| {
-                if resizing.get_untracked().is_some() {
-                    set_resizing.set(None);
-                    persist_columns(&columns.get_untracked());
-                }
-            }
-        >
-            <header class="toolbar">
-                <img class="logo" src="/icons/kog.svg" alt="Kog" />
-                <button
-                    class="flat icon-button"
-                    title="Kog menu"
-                    on:click=move |_| set_menu_open.update(|open| *open = !*open)
-                    inner_html=icons::MENU
-                ></button>
-                <button
-                    class="flat icon-button sidebar-toggle"
-                    class:active=move || sidebar_shown()
-                    title=move || {
-                        if sidebar_shown() { "Hide File Tree" } else { "Show File Tree" }
-                    }
-                    on:click=move |_| toggle_sidebar()
-                    inner_html=icons::VIEW_LIST_TREE
-                ></button>
-                <span class="mobile-title">
-                    {move || match mobile_view.get() {
-                        MobileView::Library => "Library",
-                        MobileView::Queue => "Queue",
-                        MobileView::Playlists => "Playlists",
-                    }}
-                </span>
-                <div class="search">
-                    <span class="pill-icon" aria-hidden="true" inner_html=icons::FIND></span>
-                    <input
-                        type="search"
-                        placeholder="Search"
-                        aria-label="Search playlist"
-                        prop:value=move || filter.get()
-                        on:input=move |event| set_filter.set(event_target_value(&event))
-                    />
-                    <Show when=move || !filter.get().is_empty() fallback=|| ()>
-                        <button
-                            class="flat search-clear"
-                            title="Clear playlist search"
-                            on:click=move |_| set_filter.set(String::new())
-                        >"×"</button>
-                    </Show>
-                </div>
-                <button
-                    class="flat icon-button mobile-sort"
-                    type="button"
-                    title="Sort queue"
-                    aria-label="Sort queue"
-                    on:click=move |_| set_mobile_sort_open.set(true)
-                >"↕"</button>
-                <button
-                    class="flat icon-button mobile-create-playlist"
-                    type="button"
-                    title="Create a playlist"
-                    aria-label="Create a playlist"
-                    on:click=move |_| open_create_playlist_dialog()
-                >"+"</button>
-                <select
-                    class="codec"
-                    title="Stream format"
-                    prop:value=move || codec.get()
-                    on:change=move |event| {
-                        let value = event_target_value(&event);
-                        store("kog.codec", &value);
-                        set_codec.set(value);
-                    }
-                >
-                    <option value="aac">"AAC"</option>
-                    <option value="opus">"Opus"</option>
-                    <option value="flac">"FLAC"</option>
-                </select>
-                <button
-                    class="flat server"
-                    title=move || if connected.get() { "Connected" } else { "Not connected" }
-                    aria-label=move || if connected.get() { "Server settings, connected" } else { "Server settings, disconnected" }
-                    on:click=move |_| set_settings_open.update(|open| *open = !*open)
-                >
-                    <span class="mobile-server-icon" aria-hidden="true" inner_html=icons::GEAR></span>
-                    <span class=move || {
-                        if connected.get() { "server-dot online" } else { "server-dot offline" }
-                    }>{move || if connected.get() { "●" } else { "○" }}</span>
-                    <span class="server-label">" Server"</span>
-                </button>
-            </header>
-
             <div
-                class:sidebar-open=move || sidebar_open.get()
-                class:sidebar-hidden=move || !sidebar_visible.get()
-                class:resizing=move || resizing_sidebar.get()
-                class="workspace"
-                style=move || format!("--sidebar-width: {:.0}px", sidebar_width.get())
+                class="app"
+                class:transport-compact=move || transport_compact.get()
+                class:mobile-library=move || mobile_view.get() == MobileView::Library
+                class:mobile-queue=move || mobile_view.get() == MobileView::Queue
+                class:mobile-playlists=move || mobile_view.get() == MobileView::Playlists
+                on:pointermove=move |ev: web_sys::PointerEvent| {
+                    if let Some((id, start_x, start_width)) = resizing.get_untracked() {
+                        apply_width(id, start_width + (ev.client_x() as f64 - start_x));
+                    }
+                }
+                on:pointerup=move |_| {
+                    if resizing.get_untracked().is_some() {
+                        set_resizing.set(None);
+                        persist_columns(&columns.get_untracked());
+                    }
+                }
             >
-                <div
-                    class="drawer-scrim"
-                    on:click=move |_| set_sidebar_open.set(false)
-                ></div>
-
-                <div
-                    class="pane-resizer"
-                    title="Drag to resize the file tree"
-                    on:pointerdown=move |ev: web_sys::PointerEvent| {
-                        ev.target().and_then(|target| {
-                            target.dyn_into::<web_sys::Element>().ok()
-                        })
-                        .and_then(|element| element.set_pointer_capture(ev.pointer_id()).ok());
-                        set_resizing_sidebar.set(true);
-                    }
-                    on:pointermove=move |ev: web_sys::PointerEvent| {
-                        if resizing_sidebar.get_untracked() {
-                            let width = (ev.client_x() as f64).clamp(180.0, 600.0);
-                            set_sidebar_width.set(width);
+                <header class="toolbar">
+                    <img class="logo" src="/icons/kog.svg" alt="Kog" />
+                    <button
+                        class="flat icon-button"
+                        title="Kog menu"
+                        on:click=move |_| set_menu_open.update(|open| *open = !*open)
+                        inner_html=icons::MENU
+                    ></button>
+                    <button
+                        class="flat icon-button sidebar-toggle"
+                        class:active=move || sidebar_shown()
+                        title=move || {
+                            if sidebar_shown() { "Hide File Tree" } else { "Show File Tree" }
                         }
-                    }
-                    on:pointerup=move |_| {
-                        set_resizing_sidebar.set(false);
-                        store(
-                            "kog.sidebar-width",
-                            &format!("{:.0}", sidebar_width.get_untracked()),
-                        );
-                    }
-                    on:pointercancel=move |_| set_resizing_sidebar.set(false)
-                ></div>
+                        on:click=move |_| toggle_sidebar()
+                        inner_html=icons::VIEW_LIST_TREE
+                    ></button>
+                    <span class="mobile-title">
+                        {move || match mobile_view.get() {
+                            MobileView::Library => "Library",
+                            MobileView::Queue => "Queue",
+                            MobileView::Playlists => "Playlists",
+                        }}
+                    </span>
+                    <div class="search">
+                        <span class="pill-icon" aria-hidden="true" inner_html=icons::FIND></span>
+                        <input
+                            type="search"
+                            placeholder="Search"
+                            aria-label="Search playlist"
+                            prop:value=move || filter.get()
+                            on:input=move |event| backend.send(SessionCommand::Filter {query:event_target_value(&event)})
+                        />
+                        <Show when=move || !filter.get().is_empty() fallback=|| ()>
+                            <button
+                                class="flat search-clear"
+                                title="Clear playlist search"
+                                on:click=move |_| backend.send(SessionCommand::Filter {query:String::new()})
+                            >"×"</button>
+                        </Show>
+                    </div>
+                    <button
+                        class="flat icon-button mobile-sort"
+                        type="button"
+                        title="Sort queue"
+                        aria-label="Sort queue"
+                        on:click=move |_| set_mobile_sort_open.set(true)
+                    >"↕"</button>
+                    <button
+                        class="flat icon-button mobile-create-playlist"
+                        type="button"
+                        title="Create a playlist"
+                        aria-label="Create a playlist"
+                        on:click=move |_| open_create_playlist_dialog()
+                    >"+"</button>
+                    <select
+                        class="codec"
+                        title="Stream format"
+                        prop:value=move || codec.get()
+                        on:change=move |event| {
+                            let value = event_target_value(&event);
+                            store("kog.codec", &value);
+                            set_codec.set(value);
+                        }
+                    >
+                        <option value="aac">"AAC"</option>
+                        <option value="opus">"Opus"</option>
+                        <option value="flac">"FLAC"</option>
+                    </select>
+                    <button
+                        class="flat server"
+                        title=move || if connected.get() { "Connected" } else { "Not connected" }
+                        aria-label=move || if connected.get() { "Server settings, connected" } else { "Server settings, disconnected" }
+                        on:click=move |_| set_settings_open.update(|open| *open = !*open)
+                    >
+                        <span class="mobile-server-icon" aria-hidden="true" inner_html=icons::GEAR></span>
+                        <span class=move || {
+                            if connected.get() { "server-dot online" } else { "server-dot offline" }
+                        }>{move || if connected.get() { "●" } else { "○" }}</span>
+                        <span class="server-label">" Server"</span>
+                    </button>
+                </header>
 
-                <aside class="sidebar">
-                    <section class="section files">
-                        <div
-                            class="section-header"
-                            role="button"
-                            tabindex="0"
-                            on:click=move |_| set_files_expanded.update(|open| *open = !*open)
-                        >
-                            <span class="expander">
-                                {move || if files_expanded.get() { "▾" } else { "▸" }}
-                            </span>
-                            <span class="section-title">"Files"</span>
-                        </div>
-                        <Show when=move || files_expanded.get() fallback=|| ()>
-                            <div class="section-body">
-                                <Show
-                                    when=move || connected.get()
-                                    fallback=|| view! {
-                                        <p class="empty">"Connect to a server to browse."</p>
-                                    }
-                                >
-                                    <div class="tree-root">
-                                        <button
-                                            class="icon-button"
-                                            title="Choose a folder on the server to root the tree at"
-                                            on:click=open_folder_picker
-                                            inner_html=icons::FOLDER_OPEN
-                                        ></button>
-                                        <button
-                                            class="icon-button"
-                                            title="Refresh this folder"
-                                            on:click={
-                                                let load_dir = load_dir.clone();
-                                                move |_| {
-                                                    let root = tree_root.get();
-                                                    load_dir(root, None);
+                <div
+                    class:sidebar-open=move || sidebar_open.get()
+                    class:sidebar-hidden=move || !sidebar_visible.get()
+                    class:resizing=move || resizing_sidebar.get()
+                    class="workspace"
+                    style=move || format!("--sidebar-width: {:.0}px", sidebar_width.get())
+                >
+                    <div
+                        class="drawer-scrim"
+                        on:click=move |_| set_sidebar_open.set(false)
+                    ></div>
+
+                    <div
+                        class="pane-resizer"
+                        title="Drag to resize the file tree"
+                        on:pointerdown=move |ev: web_sys::PointerEvent| {
+                            ev.target().and_then(|target| {
+                                target.dyn_into::<web_sys::Element>().ok()
+                            })
+                            .and_then(|element| element.set_pointer_capture(ev.pointer_id()).ok());
+                            set_resizing_sidebar.set(true);
+                        }
+                        on:pointermove=move |ev: web_sys::PointerEvent| {
+                            if resizing_sidebar.get_untracked() {
+                                let width = (ev.client_x() as f64).clamp(180.0, 600.0);
+                                set_sidebar_width.set(width);
+                            }
+                        }
+                        on:pointerup=move |_| {
+                            set_resizing_sidebar.set(false);
+                            store(
+                                "kog.sidebar-width",
+                                &format!("{:.0}", sidebar_width.get_untracked()),
+                            );
+                        }
+                        on:pointercancel=move |_| set_resizing_sidebar.set(false)
+                    ></div>
+
+                    <aside class="sidebar">
+                        <section class="section files">
+                            <div
+                                class="section-header"
+                                role="button"
+                                tabindex="0"
+                                on:click=move |_| set_files_expanded.update(|open| *open = !*open)
+                            >
+                                <span class="expander">
+                                    {move || if files_expanded.get() { "▾" } else { "▸" }}
+                                </span>
+                                <span class="section-title">"Files"</span>
+                            </div>
+                            <Show when=move || files_expanded.get() fallback=|| ()>
+                                <div class="section-body">
+                                    <Show
+                                        when=move || connected.get()
+                                        fallback=|| view! {
+                                            <p class="empty">"Connect to a server to browse."</p>
+                                        }
+                                    >
+                                        <div class="tree-root">
+                                            <button
+                                                class="icon-button"
+                                                title="Choose a folder on the server to root the tree at"
+                                                on:click=open_folder_picker
+                                                inner_html=icons::FOLDER_OPEN
+                                            ></button>
+                                            <button
+                                                class="icon-button"
+                                                title="Refresh this folder"
+                                                on:click={
+                                                    let load_dir = load_dir.clone();
+                                                    move |_| {
+                                                        let root = tree_root.get();
+                                                        load_dir(root, None);
+                                                    }
                                                 }
-                                            }
-                                        >"↻"</button>
-                                        <button
-                                            class="root-path"
-                                            title=move || tree_location_name(&current_root()).to_owned()
-                                            on:click=move |_| goto_root(String::new())
-                                        >{move || current_root()}</button>
-                                    </div>
-                                    <div class="tree-search">
-                                        <span class="pill-icon" aria-hidden="true" inner_html=icons::FIND></span>
-                                        <input
-                                            type="search"
-                                            placeholder="Search files and folders…"
-                                            prop:value=move || tree_search.get()
-                                            on:input=move |event| {
-                                                let query = event_target_value(&event);
-                                                set_tree_search.set(query.clone());
-                                                run_tree_search(query);
-                                            }
-                                        />
-                                        {/* The desktop's busy indicator: the
-                                            walk runs server-side in slices and
-                                            the pane says so until it is done. */}
+                                            >"↻"</button>
+                                            <button
+                                                class="root-path"
+                                                title=move || tree_location_name(&current_root()).to_owned()
+                                                on:click=move |_| goto_root(String::new())
+                                            >{move || current_root()}</button>
+                                        </div>
+                                        <div class="tree-search">
+                                            <span class="pill-icon" aria-hidden="true" inner_html=icons::FIND></span>
+                                            <input
+                                                type="search"
+                                                placeholder="Search files and folders…"
+                                                prop:value=move || tree_search.get()
+                                                on:input=move |event| {
+                                                    let query = event_target_value(&event);
+                                                    set_tree_search.set(query.clone());
+                                                    run_tree_search(query);
+                                                }
+                                            />
+                                            {/* The desktop's busy indicator: the
+                                                walk runs server-side in slices and
+                                                the pane says so until it is done. */}
+                                            <Show
+                                                when=move || tree_search_pending.get()
+                                                fallback=|| ()
+                                            >
+                                                <span
+                                                    class="tree-search-spinner"
+                                                    class:paused=search_paused
+                                                    title=move || {
+                                                        if search_paused.get() {
+                                                            "Search paused. Click to resume."
+                                                        } else {
+                                                            "Searching files and archives. Click to pause."
+                                                        }
+                                                    }
+                                                    on:click=move |_| toggle_search_paused()
+                                                >
+                                                    <span class="gear" inner_html=icons::GEAR></span>
+                                                    <span class="pause-badge">
+                                                        <span class="pause-bar"></span>
+                                                        <span class="pause-bar"></span>
+                                                    </span>
+                                                </span>
+                                            </Show>
+                                        </div>
+                                        {/* Progress line under the box, where the
+                                            desktop shows its search status: counts
+                                            while the walk runs, the total (or a
+                                            "narrow your search" notice at the pull
+                                            cap) once it is done. */}
                                         <Show
-                                            when=move || tree_search_pending.get()
+                                            when=move || !tree_search.get().trim().is_empty()
                                             fallback=|| ()
                                         >
-                                            <span
-                                                class="tree-search-spinner"
-                                                class:paused=search_paused
-                                                title=move || {
-                                                    if search_paused.get() {
-                                                        "Search paused. Click to resume."
+                                            <p class="search-status">
+                                                {move || {
+                                                    let count = search_count.get();
+                                                    let progress = search_progress.get();
+                                                    let mut text = if search_paused.get() {
+                                                        format!("Paused · {count} matches")
+                                                    } else if tree_search_pending.get() {
+                                                        if progress.scanning_archives {
+                                                            format!(
+                                                                "{count} matches · Archives {} of {}",
+                                                                progress.archives_scanned,
+                                                                progress.archive_count
+                                                            )
+                                                        } else {
+                                                            format!(
+                                                                "{count} matches · Searching folders ({} items)",
+                                                                progress.scanned
+                                                            )
+                                                        }
+                                                    } else if count == 0 {
+                                                        "No matching files or folders".to_owned()
+                                                    } else if search_capped.get() {
+                                                        format!("{count} matches — narrow your search for more")
                                                     } else {
-                                                        "Searching files and archives. Click to pause."
+                                                        format!("{count} matching files or folders")
+                                                    };
+                                                    if progress.unreadable > 0 {
+                                                        text.push_str(&format!(
+                                                            " — {} archive(s) could not be searched",
+                                                            progress.unreadable
+                                                        ));
                                                     }
-                                                }
-                                                on:click=move |_| toggle_search_paused()
-                                            >
-                                                <span class="gear" inner_html=icons::GEAR></span>
-                                                <span class="pause-badge">
-                                                    <span class="pause-bar"></span>
-                                                    <span class="pause-bar"></span>
-                                                </span>
-                                            </span>
+                                                    text
+                                                }}
+                                            </p>
                                         </Show>
-                                    </div>
-                                    {/* Progress line under the box, where the
-                                        desktop shows its search status: counts
-                                        while the walk runs, the total (or a
-                                        "narrow your search" notice at the pull
-                                        cap) once it is done. */}
-                                    <Show
-                                        when=move || !tree_search.get().trim().is_empty()
-                                        fallback=|| ()
-                                    >
-                                        <p class="search-status">
-                                            {move || {
-                                                let count = search_count.get();
-                                                let progress = search_progress.get();
-                                                let mut text = if search_paused.get() {
-                                                    format!("Paused · {count} matches")
-                                                } else if tree_search_pending.get() {
-                                                    if progress.scanning_archives {
-                                                        format!(
-                                                            "{count} matches · Archives {} of {}",
-                                                            progress.archives_scanned,
-                                                            progress.archive_count
-                                                        )
-                                                    } else {
-                                                        format!(
-                                                            "{count} matches · Searching folders ({} items)",
-                                                            progress.scanned
-                                                        )
+                                        <div class="tree-list">
+                                                <Show
+                                                    when=move || {
+                                                        // The ".." row climbs toward the root the
+                                                        // visitor chose; the library root itself is
+                                                        // the ceiling, so it lists its folders with
+                                                        // no climb row above them.
+                                                        tree_search.get().trim().is_empty()
+                                                            && !tree_root.get().is_empty()
                                                     }
-                                                } else if count == 0 {
-                                                    "No matching files or folders".to_owned()
-                                                } else if search_capped.get() {
-                                                    format!("{count} matches — narrow your search for more")
-                                                } else {
-                                                    format!("{count} matching files or folders")
-                                                };
-                                                if progress.unreadable > 0 {
-                                                    text.push_str(&format!(
-                                                        " — {} archive(s) could not be searched",
-                                                        progress.unreadable
-                                                    ));
+                                                    fallback=|| ()
+                                                >
+                                                    <button
+                                                        class="tree-row parent-row"
+                                                        title=move || tree_location_name(&parent_path(&tree_root.get())).to_owned()
+                                                        on:click={
+                                                            let go_up = go_up.clone();
+                                                            move |_| go_up()
+                                                        }
+                                                        on:contextmenu=move |ev: web_sys::MouseEvent| {
+                                                            ev.prevent_default();
+                                                            let root = tree_root.get_untracked();
+                                                            let row = TreeRow {
+                                                                name: "..".to_owned(),
+                                                                path: parent_path(&root),
+                                                                parent: root,
+                                                                is_dir: true,
+                                                                depth: 0,
+                                                                expanded: false,
+                                                                kind: "dir".to_owned(),
+                                                                entry: String::new(),
+                                                                fragment: None,
+                                                            };
+                                                            set_tree_menu.set(Some((
+                                                                ev.client_x() as f64,
+                                                                ev.client_y() as f64,
+                                                                row,
+                                                            )));
+                                                        }
+                                                    >
+                                                        <span class="twisty"></span>
+                                                        <span class="tree-icon up" inner_html=icons::GO_UP></span>
+                                                        <span class="label">".."</span>
+                                                    </button>
+                                                </Show>
+    <For
+                                                each=tree_rows
+                                                key=|row| format!(
+                                                    "{}#{}#{}#{}#{}",
+                                                    row.kind,
+                                                    row.path,
+                                                    row.entry,
+                                                    row.fragment.clone().unwrap_or_default(),
+                                                    row.depth,
+                                                )
+                                                let:row
+                                            >
+                                                {
+                                                    let row_click = row.clone();
+                                                    let row_menu = row.clone();
+                                                    let row_drag = row.clone();
+                                                    let row_add = row.clone();
+                                                    let row_name = row.name.clone();
+                                                    let row_tooltip = row_name.clone();
+                                                    let tree_toggle = tree_toggle.clone();
+                                                    let add_row_to_playlist = add_row_to_playlist.clone();
+                                                    let selected = row.path.clone();
+                                                    // The arrow reads `expanded` reactively: the
+                                                    // `For` key is the path, so a programmatic
+                                                    // expand (a restore) reuses the row and a
+                                                    // captured string would go stale.
+                                                    let twisty_path = row.path.clone();
+                                                    let is_dir = row.is_dir;
+                                                    let twisty = move || {
+                                                        if !is_dir {
+                                                            ""
+                                                        } else {
+                                                            // Whichever mode owns the pane
+                                                            // owns the expansion state.
+                                                            let open =
+                                                                if tree_search.get_untracked()
+                                                                    .trim()
+                                                                    .is_empty()
+                                                                {
+                                                                    expanded.get()
+                                                                } else {
+                                                                    search_expanded.get()
+                                                                };
+                                                            if open.contains(&twisty_path) {
+                                                                "▾"
+                                                            } else {
+                                                                "▸"
+                                                            }
+                                                        }
+                                                    };
+                                                    let indent = 6 + row.depth * 16;
+                                                    // Per-format mark, the same
+                                                    // art the desktop tree shows.
+                                                    let (icon_svg, icon_badge): (
+                                                        Option<&'static str>,
+                                                        Option<String>,
+                                                    ) = if row.is_dir {
+                                                        (None, None)
+                                                    } else {
+                                                        match file_icon(&row.path, &row.entry) {
+                                                            FileIcon::Svg(svg) => (Some(svg), None),
+                                                            FileIcon::Badge(ext) => (None, Some(ext)),
+                                                            FileIcon::None => (None, None),
+                                                        }
+                                                    };
+                                                    let icon_html: Option<String> = match (
+                                                        icon_svg, &icon_badge,
+                                                    ) {
+                                                        (Some(svg), _) => Some(svg.to_owned()),
+                                                        (None, Some(ext)) => Some(format!(
+                                                            "{}<span class=\"ext\">{ext}</span>",
+                                                            icons::FMT_PAPER
+                                                        )),
+                                                        (None, None) => None,
+                                                    };
+                                                    let has_icon = icon_html.is_some();
+                                                    view! {
+                                                        <button
+                                                            class="tree-row"
+                                                            class:directory=row.is_dir
+                                                            class:selected=move || {
+                                                                tree_selected.get() == selected
+                                                            }
+                                                            style=format!("--tree-indent: {indent}px")
+                                                            title=row_tooltip
+                                                            draggable="true"
+                                                            on:click=move |ev: web_sys::MouseEvent| {
+                                                                set_tree_selected.set(row_click.path.clone());
+                                                                set_tree_selected_dir.set(row_click.is_dir);
+                                                                if !touch_mode && ev.detail() >= 2 {
+                                                                    add_row_to_playlist(row_click.clone());
+                                                                } else if row_click.is_dir {
+                                                                    tree_toggle(row_click.path.clone());
+                                                                } else if touch_mode {
+                                                                    // Touch: tapping a file
+                                                                    // queues it, like the
+                                                                    // desktop's double click.
+                                                                    add_row_to_playlist(row_click.clone());
+                                                                    set_sidebar_open.set(false);
+                                                                    set_mobile_view.set(MobileView::Queue);
+                                                                }
+                                                            }
+                                                            on:contextmenu=move |ev: web_sys::MouseEvent| {
+                                                                ev.prevent_default();
+                                                                ev.stop_propagation();
+                                                                set_tree_selected.set(row_menu.path.clone());
+                                                                set_tree_selected_dir.set(row_menu.is_dir);
+                                                                set_tree_menu.set(Some((
+                                                                    ev.client_x() as f64,
+                                                                    ev.client_y() as f64,
+                                                                    row_menu.clone(),
+                                                                )));
+                                                            }
+                                                            on:dragstart=move |ev: web_sys::DragEvent| {
+                                                                set_dragging_tree.set(Some(row_drag.clone()));
+                                                                if let Some(transfer) = ev.data_transfer() {
+                                                                    let _ = transfer.set_data(
+                                                                        "text/plain",
+                                                                        &row_drag.path,
+                                                                    );
+                                                                    transfer.set_effect_allowed("copy");
+                                                                }
+                                                            }
+                                                            on:dragend=move |_| set_dragging_tree.set(None)
+                                                        >
+                                                            <span class="twisty">{move || twisty()}</span>
+                                                            <span
+                                                                class=if row.is_dir {
+                                                                    "tree-icon dir"
+                                                                } else if has_icon {
+                                                                    "tree-icon fmt"
+                                                                } else {
+                                                                    "tree-icon file"
+                                                                }
+                                                                inner_html=icon_html
+                                                            ></span>
+                                                            <span class="label">
+                                                                {move || {
+                                                                    highlight_label(
+                                                                        row_name.clone(),
+                                                                        tree_search.get(),
+                                                                    )
+                                                                }}
+                                                            </span>
+                                                            // Touch's visible add: enqueues
+                                                            // the folder or file without a
+                                                            // double click, drag, or hold.
+                                                            // Hidden on fine pointers by the
+                                                            // stylesheet, like the drag grip.
+                                                            <span
+                                                                class="tree-add"
+                                                                title=if touch_mode { "Add to queue" } else { "Add to playlist" }
+                                                                on:click={
+                                                                    let add_row_to_playlist =
+                                                                        add_row_to_playlist.clone();
+                                                                    let row_add = row_add.clone();
+                                                                    move |ev: web_sys::MouseEvent| {
+                                                                        ev.stop_propagation();
+                                                                        add_row_to_playlist(
+                                                                            row_add.clone(),
+                                                                        );
+                                                                        set_sidebar_open.set(false);
+                                                                        if touch_mode { set_mobile_view.set(MobileView::Queue); }
+                                                                    }
+                                                                }
+                                                            >"+"
+                                                            </span>
+                                                        </button>
+                                                    }
                                                 }
-                                                text
-                                            }}
-                                        </p>
-                                    </Show>
-                                    <div class="tree-list">
+                                            </For>
                                             <Show
                                                 when=move || {
-                                                    // The ".." row climbs toward the root the
-                                                    // visitor chose; the library root itself is
-                                                    // the ceiling, so it lists its folders with
-                                                    // no climb row above them.
-                                                    tree_search.get().trim().is_empty()
-                                                        && !tree_root.get().is_empty()
+                                                    !tree_search.get().trim().is_empty()
+                                                        && tree_rows().is_empty()
                                                 }
                                                 fallback=|| ()
                                             >
-                                                <button
-                                                    class="tree-row parent-row"
-                                                    title=move || tree_location_name(&parent_path(&tree_root.get())).to_owned()
-                                                    on:click={
-                                                        let go_up = go_up.clone();
-                                                        move |_| go_up()
-                                                    }
-                                                    on:contextmenu=move |ev: web_sys::MouseEvent| {
-                                                        ev.prevent_default();
-                                                        let root = tree_root.get_untracked();
-                                                        let row = TreeRow {
-                                                            name: "..".to_owned(),
-                                                            path: parent_path(&root),
-                                                            parent: root,
-                                                            is_dir: true,
-                                                            depth: 0,
-                                                            expanded: false,
-                                                            kind: "dir".to_owned(),
-                                                            entry: String::new(),
-                                                            fragment: None,
-                                                        };
-                                                        set_tree_menu.set(Some((
-                                                            ev.client_x() as f64,
-                                                            ev.client_y() as f64,
-                                                            row,
-                                                        )));
-                                                    }
-                                                >
-                                                    <span class="twisty"></span>
-                                                    <span class="tree-icon up" inner_html=icons::GO_UP></span>
-                                                    <span class="label">".."</span>
-                                                </button>
+                                                {/* While the walk runs the status line
+                                                    above carries the progress; this
+                                                    only speaks once it has finished. */}
+                                                <Show when=move || !tree_search_pending.get() fallback=|| ()>
+                                                    <p class="empty">"No matching files or folders"</p>
+                                                </Show>
                                             </Show>
-<For
-                                            each=tree_rows
-                                            key=|row| format!(
-                                                "{}#{}#{}#{}#{}",
-                                                row.kind,
-                                                row.path,
-                                                row.entry,
-                                                row.fragment.clone().unwrap_or_default(),
-                                                row.depth,
-                                            )
-                                            let:row
+                                        </div>
+
+                                        <Show
+                                            when=move || {
+                                                tree_rows().is_empty()
+                                                    && library_root.get().is_empty()
+                                                    && tree_search.get().trim().is_empty()
+                                            }
+                                            fallback=|| ()
                                         >
-                                            {
-                                                let row_click = row.clone();
-                                                let row_menu = row.clone();
-                                                let row_drag = row.clone();
-                                                let row_add = row.clone();
-                                                let row_name = row.name.clone();
-                                                let row_tooltip = row_name.clone();
-                                                let tree_toggle = tree_toggle.clone();
-                                                let add_row_to_playlist = add_row_to_playlist.clone();
-                                                let selected = row.path.clone();
-                                                // The arrow reads `expanded` reactively: the
-                                                // `For` key is the path, so a programmatic
-                                                // expand (a restore) reuses the row and a
-                                                // captured string would go stale.
-                                                let twisty_path = row.path.clone();
-                                                let is_dir = row.is_dir;
-                                                let twisty = move || {
-                                                    if !is_dir {
-                                                        ""
-                                                    } else {
-                                                        // Whichever mode owns the pane
-                                                        // owns the expansion state.
-                                                        let open =
-                                                            if tree_search.get_untracked()
-                                                                .trim()
-                                                                .is_empty()
-                                                            {
-                                                                expanded.get()
-                                                            } else {
-                                                                search_expanded.get()
-                                                            };
-                                                        if open.contains(&twisty_path) {
-                                                            "▾"
-                                                        } else {
-                                                            "▸"
+                                            <p class="empty">
+                                                "No music folder is configured on the server."
+                                            </p>
+                                        </Show>
+                                    </Show>
+                                </div>
+                            </Show>
+                        </section>
+
+                        <section class="section playlists">
+                            <div
+                                class="section-header"
+                                role="button"
+                                tabindex="0"
+                                on:click=move |_| {
+                                    set_playlists_expanded.update(|open| *open = !*open)
+                                }
+                            >
+                                <span class="expander">
+                                    {move || if playlists_expanded.get() { "▾" } else { "▸" }}
+                                </span>
+                                <span class="section-title">"Playlists"</span>
+                                <button
+                                    class="section-add"
+                                    title="Create a playlist"
+                                    on:click=move |event| {
+                                        event.stop_propagation();
+                                        open_create_playlist_dialog();
+                                    }
+                                >"+"</button>
+                            </div>
+                            <Show when=move || playlists_expanded.get() fallback=|| ()>
+                                <div
+                                    class="section-body"
+                                    on:dragover=move |ev: web_sys::DragEvent| {
+                                        ev.prevent_default();
+                                        if dragging_playlist.get_untracked().is_none() {
+                                            return;
+                                        }
+                                        let client_y = ev.client_y();
+                                        let rows = js_sys::eval(&format!(
+                                            "(() => {{ const rows = [...document.querySelectorAll('.playlist-row')]; const y = {client_y}; let index = rows.length; for (let i = 0; i < rows.length; i++) {{ const r = rows[i].getBoundingClientRect(); if (y < r.top + r.height / 2) {{ index = i; break; }} }} return index; }})()"
+                                        ));
+                                        if let Ok(value) = rows
+                                            && let Some(index) = value.as_f64()
+                                        {
+                                            set_playlist_reorder_to.set(Some(index as usize));
+                                        }
+                                    }
+                                    on:drop=move |ev: web_sys::DragEvent| {
+                                        ev.prevent_default();
+                                        if let Some(id) = dragging_playlist.get_untracked()
+                                            && let Some(to) = playlist_reorder_to.get_untracked()
+                                        {
+                                            let url = format!("{}/api/playlists/{id}/move", base());
+                                            let header = auth().header();
+                                            leptos::task::spawn_local(async move {
+                                                let _ = post_json(
+                                                    url,
+                                                    header,
+                                                    serde_json::json!({ "to": to }),
+                                                )
+                                                .await;
+                                                load_playlists();
+                                            });
+                                        }
+                                        set_dragging_playlist.set(None);
+                                        set_playlist_reorder_to.set(None);
+                                    }
+                                >
+                                    <Show when=move || connected.get() fallback=|| ()>
+                                        {
+                                            view! {
+                                            <button
+                                                class="tree-row favorite-row"
+                                                title="Open Favorites in a tab"
+                                                draggable="true"
+                                                on:click=move |_| {
+                                                    // Touch: a tap opens the list in
+                                                    // the pane; the + button appends.
+                                                    {
+                                                        replace_pane_with_playlist(
+                                                            0,
+                                                            "Favorites".to_owned(),
+                                                        );
+                                                        set_sidebar_open.set(false);
+                                                        set_mobile_view.set(MobileView::Queue);
+                                                    }
+                                                }
+                                                on:dragstart=move |ev: web_sys::DragEvent| {
+                                                    set_dragging_playlist.set(Some(0));
+                                                    if let Some(transfer) = ev.data_transfer() {
+                                                        let _ = transfer.set_data("text/plain", "Favorites");
+                                                        transfer.set_effect_allowed("copy");
+                                                    }
+                                                }
+                                                on:dragend=move |_| set_dragging_playlist.set(None)
+                                                on:dblclick=move |_| {
+                                                    playlist_workspace.open(0, "Favorites".into());
+                                                }
+                                            >
+                                                <span class="twisty"></span>
+                                                <span class="favorite-star">"★"</span>
+                                                <span class="label">"Favorites"</span>
+                                                <span
+                                                    class="mobile-playlist-more"
+                                                    role="button"
+                                                    tabindex="0"
+                                                    aria-label="Favorites actions"
+                                                    on:click=move |ev: web_sys::MouseEvent| {
+                                                        ev.stop_propagation();
+                                                        set_playlist_menu.set(Some((ev.client_x() as f64, ev.client_y() as f64, 0, "Favorites".to_owned())));
+                                                    }
+                                                    on:keydown=move |ev: web_sys::KeyboardEvent| {
+                                                        if ev.key() == "Enter" || ev.key() == " " {
+                                                            ev.prevent_default();
+                                                            ev.stop_propagation();
+                                                            set_playlist_menu.set(Some((0.0, 0.0, 0, "Favorites".to_owned())));
                                                         }
                                                     }
-                                                };
-                                                let indent = 6 + row.depth * 16;
-                                                // Per-format mark, the same
-                                                // art the desktop tree shows.
-                                                let (icon_svg, icon_badge): (
-                                                    Option<&'static str>,
-                                                    Option<String>,
-                                                ) = if row.is_dir {
-                                                    (None, None)
-                                                } else {
-                                                    match file_icon(&row.path, &row.entry) {
-                                                        FileIcon::Svg(svg) => (Some(svg), None),
-                                                        FileIcon::Badge(ext) => (None, Some(ext)),
-                                                        FileIcon::None => (None, None),
+                                                >"⋯"</span>
+                                                <span
+                                                    class="tree-add"
+                                                    title=if touch_mode { "Add to queue" } else { "Add to playlist" }
+                                                    on:click={
+                                                        let append_playlist = append_playlist.clone();
+                                                        move |ev: web_sys::MouseEvent| {
+                                                            ev.stop_propagation();
+                                                            append_playlist(0);
+                                                            set_sidebar_open.set(false);
+                                                            if touch_mode { set_mobile_view.set(MobileView::Queue); }
+                                                        }
                                                     }
-                                                };
-                                                let icon_html: Option<String> = match (
-                                                    icon_svg, &icon_badge,
-                                                ) {
-                                                    (Some(svg), _) => Some(svg.to_owned()),
-                                                    (None, Some(ext)) => Some(format!(
-                                                        "{}<span class=\"ext\">{ext}</span>",
-                                                        icons::FMT_PAPER
-                                                    )),
-                                                    (None, None) => None,
-                                                };
-                                                let has_icon = icon_html.is_some();
+                                                >"+"
+                                                </span>
+                                            </button>
+                                            }
+                                        }
+                                        // Re-render labels and counts after a rename or save.
+                                        <For each=move || playlists.get() key=|item| format!("{}#{}#{}", item.0, item.1, item.2) let:item>
+                                            {
+                                                let id = item.0;
+                                                let count = item.2;
+                                                let label = item.1.clone();
+                                                let drag_id = id;
+                                                let drag_label = label.clone();
+                                                let menu_label = label.clone();
+                                                let more_click_label = label.clone();
+                                                let more_key_label = label.clone();
+                                                let more_aria_label = format!("Actions for {label}");
+                                                let open_label = label.clone();
                                                 view! {
                                                     <button
-                                                        class="tree-row"
-                                                        class:directory=row.is_dir
-                                                        class:selected=move || {
-                                                            tree_selected.get() == selected
-                                                        }
-                                                        style=format!("--tree-indent: {indent}px")
-                                                        title=row_tooltip
+                                                        class="tree-row playlist-row"
+                                                        title="Open playlist in a tab"
                                                         draggable="true"
-                                                        on:click=move |ev: web_sys::MouseEvent| {
-                                                            set_tree_selected.set(row_click.path.clone());
-                                                            set_tree_selected_dir.set(row_click.is_dir);
-                                                            if !touch_mode && ev.detail() >= 2 {
-                                                                add_row_to_playlist(row_click.clone());
-                                                            } else if row_click.is_dir {
-                                                                tree_toggle(row_click.path.clone());
-                                                            } else if touch_mode {
-                                                                // Touch: tapping a file
-                                                                // queues it, like the
-                                                                // desktop's double click.
-                                                                add_row_to_playlist(row_click.clone());
+                                                        on:click=move |_| {
+                                                            // Touch: a tap opens the
+                                                            // playlist in the pane; the
+                                                            // + button appends.
+                                                            {
+                                                                replace_pane_with_playlist(
+                                                                    drag_id,
+                                                                    open_label.clone(),
+                                                                );
                                                                 set_sidebar_open.set(false);
                                                                 set_mobile_view.set(MobileView::Queue);
                                                             }
                                                         }
-                                                        on:contextmenu=move |ev: web_sys::MouseEvent| {
-                                                            ev.prevent_default();
-                                                            ev.stop_propagation();
-                                                            set_tree_selected.set(row_menu.path.clone());
-                                                            set_tree_selected_dir.set(row_menu.is_dir);
-                                                            set_tree_menu.set(Some((
-                                                                ev.client_x() as f64,
-                                                                ev.client_y() as f64,
-                                                                row_menu.clone(),
-                                                            )));
-                                                        }
                                                         on:dragstart=move |ev: web_sys::DragEvent| {
-                                                            set_dragging_tree.set(Some(row_drag.clone()));
+                                                            set_dragging_playlist.set(Some(drag_id));
                                                             if let Some(transfer) = ev.data_transfer() {
-                                                                let _ = transfer.set_data(
-                                                                    "text/plain",
-                                                                    &row_drag.path,
-                                                                );
+                                                                let _ = transfer.set_data("text/plain", &drag_label);
                                                                 transfer.set_effect_allowed("copy");
                                                             }
                                                         }
-                                                        on:dragend=move |_| set_dragging_tree.set(None)
+                                                        on:dragend=move |_| set_dragging_playlist.set(None)
+                                                        on:dblclick=move |_| {
+                                                            // Single click already focuses the editor tab.
+                                                        }
+                                                        on:contextmenu=move |ev: web_sys::MouseEvent| {
+                                                            ev.prevent_default();
+                                                            ev.stop_propagation();
+                                                            set_playlist_menu.set(Some((
+                                                                ev.client_x() as f64,
+                                                                ev.client_y() as f64,
+                                                                drag_id,
+                                                                menu_label.clone(),
+                                                           )));
+                                                        }
                                                     >
-                                                        <span class="twisty">{move || twisty()}</span>
-                                                        <span
-                                                            class=if row.is_dir {
-                                                                "tree-icon dir"
-                                                            } else if has_icon {
-                                                                "tree-icon fmt"
-                                                            } else {
-                                                                "tree-icon file"
+                                                        <span class="twisty"></span>
+                                                        <span class="playlist-entry-icon" aria-hidden="true" inner_html=icons::FMT_PLAYLIST></span>
+                                                        <Show
+                                                            when=move || renaming_playlist.get() == Some(drag_id)
+                                                            fallback=move || view! {
+                                                                <span class="label">{label.clone()}</span>
                                                             }
-                                                            inner_html=icon_html
-                                                        ></span>
-                                                        <span class="label">
-                                                            {move || {
-                                                                highlight_label(
-                                                                    row_name.clone(),
-                                                                    tree_search.get(),
-                                                                )
-                                                            }}
-                                                        </span>
-                                                        // Touch's visible add: enqueues
-                                                        // the folder or file without a
-                                                        // double click, drag, or hold.
-                                                        // Hidden on fine pointers by the
-                                                        // stylesheet, like the drag grip.
+                                                        >
+                                                            <input
+                                                                class="playlist-rename"
+                                                                node_ref=rename_input
+                                                                prop:value=move || rename_text.get()
+                                                                on:input=move |event| set_rename_text.set(event_target_value(&event))
+                                                                on:keydown=move |event: web_sys::KeyboardEvent| {
+                                                                    match event.key().as_str() {
+                                                                        "Enter" => commit_rename(),
+                                                                        "Escape" => set_renaming_playlist.set(None),
+                                                                        _ => {}
+                                                                    }
+                                                                }
+                                                                on:blur=move |_| commit_rename()
+                                                            />
+                                                        </Show>
+                                                        <span class="count">{count}</span>
+                                                        <span
+                                                            class="mobile-playlist-more"
+                                                            role="button"
+                                                            tabindex="0"
+                                                            aria-label=more_aria_label
+                                                            on:click=move |ev: web_sys::MouseEvent| {
+                                                                ev.stop_propagation();
+                                                                set_playlist_menu.set(Some((ev.client_x() as f64, ev.client_y() as f64, drag_id, more_click_label.clone())));
+                                                            }
+                                                            on:keydown=move |ev: web_sys::KeyboardEvent| {
+                                                                if ev.key() == "Enter" || ev.key() == " " {
+                                                                    ev.prevent_default();
+                                                                    ev.stop_propagation();
+                                                                    set_playlist_menu.set(Some((0.0, 0.0, drag_id, more_key_label.clone())));
+                                                                }
+                                                            }
+                                                        >"⋯"</span>
                                                         <span
                                                             class="tree-add"
                                                             title=if touch_mode { "Add to queue" } else { "Add to playlist" }
                                                             on:click={
-                                                                let add_row_to_playlist =
-                                                                    add_row_to_playlist.clone();
-                                                                let row_add = row_add.clone();
+                                                                let append_playlist =
+                                                                    append_playlist.clone();
                                                                 move |ev: web_sys::MouseEvent| {
                                                                     ev.stop_propagation();
-                                                                    add_row_to_playlist(
-                                                                        row_add.clone(),
-                                                                    );
+                                                                    append_playlist(drag_id);
                                                                     set_sidebar_open.set(false);
                                                                     if touch_mode { set_mobile_view.set(MobileView::Queue); }
                                                                 }
@@ -6339,970 +6387,1140 @@ fn App() -> impl IntoView {
                                                 }
                                             }
                                         </For>
-                                        <Show
-                                            when=move || {
-                                                !tree_search.get().trim().is_empty()
-                                                    && tree_rows().is_empty()
-                                            }
-                                            fallback=|| ()
-                                        >
-                                            {/* While the walk runs the status line
-                                                above carries the progress; this
-                                                only speaks once it has finished. */}
-                                            <Show when=move || !tree_search_pending.get() fallback=|| ()>
-                                                <p class="empty">"No matching files or folders"</p>
-                                            </Show>
+                                        <Show when=move || !connected.get() fallback=|| ()>
+                                            <p class="empty">"Not connected."</p>
                                         </Show>
-                                    </div>
-
-                                    <Show
-                                        when=move || {
-                                            tree_rows().is_empty()
-                                                && library_root.get().is_empty()
-                                                && tree_search.get().trim().is_empty()
-                                        }
-                                        fallback=|| ()
-                                    >
-                                        <p class="empty">
-                                            "No music folder is configured on the server."
-                                        </p>
                                     </Show>
-                                </Show>
-                            </div>
-                        </Show>
-                    </section>
+                                </div>
+                            </Show>
+                        </section>
+                    </aside>
 
-                    <section class="section playlists">
-                        <div
-                            class="section-header"
-                            role="button"
-                            tabindex="0"
-                            on:click=move |_| {
-                                set_playlists_expanded.update(|open| *open = !*open)
-                            }
-                        >
-                            <span class="expander">
-                                {move || if playlists_expanded.get() { "▾" } else { "▸" }}
-                            </span>
-                            <span class="section-title">"Playlists"</span>
-                            <button
-                                class="section-add"
-                                title="Create a playlist"
-                                on:click=move |event| {
-                                    event.stop_propagation();
-                                    open_create_playlist_dialog();
-                                }
-                            >"+"</button>
-                        </div>
-                        <Show when=move || playlists_expanded.get() fallback=|| ()>
-                            <div
-                                class="section-body"
-                                on:dragover=move |ev: web_sys::DragEvent| {
-                                    ev.prevent_default();
-                                    if dragging_playlist.get_untracked().is_none() {
-                                        return;
-                                    }
-                                    let client_y = ev.client_y();
-                                    let rows = js_sys::eval(&format!(
-                                        "(() => {{ const rows = [...document.querySelectorAll('.playlist-row')]; const y = {client_y}; let index = rows.length; for (let i = 0; i < rows.length; i++) {{ const r = rows[i].getBoundingClientRect(); if (y < r.top + r.height / 2) {{ index = i; break; }} }} return index; }})()"
-                                    ));
-                                    if let Ok(value) = rows
-                                        && let Some(index) = value.as_f64()
-                                    {
-                                        set_playlist_reorder_to.set(Some(index as usize));
-                                    }
-                                }
-                                on:drop=move |ev: web_sys::DragEvent| {
-                                    ev.prevent_default();
-                                    if let Some(id) = dragging_playlist.get_untracked()
-                                        && let Some(to) = playlist_reorder_to.get_untracked()
-                                    {
-                                        let url = format!("{}/api/playlists/{id}/move", base());
-                                        let header = auth().header();
-                                        leptos::task::spawn_local(async move {
-                                            let _ = post_json(
-                                                url,
-                                                header,
-                                                serde_json::json!({ "to": to }),
-                                            )
-                                            .await;
-                                            load_playlists();
-                                        });
-                                    }
-                                    set_dragging_playlist.set(None);
-                                    set_playlist_reorder_to.set(None);
-                                }
-                            >
-                                <Show when=move || connected.get() fallback=|| ()>
-                                    {
-                                        view! {
-                                        <button
-                                            class="tree-row favorite-row"
-                                            title="Open Favorites in a tab"
-                                            draggable="true"
-                                            on:click=move |_| {
-                                                // Touch: a tap opens the list in
-                                                // the pane; the + button appends.
-                                                {
-                                                    replace_pane_with_playlist(
-                                                        0,
-                                                        "Favorites".to_owned(),
-                                                    );
-                                                    set_sidebar_open.set(false);
-                                                    set_mobile_view.set(MobileView::Queue);
-                                                }
-                                            }
-                                            on:dragstart=move |ev: web_sys::DragEvent| {
-                                                set_dragging_playlist.set(Some(0));
-                                                if let Some(transfer) = ev.data_transfer() {
-                                                    let _ = transfer.set_data("text/plain", "Favorites");
-                                                    transfer.set_effect_allowed("copy");
-                                                }
-                                            }
-                                            on:dragend=move |_| set_dragging_playlist.set(None)
-                                            on:dblclick=move |_| {
-                                                playlist_workspace.open(0, "Favorites".into());
-                                            }
-                                        >
-                                            <span class="twisty"></span>
-                                            <span class="favorite-star">"★"</span>
-                                            <span class="label">"Favorites"</span>
-                                            <span
-                                                class="mobile-playlist-more"
-                                                role="button"
-                                                tabindex="0"
-                                                aria-label="Favorites actions"
-                                                on:click=move |ev: web_sys::MouseEvent| {
-                                                    ev.stop_propagation();
-                                                    set_playlist_menu.set(Some((ev.client_x() as f64, ev.client_y() as f64, 0, "Favorites".to_owned())));
-                                                }
-                                                on:keydown=move |ev: web_sys::KeyboardEvent| {
-                                                    if ev.key() == "Enter" || ev.key() == " " {
-                                                        ev.prevent_default();
-                                                        ev.stop_propagation();
-                                                        set_playlist_menu.set(Some((0.0, 0.0, 0, "Favorites".to_owned())));
-                                                    }
-                                                }
-                                            >"⋯"</span>
-                                            <span
-                                                class="tree-add"
-                                                title=if touch_mode { "Add to queue" } else { "Add to playlist" }
-                                                on:click={
-                                                    let append_playlist = append_playlist.clone();
-                                                    move |ev: web_sys::MouseEvent| {
-                                                        ev.stop_propagation();
-                                                        append_playlist(0);
-                                                        set_sidebar_open.set(false);
-                                                        if touch_mode { set_mobile_view.set(MobileView::Queue); }
-                                                    }
-                                                }
-                                            >"+"
-                                            </span>
-                                        </button>
-                                        }
-                                    }
-                                    // Re-render labels and counts after a rename or save.
-                                    <For each=move || playlists.get() key=|item| format!("{}#{}#{}", item.0, item.1, item.2) let:item>
-                                        {
-                                            let id = item.0;
-                                            let count = item.2;
-                                            let label = item.1.clone();
-                                            let drag_id = id;
-                                            let drag_label = label.clone();
-                                            let menu_label = label.clone();
-                                            let more_click_label = label.clone();
-                                            let more_key_label = label.clone();
-                                            let more_aria_label = format!("Actions for {label}");
-                                            let open_label = label.clone();
-                                            view! {
-                                                <button
-                                                    class="tree-row playlist-row"
-                                                    title="Open playlist in a tab"
-                                                    draggable="true"
-                                                    on:click=move |_| {
-                                                        // Touch: a tap opens the
-                                                        // playlist in the pane; the
-                                                        // + button appends.
-                                                        {
-                                                            replace_pane_with_playlist(
-                                                                drag_id,
-                                                                open_label.clone(),
-                                                            );
-                                                            set_sidebar_open.set(false);
-                                                            set_mobile_view.set(MobileView::Queue);
-                                                        }
-                                                    }
-                                                    on:dragstart=move |ev: web_sys::DragEvent| {
-                                                        set_dragging_playlist.set(Some(drag_id));
-                                                        if let Some(transfer) = ev.data_transfer() {
-                                                            let _ = transfer.set_data("text/plain", &drag_label);
-                                                            transfer.set_effect_allowed("copy");
-                                                        }
-                                                    }
-                                                    on:dragend=move |_| set_dragging_playlist.set(None)
-                                                    on:dblclick=move |_| {
-                                                        // Single click already focuses the editor tab.
-                                                    }
-                                                    on:contextmenu=move |ev: web_sys::MouseEvent| {
-                                                        ev.prevent_default();
-                                                        ev.stop_propagation();
-                                                        set_playlist_menu.set(Some((
-                                                            ev.client_x() as f64,
-                                                            ev.client_y() as f64,
-                                                            drag_id,
-                                                            menu_label.clone(),
-                                                       )));
-                                                    }
-                                                >
-                                                    <span class="twisty"></span>
-                                                    <span class="playlist-entry-icon" aria-hidden="true" inner_html=icons::FMT_PLAYLIST></span>
-                                                    <Show
-                                                        when=move || renaming_playlist.get() == Some(drag_id)
-                                                        fallback=move || view! {
-                                                            <span class="label">{label.clone()}</span>
-                                                        }
-                                                    >
-                                                        <input
-                                                            class="playlist-rename"
-                                                            node_ref=rename_input
-                                                            prop:value=move || rename_text.get()
-                                                            on:input=move |event| set_rename_text.set(event_target_value(&event))
-                                                            on:keydown=move |event: web_sys::KeyboardEvent| {
-                                                                match event.key().as_str() {
-                                                                    "Enter" => commit_rename(),
-                                                                    "Escape" => set_renaming_playlist.set(None),
-                                                                    _ => {}
-                                                                }
-                                                            }
-                                                            on:blur=move |_| commit_rename()
-                                                        />
-                                                    </Show>
-                                                    <span class="count">{count}</span>
-                                                    <span
-                                                        class="mobile-playlist-more"
-                                                        role="button"
-                                                        tabindex="0"
-                                                        aria-label=more_aria_label
-                                                        on:click=move |ev: web_sys::MouseEvent| {
-                                                            ev.stop_propagation();
-                                                            set_playlist_menu.set(Some((ev.client_x() as f64, ev.client_y() as f64, drag_id, more_click_label.clone())));
-                                                        }
-                                                        on:keydown=move |ev: web_sys::KeyboardEvent| {
-                                                            if ev.key() == "Enter" || ev.key() == " " {
-                                                                ev.prevent_default();
-                                                                ev.stop_propagation();
-                                                                set_playlist_menu.set(Some((0.0, 0.0, drag_id, more_key_label.clone())));
-                                                            }
-                                                        }
-                                                    >"⋯"</span>
-                                                    <span
-                                                        class="tree-add"
-                                                        title=if touch_mode { "Add to queue" } else { "Add to playlist" }
-                                                        on:click={
-                                                            let append_playlist =
-                                                                append_playlist.clone();
-                                                            move |ev: web_sys::MouseEvent| {
-                                                                ev.stop_propagation();
-                                                                append_playlist(drag_id);
-                                                                set_sidebar_open.set(false);
-                                                                if touch_mode { set_mobile_view.set(MobileView::Queue); }
-                                                            }
-                                                        }
-                                                    >"+"
-                                                    </span>
-                                                </button>
-                                            }
-                                        }
-                                    </For>
-                                    <Show when=move || !connected.get() fallback=|| ()>
-                                        <p class="empty">"Not connected."</p>
-                                    </Show>
-                                </Show>
-                            </div>
+                    <main class="playlist">
+                        <workspace::Tabs controller=playlist_workspace />
+                        <Show when=move || playlist_workspace.snapshot().active != "queue">
+                            <workspace::Editor controller=playlist_workspace queue=queue selected=selected />
                         </Show>
-                    </section>
-                </aside>
-
-                <main class="playlist">
-                    <workspace::Tabs controller=playlist_workspace />
-                    <Show when=move || playlist_workspace.snapshot().active != "queue">
-                        <workspace::Editor controller=playlist_workspace queue=queue selected=selected />
-                    </Show>
-                    <div
-                        style:display=move || if playlist_workspace.snapshot().active == "queue" { "" } else { "none" }
-                        class="rows"
-                        id="playlist-rows"
-                        class:drop-active=move || playlist_drop_active.get()
-                        on:wheel=move |event: web_sys::WheelEvent| {
-                            if touch_mode {
-                                return;
-                            }
-                            // The wide column set must be reachable with the
-                            // plain wheel: when the rows cannot scroll
-                            // vertically, or the wheel hits the top/bottom of
-                            // a long list, the delta scrolls horizontally.
-                            let element = event
-                                .current_target()
-                                .expect("wheel target exists")
-                                .unchecked_into::<web_sys::Element>();
-                            let vertical =
-                                element.scroll_height() > element.client_height();
-                            let delta = event.delta_y();
-                            if delta == 0.0 {
-                                return;
-                            }
-                            let redirect = !vertical || {
-                                let at_bottom = element.scroll_top()
-                                    + element.client_height()
-                                    >= element.scroll_height();
-                                let at_top = element.scroll_top() <= 0;
-                                (delta > 0.0 && at_bottom)
-                                    || (delta < 0.0 && at_top)
-                            };
-                            if redirect {
-                                element.set_scroll_left(
-                                    element.scroll_left() + delta as i32,
-                                );
-                                event.prevent_default();
-                            }
-                        }
-                        style=move || {
-                            format!(
-                                "--cols:{}; --table-width:{:.0}px",
-                                grid_template(),
-                                table_width()
-                            )
-                        }
-                        on:dragleave=move |_| set_playlist_drop_active.set(false)
-                    >
                         <div
-                            class="columns"
-                            on:contextmenu=move |ev: web_sys::MouseEvent| {
-                            ev.prevent_default();
-                            // Empty header space targets the first column so
-                            // the Move items still have something to act on.
-                            let target = visible_columns()
-                                .first()
-                                .map(|column| column.id)
-                                .unwrap_or(ColumnId::Index);
-                            set_column_menu.set(Some((
-                                ev.client_x() as f64,
-                                ev.client_y() as f64,
-                                target,
-                            )));
-                        }
-                    >
-                        <For each=visible_columns key=|column| column.id.key() let:column>
-                            {
-                                let id = column.id;
-                                let sort = id.sort_key();
-                                let align = if id.align_right() {
-                                    "right"
-                                } else if id.align_center() {
-                                    "center"
-                                } else {
-                                    "left"
+                            style:display=move || if playlist_workspace.snapshot().active == "queue" { "" } else { "none" }
+                            class="rows"
+                            id="playlist-rows"
+                            class:drop-active=move || playlist_drop_active.get()
+                            on:wheel=move |event: web_sys::WheelEvent| {
+                                if touch_mode {
+                                    return;
+                                }
+                                // The wide column set must be reachable with the
+                                // plain wheel: when the rows cannot scroll
+                                // vertically, or the wheel hits the top/bottom of
+                                // a long list, the delta scrolls horizontally.
+                                let element = event
+                                    .current_target()
+                                    .expect("wheel target exists")
+                                    .unchecked_into::<web_sys::Element>();
+                                let vertical =
+                                    element.scroll_height() > element.client_height();
+                                let delta = event.delta_y();
+                                if delta == 0.0 {
+                                    return;
+                                }
+                                let redirect = !vertical || {
+                                    let at_bottom = element.scroll_top()
+                                        + element.client_height()
+                                        >= element.scroll_height();
+                                    let at_top = element.scroll_top() <= 0;
+                                    (delta > 0.0 && at_bottom)
+                                        || (delta < 0.0 && at_top)
                                 };
-                                let start_column = id;
-                                view! {
-                                    <div
-                                        class=format!("cell col-head {}", id.class())
-                                        on:contextmenu=move |ev: web_sys::MouseEvent| {
-                                            ev.prevent_default();
-                                            ev.stop_propagation();
-                                            set_column_menu.set(Some((
-                                                ev.client_x() as f64,
-                                                ev.client_y() as f64,
-                                                id,
-                                            )));
-                                        }
-                                    >
-                                        <button
-                                            class="col-sort"
-                                            style=format!("text-align: {align}")
-                                            on:click=move |_| toggle_sort(sort)
-                                        >
-                                            {move || format!("{}{}", id.label(), sort_arrow(sort))}
-                                        </button>
-                                        <span
-                                            class="col-resize"
-                                            title="Drag to resize, double-click to auto-fit"
-                                            on:pointerdown=move |ev: web_sys::PointerEvent| {
-                                                ev.prevent_default();
-                                                ev.stop_propagation();
-                                                if let Some(target) = ev.current_target() {
-                                                    if let Ok(element) =
-                                                        target.dyn_into::<web_sys::Element>()
-                                                    {
-                                                        let _ = element
-                                                            .set_pointer_capture(ev.pointer_id());
-                                                    }
-                                                }
-                                                let width = columns
-                                                    .get_untracked()
-                                                    .iter()
-                                                    .find(|column| column.id == start_column)
-                                                    .map(|column| column.width)
-                                                    .unwrap_or(0.0);
-                                                set_resizing.set(Some((
-                                                    start_column,
-                                                    ev.client_x() as f64,
-                                                    width,
-                                                )));
-                                            }
-                                            on:dblclick={
-                                                let auto_fit_column = auto_fit_column.clone();
-                                                move |ev: web_sys::MouseEvent| {
-                                                    ev.stop_propagation();
-                                                    auto_fit_column(start_column);
-                                                }
-                                            }
-                                        ></span>
-                                    </div>
+                                if redirect {
+                                    element.set_scroll_left(
+                                        element.scroll_left() + delta as i32,
+                                    );
+                                    event.prevent_default();
                                 }
                             }
-                        </For>
-                    </div>
-
-                        <Show
-                            when=move || !view_rows().is_empty()
-                            fallback=move || view! {
-                                <Show when=move || !connected.get() || queue.get().is_empty()>
-                                    <p class="empty">
-                                        {move || if connected.get() {
-                                            "Pick a folder in the file tree, or a playlist."
-                                        } else {
-                                            "Open the server settings to connect."
-                                        }}
-                                    </p>
-                                    <div class="mobile-queue-empty">
-                                        <span class="mobile-empty-icon" inner_html=icons::FMT_PLAYLIST></span>
-                                        <h2>{move || if connected.get() { "Your queue is empty" } else { "Connect to Kog" }}</h2>
-                                        <p>{move || if connected.get() { "Choose music from your Library or Playlists." } else { "Connect to your Kog server to browse and play music." }}</p>
-                                        <button
-                                            type="button"
-                                            class="primary"
-                                            on:click=move |_| {
-                                                if connected.get_untracked() {
-                                                    set_mobile_view.set(MobileView::Library);
-                                                } else {
-                                                    set_settings_open.set(true);
-                                                }
-                                            }
-                                        >{move || if connected.get() { "Browse Library" } else { "Connect to Server" }}</button>
-                                    </div>
-                                </Show>
+                            style=move || {
+                                format!(
+                                    "--cols:{}; --table-width:{:.0}px",
+                                    grid_template(),
+                                    table_width()
+                                )
+                            }
+                            on:dragleave=move |_| set_playlist_drop_active.set(false)
+                        >
+                            <div
+                                class="columns"
+                                on:contextmenu=move |ev: web_sys::MouseEvent| {
+                                ev.prevent_default();
+                                // Empty header space targets the first column so
+                                // the Move items still have something to act on.
+                                let target = visible_columns()
+                                    .first()
+                                    .map(|column| column.id)
+                                    .unwrap_or(ColumnId::Index);
+                                set_column_menu.set(Some((
+                                    ev.client_x() as f64,
+                                    ev.client_y() as f64,
+                                    target,
+                                )));
                             }
                         >
-                            <For
-                                each=view_rows
-                                key=|(index, entry)| format!("{index}:{}::{}", entry.path, entry.entry)
-                                let:row
-                            >
+                            <For each=visible_columns key=|column| column.id.key() let:column>
                                 {
-                                    let (index, entry) = row;
-                                    let menu_entry = entry.clone();
-                                    let mobile_entry = entry.clone();
+                                    let id = column.id;
+                                    let sort = id.sort_key();
+                                    let align = if id.align_right() {
+                                        "right"
+                                    } else if id.align_center() {
+                                        "center"
+                                    } else {
+                                        "left"
+                                    };
+                                    let start_column = id;
                                     view! {
-                                        <button
-                                            class="track"
-                                            draggable="true"
-                                            style="position: relative"
-                                            data-index=move || index.to_string()
-                                            class:current=move || current.get() == index
-                                            class:selected=move || selected.get().contains(&index)
+                                        <div
+                                            class=format!("cell col-head {}", id.class())
                                             on:contextmenu=move |ev: web_sys::MouseEvent| {
                                                 ev.prevent_default();
-                                                if !selected.get_untracked().contains(&index) {
-                                                    set_selected.set(HashSet::from([index]));
-                                                    set_selection_anchor.set(Some(index));
-                                                }
-                                                set_song_menu.set(Some((
+                                                ev.stop_propagation();
+                                                set_column_menu.set(Some((
                                                     ev.client_x() as f64,
                                                     ev.client_y() as f64,
-                                                    index,
-                                                    menu_entry.clone(),
+                                                    id,
                                                 )));
                                             }
-                                            on:click=move |ev: web_sys::MouseEvent| {
-                                                if touch_mode && !ev.shift_key() && !ev.ctrl_key() && !ev.meta_key() {
-                                                    set_selected.set(HashSet::from([index]));
-                                                    set_selection_anchor.set(Some(index));
-                                                    activate_row(index);
-                                                    return;
-                                                }
-                                                // A single click only selects,
-                                                // like the desktop: a song starts
-                                                // on double click.
-                                                let visible: Vec<usize> = view_rows()
-                                                    .into_iter()
-                                                    .map(|(row, _)| row)
-                                                    .collect();
-                                                let (next, anchor) = click_selection(
-                                                    &selected.get_untracked(),
-                                                    selection_anchor.get_untracked(),
-                                                    &visible,
-                                                    index,
-                                                    ev.shift_key(),
-                                                    ev.ctrl_key() || ev.meta_key(),
-                                                );
-                                                set_selected.set(next);
-                                                set_selection_anchor.set(anchor);
-                                            }
-                                            on:dblclick=move |ev: web_sys::MouseEvent| {
-                                                ev.prevent_default();
-                                                // Touch handled the activation on
-                                                // the tap; the second tap of a
-                                                // double must not toggle again.
-                                                if touch_mode {
-                                                    return;
-                                                }
-                                                set_selected.set(HashSet::from([index]));
-                                                set_selection_anchor.set(Some(index));
-                                                activate_row(index);
-                                            }
                                         >
-                                            <For
-                                                each=visible_columns
-                                                key=|column| column.id.key()
-                                                let:column
+                                            <button
+                                                class="col-sort"
+                                                style=format!("text-align: {align}")
+                                                on:click=move |_| toggle_sort(sort)
                                             >
-                                                {
-                                                    let id = column.id;
-                                                    let entry = entry.clone();
-                                                    let star_entry = entry.clone();
-                                                    let toggle_star = toggle_star.clone();
-                                                    // The title column carries
-                                                    // the track's format icon,
-                                                    // the same art the file
-                                                    // tree shows.
-                                                    let title_icon: Option<String> =
-                                                        if id == ColumnId::Title {
-                                                            match file_icon(
-                                                                &entry.path,
-                                                                &entry.entry,
-                                                            ) {
-                                                                FileIcon::Svg(svg) => {
-                                                                    Some(svg.to_owned())
-                                                                }
-                                                                FileIcon::Badge(ext) => {
-                                                                    Some(format!(
-                                                                        "{}<span class=\"ext\">{ext}</span>",
-                                                                        icons::FMT_PAPER
-                                                                    ))
-                                                                }
-                                                                FileIcon::None => {
-                                                                    Some(icons::FMT_AUDIO.to_owned())
-                                                                }
-                                                            }
-                                                        } else {
-                                                            None
-                                                        };
-                                                    // Split for the view: the
-                                                    // visibility test borrows
-                                                    // for the row's lifetime
-                                                    // while the markup moves.
-                                                    let title_icon_show =
-                                                        title_icon.is_some();
-                                                    let text = move || {
-                                                        let cache = metadata.get();
-                                                        let meta = meta_for(&cache, &entry);
-                                                        let live = if current.get() == index
-                                                            && duration.get() > 0.0
+                                                {move || format!("{}{}", id.label(), sort_arrow(sort))}
+                                            </button>
+                                            <span
+                                                class="col-resize"
+                                                title="Drag to resize, double-click to auto-fit"
+                                                on:pointerdown=move |ev: web_sys::PointerEvent| {
+                                                    ev.prevent_default();
+                                                    ev.stop_propagation();
+                                                    if let Some(target) = ev.current_target() {
+                                                        if let Ok(element) =
+                                                            target.dyn_into::<web_sys::Element>()
                                                         {
-                                                            Some(duration.get())
-                                                        } else {
-                                                            None
-                                                        };
-                                                        let starred = stars
-                                                            .get()
-                                                            .contains(&entry_star_locator(&entry));
-                                                        let status = if current.get() == index {
-                                                            if playing.get() {
-                                                                "▶"
-                                                            } else if !stopped.get() {
-                                                                "Ⅱ"
-                                                            } else {
-                                                                ""
-                                                            }
-                                                        } else {
-                                                            ""
-                                                        };
-                                                        if id == ColumnId::Status {
-                                                            policy_revision.track();
-                                                            let policy = web_order.read_value();
-                                                            let queued = policy.order.queue_position(index).map(|position| format!(" {}", position + 1)).unwrap_or_default();
-                                                            let stop = if policy.order.should_stop_after(index) { " ■" } else { "" };
-                                                            return format!("{status}{queued}{stop}");
+                                                            let _ = element
+                                                                .set_pointer_capture(ev.pointer_id());
                                                         }
-                                                        if id == ColumnId::Title {
-                                                            display_title(&cache, &metadata_failed.get(), &entry)
-                                                                .unwrap_or_default()
-                                                        } else {
-                                                            column_text(
-                                                                id,
-                                                                index,
-                                                                &entry,
-                                                                meta.as_ref(),
-                                                                live,
-                                                                starred,
-                                                                status,
-                                                            )
-                                                        }
-                                                    };
-                                                    // The searchable text columns paint
-                                                    // matched tokens while the playlist
-                                                    // filter is active; the other columns
-                                                    // keep their plain text. The tooltip
-                                                    // always shows the raw text.
-                                                    let tip = text.clone();
-                                                    let text = move || {
-                                                        let raw = text();
-                                                        if matches!(
-                                                            id,
-                                                            ColumnId::Title
-                                                                | ColumnId::Artist
-                                                                | ColumnId::Album
-                                                        ) {
-                                                            highlight_label(raw, filter.get())
-                                                        } else {
-                                                            raw.into_any()
-                                                        }
-                                                    };
-                                                    view! {
-                                                        <span
-                                                            class=format!("cell {}", id.class())
-                                                            class:visualizer-trigger=move || {
-                                                                id == ColumnId::Status
-                                                                    && current.get() == index
-                                                                    && !stopped.get()
-                                                            }
-                                                            title=move || {
-                                                                if id == ColumnId::Status
-                                                                    && current.get() == index
-                                                                    && !stopped.get()
-                                                                {
-                                                                    "Open audio visualizer".to_owned()
-                                                                } else {
-                                                                    tip()
-                                                                }
-                                                            }
-                                                            on:click=move |ev: web_sys::MouseEvent| {
-                                                                if id == ColumnId::Status
-                                                                    && current.get_untracked() == index
-                                                                    && !stopped.get_untracked()
-                                                                {
-                                                                    ev.stop_propagation();
-                                                                    set_visualizer_spectrum_mode.set(false);
-                                                                    set_visualizer_open.set(true);
-                                                                    return;
-                                                                }
-                                                                // The star cell toggles without
-                                                                // selecting or playing the row.
-                                                                if id == ColumnId::Star {
-                                                                    ev.stop_propagation();
-                                                                    let entry = star_entry.clone();
-                                                                    let starred = stars
-                                                                        .get_untracked()
-                                                                        .contains(&entry_star_locator(&entry));
-                                                                    toggle_star(entry, starred);
-                                                                }
-                                                            }
-                                                            on:dblclick=move |ev: web_sys::MouseEvent| {
-                                                                if id == ColumnId::Status
-                                                                    && current.get_untracked() == index
-                                                                    && !stopped.get_untracked()
-                                                                {
-                                                                    ev.stop_propagation();
-                                                                }
-                                                            }
-                                                        >
-                                                            <Show
-                                                                when=move || title_icon_show
-                                                                fallback=|| ()
-                                                            >
-                                                                <span
-                                                                    class="cell-icon"
-                                                                    inner_html=title_icon.clone().unwrap_or_default()
-                                                                ></span>
-                                                            </Show>
-                                                            {text}
-                                                            <Show
-                                                                when=move || {
-                                                                    id == ColumnId::Status
-                                                                        && current.get() == index
-                                                                        && playing.get()
-                                                                }
-                                                                fallback=|| ()
-                                                            >
-                                                                // The desktop's status cell:
-                                                                // the play/pause glyph with
-                                                                // the five-band waveform
-                                                                // beside it, centered in the
-                                                                // cell. Paint styles are
-                                                                // inline so a stale cached
-                                                                // stylesheet cannot leave the
-                                                                // bars unstyled (invisible).
-                                                                <span
-                                                                    class="row-meter"
-                                                                    style="display: inline-flex; align-items: flex-end; gap: 1px; width: 16px; height: 14px; padding: 1px; box-sizing: border-box; border-radius: 4px; vertical-align: middle; margin-left: 3px; pointer-events: none; background: rgba(5, 20, 28, 0.78); border: 1px solid rgba(255, 255, 255, 0.18);"
-                                                                >
-                                                                    <For
-                                                                        each=|| [0usize, 1, 2, 3, 4]
-                                                                        key=|band| *band
-                                                                        let:band
-                                                                    >
-                                                                        <span
-                                                                            class="row-meter-bar"
-                                                                            style=move || {
-                                                                                let levels = audio_levels.get();
-                                                                                let level = levels
-                                                                                    .get(band)
-                                                                                    .copied()
-                                                                                    .unwrap_or(0.0)
-                                                                                    .clamp(0.0, 1.0);
-                                                                                // The desktop's
-                                                                                // selected-row set:
-                                                                                // the current row
-                                                                                // is highlight
-                                                                                // blue, and the
-                                                                                // normal colors
-                                                                                // vanish on it.
-                                                                                const COLORS: [&str; 5] = [
-                                                                                    "#8cbcff",
-                                                                                    "#64d8ff",
-                                                                                    "#47eee7",
-                                                                                    "#53edb4",
-                                                                                    "#82ef99",
-                                                                                ];
-                                                                                format!(
-                                                                                    "width: 2px; flex: none; min-height: 2px; border-radius: 1px; background: {}; height: {}px;",
-                                                                                    COLORS[band],
-                                                                                    2.0 + 10.0 * level
-                                                                                )
-                                                                            }
-                                                                        ></span>
-                                                                    </For>
-                                                                </span>
-                                                            </Show>
-                                                        </span>
+                                                    }
+                                                    let width = columns
+                                                        .get_untracked()
+                                                        .iter()
+                                                        .find(|column| column.id == start_column)
+                                                        .map(|column| column.width)
+                                                        .unwrap_or(0.0);
+                                                    set_resizing.set(Some((
+                                                        start_column,
+                                                        ev.client_x() as f64,
+                                                        width,
+                                                    )));
+                                                }
+                                                on:dblclick={
+                                                    let auto_fit_column = auto_fit_column.clone();
+                                                    move |ev: web_sys::MouseEvent| {
+                                                        ev.stop_propagation();
+                                                        auto_fit_column(start_column);
                                                     }
                                                 }
-                                            </For>
-                                            {
-                                                let mobile_title_entry = mobile_entry.clone();
-                                                let mobile_detail_entry = mobile_entry.clone();
-                                                let mobile_duration_entry = mobile_entry.clone();
-                                                let mobile_star_label_entry = mobile_entry.clone();
-                                                let mobile_icon = match file_icon(&mobile_entry.path, &mobile_entry.entry) {
-                                                    FileIcon::Svg(svg) => svg.to_owned(),
-                                                    FileIcon::Badge(ext) => format!("{}<span class=\"ext\">{ext}</span>", icons::FMT_PAPER),
-                                                    FileIcon::None => icons::FMT_AUDIO.to_owned(),
-                                                };
-                                                let mobile_star_entry = mobile_entry.clone();
-                                                let mobile_star_toggle = toggle_star.clone();
-                                                let mobile_star_key_entry = mobile_entry.clone();
-                                                let mobile_star_key_toggle = toggle_star.clone();
-                                                let mobile_menu_entry = mobile_entry.clone();
-                                                let mobile_menu_key_entry = mobile_entry.clone();
-                                                view! {
-                                                    <span class="mobile-track-card">
-                                                        <span class="mobile-track-icon" inner_html=mobile_icon></span>
-                                                        <span class="mobile-track-copy">
-                                                            <span class="mobile-track-head">
-                                                                <span
-                                                                    class="mobile-track-status"
-                                                                    role="button"
-                                                                    tabindex="0"
-                                                                    aria-label="Open audio visualizer"
-                                                                    on:click=move |ev: web_sys::MouseEvent| {
-                                                                        if current.get_untracked() == index && !stopped.get_untracked() {
-                                                                            ev.stop_propagation();
-                                                                            set_visualizer_spectrum_mode.set(false);
-                                                                            set_visualizer_open.set(true);
-                                                                        }
+                                            ></span>
+                                        </div>
+                                    }
+                                }
+                            </For>
+                        </div>
+
+                            <Show
+                                when=move || !view_rows().is_empty()
+                                fallback=move || view! {
+                                    <Show when=move || !connected.get() || queue.get().is_empty()>
+                                        <p class="empty">
+                                            {move || if connected.get() {
+                                                "Pick a folder in the file tree, or a playlist."
+                                            } else {
+                                                "Open the server settings to connect."
+                                            }}
+                                        </p>
+                                        <div class="mobile-queue-empty">
+                                            <span class="mobile-empty-icon" inner_html=icons::FMT_PLAYLIST></span>
+                                            <h2>{move || if connected.get() { "Your queue is empty" } else { "Connect to Kog" }}</h2>
+                                            <p>{move || if connected.get() { "Choose music from your Library or Playlists." } else { "Connect to your Kog server to browse and play music." }}</p>
+                                            <button
+                                                type="button"
+                                                class="primary"
+                                                on:click=move |_| {
+                                                    if connected.get_untracked() {
+                                                        set_mobile_view.set(MobileView::Library);
+                                                    } else {
+                                                        set_settings_open.set(true);
+                                                    }
+                                                }
+                                            >{move || if connected.get() { "Browse Library" } else { "Connect to Server" }}</button>
+                                        </div>
+                                    </Show>
+                                }
+                            >
+                                <For
+                                    each=view_rows
+                                    key=|(index, entry)| format!("{index}:{}::{}", entry.path, entry.entry)
+                                    let:row
+                                >
+                                    {
+                                        let (index, entry) = row;
+                                        let menu_entry = entry.clone();
+                                        let mobile_entry = entry.clone();
+                                        view! {
+                                            <button
+                                                class="track"
+                                                draggable="true"
+                                                style="position: relative"
+                                                data-index=move || index.to_string()
+                                                class:current=move || current.get() == index
+                                                class:selected=move || selected.get().contains(&index)
+                                                on:contextmenu=move |ev: web_sys::MouseEvent| {
+                                                    ev.prevent_default();
+                                                    if !selected.get_untracked().contains(&index) {
+                                                        select_row(index,false,false);
+                                                    }
+                                                    set_song_menu.set(Some((
+                                                        ev.client_x() as f64,
+                                                        ev.client_y() as f64,
+                                                        index,
+                                                        menu_entry.clone(),
+                                                    )));
+                                                }
+                                                on:click=move |ev: web_sys::MouseEvent| {
+                                                    if touch_mode && !ev.shift_key() && !ev.ctrl_key() && !ev.meta_key() {
+                                                        select_row(index,false,false);
+                                                        activate_row(index);
+                                                        return;
+                                                    }
+                                                    // A single click only selects,
+                                                    // like the desktop: a song starts
+                                                    // on double click.
+                                                    select_row(index,ev.shift_key(),ev.ctrl_key()||ev.meta_key());
+                                                }
+                                                on:dblclick=move |ev: web_sys::MouseEvent| {
+                                                    ev.prevent_default();
+                                                    // Touch handled the activation on
+                                                    // the tap; the second tap of a
+                                                    // double must not toggle again.
+                                                    if touch_mode {
+                                                        return;
+                                                    }
+                                                    select_row(index,false,false);
+                                                    activate_row(index);
+                                                }
+                                            >
+                                                <For
+                                                    each=visible_columns
+                                                    key=|column| column.id.key()
+                                                    let:column
+                                                >
+                                                    {
+                                                        let id = column.id;
+                                                        let entry = entry.clone();
+                                                        let star_entry = entry.clone();
+                                                        let toggle_star = toggle_star.clone();
+                                                        // The title column carries
+                                                        // the track's format icon,
+                                                        // the same art the file
+                                                        // tree shows.
+                                                        let title_icon: Option<String> =
+                                                            if id == ColumnId::Title {
+                                                                match file_icon(
+                                                                    &entry.path,
+                                                                    &entry.entry,
+                                                                ) {
+                                                                    FileIcon::Svg(svg) => {
+                                                                        Some(svg.to_owned())
                                                                     }
-                                                                    on:keydown=move |ev: web_sys::KeyboardEvent| {
-                                                                        if ev.key() == "Enter" || ev.key() == " " {
-                                                                            ev.prevent_default();
-                                                                            ev.stop_propagation();
+                                                                    FileIcon::Badge(ext) => {
+                                                                        Some(format!(
+                                                                            "{}<span class=\"ext\">{ext}</span>",
+                                                                            icons::FMT_PAPER
+                                                                        ))
+                                                                    }
+                                                                    FileIcon::None => {
+                                                                        Some(icons::FMT_AUDIO.to_owned())
+                                                                    }
+                                                                }
+                                                            } else {
+                                                                None
+                                                            };
+                                                        // Split for the view: the
+                                                        // visibility test borrows
+                                                        // for the row's lifetime
+                                                        // while the markup moves.
+                                                        let title_icon_show =
+                                                            title_icon.is_some();
+                                                        let text = move || {
+                                                            let cache = metadata.get();
+                                                            let meta = meta_for(&cache, &entry);
+                                                            let live = if current.get() == index
+                                                                && duration.get() > 0.0
+                                                            {
+                                                                Some(duration.get())
+                                                            } else {
+                                                                None
+                                                            };
+                                                            let starred = stars
+                                                                .get()
+                                                                .contains(&entry_star_locator(&entry));
+                                                            let status = if current.get() == index {
+                                                                if playing.get() {
+                                                                    "▶"
+                                                                } else if !stopped.get() {
+                                                                    "Ⅱ"
+                                                                } else {
+                                                                    ""
+                                                                }
+                                                            } else {
+                                                                ""
+                                                            };
+                                                            if id == ColumnId::Status {
+                                                                policy_revision.track();
+                                                                let policy = session_model.read_value();
+                                                                let queued = policy.order().queue_position(index).map(|position| format!(" {}", position + 1)).unwrap_or_default();
+                                                                let stop = if policy.order().should_stop_after(index) { " ■" } else { "" };
+                                                                return format!("{status}{queued}{stop}");
+                                                            }
+                                                            if id == ColumnId::Title {
+                                                                display_title(&cache, &metadata_failed.get(), &entry)
+                                                                    .unwrap_or_default()
+                                                            } else {
+                                                                column_text(
+                                                                    id,
+                                                                    index,
+                                                                    &entry,
+                                                                    meta.as_ref(),
+                                                                    live,
+                                                                    starred,
+                                                                    status,
+                                                                )
+                                                            }
+                                                        };
+                                                        // The searchable text columns paint
+                                                        // matched tokens while the playlist
+                                                        // filter is active; the other columns
+                                                        // keep their plain text. The tooltip
+                                                        // always shows the raw text.
+                                                        let tip = text.clone();
+                                                        let text = move || {
+                                                            let raw = text();
+                                                            if matches!(
+                                                                id,
+                                                                ColumnId::Title
+                                                                    | ColumnId::Artist
+                                                                    | ColumnId::Album
+                                                            ) {
+                                                                highlight_label(raw, filter.get())
+                                                            } else {
+                                                                raw.into_any()
+                                                            }
+                                                        };
+                                                        view! {
+                                                            <span
+                                                                class=format!("cell {}", id.class())
+                                                                class:visualizer-trigger=move || {
+                                                                    id == ColumnId::Status
+                                                                        && current.get() == index
+                                                                        && !stopped.get()
+                                                                }
+                                                                title=move || {
+                                                                    if id == ColumnId::Status
+                                                                        && current.get() == index
+                                                                        && !stopped.get()
+                                                                    {
+                                                                        "Open audio visualizer".to_owned()
+                                                                    } else {
+                                                                        tip()
+                                                                    }
+                                                                }
+                                                                on:click=move |ev: web_sys::MouseEvent| {
+                                                                    if id == ColumnId::Status
+                                                                        && current.get_untracked() == index
+                                                                        && !stopped.get_untracked()
+                                                                    {
+                                                                        ev.stop_propagation();
+                                                                        set_visualizer_spectrum_mode.set(false);
+                                                                        set_visualizer_open.set(true);
+                                                                        return;
+                                                                    }
+                                                                    // The star cell toggles without
+                                                                    // selecting or playing the row.
+                                                                    if id == ColumnId::Star {
+                                                                        ev.stop_propagation();
+                                                                        let entry = star_entry.clone();
+                                                                        let starred = stars
+                                                                            .get_untracked()
+                                                                            .contains(&entry_star_locator(&entry));
+                                                                        toggle_star(entry, starred);
+                                                                    }
+                                                                }
+                                                                on:dblclick=move |ev: web_sys::MouseEvent| {
+                                                                    if id == ColumnId::Status
+                                                                        && current.get_untracked() == index
+                                                                        && !stopped.get_untracked()
+                                                                    {
+                                                                        ev.stop_propagation();
+                                                                    }
+                                                                }
+                                                            >
+                                                                <Show
+                                                                    when=move || title_icon_show
+                                                                    fallback=|| ()
+                                                                >
+                                                                    <span
+                                                                        class="cell-icon"
+                                                                        inner_html=title_icon.clone().unwrap_or_default()
+                                                                    ></span>
+                                                                </Show>
+                                                                {text}
+                                                                <Show
+                                                                    when=move || {
+                                                                        id == ColumnId::Status
+                                                                            && current.get() == index
+                                                                            && playing.get()
+                                                                    }
+                                                                    fallback=|| ()
+                                                                >
+                                                                    // The desktop's status cell:
+                                                                    // the play/pause glyph with
+                                                                    // the five-band waveform
+                                                                    // beside it, centered in the
+                                                                    // cell. Paint styles are
+                                                                    // inline so a stale cached
+                                                                    // stylesheet cannot leave the
+                                                                    // bars unstyled (invisible).
+                                                                    <span
+                                                                        class="row-meter"
+                                                                        style="display: inline-flex; align-items: flex-end; gap: 1px; width: 16px; height: 14px; padding: 1px; box-sizing: border-box; border-radius: 4px; vertical-align: middle; margin-left: 3px; pointer-events: none; background: rgba(5, 20, 28, 0.78); border: 1px solid rgba(255, 255, 255, 0.18);"
+                                                                    >
+                                                                        <For
+                                                                            each=|| [0usize, 1, 2, 3, 4]
+                                                                            key=|band| *band
+                                                                            let:band
+                                                                        >
+                                                                            <span
+                                                                                class="row-meter-bar"
+                                                                                style=move || {
+                                                                                    let levels = audio_levels.get();
+                                                                                    let level = levels
+                                                                                        .get(band)
+                                                                                        .copied()
+                                                                                        .unwrap_or(0.0)
+                                                                                        .clamp(0.0, 1.0);
+                                                                                    // The desktop's
+                                                                                    // selected-row set:
+                                                                                    // the current row
+                                                                                    // is highlight
+                                                                                    // blue, and the
+                                                                                    // normal colors
+                                                                                    // vanish on it.
+                                                                                    const COLORS: [&str; 5] = [
+                                                                                        "#8cbcff",
+                                                                                        "#64d8ff",
+                                                                                        "#47eee7",
+                                                                                        "#53edb4",
+                                                                                        "#82ef99",
+                                                                                    ];
+                                                                                    format!(
+                                                                                        "width: 2px; flex: none; min-height: 2px; border-radius: 1px; background: {}; height: {}px;",
+                                                                                        COLORS[band],
+                                                                                        2.0 + 10.0 * level
+                                                                                    )
+                                                                                }
+                                                                            ></span>
+                                                                        </For>
+                                                                    </span>
+                                                                </Show>
+                                                            </span>
+                                                        }
+                                                    }
+                                                </For>
+                                                {
+                                                    let mobile_title_entry = mobile_entry.clone();
+                                                    let mobile_detail_entry = mobile_entry.clone();
+                                                    let mobile_duration_entry = mobile_entry.clone();
+                                                    let mobile_star_label_entry = mobile_entry.clone();
+                                                    let mobile_icon = match file_icon(&mobile_entry.path, &mobile_entry.entry) {
+                                                        FileIcon::Svg(svg) => svg.to_owned(),
+                                                        FileIcon::Badge(ext) => format!("{}<span class=\"ext\">{ext}</span>", icons::FMT_PAPER),
+                                                        FileIcon::None => icons::FMT_AUDIO.to_owned(),
+                                                    };
+                                                    let mobile_star_entry = mobile_entry.clone();
+                                                    let mobile_star_toggle = toggle_star.clone();
+                                                    let mobile_star_key_entry = mobile_entry.clone();
+                                                    let mobile_star_key_toggle = toggle_star.clone();
+                                                    let mobile_menu_entry = mobile_entry.clone();
+                                                    let mobile_menu_key_entry = mobile_entry.clone();
+                                                    view! {
+                                                        <span class="mobile-track-card">
+                                                            <span class="mobile-track-icon" inner_html=mobile_icon></span>
+                                                            <span class="mobile-track-copy">
+                                                                <span class="mobile-track-head">
+                                                                    <span
+                                                                        class="mobile-track-status"
+                                                                        role="button"
+                                                                        tabindex="0"
+                                                                        aria-label="Open audio visualizer"
+                                                                        on:click=move |ev: web_sys::MouseEvent| {
                                                                             if current.get_untracked() == index && !stopped.get_untracked() {
+                                                                                ev.stop_propagation();
                                                                                 set_visualizer_spectrum_mode.set(false);
                                                                                 set_visualizer_open.set(true);
                                                                             }
                                                                         }
-                                                                    }
-                                                                >{move || if current.get() == index && !stopped.get() { if playing.get() { "▶" } else { "Ⅱ" } } else { "" }}</span>
-                                                                <span class="mobile-track-title">
-                                                                    {move || display_title(&metadata.get(), &metadata_failed.get(), &mobile_title_entry).unwrap_or_default()}
+                                                                        on:keydown=move |ev: web_sys::KeyboardEvent| {
+                                                                            if ev.key() == "Enter" || ev.key() == " " {
+                                                                                ev.prevent_default();
+                                                                                ev.stop_propagation();
+                                                                                if current.get_untracked() == index && !stopped.get_untracked() {
+                                                                                    set_visualizer_spectrum_mode.set(false);
+                                                                                    set_visualizer_open.set(true);
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    >{move || if current.get() == index && !stopped.get() { if playing.get() { "▶" } else { "Ⅱ" } } else { "" }}</span>
+                                                                    <span class="mobile-track-title">
+                                                                        {move || display_title(&metadata.get(), &metadata_failed.get(), &mobile_title_entry).unwrap_or_default()}
+                                                                    </span>
+                                                                </span>
+                                                                <span class="mobile-track-detail">
+                                                                    {move || {
+                                                                        let cache = metadata.get();
+                                                                        let meta = meta_for(&cache, &mobile_detail_entry);
+                                                                        let artist = meta.as_ref().and_then(|row| row.artist.as_ref().or(row.album_artist.as_ref())).cloned().unwrap_or_default();
+                                                                        let album = meta.as_ref().and_then(|row| row.album.as_ref()).cloned().unwrap_or_default();
+                                                                        if artist.is_empty() { album }
+                                                                        else if album.is_empty() { artist }
+                                                                        else { format!("{artist} · {album}") }
+                                                                    }}
                                                                 </span>
                                                             </span>
-                                                            <span class="mobile-track-detail">
-                                                                {move || {
-                                                                    let cache = metadata.get();
-                                                                    let meta = meta_for(&cache, &mobile_detail_entry);
-                                                                    let artist = meta.as_ref().and_then(|row| row.artist.as_ref().or(row.album_artist.as_ref())).cloned().unwrap_or_default();
-                                                                    let album = meta.as_ref().and_then(|row| row.album.as_ref()).cloned().unwrap_or_default();
-                                                                    if artist.is_empty() { album }
-                                                                    else if album.is_empty() { artist }
-                                                                    else { format!("{artist} · {album}") }
-                                                                }}
+                                                            <span class="mobile-track-duration">
+                                                                {move || meta_for(&metadata.get(), &mobile_duration_entry).and_then(|row| row.duration).map(clock).unwrap_or_default()}
                                                             </span>
-                                                        </span>
-                                                        <span class="mobile-track-duration">
-                                                            {move || meta_for(&metadata.get(), &mobile_duration_entry).and_then(|row| row.duration).map(clock).unwrap_or_default()}
-                                                        </span>
-                                                        <span
-                                                            class="mobile-track-star"
-                                                            role="button"
-                                                            tabindex="0"
-                                                            aria-label="Toggle favorite"
-                                                            on:click=move |ev: web_sys::MouseEvent| {
-                                                                ev.stop_propagation();
-                                                                let item = mobile_star_entry.clone();
-                                                                let starred = stars.get_untracked().contains(&entry_star_locator(&item));
-                                                                mobile_star_toggle(item, starred);
-                                                            }
-                                                            on:keydown=move |ev: web_sys::KeyboardEvent| {
-                                                                if ev.key() == "Enter" || ev.key() == " " {
-                                                                    ev.prevent_default();
+                                                            <span
+                                                                class="mobile-track-star"
+                                                                role="button"
+                                                                tabindex="0"
+                                                                aria-label="Toggle favorite"
+                                                                on:click=move |ev: web_sys::MouseEvent| {
                                                                     ev.stop_propagation();
-                                                                    let item = mobile_star_key_entry.clone();
+                                                                    let item = mobile_star_entry.clone();
                                                                     let starred = stars.get_untracked().contains(&entry_star_locator(&item));
-                                                                    mobile_star_key_toggle(item, starred);
+                                                                    mobile_star_toggle(item, starred);
                                                                 }
-                                                            }
-                                                        >{move || if stars.get().contains(&entry_star_locator(&mobile_star_label_entry)) { "★" } else { "☆" }}</span>
-                                                        <span
-                                                            class="mobile-track-more"
-                                                            role="button"
-                                                            tabindex="0"
-                                                            aria-label="Track actions"
-                                                            on:click=move |ev: web_sys::MouseEvent| {
-                                                                ev.stop_propagation();
-                                                                set_selected.set(HashSet::from([index]));
-                                                                set_selection_anchor.set(Some(index));
-                                                                set_song_menu.set(Some((ev.client_x() as f64, ev.client_y() as f64, index, mobile_menu_entry.clone())));
-                                                            }
-                                                            on:keydown=move |ev: web_sys::KeyboardEvent| {
-                                                                if ev.key() == "Enter" || ev.key() == " " {
-                                                                    ev.prevent_default();
+                                                                on:keydown=move |ev: web_sys::KeyboardEvent| {
+                                                                    if ev.key() == "Enter" || ev.key() == " " {
+                                                                        ev.prevent_default();
+                                                                        ev.stop_propagation();
+                                                                        let item = mobile_star_key_entry.clone();
+                                                                        let starred = stars.get_untracked().contains(&entry_star_locator(&item));
+                                                                        mobile_star_key_toggle(item, starred);
+                                                                    }
+                                                                }
+                                                            >{move || if stars.get().contains(&entry_star_locator(&mobile_star_label_entry)) { "★" } else { "☆" }}</span>
+                                                            <span
+                                                                class="mobile-track-more"
+                                                                role="button"
+                                                                tabindex="0"
+                                                                aria-label="Track actions"
+                                                                on:click=move |ev: web_sys::MouseEvent| {
                                                                     ev.stop_propagation();
-                                                                    set_selected.set(HashSet::from([index]));
-                                                                    set_selection_anchor.set(Some(index));
-                                                                    set_song_menu.set(Some((0.0, 0.0, index, mobile_menu_key_entry.clone())));
+                                                                    select_row(index,false,false);
+                                                                    set_song_menu.set(Some((ev.client_x() as f64, ev.client_y() as f64, index, mobile_menu_entry.clone())));
                                                                 }
-                                                            }
-                                                        >"⋯"</span>
-                                                    </span>
+                                                                on:keydown=move |ev: web_sys::KeyboardEvent| {
+                                                                    if ev.key() == "Enter" || ev.key() == " " {
+                                                                        ev.prevent_default();
+                                                                        ev.stop_propagation();
+                                                                        select_row(index,false,false);
+                                                                        set_song_menu.set(Some((0.0, 0.0, index, mobile_menu_key_entry.clone())));
+                                                                    }
+                                                                }
+                                                            >"⋯"</span>
+                                                        </span>
+                                                    }
                                                 }
-                                            }
-                                        <span
-                                            class="drag-grip"
-                                            title="Drag to reorder"
-                                            on:pointerdown=move |ev: web_sys::PointerEvent| {
-                                                if let Some(target) = ev.target().and_then(|t| t.dyn_into::<web_sys::Element>().ok()) {
-                                                    let _ = target.set_pointer_capture(ev.pointer_id());
+                                            <span
+                                                class="drag-grip"
+                                                title="Drag to reorder"
+                                                on:pointerdown=move |ev: web_sys::PointerEvent| {
+                                                    if let Some(target) = ev.target().and_then(|t| t.dyn_into::<web_sys::Element>().ok()) {
+                                                        let _ = target.set_pointer_capture(ev.pointer_id());
+                                                    }
+                                                    set_dragging_track.set(Some(index));
+                                                    set_reorder_to.set(None);
                                                 }
-                                                set_dragging_track.set(Some(index));
-                                                set_reorder_to.set(None);
-                                            }
-                                            on:pointermove=move |ev: web_sys::PointerEvent| {
-                                                if dragging_track.get_untracked() != Some(index) {
-                                                    return;
+                                                on:pointermove=move |ev: web_sys::PointerEvent| {
+                                                    if dragging_track.get_untracked() != Some(index) {
+                                                        return;
+                                                    }
+                                                    let client_y = ev.client_y();
+                                                    let marker = js_sys::eval(&format!(
+                                                        "(() => {{ const rows = [...document.querySelectorAll('.track')]; const y = {client_y}; let index = rows.length; for (let i = 0; i < rows.length; i++) {{ const r = rows[i].getBoundingClientRect(); if (y < r.top + r.height / 2) {{ index = i; break; }} }} return index; }})()",
+                                                    ));
+                                                    if let Ok(value) = marker && let Some(index) = value.as_f64() {
+                                                        set_reorder_to.set(Some(index as usize));
+                                                    }
                                                 }
-                                                let client_y = ev.client_y();
-                                                let marker = js_sys::eval(&format!(
-                                                    "(() => {{ const rows = [...document.querySelectorAll('.track')]; const y = {client_y}; let index = rows.length; for (let i = 0; i < rows.length; i++) {{ const r = rows[i].getBoundingClientRect(); if (y < r.top + r.height / 2) {{ index = i; break; }} }} return index; }})()",
-                                                ));
-                                                if let Ok(value) = marker && let Some(index) = value.as_f64() {
-                                                    set_reorder_to.set(Some(index as usize));
+                                                on:pointerup=move |ev: web_sys::PointerEvent| {
+                                                    if dragging_track.get_untracked() == Some(index)
+                                                        && let Some(to) = reorder_to.get_untracked()
+                                                    {
+                                                        move_track(index, to);
+                                                    }
+                                                    set_dragging_track.set(None);
+                                                    set_reorder_to.set(None);
+                                                    let _ = js_sys::eval(
+                                                        "document.querySelectorAll('.track.reorder-above').forEach(t => t.classList.remove('reorder-above'))",
+                                                    );
                                                 }
-                                            }
-                                            on:pointerup=move |ev: web_sys::PointerEvent| {
-                                                if dragging_track.get_untracked() == Some(index)
-                                                    && let Some(to) = reorder_to.get_untracked()
-                                                {
-                                                    move_track(index, to);
-                                                }
-                                                set_dragging_track.set(None);
-                                                set_reorder_to.set(None);
-                                                let _ = js_sys::eval(
-                                                    "document.querySelectorAll('.track.reorder-above').forEach(t => t.classList.remove('reorder-above'))",
-                                                );
-                                            }
-                                            on:click=move |ev: web_sys::MouseEvent| ev.stop_propagation()
-                                        >"⠿"</span>
-</button>
+                                                on:click=move |ev: web_sys::MouseEvent| ev.stop_propagation()
+                                            >"⠿"</span>
+    </button>
+                                        }
                                     }
-                                }
-                            </For>
-                        </Show>
-                    </div>
-                </main>
-            </div>
+                                </For>
+                            </Show>
+                        </div>
+                    </main>
+                </div>
 
-            <nav class="mobile-tabs" aria-label="Main navigation">
-                <button
-                    type="button"
-                    class:active=move || mobile_view.get() == MobileView::Library
-                    aria-current=move || if mobile_view.get() == MobileView::Library { "page" } else { "false" }
-                    on:click=move |_| {
-                        set_files_expanded.set(true);
-                        set_mobile_view.set(MobileView::Library);
-                    }
-                >
-                    <span class="mobile-tab-icon" inner_html=icons::VIEW_LIST_TREE></span>
-                    <span>"Library"</span>
-                </button>
-                <button
-                    type="button"
-                    class:active=move || mobile_view.get() == MobileView::Queue
-                    aria-current=move || if mobile_view.get() == MobileView::Queue { "page" } else { "false" }
-                    on:click=move |_| set_mobile_view.set(MobileView::Queue)
-                >
-                    <span class="mobile-tab-icon" inner_html=icons::QUEUE></span>
-                    <span>"Queue"</span>
-                </button>
-                <button
-                    type="button"
-                    class:active=move || mobile_view.get() == MobileView::Playlists
-                    aria-current=move || if mobile_view.get() == MobileView::Playlists { "page" } else { "false" }
-                    on:click=move |_| {
-                        set_playlists_expanded.set(true);
-                        set_mobile_view.set(MobileView::Playlists);
-                    }
-                >
-                    <span class="mobile-tab-icon" inner_html=icons::FMT_PLAYLIST></span>
-                    <span>"Playlists"</span>
-                </button>
-            </nav>
-
-            <div class="player-scrim" on:click=move |_| set_transport_compact.set(true)></div>
-
-            <footer class="transport">
-                <div
-                    class="now"
-                    on:click=move |_| {
-                        if touch_mode && transport_compact.get_untracked() {
-                            set_transport_compact.set(false);
+                <nav class="mobile-tabs" aria-label="Main navigation">
+                    <button
+                        type="button"
+                        class:active=move || mobile_view.get() == MobileView::Library
+                        aria-current=move || if mobile_view.get() == MobileView::Library { "page" } else { "false" }
+                        on:click=move |_| {
+                            set_files_expanded.set(true);
+                            set_mobile_view.set(MobileView::Library);
                         }
-                    }
-                >
+                    >
+                        <span class="mobile-tab-icon" inner_html=icons::VIEW_LIST_TREE></span>
+                        <span>"Library"</span>
+                    </button>
+                    <button
+                        type="button"
+                        class:active=move || mobile_view.get() == MobileView::Queue
+                        aria-current=move || if mobile_view.get() == MobileView::Queue { "page" } else { "false" }
+                        on:click=move |_| set_mobile_view.set(MobileView::Queue)
+                    >
+                        <span class="mobile-tab-icon" inner_html=icons::QUEUE></span>
+                        <span>"Queue"</span>
+                    </button>
+                    <button
+                        type="button"
+                        class:active=move || mobile_view.get() == MobileView::Playlists
+                        aria-current=move || if mobile_view.get() == MobileView::Playlists { "page" } else { "false" }
+                        on:click=move |_| {
+                            set_playlists_expanded.set(true);
+                            set_mobile_view.set(MobileView::Playlists);
+                        }
+                    >
+                        <span class="mobile-tab-icon" inner_html=icons::FMT_PLAYLIST></span>
+                        <span>"Playlists"</span>
+                    </button>
+                </nav>
+
+                <div class="player-scrim" on:click=move |_| set_transport_compact.set(true)></div>
+
+                <footer class="transport">
                     <div
-                        class="art"
-                        title="Show album cover enlarged"
+                        class="now"
                         on:click=move |_| {
                             if touch_mode && transport_compact.get_untracked() {
                                 set_transport_compact.set(false);
-                            } else {
-                                set_cover_open.set(true);
                             }
                         }
                     >
+                        <div
+                            class="art"
+                            title="Show album cover enlarged"
+                            on:click=move |_| {
+                                if touch_mode && transport_compact.get_untracked() {
+                                    set_transport_compact.set(false);
+                                } else {
+                                    set_cover_open.set(true);
+                                }
+                            }
+                        >
+                            <img
+                                src=move || art_src()
+                                alt="Album cover"
+                                on:error=move |event| {
+                                    if let Some(img) = event
+                                        .target()
+                                        .and_then(|target| target.dyn_into::<web_sys::HtmlImageElement>().ok())
+                                    {
+                                        if !img.src().ends_with("/icons/cover-placeholder.svg") {
+                                            let _ = img.set_src("/icons/cover-placeholder.svg");
+                                        }
+                                    }
+                                }
+                            />
+                        </div>
+                        <div class="now-text">
+                            <div class="title">{move || now_title()}</div>
+                            <div class="subtitle">{move || now_subtitle()}</div>
+                            <div class="mobile-now-subtitle">{move || now_mobile_subtitle()}</div>
+                        </div>
+                    </div>
+
+                    <div class="transport-center">
+                        <div class="controls">
+                            <button
+                                class="toggle shuffle"
+                                class:active=move || shuffle.get() != ShuffleMode::Off
+                                title=move || shuffle_tip()
+                                disabled=move || queue.get().len() <= 1
+                                on:click=move |_| select_shuffle(shuffle.get_untracked().next())
+                                inner_html=icons::SHUFFLE
+                            ></button>
+                            <button
+                                title="Previous"
+                                disabled=move || queue.get().is_empty()
+                                on:click=move |_| step(-1)
+                                inner_html=icons::SKIP_BACKWARD
+                            ></button>
+                            <button
+                                class="play"
+                                title=move || if radio_waiting.get() { "Preparing next radio track — click to cancel" } else { "Play or pause" }
+                                aria-busy=move || radio_waiting.get().to_string()
+                                disabled=move || queue.get().is_empty() && !radio_on.get()
+                                on:click=move |_| toggle_play()
+                            >
+                                <span
+                                    class="glyph-icon"
+                                    inner_html=move || if playing.get() || radio_waiting.get() { icons::PAUSE } else { icons::PLAY }
+                                ></span>
+                            </button>
+                            <button
+                                title="Stop"
+                                disabled=move || queue.get().is_empty() && !radio_waiting.get()
+                                on:click=move |_| {
+                                    stop_playback();
+                                }
+                                inner_html=icons::STOP
+                            ></button>
+                            <button
+                                title="Next"
+                                disabled=move || queue.get().is_empty() && !radio_on.get()
+                                on:click=move |_| step(1)
+                                inner_html=icons::SKIP_FORWARD
+                            ></button>
+                            <button
+                                class="toggle repeat"
+                                class:active=move || repeat_mode.get() != Repeat::Off
+                                title=move || repeat_tip()
+                                disabled=move || queue.get().is_empty()
+                                on:click=move |_| {
+                                    select_repeat(repeat_mode.get_untracked().next());
+                                }
+                            >
+                                <span class="glyph-icon" inner_html=icons::REPEAT></span>
+                                <Show when=move || !repeat_badge().is_empty() fallback=|| ()>
+                                    <span class="badge">{move || repeat_badge()}</span>
+                                </Show>
+                            </button>
+                            <button
+                                class="toggle radio"
+                                class:active=move || radio_on.get()
+                                title=move || {
+                                    if radio_on.get() {
+                                        "Random Radio on — click to turn off"
+                                    } else {
+                                        "Random Radio off — click to turn on"
+                                    }
+                                }
+                                disabled=move || !connected.get()
+                                on:click=move |_| {
+                                    let next = !radio_on.get_untracked();
+                                    set_radio(next);
+                                }
+                            >"⚄\u{FE0E}"</button>
+                        </div>
+                        <div class="seek-row">
+                            <span class="time elapsed">{move || clock(position.get())}</span>
+                            <input
+                                class="seek"
+                                type="range"
+                                min="0"
+                                max=move || {
+                                    let value = duration.get();
+                                    if value.is_finite() && value > 0.0 { value } else { 1.0 }
+                                }
+                                step="0.5"
+                                prop:value=move || position.get()
+                                on:input=move |event| {
+                                    let requested: f64 =
+                                        event_target_value(&event).parse().unwrap_or(0.0);
+                                    // The element's own end beats the tag fallback:
+                                    // a wrong tag must never send a seek past the
+                                    // real audio.
+                                    let mut end = duration.get_untracked();
+                                    if let Some(audio) = audio_ref.get() {
+                                        if let Some(real) = finite_duration(audio.duration()) {
+                                            end = real;
+                                        } else {
+                                            let seekable = audio.seekable();
+                                            if seekable.length() > 0 {
+                                                if let Some(real) =
+                                                    seekable.end(0).ok().and_then(finite_duration)
+                                                {
+                                                    end = real;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    let target = if end.is_finite() && end > 0.0 {
+                                        requested.clamp(0.0, end)
+                                    } else {
+                                        requested
+                                    };
+                                    backend.send(SessionCommand::Seek {seconds:target});
+                                }
+                            />
+                            <span class="time total">{move || clock(duration.get())}</span>
+                        </div>
+                    </div>
+
+                    <div class="transport-right">
+                        <div class="volume-row">
+                            <button
+                                class="flat clear-list"
+                                title=if touch_mode { "Clear queue" } else { "Clear Play Queue" }
+                                disabled=move || queue.get().is_empty()
+                                on:click=move |_| clear_pane()
+                            >
+                                <span class="glyph-icon" inner_html=icons::CLEAR_LIST></span>
+                            </button>
+                            <button
+                                class="flat mute"
+                                title=move || if volume.get() <= 0.0 { "Unmute" } else { "Mute" }
+                                on:click=toggle_mute
+                            >
+                                <span
+                                    class="glyph-icon"
+                                    inner_html=move || {
+                                        if volume.get() <= 0.0 {
+                                            icons::VOLUME_MUTED
+                                        } else {
+                                            icons::VOLUME
+                                        }
+                                    }
+                                ></span>
+                            </button>
+                            <div class="volume-wrap">
+                                <span
+                                    class="volume-tip"
+                                    style=move || {
+                                        format!("left: {}%", (volume.get() * 100.0).round())
+                                    }
+                                >
+                                    {move || format!("{}%", (volume.get() * 100.0).round())}
+                                </span>
+                                <input
+                                    class="volume"
+                                    type="range"
+                                    min="0"
+                                    max="1"
+                                    step="0.01"
+                                    title=move || {
+                                        format!("Volume {}%", (volume.get() * 100.0).round())
+                                    }
+                                    prop:value=move || volume.get()
+                                    on:input=move |event| {
+                                        backend.send(SessionCommand::Volume {value:event_target_value(&event).parse().unwrap_or(0.9)})
+                                    }
+                                />
+                            </div>
+                        </div>
+                        <div class="transport-status">
+                            {move || {
+                                let note = status_note.get();
+                                if note.is_empty() {
+                                    status_line()
+                                } else {
+                                    note
+                                }
+                            }}
+                        </div>
+                    </div>
+
+                    <button
+                        class="transport-expand"
+                        title="Show playback controls"
+                        aria-label="Show playback controls"
+                        on:click=move |_| set_transport_compact.set(false)
+                    >"⌃"</button>
+
+                    <button
+                        class="transport-collapse"
+                        type="button"
+                        title="Minimize player"
+                        aria-label="Minimize player"
+                        on:click=move |_| set_transport_compact.set(true)
+                    >"⌄"</button>
+
+                    <For each={move || output_token.get().into_iter().collect::<Vec<_>>()} key=|token| (token.incarnation,token.serial) let:request_token>
+                        {
+                            let pause_token=request_token.clone();let playing_token=request_token.clone();let progress_token=request_token.clone();
+                            let failure_token=request_token.clone();let ended_token=request_token.clone();
+                            let ready_token=request_token.clone();let canplay_token=request_token.clone();
+                            let ready=resume_when_ready.clone();let canplay=resume_when_ready.clone();let source_changing=source_changing.clone();
+                            view! { <audio class="audio" node_ref=audio_ref preload="auto" data-output=request_token.serial.to_string()
+                                on:pause=move |_| {
+                                    if !source_changing.get_untracked() && session_model.with_value(|s|s.snapshot().output_token==Some(&pause_token)) {
+                                        if let Some(audio)=audio_ref.get() {if audio.paused() && !audio.ended() {backend.send(SessionCommand::Pause);}}
+                                    }
+                                }
+                                on:playing=move |_| {
+                                    if session_model.with_value(|s|s.snapshot().output_token==Some(&playing_token)) {
+                                        if session_model.with_value(|s|s.snapshot().transport==Transport::Paused) {backend.send(SessionCommand::Resume);}
+                                        backend.send(SessionCommand::Output {token:playing_token.clone(),event:OutputEvent::Started});
+                                    }
+                                }
+                                on:timeupdate=move |_| {if let Some(audio)=audio_ref.get(){backend.send(SessionCommand::Output {token:progress_token.clone(),event:OutputEvent::Progress {seconds:audio.current_time(),duration:duration.get_untracked()}});}}
+                                on:loadedmetadata=move |event|{if session_model.with_value(|s|s.snapshot().output_token==Some(&ready_token)){ready(event);}}
+                                on:durationchange=refresh_media_duration
+                                on:canplay=move |event|{if session_model.with_value(|s|s.snapshot().output_token==Some(&canplay_token)){canplay(event);}}
+                                on:error=move |_|backend.send(SessionCommand::Output {token:failure_token.clone(),event:OutputEvent::Failed {error:"The browser could not play this stream".into()}})
+                                on:ended=move |_|backend.send(SessionCommand::Output {token:ended_token.clone(),event:OutputEvent::Ended})
+                            ></audio> }
+                        }
+                    </For>
+                </footer>
+
+                <Show when=move || visualizer_open.get() fallback=|| ()>
+                    <div class="scrim" on:click=move |_| set_visualizer_open.set(false)></div>
+                    <section class="audio-visualizer" role="dialog" aria-modal="true" aria-label="Audio visualizer">
+                        <header class="audio-visualizer-header">
+                            <h2>"Audio visualizer"</h2>
+                            <button type="button" aria-label="Close visualizer" on:click=move |_| set_visualizer_open.set(false)>"×"</button>
+                        </header>
+                        <div class="audio-visualizer-modes" role="group" aria-label="Visualization mode">
+                            <button
+                                type="button"
+                                class:active=move || !visualizer_spectrum_mode.get()
+                                aria-pressed=move || (!visualizer_spectrum_mode.get()).to_string()
+                                on:click=move |_| set_visualizer_spectrum_mode.set(false)
+                            >"Waveform"</button>
+                            <button
+                                type="button"
+                                class:active=move || visualizer_spectrum_mode.get()
+                                aria-pressed=move || visualizer_spectrum_mode.get().to_string()
+                                on:click=move |_| set_visualizer_spectrum_mode.set(true)
+                            >"Spectrum"</button>
+                        </div>
+                        <canvas
+                            node_ref=visualizer_canvas
+                            width="720"
+                            height="360"
+                            role="img"
+                            aria-label="Live audio visualization"
+                        ></canvas>
+                        <p class="audio-visualizer-title">{move || now_title()}</p>
+                    </section>
+                </Show>
+
+                <Show when=move || add_url_open.get() fallback=|| ()>
+                    <div class="scrim" on:click=move |_| set_add_url_open.set(false)></div>
+                    <div class="settings add-url-dialog" role="dialog" aria-label="Add stream URL">
+                        <h2>"Add Stream URL"</h2>
+                        <label>
+                            "URL"
+                            <input
+                                type="url"
+                                placeholder="https://example.com/stream"
+                                prop:value=move || add_url_text.get()
+                                on:input=move |event| set_add_url_text.set(event_target_value(&event))
+                                on:keydown=move |event: web_sys::KeyboardEvent| {
+                                    if event.key() == "Enter" {
+                                        event.prevent_default();
+                                        add_url();
+                                    }
+                                }
+                            />
+                        </label>
+                        <div class="settings-actions">
+                            <button on:click=move |_| set_add_url_open.set(false)>"Cancel"</button>
+                            <button
+                                class="primary"
+                                disabled=move || add_url_text.get().trim().is_empty()
+                                on:click=move |_| add_url()
+                            >"Add to Queue"</button>
+                        </div>
+                    </div>
+                </Show>
+
+                <Show when=move || settings_open.get() fallback=|| ()>
+                    <div class="scrim" on:click=move |_| set_settings_open.set(false)></div>
+                    <div class="settings" role="dialog">
+                        <h2>"Server"</h2>
+                        <label class="mobile-stream-format">
+                            "Stream format"
+                            <select
+                                prop:value=move || codec.get()
+                                on:change=move |event| {
+                                    let value = event_target_value(&event);
+                                    store("kog.codec", &value);
+                                    set_codec.set(value);
+                                }
+                            >
+                                <option value="aac">"AAC"</option>
+                                <option value="opus">"Opus"</option>
+                                <option value="flac">"FLAC"</option>
+                            </select>
+                        </label>
+                        <label>
+                            "Address"
+                            <input
+                                placeholder="https://my-desktop:8420"
+                                prop:value=move || server.get()
+                                on:input=move |event| set_server.set(event_target_value(&event))
+                            />
+                        </label>
+                        <label>
+                            <input
+                                type="checkbox"
+                                prop:checked=move || use_basic.get()
+                                on:change=move |event| set_use_basic.set(event_target_checked(&event))
+                            />
+                            "Use a username and password"
+                        </label>
+                        <Show
+                            when=move || use_basic.get()
+                            fallback=move || view! {
+                                <label>
+                                    "API token"
+                                    <input
+                                        type="password"
+                                        prop:value=move || token.get()
+                                        on:input=move |event| set_token.set(event_target_value(&event))
+                                    />
+                                </label>
+                            }
+                        >
+                            <label>
+                                "Username"
+                                <input
+                                    prop:value=move || user.get()
+                                    on:input=move |event| set_user.set(event_target_value(&event))
+                                />
+                            </label>
+                            <label>
+                                "Password"
+                                <input
+                                    type="password"
+                                    prop:value=move || password.get()
+                                    on:input=move |event| set_password.set(event_target_value(&event))
+                                />
+                            </label>
+                        </Show>
+                        <Show when=move || connected.get() fallback=|| ()>
+                            <label>
+                                "MIDI synth"
+                                <select
+                                    prop:value=move || {
+                                        midi_options.track();
+                                        midi_engine.get()
+                                    }
+                                    on:change=move |event| {
+                                        let value = event_target_value(&event);
+                                        let header = auth().header();
+                                        let url = format!("{}/api/settings/midi", base());
+                                        leptos::task::spawn_local(async move {
+                                            match post_json(url, header, serde_json::json!({ "engine": value })).await {
+                                                Ok(reply) => {
+                                                    set_midi_engine.set(reply["engine"].as_str().unwrap_or_default().to_owned());
+                                                    set_message.set(String::new());
+                                                }
+                                                Err(error) => set_message.set(error),
+                                            }
+                                        });
+                                    }
+                                >
+                                    <For each=move || midi_options.get() key=|option| option.0.clone() let:option>
+                                        <option value={option.0.clone()}>{option.1.clone()}</option>
+                                    </For>
+                                </select>
+                            </label>
+                            <p class="hint">"Changing this reloads the current MIDI track. The SF2 and ROM engines need the assets the desktop's Preferences sets."</p>
+                        </Show>
+                        <label class="check">
+                            <input
+                                type="checkbox"
+                                prop:checked=move || track_notifications.get()
+                                on:change=move |event| {
+                                    let checked = event
+                                        .target()
+                                        .and_then(|target| target.dyn_into::<web_sys::HtmlInputElement>().ok())
+                                        .map(|input| input.checked())
+                                        .unwrap_or(false);
+                                    set_track_notifications_pref(
+                                        checked,
+                                        set_track_notifications,
+                                        set_message,
+                                    );
+                                }
+                            />
+                            "Show a notification when the next song plays"
+                        </label>
+                        <p class="hint">
+                            "The address and token are shown in Kog's Preferences → Server on the machine serving the library."
+                        </p>
+                        <div class="settings-actions">
+                            <button class="primary" on:click=move |_| connect()>
+                                {move || if connected.get() { "Reconnect" } else { "Connect" }}
+                            </button>
+                            <button on:click=move |_| set_settings_open.set(false)>"Close"</button>
+                        </div>
+                        <Show when=move || !message.get().is_empty() fallback=|| ()>
+                            <p class="hint error">{move || message.get()}</p>
+                        </Show>
+                    </div>
+                </Show>
+
+                <Show when=move || about_open.get() fallback=|| ()>
+                    <div class="scrim" on:click=move |_| set_about_open.set(false)></div>
+                    <div class="settings about" role="dialog">
+                        <h2>"About Kog"</h2>
+                        <p class="hint">"Kog web player, served by the local Kog server."</p>
+                        <p class="hint">
+                            {move || if version.get().is_empty() {
+                                "Server version unavailable".to_owned()
+                            } else {
+                                format!("Server version {}", version.get())
+                            }}
+                        </p>
+                        <div class="settings-actions">
+                            <button class="primary" on:click=move |_| set_about_open.set(false)>"Close"</button>
+                        </div>
+                    </div>
+                </Show>
+
+                <Show when=move || cover_open.get() fallback=|| ()>
+                    {/* The desktop's cover dialog: the artwork enlarged, titled
+                        with the track, subtitied with artist and album; click
+                        anywhere or Escape closes. */}
+                    <div class="scrim" on:click=move |_| set_cover_open.set(false)></div>
+                    <div class="cover-dialog" role="dialog">
                         <img
+                            class="cover-image"
                             src=move || art_src()
-                            alt="Album cover"
+                            alt="Album cover enlarged"
+                            on:click=move |_| set_cover_open.set(false)
                             on:error=move |event| {
                                 if let Some(img) = event
                                     .target()
@@ -7314,1385 +7532,900 @@ fn App() -> impl IntoView {
                                 }
                             }
                         />
+                        <p class="cover-title">{move || now_title()}</p>
+                        <p class="cover-subtitle">{move || now_subtitle()}</p>
                     </div>
-                    <div class="now-text">
-                        <div class="title">{move || now_title()}</div>
-                        <div class="subtitle">{move || now_subtitle()}</div>
-                        <div class="mobile-now-subtitle">{move || now_mobile_subtitle()}</div>
-                    </div>
-                </div>
+                </Show>
 
-                <div class="transport-center">
-                    <div class="controls">
-                        <button
-                            class="toggle shuffle"
-                            class:active=move || shuffle.get() != ShuffleMode::Off
-                            title=move || shuffle_tip()
-                            disabled=move || queue.get().len() <= 1
-                            on:click=move |_| select_shuffle(shuffle.get_untracked().next())
-                            inner_html=icons::SHUFFLE
-                        ></button>
-                        <button
-                            title="Previous"
-                            disabled=move || queue.get().is_empty()
-                            on:click=move |_| step(-1)
-                            inner_html=icons::SKIP_BACKWARD
-                        ></button>
-                        <button
-                            class="play"
-                            title=move || if radio_waiting.get() { "Preparing next radio track — click to cancel" } else { "Play or pause" }
-                            aria-busy=move || radio_waiting.get().to_string()
-                            disabled=move || queue.get().is_empty() && !radio_on.get()
-                            on:click=move |_| toggle_play()
-                        >
-                            <span
-                                class="glyph-icon"
-                                inner_html=move || if playing.get() || radio_waiting.get() { icons::PAUSE } else { icons::PLAY }
-                            ></span>
-                        </button>
-                        <button
-                            title="Stop"
-                            disabled=move || queue.get().is_empty() && !radio_waiting.get()
-                            on:click=move |_| {
-                                stop_playback();
-                            }
-                            inner_html=icons::STOP
-                        ></button>
-                        <button
-                            title="Next"
-                            disabled=move || queue.get().is_empty() && !radio_on.get()
-                            on:click=move |_| step(1)
-                            inner_html=icons::SKIP_FORWARD
-                        ></button>
-                        <button
-                            class="toggle repeat"
-                            class:active=move || repeat_mode.get() != Repeat::Off
-                            title=move || repeat_tip()
-                            disabled=move || queue.get().is_empty()
-                            on:click=move |_| {
-                                select_repeat(repeat_mode.get_untracked().next());
-                            }
-                        >
-                            <span class="glyph-icon" inner_html=icons::REPEAT></span>
-                            <Show when=move || !repeat_badge().is_empty() fallback=|| ()>
-                                <span class="badge">{move || repeat_badge()}</span>
-                            </Show>
-                        </button>
-                        <button
-                            class="toggle radio"
-                            class:active=move || radio_on.get()
-                            title=move || {
-                                if radio_on.get() {
-                                    "Random Radio on — click to turn off"
-                                } else {
-                                    "Random Radio off — click to turn on"
-                                }
-                            }
-                            disabled=move || !connected.get()
-                            on:click=move |_| {
-                                let next = !radio_on.get_untracked();
-                                set_radio(next);
-                            }
-                        >"⚄\u{FE0E}"</button>
-                    </div>
-                    <div class="seek-row">
-                        <span class="time elapsed">{move || clock(position.get())}</span>
-                        <input
-                            class="seek"
-                            type="range"
-                            min="0"
-                            max=move || {
-                                let value = duration.get();
-                                if value.is_finite() && value > 0.0 { value } else { 1.0 }
-                            }
-                            step="0.5"
-                            prop:value=move || position.get()
-                            on:input=move |event| {
-                                let requested: f64 =
-                                    event_target_value(&event).parse().unwrap_or(0.0);
-                                // The element's own end beats the tag fallback:
-                                // a wrong tag must never send a seek past the
-                                // real audio.
-                                let mut end = duration.get_untracked();
-                                if let Some(audio) = audio_ref.get() {
-                                    if let Some(real) = finite_duration(audio.duration()) {
-                                        end = real;
-                                    } else {
-                                        let seekable = audio.seekable();
-                                        if seekable.length() > 0 {
-                                            if let Some(real) =
-                                                seekable.end(0).ok().and_then(finite_duration)
-                                            {
-                                                end = real;
-                                            }
-                                        }
-                                    }
-                                }
-                                let target = if end.is_finite() && end > 0.0 {
-                                    requested.clamp(0.0, end)
-                                } else {
-                                    requested
-                                };
-                                if let Some(audio) = audio_ref.get() {
-                                    audio.set_current_time(target);
-                                }
-                                set_position.set(target);
-                            }
-                        />
-                        <span class="time total">{move || clock(duration.get())}</span>
-                    </div>
-                </div>
-
-                <div class="transport-right">
-                    <div class="volume-row">
-                        <button
-                            class="flat clear-list"
-                            title=if touch_mode { "Clear queue" } else { "Clear Play Queue" }
-                            disabled=move || queue.get().is_empty()
-                            on:click=move |_| clear_pane()
-                        >
-                            <span class="glyph-icon" inner_html=icons::CLEAR_LIST></span>
-                        </button>
-                        <button
-                            class="flat mute"
-                            title=move || if volume.get() <= 0.0 { "Unmute" } else { "Mute" }
-                            on:click=toggle_mute
-                        >
-                            <span
-                                class="glyph-icon"
-                                inner_html=move || {
-                                    if volume.get() <= 0.0 {
-                                        icons::VOLUME_MUTED
-                                    } else {
-                                        icons::VOLUME
-                                    }
-                                }
-                            ></span>
-                        </button>
-                        <div class="volume-wrap">
-                            <span
-                                class="volume-tip"
-                                style=move || {
-                                    format!("left: {}%", (volume.get() * 100.0).round())
-                                }
-                            >
-                                {move || format!("{}%", (volume.get() * 100.0).round())}
-                            </span>
-                            <input
-                                class="volume"
-                                type="range"
-                                min="0"
-                                max="1"
-                                step="0.01"
-                                title=move || {
-                                    format!("Volume {}%", (volume.get() * 100.0).round())
-                                }
-                                prop:value=move || volume.get()
-                                on:input=move |event| {
-                                    set_volume
-                                        .set(event_target_value(&event).parse().unwrap_or(0.9))
-                                }
-                            />
-                        </div>
-                    </div>
-                    <div class="transport-status">
-                        {move || {
-                            let note = status_note.get();
-                            if note.is_empty() {
-                                status_line()
-                            } else {
-                                note
-                            }
-                        }}
-                    </div>
-                </div>
-
-                <button
-                    class="transport-expand"
-                    title="Show playback controls"
-                    aria-label="Show playback controls"
-                    on:click=move |_| set_transport_compact.set(false)
-                >"⌃"</button>
-
-                <button
-                    class="transport-collapse"
-                    type="button"
-                    title="Minimize player"
-                    aria-label="Minimize player"
-                    on:click=move |_| set_transport_compact.set(true)
-                >"⌄"</button>
-
-                <audio
-                    class="audio"
-                    node_ref=audio_ref
-                    preload="auto"
-                    on:pause={
-                        let source_changing = source_changing.clone();
-                        move |_| {
-                            // Some browsers apply hardware controls to the
-                            // element without calling Media Session handlers.
-                            // Reflect that pause so the watchdog stays quiet.
-                            if !source_changing.get() && playing.get_untracked() {
-                                if let Some(audio) = audio_ref.get() {
-                                    if audio.paused() && !audio.ended() {
-                                        set_playing.set(false);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    on:playing=move |_| {
-                        let previous = starting_previous.get_value();
-                        web_order.write_value().order.started(previous, current.get_untracked());
-                        starting_previous.set_value(None);
-                        set_policy_revision.update(|value| *value = value.wrapping_add(1));
-                        // Likewise, native resume can bypass the action
-                        // handler. A stopped queue needs an explicit Play.
-                        if !stopped.get_untracked() && !playing.get_untracked() {
-                            if let Some(audio) = audio_ref.get() {
-                                if !audio.paused() {
-                                    set_playing.set(true);
-                                }
-                            }
-                        }
-                    }
-                    on:timeupdate=move |_| {
-                        if let Some(audio) = audio_ref.get() {
-                            set_position.set(audio.current_time());
-                        }
-                    }
-                    on:loadedmetadata=resume_when_ready.clone()
-                    on:durationchange=refresh_media_duration
-                    on:canplay=resume_when_ready
-                    on:error=move |_| navigate(NavigationEvent::Failed)
-                    on:ended=move |_| navigate(NavigationEvent::Ended)
-                ></audio>
-            </footer>
-
-            <Show when=move || visualizer_open.get() fallback=|| ()>
-                <div class="scrim" on:click=move |_| set_visualizer_open.set(false)></div>
-                <section class="audio-visualizer" role="dialog" aria-modal="true" aria-label="Audio visualizer">
-                    <header class="audio-visualizer-header">
-                        <h2>"Audio visualizer"</h2>
-                        <button type="button" aria-label="Close visualizer" on:click=move |_| set_visualizer_open.set(false)>"×"</button>
-                    </header>
-                    <div class="audio-visualizer-modes" role="group" aria-label="Visualization mode">
-                        <button
-                            type="button"
-                            class:active=move || !visualizer_spectrum_mode.get()
-                            aria-pressed=move || (!visualizer_spectrum_mode.get()).to_string()
-                            on:click=move |_| set_visualizer_spectrum_mode.set(false)
-                        >"Waveform"</button>
-                        <button
-                            type="button"
-                            class:active=move || visualizer_spectrum_mode.get()
-                            aria-pressed=move || visualizer_spectrum_mode.get().to_string()
-                            on:click=move |_| set_visualizer_spectrum_mode.set(true)
-                        >"Spectrum"</button>
-                    </div>
-                    <canvas
-                        node_ref=visualizer_canvas
-                        width="720"
-                        height="360"
-                        role="img"
-                        aria-label="Live audio visualization"
-                    ></canvas>
-                    <p class="audio-visualizer-title">{move || now_title()}</p>
-                </section>
-            </Show>
-
-            <Show when=move || add_url_open.get() fallback=|| ()>
-                <div class="scrim" on:click=move |_| set_add_url_open.set(false)></div>
-                <div class="settings add-url-dialog" role="dialog" aria-label="Add stream URL">
-                    <h2>"Add Stream URL"</h2>
-                    <label>
-                        "URL"
-                        <input
-                            type="url"
-                            placeholder="https://example.com/stream"
-                            prop:value=move || add_url_text.get()
-                            on:input=move |event| set_add_url_text.set(event_target_value(&event))
-                            on:keydown=move |event: web_sys::KeyboardEvent| {
-                                if event.key() == "Enter" {
-                                    event.prevent_default();
-                                    add_url();
-                                }
-                            }
-                        />
-                    </label>
-                    <div class="settings-actions">
-                        <button on:click=move |_| set_add_url_open.set(false)>"Cancel"</button>
-                        <button
-                            class="primary"
-                            disabled=move || add_url_text.get().trim().is_empty()
-                            on:click=move |_| add_url()
-                        >"Add to Queue"</button>
-                    </div>
-                </div>
-            </Show>
-
-            <Show when=move || settings_open.get() fallback=|| ()>
-                <div class="scrim" on:click=move |_| set_settings_open.set(false)></div>
-                <div class="settings" role="dialog">
-                    <h2>"Server"</h2>
-                    <label class="mobile-stream-format">
-                        "Stream format"
-                        <select
-                            prop:value=move || codec.get()
-                            on:change=move |event| {
-                                let value = event_target_value(&event);
-                                store("kog.codec", &value);
-                                set_codec.set(value);
-                            }
-                        >
-                            <option value="aac">"AAC"</option>
-                            <option value="opus">"Opus"</option>
-                            <option value="flac">"FLAC"</option>
-                        </select>
-                    </label>
-                    <label>
-                        "Address"
-                        <input
-                            placeholder="https://my-desktop:8420"
-                            prop:value=move || server.get()
-                            on:input=move |event| set_server.set(event_target_value(&event))
-                        />
-                    </label>
-                    <label>
-                        <input
-                            type="checkbox"
-                            prop:checked=move || use_basic.get()
-                            on:change=move |event| set_use_basic.set(event_target_checked(&event))
-                        />
-                        "Use a username and password"
-                    </label>
-                    <Show
-                        when=move || use_basic.get()
-                        fallback=move || view! {
-                            <label>
-                                "API token"
-                                <input
-                                    type="password"
-                                    prop:value=move || token.get()
-                                    on:input=move |event| set_token.set(event_target_value(&event))
-                                />
-                            </label>
-                        }
-                    >
-                        <label>
-                            "Username"
-                            <input
-                                prop:value=move || user.get()
-                                on:input=move |event| set_user.set(event_target_value(&event))
-                            />
-                        </label>
-                        <label>
-                            "Password"
-                            <input
-                                type="password"
-                                prop:value=move || password.get()
-                                on:input=move |event| set_password.set(event_target_value(&event))
-                            />
-                        </label>
-                    </Show>
-                    <Show when=move || connected.get() fallback=|| ()>
-                        <label>
-                            "MIDI synth"
-                            <select
-                                prop:value=move || {
-                                    midi_options.track();
-                                    midi_engine.get()
-                                }
-                                on:change=move |event| {
-                                    let value = event_target_value(&event);
-                                    let header = auth().header();
-                                    let url = format!("{}/api/settings/midi", base());
-                                    leptos::task::spawn_local(async move {
-                                        match post_json(url, header, serde_json::json!({ "engine": value })).await {
-                                            Ok(reply) => {
-                                                set_midi_engine.set(reply["engine"].as_str().unwrap_or_default().to_owned());
-                                                set_message.set(String::new());
-                                            }
-                                            Err(error) => set_message.set(error),
-                                        }
-                                    });
-                                }
-                            >
-                                <For each=move || midi_options.get() key=|option| option.0.clone() let:option>
-                                    <option value={option.0.clone()}>{option.1.clone()}</option>
-                                </For>
-                            </select>
-                        </label>
-                        <p class="hint">"Changing this reloads the current MIDI track. The SF2 and ROM engines need the assets the desktop's Preferences sets."</p>
-                    </Show>
-                    <label class="check">
-                        <input
-                            type="checkbox"
-                            prop:checked=move || track_notifications.get()
-                            on:change=move |event| {
-                                let checked = event
-                                    .target()
-                                    .and_then(|target| target.dyn_into::<web_sys::HtmlInputElement>().ok())
-                                    .map(|input| input.checked())
-                                    .unwrap_or(false);
-                                set_track_notifications_pref(
-                                    checked,
-                                    set_track_notifications,
-                                    set_message,
-                                );
-                            }
-                        />
-                        "Show a notification when the next song plays"
-                    </label>
-                    <p class="hint">
-                        "The address and token are shown in Kog's Preferences → Server on the machine serving the library."
-                    </p>
-                    <div class="settings-actions">
-                        <button class="primary" on:click=move |_| connect()>
-                            {move || if connected.get() { "Reconnect" } else { "Connect" }}
-                        </button>
-                        <button on:click=move |_| set_settings_open.set(false)>"Close"</button>
-                    </div>
-                    <Show when=move || !message.get().is_empty() fallback=|| ()>
-                        <p class="hint error">{move || message.get()}</p>
-                    </Show>
-                </div>
-            </Show>
-
-            <Show when=move || about_open.get() fallback=|| ()>
-                <div class="scrim" on:click=move |_| set_about_open.set(false)></div>
-                <div class="settings about" role="dialog">
-                    <h2>"About Kog"</h2>
-                    <p class="hint">"Kog web player, served by the local Kog server."</p>
-                    <p class="hint">
-                        {move || if version.get().is_empty() {
-                            "Server version unavailable".to_owned()
-                        } else {
-                            format!("Server version {}", version.get())
-                        }}
-                    </p>
-                    <div class="settings-actions">
-                        <button class="primary" on:click=move |_| set_about_open.set(false)>"Close"</button>
-                    </div>
-                </div>
-            </Show>
-
-            <Show when=move || cover_open.get() fallback=|| ()>
-                {/* The desktop's cover dialog: the artwork enlarged, titled
-                    with the track, subtitied with artist and album; click
-                    anywhere or Escape closes. */}
-                <div class="scrim" on:click=move |_| set_cover_open.set(false)></div>
-                <div class="cover-dialog" role="dialog">
-                    <img
-                        class="cover-image"
-                        src=move || art_src()
-                        alt="Album cover enlarged"
-                        on:click=move |_| set_cover_open.set(false)
-                        on:error=move |event| {
-                            if let Some(img) = event
-                                .target()
-                                .and_then(|target| target.dyn_into::<web_sys::HtmlImageElement>().ok())
-                            {
-                                if !img.src().ends_with("/icons/cover-placeholder.svg") {
-                                    let _ = img.set_src("/icons/cover-placeholder.svg");
-                                }
-                            }
-                        }
-                    />
-                    <p class="cover-title">{move || now_title()}</p>
-                    <p class="cover-subtitle">{move || now_subtitle()}</p>
-                </div>
-            </Show>
-
-            <Show when=move || picker_open.get() fallback=|| ()>
-                <div class="scrim" on:click=move |_| set_picker_open.set(false)></div>
-                <div class="settings folder-picker" role="dialog">
-                    <h2>"Choose a Folder"</h2>
-                    <p class="folder-picker-path">{move || picker_dir.get()}</p>
-                    <div class="folder-picker-list">
-                        <Show
-                            when=move || {
-                                let dir = picker_dir.get();
-                                !dir.is_empty()
-                                    && dir != library_root.get_untracked()
-                                    && !parent_path(&dir).is_empty()
-                            }
-                            fallback=|| ()
-                        >
-                            <button
-                                class="folder-picker-row parent"
-                                on:click=move |_| set_picker_dir.set(parent_path(&picker_dir.get()))
-                            >
-                                <span class="tree-icon up" inner_html=icons::GO_UP></span>
-                                ".."
-                            </button>
-                        </Show>
-                        <For
-                            each=move || picker_entries.get()
-                            key=|entry| entry.1.clone()
-                            let:entry
-                        >
-                            {
-                                let name = entry.0.clone();
-                                let browse_path = entry.1.clone();
-                                let root_path = entry.1.clone();
-                                view! {
-                                    <div class="folder-picker-row">
-                                        <button
-                                            class="folder-picker-open"
-                                            title="Browse this folder"
-                                            on:click=move |_| set_picker_dir.set(browse_path.clone())
-                                        >
-                                            <span class="tree-icon dir"></span>
-                                            {name.clone()}
-                                        </button>
-                                        <button
-                                            class="icon-button folder-picker-root"
-                                            title={format!("Use {name} as Tree Root")}
-                                            on:click=move |_| root_at_folder(root_path.clone())
-                                            inner_html=icons::FOLDER_OPEN
-                                        ></button>
-                                    </div>
-                                }
-                            }
-                        </For>
-                    </div>
-                    <div class="settings-actions">
-                        <button on:click=move |_| set_picker_open.set(false)>"Cancel"</button>
-                        <button class="primary" on:click=use_picked_folder>"Use as Tree Root"</button>
-                    </div>
-                </div>
-            </Show>
-
-            <Show when=move || tree_menu.get().is_some() fallback=|| ()>
-                {
-                    let row_is_dir = move || {
-                        tree_menu.get().map(|(_, _, row)| row.is_dir).unwrap_or(false)
-                    };
-                    view! {
-                        <div class="menu-scrim" on:click=move |_| set_tree_menu.set(None)></div>
-                        <div
-                            class="context-menu"
-                            style=move || match tree_menu.get() {
-                                Some((x, y, _)) => format!("left:{x}px; top:{y}px;"),
-                                None => String::new(),
-                            }
-                        >
-                            <button
-                                class="menu-item"
-                                disabled=move || !row_is_dir()
-                                on:click={
-                                    let goto_root = goto_root.clone();
-                                    move |_| {
-                                        if let Some((_, _, row)) = tree_menu.get() {
-                                            goto_root(row.path.clone());
-                                        }
-                                        set_tree_menu.set(None);
-                                    }
-                                }
-                            >
-                                "Use as Tree Root"
-                            </button>
-                            <button
-                                class="menu-item"
-                                disabled=move || tree_root.get().is_empty()
-                                on:click={
-                                    let go_up = go_up.clone();
-                                    move |_| {
-                                        go_up();
-                                        set_tree_menu.set(None);
-                                    }
-                                }
-                            >
-                                "Go Up"
-                            </button>
-                            <div class="menu-separator"></div>
-                            <button
-                                class="menu-item"
-                                on:click={
-                                    let add_row_to_playlist = add_row_to_playlist.clone();
-                                    move |_| {
-                                        if let Some((_, _, row)) = tree_menu.get() {
-                                            add_row_to_playlist(row);
-                                            if touch_mode { set_mobile_view.set(MobileView::Queue); }
-                                        }
-                                        set_tree_menu.set(None);
-                                    }
-                                }
-                            >
-                                {if touch_mode { "Add to Queue" } else { "Add to Playlist" }}
-                            </button>
+                <Show when=move || picker_open.get() fallback=|| ()>
+                    <div class="scrim" on:click=move |_| set_picker_open.set(false)></div>
+                    <div class="settings folder-picker" role="dialog">
+                        <h2>"Choose a Folder"</h2>
+                        <p class="folder-picker-path">{move || picker_dir.get()}</p>
+                        <div class="folder-picker-list">
                             <Show
                                 when=move || {
-                                    tree_menu.get()
-                                        .map(|(_, _, row)| {
-                                            !row.is_dir && row.kind != "remote"
-                                        })
-                                        .unwrap_or(false)
+                                    let dir = picker_dir.get();
+                                    !dir.is_empty()
+                                        && dir != library_root.get_untracked()
+                                        && !parent_path(&dir).is_empty()
                                 }
                                 fallback=|| ()
                             >
                                 <button
+                                    class="folder-picker-row parent"
+                                    on:click=move |_| set_picker_dir.set(parent_path(&picker_dir.get()))
+                                >
+                                    <span class="tree-icon up" inner_html=icons::GO_UP></span>
+                                    ".."
+                                </button>
+                            </Show>
+                            <For
+                                each=move || picker_entries.get()
+                                key=|entry| entry.1.clone()
+                                let:entry
+                            >
+                                {
+                                    let name = entry.0.clone();
+                                    let browse_path = entry.1.clone();
+                                    let root_path = entry.1.clone();
+                                    view! {
+                                        <div class="folder-picker-row">
+                                            <button
+                                                class="folder-picker-open"
+                                                title="Browse this folder"
+                                                on:click=move |_| set_picker_dir.set(browse_path.clone())
+                                            >
+                                                <span class="tree-icon dir"></span>
+                                                {name.clone()}
+                                            </button>
+                                            <button
+                                                class="icon-button folder-picker-root"
+                                                title={format!("Use {name} as Tree Root")}
+                                                on:click=move |_| root_at_folder(root_path.clone())
+                                                inner_html=icons::FOLDER_OPEN
+                                            ></button>
+                                        </div>
+                                    }
+                                }
+                            </For>
+                        </div>
+                        <div class="settings-actions">
+                            <button on:click=move |_| set_picker_open.set(false)>"Cancel"</button>
+                            <button class="primary" on:click=use_picked_folder>"Use as Tree Root"</button>
+                        </div>
+                    </div>
+                </Show>
+
+                <Show when=move || tree_menu.get().is_some() fallback=|| ()>
+                    {
+                        let row_is_dir = move || {
+                            tree_menu.get().map(|(_, _, row)| row.is_dir).unwrap_or(false)
+                        };
+                        view! {
+                            <div class="menu-scrim" on:click=move |_| set_tree_menu.set(None)></div>
+                            <div
+                                class="context-menu"
+                                style=move || match tree_menu.get() {
+                                    Some((x, y, _)) => format!("left:{x}px; top:{y}px;"),
+                                    None => String::new(),
+                                }
+                            >
+                                <button
                                     class="menu-item"
-                                    on:click=move |_| {
-                                        if let Some((_, _, row)) = tree_menu.get() {
+                                    disabled=move || !row_is_dir()
+                                    on:click={
+                                        let goto_root = goto_root.clone();
+                                        move |_| {
+                                            if let Some((_, _, row)) = tree_menu.get() {
+                                                goto_root(row.path.clone());
+                                            }
                                             set_tree_menu.set(None);
-                                            let url = format!(
-                                                "{}/api/media/download?kind={}&path={}&token={}",
-                                                base(),
-                                                url_encode(&row.kind),
-                                                url_encode(&row.path),
-                                                url_encode(&token.get()),
-                                            );
-                                            trigger_browser_download(&url, "");
                                         }
                                     }
                                 >
-                                    "Download"
+                                    "Use as Tree Root"
                                 </button>
-                            </Show>
-                        </div>
+                                <button
+                                    class="menu-item"
+                                    disabled=move || tree_root.get().is_empty()
+                                    on:click={
+                                        let go_up = go_up.clone();
+                                        move |_| {
+                                            go_up();
+                                            set_tree_menu.set(None);
+                                        }
+                                    }
+                                >
+                                    "Go Up"
+                                </button>
+                                <div class="menu-separator"></div>
+                                <button
+                                    class="menu-item"
+                                    on:click={
+                                        let add_row_to_playlist = add_row_to_playlist.clone();
+                                        move |_| {
+                                            if let Some((_, _, row)) = tree_menu.get() {
+                                                add_row_to_playlist(row);
+                                                if touch_mode { set_mobile_view.set(MobileView::Queue); }
+                                            }
+                                            set_tree_menu.set(None);
+                                        }
+                                    }
+                                >
+                                    {if touch_mode { "Add to Queue" } else { "Add to Playlist" }}
+                                </button>
+                                <Show
+                                    when=move || {
+                                        tree_menu.get()
+                                            .map(|(_, _, row)| {
+                                                !row.is_dir && row.kind != "remote"
+                                            })
+                                            .unwrap_or(false)
+                                    }
+                                    fallback=|| ()
+                                >
+                                    <button
+                                        class="menu-item"
+                                        on:click=move |_| {
+                                            if let Some((_, _, row)) = tree_menu.get() {
+                                                set_tree_menu.set(None);
+                                                let url = format!(
+                                                    "{}/api/media/download?kind={}&path={}&token={}",
+                                                    base(),
+                                                    url_encode(&row.kind),
+                                                    url_encode(&row.path),
+                                                    url_encode(&token.get()),
+                                                );
+                                                trigger_browser_download(&url, "");
+                                            }
+                                        }
+                                    >
+                                        "Download"
+                                    </button>
+                                </Show>
+                            </div>
+                        }
                     }
-                }
-            </Show>
+                </Show>
 
-            <Show when=move || song_menu.get().is_some() fallback=|| ()>
-                <div class="menu-scrim" on:click=move |_| set_song_menu.set(None)></div>
-                <div
-                    class="context-menu"
-                    style=move || match song_menu.get() {
-                        Some((x, y, ..)) => format!("left:{x}px; top:{y}px;"),
-                        None => String::new(),
-                    }
-                >
-                    <button
-                        class="menu-item"
-                        on:click={
-                            let reveal_in_tree = reveal_in_tree.clone();
-                            move |_| {
-                                if let Some((_, _, index, entry)) = song_menu.get_untracked() {
-                                    set_song_menu.set(None);
-                                    play_row(index);
-                                }
-                            }
+                <Show when=move || song_menu.get().is_some() fallback=|| ()>
+                    <div class="menu-scrim" on:click=move |_| set_song_menu.set(None)></div>
+                    <div
+                        class="context-menu"
+                        style=move || match song_menu.get() {
+                            Some((x, y, ..)) => format!("left:{x}px; top:{y}px;"),
+                            None => String::new(),
                         }
                     >
-                        "Play"
-                    </button>
-                    <button class="menu-item" on:click=move |_| {
-                        if let Some((_, _, index, _)) = song_menu.get_untracked() {
-                            let indices = if selected.get_untracked().contains(&index) { let mut indices: Vec<_> = selected.get_untracked().into_iter().collect(); indices.sort_unstable(); indices } else { vec![index] };
-                            web_order.write_value().order.toggle_queue(&indices);
-                            set_policy_revision.update(|value| *value = value.wrapping_add(1));
-                            set_song_menu.set(None);
-                        }
-                    }>"Toggle Play Next"</button>
-                    <button class="menu-item" on:click=move |_| {
-                        if let Some((_, _, index, _)) = song_menu.get_untracked() {
-                            let indices = if selected.get_untracked().contains(&index) { let mut indices: Vec<_> = selected.get_untracked().into_iter().collect(); indices.sort_unstable(); indices } else { vec![index] };
-                            web_order.write_value().order.toggle_stop_after(&indices);
-                            set_policy_revision.update(|value| *value = value.wrapping_add(1));
-                            set_song_menu.set(None);
-                        }
-                    }>"Toggle Stop After"</button>
-                    <button
-                        class="menu-item"
-                        on:click=move |_| {
-                            if let Some((_, _, index, entry)) = song_menu.get_untracked() {
-                                set_track_details.set(Some((index, entry)));
-                                set_song_menu.set(None);
-                            }
-                        }
-                    >"Track Details"</button>
-                    <div class="menu-separator"></div>
-                    <Show when=move || radio_on.get() fallback=|| ()>
                         <button
                             class="menu-item"
-                            on:click=move |_| {
-                                set_song_menu.set(None);
-                                reshuffle_radio();
-                            }
-                        >
-                            "Reshuffle Radio"
-                        </button>
-                    </Show>
-                    <button
-                        class="menu-item"
-                        on:click=move |_| {
-                            set_song_menu.set(None);
-                            remove_selected();
-                        }
-                    >
-                        "Remove Selected"
-                    </button>
-                    <button
-                        class="menu-item"
-                        on:click=move |_| {
-                            set_song_menu.set(None);
-                            select_all_results();
-                        }
-                    >
-                        "Select All"
-                    </button>
-                    <button
-                        class="menu-item"
-                        on:click=move |_| {
-                            set_song_menu.set(None);
-                            clear_pane();
-                        }
-                    >
-                        {if touch_mode { "Clear Queue" } else { "Clear Play Queue" }}
-                    </button>
-                    <div class="menu-separator"></div>
-                    <button
-                        class="menu-item"
-                        on:click={
-                            let reveal_in_tree = reveal_in_tree.clone();
-                            move |_| {
-                                if let Some((_, _, _, entry)) = song_menu.get_untracked() {
-                                    set_song_menu.set(None);
-                                    reveal_in_tree(entry);
-                                    if touch_mode {
-                                        set_mobile_view.set(MobileView::Library);
+                            on:click={
+                                let reveal_in_tree = reveal_in_tree.clone();
+                                move |_| {
+                                    if let Some((_, _, index, entry)) = song_menu.get_untracked() {
+                                        set_song_menu.set(None);
+                                        play_row(index);
                                     }
                                 }
                             }
-                        }
-                    >
-                        "Show in File Tree"
-                    </button>
-                    <Show
-                        when=move || {
-                            song_menu
-                                .get_untracked()
-                                .map(|(_, _, _, entry)| entry.kind != "remote")
-                                .unwrap_or(false)
-                        }
-                        fallback=|| ()
-                    >
+                        >
+                            "Play"
+                        </button>
+                        <button class="menu-item" on:click=move |_| {
+                            if let Some((_, _, index, _)) = song_menu.get_untracked() {
+                                let indices = if selected.get_untracked().contains(&index) { let mut indices: Vec<_> = selected.get_untracked().into_iter().collect(); indices.sort_unstable(); indices } else { vec![index] };
+                                backend.send(SessionCommand::ToggleQueued {indices});
+                                set_policy_revision.update(|value| *value = value.wrapping_add(1));
+                                set_song_menu.set(None);
+                            }
+                        }>"Toggle Play Next"</button>
+                        <button class="menu-item" on:click=move |_| {
+                            if let Some((_, _, index, _)) = song_menu.get_untracked() {
+                                let indices = if selected.get_untracked().contains(&index) { let mut indices: Vec<_> = selected.get_untracked().into_iter().collect(); indices.sort_unstable(); indices } else { vec![index] };
+                                backend.send(SessionCommand::ToggleStopAfter {indices});
+                                set_policy_revision.update(|value| *value = value.wrapping_add(1));
+                                set_song_menu.set(None);
+                            }
+                        }>"Toggle Stop After"</button>
                         <button
                             class="menu-item"
                             on:click=move |_| {
-                                if let Some((_, _, _, entry)) = song_menu.get_untracked() {
+                                if let Some((_, _, index, entry)) = song_menu.get_untracked() {
+                                    set_track_details.set(Some((index, entry)));
                                     set_song_menu.set(None);
-                                    let member = if entry.kind == "archive" {
-                                        last_segment(&entry.entry)
-                                    } else {
-                                        last_segment(&entry.path)
-                                    };
-                                    let url = format!(
-                                        "{}/api/media/download?kind={}&path={}&entry={}&token={}",
-                                        base(),
-                                        url_encode(&entry.kind),
-                                        url_encode(&entry.path),
-                                        url_encode(&entry.entry),
-                                        url_encode(&token.get()),
-                                    );
-                                    trigger_browser_download(&url, "");
+                                }
+                            }
+                        >"Track Details"</button>
+                        <div class="menu-separator"></div>
+                        <Show when=move || radio_on.get() fallback=|| ()>
+                            <button
+                                class="menu-item"
+                                on:click=move |_| {
+                                    set_song_menu.set(None);
+                                    reshuffle_radio();
+                                }
+                            >
+                                "Reshuffle Radio"
+                            </button>
+                        </Show>
+                        <button
+                            class="menu-item"
+                            on:click=move |_| {
+                                set_song_menu.set(None);
+                                remove_selected();
+                            }
+                        >
+                            "Remove Selected"
+                        </button>
+                        <button
+                            class="menu-item"
+                            on:click=move |_| {
+                                set_song_menu.set(None);
+                                select_all_results();
+                            }
+                        >
+                            "Select All"
+                        </button>
+                        <button
+                            class="menu-item"
+                            on:click=move |_| {
+                                set_song_menu.set(None);
+                                clear_pane();
+                            }
+                        >
+                            {if touch_mode { "Clear Queue" } else { "Clear Play Queue" }}
+                        </button>
+                        <div class="menu-separator"></div>
+                        <button
+                            class="menu-item"
+                            on:click={
+                                let reveal_in_tree = reveal_in_tree.clone();
+                                move |_| {
+                                    if let Some((_, _, _, entry)) = song_menu.get_untracked() {
+                                        set_song_menu.set(None);
+                                        reveal_in_tree(entry);
+                                        if touch_mode {
+                                            set_mobile_view.set(MobileView::Library);
+                                        }
+                                    }
                                 }
                             }
                         >
-                            "Download"
+                            "Show in File Tree"
                         </button>
-                    </Show>
-                </div>
-            </Show>
+                        <Show
+                            when=move || {
+                                song_menu
+                                    .get_untracked()
+                                    .map(|(_, _, _, entry)| entry.kind != "remote")
+                                    .unwrap_or(false)
+                            }
+                            fallback=|| ()
+                        >
+                            <button
+                                class="menu-item"
+                                on:click=move |_| {
+                                    if let Some((_, _, _, entry)) = song_menu.get_untracked() {
+                                        set_song_menu.set(None);
+                                        let member = if entry.kind == "archive" {
+                                            last_segment(&entry.entry)
+                                        } else {
+                                            last_segment(&entry.path)
+                                        };
+                                        let url = format!(
+                                            "{}/api/media/download?kind={}&path={}&entry={}&token={}",
+                                            base(),
+                                            url_encode(&entry.kind),
+                                            url_encode(&entry.path),
+                                            url_encode(&entry.entry),
+                                            url_encode(&token.get()),
+                                        );
+                                        trigger_browser_download(&url, "");
+                                    }
+                                }
+                            >
+                                "Download"
+                            </button>
+                        </Show>
+                    </div>
+                </Show>
 
-            <Show when=move || playlist_menu.get().is_some() fallback=|| ()>
-                <div class="menu-scrim" on:click=move |_| set_playlist_menu.set(None)></div>
-                <div
-                    class="context-menu"
-                    style=move || match playlist_menu.get() {
-                        Some((x, y, ..)) => format!("left:{x}px; top:{y}px;"),
-                        None => String::new(),
-                    }
-                >
-                    {/* The desktop's playlist context menu, in its order. */}
-                    <button
-                        class="menu-item"
-                        on:click=move |_| {
-                            if let Some((_, _, id, _)) = playlist_menu.get_untracked() {
-                                set_playlist_menu.set(None);
-                                append_playlist(id);
-                                if touch_mode { set_mobile_view.set(MobileView::Queue); }
-                            }
+                <Show when=move || playlist_menu.get().is_some() fallback=|| ()>
+                    <div class="menu-scrim" on:click=move |_| set_playlist_menu.set(None)></div>
+                    <div
+                        class="context-menu"
+                        style=move || match playlist_menu.get() {
+                            Some((x, y, ..)) => format!("left:{x}px; top:{y}px;"),
+                            None => String::new(),
                         }
                     >
-                        {if touch_mode { "Add to Queue" } else { "Add to Pane" }}
-                    </button>
-                    <button
-                        class="menu-item"
-                        on:click=move |_| {
-                            if let Some((_, _, id, _)) = playlist_menu.get_untracked() {
-                                set_playlist_menu.set(None);
-                                play_playlist(id);
-                                if touch_mode { set_mobile_view.set(MobileView::Queue); }
-                            }
-                        }
-                    >
-                        "Play"
-                    </button>
-                    <button
-                        class="menu-item"
-                        on:click=move |_| {
-                            if let Some((_, _, id, name)) = playlist_menu.get_untracked() {
-                                set_playlist_menu.set(None);
-                                replace_pane_with_playlist(id, name);
-                                if touch_mode { set_mobile_view.set(MobileView::Queue); }
-                            }
-                        }
-                    >
-                        {if touch_mode { "Replace Queue" } else { "Replace Pane" }}
-                    </button>
-                    <Show
-                        when=move || {
-                            playlist_menu
-                                .get()
-                                .map(|(_, _, id, _)| id > 0)
-                                .unwrap_or(false)
-                        }
-                        fallback=|| ()
-                    >
+                        {/* The desktop's playlist context menu, in its order. */}
                         <button
                             class="menu-item"
                             on:click=move |_| {
                                 if let Some((_, _, id, _)) = playlist_menu.get_untracked() {
                                     set_playlist_menu.set(None);
-                                    prune_playlist_missing(id);
+                                    append_playlist(id);
+                                    if touch_mode { set_mobile_view.set(MobileView::Queue); }
                                 }
                             }
                         >
-                            "Remove Missing Files"
+                            {if touch_mode { "Add to Queue" } else { "Add to Pane" }}
                         </button>
-                    </Show>
-                    <div class="menu-separator"></div>
-                    <Show
-                        when=move || {
-                            playlist_menu
-                                .get()
-                                .map(|(_, _, id, _)| id > 0)
-                                .unwrap_or(false)
+                        <button
+                            class="menu-item"
+                            on:click=move |_| {
+                                if let Some((_, _, id, _)) = playlist_menu.get_untracked() {
+                                    set_playlist_menu.set(None);
+                                    play_playlist(id);
+                                    if touch_mode { set_mobile_view.set(MobileView::Queue); }
+                                }
+                            }
+                        >
+                            "Play"
+                        </button>
+                        <button
+                            class="menu-item"
+                            on:click=move |_| {
+                                if let Some((_, _, id, name)) = playlist_menu.get_untracked() {
+                                    set_playlist_menu.set(None);
+                                    replace_pane_with_playlist(id, name);
+                                    if touch_mode { set_mobile_view.set(MobileView::Queue); }
+                                }
+                            }
+                        >
+                            {if touch_mode { "Replace Queue" } else { "Replace Pane" }}
+                        </button>
+                        <Show
+                            when=move || {
+                                playlist_menu
+                                    .get()
+                                    .map(|(_, _, id, _)| id > 0)
+                                    .unwrap_or(false)
+                            }
+                            fallback=|| ()
+                        >
+                            <button
+                                class="menu-item"
+                                on:click=move |_| {
+                                    if let Some((_, _, id, _)) = playlist_menu.get_untracked() {
+                                        set_playlist_menu.set(None);
+                                        prune_playlist_missing(id);
+                                    }
+                                }
+                            >
+                                "Remove Missing Files"
+                            </button>
+                        </Show>
+                        <div class="menu-separator"></div>
+                        <Show
+                            when=move || {
+                                playlist_menu
+                                    .get()
+                                    .map(|(_, _, id, _)| id > 0)
+                                    .unwrap_or(false)
+                            }
+                            fallback=|| ()
+                        >
+                            <button
+                                class="menu-item"
+                                on:click=move |_| {
+                                    if let Some((_, _, id, name)) = playlist_menu.get_untracked() {
+                                        set_playlist_menu.set(None);
+                                        set_rename_text.set(name);
+                                        set_renaming_playlist.set(Some(id));
+                                    }
+                                }
+                            >
+                                "Rename"
+                            </button>
+                            <button
+                                class="menu-item"
+                                on:click=move |_| {
+                                    if let Some((_, _, id, name)) = playlist_menu.get_untracked() {
+                                        set_playlist_menu.set(None);
+                                        set_playlist_dialog_opened.update(|epoch| *epoch += 1);
+                                        set_playlist_dialog.set(Some(PlaylistDialog {
+                                            mode: PlaylistDialogMode::Duplicate,
+                                            title: "Duplicate Playlist",
+                                            value: format!("{name} copy"),
+                                            id,
+                                            name,
+                                        }));
+                                    }
+                                }
+                            >
+                                "Duplicate"
+                            </button>
+                            <button
+                                class="menu-item"
+                                on:click=move |_| {
+                                    if let Some((_, _, id, name)) = playlist_menu.get_untracked() {
+                                        set_playlist_menu.set(None);
+                                        export_playlist_m3u(id, name);
+                                    }
+                                }
+                            >
+                                "Export as m3u…"
+                            </button>
+                            <div class="menu-separator"></div>
+                            <button
+                                class="menu-item"
+                                on:click=move |_| {
+                                    if let Some((_, _, id, name)) = playlist_menu.get_untracked() {
+                                        set_playlist_menu.set(None);
+                                        set_playlist_dialog_opened.update(|epoch| *epoch += 1);
+                                        set_playlist_dialog.set(Some(PlaylistDialog {
+                                            mode: PlaylistDialogMode::ConfirmDelete,
+                                            title: "Delete Playlists",
+                                            value: String::new(),
+                                            id,
+                                            name,
+                                        }));
+                                    }
+                                }
+                            >
+                                "Delete…"
+                            </button>
+                        </Show>
+                    </div>
+                </Show>
+
+                <Show when=move || playlist_dialog.get().is_some() fallback=|| ()>
+                    <div class="scrim" on:click=move |_| set_playlist_dialog.set(None)></div>
+                    <div class="settings playlist-dialog" role="dialog">
+                        <h2>{move || {
+                            playlist_dialog.get().map(|dialog| dialog.title.to_owned())
+                                .unwrap_or_default()
+                        }}</h2>
+                        <p class="hint">
+                            {move || match playlist_dialog.get() {
+                                Some(dialog) => match dialog.mode {
+                                    PlaylistDialogMode::CreateFromPane => {
+                                        let name = dialog.value.trim();
+                                        if !name.is_empty()
+                                            && playlist_name_exists(name.to_owned())
+                                        {
+                                            format!(
+                                                "A playlist named \u{201c}{name}\u{201d} already exists. Saving will replace its tracks."
+                                            )
+                                        } else {
+                                            "Name the new playlist. The pane is saved into it."
+                                                .to_owned()
+                                        }
+                                    }
+                                    PlaylistDialogMode::Duplicate => {
+                                        "Name the copy.".to_owned()
+                                    }
+                                    PlaylistDialogMode::ConfirmDelete => {
+                                        "Delete this playlist? Its songs stay in your library."
+                                            .to_owned()
+                                    }
+                                },
+                                None => String::new(),
+                            }}
+                        </p>
+                        {/* Name field and confirm label stay mounted: recreating
+                            the input per keystroke re-fired focus and re-selected
+                            the text, so typing overwrote itself. */}
+                        <input
+                            class="playlist-dialog-name"
+                            class:hidden=confirm_delete_mode
+                            node_ref=playlist_dialog_input
+                            prop:value=move || {
+                                playlist_dialog.get().map(|d| d.value).unwrap_or_default()
+                            }
+                            on:input=move |event| {
+                                set_playlist_dialog.update(|dialog| {
+                                    if let Some(dialog) = dialog {
+                                        dialog.value = event_target_value(&event);
+                                    }
+                                });
+                            }
+                            on:keydown=move |event: web_sys::KeyboardEvent| {
+                                if event.key() == "Enter" {
+                                    accept_playlist_dialog();
+                                }
+                            }
+                        />
+                        <p
+                            class="playlist-dialog-confirm"
+                            class:hidden=move || !confirm_delete_mode()
+                        >
+                            {move || {
+                                playlist_dialog.get().map(|d| d.name).unwrap_or_default()
+                            }}
+                        </p>
+                        <div class="settings-actions">
+                            <button on:click=move |_| set_playlist_dialog.set(None)>"Cancel"</button>
+                            <button
+                                class="primary"
+                                disabled=move || {
+                                    playlist_dialog
+                                        .get()
+                                        .map(|dialog| {
+                                            dialog.mode != PlaylistDialogMode::ConfirmDelete
+                                                && dialog.value.trim().is_empty()
+                                        })
+                                        .unwrap_or(true)
+                                }
+                                on:click=move |_| accept_playlist_dialog()
+                            >
+                                {move || {
+                                    playlist_dialog
+                                        .get()
+                                        .map(|dialog| match dialog.mode {
+                                            PlaylistDialogMode::CreateFromPane => {
+                                                let name = dialog.value.trim();
+                                                if !name.is_empty()
+                                                    && playlist_name_exists(name.to_owned())
+                                                {
+                                                    "Overwrite"
+                                                } else {
+                                                    "Save"
+                                                }
+                                            }
+                                            PlaylistDialogMode::Duplicate => "Duplicate",
+                                            PlaylistDialogMode::ConfirmDelete => "Delete",
+                                        })
+                                        .unwrap_or("OK")
+                                        .to_owned()
+                                }}
+                            </button>
+                        </div>
+                    </div>
+                </Show>
+
+                <Show when=move || column_menu.get().is_some() fallback=|| ()>
+                    <div class="menu-scrim" on:click=move |_| set_column_menu.set(None)></div>
+                    <div
+                        class="context-menu column-menu"
+                        style=move || match column_menu.get() {
+                            Some((x, y, _)) => format!("left:{x}px; top:{y}px;"),
+                            None => String::new(),
                         }
-                        fallback=|| ()
                     >
                         <button
                             class="menu-item"
-                            on:click=move |_| {
-                                if let Some((_, _, id, name)) = playlist_menu.get_untracked() {
-                                    set_playlist_menu.set(None);
-                                    set_rename_text.set(name);
-                                    set_renaming_playlist.set(Some(id));
+                            disabled=move || !can_move_column(-1)
+                            on:click=move |_| move_column(-1)
+                        >
+                            "Move Column Left"
+                        </button>
+                        <button
+                            class="menu-item"
+                            disabled=move || !can_move_column(1)
+                            on:click=move |_| move_column(1)
+                        >
+                            "Move Column Right"
+                        </button>
+                        <button
+                            class="menu-item"
+                            on:click={
+                                let auto_fit_column = auto_fit_column.clone();
+                                move |_| {
+                                    auto_fit_column(menu_column());
+                                    set_column_menu.set(None);
                                 }
                             }
                         >
-                            "Rename"
+                            "Auto-Fit Column"
                         </button>
                         <button
                             class="menu-item"
                             on:click=move |_| {
-                                if let Some((_, _, id, name)) = playlist_menu.get_untracked() {
-                                    set_playlist_menu.set(None);
-                                    set_playlist_dialog_opened.update(|epoch| *epoch += 1);
-                                    set_playlist_dialog.set(Some(PlaylistDialog {
-                                        mode: PlaylistDialogMode::Duplicate,
-                                        title: "Duplicate Playlist",
-                                        value: format!("{name} copy"),
-                                        id,
-                                        name,
-                                    }));
-                                }
+                                auto_fit_all();
+                                set_column_menu.set(None);
                             }
                         >
-                            "Duplicate"
+                            "Auto-Fit All Columns"
                         </button>
-                        <button
-                            class="menu-item"
-                            on:click=move |_| {
-                                if let Some((_, _, id, name)) = playlist_menu.get_untracked() {
-                                    set_playlist_menu.set(None);
-                                    export_playlist_m3u(id, name);
+                        <div class="menu-separator"></div>
+                        <For each=move || ColumnId::MENU_ORDER key=|id| id.key() let:id>
+                            {
+                                let visible = move || {
+                                    columns
+                                        .get()
+                                        .iter()
+                                        .any(|column| column.id == id && column.visible)
+                                };
+                                let only_visible = move || {
+                                    let shown =
+                                        columns.get().iter().filter(|column| column.visible).count();
+                                    visible() && shown <= 1
+                                };
+                                view! {
+                                    <button
+                                        class="menu-item"
+                                        disabled=only_visible
+                                        on:click=move |_| toggle_column(id)
+                                    >
+                                        <span class="menu-check">
+                                            {move || if visible() { "✓" } else { "" }}
+                                        </span>
+                                        {id.menu_label()}
+                                    </button>
                                 }
                             }
-                        >
-                            "Export as m3u…"
-                        </button>
+                        </For>
                         <div class="menu-separator"></div>
                         <button
                             class="menu-item"
                             on:click=move |_| {
-                                if let Some((_, _, id, name)) = playlist_menu.get_untracked() {
-                                    set_playlist_menu.set(None);
-                                    set_playlist_dialog_opened.update(|epoch| *epoch += 1);
-                                    set_playlist_dialog.set(Some(PlaylistDialog {
-                                        mode: PlaylistDialogMode::ConfirmDelete,
-                                        title: "Delete Playlists",
-                                        value: String::new(),
-                                        id,
-                                        name,
-                                    }));
-                                }
-                            }
-                        >
-                            "Delete…"
-                        </button>
-                    </Show>
-                </div>
-            </Show>
-
-            <Show when=move || playlist_dialog.get().is_some() fallback=|| ()>
-                <div class="scrim" on:click=move |_| set_playlist_dialog.set(None)></div>
-                <div class="settings playlist-dialog" role="dialog">
-                    <h2>{move || {
-                        playlist_dialog.get().map(|dialog| dialog.title.to_owned())
-                            .unwrap_or_default()
-                    }}</h2>
-                    <p class="hint">
-                        {move || match playlist_dialog.get() {
-                            Some(dialog) => match dialog.mode {
-                                PlaylistDialogMode::CreateFromPane => {
-                                    let name = dialog.value.trim();
-                                    if !name.is_empty()
-                                        && playlist_name_exists(name.to_owned())
-                                    {
-                                        format!(
-                                            "A playlist named \u{201c}{name}\u{201d} already exists. Saving will replace its tracks."
-                                        )
-                                    } else {
-                                        "Name the new playlist. The pane is saved into it."
-                                            .to_owned()
-                                    }
-                                }
-                                PlaylistDialogMode::Duplicate => {
-                                    "Name the copy.".to_owned()
-                                }
-                                PlaylistDialogMode::ConfirmDelete => {
-                                    "Delete this playlist? Its songs stay in your library."
-                                        .to_owned()
-                                }
-                            },
-                            None => String::new(),
-                        }}
-                    </p>
-                    {/* Name field and confirm label stay mounted: recreating
-                        the input per keystroke re-fired focus and re-selected
-                        the text, so typing overwrote itself. */}
-                    <input
-                        class="playlist-dialog-name"
-                        class:hidden=confirm_delete_mode
-                        node_ref=playlist_dialog_input
-                        prop:value=move || {
-                            playlist_dialog.get().map(|d| d.value).unwrap_or_default()
-                        }
-                        on:input=move |event| {
-                            set_playlist_dialog.update(|dialog| {
-                                if let Some(dialog) = dialog {
-                                    dialog.value = event_target_value(&event);
-                                }
-                            });
-                        }
-                        on:keydown=move |event: web_sys::KeyboardEvent| {
-                            if event.key() == "Enter" {
-                                accept_playlist_dialog();
-                            }
-                        }
-                    />
-                    <p
-                        class="playlist-dialog-confirm"
-                        class:hidden=move || !confirm_delete_mode()
-                    >
-                        {move || {
-                            playlist_dialog.get().map(|d| d.name).unwrap_or_default()
-                        }}
-                    </p>
-                    <div class="settings-actions">
-                        <button on:click=move |_| set_playlist_dialog.set(None)>"Cancel"</button>
-                        <button
-                            class="primary"
-                            disabled=move || {
-                                playlist_dialog
-                                    .get()
-                                    .map(|dialog| {
-                                        dialog.mode != PlaylistDialogMode::ConfirmDelete
-                                            && dialog.value.trim().is_empty()
-                                    })
-                                    .unwrap_or(true)
-                            }
-                            on:click=move |_| accept_playlist_dialog()
-                        >
-                            {move || {
-                                playlist_dialog
-                                    .get()
-                                    .map(|dialog| match dialog.mode {
-                                        PlaylistDialogMode::CreateFromPane => {
-                                            let name = dialog.value.trim();
-                                            if !name.is_empty()
-                                                && playlist_name_exists(name.to_owned())
-                                            {
-                                                "Overwrite"
-                                            } else {
-                                                "Save"
-                                            }
-                                        }
-                                        PlaylistDialogMode::Duplicate => "Duplicate",
-                                        PlaylistDialogMode::ConfirmDelete => "Delete",
-                                    })
-                                    .unwrap_or("OK")
-                                    .to_owned()
-                            }}
-                        </button>
-                    </div>
-                </div>
-            </Show>
-
-            <Show when=move || column_menu.get().is_some() fallback=|| ()>
-                <div class="menu-scrim" on:click=move |_| set_column_menu.set(None)></div>
-                <div
-                    class="context-menu column-menu"
-                    style=move || match column_menu.get() {
-                        Some((x, y, _)) => format!("left:{x}px; top:{y}px;"),
-                        None => String::new(),
-                    }
-                >
-                    <button
-                        class="menu-item"
-                        disabled=move || !can_move_column(-1)
-                        on:click=move |_| move_column(-1)
-                    >
-                        "Move Column Left"
-                    </button>
-                    <button
-                        class="menu-item"
-                        disabled=move || !can_move_column(1)
-                        on:click=move |_| move_column(1)
-                    >
-                        "Move Column Right"
-                    </button>
-                    <button
-                        class="menu-item"
-                        on:click={
-                            let auto_fit_column = auto_fit_column.clone();
-                            move |_| {
-                                auto_fit_column(menu_column());
+                                reset_columns();
                                 set_column_menu.set(None);
                             }
-                        }
-                    >
-                        "Auto-Fit Column"
-                    </button>
-                    <button
-                        class="menu-item"
-                        on:click=move |_| {
-                            auto_fit_all();
-                            set_column_menu.set(None);
-                        }
-                    >
-                        "Auto-Fit All Columns"
-                    </button>
-                    <div class="menu-separator"></div>
-                    <For each=move || ColumnId::MENU_ORDER key=|id| id.key() let:id>
-                        {
-                            let visible = move || {
-                                columns
-                                    .get()
-                                    .iter()
-                                    .any(|column| column.id == id && column.visible)
-                            };
-                            let only_visible = move || {
-                                let shown =
-                                    columns.get().iter().filter(|column| column.visible).count();
-                                visible() && shown <= 1
-                            };
-                            view! {
-                                <button
-                                    class="menu-item"
-                                    disabled=only_visible
-                                    on:click=move |_| toggle_column(id)
-                                >
-                                    <span class="menu-check">
-                                        {move || if visible() { "✓" } else { "" }}
-                                    </span>
-                                    {id.menu_label()}
-                                </button>
-                            }
-                        }
-                    </For>
-                    <div class="menu-separator"></div>
-                    <button
-                        class="menu-item"
-                        on:click=move |_| {
-                            reset_columns();
-                            set_column_menu.set(None);
-                        }
-                    >
-                        "Reset Columns"
-                    </button>
-                </div>
-            </Show>
+                        >
+                            "Reset Columns"
+                        </button>
+                    </div>
+                </Show>
 
-            <Show when=move || mobile_sort_open.get() fallback=|| ()>
-                <div class="menu-scrim" on:click=move |_| set_mobile_sort_open.set(false)></div>
-                <div class="context-menu mobile-sort-menu" role="menu" aria-label="Sort queue">
-                    <div class="menu-group">"Sort queue"</div>
-                    <For
-                        each=|| [
-                            ColumnId::Index, ColumnId::Title, ColumnId::Artist,
-                            ColumnId::AlbumArtist, ColumnId::Album, ColumnId::Composer,
-                            ColumnId::Length, ColumnId::Year, ColumnId::Genre,
-                            ColumnId::Track, ColumnId::FileSize, ColumnId::Path,
-                            ColumnId::Filename, ColumnId::Codec, ColumnId::SampleRate,
-                            ColumnId::BitsPerSample, ColumnId::Bitrate, ColumnId::Star,
-                        ]
-                        key=|id| id.key()
-                        let:id
-                    >
+                <Show when=move || mobile_sort_open.get() fallback=|| ()>
+                    <div class="menu-scrim" on:click=move |_| set_mobile_sort_open.set(false)></div>
+                    <div class="context-menu mobile-sort-menu" role="menu" aria-label="Sort queue">
+                        <div class="menu-group">"Sort queue"</div>
+                        <For
+                            each=|| [
+                                ColumnId::Index, ColumnId::Title, ColumnId::Artist,
+                                ColumnId::AlbumArtist, ColumnId::Album, ColumnId::Composer,
+                                ColumnId::Length, ColumnId::Year, ColumnId::Genre,
+                                ColumnId::Track, ColumnId::FileSize, ColumnId::Path,
+                                ColumnId::Filename, ColumnId::Codec, ColumnId::SampleRate,
+                                ColumnId::BitsPerSample, ColumnId::Bitrate, ColumnId::Star,
+                            ]
+                            key=|id| id.key()
+                            let:id
+                        >
+                            <button
+                                class="menu-item"
+                                on:click=move |_| {
+                                    toggle_sort(id.sort_key());
+                                    set_mobile_sort_open.set(false);
+                                }
+                            >
+                                <span class="menu-check">{move || if sort_key.get() == id.sort_key() { "✓" } else { "" }}</span>
+                                {id.menu_label()}
+                                <span class="mobile-sort-direction">{move || sort_arrow(id.sort_key())}</span>
+                            </button>
+                        </For>
+                    </div>
+                </Show>
+
+                <Show when=move || track_details.get().is_some() fallback=|| ()>
+                    <div class="scrim" on:click=move |_| set_track_details.set(None)></div>
+                    <div class="settings track-details" role="dialog" aria-label="Track details">
+                        <h2>"Track Details"</h2>
+                        <dl class="track-details-list">
+                            <For
+                                each=move || {
+                                    let Some((index, entry)) = track_details.get() else { return Vec::new(); };
+                                    let cache = metadata.get();
+                                    let meta = meta_for(&cache, &entry);
+                                    ColumnId::MENU_ORDER.into_iter().filter_map(|id| {
+                                        if matches!(id, ColumnId::Status | ColumnId::Rating | ColumnId::PlayCount) {
+                                            return None;
+                                        }
+                                        let value = if id == ColumnId::Title {
+                                            display_title(&cache, &metadata_failed.get(), &entry).unwrap_or_default()
+                                        } else {
+                                            column_text(id, index, &entry, meta.as_ref(), None, false, "")
+                                        };
+                                        (!value.trim().is_empty()).then(|| (id.menu_label().to_owned(), value))
+                                    }).collect::<Vec<_>>()
+                                }
+                                key=|field| field.0.clone()
+                                let:field
+                            >
+                                <div class="track-detail">
+                                    <dt>{field.0}</dt>
+                                    <dd>{field.1}</dd>
+                                </div>
+                            </For>
+                        </dl>
+                        <div class="settings-actions">
+                            <button class="primary" on:click=move |_| set_track_details.set(None)>"Done"</button>
+                        </div>
+                    </div>
+                </Show>
+
+                <Show when=move || update_ready.get() fallback=|| ()>
+                    <div class="update-banner">
+                        <span>"A new Kog build is ready — reloading shortly."</span>
+                        <button
+                            class="update-reload"
+                            on:click=move |_| {
+                                if let Some(window) = web_sys::window() {
+                                    let _ = window.location().reload();
+                                }
+                            }
+                        >
+                            "Reload now"
+                        </button>
+                    </div>
+                </Show>
+
+                <Show when=move || menu_open.get() fallback=|| ()>
+                    <div class="menu-scrim" on:click=move |_| set_menu_open.set(false)></div>
+                    <div class="context-menu app-menu" role="menu">
+                        <button class="menu-item" on:click=move |_| open_add_url()>
+                            "Add URL…"
+                        </button>
+                        <div class="menu-separator"></div>
+                        <button
+                            class="menu-item"
+                            disabled=move || queue.get().is_empty()
+                            on:click=move |_| {
+                                set_menu_open.set(false);
+                                open_create_playlist_dialog();
+                            }
+                        >
+                            "Save Playlist…"
+                        </button>
+                        <div class="menu-separator"></div>
+                        <button
+                            class="menu-item"
+                            disabled=move || selected.get().is_empty()
+                            on:click=move |_| remove_selected()
+                        >
+                            "Remove Selected"
+                        </button>
+                        <button
+                            class="menu-item"
+                            disabled=move || queue.get().is_empty()
+                            on:click=move |_| clear_pane()
+                        >
+                            {if touch_mode { "Clear Queue" } else { "Clear Play Queue" }}
+                        </button>
+                        <div class="menu-separator"></div>
+                        <div class="menu-group">"View"</div>
+                        <button class="menu-item" on:click=move |_| {
+                            if touch_mode {
+                                set_files_expanded.set(true);
+                                set_mobile_view.set(MobileView::Library);
+                            } else {
+                                toggle_sidebar();
+                            }
+                            set_menu_open.set(false);
+                        }>
+                            <span class="menu-check">
+                                {move || if sidebar_shown() { "✓" } else { "" }}
+                            </span>
+                            {if touch_mode { "Library" } else { "Show File Tree" }}
+                        </button>
+                        <div class="menu-separator"></div>
+                        <div class="menu-group">"Playback"</div>
+                        <button
+                            class="menu-item"
+                            disabled=move || !connected.get()
+                            on:click=move |_| {
+                                set_radio(!radio_on.get_untracked());
+                                set_menu_open.set(false);
+                            }
+                        >
+                            <span class="menu-check">{move || if radio_on.get() { "✓" } else { "" }}</span>
+                            "Random Radio"
+                        </button>
+                        <button
+                            class="menu-item"
+                            disabled=move || queue.get().is_empty() && !radio_on.get()
+                            on:click=move |_| {
+                                toggle_play();
+                                set_menu_open.set(false);
+                            }
+                        >
+                            "Play/Pause"
+                        </button>
+                        <button
+                            class="menu-item"
+                            disabled=move || queue.get().is_empty() && !radio_waiting.get()
+                            on:click=move |_| {
+                                stop_playback();
+                                set_menu_open.set(false);
+                            }
+                        >
+                            "Stop"
+                        </button>
+                        <button
+                            class="menu-item"
+                            disabled=move || queue.get().is_empty()
+                            on:click=move |_| {
+                                step(-1);
+                                set_menu_open.set(false);
+                            }
+                        >
+                            "Previous"
+                        </button>
+                        <button
+                            class="menu-item"
+                            disabled=move || queue.get().is_empty() && !radio_on.get()
+                            on:click=move |_| {
+                                step(1);
+                                set_menu_open.set(false);
+                            }
+                        >
+                            "Next"
+                        </button>
+                        <div class="menu-group">"Shuffle"</div>
                         <button
                             class="menu-item"
                             on:click=move |_| {
-                                toggle_sort(id.sort_key());
-                                set_mobile_sort_open.set(false);
+                                select_shuffle(ShuffleMode::Off);
+                                set_menu_open.set(false);
                             }
                         >
-                            <span class="menu-check">{move || if sort_key.get() == id.sort_key() { "✓" } else { "" }}</span>
-                            {id.menu_label()}
-                            <span class="mobile-sort-direction">{move || sort_arrow(id.sort_key())}</span>
+                            <span class="menu-check">{move || if shuffle.get() == ShuffleMode::Off { "●" } else { "" }}</span>
+                            "Off"
                         </button>
-                    </For>
-                </div>
-            </Show>
-
-            <Show when=move || track_details.get().is_some() fallback=|| ()>
-                <div class="scrim" on:click=move |_| set_track_details.set(None)></div>
-                <div class="settings track-details" role="dialog" aria-label="Track details">
-                    <h2>"Track Details"</h2>
-                    <dl class="track-details-list">
-                        <For
-                            each=move || {
-                                let Some((index, entry)) = track_details.get() else { return Vec::new(); };
-                                let cache = metadata.get();
-                                let meta = meta_for(&cache, &entry);
-                                ColumnId::MENU_ORDER.into_iter().filter_map(|id| {
-                                    if matches!(id, ColumnId::Status | ColumnId::Rating | ColumnId::PlayCount) {
-                                        return None;
-                                    }
-                                    let value = if id == ColumnId::Title {
-                                        display_title(&cache, &metadata_failed.get(), &entry).unwrap_or_default()
-                                    } else {
-                                        column_text(id, index, &entry, meta.as_ref(), None, false, "")
-                                    };
-                                    (!value.trim().is_empty()).then(|| (id.menu_label().to_owned(), value))
-                                }).collect::<Vec<_>>()
+                        <button
+                            class="menu-item"
+                            on:click=move |_| {
+                                select_shuffle(ShuffleMode::All);
+                                set_menu_open.set(false);
                             }
-                            key=|field| field.0.clone()
-                            let:field
                         >
-                            <div class="track-detail">
-                                <dt>{field.0}</dt>
-                                <dd>{field.1}</dd>
-                            </div>
-                        </For>
-                    </dl>
-                    <div class="settings-actions">
-                        <button class="primary" on:click=move |_| set_track_details.set(None)>"Done"</button>
-                    </div>
-                </div>
-            </Show>
-
-            <Show when=move || update_ready.get() fallback=|| ()>
-                <div class="update-banner">
-                    <span>"A new Kog build is ready — reloading shortly."</span>
-                    <button
-                        class="update-reload"
-                        on:click=move |_| {
-                            if let Some(window) = web_sys::window() {
-                                let _ = window.location().reload();
+                            <span class="menu-check">{move || if shuffle.get() == ShuffleMode::All { "●" } else { "" }}</span>
+                            "All Tracks"
+                        </button>
+                        <button class="menu-item" on:click=move |_| { select_shuffle(ShuffleMode::Albums); set_menu_open.set(false); }>
+                            <span class="menu-check">{move || if shuffle.get() == ShuffleMode::Albums { "●" } else { "" }}</span>
+                            "Albums"
+                        </button>
+                        <div class="menu-group">"Repeat"</div>
+                        <button
+                            class="menu-item"
+                            on:click=move |_| {
+                                select_repeat(Repeat::Off);
+                                set_menu_open.set(false);
                             }
-                        }
-                    >
-                        "Reload now"
-                    </button>
-                </div>
-            </Show>
-
-            <Show when=move || menu_open.get() fallback=|| ()>
-                <div class="menu-scrim" on:click=move |_| set_menu_open.set(false)></div>
-                <div class="context-menu app-menu" role="menu">
-                    <button class="menu-item" on:click=move |_| open_add_url()>
-                        "Add URL…"
-                    </button>
-                    <div class="menu-separator"></div>
-                    <button
-                        class="menu-item"
-                        disabled=move || queue.get().is_empty()
-                        on:click=move |_| {
-                            set_menu_open.set(false);
-                            open_create_playlist_dialog();
-                        }
-                    >
-                        "Save Playlist…"
-                    </button>
-                    <div class="menu-separator"></div>
-                    <button
-                        class="menu-item"
-                        disabled=move || selected.get().is_empty()
-                        on:click=move |_| remove_selected()
-                    >
-                        "Remove Selected"
-                    </button>
-                    <button
-                        class="menu-item"
-                        disabled=move || queue.get().is_empty()
-                        on:click=move |_| clear_pane()
-                    >
-                        {if touch_mode { "Clear Queue" } else { "Clear Play Queue" }}
-                    </button>
-                    <div class="menu-separator"></div>
-                    <div class="menu-group">"View"</div>
-                    <button class="menu-item" on:click=move |_| {
-                        if touch_mode {
-                            set_files_expanded.set(true);
-                            set_mobile_view.set(MobileView::Library);
-                        } else {
-                            toggle_sidebar();
-                        }
-                        set_menu_open.set(false);
-                    }>
-                        <span class="menu-check">
-                            {move || if sidebar_shown() { "✓" } else { "" }}
-                        </span>
-                        {if touch_mode { "Library" } else { "Show File Tree" }}
-                    </button>
-                    <div class="menu-separator"></div>
-                    <div class="menu-group">"Playback"</div>
-                    <button
-                        class="menu-item"
-                        disabled=move || !connected.get()
-                        on:click=move |_| {
-                            set_radio(!radio_on.get_untracked());
-                            set_menu_open.set(false);
-                        }
-                    >
-                        <span class="menu-check">{move || if radio_on.get() { "✓" } else { "" }}</span>
-                        "Random Radio"
-                    </button>
-                    <button
-                        class="menu-item"
-                        disabled=move || queue.get().is_empty() && !radio_on.get()
-                        on:click=move |_| {
-                            toggle_play();
-                            set_menu_open.set(false);
-                        }
-                    >
-                        "Play/Pause"
-                    </button>
-                    <button
-                        class="menu-item"
-                        disabled=move || queue.get().is_empty() && !radio_waiting.get()
-                        on:click=move |_| {
-                            stop_playback();
-                            set_menu_open.set(false);
-                        }
-                    >
-                        "Stop"
-                    </button>
-                    <button
-                        class="menu-item"
-                        disabled=move || queue.get().is_empty()
-                        on:click=move |_| {
-                            step(-1);
-                            set_menu_open.set(false);
-                        }
-                    >
-                        "Previous"
-                    </button>
-                    <button
-                        class="menu-item"
-                        disabled=move || queue.get().is_empty() && !radio_on.get()
-                        on:click=move |_| {
-                            step(1);
-                            set_menu_open.set(false);
-                        }
-                    >
-                        "Next"
-                    </button>
-                    <div class="menu-group">"Shuffle"</div>
-                    <button
-                        class="menu-item"
-                        on:click=move |_| {
-                            select_shuffle(ShuffleMode::Off);
-                            set_menu_open.set(false);
-                        }
-                    >
-                        <span class="menu-check">{move || if shuffle.get() == ShuffleMode::Off { "●" } else { "" }}</span>
-                        "Off"
-                    </button>
-                    <button
-                        class="menu-item"
-                        on:click=move |_| {
-                            select_shuffle(ShuffleMode::All);
-                            set_menu_open.set(false);
-                        }
-                    >
-                        <span class="menu-check">{move || if shuffle.get() == ShuffleMode::All { "●" } else { "" }}</span>
-                        "All Tracks"
-                    </button>
-                    <button class="menu-item" on:click=move |_| { select_shuffle(ShuffleMode::Albums); set_menu_open.set(false); }>
-                        <span class="menu-check">{move || if shuffle.get() == ShuffleMode::Albums { "●" } else { "" }}</span>
-                        "Albums"
-                    </button>
-                    <div class="menu-group">"Repeat"</div>
-                    <button
-                        class="menu-item"
-                        on:click=move |_| {
-                            select_repeat(Repeat::Off);
-                            set_menu_open.set(false);
-                        }
-                    >
-                        <span class="menu-check">{move || if repeat_mode.get() == Repeat::Off { "●" } else { "" }}</span>
-                        "Off"
-                    </button>
-                    <button
-                        class="menu-item"
-                        on:click=move |_| {
-                            select_repeat(Repeat::One);
-                            set_menu_open.set(false);
-                        }
-                    >
-                        <span class="menu-check">{move || if repeat_mode.get() == Repeat::One { "●" } else { "" }}</span>
-                        "One Track"
-                    </button>
-                    <button class="menu-item" on:click=move |_| { select_repeat(Repeat::Album); set_menu_open.set(false); }>
-                        <span class="menu-check">{move || if repeat_mode.get() == Repeat::Album { "●" } else { "" }}</span>
-                        "Album"
-                    </button>
-                    <button
-                        class="menu-item"
-                        on:click=move |_| {
-                            select_repeat(Repeat::All);
-                            set_menu_open.set(false);
-                        }
-                    >
-                        <span class="menu-check">{move || if repeat_mode.get() == Repeat::All { "●" } else { "" }}</span>
-                        "All Tracks"
-                    </button>
-                    <button
-                        class="menu-item"
-                        disabled=move || !radio_on.get()
-                        on:click=move |_| {
-                            reshuffle_radio();
-                            set_menu_open.set(false);
-                        }
-                    >
-                        "Reshuffle Radio"
-                    </button>
-                    <div class="menu-separator"></div>
-                    <button class="menu-item" on:click=move |_| open_preferences()>
-                        "Preferences…"
-                    </button>
-                    <button class="menu-item" on:click=move |_| open_about()>
-                        "About Kog…"
-                    </button>
-                </div>
-            </Show>
-        </div>
-    }
+                        >
+                            <span class="menu-check">{move || if repeat_mode.get() == Repeat::Off { "●" } else { "" }}</span>
+                            "Off"
+                        </button>
+                        <button
+                            class="menu-item"
+                            on:click=move |_| {
+                                select_repeat(Repeat::One);
+                                set_menu_open.set(false);
+                            }
+                        >
+                            <span class="menu-check">{move || if repeat_mode.get() == Repeat::One { "●" } else { "" }}</span>
+                            "One Track"
+                        </button>
+                        <button class="menu-item" on:click=move |_| { select_repeat(Repeat::Album); set_menu_open.set(false); }>
+                            <span class="menu-check">{move || if repeat_mode.get() == Repeat::Album { "●" } else { "" }}</span>
+                            "Album"
+                        </button>
+                        <button
+                            class="menu-item"
+                            on:click=move |_| {
+                                select_repeat(Repeat::All);
+                                set_menu_open.set(false);
+                            }
+                        >
+                            <span class="menu-check">{move || if repeat_mode.get() == Repeat::All { "●" } else { "" }}</span>
+                            "All Tracks"
+                        </button>
+                        <button
+                            class="menu-item"
+                            disabled=move || !radio_on.get()
+                            on:click=move |_| {
+                                reshuffle_radio();
+                                set_menu_open.set(false);
+                            }
+                        >
+                            "Reshuffle Radio"
+                        </button>
+                        <div class="menu-separator"></div>
+                        <button class="menu-item" on:click=move |_| open_preferences()>
+                            "Preferences…"
+                        </button>
+                        <button class="menu-item" on:click=move |_| open_about()>
+                            "About Kog…"
+                        </button>
+                    </div>
+                </Show>
+            </div>
+        }
 }

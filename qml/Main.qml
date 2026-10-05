@@ -659,6 +659,16 @@ ApplicationWindow {
         return selectedRows.indexOf(row) !== -1
     }
 
+    Connections {
+        target: appController
+        function onQueue_selectionChanged() {
+            const state = JSON.parse(appController.queue_selection)
+            root.selectedRows = state.indices
+            root.selectionAnchor = state.anchor === null ? -1 : state.anchor
+            root.selectedRow = state.indices.indexOf(root.selectedRow) >= 0 ? root.selectedRow : (state.indices.length ? state.indices[0] : -1)
+        }
+    }
+
     function setPlaylistSelection(rows, current, anchor) {
         const state = JSON.parse(appController.selection_json("{}", JSON.stringify({op:"set", indices:rows, anchor:anchor >= 0 ? anchor : null}), appController.playlist_count))
         selectedRows = state.indices
@@ -676,6 +686,7 @@ ApplicationWindow {
     }
 
     function clearPlaylistSelection() {
+        appController.selection_json("{}", JSON.stringify({op:"clear"}), appController.playlist_count)
         selectedRows = []
         selectedRow = -1
         selectionAnchor = -1

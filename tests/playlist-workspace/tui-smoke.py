@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise the actual terminal UI in a private PTY and settings directory."""
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -19,6 +20,7 @@ with tempfile.TemporaryDirectory(prefix="kog-playlist-tui-") as directory:
     for name in ("config/kog", "data/kog", "cache", "runtime"):
         (root / name).mkdir(parents=True)
     (root / "runtime").chmod(0o700)
+    (root / "config/kog/output-volume").write_text("0")
     database = root / "data/kog/kog.db"
     with sqlite3.connect(database) as db:
         db.executescript("""
@@ -29,11 +31,14 @@ with tempfile.TemporaryDirectory(prefix="kog-playlist-tui-") as directory:
         """)
         for position in range(2):
             db.execute("INSERT INTO playlist_entries(playlist_id,position,kind,path) VALUES(1,?,'local',?)", (position, str(repo / "tests/fixtures/codec-libs/tone.wav")))
-    pid, terminal = pty.fork()
-    if pid == 0:
-        os.environ.update(XDG_CONFIG_HOME=str(root / "config"), XDG_DATA_HOME=str(root / "data"), XDG_CACHE_HOME=str(root / "cache"), XDG_RUNTIME_DIR=str(root / "runtime"), TERM="xterm-256color")
-        os.execv(str(repo / "target/debug/kog-tui"), ["kog-tui"])
-    fcntl.ioctl(terminal, termios.TIOCSWINSZ, struct.pack("HHHH", 34, 120, 0, 0))
+    def launch():
+        pid, terminal = pty.fork()
+        if pid == 0:
+            os.environ.update(XDG_CONFIG_HOME=str(root / "config"), XDG_DATA_HOME=str(root / "data"), XDG_CACHE_HOME=str(root / "cache"), XDG_RUNTIME_DIR=str(root / "runtime"), TERM="xterm-256color")
+            os.execv(str(repo / "target/debug/kog-tui"), ["kog-tui"])
+        fcntl.ioctl(terminal, termios.TIOCSWINSZ, struct.pack("HHHH", 34, 120, 0, 0))
+        return pid, terminal
+    pid, terminal = launch()
     output = bytearray()
     def drain(seconds=0.3):
         deadline = time.monotonic() + seconds
@@ -44,9 +49,12 @@ with tempfile.TemporaryDirectory(prefix="kog-playlist-tui-") as directory:
     def send(keys):
         os.write(terminal, keys)
         drain()
-    def state():
-        path=root / "config/kog/playlist-tabs-tui.json"
+    def checkpoint():
+        path=root / "config/kog/sessions" / (hashlib.sha256(b"tui:default").hexdigest()+".session.json")
         return json.loads(path.read_text()) if path.exists() else None
+    def state():
+        value=checkpoint()
+        return value["workspace"] if value else None
     def wait(predicate, message):
         for _ in range(60):
             drain(0.1)
@@ -78,6 +86,12 @@ with tempfile.TemporaryDirectory(prefix="kog-playlist-tui-") as directory:
         wait(lambda value:value["pending_close"]=="local:1","Dirty close must ask")
         send(b"c")
         wait(lambda value:value["pending_close"] is None and value["active"]=="local:1","Cancel keeps draft")
+        send(b"\x01")  # Ctrl+A: both draft rows
+        send(b"p")  # Play Now via backend expansion
+        drain(2)
+        saved=checkpoint()
+        assert len(saved["queue"])==2 and saved["current"]==1, "Native EOS should advance through both duplicate rows"
+        assert saved["volume"]==0 and b"Playing" in output, "Muted native output did not start"
         send(b"\x17"); send(b"d")
         wait(lambda value:value["active"]=="queue" and not value["tabs"],"Discard closes editor and returns to queue")
         assert count()==1,"Discard changed saved contents"
@@ -85,7 +99,16 @@ with tempfile.TemporaryDirectory(prefix="kog-playlist-tui-") as directory:
         send(b"\x03")
         os.waitpid(pid,0)
         pid=0
-        print("TUI WORKSPACE PASS: open/select/edit/save/undo/close/cancel/discard")
+        os.close(terminal)
+        output.clear()
+        pid, terminal = launch()
+        drain(2)
+        assert len(checkpoint()["queue"])==2 and checkpoint()["current"]==1, "Restored session lost its queue"
+        assert b"Ready to play" in output, "Restored output must stay stopped"
+        send(b"\x03")
+        os.waitpid(pid,0)
+        pid=0
+        print("TUI WORKSPACE PASS: editor/selection/save/undo/close/cancel/discard/native audio/EOS/stopped restore")
     finally:
         if pid:
             os.kill(pid,signal.SIGTERM)

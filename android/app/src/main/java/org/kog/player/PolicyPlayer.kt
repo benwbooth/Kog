@@ -18,7 +18,6 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
-import java.util.UUID
 
 /** The Rust session owns the application. Media3 is its audio/system-control port.
  * This adapter mirrors the session's row IDs into Media3's timeline, executes
@@ -31,8 +30,7 @@ internal class PolicyPlayer(
     private val publish: (JSONObject) -> Unit,
 ) : ForwardingSimpleBasePlayer(output) {
     private val prefs = context.getSharedPreferences("kog", Context.MODE_PRIVATE)
-    private val session = SharedBackendSession(sessionID ?: prefs.getString("backend_session_id", null)
-        ?: "android:${UUID.randomUUID()}".also { prefs.edit().putString("backend_session_id", it).apply() })
+    private val session = SharedBackendSession(sessionID ?: SharedBackendSession.defaultID(context))
     private val storageKey = "backend_session.${session.id}"
     private val api = KogApi(context).apply { this.sessionID = session.id }
     private val deviceApi = KogApi(context, onDevice = true).apply { this.sessionID = session.id }
@@ -162,9 +160,9 @@ internal class PolicyPlayer(
         return session.snapshot
     }
     private fun client(source: String): KogApi {
-        if (source == "device") return deviceApi
+        if (source == "device") return deviceApi.snapshot()
         check(source == "server:${api.server}") { "Reconnect to this playlist's server to load or save it." }
-        return api
+        return api.snapshot()
     }
     private fun execute(effect: JSONObject) {
         when (effect.getString("action")) {
@@ -196,7 +194,7 @@ internal class PolicyPlayer(
                 val token = effect.getJSONObject("token")
                 try {
                     val source = effect.getString("scope")
-                    val api = client(source)
+                    val api = client(source).apply { radioRequest = token }
                     val result = when (effect.getString("action")) {
                         "load" -> JSONObject().put("kind", "loaded").put("entries", JSONArray(api.playlist(effect.getLong("playlist_id")).map { it.saved() }))
                         "save" -> {

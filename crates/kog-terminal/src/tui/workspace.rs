@@ -1,119 +1,16 @@
 //! Terminal adapter for the portable saved-playlist draft model.
 use super::*;
 use kog_audio::playback_order::selection::{Command as Select, Gesture};
-use kog_audio::playback_order::workspace::{CloseChoice, Command, Effect, QueueAction, Workspace};
+use kog_audio::playback_order::workspace::{CloseChoice, Command, QueueAction};
 
-pub(super) fn restore() -> Workspace {
+pub(super) fn restore() -> Option<serde_json::Value> {
     kog_audio::settings::setting_path("playlist-tabs-tui.json")
-        .and_then(|path| std::fs::read(path).ok())
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .and_then(|value| Workspace::restore(value).ok())
-        .unwrap_or_default()
+        .and_then(|p| std::fs::read(p).ok())
+        .and_then(|b| serde_json::from_slice(&b).ok())
 }
 impl Ui {
     pub(super) fn workspace_command(&mut self, command: Command) {
-        let effect =
-            self.workspace
-                .apply_ui(command, self.tracks.len(), self.selected_tracks.len());
-        if let Some(path) = kog_audio::settings::setting_path("playlist-tabs-tui.json") {
-            let result = (|| -> Result<(), String> {
-                let parent = path.parent().ok_or("Invalid workspace settings path")?;
-                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-                let mut file =
-                    tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
-                serde_json::to_writer(&mut file, &self.workspace).map_err(|e| e.to_string())?;
-                file.persist(path).map_err(|e| e.to_string())?;
-                Ok(())
-            })();
-            if let Err(error) = result {
-                self.status = format!("Could not preserve playlist draft: {error}");
-            }
-        }
-        match effect {
-            Ok(Effect::None) => {}
-            Ok(Effect::Load {
-                key,
-                playlist_id,
-                generation,
-                ..
-            }) => {
-                let entries = if playlist_id == 0 {
-                    self.library.db().starred_entries()
-                } else {
-                    self.library.db().playlist_entries(playlist_id)
-                };
-                self.workspace_command(match entries {
-                    Ok(entries) => Command::Loaded {
-                        key,
-                        generation,
-                        entries: entries
-                            .into_iter()
-                            .map(kog_server::api::entry_json)
-                            .collect(),
-                    },
-                    Err(error) => Command::LoadFailed {
-                        key,
-                        generation,
-                        error,
-                    },
-                });
-            }
-            Ok(Effect::Save {
-                key,
-                playlist_id,
-                revision,
-                entries,
-                expected_entries,
-                ..
-            }) => {
-                let result =
-                    kog_server::api::stored_entries_from_json(&entries).and_then(|entries| {
-                        let expected =
-                            kog_server::api::stored_entries_from_json(&expected_entries)?;
-                        self.library.db().replace_entries_checked(
-                            playlist_id,
-                            &entries,
-                            Some(&expected),
-                        )
-                    });
-                let command = match result {
-                    Ok(()) => {
-                        self.reload_lists();
-                        self.status = "Playlist saved".into();
-                        Command::Saved { key, revision }
-                    }
-                    Err(error) => Command::SaveFailed {
-                        key,
-                        revision,
-                        error,
-                    },
-                };
-                self.workspace_command(command);
-            }
-            Ok(Effect::Queue { mode, entries, .. }) => {
-                let entries = kog_server::api::queue_entries_from_json(&entries);
-                let decoders = self
-                    .decoders
-                    .background_worker(self.decoder_settings.clone());
-                let root = self.library.root();
-                let (sender, receiver) = mpsc::channel();
-                std::thread::spawn(move || {
-                    let mut tracks = Vec::new();
-                    for entry in entries {
-                        let name = track_from_entry(entry.clone()).name;
-                        tracks.extend(
-                            expand_stored_entry(&decoders, root.as_deref(), &entry, &name)
-                                .into_iter()
-                                .map(|(name, entry)| Track { name, entry }),
-                        );
-                    }
-                    let _ = sender.send(tracks);
-                });
-                self.workspace_jobs.push_back((mode, receiver));
-                self.status = "Preparing playlist tracks…".into();
-            }
-            Err(error) => self.status = error,
-        }
+        self.session_command(SessionCommand::Workspace { command });
     }
     pub(super) fn open_playlist_tab(&mut self, index: usize) {
         let Some((id, name)) = self.lists.get(index).cloned() else {
@@ -132,34 +29,12 @@ impl Ui {
         self.keyboard_column = None;
     }
     pub(super) fn poll_workspace(&mut self) {
-        while let Some((mode, receiver)) = self.workspace_jobs.front() {
-            let tracks = match receiver.try_recv() {
-                Ok(tracks) => tracks,
-                Err(mpsc::TryRecvError::Empty) => break,
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    self.workspace_jobs.pop_front();
-                    self.status = "Playlist preparation stopped".into();
-                    continue;
-                }
-            };
-            let mode = *mode;
-            self.workspace_jobs.pop_front();
-            let start = self.tracks.len();
-            let count = tracks.len();
-            self.tracks.extend(tracks);
-            self.order_tracks_changed();
-            if let Some(PlaybackDecision::Play(index)) =
-                self.order.apply_queue_action(mode, start, count)
-            {
-                self.selected[2] = index;
-                self.play_selected();
-            }
-            self.status = format!("Added {count} tracks to Play Queue");
-        }
+        self.poll_session_ports();
     }
     fn workspace_cycle(&mut self, delta: isize) {
         let state = self
-            .workspace
+            .session
+            .workspace_model()
             .snapshot_for(self.tracks.len(), self.selected_tracks.len());
         let index = state
             .tabs
@@ -175,18 +50,14 @@ impl Ui {
         self.focus = Focus::Tracks;
     }
     fn workspace_append_queue(&mut self, all: bool) {
-        let entries = self
-            .tracks
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| all || self.selected_tracks.contains(i))
-            .map(|(_, track)| kog_server::api::entry_json(track.entry.clone()))
-            .collect();
-        self.workspace_command(Command::Append { entries });
+        self.session_command(SessionCommand::AppendQueueToWorkspace {
+            selected_only: !all,
+        });
     }
     pub(super) fn workspace_key(&mut self, key: Key, size: (usize, usize)) -> bool {
         let state = self
-            .workspace
+            .session
+            .workspace_model()
             .snapshot_for(self.tracks.len(), self.selected_tracks.len());
         if state.pending_close.is_some() {
             let choice = match key {
@@ -307,7 +178,8 @@ impl Ui {
     }
     fn workspace_tab_cells(&self, width: usize) -> Vec<(usize, usize, String, String, bool)> {
         let state = self
-            .workspace
+            .session
+            .workspace_model()
             .snapshot_for(self.tracks.len(), self.selected_tracks.len());
         let mut cells = Vec::new();
         let mut x = 0;
@@ -343,7 +215,8 @@ impl Ui {
             return false;
         }
         let state = self
-            .workspace
+            .session
+            .workspace_model()
             .snapshot_for(self.tracks.len(), self.selected_tracks.len());
         if state.pending_close.is_some() {
             return true;
@@ -430,7 +303,8 @@ impl Ui {
         let left = layout.playlist_left() + 1;
         let width = size.0.saturating_sub(left - 1);
         let state = self
-            .workspace
+            .session
+            .workspace_model()
             .snapshot_for(self.tracks.len(), self.selected_tracks.len());
         if state.active != "queue" {
             let page = layout.footer_top.saturating_sub(5).max(1);

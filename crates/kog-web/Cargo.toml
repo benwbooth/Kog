@@ -26,6 +26,7 @@ web-sys = { version = "=0.3.98", features = [
   "Storage",
   "Location",
   "Url",
+  "UrlSearchParams",
   "Blob",
   "Document",
   "Notification",

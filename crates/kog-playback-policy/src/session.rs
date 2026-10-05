@@ -486,6 +486,9 @@ impl<T: Item> Session<T> {
     pub fn visible(&self) -> &[usize] {
         &self.visible
     }
+    pub fn workspace_model(&self) -> &workspace::Workspace {
+        &self.workspace
+    }
     pub fn workspace(&self) -> workspace::Snapshot {
         self.workspace
             .snapshot_for(self.queue.len(), self.selection.indices.len())

@@ -1,30 +1,80 @@
 # Shared frontend backend contract
 
-The five frontends are adapters over the same Rust rules. Equal queue metadata,
-mode settings, random seed, and command history must produce equal decisions.
-Sessions are independent: they do not synchronize their queues, random seeds,
-or current track across devices.
+All five frontends use `kog-playback-policy::session::Session` as their
+application backend. A session owns the queue and row identities, current row,
+transport state, modes, selection, sort/filter, playlist drafts, radio buffer,
+and pending I/O. Frontends send commands, render snapshots, execute I/O effects,
+and return tokened results. They do not maintain a second authoritative queue
+or decide which track plays next.
+
+Sessions are independent instances of that same implementation. Sharing the
+backend does not synchronize playback across devices.
 
 ## Ownership
 
 | Behavior | Backend owner | Frontend responsibility |
 | --- | --- | --- |
-| Next, Previous, end of stream, failed open | `kog-playback-policy::PlaybackOrder` | Execute `Play`, `Radio`, or `Stop`; report successful starts and failed opens |
-| Shuffle, repeat, queue overrides, stop after | `PlaybackOrder` | Send commands; display returned state; remap row identities on edits |
-| Natural text, numeric, album/disc/track and star sorting | `kog-playback-policy::sort` | Supply raw metadata; apply returned order |
-| Selection, range anchor, activation | `kog-playback-policy::selection` | Translate gestures; retain returned indices and anchor |
-| Saved playlist tabs, edits, undo, dirty close, enabled actions | `kog-playback-policy::workspace` | Render snapshots; execute load/save/queue effects |
-| Playlist text filtering | `sort::matches_query` | Supply searchable metadata and display matching rows |
-| Radio picks, subsongs, blacklists, persisted rounds | `kog-server::radio::Radio` | Supply root and scope |
-| Ready radio buffer, waiting, stale replies | `kog-playback-policy::radio::RadioBuffer` | Schedule service requests; honor generation checks |
+| Queue edits, duplicate row identity, current row, transport | `session::Session` | Send commands; render read-only projections |
+| Next, Previous, EOS, failed opens, shuffle/repeat, queue priority, stop after | `Session` with `PlaybackOrder` | Execute output effects and return tokened events |
+| Sorting, filtering, selection and range anchors | `Session` with `sort` and `selection` | Supply metadata and gestures; render visible rows |
+| Playlist tabs, drafts, undo, dirty close, load/save acknowledgements | `Session` with `workspace` | Render snapshots; perform storage requests |
+| Expansion order, cancellation and deferred Play Now | `Session` | Expand accessible sources and return results, in any completion order |
+| Radio buffer, waiting, refill requests and stale replies | `Session` with `radio::RadioBuffer` | Execute radio service requests |
+| Radio picks, subsongs, blacklists and persisted rounds | `kog-server::radio::Radio` | Supply root, session ID and request token |
 | Browse, search, expansion, tags, saved playlists, stars | `kog-server::api` and `kog-core` | HTTP or in-process calls; present results |
 | Decoder choice, archives, subsongs, companion resolution | `kog-audio` | Supply accessible locators and configured decoder assets |
-| Speakers, browser audio, AVAudioEngine, Media3, permissions | Platform adapters | Output and lifecycle callbacks; no independent queue traversal |
+| Speakers, browser audio, AVAudioEngine, Media3, permissions | Platform adapters | Manage output resources and report lifecycle events |
 
-Swift and Kotlin's `SharedPlaybackPolicy` classes only serialize commands and
-retain opaque Rust state. Android's `PolicyPlayer` lives in `PlaybackService`;
-ExoPlayer's automatic shuffle/repeat decisions are disabled. Queue navigation
-from the app, notification, headset, and end-of-stream callbacks reaches Rust.
+Qt and TUI own typed Rust sessions and project their snapshots into QML or
+terminal views. Web compiles the same session to WebAssembly. Swift and Kotlin
+`SharedBackendSession` retain opaque Rust state and call `kog_session_json` or
+its JNI wrapper. Android's `PolicyPlayer` owns the session in `PlaybackService`,
+so notification, headset, and background playback use the same commands.
+Media3's timeline is a projection keyed by backend row IDs, and its automatic
+shuffle/repeat traversal is disabled.
+
+## Session identity and persistence
+
+- Qt defaults to `qt:default`; TUI defaults to `tui:default`. Set
+  `KOG_SESSION_ID` before launching either to select another checkpoint.
+- Web defaults to a persistent browser device ID. `?session=NAME` selects an
+  independent named session (`web:NAME`) without changing the browser default.
+- iOS and Android use persistent per-installation UUIDs. Their session owners
+  also accept an explicit session ID for embedded use and integration tests.
+- Native checkpoints are stored as `sessions/<SHA-256 of ID>.session.json` in
+  Kog's configuration directory. Web and mobile use per-ID storage keys.
+- The common versioned checkpoint includes queue locators, row IDs, order,
+  selection, filter/sort, volume and playlist drafts. Restore always stops
+  output and discards pending I/O; an old callback cannot restart playback.
+- The default session imports the previous frontend queue and draft format
+  once. New explicitly named sessions start with an empty queue. Tree layout,
+  window geometry, decoder settings and connection preferences remain UI or
+  platform settings.
+
+A session ID is a persistence and service namespace, not a live synchronization
+protocol. Use distinct IDs for independent players. Two concurrent players
+using the same ID do not merge their queues or checkpoints.
+
+Named HTTP search and radio requests have independent server state. Pausing or
+cancelling one search does not affect another session. Radio rounds use separate
+files and do not write the legacy global enabled preference. Requests without a
+session ID retain the legacy API behavior. Radio request serials prevent a late
+request from reversing a newer root or enabled-state change.
+
+## Asynchronous work
+
+Every I/O request carries a session ID, incarnation and serial. The backend
+rejects foreign and stale replies, preserves enqueue order when expansion jobs
+finish out of order, and rejects results from a disconnected library scope.
+Clear invalidates pending additions; Stop cancels their deferred autoplay while
+allowing requested additions to finish. Save acknowledges the captured draft
+revision, so edits made during a save remain dirty.
+
+Output tokens belong to a queue row identity, not an index. Moving a playing
+row preserves its output, including duplicate locators. Removing it stops
+output. Browser elements and mobile callbacks capture the output token; old
+end/failure/progress callbacks cannot advance a replacement track. Output
+reload effects preserve position and pause state.
 
 ## Transport semantics
 
@@ -55,6 +105,9 @@ failure, sorted traversal, duplicate remapping, mobile-wire, radio, sorting,
 and filtering outcomes. Module tests cover album grouping and radio lifecycle.
 `kog-server::radio_client` tests the real scheduling adapter and NSF decoding;
 its opt-in `KOG_RADIO_TEST_FILE` test accepts a real multi-song fixture.
+`tests/session.rs` checks session ownership, asynchronous cancellation, output
+identity and stopped checkpoint restore. Server tests cover independent search
+and radio sessions and delayed radio requests.
 `kog-server::local_api` exercises the mobile in-process library routes and
 database storage.
 
@@ -87,15 +140,18 @@ order without changing the queue. Activating the current row toggles playback;
 activating another row starts it. Touch, keyboard, and mouse gesture recognition
 remain native to each frontend.
 
-### UI contract checks
+### UI and application contract checks
 
 `tests/ui-contract/playlist.json` contains expected states and effects for 30
 steps, covering activation, queue selection remapping, editor selection, action
 availability, edits, history, saving, dirty close, and Favorites. The same
 transcript runs through native Rust plus its JSON wire, the production Swift/C
 bridge, and the packaged Android JNI bridge and UI snapshot parser. These tests
-check the actual language boundaries; they are not screenshots or device audio
-tests.
+check the actual language boundaries. `tests/ui-contract/session.json` adds
+33 expected application steps across two independent sessions, including reversed
+I/O completion, stale callbacks, duplicate rows, edits during saves and stopped
+restore. Android instrumentation additionally exercises two real Media3 players
+and native decoding through the production output factory.
 
 - Rust: `cargo test -p kog-playback-policy`.
 - Swift/C: `bash tests/ui-contract/run-swift.sh` (Swift and Rust required).
@@ -104,10 +160,12 @@ tests.
   org.kog.player.test/org.kog.player.UiContractInstrumentation`.
 - Qt: after a native build, `nix develop --command bash
   tests/playlist-workspace/run-qt.sh` exercises the real controller and both
-  editor components, including range shrinking and enabled actions.
+  editor components, including range shrinking and enabled actions, plus native
+  playback, pause, seek, EOS and stopped restore.
 - Terminal: `nix develop --command python3
   tests/playlist-workspace/tui-smoke.py` drives the actual app in a private PTY
-  and checks stored draft and database outcomes.
+  and checks stored draft/database outcomes, native playback, EOS and stopped
+  restore.
 - Browser: build WebAssembly and exercise tabs, action availability, filtered
   selection, save/close, and current-row activation against a private server.
 

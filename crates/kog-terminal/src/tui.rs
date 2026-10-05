@@ -12,8 +12,12 @@ use std::time::{Duration, Instant};
 
 use kog_audio::decoder::{DecoderRegistry, DecoderSettings, PlaybackSource, validate_soundfont};
 use kog_audio::playback::{PlaybackEngine, PlaybackState, available_output_devices};
-use kog_audio::playback_order::{NavigationEvent, PlaybackDecision, PlaybackOrder};
-use kog_audio::playback_order::sort::{SortRow, sorted_rows};
+use kog_audio::playback_order::NavigationEvent;
+use kog_audio::playback_order::session::{
+    Command as SessionCommand, Effect as SessionEffect, IoResult, Item as SessionItem, OutputEvent,
+    Session, Token,
+};
+use kog_audio::playback_order::sort::SortRow;
 use kog_audio::playlist::{Playlist, PlaylistEntry};
 use kog_audio::settings::{
     AppSettings, MidiEngine, OpeningFilesBehavior, OutputDevicePreference, RepeatMode, ShuffleMode,
@@ -22,21 +26,24 @@ use kog_audio::track::Track as AudioTrack;
 use kog_core::db::{BLACKLIST_FOLDER, BLACKLIST_SONG, BlacklistEntry, StoredEntry};
 use kog_core::equalizer::{EqualizerSettings, presets};
 use kog_server::api::{Library, LocalSearch, browse_local_unrestricted, expand_stored_entry};
-use kog_server::radio::{Radio, RadioEntry};
-use kog_server::radio_client::RadioClient;
+use kog_server::radio::RadioEntry;
+use kog_server::radio_client::SessionRadioPort;
 use kog_server::{AuthMode, StreamCodec, TlsMode};
 use rand::Rng;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+mod session;
 mod workspace;
-use kog_audio::playback_order::workspace::{Workspace, QueueAction};
 use crate::columns::Columns;
 use crate::cover_preview::{self, COVER_HEIGHT, COVER_WIDTH, CoverPreview};
-use crate::remote::{RemoteFile, RemoteListing, RemoteSearchHit, RemoteSearchProgress, RemoteSettings};
+use crate::remote::{
+    RemoteFile, RemoteListing, RemoteSearchHit, RemoteSearchProgress, RemoteSettings,
+};
 use crate::rom_import::{RomKind, import_rom_archive};
 use crate::server_control::RunningServer;
 use crate::tag_editor::{parse_edits, snapshot_json, write_tags};
+use kog_audio::playback_order::workspace::QueueAction;
 
 #[derive(Clone)]
 struct Track {
@@ -147,7 +154,11 @@ fn save_tree_state(
         .map_err(|error| format!("creating {}: {error}", parent.display()))?;
     let mut paths: Vec<_> = expanded
         .iter()
-        .filter(|item| browse_path.or(library_root).is_none_or(|root| item.starts_with(root)))
+        .filter(|item| {
+            browse_path
+                .or(library_root)
+                .is_none_or(|root| item.starts_with(root))
+        })
         .map(|item| item.to_string_lossy().into_owned())
         .collect();
     if paths.len() > TREE_STATE_MAX_EXPANDED {
@@ -238,6 +249,7 @@ fn load_playlist_session(path: &Path) -> Option<RestoredPlaylist> {
     })
 }
 
+#[cfg(test)]
 fn save_playlist_session(path: &Path, tracks: &[Track], selected: usize) -> Result<(), String> {
     if tracks.len() > SESSION_MAX_TRACKS {
         return Err("the current playlist is too large to save as a session".to_owned());
@@ -475,7 +487,10 @@ fn menu_shortcuts(page: MenuPage) -> Vec<Option<char>> {
                     word_start = true;
                 }
             }
-            for character in visible.chars().filter(|character| character.is_ascii_alphabetic()) {
+            for character in visible
+                .chars()
+                .filter(|character| character.is_ascii_alphabetic())
+            {
                 let key = character.to_ascii_uppercase();
                 if !candidates.contains(&key) {
                     candidates.push(key);
@@ -949,20 +964,11 @@ struct RomImportResult {
 enum RemoteCommand {
     Root(u64, RemoteSettings, Option<String>),
     Expand(u64, RemoteSettings, PathBuf),
-    Collect(u64, u64, RemoteSettings, PathBuf, String),
-    AddTracks(u64, u64, RemoteSettings, Vec<RemoteFile>, bool),
 }
 
 enum RemoteResponse {
     Root(u64, RemoteSettings, Result<RemoteListing, String>),
     Expand(u64, PathBuf, RemoteSettings, Result<RemoteListing, String>),
-    Collect(
-        u64,
-        u64,
-        PathBuf,
-        RemoteSettings,
-        Result<Vec<RemoteFile>, String>,
-    ),
     SearchProgress(
         u64,
         u64,
@@ -972,20 +978,14 @@ enum RemoteResponse {
         RemoteSearchProgress,
     ),
     Search(u64, u64, Result<(), String>),
-    AddTracks(
-        u64,
-        u64,
-        RemoteSettings,
-        bool,
-        Result<Vec<RemoteFile>, String>,
-    ),
 }
 
 struct Ui {
-    workspace: Workspace,
+    session: Session<Track>,
+    session_effects: std::collections::VecDeque<SessionEffect>,
+    session_jobs: Vec<(Token, Receiver<IoResult<Track>>)>,
     workspace_cursor: usize,
     workspace_offset: usize,
-    workspace_jobs: std::collections::VecDeque<(QueueAction, Receiver<Vec<Track>>)>,
     library: Arc<Library>,
     decoder_settings: DecoderSettings,
     decoders: DecoderRegistry,
@@ -1019,9 +1019,8 @@ struct Ui {
     volume_drag: bool,
     repeat_mode: RepeatMode,
     shuffle_mode: ShuffleMode,
-    order: PlaybackOrder,
     radio_enabled: bool,
-    radio: RadioClient<Track>,
+    radio: SessionRadioPort<Track>,
     equalizer: EqualizerSettings,
     last_click: Option<(Instant, usize, usize)>,
     prompt: Option<(PromptKind, String)>,
@@ -1049,10 +1048,6 @@ struct Ui {
     cover_key: String,
     cover_preview: Option<CoverPreview>,
     download_cover_art: bool,
-    folder_requests: Sender<(u64, PathBuf, kog_audio::library_policy::TreeFilter)>,
-    folder_results: Receiver<(u64, PathBuf, Result<Vec<Track>, String>)>,
-    folder_generation: u64,
-    folder_play_pending: HashSet<PathBuf>,
     delete_requests: Sender<PathBuf>,
     delete_results: Receiver<(PathBuf, Result<(), String>)>,
     pending_delete_paths: Vec<PathBuf>,
@@ -1210,23 +1205,6 @@ impl Ui {
             }
         });
         let library = Arc::new(Library::open());
-        let (folder_requests, pending_folders) = mpsc::channel::<(u64, PathBuf, kog_audio::library_policy::TreeFilter)>();
-        let (completed_folders, folder_results) = mpsc::channel();
-        let folder_library = library.clone();
-        std::thread::spawn(move || {
-            let decoders = DecoderRegistry::new(AppSettings::load().decoder_settings());
-            while let Ok((generation, path, filter)) = pending_folders.recv() {
-                let settings = AppSettings::load();
-                let result = kog_server::api::collect_local_folder_filtered(
-                    &folder_library, &decoders, &path, true,
-                    settings.read_cue_sheets_in_folders, settings.read_playlists_in_folders,
-                    &filter,
-                ).map(|entries| entries.into_iter().map(|(name, entry)| Track { name, entry }).collect());
-                if completed_folders.send((generation, path, result)).is_err() {
-                    break;
-                }
-            }
-        });
         let (delete_requests, delete_jobs) = mpsc::channel::<PathBuf>();
         let (delete_done, delete_results) = mpsc::channel();
         std::thread::spawn(move || {
@@ -1344,32 +1322,6 @@ impl Ui {
                         let result = settings.browse(path.to_str());
                         RemoteResponse::Expand(generation, path, settings, result)
                     }
-                    RemoteCommand::Collect(generation, folder_generation, settings, path, query) => {
-                        let result = settings.collect_folder(&path, &query);
-                        RemoteResponse::Collect(
-                            generation,
-                            folder_generation,
-                            path,
-                            settings,
-                            result,
-                        )
-                    }
-                    RemoteCommand::AddTracks(
-                        generation,
-                        folder_generation,
-                        settings,
-                        files,
-                        play,
-                    ) => {
-                        let result = settings.expand_files(&files);
-                        RemoteResponse::AddTracks(
-                            generation,
-                            folder_generation,
-                            settings,
-                            play,
-                            result,
-                        )
-                    }
                 };
                 if remote_done.send(response).is_err() {
                     break;
@@ -1377,7 +1329,8 @@ impl Ui {
             }
         });
         let decoders = DecoderRegistry::new(decoder_settings.clone());
-        let radio = RadioClient::new(Radio::from_settings(), |entry| Ok(radio_track(entry)))
+        let session_id = std::env::var("KOG_SESSION_ID").unwrap_or_else(|_| "tui:default".into());
+        let radio = SessionRadioPort::new(&session_id, |entry| Ok(radio_track(entry)))
             .expect("start radio worker");
         let mut player = PlaybackEngine::with_equalizer_and_output(
             DecoderRegistry::new(decoder_settings.clone()),
@@ -1413,7 +1366,16 @@ impl Ui {
             list_counts: HashMap::new(),
             selected_lists: HashSet::new(),
             list_anchor: None,
-            workspace: workspace::restore(), workspace_cursor: 0, workspace_offset: 0, workspace_jobs: std::collections::VecDeque::new(),
+            session: Session::new(
+                session_id,
+                rand::rng().random(),
+                settings.shuffle_mode,
+                settings.repeat_mode,
+            ),
+            session_effects: Default::default(),
+            session_jobs: Vec::new(),
+            workspace_cursor: 0,
+            workspace_offset: 0,
             tracks: Vec::new(),
             selected_tracks: HashSet::new(),
             selection_anchor: None,
@@ -1432,11 +1394,6 @@ impl Ui {
             volume_drag: false,
             repeat_mode: settings.repeat_mode,
             shuffle_mode: settings.shuffle_mode,
-            order: PlaybackOrder::new(
-                settings.shuffle_mode,
-                settings.repeat_mode,
-                rand::rng().random(),
-            ),
             radio_enabled: settings.radio_enabled,
             radio,
             equalizer: settings.equalizer,
@@ -1466,10 +1423,6 @@ impl Ui {
             cover_key: String::new(),
             cover_preview: None,
             download_cover_art: settings.download_cover_art,
-            folder_requests,
-            folder_results,
-            folder_generation: 0,
-            folder_play_pending: HashSet::new(),
             delete_requests,
             delete_results,
             pending_delete_paths: Vec::new(),
@@ -1532,22 +1485,45 @@ impl Ui {
             column_viewport_width: 40,
             starred_keys,
         };
-        if let Some(session) = kog_audio::settings::setting_path(SESSION_FILE)
-            .as_deref()
-            .and_then(load_playlist_session)
-        {
-            ui.tracks = session.tracks;
-            ui.selected[2] = session.selected;
-            if !ui.tracks.is_empty() {
-                ui.selected_tracks.insert(session.selected);
-                ui.selection_anchor = Some(session.selected);
+        let restored = kog_audio::playback_order::session_path(ui.session.id(), "session")
+            .and_then(|p| std::fs::read(p).ok())
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .is_some_and(|value| ui.session.restore(value, session::decode_track).is_ok());
+        if !restored {
+            if std::env::var_os("KOG_SESSION_ID").is_none() {
+                if let Some(legacy) = kog_audio::settings::setting_path(SESSION_FILE)
+                    .as_deref()
+                    .and_then(load_playlist_session)
+                {
+                    let current = (!legacy.tracks.is_empty()).then_some(legacy.selected);
+                    ui.queue_session(SessionCommand::Replace {
+                        tracks: legacy.tracks,
+                        current,
+                    });
+                    if let Some(index) = current {
+                        ui.queue_session(SessionCommand::Select {
+                            command: kog_audio::playback_order::selection::Command::Choose {
+                                index,
+                                gesture: kog_audio::playback_order::selection::Gesture::Replace,
+                            },
+                        });
+                    }
+                }
+                if let Some(value) = workspace::restore() {
+                    ui.queue_session(SessionCommand::WorkspaceRestore { value });
+                }
             }
-            ui.order_tracks_changed();
-            ui.session_dirty = false;
+            ui.queue_session(SessionCommand::Volume {
+                value: f64::from(volume),
+            });
         }
+        ui.player
+            .set_volume(ui.session.checkpoint()["volume"].as_f64().unwrap_or(1.0) as f32);
+        ui.tracks = ui.session.queue().to_vec();
+        ui.apply_session_view();
         ui.reload_lists();
-        let browse_path = load_tree_state(ui.library.root().as_deref())
-            .and_then(|saved| saved.browse_path);
+        let browse_path =
+            load_tree_state(ui.library.root().as_deref()).and_then(|saved| saved.browse_path);
         ui.browse(browse_path.clone());
         if browse_path.is_some() && ui.browse_path != browse_path {
             ui.browse(None);
@@ -1555,9 +1531,29 @@ impl Ui {
         if kog_server::config::load_config().enabled {
             ui.start_api_server();
         }
-        if ui.radio_enabled {
-            ui.start_radio(false);
+        let checkpoint = ui.session.checkpoint();
+        if checkpoint["radio_enabled"].as_bool().unwrap_or(false)
+            || (!restored && settings.radio_enabled)
+        {
+            let root = checkpoint["radio_root"]
+                .as_str()
+                .filter(|r| !r.is_empty())
+                .map(str::to_owned)
+                .unwrap_or_else(|| {
+                    ui.library
+                        .root()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned()
+                });
+            ui.session_command(SessionCommand::Radio {
+                enabled: true,
+                scope: "local".into(),
+                root,
+                reshuffle: false,
+            });
         }
+        ui.flush_session_effects();
         ui
     }
 
@@ -1593,21 +1589,18 @@ impl Ui {
     }
 
     fn poll_metadata(&mut self) {
-        let mut order_changed = false;
         let mut changed_keys = Vec::new();
         while let Ok((generation, key, metadata)) = self.metadata_results.try_recv() {
             if generation != self.metadata_generation {
                 continue;
             }
             self.metadata_pending.remove(&key);
-            order_changed |= metadata.as_ref().is_some_and(|meta| !meta.album.is_empty());
             self.metadata.insert(key.clone(), metadata);
             changed_keys.push(key);
         }
         self.refresh_auto_fit_metadata(&changed_keys);
-        if order_changed && self.shuffle_mode == ShuffleMode::Albums {
-            let tracks = self.order_tracks();
-            self.order.album_metadata_changed(&tracks, self.playing);
+        if !changed_keys.is_empty() {
+            self.refresh_session_metadata();
         }
     }
 
@@ -1676,36 +1669,11 @@ impl Ui {
         self.auto_fit_cache = None;
     }
 
-    fn order_tracks(&self) -> Vec<AudioTrack> {
-        self.tracks
-            .iter()
-            .map(|track| {
-                let mut ordered = AudioTrack::default();
-                if let Some(meta) = self.metadata_for(track) {
-                    ordered.album = meta.album.clone();
-                    ordered.disc_number = meta.disc_number;
-                    ordered.track_number = meta.track_number;
-                }
-                ordered
-            })
-            .collect()
-    }
-
-    fn order_tracks_changed(&mut self) {
-        let tracks = self.order_tracks();
-        self.order.tracks_changed(&tracks, self.playing);
-        self.session_dirty = true;
-        self.auto_fit_cache = None;
-    }
-
     fn flush_session(&mut self) -> Result<(), String> {
-        if !self.session_dirty {
-            return Ok(());
+        if self.session_dirty {
+            kog_audio::playback_order::save_session(self.session.id(), &self.session.checkpoint())?;
+            self.session_dirty = false;
         }
-        let path = kog_audio::settings::setting_path(SESSION_FILE)
-            .ok_or("Cannot find the terminal playlist settings directory")?;
-        save_playlist_session(&path, &self.tracks, self.selected[2])?;
-        self.session_dirty = false;
         Ok(())
     }
 
@@ -1716,39 +1684,40 @@ impl Ui {
     }
 
     fn poll_radio(&mut self) {
-        self.radio.poll();
-        if let Some(error) = self.radio.take_error() { self.status = error; }
-        if let Some(track) = self.radio.take_pending() { self.play_radio_track(track); }
+        self.poll_session_ports();
     }
 
     fn start_radio(&mut self, reshuffle: bool) {
-        self.order.set_radio_enabled(true, &self.order_tracks(), self.playing);
-        self.sync_order_modes();
-        if reshuffle {
-            self.radio.reshuffle(self.library.root(), self.browse_path.clone());
-        } else {
-            self.radio.set_enabled(true, self.library.root(), self.browse_path.clone());
-        }
+        let root = self
+            .browse_path
+            .clone()
+            .or_else(|| self.library.root())
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        self.session_command(SessionCommand::Radio {
+            enabled: true,
+            scope: "local".into(),
+            root,
+            reshuffle,
+        });
     }
 
     fn toggle_radio(&mut self) {
         if self.radio_enabled {
-            self.order.set_radio_enabled(false, &self.order_tracks(), self.playing);
-            self.sync_order_modes();
-        } else { self.start_radio(false); }
-        self.status = format!("Random Radio: {}", if self.radio_enabled { "on" } else { "off" });
-    }
-
-    fn sync_order_modes(&mut self) {
-        let was_radio = self.radio_enabled;
-        self.radio_enabled = self.order.radio_enabled();
-        self.repeat_mode = self.order.repeat_mode();
-        self.shuffle_mode = self.order.shuffle_mode();
-        if was_radio && !self.radio_enabled {
-            self.radio.set_enabled(false, self.library.root(), self.browse_path.clone());
+            self.session_command(SessionCommand::Radio {
+                enabled: false,
+                scope: "local".into(),
+                root: String::new(),
+                reshuffle: false,
+            });
+        } else {
+            self.start_radio(false);
         }
-        let _ = AppSettings::save_repeat_mode(self.repeat_mode);
-        let _ = AppSettings::save_shuffle_mode(self.shuffle_mode);
+        self.status = format!(
+            "Random Radio: {}",
+            if self.radio_enabled { "on" } else { "off" }
+        );
     }
 
     fn activate_transport(&mut self, action: TransportAction) {
@@ -1757,9 +1726,7 @@ impl Ui {
             TransportAction::Previous => self.previous(),
             TransportAction::PlayPause => self.play_pause(),
             TransportAction::Stop => {
-                self.player.stop();
-                self.radio.cancel_waiting();
-                self.order.cancel_navigation();
+                self.session_command(SessionCommand::Stop);
             }
             TransportAction::Next => self.next(false),
             TransportAction::Repeat => self.cycle_repeat(),
@@ -1770,26 +1737,6 @@ impl Ui {
     fn reshuffle_radio(&mut self) {
         self.start_radio(true);
         self.status = "Reshuffling Random Radio…".to_owned();
-    }
-
-    fn play_radio_track(&mut self, track: Track) {
-        self.tracks.push(track);
-        self.order_tracks_changed();
-        self.selected[2] = self.tracks.len() - 1;
-        self.select_track(self.selected[2], false, false);
-        self.order.radio_candidate(self.selected[2]);
-        if !self.try_play_selected() { self.navigate(NavigationEvent::Failed); }
-    }
-
-    fn append_next_radio(&mut self) {
-        if let Some(track) = self.radio.request_next() {
-            self.play_radio_track(track);
-        } else {
-            self.player.stop();
-            self.status = if self.radio.waiting() {
-                "Random Radio — finding a track…"
-            } else { "Random Radio found no playable tracks" }.to_owned();
-        }
     }
 
     fn request_metadata(&mut self, entry: &StoredEntry) {
@@ -1841,7 +1788,7 @@ impl Ui {
             }
             .to_owned(),
             "status" => {
-                if self.order.should_stop_after(index) {
+                if self.session.order().should_stop_after(index) {
                     MEDIA_STOP.to_owned()
                 } else if self.playing == Some(index) {
                     match self.player.state() {
@@ -1850,8 +1797,7 @@ impl Ui {
                         PlaybackState::Stopped => "",
                     }
                     .to_owned()
-                } else if let Some(position) = self.order.queue_position(index)
-                {
+                } else if let Some(position) = self.session.order().queue_position(index) {
                     format!("{MEDIA_NEXT}{}", position + 1)
                 } else {
                     String::new()
@@ -1930,21 +1876,19 @@ impl Ui {
     }
 
     fn toggle_selected_queue(&mut self) {
-        self.order.toggle_queue(&self.selected_track_indices());
-        self.auto_fit_cache = None;
-        self.status = format!("{} track(s) queued", self.order.queue_count());
+        self.session_command(SessionCommand::ToggleQueued {
+            indices: self.selected_track_indices(),
+        });
     }
 
     fn toggle_selected_stop_after(&mut self) {
-        self.order.toggle_stop_after(&self.selected_track_indices());
-        self.auto_fit_cache = None;
-        self.status = format!("{} stop-after marker(s)", self.order.stop_after_indices().count());
+        self.session_command(SessionCommand::ToggleStopAfter {
+            indices: self.selected_track_indices(),
+        });
     }
 
     fn clear_queue(&mut self) {
-        self.order.clear_queue();
-        self.auto_fit_cache = None;
-        self.status = "Queue cleared".to_owned();
+        self.session_command(SessionCommand::ClearQueued);
     }
 
     fn prune_missing_selected_list(&mut self) {
@@ -2019,7 +1963,9 @@ impl Ui {
             self.volume_before_mute = self.volume;
             self.volume = 0.0;
         }
-        self.player.set_volume(self.volume);
+        self.session_command(SessionCommand::Volume {
+            value: f64::from(self.volume),
+        });
     }
 
     fn set_volume_from_bar(&mut self, x: usize, size: (usize, usize)) {
@@ -2028,7 +1974,9 @@ impl Ui {
         if self.volume > 0.0 {
             self.volume_before_mute = self.volume;
         }
-        self.player.set_volume(self.volume);
+        self.session_command(SessionCommand::Volume {
+            value: f64::from(self.volume),
+        });
     }
 
     fn layout(&self, size: (usize, usize)) -> Layout {
@@ -2084,10 +2032,13 @@ impl Ui {
             .then(|| {
                 HorizontalScrollbar::new(
                     layout.playlist_left(),
-                    size.0.saturating_sub(layout.playlist_left() + usize::from(
-                        self.track_scrollbar_for_count(layout, size, track_count)
-                            .is_some(),
-                    )),
+                    size.0.saturating_sub(
+                        layout.playlist_left()
+                            + usize::from(
+                                self.track_scrollbar_for_count(layout, size, track_count)
+                                    .is_some(),
+                            ),
+                    ),
                     self.columns.total_width(),
                     self.columns.scroll,
                 )
@@ -2109,7 +2060,11 @@ impl Ui {
                 layout.first.saturating_sub(1),
             )
         } else if self.focus == Focus::Library {
-            (2, layout.footer_top.saturating_sub(2), size.0.saturating_sub(1))
+            (
+                2,
+                layout.footer_top.saturating_sub(2),
+                size.0.saturating_sub(1),
+            )
         } else {
             return None;
         };
@@ -2155,9 +2110,8 @@ impl Ui {
         x: usize,
         y: usize,
     ) -> Option<(usize, VerticalScrollbar)> {
-        let hit = |bar: VerticalScrollbar| {
-            x == bar.x && (bar.top..bar.top + bar.height).contains(&y)
-        };
+        let hit =
+            |bar: VerticalScrollbar| x == bar.x && (bar.top..bar.top + bar.height).contains(&y);
         if let Some(bar) = self.tree_scrollbar(layout, size).filter(|bar| hit(*bar)) {
             return Some((1, bar));
         }
@@ -2343,7 +2297,11 @@ impl Ui {
         self.menu_open = false;
         if page == MenuPage::ColumnContext && index == 12 {
             if let Some(column) = self.context_column
-                && self.columns.entries.get(column).is_some_and(|entry| entry.visible)
+                && self
+                    .columns
+                    .entries
+                    .get(column)
+                    .is_some_and(|entry| entry.visible)
             {
                 self.toggle_column(column);
             }
@@ -2406,9 +2364,7 @@ impl Ui {
             (MenuPage::View, 7) => self.show_artwork(),
             (MenuPage::Playback, 0) => self.play_pause(),
             (MenuPage::Playback, 1) => {
-                self.player.stop();
-                self.radio.cancel_waiting();
-                self.order.cancel_navigation();
+                self.session_command(SessionCommand::Stop);
             }
             (MenuPage::Playback, 2) => self.previous(),
             (MenuPage::Playback, 3) => self.next(false),
@@ -2416,9 +2372,17 @@ impl Ui {
             (MenuPage::Playback, 5) => self.cycle_repeat(),
             (MenuPage::Playback, 6) => {
                 if let Some(index) = self.playing {
-                    self.order.toggle_stop_after(&[index]);
-                    self.status = format!("Stop after current: {}",
-                        if self.order.should_stop_after(index) { "on" } else { "off" });
+                    self.session_command(SessionCommand::ToggleStopAfter {
+                        indices: vec![index],
+                    });
+                    self.status = format!(
+                        "Stop after current: {}",
+                        if self.session.order().should_stop_after(index) {
+                            "on"
+                        } else {
+                            "off"
+                        }
+                    );
                 }
             }
             (MenuPage::Playback, 7) => self.toggle_mute(),
@@ -2537,24 +2501,9 @@ impl Ui {
                         self.decoder_settings.set_midi_engine(next);
                         self.invalidate_metadata();
                         self.status = format!("MIDI backend: {}", next.setting_value());
-                        if let Some((index, position, state)) = resume {
-                            let selected = self.selected[2];
-                            self.selected[2] = index;
-                            if self.try_play_selected() {
-                                if let Err(error) = self.player.seek(position) {
-                                    self.status = format!(
-                                        "MIDI synth changed; restoring position failed: {error}"
-                                    );
-                                } else {
-                                    self.status = format!("MIDI backend: {}", next.setting_value());
-                                }
-                                if state == PlaybackState::Paused {
-                                    self.player.play_pause();
-                                }
-                            } else {
-                                self.player.stop();
-                            }
-                            self.selected[2] = selected;
+                        if resume.is_some() {
+                            self.report_session_progress();
+                            self.session_command(SessionCommand::ReloadOutput);
                         }
                     }
                     Err(error) => self.status = error,
@@ -2645,7 +2594,9 @@ impl Ui {
             (MenuPage::Tracks, 6) => self.show_track_in_tree(),
             (MenuPage::Tracks, 7) => self.begin_prompt(PromptKind::SaveSelection, String::new()),
             (MenuPage::Tracks, 8) => {
-                self.selected_tracks = self.visible_tracks().into_iter().collect();
+                self.session_command(SessionCommand::Select {
+                    command: kog_audio::playback_order::selection::Command::All,
+                });
                 self.status = format!("Selected {} tracks", self.selected_tracks.len());
             }
             (MenuPage::Tracks, 9) => self.toggle_selected_queue(),
@@ -2702,7 +2653,9 @@ impl Ui {
             (MenuPage::Playlist, 1) => self.begin_prompt(PromptKind::AddUrl, String::new()),
             (MenuPage::Playlist, 2) => self.begin_prompt(PromptKind::SavePlaylist, String::new()),
             (MenuPage::Playlist, 3) => {
-                self.selected_tracks = self.visible_tracks().into_iter().collect();
+                self.session_command(SessionCommand::Select {
+                    command: kog_audio::playback_order::selection::Command::All,
+                });
                 self.status = format!("Selected {} tracks", self.selected_tracks.len());
             }
             (MenuPage::Playlist, 4) => self.clear_playlist(),
@@ -3167,50 +3120,47 @@ impl Ui {
             true
         };
         self.sort_column = Some(column);
-        let id = self.columns.entries[column].id;
-        let rows = self.tracks.iter().enumerate().map(|(index, track)| {
-            let meta = self.metadata_for(track);
-            SortRow {
-                original: Some(self.order.original_position(index) as f64), title: self.title_for(track).to_owned(),
-                artist: meta.map(|m| m.artist.clone()).unwrap_or_default(),
-                album: meta.map(|m| m.album.clone()).unwrap_or_default(),
-                album_artist: meta.map(|m| m.album_artist.clone()).unwrap_or_default(),
-                composer: meta.map(|m| m.composer.clone()).unwrap_or_default(), genre: meta.map(|m| m.genre.clone()).unwrap_or_default(),
-                year: meta.and_then(|m| m.year).map(f64::from), disc_number: meta.and_then(|m| m.disc_number).map(f64::from),
-                track_number: meta.and_then(|m| m.track_number).map(f64::from),
-                duration: meta.and_then(|m| m.duration).map(|d| d.as_secs_f64()),
-                file_size_bytes: meta.and_then(|m| m.file_size_bytes).map(|n| n as f64),
-                sample_rate: meta.and_then(|m| m.sample_rate).map(f64::from), bits_per_sample: meta.and_then(|m| m.bits_per_sample).map(f64::from),
-                bitrate: meta.and_then(|m| m.bitrate).map(f64::from), channels: meta.and_then(|m| m.channels).map(f64::from),
-                codec: meta.map(|m| m.codec.clone()).unwrap_or_default(), path: display_entry_path(&track.entry),
-                filename: self.column_value(index, track, "filename"), star: self.starred_keys.contains(&metadata_key(&track.entry)),
-            }
-        }).collect::<Vec<_>>();
-        let order = sorted_rows(&rows, id, !self.sort_ascending);
-        let mut mapping = vec![0; order.len()];
-        for (new, &old) in order.iter().enumerate() {
-            mapping[old] = new;
-        }
-        let mut tracks: Vec<_> = std::mem::take(&mut self.tracks)
-            .into_iter()
-            .map(Some)
-            .collect();
-        self.tracks = order
-            .into_iter()
-            .map(|old| tracks[old].take().unwrap())
-            .collect();
-        self.playing = self.playing.and_then(|old| mapping.get(old).copied());
-        self.order.remap_tracks(&mapping.iter().copied().map(Some).collect::<Vec<_>>());
-        self.selected_tracks = self
-            .selected_tracks
+        self.refresh_session_metadata();
+        self.session_command(SessionCommand::Sort {
+            column: self.columns.entries[column].id.into(),
+            descending: !self.sort_ascending,
+            physical: true,
+        });
+    }
+    fn session_metadata(&self) -> Vec<SortRow> {
+        self.tracks
             .iter()
-            .filter_map(|old| mapping.get(*old).copied())
-            .collect();
-        self.selected[2] = mapping.get(self.selected[2]).copied().unwrap_or(0);
-        self.selection_anchor = self
-            .selection_anchor
-            .and_then(|old| mapping.get(old).copied());
-        self.order_tracks_changed();
+            .enumerate()
+            .map(|(index, track)| {
+                let meta = self.metadata_for(track);
+                SortRow {
+                    original: Some(self.session.order().original_position(index) as f64),
+                    title: self.title_for(track).to_owned(),
+                    artist: meta.map(|m| m.artist.clone()).unwrap_or_default(),
+                    album: meta.map(|m| m.album.clone()).unwrap_or_default(),
+                    album_artist: meta.map(|m| m.album_artist.clone()).unwrap_or_default(),
+                    composer: meta.map(|m| m.composer.clone()).unwrap_or_default(),
+                    genre: meta.map(|m| m.genre.clone()).unwrap_or_default(),
+                    year: meta.and_then(|m| m.year).map(f64::from),
+                    disc_number: meta.and_then(|m| m.disc_number).map(f64::from),
+                    track_number: meta.and_then(|m| m.track_number).map(f64::from),
+                    duration: meta.and_then(|m| m.duration).map(|d| d.as_secs_f64()),
+                    file_size_bytes: meta.and_then(|m| m.file_size_bytes).map(|n| n as f64),
+                    sample_rate: meta.and_then(|m| m.sample_rate).map(f64::from),
+                    bits_per_sample: meta.and_then(|m| m.bits_per_sample).map(f64::from),
+                    bitrate: meta.and_then(|m| m.bitrate).map(f64::from),
+                    channels: meta.and_then(|m| m.channels).map(f64::from),
+                    codec: meta.map(|m| m.codec.clone()).unwrap_or_default(),
+                    path: display_entry_path(&track.entry),
+                    filename: self.column_value(index, track, "filename"),
+                    star: self.starred_keys.contains(&metadata_key(&track.entry)),
+                }
+            })
+            .collect::<Vec<_>>()
+    }
+    fn refresh_session_metadata(&mut self) {
+        let rows = self.session_metadata();
+        self.session_command(SessionCommand::Metadata { rows });
     }
 
     fn move_menu_selection(&mut self, delta: isize, height: usize) {
@@ -3256,21 +3206,10 @@ impl Ui {
     }
 
     fn clear_playlist(&mut self) {
-        self.workspace_jobs.clear();
-        self.folder_generation = self.folder_generation.wrapping_add(1);
-        self.folder_play_pending.clear();
-        self.player.stop();
-        self.playing = None;
-        self.tracks.clear();
-        self.auto_fit_cache = None;
-        self.order.clear_tracks();
-        self.radio.cancel_waiting();
-        self.selected_tracks.clear();
-        self.selection_anchor = None;
+        self.session_command(SessionCommand::Clear);
         self.selected[2] = 0;
         self.offsets[2] = 0;
-        self.session_dirty = true;
-        self.status = "Playlist cleared".to_owned();
+        self.status = "Playlist cleared".into();
     }
 
     fn show_info(&mut self) {
@@ -3479,7 +3418,9 @@ impl Ui {
                 self.remote_path.clear();
                 let radio_scope_changed = self.browse_path != location;
                 self.browse_path = location;
-                if self.radio_enabled && radio_scope_changed { self.start_radio(false); }
+                if self.radio_enabled && radio_scope_changed {
+                    self.start_radio(false);
+                }
                 self.root_items = items;
                 self.expanded.clear();
                 self.children.clear();
@@ -3615,20 +3556,7 @@ impl Ui {
                         Err(error) => self.status = error,
                     }
                 }
-                RemoteResponse::Collect(generation, folder_generation, path, settings, result) => {
-                    if generation != self.remote_generation
-                        || folder_generation != self.folder_generation
-                    {
-                        continue;
-                    }
-                    let tracks = result.and_then(|files| {
-                        files
-                            .into_iter()
-                            .map(|file| remote_track(&settings, file))
-                            .collect()
-                    });
-                    self.accept_folder_result(path, tracks);
-                }
+
                 RemoteResponse::SearchProgress(
                     generation,
                     search_generation,
@@ -3688,41 +3616,6 @@ impl Ui {
                             )
                         }
                         Err(error) if error == "Search superseded" => {}
-                        Err(error) => self.status = error,
-                    }
-                }
-                RemoteResponse::AddTracks(
-                    generation,
-                    folder_generation,
-                    settings,
-                    play,
-                    result,
-                ) => {
-                    if generation != self.remote_generation
-                        || folder_generation != self.folder_generation
-                    {
-                        continue;
-                    }
-                    match result.and_then(|files| {
-                        files
-                            .into_iter()
-                            .map(|file| remote_track(&settings, file))
-                            .collect::<Result<Vec<_>, _>>()
-                    }) {
-                        Ok(tracks) => {
-                            let count = tracks.len();
-                            let first = self.tracks.len();
-                            self.tracks.extend(tracks);
-                            self.order_tracks_changed();
-                            if count > 0 {
-                                self.selected[2] = first;
-                                self.select_track(first, false, false);
-                                self.status = format!("Added {count} track(s)");
-                                if play {
-                                    self.play_selected();
-                                }
-                            }
-                        }
                         Err(error) => self.status = error,
                     }
                 }
@@ -3855,7 +3748,10 @@ impl Ui {
                 }
             }
             push(
-                hit.hierarchy.parent().unwrap_or(root.as_path()).to_path_buf(),
+                hit.hierarchy
+                    .parent()
+                    .unwrap_or(root.as_path())
+                    .to_path_buf(),
                 hit.item.clone(),
                 &mut buckets,
                 &mut seen,
@@ -4152,16 +4048,31 @@ impl Ui {
     }
 
     fn enqueue_selected_lists(&mut self, play: bool) {
-        let selected = self.selected_list_indices();
-        let mut last_start = None;
-        for index in selected {
-            last_start = Some(self.tracks.len());
-            self.enqueue_list(index);
+        let mut entries = Vec::new();
+        for index in self.selected_list_indices() {
+            let id = self.lists[index].0;
+            let result = if id == 0 {
+                self.library.db().starred_entries()
+            } else {
+                self.library.db().playlist_entries(id)
+            };
+            match result {
+                Ok(rows) => entries.extend(rows.into_iter().map(kog_server::api::entry_json)),
+                Err(error) => {
+                    self.status = error;
+                    return;
+                }
+            }
         }
-        if play && let Some(start) = last_start.filter(|start| *start < self.tracks.len()) {
-            self.selected[2] = start;
-            self.play_selected();
-        }
+        self.session_command(SessionCommand::Expand {
+            scope: "local".into(),
+            entries,
+            action: if play {
+                QueueAction::PlayNow
+            } else {
+                QueueAction::AddToQueue
+            },
+        });
     }
 
     fn enqueue_list(&mut self, index: usize) {
@@ -4174,171 +4085,68 @@ impl Ui {
             self.library.db().playlist_entries(*id)
         };
         match result {
-            Ok(entries) => {
-                let count = entries.len();
-                self.tracks
-                    .extend(entries.into_iter().map(track_from_entry));
-                self.order_tracks_changed();
-                self.status = format!("Added {count} tracks to the playlist");
-            }
+            Ok(entries) => self.session_command(SessionCommand::Expand {
+                scope: "local".into(),
+                entries: entries
+                    .into_iter()
+                    .map(kog_server::api::entry_json)
+                    .collect(),
+                action: QueueAction::AddToQueue,
+            }),
             Err(error) => self.status = error,
         }
     }
 
     fn enqueue_folder(&mut self, path: PathBuf) {
-        if self.remote_active {
-            let Some(settings) = self.remote_connection.clone() else {
-                self.status = "Connect to a server first".to_owned();
-                return;
-            };
-            if self
-                .remote_requests
-                .send(RemoteCommand::Collect(
-                    self.remote_generation,
-                    self.folder_generation,
-                    settings,
-                    path.clone(),
-                    self.search_query.clone(),
-                ))
-                .is_ok()
-            {
-                self.status = format!("Adding tracks from {}…", path.display());
-            } else {
-                self.status = "Remote browser worker is unavailable".to_owned();
-            }
-            return;
-        }
-        if self
-            .folder_requests
-            .send((self.folder_generation, path.clone(),
-                kog_audio::library_policy::TreeFilter::new(&self.search_query,
-                    self.search_root.clone().or_else(|| self.library.root()).unwrap_or_default())))
-            .is_ok()
-        {
-            self.status = format!("Adding tracks from {}…", path.display());
+        let scope = if self.remote_active {
+            self.remote_scope()
         } else {
-            self.status = "Folder scanner is unavailable".to_owned();
-        }
+            "local".into()
+        };
+        self.session_command(SessionCommand::Collect {
+            scope,
+            path: path.to_string_lossy().into_owned(),
+            query: self.search_query.clone(),
+            root: self
+                .search_root
+                .clone()
+                .or_else(|| self.library.root())
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
+            action: QueueAction::AddToQueue,
+        });
     }
 
     fn poll_folders(&mut self) {
-        while let Ok((generation, path, result)) = self.folder_results.try_recv() {
-            if generation != self.folder_generation {
-                continue;
-            }
-            self.accept_folder_result(path, result);
-        }
-    }
-
-    fn accept_folder_result(&mut self, path: PathBuf, result: Result<Vec<Track>, String>) {
-        let play_when_loaded = self.folder_play_pending.remove(&path);
-        match result {
-            Ok(tracks) => {
-                let count = tracks.len();
-                let first = self.tracks.len();
-                self.tracks.extend(tracks);
-                self.order_tracks_changed();
-                self.status = format!("Added {count} tracks from folder");
-                if count > 0 {
-                    // The folder scan finishes after the tree action returns.
-                    // Reveal its first new row instead of leaving the pane
-                    // parked on the old selection above the appended tracks.
-                    self.playlist_query.clear();
-                    self.offsets[2] = first;
-                    self.manual_scroll_selection[2] = None;
-                    self.select_track(first, false, false);
-                    if play_when_loaded {
-                        self.folder_play_pending.clear();
-                        self.play_selected();
-                    }
-                }
-            }
-            Err(error) => self.status = error,
-        }
+        self.poll_session_ports();
     }
 
     fn add_selected(&mut self, play: bool) {
         self.add_selected_with_remote_play(play, play);
     }
 
-    fn add_selected_with_remote_play(&mut self, play: bool, play_remote: bool) {
-        let items = self.selected_tree_items();
-        if items.is_empty() {
-            return;
+    fn add_selected_with_remote_play(&mut self, clear: bool, play: bool) {
+        if clear {
+            self.session_command(SessionCommand::Clear);
         }
-        if play {
-            self.folder_generation = self.folder_generation.wrapping_add(1);
-            self.folder_play_pending.clear();
-            self.player.stop();
-            self.playing = None;
-            self.tracks.clear();
-            self.auto_fit_cache = None;
-            self.order.clear_tracks();
-            self.order.clear_tracks();
-            self.selected_tracks.clear();
-            self.session_dirty = true;
-        }
-        let first = self.tracks.len();
-        let mut folders = Vec::new();
-        let mut remote_files = Vec::new();
-        let root = self.library.root();
-        for item in items {
-            match item {
-                Item::Parent(_) => {}
-                Item::Track(track) => {
-                    if track.entry.kind == "remote" {
-                        if let Some(file) =
-                            RemoteFile::from_stream_url(track.name, &track.entry.path)
-                        {
-                            remote_files.push(file);
-                        }
-                    } else {
-                        self.tracks
-                            .extend(expand_track(&self.decoders, root.as_deref(), track));
-                    }
-                }
-                Item::Directory(_, path) => {
-                    self.enqueue_folder(path.clone());
-                    folders.push(path);
-                }
-            }
-        }
-        let added = self.tracks.len() - first;
-        if added > 0 {
-            self.order_tracks_changed();
-            self.selected[2] = first;
-            self.select_track(first, false, false);
-            self.status = format!("Added {added} track(s)");
-        }
-        if play && added == 0 {
-            if remote_files.is_empty() {
-                self.folder_play_pending.extend(folders);
-            }
-        }
-        if play && added > 0 {
-            self.play_selected();
-        }
-        if !remote_files.is_empty() {
-            let Some(settings) = self.remote_connection.clone() else {
-                self.status = "Connect to a server first".to_owned();
-                return;
-            };
-            if self
-                .remote_requests
-                .send(RemoteCommand::AddTracks(
-                    self.remote_generation,
-                    self.folder_generation,
-                    settings,
-                    remote_files,
-                    play_remote && added == 0,
-                ))
-                .is_ok()
-            {
-                self.status = "Expanding remote tracks…".to_owned();
+        let entries=self.selected_tree_items().into_iter().filter_map(|item|match item {
+            Item::Parent(_)=>None,Item::Track(track)=>Some(track.entry()),Item::Directory(_,path)=>Some(serde_json::json!({"scan_path":path.to_string_lossy(),"scan_query":self.search_query,"scan_root":self.search_root.clone().or_else(||self.library.root()).unwrap_or_default().to_string_lossy()})),
+        }).collect();
+        let scope = if self.remote_active {
+            self.remote_scope()
+        } else {
+            "local".into()
+        };
+        self.session_command(SessionCommand::Expand {
+            scope,
+            entries,
+            action: if play {
+                QueueAction::PlayNow
             } else {
-                self.status = "Remote browser worker is unavailable".to_owned();
-            }
-        }
+                QueueAction::AddToQueue
+            },
+        });
     }
 
     fn open_selected(&mut self) {
@@ -4360,191 +4168,75 @@ impl Ui {
     }
 
     fn activate_selected(&mut self) {
-        match AppSettings::load().opening_files_behavior {
-            OpeningFilesBehavior::ClearAndPlay => self.add_selected(true),
-            OpeningFilesBehavior::Enqueue => self.add_selected(false),
-            OpeningFilesBehavior::EnqueueAndPlay => {
-                let first = self.tracks.len();
-                let folders: Vec<_> = self
-                    .selected_tree_items()
-                    .into_iter()
-                    .filter_map(|item| match item {
-                        Item::Parent(_) => None,
-                        Item::Directory(_, path) => Some(path),
-                        Item::Track(_) => None,
-                    })
-                    .collect();
-                self.add_selected_with_remote_play(false, true);
-                if first < self.tracks.len() {
-                    self.selected[2] = first;
-                    self.play_selected();
-                } else {
-                    self.folder_play_pending.extend(folders);
-                }
-            }
-        }
+        let behavior = AppSettings::load().opening_files_behavior;
+        self.add_selected_with_remote_play(behavior.clears_playlist(), behavior.starts_playback());
     }
 
     fn activate_queue_selected(&mut self) {
-        use kog_audio::playback_order::selection::{activate, Activation};
-        match activate(self.selected[2], self.playing, self.tracks.len()) {
-            Some(Activation::TogglePlayback) => self.play_pause(),
-            Some(Activation::Play { .. }) => self.play_selected(),
-            None => (),
-        }
+        self.session_command(SessionCommand::Activate {
+            index: self.selected[2],
+        });
     }
 
     fn play_selected(&mut self) {
-        self.order.cancel_navigation();
-        self.radio.cancel_waiting();
-        self.try_play_selected();
+        self.session_command(SessionCommand::Play {
+            index: self.selected[2],
+        });
     }
 
-    fn try_play_selected(&mut self) -> bool {
-        let index = self.selected[2];
-        let Some(track) = self.tracks.get(index) else {
-            return false;
-        };
-        let entry = match PlaylistEntry::try_from(&track.entry) {
-            Ok(entry) => entry,
-            Err(error) => {
-                self.status = error;
-                return false;
+    fn next(&mut self, ended: bool) {
+        if ended {
+            if let Some(token) = self.session.snapshot().output_token.cloned() {
+                self.session_command(SessionCommand::Output {
+                    token,
+                    event: OutputEvent::Ended,
+                });
             }
-        };
-        // The decoder registry holds any extracted archive files alive while
-        // this playback engine plays them.
-        match kog_audio::streaming::resolve_entry(
-            &entry,
-            &self.decoders,
-            &kog_server::service::scratch_root().join("tui"),
-        )
-        .and_then(|source| self.player.play_source(&source).map(|_| ()))
-        {
-            Ok(()) => {
-                self.order.started(self.playing, index);
-                self.playing = Some(index);
-                self.auto_fit_cache = None;
-                self.status = "Playing".to_owned();
-                true
-            }
-            Err(error) => {
-                self.player.stop();
-                self.status = error;
-                false
-            }
+        } else {
+            self.navigate(NavigationEvent::Next);
         }
     }
 
-    fn next(&mut self, honor_repeat_one: bool) {
-        self.navigate(if honor_repeat_one { NavigationEvent::Ended } else { NavigationEvent::Next });
-    }
-
-    fn navigate(&mut self, mut event: NavigationEvent) {
-        let tracks = self.order_tracks();
-        loop {
-            match self.order.navigate(&tracks, self.playing, event) {
-                PlaybackDecision::Play(index) => {
-                    self.selected[2] = index;
-                    if self.try_play_selected() { return; }
-                    event = NavigationEvent::Failed;
-                }
-                PlaybackDecision::Radio => { self.append_next_radio(); return; }
-                PlaybackDecision::Stop => {
-                    self.player.stop();
-                    self.radio.cancel_waiting();
-                    self.order.cancel_navigation();
-                    self.auto_fit_cache = None;
-                    return;
-                }
-            }
-        }
+    fn navigate(&mut self, event: NavigationEvent) {
+        self.session_command(SessionCommand::Navigate { event });
     }
 
     fn play_pause(&mut self) {
-        if self.radio.waiting() { self.radio.cancel_waiting(); self.player.stop(); return; }
-        if self.player.state() == PlaybackState::Stopped {
-            if self.tracks.is_empty() && self.radio_enabled {
-                self.append_next_radio();
-            } else {
-                self.selected[2] = self.playing.unwrap_or(0).min(self.tracks.len().saturating_sub(1));
-                self.play_selected();
-            }
-        } else {
-            self.player.play_pause();
-        }
+        self.session_command(SessionCommand::Toggle);
     }
 
-    fn previous(&mut self) { self.navigate(NavigationEvent::Previous); }
+    fn previous(&mut self) {
+        self.navigate(NavigationEvent::Previous);
+    }
 
     fn cycle_repeat(&mut self) {
-        self.order.set_repeat_mode(self.order.repeat_mode().next());
-        self.sync_order_modes();
+        self.session_command(SessionCommand::CycleRepeat);
         self.status = format!("Repeat: {}", self.repeat_mode.setting_value());
     }
 
     fn cycle_shuffle(&mut self) {
-        self.order.set_shuffle_mode(self.order.shuffle_mode().next(), &self.order_tracks(), self.playing);
-        self.sync_order_modes();
+        self.session_command(SessionCommand::CycleShuffle);
         self.status = format!("Shuffle: {}", self.shuffle_mode.setting_value());
     }
 
     fn remove_selected(&mut self) {
-        if self.tracks.is_empty() {
-            return;
-        }
-        let mut indices: Vec<_> = self
-            .selected_tracks
-            .iter()
-            .copied()
-            .filter(|&index| index < self.tracks.len())
-            .collect();
-        if indices.is_empty() {
-            indices.push(self.selected[2].min(self.tracks.len() - 1));
-        }
-        indices.sort_unstable();
-        let first = indices[0];
-        let remap = |old: usize| {
-            if indices.binary_search(&old).is_ok() {
-                None
-            } else {
-                Some(old - indices.iter().filter(|&&index| index < old).count())
-            }
-        };
-        self.order.remap_tracks(&(0..self.tracks.len()).map(remap).collect::<Vec<_>>());
-        let was_playing = self
-            .playing
-            .is_some_and(|index| indices.binary_search(&index).is_ok());
-        if was_playing {
-            self.player.stop();
-            self.playing = None;
-        } else if let Some(playing) = self.playing {
-            self.playing = Some(playing - indices.iter().filter(|&&index| index < playing).count());
-        }
-        for index in indices.iter().rev() {
-            self.tracks.remove(*index);
-        }
+        let indices = self.selected_track_indices();
+        let first = indices.first().copied().unwrap_or_default();
+        self.session_command(SessionCommand::Remove { indices });
         self.selected[2] = first.min(self.tracks.len().saturating_sub(1));
-        self.selected_tracks.clear();
-        self.selection_anchor = None;
-        if !self.tracks.is_empty() {
-            self.select_track(self.selected[2], false, false);
-        }
-        self.order_tracks_changed();
-        self.status = format!("Removed {} track(s)", indices.len());
     }
 
     fn select_track(&mut self, index: usize, shift: bool, ctrl: bool) {
-        use kog_audio::playback_order::selection::{Command, Gesture, Selection};
-        if index >= self.tracks.len() { return; }
-        let mut state = Selection { indices:self.selected_tracks.iter().copied().collect(), anchor:self.selection_anchor };
-        let gesture = match (shift,ctrl) {
-            (true,true)=>Gesture::AddRange, (true,false)=>Gesture::Range,
-            (false,true)=>Gesture::Toggle, _=>Gesture::Replace,
+        use kog_audio::playback_order::selection::{Command, Gesture};
+        let gesture = match (shift, ctrl) {
+            (true, true) => Gesture::AddRange,
+            (true, false) => Gesture::Range,
+            (false, true) => Gesture::Toggle,
+            _ => Gesture::Replace,
         };
-        state.apply(Command::Choose { index,gesture }, self.tracks.len(), &self.visible_tracks());
-        self.selected_tracks = state.indices.into_iter().collect();
-        self.selection_anchor = state.anchor;
+        self.session_command(SessionCommand::Select {
+            command: Command::Choose { index, gesture },
+        });
         self.selected[2] = index;
     }
 
@@ -4595,7 +4287,12 @@ impl Ui {
             Focus::Tracks => {
                 let anchor = self.selection_anchor.unwrap_or(self.selected[2]);
                 self.move_selection(delta, page);
-                self.selection_anchor = Some(anchor);
+                self.session_command(SessionCommand::Select {
+                    command: kog_audio::playback_order::selection::Command::Set {
+                        indices: self.selected_tracks.iter().copied().collect(),
+                        anchor: Some(anchor),
+                    },
+                });
                 self.select_track(self.selected[2], true, false);
             }
         }
@@ -4605,26 +4302,10 @@ impl Ui {
         if from == to || from >= self.tracks.len() || to >= self.tracks.len() {
             return;
         }
-        let remap = |index: usize| -> usize {
-            if index == from {
-                to
-            } else if from < to && index > from && index <= to {
-                index - 1
-            } else if to < from && index >= to && index < from {
-                index + 1
-            } else {
-                index
-            }
-        };
-        let track = self.tracks.remove(from);
-        self.tracks.insert(to, track);
-        self.playing = self.playing.map(remap);
-        self.order.remap_tracks(&(0..self.tracks.len()).map(|index| Some(remap(index))).collect::<Vec<_>>());
-        self.selected_tracks = self.selected_tracks.iter().copied().map(remap).collect();
-        self.selected[2] = remap(self.selected[2]);
-        self.selection_anchor = self.selection_anchor.map(remap);
-        self.order_tracks_changed();
-        self.status = format!("Moved track {} to {}", from + 1, to + 1);
+        self.session_command(SessionCommand::Move {
+            indices: vec![from],
+            target: if from < to { to + 1 } else { to },
+        });
     }
 
     fn toggle_star(&mut self) {
@@ -4777,7 +4458,9 @@ impl Ui {
     }
 
     fn refresh_radio_blacklist(&mut self) {
-        if self.radio_enabled { self.radio.refresh(); }
+        if self.radio_enabled {
+            self.start_radio(false);
+        }
     }
 
     fn show_blacklist(&mut self) {
@@ -4886,6 +4569,7 @@ impl Ui {
                 (state != PlaybackState::Stopped).then_some((index, self.player.position(), state))
             });
         if self.tag_resume.is_some() {
+            self.report_session_progress();
             self.player.stop();
         }
         self.tag_busy = true;
@@ -4954,19 +4638,11 @@ impl Ui {
                     if !paths.is_empty() {
                         self.auto_fit_cache = None;
                     }
-                    if !paths.is_empty() && self.shuffle_mode == ShuffleMode::Albums {
-                        let tracks = self.order_tracks();
-                        self.order.album_metadata_changed(&tracks, self.playing);
+                    if !paths.is_empty() {
+                        self.refresh_session_metadata();
                     }
-                    if let Some((index, position, state)) = self.tag_resume.take() {
-                        let selected = self.selected[2];
-                        self.selected[2] = index;
-                        self.play_selected();
-                        let _ = self.player.seek(position);
-                        if state == PlaybackState::Paused {
-                            self.player.play_pause();
-                        }
-                        self.selected[2] = selected;
+                    if self.tag_resume.take().is_some() {
+                        self.session_command(SessionCommand::ReloadOutput);
                     }
                     self.status = error
                         .unwrap_or_else(|| format!("Updated tags for {} file(s)", paths.len()));
@@ -5049,7 +4725,12 @@ impl Ui {
                         })
                         .collect();
                     if !doomed.is_empty() {
-                        self.selected_tracks = doomed.into_iter().collect();
+                        self.session_command(SessionCommand::Select {
+                            command: kog_audio::playback_order::selection::Command::Set {
+                                indices: doomed,
+                                anchor: None,
+                            },
+                        });
                         self.remove_selected();
                     }
                     self.status = format!("Moved {} to trash", path.display());
@@ -5143,7 +4824,9 @@ impl Ui {
                 }
             }
             PromptKind::PlaylistSearch => {
-                self.playlist_query = value.to_lowercase();
+                self.session_command(SessionCommand::Filter {
+                    query: value.to_lowercase(),
+                });
                 self.offsets[2] = 0;
                 if let Some(first) = self.visible_tracks().first() {
                     self.selected[2] = *first;
@@ -5215,7 +4898,10 @@ impl Ui {
                 self.search_query = value.to_owned();
                 self.search_done = false;
                 self.clear_search_tree();
-                self.search_root = self.library.root().and_then(|root| root.canonicalize().ok());
+                self.search_root = self
+                    .library
+                    .root()
+                    .and_then(|root| root.canonicalize().ok());
                 self.items.clear();
                 self.root_items.clear();
                 self.children.clear();
@@ -5295,7 +4981,12 @@ impl Ui {
                 let result = self.library.db().rename_playlist(id, value);
                 match result {
                     Ok(()) => {
-                        self.workspace_command(kog_audio::playback_order::workspace::Command::Renamed {key:format!("local:{id}"),name:value.into()});
+                        self.workspace_command(
+                            kog_audio::playback_order::workspace::Command::Renamed {
+                                key: format!("local:{id}"),
+                                name: value.into(),
+                            },
+                        );
                         self.reload_lists();
                         self.status = format!("Renamed to {value}");
                     }
@@ -5317,7 +5008,14 @@ impl Ui {
                 for id in ids {
                     let result = self.library.db().delete_playlist(id);
                     match result {
-                        Ok(()) => { self.workspace_command(kog_audio::playback_order::workspace::Command::Deleted { key:format!("local:{id}") }); deleted += 1; },
+                        Ok(()) => {
+                            self.workspace_command(
+                                kog_audio::playback_order::workspace::Command::Deleted {
+                                    key: format!("local:{id}"),
+                                },
+                            );
+                            deleted += 1;
+                        }
                         Err(error) => {
                             self.status = error;
                             break;
@@ -5339,7 +5037,9 @@ impl Ui {
                 self.run_file_search(value);
             }
             PromptKind::PlaylistSearch => {
-                self.playlist_query = value.to_lowercase();
+                self.session_command(SessionCommand::Filter {
+                    query: value.to_lowercase(),
+                });
                 self.offsets[2] = 0;
                 if let Some(first) = self.visible_tracks().first() {
                     self.selected[2] = *first;
@@ -5357,8 +5057,11 @@ impl Ui {
                         fragment: None,
                     });
                     self.status = format!("Added {}", track.name);
-                    self.tracks.push(track);
-                    self.order_tracks_changed();
+                    self.session_command(SessionCommand::Expand {
+                        scope: "local".into(),
+                        entries: vec![track.entry()],
+                        action: QueueAction::AddToQueue,
+                    });
                 } else {
                     self.status = format!("Cannot add {}", path.display());
                 }
@@ -5374,8 +5077,11 @@ impl Ui {
                         fragment: None,
                     });
                     self.status = format!("Added {}", track.name);
-                    self.tracks.push(track);
-                    self.order_tracks_changed();
+                    self.session_command(SessionCommand::Expand {
+                        scope: "local".into(),
+                        entries: vec![track.entry()],
+                        action: QueueAction::AddToQueue,
+                    });
                 }
             }
             PromptKind::SavePlaylist | PromptKind::SaveSelection => {
@@ -5478,12 +5184,14 @@ impl Ui {
             PromptKind::Volume => match value.parse::<u8>() {
                 Ok(percent) if percent <= 100 => {
                     self.volume = f32::from(percent) / 100.0;
-                    self.player.set_volume(self.volume);
+                    self.session_command(SessionCommand::Volume {
+                        value: f64::from(self.volume),
+                    });
                 }
                 _ => self.status = "Volume must be between 0 and 100".to_owned(),
             },
             PromptKind::SeekPosition => match parse_seek_position(value) {
-                Some(seconds) => match self.player.seek(Duration::from_secs(seconds)) {
+                Some(seconds) => match self.seek_session(seconds as f64) {
                     Ok(()) => {
                         self.status = format!("Seeked to {}:{:02}", seconds / 60, seconds % 60)
                     }
@@ -5579,12 +5287,16 @@ impl Ui {
                 _ => self.status = "Preamp must be between -20 and 20 dB".to_owned(),
             },
             PromptKind::OutputDevice => {
+                self.report_session_progress();
                 if value.eq_ignore_ascii_case("default") {
                     match self.player.switch_output_device(None) {
-                        Ok(()) => match AppSettings::save_output_device(None) {
-                            Ok(()) => self.status = "Using default output".to_owned(),
-                            Err(error) => self.status = error,
-                        },
+                        Ok(()) => {
+                            self.session_command(SessionCommand::ReloadOutput);
+                            match AppSettings::save_output_device(None) {
+                                Ok(()) => self.status = "Using default output".to_owned(),
+                                Err(error) => self.status = error,
+                            }
+                        }
                         Err(error) => self.status = error,
                     }
                 } else {
@@ -5595,6 +5307,7 @@ impl Ui {
                             }) {
                                 match self.player.switch_output_device(Some(device.id.clone())) {
                                     Ok(()) => {
+                                        self.session_command(SessionCommand::ReloadOutput);
                                         let preference = OutputDevicePreference {
                                             id: device.id,
                                             name: device.name.clone(),
@@ -6025,7 +5738,10 @@ impl Ui {
         if done {
             self.search_done = true;
             self.status = if progress.limited {
-                format!("{} matches for {} · narrow your search for more", self.search_seen, self.search_query)
+                format!(
+                    "{} matches for {} · narrow your search for more",
+                    self.search_seen, self.search_query
+                )
             } else {
                 format!("{} matches for {}", self.search_seen, self.search_query)
             };
@@ -6090,29 +5806,7 @@ impl Ui {
     }
 
     fn visible_tracks(&self) -> Vec<usize> {
-        if self.playlist_query.is_empty() {
-            return (0..self.tracks.len()).collect();
-        }
-        self.tracks
-            .iter()
-            .enumerate()
-            .filter_map(|(index, track)| {
-                if !self.metadata_ready(track) {
-                    return None;
-                }
-                let metadata = self.metadata_for(track);
-                let fields = [
-                    self.title_for(track), metadata.map_or(String::new(), |meta| meta.artist.clone()),
-                    metadata.map_or(String::new(), |meta| meta.album.clone()),
-                    metadata.map_or(String::new(), |meta| meta.album_artist.clone()),
-                    metadata.map_or(String::new(), |meta| meta.composer.clone()),
-                    metadata.map_or(String::new(), |meta| meta.genre.clone()),
-                    self.column_value(index, track, "filename"),
-                ];
-                let matches = kog_audio::playback_order::sort::matches_query(&fields.iter().map(String::as_str).collect::<Vec<_>>(), &self.playlist_query);
-                matches.then_some(index)
-            })
-            .collect()
+        self.session.visible().to_vec()
     }
 
     fn pane_index(&self) -> usize {
@@ -6220,7 +5914,10 @@ impl Ui {
                 Item::Directory(name, _) => name.clone(),
                 Item::Track(track) => track.name.clone(),
             }),
-            Focus::Playlists => self.lists.get(self.selected[0]).map(|(_, name)| name.clone()),
+            Focus::Playlists => self
+                .lists
+                .get(self.selected[0])
+                .map(|(_, name)| name.clone()),
             Focus::Tracks => self.tracks.get(self.selected[2]).map(|track| {
                 if let Some(column) = self
                     .keyboard_column
@@ -6400,14 +6097,21 @@ impl Ui {
 
     fn key(&mut self, key: Key, size: (usize, usize)) -> bool {
         self.hover_position = None;
-        if self.workspace.snapshot().pending_close.is_some() { self.workspace_key(key, size); return true; }
+        if self
+            .session
+            .workspace_model()
+            .snapshot()
+            .pending_close
+            .is_some()
+        {
+            self.workspace_key(key, size);
+            return true;
+        }
         if self.exit_confirm_open {
             match key {
-                Key::Esc
-                | Key::Char('n')
-                | Key::Char('N')
-                | Key::Char('s')
-                | Key::Char('S') => self.exit_confirm_open = false,
+                Key::Esc | Key::Char('n') | Key::Char('N') | Key::Char('s') | Key::Char('S') => {
+                    self.exit_confirm_open = false
+                }
                 Key::Char('y') | Key::Char('Y') | Key::Char('e') | Key::Char('E') => {
                     self.exit_confirm_open = false;
                     self.exit_requested = true;
@@ -6558,7 +6262,9 @@ impl Ui {
                             self.browse(None);
                         }
                     } else if kind == PromptKind::PlaylistSearch {
-                        self.playlist_query.clear();
+                        self.session_command(SessionCommand::Filter {
+                            query: String::new(),
+                        });
                     } else if kind == PromptKind::TrashSelected {
                         self.pending_delete_paths.clear();
                     } else if matches!(kind, PromptKind::TagField(_) | PromptKind::TagArtwork) {
@@ -6717,7 +6423,9 @@ impl Ui {
             }
             return true;
         }
-        if self.workspace_key(key, size) { return true; }
+        if self.workspace_key(key, size) {
+            return true;
+        }
         if let Some(column) = self.keyboard_column {
             match key {
                 Key::Esc | Key::Char('q') => self.request_exit(),
@@ -6920,7 +6628,9 @@ impl Ui {
                 self.move_track(from, to);
             }
             Key::CtrlA if self.focus == Focus::Tracks => {
-                self.selected_tracks = self.visible_tracks().into_iter().collect();
+                self.session_command(SessionCommand::Select {
+                    command: kog_audio::playback_order::selection::Command::All,
+                });
                 self.status = format!("Selected {} tracks", self.selected_tracks.len());
             }
             Key::CtrlA if self.focus == Focus::Playlists => {
@@ -6960,7 +6670,9 @@ impl Ui {
                 self.columns
                     .scroll_by(8, size.0.saturating_sub(layout.playlist_left()));
             }
-            Key::Enter if self.focus == Focus::Playlists => self.open_playlist_tab(self.selected[0]),
+            Key::Enter if self.focus == Focus::Playlists => {
+                self.open_playlist_tab(self.selected[0])
+            }
             Key::Enter if self.focus == Focus::Tracks => self.activate_queue_selected(),
             Key::Char('a') if self.focus == Focus::Library => self.add_selected(false),
             Key::Char('n') if self.focus == Focus::Playlists => {
@@ -7003,9 +6715,7 @@ impl Ui {
             Key::Char('e') if self.focus == Focus::Tracks => self.open_tag_editor(),
             Key::Char(' ') => self.play_pause(),
             Key::Char('s') => {
-                self.player.stop();
-                self.radio.cancel_waiting();
-                self.order.cancel_navigation();
+                self.session_command(SessionCommand::Stop);
             }
             Key::Char('>') => self.next(false),
             Key::Char('<') => self.previous(),
@@ -7023,23 +6733,21 @@ impl Ui {
             Key::Char('X') if self.focus == Focus::Tracks => self.toggle_selected_stop_after(),
             Key::Char('+') | Key::Char('=') => {
                 self.volume = (self.volume + 0.05).min(1.0);
-                self.player.set_volume(self.volume);
+                self.session_command(SessionCommand::Volume {
+                    value: f64::from(self.volume),
+                });
             }
             Key::Char('-') => {
                 self.volume = (self.volume - 0.05).max(0.0);
-                self.player.set_volume(self.volume);
+                self.session_command(SessionCommand::Volume {
+                    value: f64::from(self.volume),
+                });
             }
             Key::Char('h') if self.focus == Focus::Tracks || self.compact_mode => {
-                let _ = self.player.seek(
-                    self.player
-                        .position()
-                        .saturating_sub(Duration::from_secs(10)),
-                );
+                let _ = self.seek_session((self.player.position().as_secs_f64() - 10.0).max(0.0));
             }
             Key::Char('l') if self.focus == Focus::Tracks || self.compact_mode => {
-                let _ = self
-                    .player
-                    .seek(self.player.position() + Duration::from_secs(10));
+                let _ = self.seek_session(self.player.position().as_secs_f64() + 10.0);
             }
             _ => {}
         }
@@ -7080,13 +6788,9 @@ impl Ui {
         if self.exit_confirm_open {
             if button & 32 == 0 && (button & 0b1100_0000) != 64 && button & 3 == 0 {
                 let dialog = ExitDialog::new(size);
-                if y == dialog.y + 4
-                    && (dialog.stay_x()..dialog.stay_x() + 6).contains(&x)
-                {
+                if y == dialog.y + 4 && (dialog.stay_x()..dialog.stay_x() + 6).contains(&x) {
                     self.exit_confirm_open = false;
-                } else if y == dialog.y + 4
-                    && (dialog.exit_x()..dialog.exit_x() + 6).contains(&x)
-                {
+                } else if y == dialog.y + 4 && (dialog.exit_x()..dialog.exit_x() + 6).contains(&x) {
                     self.exit_confirm_open = false;
                     self.exit_requested = true;
                 } else if x < dialog.x
@@ -7100,7 +6804,13 @@ impl Ui {
             return;
         }
         let layout = self.layout(size);
-        if self.modal.is_none() && !self.menu_open && self.prompt.is_none() && self.workspace_mouse(button, x, y, size) { return; }
+        if self.modal.is_none()
+            && !self.menu_open
+            && self.prompt.is_none()
+            && self.workspace_mouse(button, x, y, size)
+        {
+            return;
+        }
         if self.modal.is_some() {
             if self.visualizer_open {
                 if button & 32 == 0 && (button & 0b1100_0000) != 64 && button & 3 == 0 {
@@ -7192,13 +6902,10 @@ impl Ui {
         if let Some(from) = self.track_drag
             && button & 32 != 0
         {
-            let right_edge = size.0.saturating_sub(usize::from(
-                self.track_scrollbar(&layout, size).is_some(),
-            ));
-            if x >= layout.playlist_left()
-                && x < right_edge
-                && y >= 2
-                && y < 2 + layout.track_page
+            let right_edge = size
+                .0
+                .saturating_sub(usize::from(self.track_scrollbar(&layout, size).is_some()));
+            if x >= layout.playlist_left() && x < right_edge && y >= 2 && y < 2 + layout.track_page
             {
                 let visible = self.visible_tracks();
                 if let Some(&to) = visible.get(self.offsets[2] + y - 2) {
@@ -7211,7 +6918,11 @@ impl Ui {
         if (button & 0b1100_0000) == 64 {
             let wheel = button & 3;
             if let Some((pane, bar)) = self.vertical_scrollbar_at(&layout, size, x, y) {
-                self.focus = if pane == 1 { Focus::Library } else { Focus::Tracks };
+                self.focus = if pane == 1 {
+                    Focus::Library
+                } else {
+                    Focus::Tracks
+                };
                 self.offsets[pane] = self.offsets[pane]
                     .saturating_add_signed(if wheel & 1 == 0 { 3 } else { -3 })
                     .min(bar.max_scroll);
@@ -7467,7 +7178,11 @@ impl Ui {
             return;
         }
         if let Some((pane, bar)) = self.vertical_scrollbar_at(&layout, size, x, y) {
-            self.focus = if pane == 1 { Focus::Library } else { Focus::Tracks };
+            self.focus = if pane == 1 {
+                Focus::Library
+            } else {
+                Focus::Tracks
+            };
             self.manual_scroll_selection[pane] = Some(self.selected[pane]);
             if y == bar.top {
                 self.offsets[pane] = self.offsets[pane].saturating_sub(1);
@@ -7519,10 +7234,7 @@ impl Ui {
         if y == 0 {
             let search_x = (size.0 / 2).saturating_sub(17).max(14);
             let search_width = size.0.saturating_sub(search_x + 7).min(36);
-            if button & 3 == 0
-                && search_width >= 6
-                && x == search_x + search_width - 2
-            {
+            if button & 3 == 0 && search_width >= 6 && x == search_x + search_width - 2 {
                 let kind = if !layout.show_sidebar && self.focus == Focus::Library {
                     PromptKind::Search
                 } else {
@@ -7618,7 +7330,7 @@ impl Ui {
                     let (_, bar_left, bar_width) = progress_bar_geometry(size.0, &clock_label);
                     if (bar_left..bar_left + bar_width).contains(&x) {
                         let fraction = (x - bar_left) as f64 / (bar_width - 1) as f64;
-                        let _ = self.player.seek(duration.mul_f64(fraction));
+                        let _ = self.seek_session(duration.as_secs_f64() * fraction);
                     }
                 }
             }
@@ -7652,7 +7364,7 @@ impl Ui {
                         .and_then(|meta| meta.duration);
                     if let Some(duration) = duration.filter(|time| !time.is_zero()) {
                         let fraction = (x - seek_left) as f64 / 25.0;
-                        let _ = self.player.seek(duration.mul_f64(fraction));
+                        let _ = self.seek_session(duration.as_secs_f64() * fraction);
                     }
                 } else if y == card_y + 7 && x >= card_x + 17 {
                     let transport = compact_transport(
@@ -7666,7 +7378,9 @@ impl Ui {
                 } else if y == card_y + 8 && (card_x + 19..card_x + 39).contains(&x) {
                     self.volume = (x - card_x - 19) as f32 / 19.0;
                     self.volume_before_mute = self.volume.max(0.05);
-                    self.player.set_volume(self.volume);
+                    self.session_command(SessionCommand::Volume {
+                        value: f64::from(self.volume),
+                    });
                 }
             } else if y == card_y + 3 && x >= card_x {
                 let transport = compact_transport(
@@ -7752,7 +7466,9 @@ impl Ui {
                     } else {
                         Some((now, 0, index))
                     };
-                    if !modified { self.open_playlist_tab(index); }
+                    if !modified {
+                        self.open_playlist_tab(index);
+                    }
                 }
                 return;
             }
@@ -7834,12 +7550,7 @@ impl Ui {
                     if ranged {
                         self.status = format!("Selected {} tree items", self.selected_tree.len());
                     }
-                    if !modified
-                        && x
-                            <= self.items[index]
-                                .depth
-                                .saturating_mul(2)
-                                .saturating_add(2)
+                    if !modified && x <= self.items[index].depth.saturating_mul(2).saturating_add(2)
                     {
                         if let Some(TreeRow {
                             item: Item::Directory(_, path),
@@ -7910,7 +7621,9 @@ impl Ui {
                     } else {
                         Some((now, 0, index))
                     };
-                    if !modified { self.open_playlist_tab(index); }
+                    if !modified {
+                        self.open_playlist_tab(index);
+                    }
                 }
             }
             return;
@@ -7962,8 +7675,9 @@ impl Ui {
                 && self.columns.positions().any(|(column, start, width)| {
                     self.columns.entries[column].id == "status"
                         && (start + cell_width(PLAYLIST_PLAY)
-                            ..start + (cell_width(PLAYLIST_PLAY) + STATUS_WAVEFORM_WIDTH)
-                                .min(width.saturating_sub(1)))
+                            ..start
+                                + (cell_width(PLAYLIST_PLAY) + STATUS_WAVEFORM_WIDTH)
+                                    .min(width.saturating_sub(1)))
                             .contains(&relative)
                 })
             {
@@ -8179,7 +7893,11 @@ impl Ui {
             .filter_map(|index| self.tracks.get(index))
             .map(|track| track.entry.clone())
             .collect();
-        to_probe.extend(self.tracks[probe_range].iter().map(|track| track.entry.clone()));
+        to_probe.extend(
+            self.tracks[probe_range]
+                .iter()
+                .map(|track| track.entry.clone()),
+        );
         for entry in &to_probe {
             self.request_metadata(entry);
         }
@@ -8388,7 +8106,8 @@ impl Ui {
                                     .is_some_and(|(x, row)| row == y && x < tree_width)
                                 {
                                     hover_labels.label = Some(HoverLabel {
-                                        text: tree_location_name(&path.to_string_lossy()).to_owned(),
+                                        text: tree_location_name(&path.to_string_lossy())
+                                            .to_owned(),
                                     });
                                 }
                                 "  ↑  ..".to_owned()
@@ -8409,12 +8128,7 @@ impl Ui {
                                     name,
                                     name_width,
                                 );
-                                marquee_prefixed(
-                                    &prefix,
-                                    name,
-                                    tree_width,
-                                    marquee_tick,
-                                )
+                                marquee_prefixed(&prefix, name, tree_width, marquee_tick)
                             }
                             Item::Track(track) => {
                                 let prefix = format!("{indent}  {} ", glyph(&track.entry));
@@ -8432,15 +8146,7 @@ impl Ui {
                         }
                     })
                     .unwrap_or_default();
-                paint(
-                    &mut screen,
-                    y + 1,
-                    1,
-                    &label,
-                    tree_width,
-                    surface,
-                    false,
-                );
+                paint(&mut screen, y + 1, 1, &label, tree_width, surface, false);
             }
             if let Some(bar) = tree_scrollbar {
                 paint_vertical_scrollbar(&mut screen, bar);
@@ -8590,7 +8296,8 @@ impl Ui {
                                     .is_some_and(|(x, row)| row == y && x < tree_width)
                                 {
                                     hover_labels.label = Some(HoverLabel {
-                                        text: tree_location_name(&path.to_string_lossy()).to_owned(),
+                                        text: tree_location_name(&path.to_string_lossy())
+                                            .to_owned(),
                                     });
                                 }
                                 "  ↑  ..".to_owned()
@@ -8642,15 +8349,7 @@ impl Ui {
                 } else {
                     Surface::Main
                 };
-                paint(
-                    &mut screen,
-                    y + 1,
-                    1,
-                    &label,
-                    tree_width,
-                    surface,
-                    false,
-                );
+                paint(&mut screen, y + 1, 1, &label, tree_width, surface, false);
             }
             if let Some(bar) = tree_scrollbar {
                 paint_vertical_scrollbar(&mut screen, bar);
@@ -8714,7 +8413,15 @@ impl Ui {
                 } else {
                     Surface::Main
                 };
-                paint(&mut screen, y + 1, right_x, "", content_width, surface, false);
+                paint(
+                    &mut screen,
+                    y + 1,
+                    right_x,
+                    "",
+                    content_width,
+                    surface,
+                    false,
+                );
                 if let Some((index, track)) =
                     index.and_then(|index| self.tracks.get(index).map(|track| (index, track)))
                 {
@@ -9156,11 +8863,7 @@ impl Ui {
                     &mut screen,
                     card_y + 1,
                     card_x + 6,
-                    &marquee_window(
-                        &current,
-                        card_width.saturating_sub(6),
-                        marquee_tick,
-                    ),
+                    &marquee_window(&current, card_width.saturating_sub(6), marquee_tick),
                     card_width.saturating_sub(6),
                     Surface::Main,
                     true,
@@ -9177,11 +8880,7 @@ impl Ui {
                     &mut screen,
                     card_y + 2,
                     card_x + 6,
-                    &marquee_window(
-                        &subtitle,
-                        card_width.saturating_sub(6),
-                        marquee_tick,
-                    ),
+                    &marquee_window(&subtitle, card_width.saturating_sub(6), marquee_tick),
                     card_width.saturating_sub(6),
                     Surface::Muted,
                     false,
@@ -9301,11 +9000,20 @@ impl Ui {
                 icon_x + 1,
                 icon,
                 icon_width,
-                if self.tracks.is_empty() { Surface::Muted } else { Surface::Accent },
+                if self.tracks.is_empty() {
+                    Surface::Muted
+                } else {
+                    Surface::Accent
+                },
                 true,
             );
-            if hover_labels.pointer.is_some_and(|(x, y)| y == clear_row && clear_range.contains(&x)) {
-                hover_labels.label = Some(HoverLabel { text: "Clear Playlist · D".to_owned() });
+            if hover_labels
+                .pointer
+                .is_some_and(|(x, y)| y == clear_row && clear_range.contains(&x))
+            {
+                hover_labels.label = Some(HoverLabel {
+                    text: "Clear Playlist · D".to_owned(),
+                });
             }
         }
         paint(
@@ -10801,7 +10509,11 @@ fn paint_vertical_scrollbar(out: &mut String, bar: VerticalScrollbar) {
             bar.x + 1,
             if thumb { "┃" } else { "│" },
             1,
-            if thumb { Surface::Accent } else { Surface::Header },
+            if thumb {
+                Surface::Accent
+            } else {
+                Surface::Header
+            },
             thumb,
         );
     }
@@ -10829,11 +10541,7 @@ struct Layout {
 }
 impl Layout {
     fn playlist_left(&self) -> usize {
-        if self.show_sidebar {
-            self.first + 1
-        } else {
-            0
-        }
+        if self.show_sidebar { self.first + 1 } else { 0 }
     }
 
     fn new(
@@ -11158,7 +10866,11 @@ fn tooltip_lines(text: &str, width: usize) -> Vec<String> {
                     word_break = byte;
                 }
             }
-            let end = if word_break > 0 { word_break } else { fitting_end };
+            let end = if word_break > 0 {
+                word_break
+            } else {
+                fitting_end
+            };
             if end == 0 {
                 break;
             }
@@ -11185,7 +10897,9 @@ fn draw_hover_tooltip(
     if lines.len() > max_lines {
         lines.truncate(max_lines);
         if let Some(last) = lines.last_mut() {
-            *last = truncate(&format!("{last}…"), content_width).trim_end().to_owned();
+            *last = truncate(&format!("{last}…"), content_width)
+                .trim_end()
+                .to_owned();
         }
     }
     if lines.is_empty() {
@@ -11893,7 +11607,11 @@ fn draw_folder_chooser(
         let icon = if entry.parent { "↰" } else { FOLDER_ICON };
         let prefix = format!(
             "{} {icon} ",
-            if index == chooser.selected { "▸" } else { " " }
+            if index == chooser.selected {
+                "▸"
+            } else {
+                " "
+            }
         );
         let name_width = field_width.saturating_sub(cell_width(&prefix));
         register_hover_label(
@@ -12385,7 +12103,11 @@ pub fn run() -> Result<(), String> {
         let size = terminal.size();
         let live_waveform = ui.player.state() == PlaybackState::Playing
             && !ui.compact_mode
-            && ui.columns.entries.iter().any(|column| column.id == "status" && column.visible);
+            && ui
+                .columns
+                .entries
+                .iter()
+                .any(|column| column.id == "status" && column.visible);
         let animate = ui.visualizer_open || live_waveform;
         let frame_interval = if animate { 66 } else { 150 };
         if size != last_size || last_draw.elapsed() >= Duration::from_millis(frame_interval) {
@@ -12397,6 +12119,7 @@ pub fn run() -> Result<(), String> {
             last_size = size;
             last_draw = Instant::now();
         }
+        ui.report_session_progress();
         if ui.player.finished() {
             ui.next(true);
         }
@@ -12517,7 +12240,10 @@ mod tests {
             browse_parent_path(Path::new("/music/songs.zip/nested")),
             Some(PathBuf::from("/music/songs.zip"))
         );
-        assert_eq!(browse_parent_path(Path::new("/music")), Some(PathBuf::from("/")));
+        assert_eq!(
+            browse_parent_path(Path::new("/music")),
+            Some(PathBuf::from("/"))
+        );
     }
 
     #[test]
@@ -12528,7 +12254,11 @@ mod tests {
         let frame = serde_json::json!({"wave": wave, "spectrum": vec![0.0_f32; 40]}).to_string();
         let glyphs = status_waveform_glyphs([0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 0.5, 0.1]);
         assert_eq!(glyphs.len(), STATUS_WAVEFORM_WIDTH);
-        assert!(glyphs.iter().any(|glyph| ('\u{2801}'..='\u{28ff}').contains(glyph)));
+        assert!(
+            glyphs
+                .iter()
+                .any(|glyph| ('\u{2801}'..='\u{28ff}').contains(glyph))
+        );
         assert_eq!(status_waveform_glyphs([0.0; 8]), vec!['\u{2800}'; 4]);
         assert_eq!(status_waveform_glyphs([0.25; 8]), vec!['\u{28ff}'; 4]);
         let mut status = String::new();
@@ -12541,14 +12271,20 @@ mod tests {
         let mut modal = String::new();
         draw_visualizer_modal(&mut modal, (80, 24), VisualizerMode::Waveform, &frame);
         assert!(modal.contains("[1 Waveform]"));
-        assert!(modal.chars().any(|glyph| ('\u{2801}'..='\u{28ff}').contains(&glyph)));
+        assert!(
+            modal
+                .chars()
+                .any(|glyph| ('\u{2801}'..='\u{28ff}').contains(&glyph))
+        );
     }
 
     #[test]
     fn silent_waveform_has_no_center_bar() {
-        assert!(waveform_dots(&[0.0; 256], 20, 10)
-            .iter()
-            .all(|&mask| mask == 0));
+        assert!(
+            waveform_dots(&[0.0; 256], 20, 10)
+                .iter()
+                .all(|&mask| mask == 0)
+        );
         let size = (80, 24);
         let dialog = VisualizerGeometry::new(size);
         let frame = serde_json::json!({"wave": vec![0.0_f32; 256], "spectrum": vec![0.0_f32; 40]})
@@ -12778,7 +12514,10 @@ mod tests {
                 assert_eq!(menu_shortcut_index(page, shortcut), Some(index));
                 for width in [18, 33] {
                     let row = menu_row(label, width);
-                    assert!(menu_mnemonic(&row, shortcut).is_some(), "{label}: {shortcut}");
+                    assert!(
+                        menu_mnemonic(&row, shortcut).is_some(),
+                        "{label}: {shortcut}"
+                    );
                     assert!(!row.contains("Alt+"));
                     assert!(cell_width(&row) <= width - 1);
                 }
@@ -12788,8 +12527,14 @@ mod tests {
         assert_eq!(menu_shortcut_index(MenuPage::Main, 'p'), Some(11));
         assert_eq!(MenuPage::Columns.labels().len(), 12);
         assert_eq!(MenuPage::ColumnContext.labels()[12], "Hide This Column");
-        assert_eq!(menu_row_checked("Artist", 18, true).chars().nth(2), Some('✓'));
-        assert_eq!(menu_row_checked("Artist", 18, false).chars().nth(2), Some(' '));
+        assert_eq!(
+            menu_row_checked("Artist", 18, true).chars().nth(2),
+            Some('✓')
+        );
+        assert_eq!(
+            menu_row_checked("Artist", 18, false).chars().nth(2),
+            Some(' ')
+        );
         let visibility_shortcuts = menu_shortcuts(MenuPage::ColumnVisibility);
         for (index, &label) in COLUMN_VISIBILITY_MENU.iter().enumerate() {
             assert!(Columns::default_id(index).is_some());
@@ -12822,13 +12567,21 @@ mod tests {
             assert_eq!(clear_range.end, icon_x);
             assert_eq!(clear_range.len(), 4);
             if volume_row == 36 {
-                assert!(footer_transport_slot(width, TransportAction::Radio).end <= clear_range.start);
+                assert!(
+                    footer_transport_slot(width, TransportAction::Radio).end <= clear_range.start
+                );
             }
             assert!(bar_x + bar_width <= width);
             let (_, bar_start, bar_width) = progress_bar_geometry(width, "8:01:03");
             assert!(bar_start < bar_start + bar_width);
         }
-        for (width, rich) in [(20, false), (26, false), (36, false), (44, false), (51, true)] {
+        for (width, rich) in [
+            (20, false),
+            (26, false),
+            (36, false),
+            (44, false),
+            (51, true),
+        ] {
             for playing in [false, true] {
                 let transport = compact_transport(width, rich, playing);
                 assert!(cell_width(&transport.text) <= width);

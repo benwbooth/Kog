@@ -1,27 +1,12 @@
-//! Random Radio for the web player.
+//! Random radio selection and persistence shared by native, browser and mobile.
 //!
-//! The desktop's random radio is an exhaustive, seeded, hierarchical shuffle
-//! of the music folder, persisted to `radio-round.json`. The web player had no
-//! equivalent, so this module owns a small server-side session around the very
-//! same [`kog_audio::radio::RadioRound`]: it loads and saves the desktop's
-//! round file, walks the library root with the shared pick logic, and hands the
-//! web client a window of playable entries.
-//!
-//! Picks are expanded and proved exactly as the desktop does. The shared
-//! [`DecoderRegistry::expand_detailed`] turns a cue sheet or multi-song file
-//! into its individual tracks, and every candidate is probed before it is
-//! handed out: a pick that yields nothing playable joins the round's `dead`
-//! set, so both clients skip the same broken files. `read_cue` follows the
-//! user's folder setting, matching the desktop's radio session.
-//!
-//! Because the round file is the desktop's, the server roots itself where the
-//! desktop left off: a persisted round whose root is a directory inside the
-//! configured library root is resumed in place (same seed and cursors, so the
-//! two clients continue one shuffle). With no usable round it starts fresh at
-//! the configured music directory.
+//! Each named session has its own round and enabled state. The legacy endpoint
+//! without a session ID keeps the historical desktop round-file behavior.
+//! Picks use the shared hierarchical RadioRound, decoder expansion, playable
+//! validation and blacklist policy; output and ready buffering live in Session.
 
-use std::collections::{HashMap, HashSet};
 use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -76,16 +61,26 @@ pub struct RadioEntry {
 impl RadioEntry {
     pub fn playlist_entry(&self) -> Result<kog_audio::playlist::PlaylistEntry, String> {
         kog_audio::playlist::PlaylistEntry::from_locator(
-            &self.kind, &self.path, &self.entry, self.fragment.clone(),
+            &self.kind,
+            &self.path,
+            &self.entry,
+            self.fragment.clone(),
         )
     }
 
     /// Native presentation adapter. Expansion still goes through the same
     /// validated locator used by the stream API, including CUE track numbers
     /// and nested archive members. Keep `decoders` alive while using the track.
-    pub fn audio_track(&self, decoders: &DecoderRegistry) -> Result<kog_audio::track::Track, String> {
+    pub fn audio_track(
+        &self,
+        decoders: &DecoderRegistry,
+    ) -> Result<kog_audio::track::Track, String> {
         let entry = self.playlist_entry()?;
-        let source = decoders.expand_entry(&entry)?.sources.into_iter().next()
+        let source = decoders
+            .expand_entry(&entry)?
+            .sources
+            .into_iter()
+            .next()
             .ok_or_else(|| "Radio pick no longer contains a playable track".to_owned())?;
         Ok(kog_audio::track::Track::from_source(source, decoders))
     }
@@ -128,6 +123,7 @@ struct Inner {
 /// The server's random-radio session. Cheap to clone through `Arc`; all
 /// mutation is serialized by one mutex.
 pub struct Radio {
+    requests: Mutex<HashMap<u64, u64>>,
     inner: Mutex<Inner>,
 }
 
@@ -138,21 +134,33 @@ pub struct Sessions(Mutex<HashMap<String, Arc<Radio>>>);
 
 impl Sessions {
     pub fn get(&self, id: Option<&str>, legacy: &Arc<Radio>) -> Result<Arc<Radio>, String> {
-        let Some(id) = id else { return Ok(legacy.clone()); };
-        if id.is_empty() || id.len() > 256 { return Err("Invalid radio session ID".into()); }
+        let Some(id) = id else {
+            return Ok(legacy.clone());
+        };
+        if id.is_empty() || id.len() > 256 {
+            return Err("Invalid radio session ID".into());
+        }
         let mut sessions = lock(&self.0);
-        Ok(sessions.entry(id.to_owned()).or_insert_with(|| {
-            let inner = lock(&legacy.inner);
-            let base = inner.save_path.clone().or_else(|| if inner.configured {
-                kog_audio::settings::setting_path(ROUND_FILE)
-            } else { None });
-            let save = base.and_then(|p| p.parent().map(|p| p.join("sessions")))
-                .map(|directory| {
-                    let _ = std::fs::create_dir_all(&directory);
-                    directory.join(format!("{:x}.radio.json", Sha256::digest(id.as_bytes())))
+        Ok(sessions
+            .entry(id.to_owned())
+            .or_insert_with(|| {
+                let inner = lock(&legacy.inner);
+                let base = inner.save_path.clone().or_else(|| {
+                    if inner.configured {
+                        kog_audio::settings::setting_path(ROUND_FILE)
+                    } else {
+                        None
+                    }
                 });
-            Arc::new(Radio::new(inner.root.clone(), save, false))
-        }).clone())
+                let save = base
+                    .and_then(|p| p.parent().map(|p| p.join("sessions")))
+                    .map(|directory| {
+                        let _ = std::fs::create_dir_all(&directory);
+                        directory.join(format!("{:x}.radio.json", Sha256::digest(id.as_bytes())))
+                    });
+                Arc::new(Radio::new(inner.root.clone(), save, false))
+            })
+            .clone())
     }
 }
 
@@ -161,6 +169,7 @@ impl Radio {
     /// settings file and no round file to touch.
     pub fn disabled() -> Self {
         Self {
+            requests: Mutex::new(HashMap::new()),
             inner: Mutex::new(Inner {
                 configured: false,
                 initialized: true,
@@ -180,6 +189,7 @@ impl Radio {
     /// lazily on the first radio request.
     pub fn from_settings() -> Self {
         Self {
+            requests: Mutex::new(HashMap::new()),
             inner: Mutex::new(Inner {
                 configured: true,
                 initialized: false,
@@ -200,6 +210,7 @@ impl Radio {
     pub fn new(root: Option<PathBuf>, save_path: Option<PathBuf>, enabled: bool) -> Self {
         let root = resolve_root(save_path.as_deref(), root.as_deref());
         Self {
+            requests: Mutex::new(HashMap::new()),
             inner: Mutex::new(Inner {
                 configured: false,
                 initialized: true,
@@ -222,11 +233,20 @@ impl Radio {
 
     /// Resume with one proved pick so interactive clients can play while
     /// they fill their ready buffer in the background.
-    pub fn snapshot_incremental(&self, library_root: Option<&Path>, scope: Option<&Path>) -> RadioStatus {
+    pub fn snapshot_incremental(
+        &self,
+        library_root: Option<&Path>,
+        scope: Option<&Path>,
+    ) -> RadioStatus {
         self.snapshot_with_target(library_root, scope, 1)
     }
 
-    fn snapshot_with_target(&self, library_root: Option<&Path>, scope: Option<&Path>, target: usize) -> RadioStatus {
+    fn snapshot_with_target(
+        &self,
+        library_root: Option<&Path>,
+        scope: Option<&Path>,
+        target: usize,
+    ) -> RadioStatus {
         let mut inner = lock(&self.inner);
         Self::ensure_loaded(&mut inner, library_root);
         Self::reroot(&mut inner, scope);
@@ -723,6 +743,8 @@ pub struct RootQuery {
     /// falling back to a wider directory.
     pub root: Option<String>,
     pub session: Option<String>,
+    pub incarnation: Option<u64>,
+    pub serial: Option<u64>,
     #[serde(default)]
     pub incremental: bool,
 }
@@ -750,15 +772,26 @@ fn scoped_root(requested: Option<&str>) -> Result<Option<PathBuf>, String> {
 
 /// `GET /api/radio` — current state and the visible round window.
 pub async fn status(State(state): State<AppState>, query: Query<RootQuery>) -> Response {
-    let radio = match state.radio_sessions.get(query.session.as_deref(), &state.radio) {
-        Ok(radio) => radio, Err(error) => return bad_request(&error),
+    let radio = match state
+        .radio_sessions
+        .get(query.session.as_deref(), &state.radio)
+    {
+        Ok(radio) => radio,
+        Err(error) => return bad_request(&error),
     };
     let scope = match scoped_root(query.root.as_deref()) {
         Ok(scope) => scope,
         Err(error) => return bad_request(&error),
     };
     let root = scope.clone().or_else(|| state.library.root());
-    blocking(move || if query.incremental { radio.snapshot_incremental(root.as_deref(), scope.as_deref()) } else { radio.snapshot(root.as_deref(), scope.as_deref()) }).await
+    ordered(radio, query.incarnation.zip(query.serial), move |radio| {
+        if query.incremental {
+            radio.snapshot_incremental(root.as_deref(), scope.as_deref())
+        } else {
+            radio.snapshot(root.as_deref(), scope.as_deref())
+        }
+    })
+    .await
 }
 
 /// `POST /api/radio/enabled` — turn random radio on or off.
@@ -767,8 +800,12 @@ pub async fn set_enabled(
     query: Query<RootQuery>,
     axum::Json(request): axum::Json<EnabledRequest>,
 ) -> Response {
-    let radio = match state.radio_sessions.get(query.session.as_deref(), &state.radio) {
-        Ok(radio) => radio, Err(error) => return bad_request(&error),
+    let radio = match state
+        .radio_sessions
+        .get(query.session.as_deref(), &state.radio)
+    {
+        Ok(radio) => radio,
+        Err(error) => return bad_request(&error),
     };
     let scope = match scoped_root(query.root.as_deref()) {
         Ok(scope) => scope,
@@ -776,42 +813,86 @@ pub async fn set_enabled(
     };
     let root = scope.clone().or_else(|| state.library.root());
     let enabled = request.enabled;
-    blocking(move || if query.incremental { radio.set_enabled_incremental(enabled, root.as_deref(), scope.as_deref()) } else { radio.set_enabled(enabled, root.as_deref(), scope.as_deref()) }).await
+    ordered(radio, query.incarnation.zip(query.serial), move |radio| {
+        if query.incremental {
+            radio.set_enabled_incremental(enabled, root.as_deref(), scope.as_deref())
+        } else {
+            radio.set_enabled(enabled, root.as_deref(), scope.as_deref())
+        }
+    })
+    .await
 }
 
 /// `POST /api/radio/reshuffle` — fresh shuffle under the requested scope.
 pub async fn reshuffle(State(state): State<AppState>, query: Query<RootQuery>) -> Response {
-    let radio = match state.radio_sessions.get(query.session.as_deref(), &state.radio) {
-        Ok(radio) => radio, Err(error) => return bad_request(&error),
+    let radio = match state
+        .radio_sessions
+        .get(query.session.as_deref(), &state.radio)
+    {
+        Ok(radio) => radio,
+        Err(error) => return bad_request(&error),
     };
     let scope = match scoped_root(query.root.as_deref()) {
         Ok(scope) => scope,
         Err(error) => return bad_request(&error),
     };
     let root = scope.clone().or_else(|| state.library.root());
-    blocking(move || if query.incremental { radio.reshuffle_incremental(root.as_deref(), scope.as_deref()) } else { radio.reshuffle(root.as_deref(), scope.as_deref()) }).await
+    ordered(radio, query.incarnation.zip(query.serial), move |radio| {
+        if query.incremental {
+            radio.reshuffle_incremental(root.as_deref(), scope.as_deref())
+        } else {
+            radio.reshuffle(root.as_deref(), scope.as_deref())
+        }
+    })
+    .await
 }
 
 /// `POST /api/radio/advance` — the next window of the running round.
 pub async fn advance(State(state): State<AppState>, query: Query<RootQuery>) -> Response {
-    let radio = match state.radio_sessions.get(query.session.as_deref(), &state.radio) {
-        Ok(radio) => radio, Err(error) => return bad_request(&error),
+    let radio = match state
+        .radio_sessions
+        .get(query.session.as_deref(), &state.radio)
+    {
+        Ok(radio) => radio,
+        Err(error) => return bad_request(&error),
     };
     let scope = match scoped_root(query.root.as_deref()) {
         Ok(scope) => scope,
         Err(error) => return bad_request(&error),
     };
     let root = scope.clone().or_else(|| state.library.root());
-    blocking(move || if query.incremental { radio.advance_incremental(root.as_deref(), scope.as_deref()) } else { radio.advance(root.as_deref(), scope.as_deref()) }).await
+    ordered(radio, query.incarnation.zip(query.serial), move |radio| {
+        if query.incremental {
+            radio.advance_incremental(root.as_deref(), scope.as_deref())
+        } else {
+            radio.advance(root.as_deref(), scope.as_deref())
+        }
+    })
+    .await
 }
 
-async fn blocking<T, F>(work: F) -> Response
+// Hold the request gate through the operation: a delayed old request must
+// never reset the root or enabled state after a newer command was applied.
+async fn ordered<T, F>(radio: Arc<Radio>, token: Option<(u64, u64)>, work: F) -> Response
 where
     T: Serialize + Send + 'static,
-    F: FnOnce() -> T + Send + 'static,
+    F: FnOnce(&Radio) -> T + Send + 'static,
 {
-    match tokio::task::spawn_blocking(work).await {
-        Ok(value) => axum::Json(value).into_response(),
+    match tokio::task::spawn_blocking(move || {
+        let mut requests = lock(&radio.requests);
+        if let Some((incarnation, serial)) = token {
+            let previous = requests.entry(incarnation).or_default();
+            if serial <= *previous {
+                return Err("Superseded radio request".to_owned());
+            }
+            *previous = serial;
+        }
+        Ok(work(&radio))
+    })
+    .await
+    {
+        Ok(Ok(value)) => axum::Json(value).into_response(),
+        Ok(Err(error)) => bad_request(&error),
         Err(error) => bad_request(&format!("random radio failed: {error}")),
     }
 }
@@ -1249,25 +1330,94 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn delayed_radio_command_cannot_undo_newer_session_command() {
+        let (library, root, save) = fixture(2);
+        let state = state_with_radio(library, root, save);
+        let (status, _) = request(
+            state.clone(),
+            "POST",
+            "/api/radio/enabled?session=ordered&incarnation=1&serial=3&incremental=true",
+            Some(serde_json::json!({"enabled":false})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = request(
+            state.clone(),
+            "POST",
+            "/api/radio/enabled?session=ordered&incarnation=1&serial=2&incremental=true",
+            Some(serde_json::json!({"enabled":true})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (_, snapshot) = request(
+            state,
+            "GET",
+            "/api/radio?session=ordered&incremental=true",
+            None,
+        )
+        .await;
+        assert_eq!(snapshot["enabled"], false);
+    }
+
+    #[tokio::test]
     async fn named_radio_sessions_do_not_share_rounds_or_enabled_state() {
         let (library, root, save) = fixture(8);
         let state = state_with_radio(library, root, save.clone());
-        let (_, a) = request(state.clone(), "POST", "/api/radio/enabled?session=phone&incremental=true", Some(serde_json::json!({"enabled":true}))).await;
+        let (_, a) = request(
+            state.clone(),
+            "POST",
+            "/api/radio/enabled?session=phone&incremental=true",
+            Some(serde_json::json!({"enabled":true})),
+        )
+        .await;
         assert_eq!(a["enabled"], true);
-        let (_, b) = request(state.clone(), "GET", "/api/radio?session=web&incremental=true", None).await;
+        let (_, b) = request(
+            state.clone(),
+            "GET",
+            "/api/radio?session=web&incremental=true",
+            None,
+        )
+        .await;
         assert_eq!(b["enabled"], false);
         let (_, legacy) = request(state.clone(), "GET", "/api/radio?incremental=true", None).await;
         assert_eq!(legacy["enabled"], false);
-        request(state.clone(), "POST", "/api/radio/enabled?session=web&incremental=true", Some(serde_json::json!({"enabled":true}))).await;
-        request(state.clone(), "POST", "/api/radio/enabled?session=phone&incremental=true", Some(serde_json::json!({"enabled":false}))).await;
-        let (_, b) = request(state.clone(), "GET", "/api/radio?session=web&incremental=true", None).await;
+        request(
+            state.clone(),
+            "POST",
+            "/api/radio/enabled?session=web&incremental=true",
+            Some(serde_json::json!({"enabled":true})),
+        )
+        .await;
+        request(
+            state.clone(),
+            "POST",
+            "/api/radio/enabled?session=phone&incremental=true",
+            Some(serde_json::json!({"enabled":false})),
+        )
+        .await;
+        let (_, b) = request(
+            state.clone(),
+            "GET",
+            "/api/radio?session=web&incremental=true",
+            None,
+        )
+        .await;
         assert_eq!(b["enabled"], true);
-        let phone = state.radio_sessions.get(Some("phone"), &state.radio).unwrap();
+        let phone = state
+            .radio_sessions
+            .get(Some("phone"), &state.radio)
+            .unwrap();
         let web = state.radio_sessions.get(Some("web"), &state.radio).unwrap();
         assert!(!Arc::ptr_eq(&phone, &web));
         assert_ne!(lock(&phone.inner).save_path, lock(&web.inner).save_path);
-        assert_ne!(lock(&phone.inner).save_path.as_deref(), Some(save.as_path()));
-        assert_eq!(request(state, "GET", "/api/radio?session=", None).await.0, StatusCode::BAD_REQUEST);
+        assert_ne!(
+            lock(&phone.inner).save_path.as_deref(),
+            Some(save.as_path())
+        );
+        assert_eq!(
+            request(state, "GET", "/api/radio?session=", None).await.0,
+            StatusCode::BAD_REQUEST
+        );
     }
 
     #[tokio::test]
@@ -1280,9 +1430,17 @@ mod tests {
         let (status, first) = request(state.clone(), "GET", &path, None).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(first["entries"].as_array().unwrap().len(), 1);
-        assert!(first["entries"][0]["path"].as_str().unwrap().starts_with(scope.to_str().unwrap()));
+        assert!(
+            first["entries"][0]["path"]
+                .as_str()
+                .unwrap()
+                .starts_with(scope.to_str().unwrap())
+        );
         let (_, again) = request(state, "GET", &path, None).await;
-        assert_eq!(first, again, "reading the snapshot must not consume more picks");
+        assert_eq!(
+            first, again,
+            "reading the snapshot must not consume more picks"
+        );
     }
 
     #[tokio::test]
@@ -1293,13 +1451,30 @@ mod tests {
         let query = format!("?incremental=true&root={}", scope.display());
         for endpoint in ["enabled", "advance", "reshuffle"] {
             let body = (endpoint == "enabled").then(|| serde_json::json!({"enabled": true}));
-            let (status, reply) = request(state.clone(), "POST", &format!("/api/radio/{endpoint}{query}"), body).await;
+            let (status, reply) = request(
+                state.clone(),
+                "POST",
+                &format!("/api/radio/{endpoint}{query}"),
+                body,
+            )
+            .await;
             assert_eq!(status, StatusCode::OK);
             let entries = reply["entries"].as_array().unwrap();
             assert_eq!(entries.len(), 1);
-            assert!(entries[0]["path"].as_str().unwrap().starts_with(scope.to_str().unwrap()));
+            assert!(
+                entries[0]["path"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with(scope.to_str().unwrap())
+            );
         }
-        let (status, reply) = request(state, "POST", &format!("/api/radio/enabled{query}"), Some(serde_json::json!({"enabled": false}))).await;
+        let (status, reply) = request(
+            state,
+            "POST",
+            &format!("/api/radio/enabled{query}"),
+            Some(serde_json::json!({"enabled": false})),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(reply["enabled"], false);
         assert!(reply["entries"].as_array().unwrap().is_empty());
@@ -1339,7 +1514,10 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["root"], one.to_string_lossy().as_ref());
         assert!(body["entries"].as_array().unwrap().iter().all(|entry| {
-            entry["path"].as_str().unwrap().starts_with(one.to_str().unwrap())
+            entry["path"]
+                .as_str()
+                .unwrap()
+                .starts_with(one.to_str().unwrap())
         }));
 
         let (status, body) = request(
