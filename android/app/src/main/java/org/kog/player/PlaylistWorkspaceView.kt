@@ -52,18 +52,24 @@ data class PlaylistWorkspaceSnapshot(
 
 @Composable
 internal fun PlaylistWorkspaceTabs(state: KogState) {
-    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(4.dp),
-        horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+    if (state.workspace.tabs.size > 1) PrimaryScrollableTabRow(
+        selectedTabIndex = state.workspace.tabs.indexOfFirst { it.key == state.workspace.active }.coerceAtLeast(0),
+        edgePadding = 8.dp, containerColor = MaterialTheme.colorScheme.surface,
+    ) {
         state.workspace.tabs.forEach { tab ->
-            Row(verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.background(if (state.workspace.active == tab.key) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surface)) {
-                TextButton(onClick = { state.workspaceCommand("focus", JSONObject().put("key", tab.key)) }) {
-                    Text(tab.name + if (tab.dirty) " •" else "", maxLines = 1)
-                }
-                if (tab.key != "queue") IconButton(onClick = { state.workspaceCommand("close", JSONObject().put("key", tab.key)) }) {
-                    Icon(Icons.Default.Close, "Close ${tab.name}", Modifier.size(16.dp))
-                }
-            }
+            Tab(selected = state.workspace.active == tab.key,
+                onClick = { state.workspaceCommand("focus", JSONObject().put("key", tab.key)) },
+                text = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(tab.name + if (tab.dirty) " •" else "", maxLines = 1,
+                            overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 220.dp))
+                        if (tab.key != "queue") IconButton(
+                            modifier = Modifier.size(32.dp),
+                            onClick = { state.workspaceCommand("close", JSONObject().put("key", tab.key)) }) {
+                            Icon(Icons.Default.Close, "Close ${tab.name}", Modifier.size(16.dp))
+                        }
+                    }
+                })
         }
     }
     if (state.workspace.pendingClose != null) AlertDialog(

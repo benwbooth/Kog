@@ -6,32 +6,65 @@ Item {
     id: bar
     required property var app
     required property var workspaceState
-    implicitHeight: 38
+    readonly property var entries: workspaceState.tabs || []
+    readonly property bool multipleTabs: entries.length > 1
+    visible: multipleTabs
+    implicitHeight: multipleTabs ? tabs.implicitHeight : 0
     function send(command) { app.workspace_command(JSON.stringify(command)) }
-    ScrollView {
+    TabBar {
+        id: tabs
+        objectName: "playlistTabBar"
         anchors.fill: parent
-        contentWidth: tabs.implicitWidth
-        ScrollBar.vertical.policy: ScrollBar.AlwaysOff
-        Row {
-            id: tabs
-            spacing: 2
-            Repeater {
-                model: bar.workspaceState.tabs || []
-                Row {
-                    required property var modelData
-                    Button {
-                        text: modelData.name + (modelData.dirty ? " •" : "")
-                        checkable: true
-                        checked: bar.workspaceState.active === modelData.key
-                        onClicked: bar.send({op: "focus", key: modelData.key})
-                        Accessible.name: text + (modelData.dirty ? qsTr("; unsaved changes") : "")
-                    }
-                    ToolButton {
-                        visible: modelData.key !== "queue"
-                        text: "×"
-                        Accessible.name: qsTr("Close %1").arg(modelData.name)
-                        onClicked: bar.send({op: "close", key: modelData.key})
-                    }
+        clip: true
+        currentIndex: Math.max(0, bar.entries.findIndex(tab => tab.key === bar.workspaceState.active))
+        onCurrentIndexChanged: Qt.callLater(function() {
+            // Model updates can change the current index while bindings are
+            // evaluating. Dispatch keyboard navigation after they settle.
+            const entry = bar.entries[tabs.currentIndex]
+            if (tabs.activeFocus && entry && tabs.count === bar.entries.length
+                    && entry.key !== bar.workspaceState.active)
+                bar.send({op: "focus", key: entry.key})
+        })
+        Repeater {
+            model: bar.entries
+            TabButton {
+                id: tab
+                required property var modelData
+                text: modelData.name + (modelData.dirty ? " •" : "")
+                width: Math.min(280, Math.max(112, implicitWidth))
+                implicitHeight: Math.max(32, implicitBackgroundHeight, implicitContentHeight + 12)
+                leftPadding: 12
+                topPadding: 6
+                bottomPadding: 6
+                rightPadding: closeButton.visible ? closeButton.width + 12 : leftPadding
+                contentItem: Label {
+                    text: tab.text
+                    textFormat: Text.PlainText
+                    font: tab.font
+                    color: tab.palette.buttonText
+                    verticalAlignment: Text.AlignVCenter
+                    elide: Text.ElideRight
+                }
+                onClicked: bar.send({op: "focus", key: modelData.key})
+                Accessible.name: text + (modelData.dirty ? qsTr("; unsaved changes") : "")
+                ToolTip.visible: hovered
+                ToolTip.delay: 700
+                ToolTip.text: text
+                ToolButton {
+                    id: closeButton
+                    objectName: "closePlaylistTab"
+                    visible: tab.modelData.key !== "queue"
+                    anchors.right: parent.right
+                    anchors.rightMargin: 5
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 24; height: 24
+                    text: "×"
+                    font.pixelSize: 16
+                    Accessible.name: qsTr("Close %1").arg(tab.modelData.name)
+                    ToolTip.visible: hovered
+                    ToolTip.delay: 700
+                    ToolTip.text: Accessible.name
+                    onClicked: bar.send({op: "close", key: tab.modelData.key})
                 }
             }
         }

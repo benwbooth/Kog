@@ -6,8 +6,10 @@ import "../../qml" as Source
 
 ApplicationWindow {
     id: root
+    objectName: "kogMainWindow"
     width: 1000; height: 580; visible: true
     AppController { id: controller }
+    Source.MainWindowSettings { id: preferences; app: controller }
     property int stage: 0
     property int playlistId: 0
     property int attempts: 0
@@ -27,6 +29,7 @@ ApplicationWindow {
     }
     Component.onCompleted: {
         if (controller.playlist_count === 2) {
+            check(preferences.sidebarWidth === 444 && !preferences.sidebarVisible, "SQLite UI preference restore")
             check(controller.playback_state === "stopped", "restored session must stay stopped")
             check(controller.current_index === 1, "restored current row")
             check(controller.volume === 0, "restored session volume")
@@ -38,6 +41,9 @@ ApplicationWindow {
             })
             return
         }
+        check(preferences.sidebarWidth === 333 && preferences.sidebarVisible, "legacy Qt preference import")
+        preferences.sidebarWidth = 444
+        preferences.sidebarVisible = false
         const created = JSON.parse(controller.create_playlist("Workspace smoke")); check(created.ok, "create"); playlistId = created.id
         controller.open_playlist_tab(playlistId, "Workspace smoke")
         check(snapshot.tabs.length === 2 && controller.playlist_count === 0, "open must leave queue alone")

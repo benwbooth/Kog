@@ -39,7 +39,7 @@ Window {
         category: "NowPlayingNotification"
         property real rightMargin: 16
         property real bottomMargin: 16
-        values: ({rightMargin, bottomMargin})
+        values: ({rightMargin: placement.rightMargin, bottomMargin: placement.bottomMargin})
     }
 
     Component.onCompleted: {

@@ -182,6 +182,9 @@ impl Ui {
             .workspace_model()
             .snapshot_for(self.tracks.len(), self.selected_tracks.len());
         let mut cells = Vec::new();
+        if state.tabs.len() < 2 {
+            return cells;
+        }
         let mut x = 0;
         let active = state
             .tabs
@@ -224,7 +227,7 @@ impl Ui {
         if x < left || y >= layout.footer_top {
             return false;
         }
-        if y == layout.footer_top.saturating_sub(1) {
+        if state.tabs.len() > 1 && y == layout.footer_top.saturating_sub(1) {
             if button & 3 == 0 && button & 32 == 0 {
                 if let Some((_, _, key, _, _)) = self
                     .workspace_tab_cells(size.0.saturating_sub(left))
@@ -306,6 +309,9 @@ impl Ui {
             .session
             .workspace_model()
             .snapshot_for(self.tracks.len(), self.selected_tracks.len());
+        if state.tabs.len() < 2 {
+            return;
+        }
         if state.active != "queue" {
             let page = layout.footer_top.saturating_sub(5).max(1);
             self.workspace_cursor = self

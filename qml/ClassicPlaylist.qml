@@ -88,10 +88,10 @@ Item {
             root.app.open_playlist_tab(item.id, item.name)
         }
     }
-    PlaylistWorkspaceBar { x: 12; y: 48; width: 243; app: root.app; workspaceState: root.workspaceState }
+    PlaylistWorkspaceBar { id: workspaceTabs; x: 12; y: 48; width: 243; app: root.app; workspaceState: root.workspaceState }
     PlaylistEditor {
         objectName: "classicPlaylistEditor"
-        x: 12; y: 86; width: 243; height: root.height - 124
+        x: 12; y: 48 + workspaceTabs.implicitHeight; width: 243; height: root.height - y - 38
         visible: !root.queueActive
         app: root.app; workspaceState: root.workspaceState; theme: root.editorTheme
         queueSelection: root.selectedRows; compact: true
@@ -99,7 +99,7 @@ Item {
     ListView {
         id: list
         objectName: "classicPlaylist"
-        x: 12; y: 86; width: 243; height: root.height - 124
+        x: 12; y: 48 + workspaceTabs.implicitHeight; width: 243; height: root.height - y - 38
         visible: root.queueActive
         clip: true
         model: root.app.playlist_count
@@ -170,7 +170,7 @@ Item {
         KineticWheelHandler { view: list }
     }
     DropArea {
-        x: 12; y: 86; width: 243; height: root.height - 124
+        x: 12; y: 48 + workspaceTabs.implicitHeight; width: 243; height: root.height - y - 38
         enabled: root.queueActive
         onDropped: drop => { if (drop.hasUrls) { root.app.enqueue_urls_json(JSON.stringify(drop.urls)); drop.acceptProposedAction() } }
     }

@@ -27,6 +27,7 @@ impl Controller {
 #[component]
 pub fn Tabs(controller: Controller) -> impl IntoView {
     view! {
+        <Show when=move || { controller.snapshot().tabs.len() > 1 }>
         <div class="playlist-tabs" role="tablist" aria-label="Open playlists">
             <For each=move || controller.snapshot().tabs key=|tab| (tab.key.clone(), tab.name.clone(), tab.dirty) let:tab>
                 { let focus = tab.key.clone(); let active = tab.key.clone(); let close = tab.key.clone(); let closable = tab.key != "queue";
@@ -40,6 +41,7 @@ pub fn Tabs(controller: Controller) -> impl IntoView {
                 }
             </For>
         </div>
+        </Show>
         <Show when=move || controller.snapshot().pending_close.is_some()>
             <div class="workspace-close" role="alertdialog" aria-label="Unsaved playlist changes">
                 <span>"Save changes before closing?"</span>

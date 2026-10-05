@@ -16,12 +16,13 @@ ApplicationWindow {
     property bool playlistVisible: true
     property string settingsFile: ""
     SqliteSettings {
+        id: classicSettings
         app: root.app
         category: "ClassicPlayer"
         fileName: root.settingsFile
         property alias toolbarVisible: root.toolbarVisible
         property alias playlistVisible: root.playlistVisible
-        values: ({toolbarVisible, playlistVisible})
+        values: ({toolbarVisible: classicSettings.toolbarVisible, playlistVisible: classicSettings.playlistVisible})
     }
     readonly property var assets: skin.assets || ({})
     readonly property var textColors: (skin.textColors || "#000000,#71f5b0").split(",")

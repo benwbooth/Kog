@@ -3,24 +3,28 @@ import SwiftUI
 struct PlaylistWorkspaceTabs: View {
     @EnvironmentObject private var store: KogStore
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 4) {
-                ForEach(store.workspace.tabs) { item in
-                    HStack(spacing: 0) {
-                        Button { store.workspaceCommand(["op": "focus", "key": item.key]) } label: {
-                            Text(item.name + (item.dirty ? " •" : "")).lineLimit(1).padding(.horizontal, 12).frame(minHeight: 44)
+        Group {
+            if store.workspace.tabs.count > 1 {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 4) {
+                        ForEach(store.workspace.tabs) { item in
+                            HStack(spacing: 0) {
+                                Button { store.workspaceCommand(["op": "focus", "key": item.key]) } label: {
+                                    Text(item.name + (item.dirty ? " •" : "")).lineLimit(1).padding(.horizontal, 12).frame(minHeight: 44)
+                                }
+                                if item.key != "queue" {
+                                    Button { store.workspaceCommand(["op": "close", "key": item.key]) } label: {
+                                        Image(systemName: "xmark").font(.caption).frame(width: 36, height: 44)
+                                    }.accessibilityLabel("Close \(item.name)")
+                                }
+                            }.foregroundStyle(store.workspace.active == item.key ? Palette.accent : Palette.muted)
+                                .background(store.workspace.active == item.key ? Palette.raised : Palette.panel)
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
                         }
-                        if item.key != "queue" {
-                            Button { store.workspaceCommand(["op": "close", "key": item.key]) } label: {
-                                Image(systemName: "xmark").font(.caption).frame(width: 36, height: 44)
-                            }.accessibilityLabel("Close \(item.name)")
-                        }
-                    }.foregroundStyle(store.workspace.active == item.key ? Palette.accent : Palette.muted)
-                        .background(store.workspace.active == item.key ? Palette.raised : Palette.panel)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                }
-            }.padding(.horizontal, 6).padding(.vertical, 4)
-        }.background(Palette.panel)
+                    }.padding(.horizontal, 6).padding(.vertical, 4)
+                }.background(Palette.panel)
+            }
+        }
             .alert("Save playlist changes?", isPresented: Binding(
                 get: { store.workspace.pending_close != nil },
                 set: { if !$0 && store.workspace.pending_close != nil { store.workspaceCommand(["op": "resolve_close", "choice": "cancel"]) } })) {

@@ -4,6 +4,12 @@ repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 test_dir="$(mktemp -d -t kog-playlist-workspace.XXXXXX)"
 trap 'cat "$test_dir/run.log"; rm -rf "$test_dir"' EXIT
 mkdir -p "$test_dir"/{config,data,runtime,cache}
+mkdir -p "$test_dir/config/Kog"
+cat > "$test_dir/config/Kog/Kog.conf" <<'LEGACY'
+[MainWindow]
+sidebarVisible=true
+sidebarWidth=333
+LEGACY
 chmod 700 "$test_dir/runtime"
 for pass in 1 2; do
 XDG_CONFIG_HOME="$test_dir/config" XDG_DATA_HOME="$test_dir/data" XDG_CACHE_HOME="$test_dir/cache" \
@@ -16,6 +22,11 @@ with sqlite3.connect(sys.argv[1]) as db:
     assert db.execute("SELECT count(*) FROM playlists WHERE name='Workspace smoke complete'").fetchone()[0] == 1, "QML smoke did not complete"
     assert db.execute("SELECT count(*) FROM playlist_entries").fetchone()[0] == 3
     assert db.execute("SELECT count(*) FROM playlists WHERE name='Session restore complete'").fetchone()[0] == 1, "Stopped restore did not complete"
+    assert db.execute("SELECT value FROM app_state WHERE namespace='preferences' AND key='qml//MainWindow/sidebarWidth'").fetchone()[0] == '444'
+    assert db.execute("SELECT value FROM app_state WHERE namespace='preferences' AND key='qml//MainWindow/sidebarVisible'").fetchone()[0] == 'false'
+    assert db.execute("SELECT count(*) FROM app_state WHERE key='qt-native/MainWindow/normalGeometry'").fetchone()[0] == 1
+    assert db.execute("SELECT count(*) FROM app_state WHERE namespace='sessions' AND key='qt:default'").fetchone()[0] == 1
 print("QT WORKSPACE PASS: editor/selection/save/queue/close/undo/rename/native audio/pause/seek/resume/EOS/stopped restore")
 PYTEST
+if ! rg -q '^sidebarWidth=333$' "$test_dir/config/Kog/Kog.conf"; then exit 1; fi
 if rg -q 'WORKSPACE FAIL|Binding loop|TypeError|ReferenceError|Cannot assign' "$test_dir/run.log"; then exit 1; fi

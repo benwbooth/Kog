@@ -144,7 +144,8 @@ Window {
         property string authMode: "token"
         property string codec: "aac"
         property string tlsMode: "off"
-        values: ({serverUrl, token, username, password, authMode, codec, tlsMode})
+        values: ({serverUrl: connection.serverUrl, token: connection.token, username: connection.username,
+            password: connection.password, authMode: connection.authMode, codec: connection.codec, tlsMode: connection.tlsMode})
     }
 
     ColumnLayout {

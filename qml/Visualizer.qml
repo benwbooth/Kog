@@ -28,11 +28,12 @@ ApplicationWindow {
         requestActivate()
     }
     SqliteSettings {
+        id: visualizerSettings
         app: root.app
         category: "Visualizer"
         fileName: root.settingsFile
         property alias mode: mode.currentIndex
-        values: ({mode})
+        values: ({mode: visualizerSettings.mode})
     }
     Shortcut { sequence: "Escape"; onActivated: root.visibility === Window.FullScreen ? root.showNormal() : root.hide() }
     Shortcut { sequence: "F11"; onActivated: root.visibility === Window.FullScreen ? root.showNormal() : root.showFullScreen() }

@@ -3395,10 +3395,15 @@ body.touch .track .index-cell {
 }
 
 /* Saved playlists are drafts; transport always consumes Play Queue. */
-.playlist-tabs { display:flex; flex:none; gap:4px; overflow-x:auto; padding:6px; border-bottom:1px solid var(--border, #555); }
-.playlist-tab { display:flex; flex:none; border:1px solid transparent; border-radius:5px; }
-.playlist-tab.active { border-color:var(--accent, #7398dc); background:#738fb329; }
-.playlist-tab button { padding:7px 10px; color:inherit; background:transparent; border:0; white-space:nowrap; }
+.playlist-tabs { display:flex; flex:none; gap:2px; overflow-x:auto; padding:6px 8px 0; background:var(--window); border-bottom:1px solid var(--border); }
+.playlist-tab { display:flex; align-items:center; flex:none; position:relative; color:var(--muted); border:1px solid transparent; border-bottom:0; border-radius:6px 6px 0 0; }
+.playlist-tab.active { color:var(--text); border-color:var(--border); background:var(--base); box-shadow:inset 0 2px var(--highlight); }
+.playlist-tab:not(.active):hover { color:var(--text); background:var(--alternate); }
+.playlist-tab button { min-height:34px; padding:7px 12px; color:inherit; background:transparent; border:0; white-space:nowrap; }
+.playlist-tab button[role="tab"] { max-width:240px; overflow:hidden; text-overflow:ellipsis; }
+.playlist-tab button:not([role="tab"]) { min-height:24px; width:24px; padding:0; margin-right:5px; border-radius:4px; font-size:16px; }
+.playlist-tab button:not([role="tab"]):hover { background:var(--border); }
+.playlist-tab button:focus-visible { outline:2px solid var(--highlight); outline-offset:-3px; }
 .playlist-editor { display:flex; flex-direction:column; flex:1; min-height:0; overflow:hidden; padding:8px; gap:8px; }
 .workspace-actions,.workspace-close { display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
 .workspace-actions button,.workspace-close button { color:inherit; background:#738fb31a; border:1px solid #80808060; border-radius:4px; padding:7px 10px; }
