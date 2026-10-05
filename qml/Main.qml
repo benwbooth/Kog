@@ -659,14 +659,15 @@ ApplicationWindow {
         return selectedRows.indexOf(row) !== -1
     }
 
+    function syncQueueSelection() {
+        const state = JSON.parse(appController.queue_selection)
+        root.selectedRows = state.indices
+        root.selectionAnchor = state.anchor === null ? -1 : state.anchor
+        root.selectedRow = state.indices.indexOf(root.selectedRow) >= 0 ? root.selectedRow : (state.indices.length ? state.indices[0] : -1)
+    }
     Connections {
         target: appController
-        function onQueue_selectionChanged() {
-            const state = JSON.parse(appController.queue_selection)
-            root.selectedRows = state.indices
-            root.selectionAnchor = state.anchor === null ? -1 : state.anchor
-            root.selectedRow = state.indices.indexOf(root.selectedRow) >= 0 ? root.selectedRow : (state.indices.length ? state.indices[0] : -1)
-        }
+        function onQueue_selectionChanged() { root.syncQueueSelection() }
     }
 
     function setPlaylistSelection(rows, current, anchor) {
@@ -975,6 +976,7 @@ ApplicationWindow {
     }
 
     Component.onCompleted: {
+        root.syncQueueSelection()
         fileTreeModel.set_root_path_text(appController.directory_path)
         root.requestTreeExpandRestore()
         // Warm the selected synth backend in the background so the first

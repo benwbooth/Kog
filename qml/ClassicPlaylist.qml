@@ -37,13 +37,15 @@ Item {
         if (selectedRows.length) app.remove_tracks(selectedRows.join(","))
         selectedRows = []
     }
+    function syncQueueSelection() {
+        const state = JSON.parse(root.app.queue_selection)
+        root.selectedRows = state.indices
+        root.selectionAnchor = state.anchor === null ? -1 : state.anchor
+    }
+    Component.onCompleted: root.syncQueueSelection()
     Connections {
         target: root.app
-        function onQueue_selectionChanged() {
-            const state = JSON.parse(root.app.queue_selection)
-            root.selectedRows = state.indices
-            root.selectionAnchor = state.anchor === null ? -1 : state.anchor
-        }
+        function onQueue_selectionChanged() { root.syncQueueSelection() }
         function onPlaylist_countChanged() {
             root.selectedRows = root.selectedRows.filter(row => row < root.app.playlist_count)
             if (root.selectionAnchor >= root.app.playlist_count) root.selectionAnchor = -1

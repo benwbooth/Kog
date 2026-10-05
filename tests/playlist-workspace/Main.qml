@@ -31,8 +31,11 @@ ApplicationWindow {
             check(controller.current_index === 1, "restored current row")
             check(controller.volume === 0, "restored session volume")
             check(snapshot.tabs.length === 2, "restored playlist draft")
-            check(JSON.parse(controller.create_playlist("Session restore complete")).ok, "restore marker")
-            Qt.quit()
+            Qt.callLater(function() {
+                check(classic.selectedRows.join(",") === "1" && classic.selectionAnchor === 1, "restored queue selection projection")
+                check(JSON.parse(controller.create_playlist("Session restore complete")).ok, "restore marker")
+                Qt.quit()
+            })
             return
         }
         const created = JSON.parse(controller.create_playlist("Workspace smoke")); check(created.ok, "create"); playlistId = created.id
@@ -90,6 +93,7 @@ ApplicationWindow {
                 root.check(controller.playback_state === "playing", "native resume")
                 root.stage=3
             } else if (root.stage === 3 && controller.current_index === 1 && controller.playback_state === "stopped") {
+                controller.selection_json("{}", JSON.stringify({op:"set",indices:[1],anchor:1}), 2)
                 root.check(JSON.parse(controller.create_playlist("Workspace smoke complete")).ok, "completion marker")
                 console.warn("WORKSPACE PASS: editor, native playback, pause, seek, resume, end of stream")
                 Qt.quit()
