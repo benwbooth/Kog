@@ -72,6 +72,9 @@ ApplicationWindow {
     property int renamingPlaylistId: -2
     property int playlistInsertIndex: -1
     property int playlistMenuPid: -1
+    property string playlistAppendTarget: ""
+    readonly property var activePlaylistTab: (playlistWorkspace.tabs || []).find(tab => tab.key === playlistWorkspace.active) || ({name: qsTr("Play Queue")})
+    readonly property string appendPlaylistLabel: qsTr("Append to “%1”").arg(activePlaylistTab.name)
     property int playlistRenamePid: -1
     property real volumeBeforeMute: 0.75
     property int mprisRaiseSerialSeen: 0
@@ -783,12 +786,38 @@ ApplicationWindow {
         savePlaylistDialog.openFor(root.selectedRows.length > 0)
     }
 
-    function enqueueSelectedPlaylists(startPlayback) {
-        const ids = orderedSelectedPlaylistIds()
-        if (ids.length === 0)
-            return
-        for (const pid of ids)
-            appController.enqueue_playlist(pid, startPlayback && pid === ids[ids.length - 1])
+    function canAppendToTab(key) {
+        const tab = (playlistWorkspace.tabs || []).find(tab => tab.key === key)
+        return !!tab && !tab.readonly && !tab.loading && !playlistWorkspace.pending_close
+    }
+
+    function appendPlaylists(ids, key) {
+        if (ids.length && canAppendToTab(key))
+            appController.append_playlists_to_tab(JSON.stringify(ids), key)
+    }
+
+    function openSelectedPlaylists() {
+        for (const pid of orderedSelectedPlaylistIds()) {
+            const row = playlistsModelItems().find(item => item.pid === pid)
+            if (row) appController.open_playlist_tab(row.pid, row.name)
+        }
+    }
+
+    function playlistDragTarget(from, x, y) {
+        const key = playlistWorkspaceBar.tabAtPoint(from, x, y)
+        if (key) return canAppendToTab(key) ? key : ""
+        const point = from.mapToItem(playlistPane, x, y)
+        if (point.x >= 0 && point.x < playlistPane.width
+                && point.y >= playlistWorkspaceBar.height && point.y < playlistPane.height
+                && canAppendToTab(playlistWorkspace.active))
+            return playlistWorkspace.active
+        return ""
+    }
+
+    function resetPlaylistDrag() {
+        playlistsList.interactive = true
+        playlistAppendTarget = ""
+        playlistInsertIndex = -1
     }
 
     function commitPlaylistDrag(draggedPid, insertIndex) {
@@ -1728,6 +1757,23 @@ ApplicationWindow {
         }
     }
 
+    Action {
+        id: undoQueueAppendAction
+        text: qsTr("Undo Append")
+        icon.name: "edit-undo"
+        shortcut: StandardKey.Undo
+        enabled: root.playlistWorkspace.active === "queue" && !!root.playlistWorkspace.actions.undo
+        onTriggered: appController.workspace_command(JSON.stringify({op: "undo"}))
+    }
+    Action {
+        id: redoQueueAppendAction
+        text: qsTr("Redo Append")
+        icon.name: "edit-redo"
+        shortcut: StandardKey.Redo
+        enabled: root.playlistWorkspace.active === "queue" && !!root.playlistWorkspace.actions.redo
+        onTriggered: appController.workspace_command(JSON.stringify({op: "redo"}))
+    }
+
     Menu {
         id: playlistContextMenu
         MenuItem {
@@ -1747,6 +1793,8 @@ ApplicationWindow {
         MenuItem { action: toggleQueueAction }
         MenuItem { action: stopAfterSelectionAction }
         MenuItem { action: removeSelectedAction; icon.name: "edit-delete" }
+        MenuItem { action: undoQueueAppendAction }
+        MenuItem { action: redoQueueAppendAction }
         MenuSeparator {}
         MenuItem { action: saveSelectionAction }
         MenuItem { action: editTagsAction }
@@ -1821,14 +1869,19 @@ ApplicationWindow {
         id: playlistMenu
 
         MenuItem {
-            text: qsTr("Add to Pane")
-            icon.name: "list-add"
-            onTriggered: {
-                const ids = root.orderedSelectedPlaylistIds()
-                for (const pid of ids)
-                    appController.enqueue_playlist(pid, false)
-            }
+            objectName: "openPlaylistTabMenuItem"
+            text: qsTr("Open in Tab")
+            icon.name: "tab-new"
+            onTriggered: root.openSelectedPlaylists()
         }
+        MenuItem {
+            objectName: "appendPlaylistMenuItem"
+            text: root.appendPlaylistLabel
+            icon.name: "list-add"
+            enabled: root.canAppendToTab(root.playlistWorkspace.active)
+            onTriggered: root.appendPlaylists(root.orderedSelectedPlaylistIds(), root.playlistWorkspace.active)
+        }
+        MenuSeparator {}
         MenuItem {
             text: qsTr("Play")
             icon.name: "media-playback-start"
@@ -1839,7 +1892,7 @@ ApplicationWindow {
             }
         }
         MenuItem {
-            text: qsTr("Replace Pane")
+            text: qsTr("Replace Play Queue")
             icon.name: "document-open"
             onTriggered: appController.load_playlist_into_pane(root.playlistMenuPid)
         }
@@ -3201,196 +3254,71 @@ ApplicationWindow {
                         model: playlistsModel
                         spacing: 1
 
-                        delegate: Item {
+                        delegate: PlaylistSidebarRow {
                             id: playlistRow
                             required property int index
-                            required property int pid
-                            required property string name
-                            required property int entryCount
+                            objectName: "sidebarPlaylist_" + pid
                             width: playlistsList.width
                             height: 30
-
-                            readonly property bool isFavorite: pid === 0
-                            readonly property bool isSelected:
-                                root.isPlaylistSelected(pid)
-                            readonly property bool renaming:
-                                root.renamingPlaylistId === pid
-
-                            Rectangle {
-                                anchors.fill: parent
-                                radius: 4
-                                visible: playlistRow.isSelected || rowHover.hovered
-                                color: playlistRow.isSelected
-                                    ? root.palette.highlight
-                                    : root.palette.button
+                            theme: root.palette
+                            selected: root.isPlaylistSelected(pid)
+                            renaming: root.renamingPlaylistId === pid
+                            canAppend: root.canAppendToTab(root.playlistWorkspace.active)
+                            destinationName: root.activePlaylistTab.name
+                            onSelectedWithModifiers: modifiers => {
+                                root.selectPlaylistById(pid, modifiers)
+                                playlistRenameTimer.stop()
                             }
-
-                            RowLayout {
-                                anchors.fill: parent
-                                anchors.leftMargin: 8
-                                anchors.rightMargin: 8
-                                spacing: 6
-
-                                Image {
-                                    visible: playlistRow.isFavorite
-                                    Layout.preferredWidth: 14
-                                    Layout.preferredHeight: 14
-                                    Layout.alignment: Qt.AlignVCenter
-                                    source: Qt.resolvedUrl("icons/star-filled.svg")
-                                    sourceSize.width: 28
-                                    sourceSize.height: 28
-                                    fillMode: Image.PreserveAspectFit
-                                    mipmap: true
-                                    Accessible.name: qsTr("Favorites")
+                            onOpened: {
+                                playlistRenameTimer.stop()
+                                root.renamingPlaylistId = -2
+                                appController.open_playlist_tab(pid, name)
+                            }
+                            onAppendRequested: root.appendPlaylists([pid], root.playlistWorkspace.active)
+                            onContextRequested: {
+                                if (!selected) {
+                                    root.setPlaylistSelectionById([pid])
+                                    root.playlistSelectionAnchor = pid
                                 }
-                                Label {
-                                    Layout.fillWidth: true
-                                    visible: !playlistRow.renaming
-                                    text: playlistRow.isFavorite
-                                        ? qsTr("Favorites")
-                                        : playlistRow.name
-                                    font.pixelSize: 12
-                                    color: playlistRow.isSelected
-                                        ? root.palette.highlightedText
-                                        : root.palette.text
-                                    elide: Text.ElideRight
-                                }
-                                TextField {
-                                    Layout.fillWidth: true
-                                    visible: playlistRow.renaming
-                                    text: playlistRow.name
-                                    font.pixelSize: 12
-                                    selectByMouse: true
-                                    maximumLength: 120
-                                    background: Item {}
-                                    onVisibleChanged: if (visible) {
-                                        forceActiveFocus()
-                                        selectAll()
-                                    }
-                                    onAccepted: {
-                                        const result = root.renamePlaylistById(
-                                            playlistRow.pid, text)
-                                        if (result)
-                                            root.renamingPlaylistId = -2
-                                    }
-                                    Keys.onEscapePressed:
-                                        root.renamingPlaylistId = -2
-                                    onActiveFocusChanged: if (!activeFocus
-                                            && playlistRow.renaming) {
-                                        const result = root.renamePlaylistById(
-                                            playlistRow.pid, text)
-                                        if (result)
-                                            root.renamingPlaylistId = -2
-                                    }
-                                }
-                                Label {
-                                    visible: !playlistRow.renaming
-                                    text: String(playlistRow.entryCount)
-                                    font.pixelSize: 11
-                                    color: root.palette.placeholderText
+                                root.playlistMenuPid = pid
+                                playlistMenu.popup()
+                            }
+                            onRenameAccepted: value => {
+                                if (root.renamePlaylistById(pid, value)) root.renamingPlaylistId = -2
+                            }
+                            onRenameCancelled: root.renamingPlaylistId = -2
+                            onNavigationRequested: (delta, modifiers) => {
+                                const next = Math.max(0, Math.min(playlistsModel.count - 1, index + delta))
+                                root.selectPlaylistById(playlistsModel.get(next).pid, modifiers)
+                                playlistsList.positionViewAtIndex(next, ListView.Contain)
+                                const row = playlistsList.itemAtIndex(next)
+                                if (row) row.forceActiveFocus()
+                            }
+                            onDragStarted: {
+                                playlistRenameTimer.stop()
+                                playlistsList.interactive = false
+                                if (!selected) {
+                                    root.setPlaylistSelectionById([pid])
+                                    root.playlistSelectionAnchor = pid
                                 }
                             }
-
-                            HoverHandler {
-                                id: rowHover
+                            onDragMoved: (x, y) => {
+                                root.playlistAppendTarget = root.playlistDragTarget(playlistRow, x, y)
+                                const point = playlistRow.mapToItem(playlistsList, x, y)
+                                root.playlistInsertIndex = !favorite && !root.playlistAppendTarget
+                                        && point.x >= 0 && point.x < playlistsList.width
+                                        && point.y >= 0 && point.y < playlistsList.height
+                                    ? Math.max(1, Math.min(Math.floor((point.y + playlistsList.contentY) / 31), playlistsModel.count))
+                                    : -1
                             }
-
-                            MouseArea {
-                                anchors.fill: parent
-                                acceptedButtons: Qt.LeftButton | Qt.RightButton
-                                hoverEnabled: true
-                                onPressed: mouse => {
-                                    pressX = mouse.x
-                                    pressY = mouse.y
-                                    dragging = false
-                                    if (mouse.button === Qt.RightButton) {
-                                        if (!root.isPlaylistSelected(playlistRow.pid)) {
-                                            root.setPlaylistSelectionById([playlistRow.pid])
-                                            root.playlistSelectionAnchor = playlistRow.pid
-                                        }
-                                        root.playlistMenuPid = playlistRow.pid
-                                        playlistMenu.popup()
-                                    }
-                                }
-                                onPositionChanged: mouse => {
-                                    if ((mouse.buttons & Qt.LeftButton) === 0
-                                            || playlistRow.isFavorite)
-                                        return
-                                    if (!dragging
-                                            && (Math.abs(mouse.x - pressX)
-                                                >= Application.styleHints.startDragDistance
-                                                || Math.abs(mouse.y - pressY)
-                                                >= Application.styleHints.startDragDistance)) {
-                                        dragging = true
-                                        playlistRenameTimer.stop()
-                                        playlistsList.interactive = false
-                                        if (!root.isPlaylistSelected(playlistRow.pid)) {
-                                            root.setPlaylistSelectionById([playlistRow.pid])
-                                            root.playlistSelectionAnchor = playlistRow.pid
-                                        }
-                                    }
-                                    if (!dragging)
-                                        return
-                                    const panePoint = mapToItem(playlistView,
-                                        mouse.x, mouse.y)
-                                    if (panePoint.x >= 0
-                                            && panePoint.x <= playlistView.width
-                                            && panePoint.y >= 0
-                                            && panePoint.y <= playlistView.height) {
-                                        root.playlistDropTarget =
-                                            root.playlistDropIndex(panePoint.y)
-                                        root.playlistInsertIndex = -1
-                                    } else {
-                                        root.playlistDropTarget = -1
-                                        const listPoint = mapToItem(playlistsList,
-                                            mouse.x, mouse.y)
-                                        const row = Math.floor(
-                                            (listPoint.y + playlistsList.contentY) / 31)
-                                        // Favorites at row 0 never moves.
-                                        root.playlistInsertIndex = Math.max(1,
-                                            Math.min(row, playlistsModel.count))
-                                    }
-                                }
-                                onClicked: mouse => {
-                                    if (mouse.button !== Qt.LeftButton)
-                                        return
-                                    root.selectPlaylistById(playlistRow.pid, mouse.modifiers)
-                                    playlistRenameTimer.stop()
-                                    if (mouse.modifiers === Qt.NoModifier)
-                                        appController.open_playlist_tab(playlistRow.pid, playlistRow.name)
-                                }
-                                onDoubleClicked: mouse => {
-                                    if (mouse.button !== Qt.LeftButton)
-                                        return
-                                    playlistRenameTimer.stop()
-                                    root.renamingPlaylistId = -2
-                                    appController.open_playlist_tab(playlistRow.pid, playlistRow.name)
-                                }
-                                onReleased: mouse => {
-                                    if (!dragging)
-                                        return
-                                    dragging = false
-                                    playlistsList.interactive = true
-                                    if (root.playlistDropTarget >= 0) {
-                                        root.enqueueSelectedPlaylists(false)
-                                    } else if (root.playlistInsertIndex >= 0) {
-                                        root.commitPlaylistDrag(
-                                            playlistRow.pid, root.playlistInsertIndex)
-                                    }
-                                    root.playlistDropTarget = -1
-                                    root.playlistInsertIndex = -1
-                                }
-                                onCanceled: {
-                                    dragging = false
-                                    playlistsList.interactive = true
-                                    root.playlistDropTarget = -1
-                                    root.playlistInsertIndex = -1
-                                }
-
-                                property real pressX: 0
-                                property real pressY: 0
-                                property bool dragging: false
+                            onDragFinished: (x, y) => {
+                                const key = root.playlistDragTarget(playlistRow, x, y)
+                                if (key) root.appendPlaylists(root.orderedSelectedPlaylistIds(), key)
+                                else if (root.playlistInsertIndex >= 0 && !favorite)
+                                    root.commitPlaylistDrag(pid, root.playlistInsertIndex)
+                                root.resetPlaylistDrag()
                             }
+                            onDragCancelled: root.resetPlaylistDrag()
                         }
 
                         Rectangle {
@@ -3415,15 +3343,28 @@ ApplicationWindow {
         }
 
         Rectangle {
+            id: playlistPane
+            objectName: "playlistPane"
             SplitView.fillWidth: true
             SplitView.minimumWidth: 320
             color: root.palette.base
+            Rectangle {
+                z: 10
+                anchors.fill: parent
+                anchors.topMargin: playlistWorkspaceBar.height
+                color: "transparent"
+                border.color: root.palette.highlight
+                border.width: 2
+                visible: root.playlistAppendTarget === root.playlistWorkspace.active
+            }
 
             ColumnLayout {
                 anchors.fill: parent
                 spacing: 0
 
                 PlaylistWorkspaceBar {
+                    id: playlistWorkspaceBar
+                    appendTarget: root.playlistAppendTarget
                     Layout.fillWidth: true
                     app: appController
                     workspaceState: root.playlistWorkspace

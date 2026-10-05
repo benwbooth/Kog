@@ -208,6 +208,8 @@ pub mod qobject {
         #[qinvokable]
         fn open_playlist_tab(self: Pin<&mut AppController>, id: i32, name: QString);
         #[qinvokable]
+        fn append_playlists_to_tab(self: Pin<&mut AppController>, ids: QString, key: QString);
+        #[qinvokable]
         fn workspace_add_queue_selection(self: Pin<&mut AppController>, indices: QString);
         #[qinvokable]
         fn poll_workspace(self: Pin<&mut AppController>);
@@ -3660,8 +3662,7 @@ impl qobject::AppController {
                 &self
                     .rust()
                     .session
-                    .workspace_model()
-                    .snapshot_for(self.rust().tracks.len(), selected.max(0) as usize),
+                    .workspace_for_selection(selected.max(0) as usize),
             )
             .unwrap_or_default(),
         )
@@ -3887,6 +3888,32 @@ impl qobject::AppController {
             name: name.to_string(),
             readonly: id == 0,
         });
+    }
+
+    pub fn append_playlists_to_tab(mut self: Pin<&mut Self>, ids: QString, key: QString) {
+        let entries = serde_json::from_str::<Vec<i64>>(&ids.to_string())
+            .map_err(|error| error.to_string())
+            .and_then(|ids| {
+                let mut entries = Vec::new();
+                for id in ids {
+                    entries.extend(self.as_ref().playlist_stored_entries(id)?);
+                }
+                Ok(entries)
+            });
+        match entries {
+            Ok(entries) if entries.is_empty() => {
+                self.as_mut().set_status(qstring("Playlist is empty"))
+            }
+            Ok(entries) => self.as_mut().session_command(SessionCommand::AppendToTab {
+                key: key.to_string(),
+                scope: "local".into(),
+                entries: entries
+                    .into_iter()
+                    .map(kog_server::api::entry_json)
+                    .collect(),
+            }),
+            Err(error) => self.as_mut().set_status(qstring(error)),
+        }
     }
 
     pub fn workspace_command(mut self: Pin<&mut Self>, command: QString) {

@@ -13,6 +13,7 @@ ApplicationWindow {
     property int stage: 0
     property int playlistId: 0
     property int attempts: 0
+    property real pausedPosition: 0
     readonly property var snapshot: { const revision = controller.workspace_revision; return JSON.parse(controller.workspace_json()) }
     function send(value) { controller.workspace_command(JSON.stringify(value)) }
     function check(value, message) { if (!value) { console.error("WORKSPACE FAIL: " + message); Qt.exit(1); throw new Error(message) } }
@@ -87,6 +88,19 @@ ApplicationWindow {
                 root.check(root.snapshot.selected.join(",") === "2" && controller.playlist_count === 1, "draft drag changes only the draft")
                 root.send({op:"undo"})
                 root.check(root.snapshot.selected.join(",") === "0" && !root.snapshot.tabs[1].dirty, "draft drag undo restores selection")
+                const destination = JSON.parse(controller.create_playlist("Append destination"))
+                root.check(destination.ok, "create append destination")
+                controller.open_playlist_tab(destination.id, "Append destination")
+                const destinationKey = root.snapshot.active
+                root.send({op:"focus",key:"local:" + root.playlistId})
+                controller.append_playlists_to_tab(JSON.stringify([root.playlistId]), destinationKey)
+                root.check(root.snapshot.active === "local:" + root.playlistId && controller.playlist_count === 1, "append to another tab keeps the active pane and queue")
+                root.send({op:"focus",key:destinationKey})
+                root.check(root.snapshot.entries.length === 3, "all stored playlist entries appended to destination")
+                root.send({op:"undo"}); root.check(root.snapshot.entries.length === 0, "draft append is one undo step")
+                root.send({op:"redo"}); root.check(root.snapshot.entries.length === 3, "draft append redo")
+                root.send({op:"undo"}); root.send({op:"close",key:destinationKey})
+                root.send({op:"focus",key:"local:" + root.playlistId})
                 root.send({op:"select",indices:[0]}); root.send({op:"remove"})
                 root.check(controller.playlist_count === 1 && root.snapshot.entries.length === 2, "draft must not change queue")
                 root.send({op:"close",key:root.snapshot.active}); root.check(!!root.snapshot.pending_close,"dirty close confirmation")
@@ -106,6 +120,19 @@ ApplicationWindow {
                 controller.play_pause()
                 root.check(controller.playback_state === "paused", "native pause")
                 controller.seek(0.1)
+                root.pausedPosition = controller.position_seconds
+                controller.append_playlists_to_tab(JSON.stringify([root.playlistId]), "queue")
+                root.stage=21
+            } else if (root.stage === 21 && controller.playlist_count === 5) {
+                root.check(controller.playback_state === "paused" && controller.current_index === 0, "queue append preserves paused output")
+                root.check(Math.abs(controller.position_seconds - root.pausedPosition) < 0.05, "queue append preserves position")
+                root.send({op:"focus",key:"queue"}); root.send({op:"undo"})
+                root.check(controller.playlist_count === 2 && controller.playback_state === "paused", "queue append undo")
+                root.send({op:"redo"}); root.stage=22
+            } else if (root.stage === 22 && controller.playlist_count === 5) {
+                root.send({op:"undo"})
+                root.check(controller.playlist_count === 2 && controller.playback_state === "paused", "queue append redo and second undo")
+                controller.open_playlist_tab(root.playlistId,"Renamed smoke")
                 controller.play_pause()
                 root.check(controller.playback_state === "playing", "native resume")
                 root.stage=3

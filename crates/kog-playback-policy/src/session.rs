@@ -174,6 +174,11 @@ pub enum Command<T> {
         #[serde(default)]
         selected_only: bool,
     },
+    AppendToTab {
+        key: String,
+        scope: String,
+        entries: Vec<Value>,
+    },
     Expand {
         scope: String,
         entries: Vec<Value>,
@@ -365,6 +370,16 @@ struct OutputRequest {
     started: bool,
 }
 
+/// An explicit append is one undo step, including while its I/O is pending.
+/// Row identities let undo leave unrelated rows and the current output alone.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct QueueAppend {
+    scope: String,
+    entries: Vec<Value>,
+    token: u64,
+    rows: Vec<u64>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Session<T> {
     id: String,
@@ -390,6 +405,10 @@ pub struct Session<T> {
     visible: Vec<usize>,
     pending: BTreeMap<u64, Pending<T>>,
     expansion_order: VecDeque<u64>,
+    #[serde(default)]
+    append_undo: Vec<QueueAppend>,
+    #[serde(default)]
+    append_redo: Vec<QueueAppend>,
     output: Option<OutputRequest>,
     transport_epoch: u64,
     radio: RadioBuffer<T>,
@@ -459,6 +478,8 @@ impl<T: Item> Session<T> {
             visible: vec![],
             pending: BTreeMap::new(),
             expansion_order: VecDeque::new(),
+            append_undo: vec![],
+            append_redo: vec![],
             output: None,
             transport_epoch: 0,
             radio: RadioBuffer::default(),
@@ -490,8 +511,18 @@ impl<T: Item> Session<T> {
         &self.workspace
     }
     pub fn workspace(&self) -> workspace::Snapshot {
-        self.workspace
-            .snapshot_for(self.queue.len(), self.selection.indices.len())
+        self.workspace_for_selection(self.selection.indices.len())
+    }
+    pub fn workspace_for_selection(&self, selected: usize) -> workspace::Snapshot {
+        let mut view = self.workspace.snapshot_for(self.queue.len(), selected);
+        if view.active == workspace::QUEUE_TAB && view.pending_close.is_none() {
+            view.actions.append = true;
+            view.can_undo = !self.append_undo.is_empty();
+            view.can_redo = !self.append_redo.is_empty();
+            view.actions.undo = view.can_undo;
+            view.actions.redo = view.can_redo;
+        }
+        view
     }
     pub fn snapshot(&self) -> Snapshot<'_, T> {
         let mut stop_after: Vec<_> = self.order.stop_after_indices().collect();
@@ -591,6 +622,21 @@ impl<T: Item> Session<T> {
         {
             self.play(index, false, effects);
         }
+    }
+    fn remove(&mut self, indices: Vec<usize>, effects: &mut Vec<Effect>) {
+        let keep: Vec<_> = (0..self.queue.len())
+            .filter(|i| !indices.contains(i))
+            .collect();
+        let mapping = (0..self.queue.len())
+            .map(|i| keep.iter().position(|old| *old == i))
+            .collect();
+        if self.current.is_some_and(|i| indices.contains(&i)) {
+            self.stop(effects)
+        }
+        self.queue = keep.iter().map(|i| self.queue[*i].clone()).collect();
+        self.metadata = keep.iter().map(|i| self.metadata[*i].clone()).collect();
+        self.rows = keep.iter().map(|i| self.rows[*i]).collect();
+        self.changed(mapping, effects);
     }
     fn reorder(&mut self, order: Vec<usize>, effects: &mut Vec<Effect>) {
         if order.len() != self.queue.len() {
@@ -729,14 +775,111 @@ impl<T: Item> Session<T> {
             entries,
         });
     }
-    fn workspace_command(&mut self, command: workspace::Command, effects: &mut Vec<Effect>) {
-        if let workspace::Command::Append { entries } = &command {
-            if let Some(tab) = self
-                .workspace()
-                .tabs
-                .iter()
-                .find(|t| t.key == self.workspace().active)
+    fn begin_append(&mut self, scope: String, entries: Vec<Value>, effects: &mut Vec<Effect>) {
+        self.expand(
+            scope.clone(),
+            entries.clone(),
+            workspace::QueueAction::AddToQueue,
+            effects,
+        );
+        self.append_undo.push(QueueAppend {
+            scope,
+            entries,
+            token: self.serial,
+            rows: vec![],
+        });
+        if self.append_undo.len() > 50 {
+            self.append_undo.remove(0);
+        }
+    }
+    fn undo_append(&mut self, redo: bool, effects: &mut Vec<Effect>) {
+        if redo {
+            if let Some(edit) = self.append_redo.pop() {
+                self.begin_append(edit.scope, edit.entries, effects);
+            }
+            return;
+        }
+        let Some(edit) = self.append_undo.pop() else {
+            return;
+        };
+        self.pending.remove(&edit.token);
+        self.expansion_order.retain(|serial| *serial != edit.token);
+        let indices = self
+            .rows
+            .iter()
+            .enumerate()
+            .filter_map(|(i, id)| edit.rows.contains(id).then_some(i))
+            .collect::<Vec<_>>();
+        if !indices.is_empty() {
+            self.remove(indices, effects);
+        }
+        self.append_redo.push(edit);
+        self.finish_expansions(effects);
+    }
+    fn finish_expansions(&mut self, effects: &mut Vec<Effect>) {
+        while let Some(serial) = self.expansion_order.front().copied() {
+            if !matches!(
+                self.pending.get(&serial),
+                Some(Pending::Expand { ready: Some(_), .. })
+            ) {
+                break;
+            }
+            self.expansion_order.pop_front();
+            if let Some(Pending::Expand {
+                action,
+                transport_epoch,
+                ready: Some(result),
+                ..
+            }) = self.pending.remove(&serial)
             {
+                match result {
+                    Ok(tracks) => {
+                        let action = if transport_epoch != self.transport_epoch
+                            && action == workspace::QueueAction::PlayNow
+                        {
+                            workspace::QueueAction::AddToQueue
+                        } else {
+                            action
+                        };
+                        let epoch = self.transport_epoch;
+                        let start = self.rows.len();
+                        self.append(tracks, action, effects);
+                        self.transport_epoch = epoch;
+                        if let Some(edit) = self
+                            .append_undo
+                            .iter_mut()
+                            .find(|edit| edit.token == serial)
+                        {
+                            edit.rows = self.rows[start..].to_vec();
+                        }
+                        if self.rows.len() == start {
+                            self.append_undo.retain(|edit| edit.token != serial);
+                        }
+                    }
+                    Err(error) => {
+                        self.error = Some(error);
+                        self.append_undo.retain(|edit| edit.token != serial);
+                    }
+                }
+            }
+        }
+    }
+    fn workspace_command(&mut self, command: workspace::Command, effects: &mut Vec<Effect>) {
+        if self.workspace().active == workspace::QUEUE_TAB {
+            if matches!(command, workspace::Command::Undo | workspace::Command::Redo) {
+                if self.workspace().pending_close.is_none() {
+                    self.undo_append(matches!(command, workspace::Command::Redo), effects);
+                }
+                return;
+            }
+        }
+        let append = match &command {
+            workspace::Command::Append { entries } => Some((self.workspace().active, entries)),
+            workspace::Command::AppendTo { key, entries } => Some((key.clone(), entries)),
+            _ => None,
+        };
+        if let Some((key, entries)) = append {
+            if let Some(tab) = self.workspace().tabs.iter().find(|t| t.key == key) {
                 let device = tab.scope == "device";
                 if entries
                     .iter()
@@ -881,38 +1024,7 @@ impl<T: Item> Session<T> {
                         ready,
                     },
                 );
-                while let Some(serial) = self.expansion_order.front().copied() {
-                    if !matches!(
-                        self.pending.get(&serial),
-                        Some(Pending::Expand { ready: Some(_), .. })
-                    ) {
-                        break;
-                    }
-                    self.expansion_order.pop_front();
-                    if let Some(Pending::Expand {
-                        action,
-                        transport_epoch,
-                        ready: Some(result),
-                        ..
-                    }) = self.pending.remove(&serial)
-                    {
-                        match result {
-                            Ok(tracks) => {
-                                let action = if transport_epoch != self.transport_epoch
-                                    && action == workspace::QueueAction::PlayNow
-                                {
-                                    workspace::QueueAction::AddToQueue
-                                } else {
-                                    action
-                                };
-                                let epoch = self.transport_epoch;
-                                self.append(tracks, action, effects);
-                                self.transport_epoch = epoch;
-                            }
-                            Err(error) => self.error = Some(error),
-                        }
-                    }
-                }
+                self.finish_expansions(effects);
             }
             Pending::Radio { generation, .. } => {
                 let accepted = match result {
@@ -1006,19 +1118,7 @@ impl<T: Item> Session<T> {
             }
             Command::Clear => self.clear(&mut effects),
             Command::Remove { indices } => {
-                let keep: Vec<_> = (0..self.queue.len())
-                    .filter(|i| !indices.contains(i))
-                    .collect();
-                let mapping = (0..self.queue.len())
-                    .map(|i| keep.iter().position(|old| *old == i))
-                    .collect();
-                if self.current.is_some_and(|i| indices.contains(&i)) {
-                    self.stop(&mut effects)
-                }
-                self.queue = keep.iter().map(|i| self.queue[*i].clone()).collect();
-                self.metadata = keep.iter().map(|i| self.metadata[*i].clone()).collect();
-                self.rows = keep.iter().map(|i| self.rows[*i]).collect();
-                self.changed(mapping, &mut effects);
+                self.remove(indices, &mut effects);
             }
             Command::Move {
                 mut indices,
@@ -1099,6 +1199,23 @@ impl<T: Item> Session<T> {
                     .map(|(_, track)| track.entry())
                     .collect();
                 self.workspace_command(workspace::Command::Append { entries }, &mut effects);
+            }
+            Command::AppendToTab {
+                key,
+                scope,
+                entries,
+            } => {
+                if key == workspace::QUEUE_TAB {
+                    if self.workspace().pending_close.is_none() && !entries.is_empty() {
+                        self.append_redo.clear();
+                        self.begin_append(scope, entries, &mut effects);
+                    }
+                } else {
+                    self.workspace_command(
+                        workspace::Command::AppendTo { key, entries },
+                        &mut effects,
+                    );
+                }
             }
             Command::Expand {
                 scope,
@@ -1326,6 +1443,8 @@ impl<T: Item> Session<T> {
         self.pending
             .retain(|_, p| !matches!(p, Pending::Expand { .. }));
         self.expansion_order.clear();
+        self.append_undo.clear();
+        self.append_redo.clear();
         self.changed(vec![None; count], effects);
     }
     fn toggle(&mut self, effects: &mut Vec<Effect>) {

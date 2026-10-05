@@ -6,11 +6,24 @@ Item {
     id: bar
     required property var app
     required property var workspaceState
+    property string appendTarget: ""
     readonly property var entries: workspaceState.tabs || []
     readonly property bool multipleTabs: entries.length > 1
     visible: multipleTabs
     implicitHeight: multipleTabs ? tabs.implicitHeight : 0
     function send(command) { app.workspace_command(JSON.stringify(command)) }
+    function tabAtPoint(from, x, y) {
+        const point = from.mapToItem(tabs, x, y)
+        if (!visible || point.x < 0 || point.x >= tabs.width || point.y < 0 || point.y >= tabs.height)
+            return ""
+        for (let index = 0; index < tabs.count; ++index) {
+            const item = tabs.itemAt(index)
+            const local = from.mapToItem(item, x, y)
+            if (local.x >= 0 && local.x < item.width && local.y >= 0 && local.y < item.height)
+                return item.modelData.key
+        }
+        return ""
+    }
     TabBar {
         id: tabs
         objectName: "playlistTabBar"
@@ -53,6 +66,14 @@ Item {
                 width: implicitWidth + (closeButton.visible ? closeButton.width : 0)
                 rightPadding: leftPadding + (closeButton.visible ? closeButton.width + 6 : 0)
                 onClicked: bar.send({op: "focus", key: modelData.key})
+                Rectangle {
+                    anchors.fill: parent
+                    color: "transparent"
+                    border.width: 2
+                    border.color: tab.palette.highlight
+                    visible: bar.appendTarget === tab.modelData.key
+                    radius: 3
+                }
                 Accessible.name: text + (modelData.dirty ? qsTr("; unsaved changes") : "")
                 ToolTip.visible: hovered
                 ToolTip.delay: 700

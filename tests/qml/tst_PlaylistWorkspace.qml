@@ -67,6 +67,10 @@ TestCase {
         const header = findChild(editor, "workspacePlaylistHeader")
         compare(native.count, 2)
         compare(native.currentIndex, 1)
+        compare(tabs.tabAtPoint(native.itemAt(0), 10, native.height / 2), "queue")
+        compare(tabs.tabAtPoint(native.itemAt(1), 10, native.height / 2), "local:1")
+        compare(tabs.tabAtPoint(tabs, 10, tabs.height + 30), "")
+        compare(test.state.active, "local:1", "Finding a drop target must not switch tabs")
         for (let i = 0; i < native.count; ++i) {
             const tab = native.itemAt(i)
             if (tab.background && "text" in tab.background && tab.background.text.length)

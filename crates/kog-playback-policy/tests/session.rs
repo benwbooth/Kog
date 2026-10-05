@@ -323,3 +323,160 @@ fn fifo_play_requests_commit_only_the_last_output_without_cancelling_later_adds(
             .any(|e| matches!(e, Effect::Play { index: 1, .. }))
     );
 }
+
+fn append_to(s: &mut Session<Value>, key: &str, entries: Vec<Value>) -> Vec<Effect> {
+    s.dispatch(Command::AppendToTab {
+        key: key.into(),
+        scope: "local".into(),
+        entries,
+    })
+}
+fn complete_append(
+    s: &mut Session<Value>,
+    effects: Vec<Effect>,
+    tracks: Vec<Value>,
+) -> Vec<Effect> {
+    let token = effects
+        .into_iter()
+        .find_map(|e| match e {
+            Effect::Expand { token, .. } => Some(token),
+            _ => None,
+        })
+        .unwrap();
+    s.dispatch(Command::Complete {
+        token,
+        result: IoResult::Expanded { tracks },
+    })
+}
+fn workspace_action(s: &mut Session<Value>, command: workspace::Command) -> Vec<Effect> {
+    s.dispatch(Command::Workspace { command })
+}
+
+#[test]
+fn append_to_queue_is_one_undo_step_and_preserves_playback_and_duplicates() {
+    let mut s = session("qt");
+    append(&mut s, &["playing", "original"]);
+    let token = play_token(s.dispatch(Command::Play { index: 0 }));
+    s.dispatch(Command::Output {
+        token: token.clone(),
+        event: OutputEvent::Started,
+    });
+    s.dispatch(Command::Pause);
+    s.dispatch(Command::Output {
+        token: token.clone(),
+        event: OutputEvent::Progress {
+            seconds: 17.0,
+            duration: 120.0,
+        },
+    });
+    let original_rows = s.snapshot().row_ids.to_vec();
+    let tracks = vec![row("original"), row("added"), row("added")];
+    let request = append_to(&mut s, "queue", tracks.clone());
+    let effects = complete_append(&mut s, request, tracks.clone());
+    assert_eq!(&s.queue()[2..], tracks);
+    assert!(!effects.iter().any(|e| matches!(
+        e,
+        Effect::Play { .. } | Effect::Pause | Effect::Resume | Effect::Stop
+    )));
+    assert_eq!(s.snapshot().transport, Transport::Paused);
+    assert_eq!(s.snapshot().position, 17.0);
+    assert_eq!(s.snapshot().output_token, Some(&token));
+    let effects = workspace_action(&mut s, workspace::Command::Undo);
+    assert_eq!(s.snapshot().row_ids, original_rows);
+    assert_eq!(s.queue(), [row("playing"), row("original")]);
+    assert_eq!(s.snapshot().output_token, Some(&token));
+    assert!(
+        !effects
+            .iter()
+            .any(|e| matches!(e, Effect::Stop | Effect::Play { .. }))
+    );
+    assert!(s.workspace().actions.redo);
+    let redo = workspace_action(&mut s, workspace::Command::Redo);
+    complete_append(&mut s, redo, tracks.clone());
+    assert_eq!(&s.queue()[2..], tracks);
+    assert_eq!(s.snapshot().transport, Transport::Paused);
+    assert_eq!(s.snapshot().position, 17.0);
+    assert!(s.workspace().actions.undo);
+}
+
+#[test]
+fn undo_pending_append_ignores_late_completion_without_losing_other_io() {
+    let mut s = session("qt");
+    let first = append_to(&mut s, "queue", vec![row("cancelled")]);
+    let second = expand(&mut s, workspace::QueueAction::AddToQueue);
+    s.dispatch(Command::Complete {
+        token: second,
+        result: IoResult::Expanded {
+            tracks: vec![row("keep")],
+        },
+    });
+    assert!(s.queue().is_empty());
+    workspace_action(&mut s, workspace::Command::Undo);
+    assert_eq!(s.queue(), [row("keep")]);
+    assert!(complete_append(&mut s, first, vec![row("late")]).is_empty());
+    assert_eq!(s.queue(), [row("keep")]);
+}
+
+#[test]
+fn append_targets_an_inactive_draft_without_changing_queue_or_active_tab() {
+    let mut s = session("qt");
+    append(&mut s, &["queue"]);
+    for (key, id, readonly) in [("local:1", 1, false), ("local:0", 0, true)] {
+        let load = workspace_action(
+            &mut s,
+            workspace::Command::Open {
+                key: key.into(),
+                scope: "local".into(),
+                playlist_id: id,
+                name: key.into(),
+                readonly,
+            },
+        );
+        let token = load
+            .into_iter()
+            .find_map(|e| match e {
+                Effect::Load { token, .. } => Some(token),
+                _ => None,
+            })
+            .unwrap();
+        s.dispatch(Command::Complete {
+            token,
+            result: IoResult::Loaded {
+                entries: vec![row("existing")],
+            },
+        });
+    }
+    workspace_action(
+        &mut s,
+        workspace::Command::Focus {
+            key: "queue".into(),
+        },
+    );
+    let before = s.queue().to_vec();
+    let entries = vec![row("A"), row("B"), row("A")];
+    let effects = append_to(&mut s, "local:1", entries.clone());
+    assert!(!effects.iter().any(|e| matches!(
+        e,
+        Effect::Expand { .. } | Effect::Play { .. } | Effect::QueueChanged { .. }
+    )));
+    assert_eq!(s.workspace().active, "queue");
+    assert_eq!(s.queue(), before);
+    workspace_action(
+        &mut s,
+        workspace::Command::Focus {
+            key: "local:1".into(),
+        },
+    );
+    assert_eq!(&s.workspace().entries[1..], entries);
+    workspace_action(&mut s, workspace::Command::Undo);
+    assert_eq!(s.workspace().entries, [row("existing")]);
+    let unchanged = s.checkpoint();
+    append_to(&mut s, "local:0", vec![row("forbidden")]);
+    assert_eq!(s.checkpoint(), unchanged, "Favorites cannot receive tracks");
+    append_to(&mut s, "missing", vec![row("stale drop")]);
+    assert_eq!(
+        s.checkpoint(),
+        unchanged,
+        "A stale drop never redirects to the active tab"
+    );
+}

@@ -128,6 +128,10 @@ pub enum Command {
     Append {
         entries: Vec<Value>,
     },
+    AppendTo {
+        key: String,
+        entries: Vec<Value>,
+    },
     Remove,
     Nudge {
         delta: i32,
@@ -553,12 +557,25 @@ impl Workspace {
                     .collect();
             }
             Append { entries } => {
+                return self.apply(AppendTo {
+                    key: self.active.clone(),
+                    entries,
+                });
+            }
+            AppendTo { key, entries } => {
                 if entries.is_empty() {
                     return Ok(Effect::None);
                 }
-                self.active_mut()?.edit()?;
+                if self.pending_close.is_some() {
+                    return Ok(Effect::None);
+                }
+                self.tabs
+                    .iter_mut()
+                    .find(|tab| tab.key == key)
+                    .ok_or("Playlist tab no longer exists")?
+                    .edit()?;
                 let rows = self.rows(entries);
-                let tab = self.active_mut()?;
+                let tab = self.tabs.iter_mut().find(|tab| tab.key == key).unwrap();
                 tab.draft.selected = rows.iter().map(|r| r.id).collect();
                 tab.draft.anchor = rows.first().map(|r| r.id);
                 tab.draft.rows.extend(rows);

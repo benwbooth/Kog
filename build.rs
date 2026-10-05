@@ -41,6 +41,7 @@ fn main() {
         "qml/KineticWheelHandler.qml",
         "qml/Lyrics.qml",
         "qml/Main.qml",
+        "qml/PlaylistSidebarRow.qml",
         "qml/MainWindowSettings.qml",
         "qml/SqliteSettings.qml",
         "qml/MiniPlayer.qml",
