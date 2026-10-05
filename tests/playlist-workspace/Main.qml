@@ -27,7 +27,8 @@ ApplicationWindow {
         for (const child of item.children || []) { const found = childNamed(child, name); if (found) return found }
         return null
     }
-    Component.onCompleted: {
+    Component.onCompleted: Qt.callLater(startSmoke)
+    function startSmoke() {
         if (controller.playlist_count === 2) {
             check(preferences.sidebarWidth === 444 && !preferences.sidebarVisible, "SQLite UI preference restore")
             check(controller.playback_state === "stopped", "restored session must stay stopped")
