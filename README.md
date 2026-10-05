@@ -179,9 +179,8 @@ need Apple Silicon and may require the first-launch approval described above.
 <details>
 <summary><strong>Android: APK</strong></summary>
 
-1. On an **arm64 Android 9+** device, download the `kog-android` artifact from a
-   successful [package build](https://github.com/benwbooth/Kog/actions/workflows/packages.yml)
-   and extract `Kog-…-android-arm64.apk` from the ZIP.
+1. On an **arm64 Android 9+** device, download `Kog-0.10.0-android-arm64.apk`
+   from the [release page](https://github.com/benwbooth/Kog/releases/latest).
 2. Open the download. If prompted, allow your browser or file manager to
    **install unknown apps**, then tap **Install**.
 3. Open Kog and choose local files, or enter your Kog server address in Settings.
@@ -189,8 +188,6 @@ need Apple Silicon and may require the first-launch approval described above.
 The APK is an optimized release build, signed for direct installation. Earlier
 debug-signed builds require a one-time uninstall before installing this version;
 uninstalling removes Kog's app data and settings.
-The v0.9.42 release page still has the older debug APK; use the package build
-for the signed release build until the next tagged release.
 [Android installation help](https://support.google.com/pixelphone/answer/7391672)
 · [Local playback and build details](android/README.md)
 
@@ -246,7 +243,7 @@ The web player needs the Kog server running.
 With Nix and flakes enabled, install the tagged package into your user profile:
 
 ```sh
-nix profile add 'git+https://github.com/benwbooth/Kog?ref=refs/tags/v0.9.42&submodules=1#default'
+nix profile add 'git+https://github.com/benwbooth/Kog?ref=refs/tags/v0.10.0&submodules=1#default'
 kog --gui
 ```
 

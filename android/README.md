@@ -8,11 +8,9 @@ in the background and receives system and Bluetooth media controls.
 
 ## Build and install
 
-For a ready-made signed arm64 release APK, download and extract the `kog-android`
-artifact from a successful
-[Cross-platform packages build](https://github.com/benwbooth/Kog/actions/workflows/packages.yml).
-Android uses the same workflow as desktop and iOS. The v0.9.42 release page still
-has the older debug APK; the next tagged release will include the signed build.
+For a ready-made signed arm64 release APK, download `Kog-0.10.0-android-arm64.apk`
+from the [release page](https://github.com/benwbooth/Kog/releases/latest).
+Android uses the same package workflow as desktop and iOS.
 The Kotlin app and Rust decoder backend both use release builds. R8 shrinks the app and resources,
 with the native JNI bridge names preserved. Manual workflow runs can select
 the `android` platform to build just the APK.

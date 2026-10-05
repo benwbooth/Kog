@@ -3,15 +3,15 @@
 **Cross-platform packages** builds Linux, Flatpak, Windows, macOS, Android, and
 iOS in one workflow. A successful version-tag build publishes all their assets
 to the matching GitHub release, including separate Linux/macOS TUI and server
-archives, the Android development APK, and the unsigned iOS IPA.
+archives, the signed Android release APK, and the unsigned iOS IPA.
 
 ## Prepare the version
 
 1. Keep `main` building and resolve any failing platform jobs.
 2. Update the version in the root `Cargo.toml` and every `crates/*/Cargo.toml`,
    including the standalone web crate.
-3. Update Android's `versionName` and increment `versionCode`; update iOS's
-   `CFBundleShortVersionString` and increment `CFBundleVersion`.
+3. Android derives `versionName` and `versionCode` from the root Cargo version.
+   Update iOS's `CFBundleShortVersionString` and increment `CFBundleVersion`.
 4. Add the version and date to `packaging/linux/org.kog.player.metainfo.xml`.
    Update the pinned installation examples in `README.md` and `packaging/README.md`.
 5. Refresh both lockfiles with Cargo, without changing dependency versions:
@@ -88,7 +88,7 @@ source. The `.flatpakrepo` file supports adding the remote without installing.
 
 - Desktop jobs build and embed the web frontend before the Rust application.
 - The Flatpak job generates its Cargo vendor list from the committed lockfile.
-- Android APKs currently use development signing. The iOS IPA is unsigned and
+- Official Android APKs use the persistent release signing key. The iOS IPA is unsigned and
   must be signed for the user's device; it is not an App Store distribution.
 - Windows packages are not Authenticode signed. macOS packages are ad-hoc
   signed, not notarized. The Homebrew cask uses the published DMG's SHA-256.

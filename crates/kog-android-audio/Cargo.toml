@@ -1,6 +1,6 @@
 [package]
 name = "kog-android-audio"
-version = "0.9.42"
+version = "0.10.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
 description = "JNI bridge to Kog's shared audio decoders"
