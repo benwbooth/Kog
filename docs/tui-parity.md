@@ -56,6 +56,7 @@ The printable alternatives for range selection, context actions, resizing, reord
 - [x] Favorites, create, rename, delete, save current pane, and add to a saved playlist work.
 - [x] Saved playlists show right-aligned song counts, including Favorites; counts refresh after adding, duplicating, and pruning tracks.
 - [x] Queue remove, clear, reorder, sort, star, and search work with the visible selection.
+- [x] Dragging a queue row shows an insertion row and moves the track only on release. The wheel scrolls during a drag; Escape or releasing outside the queue cancels it. A private PTY fixture (`tests/playlist-workspace/tui-drag-smoke.py`) checks the rendered marker and persisted queue order, including filtered rows and scrolling to the end.
 - [x] The current playlist and selected row survive a TUI quit and relaunch in a separate atomic session file; the PTY fixture checks the full queue before and after restart.
 - [x] Playlist rows show decoded title, artist, and album without probing on the input thread.
 - [x] Default #, Title, Artist, and Album columns have header sorting, mouse resizing, visibility toggles, and auto fit from loaded metadata.

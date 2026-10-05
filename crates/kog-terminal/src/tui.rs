@@ -33,6 +33,7 @@ use rand::Rng;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+mod queue_drag;
 mod session;
 mod workspace;
 use crate::columns::Columns;
@@ -1074,7 +1075,8 @@ struct Ui {
     column_scroll_drag: Option<usize>,
     vertical_scroll_drag: Option<(usize, usize)>,
     manual_scroll_selection: [Option<usize>; 3],
-    track_drag: Option<usize>,
+    track_drag: Option<u64>,
+    track_drop_target: Option<usize>,
     sort_column: Option<usize>,
     sort_ascending: bool,
     columns: Columns,
@@ -1453,6 +1455,7 @@ impl Ui {
             vertical_scroll_drag: None,
             manual_scroll_selection: [None; 3],
             track_drag: None,
+            track_drop_target: None,
             sort_column: None,
             sort_ascending: true,
             columns,
@@ -1991,7 +1994,8 @@ impl Ui {
         }
         layout.track_page = layout.track_page.saturating_sub(1).max(1);
         let track_width = size.0.saturating_sub(layout.playlist_left());
-        let vertical = track_count > layout.track_page;
+        let vertical =
+            track_count + usize::from(self.track_drop_target.is_some()) > layout.track_page;
         if self.columns.total_width() > track_width.saturating_sub(usize::from(vertical))
             && track_width >= 5
         {
@@ -2080,7 +2084,7 @@ impl Ui {
             size.0.saturating_sub(1),
             2,
             layout.track_page,
-            count,
+            count + usize::from(self.track_drop_target.is_some()),
             self.offsets[2],
         )
     }
@@ -5817,6 +5821,8 @@ impl Ui {
                 row("Enter on ..", "Go to parent folder"),
                 row("J / K", "Move cursor only"),
                 row("Mouse hover", "Read a clipped label"),
+                row("Drag queue row", "Preview insertion; release to move"),
+                row("Wheel / Esc while dragging", "Scroll queue / cancel move"),
                 String::new(),
                 "SELECTION".to_owned(),
                 row("Shift+↑ / ↓", "Extend selected range"),
@@ -6074,6 +6080,9 @@ impl Ui {
 
     fn key(&mut self, key: Key, size: (usize, usize)) -> bool {
         self.hover_position = None;
+        if self.cancel_track_drag() && matches!(key, Key::Esc) {
+            return true;
+        }
         if self
             .session
             .workspace_model()
@@ -6733,6 +6742,7 @@ impl Ui {
 
     fn mouse(&mut self, button: u16, x: usize, y: usize, release: bool, size: (usize, usize)) {
         if !release && button & 32 != 0 && button & 3 == 3 {
+            self.cancel_track_drag();
             if self.hover_position != Some((x, y)) {
                 self.hover_position = Some((x, y));
                 self.hover_since = Instant::now();
@@ -6748,6 +6758,7 @@ impl Ui {
             return;
         }
         if release {
+            self.finish_track_drag(x, y, size);
             if self.column_drag.is_some() {
                 self.persist_columns();
             }
@@ -6759,7 +6770,6 @@ impl Ui {
             self.column_scroll_drag = None;
             self.vertical_scroll_drag = None;
             self.volume_drag = false;
-            self.track_drag = None;
             return;
         }
         if self.exit_confirm_open {
@@ -6781,6 +6791,27 @@ impl Ui {
             return;
         }
         let layout = self.layout(size);
+        if self.track_drag.is_some() {
+            if button & 32 != 0 {
+                self.track_drop_target = self.queue_drop_gap_at(x, y, size);
+                self.manual_scroll_selection[2] = Some(self.selected[2]);
+                self.last_click = None;
+                return;
+            }
+            if (button & 0b1100_0000) == 64 {
+                if self.queue_drop_gap_at(x, y, size).is_some() && button & 3 < 2 {
+                    let page = layout.track_page.saturating_sub(1).max(1);
+                    self.offsets[2] = self.offsets[2]
+                        .saturating_add_signed(if button & 1 == 0 { -3 } else { 3 })
+                        .min(self.visible_track_count().saturating_sub(page));
+                    self.manual_scroll_selection[2] = Some(self.selected[2]);
+                    self.track_drop_target = None;
+                    self.track_drop_target = self.queue_drop_gap_at(x, y, size);
+                }
+                return;
+            }
+            self.cancel_track_drag();
+        }
         if self.modal.is_none()
             && !self.menu_open
             && self.prompt.is_none()
@@ -6874,22 +6905,6 @@ impl Ui {
         }
         if self.volume_drag && button & 32 != 0 {
             self.set_volume_from_bar(x, size);
-            return;
-        }
-        if let Some(from) = self.track_drag
-            && button & 32 != 0
-        {
-            let right_edge = size
-                .0
-                .saturating_sub(usize::from(self.track_scrollbar(&layout, size).is_some()));
-            if x >= layout.playlist_left() && x < right_edge && y >= 2 && y < 2 + layout.track_page
-            {
-                let visible = self.visible_tracks();
-                if let Some(&to) = visible.get(self.offsets[2] + y - 2) {
-                    self.move_track(from, to);
-                    self.track_drag = Some(to);
-                }
-            }
             return;
         }
         if (button & 0b1100_0000) == 64 {
@@ -7676,7 +7691,8 @@ impl Ui {
                 self.toggle_star();
                 return;
             }
-            self.track_drag = (!modified).then_some(index);
+            self.track_drag = (!modified).then(|| self.session.snapshot().row_ids[index]);
+            self.track_drop_target = None;
             let now = Instant::now();
             let double = !modified
                 && self.last_click.is_some_and(|(when, pane, row)| {
@@ -7822,7 +7838,13 @@ impl Ui {
         let visible_tracks = self.visible_tracks();
         let layout = self.layout_for_track_count(size, visible_tracks.len());
         let tree_page = self.tree_page(&layout);
-        let pages = [layout.list_page, tree_page, layout.track_page];
+        let pages = [
+            layout.list_page,
+            tree_page,
+            layout
+                .track_page
+                .saturating_sub(usize::from(self.track_drop_target.is_some())),
+        ];
         for (pane, len) in [self.lists.len(), self.items.len(), visible_tracks.len()]
             .into_iter()
             .enumerate()
@@ -8380,7 +8402,27 @@ impl Ui {
                 .footer_top
                 .saturating_sub(1 + usize::from(scrollbar.is_some()))
             {
-                let index = visible_tracks.get(self.offsets[2] + y - 2).copied();
+                let position =
+                    queue_drag::queue_row(self.offsets[2], y - 2, self.track_drop_target);
+                if position.is_none() {
+                    let marker = format!(
+                        "▶ Insert here {}",
+                        "─".repeat(content_width.saturating_sub(14))
+                    );
+                    paint(
+                        &mut screen,
+                        y + 1,
+                        right_x,
+                        &marker,
+                        content_width,
+                        Surface::Accent,
+                        true,
+                    );
+                    continue;
+                }
+                let index = position
+                    .and_then(|position| visible_tracks.get(position))
+                    .copied();
                 let surface = if index.is_some_and(|index| self.selected_tracks.contains(&index))
                     || index == Some(self.selected[2]) && self.focus == Focus::Tracks
                 {
