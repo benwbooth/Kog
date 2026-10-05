@@ -9,6 +9,7 @@ pub mod radio;
 pub mod sort;
 pub mod selection;
 pub mod workspace;
+pub mod session;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

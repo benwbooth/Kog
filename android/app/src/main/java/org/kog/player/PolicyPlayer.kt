@@ -7,379 +7,278 @@ import androidx.media3.common.ForwardingSimpleBasePlayer
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
-import androidx.media3.common.Timeline
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
-import kotlin.random.Random
+import java.util.UUID
 
-/** Media3 supplies audio output and system integration. Rust supplies policy.
- * The service owns this adapter so background EOS and headset commands use
- * exactly the same commands as the foreground UI. */
+/** The Rust session owns the application. Media3 is its audio/system-control port.
+ * This adapter mirrors the session's row IDs into Media3's timeline, executes
+ * effects, and returns callbacks bearing the originating session token. */
 @UnstableApi
 internal class PolicyPlayer(
     context: Context,
     private val output: ExoPlayer,
+    sessionID: String? = null,
     private val publish: (JSONObject) -> Unit,
 ) : ForwardingSimpleBasePlayer(output) {
-    private val policy = SharedPlaybackPolicy()
-    private val api = KogApi(context)
-    private val deviceApi = KogApi(context, onDevice = true)
-    private var radioOnDevice = false
     private val prefs = context.getSharedPreferences("kog", Context.MODE_PRIVATE)
+    private val session = SharedBackendSession(sessionID ?: prefs.getString("backend_session_id", null)
+        ?: "android:${UUID.randomUUID()}".also { prefs.edit().putString("backend_session_id", it).apply() })
+    private val storageKey = "backend_session.${session.id}"
+    private val api = KogApi(context).apply { this.sessionID = session.id }
+    private val deviceApi = KogApi(context, onDevice = true).apply { this.sessionID = session.id }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val handler = Handler(output.applicationLooper)
-    private var radioJob: Job? = null
-    private var radioRoot = ""
-    private var editing = false
+    private var applyingOutput = false
+    private var outputToken: JSONObject? = null
+    private var outputRow: Long? = null
     private var awaitingStart = false
-    private var previous = -1
-    private var cursor = -1
-    private var transportGeneration = 0L
     private var endScheduled = false
-    private val workspaceQueueLock = Mutex()
-    private var workspaceQueueGeneration = 0
-    private var lastWorkspaceState = ""
+    private var knownScopes: String? = null
+    private var radioOnDevice = false
+    private var radioRoot = ""
+    private val progress = object : Runnable {
+        override fun run() {
+            if (outputToken != null && !applyingOutput) outputEvent(command("progress")
+                .put("seconds", output.currentPosition.coerceAtLeast(0) / 1000.0)
+                .put("duration", output.duration.coerceAtLeast(0) / 1000.0))
+            handler.postDelayed(this, 500)
+        }
+    }
 
     init {
-        policy.send(command("init").put("seed", Random.nextLong(1, Long.MAX_VALUE))
-            .put("shuffle", prefs.getString("shuffle_mode", if (prefs.getBoolean("shuffle", false)) "all" else "off"))
-            .put("repeat", prefs.getString("repeat_mode", if (prefs.getBoolean("repeat", false)) "all" else "off")))
-        prefs.getString("playlist_workspace", null)?.let { saved ->
-            runCatching { policy.send(command("workspace_restore").put("value", JSONObject(saved))) }
-        }
-        // Prevent Media3 from choosing the next item at the end of a track.
         output.pauseAtEndOfMediaItems = true
         output.repeatMode = Player.REPEAT_MODE_OFF
         output.shuffleModeEnabled = false
-        output.addListener(object : Player.Listener {
-            override fun onTimelineChanged(timeline: Timeline, reason: Int) {
-                if (!editing) sync()
+        val saved = prefs.getString(storageKey, null)
+        if (saved != null) {
+            apply(session.send(restore = JSONObject(saved)))
+        } else {
+            send(command("replace").put("tracks", if (sessionID == null) JSONArray(prefs.getString("queue", "[]")) else JSONArray())
+                .put("current", if (sessionID == null) prefs.getInt("index", 0) else JSONObject.NULL))
+            if (sessionID == null) {
+                send(command("shuffle").put("mode", prefs.getString("shuffle_mode", if (prefs.getBoolean("shuffle", false)) "all" else "off")))
+                send(command("repeat").put("mode", prefs.getString("repeat_mode", if (prefs.getBoolean("repeat", false)) "all" else "off")))
+                prefs.getString("playlist_workspace", null)?.let { send(command("workspace_restore").put("value", JSONObject(it))) }
             }
+        }
+        updateScopes()
+        output.volume = session.snapshot.optDouble("volume", 1.0).toFloat()
+        output.addListener(object : Player.Listener {
             override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
-                if (reason == Player.PLAY_WHEN_READY_CHANGE_REASON_END_OF_MEDIA_ITEM) ended()
+                if (!applyingOutput && reason == Player.PLAY_WHEN_READY_CHANGE_REASON_END_OF_MEDIA_ITEM) ended()
             }
             override fun onPlaybackStateChanged(playbackState: Int) {
+                if (applyingOutput) return
                 if (playbackState == Player.STATE_ENDED && output.playWhenReady) ended()
                 if (playbackState == Player.STATE_READY && awaitingStart) started()
             }
             override fun onPlayerError(error: PlaybackException) {
-                val generation = transportGeneration
-                handler.post { if (generation == transportGeneration) navigate("failed") }
+                if (applyingOutput) return
+                val token = outputToken ?: return
+                handler.post { outputEvent(command("failed").put("error", error.message), token) }
             }
         })
+        val checkpoint = session.send().getJSONObject("checkpoint")
+        radioRoot = checkpoint.optString("radio_root")
+        radioOnDevice = checkpoint.optString("radio_scope") == "device"
+        if (session.snapshot.optBoolean("radio_enabled")) send(command("radio").put("enabled", true)
+            .put("scope", checkpoint.optString("radio_scope")).put("root", radioRoot))
+        handler.post(progress)
     }
 
-    private fun tracks() = (0 until output.mediaItemCount).map { output.getMediaItemAt(it).kogTrack() }
-    private fun current() = cursor.takeIf { it in 0 until output.mediaItemCount } ?: -1
-    private fun sync(oldToNew: List<Int?>? = null) {
-        if (oldToNew != null) cursor = oldToNew.getOrNull(cursor) ?: -1
-        policy.sync(tracks(), current(), oldToNew)
-        changed()
+    private fun tracks(rows: JSONArray? = session.snapshot.optJSONArray("queue")): List<Track> =
+        if (rows == null) emptyList() else (0 until rows.length()).map { Track.parse(rows.getJSONObject(it)) }
+    private fun current() = session.snapshot.optInt("current", -1)
+    private fun send(request: JSONObject): JSONObject {
+        val reply = session.send(request)
+        apply(reply)
+        return session.snapshot
     }
-    private fun publicSnapshot() = JSONObject(policy.snapshot.toString()).apply {
-        remove("state"); remove("workspace_state"); remove("workspace_effect"); put("current", current())
-    }
-    private fun changed() {
-        val workspaceState = policy.snapshot.optJSONObject("workspace_state")?.toString().orEmpty()
-        if (workspaceState.isNotEmpty() && workspaceState != lastWorkspaceState) {
-            prefs.edit().putString("playlist_workspace", workspaceState).apply(); lastWorkspaceState = workspaceState
-        }
-        val snapshot = publicSnapshot()
-        prefs.edit().putString("shuffle_mode", snapshot.optString("shuffle"))
-            .putString("repeat_mode", snapshot.optString("repeat")).apply()
-        publish(snapshot)
+    private fun apply(reply: JSONObject) {
+        val effects = reply.optJSONArray("effects") ?: JSONArray()
+        // Persist before output callbacks can re-enter the session.
+        for (i in 0 until effects.length()) if (effects.getJSONObject(i).optString("action") == "persist")
+            prefs.edit().putString(storageKey, effects.getJSONObject(i).getJSONObject("value").toString()).apply()
+        mirrorTimeline()
+        publish(session.snapshot)
         invalidateState()
+        for (i in 0 until effects.length()) execute(effects.getJSONObject(i))
     }
-    private fun send(command: JSONObject): JSONObject {
-        val reply = policy.send(command)
-        changed()
-        return reply
+    private inline fun outputMutation(block: () -> Unit) {
+        val previous = applyingOutput; applyingOutput = true
+        try { block() } finally { applyingOutput = previous }
     }
-
-    fun dispatch(request: JSONObject): JSONObject {
-        sync()
-        when (request.getString("op")) {
-            "sync" -> Unit
-            "activate" -> {
-                val activation = send(request.put("current", index(current()))).optJSONObject("activation")
-                when (activation?.optString("action")) {
-                    "toggle_playback" -> if (policy.waiting) stop() else if (output.isPlaying) pause() else play()
-                    "play" -> { send(command("cancel_waiting")); activate(activation.getInt("index")) }
-                }
-            }
-            "workspace" -> workspace(request.getJSONObject("command"))
-            "radio_toggle", "radio_reshuffle" -> {
-                radioRoot = request.optString("root", radioRoot)
-                radioOnDevice = request.optBoolean("on_device", radioOnDevice)
-                val reshuffle = request.getString("op") == "radio_reshuffle"
-                radioJob?.cancel()
-                send(command("radio_reset").put("enabled", reshuffle || !policy.radio.optBoolean("enabled"))
-                    .put("current", index(current())))
-                refill(initial = true, reshuffle = reshuffle)
-            }
-            "radio_root" -> {
-                val root = request.optString("root")
-                if (root != radioRoot && policy.radio.optBoolean("enabled")) {
-                    radioRoot = root
-                    radioJob?.cancel()
-                    send(command("radio_reset").put("enabled", true).put("current", index(current())))
-                    refill(initial = true)
-                }
-            }
-            "sort", "sort_rows" -> {
-                val reply = send(request)
-                val order = reply.getJSONArray("indices")
-                val identities = (0 until output.mediaItemCount).toMutableList()
-                editing = true
-                try {
-                    for (destination in 0 until order.length()) {
-                        val source = identities.indexOf(order.getInt(destination))
-                        output.moveMediaItem(source, destination)
-                        identities.add(destination, identities.removeAt(source))
-                    }
-                } finally { editing = false }
-                sync(identities.indices.map { identities.indexOf(it) })
-            }
-            else -> {
-                request.put("current", index(current()))
-                send(request)
-                if (!policy.radio.optBoolean("enabled")) radioJob?.cancel()
-            }
+    private fun mirrorTimeline() = outputMutation {
+        val rows = session.snapshot.optJSONArray("row_ids") ?: JSONArray()
+        val entries = tracks()
+        val wanted = (0 until rows.length()).map { "session-row:${rows.getLong(it)}" }
+        for (index in output.mediaItemCount - 1 downTo 0)
+            if (output.getMediaItemAt(index).mediaId !in wanted) output.removeMediaItem(index)
+        wanted.forEachIndexed { index, id ->
+            val existing = (index until output.mediaItemCount).firstOrNull { output.getMediaItemAt(it).mediaId == id }
+            if (existing == null) output.addMediaItem(index, entries[index].mediaItem(api).buildUpon().setMediaId(id).build())
+            else if (existing != index) output.moveMediaItem(existing, index)
         }
-        return publicSnapshot()
     }
-
-    private fun workspaceApi(scope: String): KogApi {
-        if (scope == "device") return deviceApi
-        check(scope == "server:${api.server}") { "Reconnect to this playlist's server to load or save it." }
+    private fun updateScopes() {
+        val key = api.server
+        if (knownScopes != key || !session.snapshot.has("session_id")) {
+            knownScopes = key
+            send(command("scopes").put("scopes", JSONArray().put("device").put("server:$key")))
+        }
+    }
+    fun dispatch(request: JSONObject): JSONObject {
+        updateScopes()
+        when (request.getString("op")) {
+            "sync" -> { publish(session.snapshot); invalidateState() }
+            "radio_toggle", "radio_reshuffle", "radio_root" -> {
+                val op = request.getString("op")
+                val root = request.optString("root", radioRoot)
+                val device = request.optBoolean("on_device", radioOnDevice)
+                if (op != "radio_root" || root != radioRoot || device != radioOnDevice) {
+                    radioRoot = root; radioOnDevice = device
+                    send(command("radio").put("root", root).put("scope", if (device) "device" else "server:${api.server}")
+                        .put("enabled", if (op == "radio_toggle") !session.snapshot.optBoolean("radio_enabled") else true)
+                        .put("reshuffle", op == "radio_reshuffle"))
+                }
+            }
+            "reload_output" -> {
+                outputToken?.let { outputEvent(command("progress").put("seconds", output.currentPosition.coerceAtLeast(0) / 1000.0)
+                    .put("duration", output.duration.coerceAtLeast(0) / 1000.0), it) }
+                send(request)
+            }
+            else -> send(request)
+        }
+        return session.snapshot
+    }
+    private fun client(source: String): KogApi {
+        if (source == "device") return deviceApi
+        check(source == "server:${api.server}") { "Reconnect to this playlist's server to load or save it." }
         return api
     }
-    private fun workspaceTracks(rows: JSONArray?): List<Track> = if (rows == null) emptyList() else
-        (0 until rows.length()).map { Track.parse(rows.getJSONObject(it)) }
-    private fun workspace(request: JSONObject) {
-        val effect = send(command("workspace").put("command", request)).optJSONObject("workspace_effect") ?: return
-        when (effect.optString("action")) {
-            "load" -> scope.launch {
-                val key = effect.getString("key"); val generation = effect.getLong("generation")
+    private fun execute(effect: JSONObject) {
+        when (effect.getString("action")) {
+            "play" -> {
+                val token = effect.getJSONObject("token")
+                outputToken = token
+                val index = effect.getInt("index")
+                outputRow = session.snapshot.getJSONArray("row_ids").getLong(index)
+                awaitingStart = true; endScheduled = false
                 try {
-                    val entries = workspaceApi(effect.getString("scope")).playlist(effect.getLong("playlist_id"))
-                    workspace(command("loaded").put("key", key).put("generation", generation).put("entries", JSONArray(entries.map { it.saved() })))
-                } catch (error: Exception) {
-                    workspace(command("load_failed").put("key", key).put("generation", generation).put("error", error.message))
-                }
-            }
-            "save" -> scope.launch {
-                val key = effect.getString("key"); val revision = effect.getLong("revision")
-                try {
-                    workspaceApi(effect.getString("scope")).replacePlaylist(effect.getLong("playlist_id"),
-                        workspaceTracks(effect.optJSONArray("entries")), workspaceTracks(effect.optJSONArray("expected_entries")))
-                    workspace(command("saved").put("key", key).put("revision", revision))
-                } catch (error: Exception) {
-                    workspace(command("save_failed").put("key", key).put("revision", revision).put("error", error.message))
-                }
-            }
-            "queue" -> {
-                val generation = workspaceQueueGeneration
-                scope.launch { workspaceQueueLock.withLock {
-                    try {
-                        if (generation != workspaceQueueGeneration) return@withLock
-                        val source = effect.getString("scope")
-                        val client = workspaceApi(source)
-                        val expanded = workspaceTracks(effect.optJSONArray("entries")).flatMap { client.expand(it) }
-                        workspaceApi(source) // A connection change invalidates the old request.
-                        if (generation != workspaceQueueGeneration) return@withLock
-                        val start = output.mediaItemCount
-                        output.addMediaItems(expanded.map { it.mediaItem(api) }); sync()
-                        val decision = send(command("apply_queue_action").put("action", effect.getString("mode"))
-                            .put("start", start).put("count", expanded.size)).optJSONObject("decision")
-                        if (decision?.optString("action") == "play") {
-                            send(command("cancel_waiting")); activate(decision.getInt("index"))
-                        }
-                    } catch (error: Exception) {
-                        publish(publicSnapshot().put("error", error.message))
+                    outputMutation {
+                        // Refresh the URI/decoder configuration for this play request.
+                        output.replaceMediaItem(index, tracks()[index].mediaItem(api).buildUpon().setMediaId("session-row:$outputRow").build())
+                        output.seekTo(index, (effect.getDouble("seconds") * 1000).toLong())
+                        output.prepare(); output.playWhenReady = effect.getBoolean("playing")
                     }
-                } }
+                    if (output.playbackState == Player.STATE_READY) started()
+                } catch (error: Exception) { outputEvent(command("failed").put("error", error.message), token) }
+            }
+            "pause" -> output.pause()
+            "resume" -> output.play()
+            "stop" -> {
+                outputToken = null; outputRow = null; awaitingStart = false; endScheduled = false
+                outputMutation { output.pause(); output.stop(); if (current() >= 0) output.seekTo(current(), 0) }
+            }
+            "seek" -> output.seekTo((effect.getDouble("seconds") * 1000).toLong())
+            "volume" -> output.volume = effect.getDouble("value").toFloat()
+            "load", "save", "expand", "collect", "radio" -> scope.launch {
+                val token = effect.getJSONObject("token")
+                try {
+                    val source = effect.getString("scope")
+                    val api = client(source)
+                    val result = when (effect.getString("action")) {
+                        "load" -> JSONObject().put("kind", "loaded").put("entries", JSONArray(api.playlist(effect.getLong("playlist_id")).map { it.saved() }))
+                        "save" -> {
+                            api.replacePlaylist(effect.getLong("playlist_id"), tracks(effect.getJSONArray("entries")), tracks(effect.getJSONArray("expected_entries")))
+                            JSONObject().put("kind", "saved")
+                        }
+                        "expand" -> JSONObject().put("kind", "expanded").put("tracks", JSONArray(api.expand(tracks(effect.getJSONArray("entries"))).map { it.saved() }))
+                        "collect" -> JSONObject().put("kind", "expanded").put("tracks", JSONArray(api.collect(effect.getString("path"), effect.getString("query"), effect.getString("root")).map { it.saved() }))
+                        else -> {
+                            val root = effect.getString("root")
+                            val batch = if (effect.getBoolean("reshuffle")) api.reshuffleRadio(root)
+                                else if (effect.getBoolean("reset")) api.radio(effect.getBoolean("enabled"), root) else api.radioAdvance(root)
+                            JSONObject().put("kind", "radio").put("tracks", JSONArray(batch.tracks.map { it.saved() })).put("exhausted", batch.exhausted)
+                        }
+                    }
+                    updateScopes()
+                    send(command("complete").put("token", token).put("result", result))
+                } catch (error: Exception) {
+                    send(command("complete").put("token", token).put("result", JSONObject().put("kind", "failed").put("error", error.message ?: "Request failed")))
+                }
             }
         }
     }
-
-    private fun ended() {
-        if (endScheduled) return
-        endScheduled = true
-        val generation = transportGeneration
-        handler.post {
-            endScheduled = false
-            if (generation == transportGeneration) navigate("ended")
-        }
+    private fun outputEvent(event: JSONObject, token: JSONObject? = outputToken) {
+        if (token == null) return
+        val payload = JSONObject(event.toString()).put("event", event.getString("op")); payload.remove("op")
+        send(command("output").put("token", token).put("event", payload))
     }
     private fun started() {
+        if (output.currentMediaItem?.mediaId != "session-row:$outputRow") return
         awaitingStart = false
-        if (current() >= 0) send(command("started").put("previous", index(previous)).put("index", current()))
+        outputEvent(command("started"))
     }
-    private fun activate(index: Int) {
-        transportGeneration++
-        previous = current()
-        cursor = index
-        awaitingStart = true
-        output.seekTo(index, 0)
-        output.prepare()
-        output.play()
-        if (output.playbackState == Player.STATE_READY) started()
+    private fun ended() {
+        if (endScheduled || output.currentMediaItem?.mediaId != "session-row:$outputRow") return
+        val token = outputToken ?: return
+        endScheduled = true
+        handler.post { endScheduled = false; outputEvent(command("ended"), token) }
     }
-    private fun navigate(event: String) {
-        sync()
-        val decision = send(command("navigate").put("event", event).put("current", index(current())))
-            .getJSONObject("decision")
-        when (decision.getString("action")) {
-            "play" -> activate(decision.getInt("index"))
-            "radio" -> { consumeRadio("radio_next"); refill() }
-            else -> stopOutput()
-        }
-    }
-    private fun cancelNavigation() {
-        transportGeneration++
-        awaitingStart = false
-        send(command("cancel_navigation"))
-        send(command("cancel_waiting"))
-    }
-    private fun stopOutput() {
-        cancelNavigation()
-        output.pause()
-        output.stop()
-        if (current() >= 0) output.seekTo(current(), 0)
-    }
-
-    private fun consumeRadio(op: String) {
-        val entry = send(command(op)).optJSONObject("entry")
-        if (entry != null) {
-            output.addMediaItem(Track.parse(entry).mediaItem(api))
-            sync()
-            send(command("radio_candidate").put("index", output.mediaItemCount - 1))
-            activate(output.mediaItemCount - 1)
-        } else if (op == "radio_next" && !policy.waiting) stopOutput()
-    }
-    private fun refill(initial: Boolean = false, reshuffle: Boolean = false) {
-        if (!initial && !policy.needsRefill) return
-        send(command("radio_begin"))
-        val generation = policy.generation
-        val enabled = policy.radio.optBoolean("enabled")
-        val root = radioRoot
-        val client = if (radioOnDevice) deviceApi else api
-        radioJob = scope.launch {
-            try {
-                val batch = if (reshuffle) client.reshuffleRadio(root) else if (initial) client.radio(enabled, root) else client.radioAdvance(root)
-                if (generation != policy.generation) return@launch
-                send(command("radio_accept").put("generation", generation)
-                    .put("entries", JSONArray(batch.tracks.map { it.saved() })).put("exhausted", batch.exhausted))
-                consumeRadio("radio_pending")
-                refill()
-            } catch (error: Exception) {
-                if (generation != policy.generation) return@launch
-                send(command("radio_fail").put("generation", generation)).put("error", error.message)
-                changed()
-            }
-        }
-    }
-
     override fun getState(): State {
         val base = super.getState()
-        val commands = base.availableCommands.buildUpon().addAll(
+        return base.buildUpon().setAvailableCommands(base.availableCommands.buildUpon().addAll(
             Player.COMMAND_SEEK_TO_NEXT, Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM,
-            Player.COMMAND_SEEK_TO_PREVIOUS, Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM).build()
-        return base.buildUpon().setAvailableCommands(commands)
-            .setShuffleModeEnabled(policy.snapshot.optString("shuffle", "off") != "off")
-            .setRepeatMode(when (policy.snapshot.optString("repeat")) {
-                "one" -> Player.REPEAT_MODE_ONE
-                "all", "album" -> Player.REPEAT_MODE_ALL
-                else -> Player.REPEAT_MODE_OFF
+            Player.COMMAND_SEEK_TO_PREVIOUS, Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM).build())
+            .setShuffleModeEnabled(session.snapshot.optString("shuffle", "off") != "off")
+            .setRepeatMode(when (session.snapshot.optString("repeat")) {
+                "one" -> Player.REPEAT_MODE_ONE; "all", "album" -> Player.REPEAT_MODE_ALL; else -> Player.REPEAT_MODE_OFF
             }).build()
     }
     override fun handleSeek(mediaItemIndex: Int, positionMs: Long, seekCommand: Int): ListenableFuture<*> {
         when (seekCommand) {
-            Player.COMMAND_SEEK_TO_NEXT, Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM -> navigate("next")
-            Player.COMMAND_SEEK_TO_PREVIOUS, Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM -> navigate("previous")
+            Player.COMMAND_SEEK_TO_NEXT, Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM -> send(command("navigate").put("event", "next"))
+            Player.COMMAND_SEEK_TO_PREVIOUS, Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM -> send(command("navigate").put("event", "previous"))
             else -> {
-                if (seekCommand == Player.COMMAND_SEEK_TO_MEDIA_ITEM) {
-                    cancelNavigation(); previous = current(); cursor = mediaItemIndex; awaitingStart = true
-                }
-                val result = super.handleSeek(mediaItemIndex, positionMs, seekCommand)
-                if (awaitingStart && output.playbackState == Player.STATE_READY) started()
-                changed()
-                return result
+                if (mediaItemIndex != current()) send(command("play").put("index", mediaItemIndex))
+                if (positionMs != C.TIME_UNSET) send(command("seek").put("seconds", positionMs / 1000.0))
             }
         }
         return Futures.immediateVoidFuture()
     }
-    override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<*> {
-        if (!playWhenReady) send(command("cancel_waiting"))
-        if (playWhenReady && current() < 0 && output.mediaItemCount > 0) activate(0)
-        else if (playWhenReady && current() < 0 && policy.radio.optBoolean("enabled")) navigate("next")
-        else {
-            if (playWhenReady && output.playbackState == Player.STATE_IDLE) output.prepare()
-            output.playWhenReady = playWhenReady
-        }
-        return Futures.immediateVoidFuture()
-    }
-    override fun handleStop(): ListenableFuture<*> {
-        stopOutput()
-        return Futures.immediateVoidFuture()
-    }
-    override fun handleSetShuffleModeEnabled(enabled: Boolean): ListenableFuture<*> {
-        dispatch(command("set_shuffle").put("mode", if (enabled) "all" else "off"))
-        return Futures.immediateVoidFuture()
-    }
-    override fun handleSetRepeatMode(mode: Int): ListenableFuture<*> {
-        dispatch(command("set_repeat").put("mode", when (mode) {
-            Player.REPEAT_MODE_ONE -> "one"; Player.REPEAT_MODE_ALL -> "all"; else -> "off"
-        }))
-        return Futures.immediateVoidFuture()
-    }
-    override fun handleSetMediaItems(items: MutableList<MediaItem>, startIndex: Int, startPositionMs: Long): ListenableFuture<*> {
-        workspaceQueueGeneration++
-        cancelNavigation()
-        cursor = startIndex.takeIf { it in items.indices } ?: -1
-        editing = true
-        val result = try { super.handleSetMediaItems(items, startIndex, startPositionMs) } finally { editing = false }
-        sync()
-        return result
-    }
-    override fun handleMoveMediaItems(fromIndex: Int, toIndex: Int, newIndex: Int): ListenableFuture<*> {
-        val order = (0 until output.mediaItemCount).toMutableList()
-        val moving = order.subList(fromIndex, toIndex).toList()
-        order.subList(fromIndex, toIndex).clear()
-        order.addAll(newIndex.coerceAtMost(order.size), moving)
-        editing = true
-        val result = try { super.handleMoveMediaItems(fromIndex, toIndex, newIndex) } finally { editing = false }
-        sync(order.indices.map { order.indexOf(it) })
-        return result
-    }
-    override fun handleRemoveMediaItems(fromIndex: Int, toIndex: Int): ListenableFuture<*> {
-        val oldSize = output.mediaItemCount
-        val removedCurrent = current() in fromIndex until toIndex
-        if (removedCurrent) stopOutput()
-        editing = true
-        val result = try { super.handleRemoveMediaItems(fromIndex, toIndex) } finally { editing = false }
-        sync((0 until oldSize).map { if (it < fromIndex) it else if (it < toIndex) null else it - (toIndex - fromIndex) })
-        if (output.mediaItemCount == 0) { workspaceQueueGeneration++; stopOutput() }
-        return result
-    }
+    override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<*> = done(command(if (playWhenReady) "resume" else "pause"))
+    override fun handleStop(): ListenableFuture<*> = done(command("stop"))
+    override fun handleSetShuffleModeEnabled(enabled: Boolean): ListenableFuture<*> = done(command("shuffle").put("mode", if (enabled) "all" else "off"))
+    override fun handleSetRepeatMode(mode: Int): ListenableFuture<*> = done(command("repeat").put("mode", when (mode) {
+        Player.REPEAT_MODE_ONE -> "one"; Player.REPEAT_MODE_ALL -> "all"; else -> "off"
+    }))
+    override fun handleSetVolume(volume: Float, flags: Int): ListenableFuture<*> = done(command("volume").put("value", volume.toDouble()))
+    override fun handleSetMediaItems(items: MutableList<MediaItem>, startIndex: Int, startPositionMs: Long): ListenableFuture<*> =
+        done(command("replace").put("tracks", JSONArray(items.map { it.kogTrack().saved() })).put("current", SharedPlaybackPolicy.index(startIndex)))
+    override fun handleAddMediaItems(index: Int, items: MutableList<MediaItem>): ListenableFuture<*> =
+        done(command("insert").put("index", index).put("tracks", JSONArray(items.map { it.kogTrack().saved() })))
+    override fun handleMoveMediaItems(fromIndex: Int, toIndex: Int, newIndex: Int): ListenableFuture<*> =
+        done(command("move").put("indices", JSONArray((fromIndex until toIndex).toList()))
+            .put("target", if (newIndex > fromIndex) newIndex + toIndex - fromIndex else newIndex))
+    override fun handleReplaceMediaItems(fromIndex: Int, toIndex: Int, items: MutableList<MediaItem>): ListenableFuture<*> =
+        done(command("replace_range").put("start", fromIndex).put("end", toIndex).put("tracks", JSONArray(items.map { it.kogTrack().saved() })))
+    override fun handleRemoveMediaItems(fromIndex: Int, toIndex: Int): ListenableFuture<*> =
+        done(command("remove").put("indices", JSONArray((fromIndex until toIndex).toList())))
     override fun handleRelease(): ListenableFuture<*> {
-        scope.cancel()
+        handler.removeCallbacks(progress); scope.cancel()
         return super.handleRelease()
     }
-
-    private fun command(op: String) = SharedPlaybackPolicy.command(op)
-    private fun index(index: Int) = SharedPlaybackPolicy.index(index)
+    private fun done(request: JSONObject): ListenableFuture<*> { send(request); return Futures.immediateVoidFuture() }
+    private fun command(op: String) = JSONObject().put("op", op)
 }

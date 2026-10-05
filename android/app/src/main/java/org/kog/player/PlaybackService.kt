@@ -1,6 +1,7 @@
 package org.kog.player
 
 import android.os.Bundle
+import android.content.Context
 import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionResult
 import com.google.common.util.concurrent.Futures
@@ -18,27 +19,32 @@ import java.util.Base64
 /** Owns playback while the UI is closed and exposes Bluetooth/system media controls. */
 class PlaybackService : MediaSessionService() {
     private var session: MediaSession? = null
-    companion object { const val POLICY_COMMAND = "org.kog.player.POLICY" }
+    companion object {
+        const val POLICY_COMMAND = "org.kog.player.POLICY"
+        internal fun createOutput(context: Context): ExoPlayer {
+            NativeAudio.configure(context)
+            val http = DataSource.Factory {
+                val api = KogApi(context)
+                val headers = when {
+                    api.token.isNotBlank() -> mapOf("Authorization" to "Bearer ${api.token}")
+                    api.username.isNotBlank() -> mapOf("Authorization" to "Basic " +
+                        Base64.getEncoder().encodeToString("${api.username}:${api.password}".toByteArray()))
+                    else -> emptyMap()
+                }
+                DefaultHttpDataSource.Factory().setDefaultRequestProperties(headers).createDataSource()
+            }
+            val data = DefaultDataSource.Factory(context, DataSource.Factory {
+                KogBaseDataSource(context, http.createDataSource())
+            })
+            return ExoPlayer.Builder(context)
+                .setMediaSourceFactory(DefaultMediaSourceFactory(data))
+                .build()
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
-        NativeAudio.configure(this)
-        val http = DataSource.Factory {
-            val api = KogApi(this)
-            val headers = when {
-                api.token.isNotBlank() -> mapOf("Authorization" to "Bearer ${api.token}")
-                api.username.isNotBlank() -> mapOf("Authorization" to "Basic " +
-                    Base64.getEncoder().encodeToString("${api.username}:${api.password}".toByteArray()))
-                else -> emptyMap()
-            }
-            DefaultHttpDataSource.Factory().setDefaultRequestProperties(headers).createDataSource()
-        }
-        val data = DefaultDataSource.Factory(this, DataSource.Factory {
-            KogBaseDataSource(this, http.createDataSource())
-        })
-        val player = ExoPlayer.Builder(this)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(data))
-            .build()
+        val player = createOutput(this)
         val policyPlayer = PolicyPlayer(this, player) { snapshot ->
             session?.setSessionExtras(Bundle().apply { putString("kog_policy", snapshot.toString()) })
         }

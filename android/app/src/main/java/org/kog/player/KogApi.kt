@@ -65,6 +65,7 @@ data class SearchPage(val tracks: List<Track>, val folders: List<Folder>, val ge
 
 /** The mobile client uses the same HTTP endpoints and locator shape as Kog Web. */
 class KogApi(private val context: Context, val onDevice: Boolean = false) {
+    var sessionID: String = ""
     val deviceRoot get() = File(context.filesDir, "Kog Imports").absolutePath
     private fun parseTrack(row: JSONObject): Track = Track.parse(row).let { if (onDevice && it.kind != "remote") it.copy(kind = "device") else it }
 
@@ -183,11 +184,12 @@ class KogApi(private val context: Context, val onDevice: Boolean = false) {
         return withMetadata(tracks)
     }
 
-    suspend fun expand(track: Track): List<Track> {
-        val response = JSONObject(request(uri("/api/expand"), "POST", JSONArray().put(
-            track.locator().put("name", track.name))))
-        val rows = response.optJSONArray("tracks")?.optJSONArray(0)
-        return withMetadata(rows.objects().map(::parseTrack))
+    suspend fun expand(track: Track): List<Track> = expand(listOf(track))
+
+    suspend fun expand(tracks: List<Track>): List<Track> {
+        val response = JSONObject(request(uri("/api/expand"), "POST", JSONArray(tracks.map { it.locator().put("name", it.name) })))
+        val rows = response.optJSONArray("tracks") ?: JSONArray()
+        return withMetadata((0 until rows.length()).flatMap { rows.optJSONArray(it).objects().map(::parseTrack) })
     }
 
     suspend fun withMetadata(tracks: List<Track>): List<Track> {
@@ -266,14 +268,14 @@ class KogApi(private val context: Context, val onDevice: Boolean = false) {
     }
 
     suspend fun radio(enabled: Boolean, root: String): RadioBatch = radioBatch(
-        JSONObject(request(uri("/api/radio/enabled", "root" to root, "incremental" to "true"), "POST",
+        JSONObject(request(uri("/api/radio/enabled", "root" to root, "incremental" to "true", "session" to sessionID), "POST",
             JSONObject().put("enabled", enabled))))
 
     suspend fun radioAdvance(root: String): RadioBatch = radioBatch(
-        JSONObject(request(uri("/api/radio/advance", "root" to root, "incremental" to "true"), "POST")))
+        JSONObject(request(uri("/api/radio/advance", "root" to root, "incremental" to "true", "session" to sessionID), "POST")))
 
     suspend fun reshuffleRadio(root: String): RadioBatch = radioBatch(
-        JSONObject(request(uri("/api/radio/reshuffle", "root" to root, "incremental" to "true"), "POST")))
+        JSONObject(request(uri("/api/radio/reshuffle", "root" to root, "incremental" to "true", "session" to sessionID), "POST")))
 
     private suspend fun radioBatch(reply: JSONObject): RadioBatch {
         val tracks = withMetadata(reply.optJSONArray("entries").objects().map(::parseTrack))

@@ -21,6 +21,14 @@ pub unsafe extern "C" fn kog_playback_policy(
     unsafe { kog_audio::playback_order::ffi::kog_policy_json(input, error, error_capacity) }
 }
 
+/// Keep the application session bridge linked in the native audio library.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kog_backend_session(
+    input: *const c_char, error: *mut c_char, error_capacity: usize,
+) -> *mut c_char {
+    unsafe { kog_audio::playback_order::ffi::kog_session_json(input, error, error_capacity) }
+}
+
 pub struct KogAudioHandle {
     reader: PcmReader,
 }

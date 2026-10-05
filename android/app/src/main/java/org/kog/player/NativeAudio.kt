@@ -22,6 +22,7 @@ internal object NativeAudio {
 
     external fun nativeSetHelperDirectory(path: String): Boolean
     external fun nativePolicy(input: String): String
+    external fun nativeSession(input: String): String
     external fun nativeLibrary(input: String): String
     external fun nativeOpen(path: String, subsong: Int, midiEngine: String,
         soundfontPath: String, sc55RomPath: String, mt32RomPath: String): Long

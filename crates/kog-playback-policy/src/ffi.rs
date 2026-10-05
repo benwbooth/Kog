@@ -9,6 +9,26 @@ pub unsafe extern "C" fn kog_policy_json(
     error: *mut c_char,
     capacity: usize,
 ) -> *mut c_char {
+    unsafe { json_call(input, error, capacity, crate::bridge::dispatch_json) }
+}
+
+/// # Safety
+/// The pointer requirements are the same as `kog_policy_json`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kog_session_json(
+    input: *const c_char,
+    error: *mut c_char,
+    capacity: usize,
+) -> *mut c_char {
+    unsafe { json_call(input, error, capacity, crate::session::dispatch_json) }
+}
+
+unsafe fn json_call(
+    input: *const c_char,
+    error: *mut c_char,
+    capacity: usize,
+    dispatch: fn(&str) -> Result<String, String>,
+) -> *mut c_char {
     let result = (|| {
         if input.is_null() {
             return Err("Missing policy command".to_owned());
@@ -16,7 +36,7 @@ pub unsafe extern "C" fn kog_policy_json(
         let input = unsafe { CStr::from_ptr(input) }
             .to_str()
             .map_err(|e| e.to_string())?;
-        CString::new(crate::bridge::dispatch_json(input)?).map_err(|e| e.to_string())
+        CString::new(dispatch(input)?).map_err(|e| e.to_string())
     })();
     match result {
         Ok(value) => value.into_raw(),

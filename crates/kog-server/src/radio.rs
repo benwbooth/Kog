@@ -20,7 +20,8 @@
 //! two clients continue one shuffle). With no usable round it starts fresh at
 //! the configured music directory.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -128,6 +129,31 @@ struct Inner {
 /// mutation is serialized by one mutex.
 pub struct Radio {
     inner: Mutex<Inner>,
+}
+
+/// Independent named sessions never read or update the desktop enabled flag.
+/// The legacy endpoint without a session keeps its existing round.
+#[derive(Default)]
+pub struct Sessions(Mutex<HashMap<String, Arc<Radio>>>);
+
+impl Sessions {
+    pub fn get(&self, id: Option<&str>, legacy: &Arc<Radio>) -> Result<Arc<Radio>, String> {
+        let Some(id) = id else { return Ok(legacy.clone()); };
+        if id.is_empty() || id.len() > 256 { return Err("Invalid radio session ID".into()); }
+        let mut sessions = lock(&self.0);
+        Ok(sessions.entry(id.to_owned()).or_insert_with(|| {
+            let inner = lock(&legacy.inner);
+            let base = inner.save_path.clone().or_else(|| if inner.configured {
+                kog_audio::settings::setting_path(ROUND_FILE)
+            } else { None });
+            let save = base.and_then(|p| p.parent().map(|p| p.join("sessions")))
+                .map(|directory| {
+                    let _ = std::fs::create_dir_all(&directory);
+                    directory.join(format!("{:x}.radio.json", Sha256::digest(id.as_bytes())))
+                });
+            Arc::new(Radio::new(inner.root.clone(), save, false))
+        }).clone())
+    }
 }
 
 impl Radio {
@@ -696,6 +722,7 @@ pub struct RootQuery {
     /// root. An invalid explicit root is rejected instead of silently
     /// falling back to a wider directory.
     pub root: Option<String>,
+    pub session: Option<String>,
     #[serde(default)]
     pub incremental: bool,
 }
@@ -723,7 +750,9 @@ fn scoped_root(requested: Option<&str>) -> Result<Option<PathBuf>, String> {
 
 /// `GET /api/radio` — current state and the visible round window.
 pub async fn status(State(state): State<AppState>, query: Query<RootQuery>) -> Response {
-    let radio = state.radio.clone();
+    let radio = match state.radio_sessions.get(query.session.as_deref(), &state.radio) {
+        Ok(radio) => radio, Err(error) => return bad_request(&error),
+    };
     let scope = match scoped_root(query.root.as_deref()) {
         Ok(scope) => scope,
         Err(error) => return bad_request(&error),
@@ -738,7 +767,9 @@ pub async fn set_enabled(
     query: Query<RootQuery>,
     axum::Json(request): axum::Json<EnabledRequest>,
 ) -> Response {
-    let radio = state.radio.clone();
+    let radio = match state.radio_sessions.get(query.session.as_deref(), &state.radio) {
+        Ok(radio) => radio, Err(error) => return bad_request(&error),
+    };
     let scope = match scoped_root(query.root.as_deref()) {
         Ok(scope) => scope,
         Err(error) => return bad_request(&error),
@@ -750,7 +781,9 @@ pub async fn set_enabled(
 
 /// `POST /api/radio/reshuffle` — fresh shuffle under the requested scope.
 pub async fn reshuffle(State(state): State<AppState>, query: Query<RootQuery>) -> Response {
-    let radio = state.radio.clone();
+    let radio = match state.radio_sessions.get(query.session.as_deref(), &state.radio) {
+        Ok(radio) => radio, Err(error) => return bad_request(&error),
+    };
     let scope = match scoped_root(query.root.as_deref()) {
         Ok(scope) => scope,
         Err(error) => return bad_request(&error),
@@ -761,7 +794,9 @@ pub async fn reshuffle(State(state): State<AppState>, query: Query<RootQuery>) -
 
 /// `POST /api/radio/advance` — the next window of the running round.
 pub async fn advance(State(state): State<AppState>, query: Query<RootQuery>) -> Response {
-    let radio = state.radio.clone();
+    let radio = match state.radio_sessions.get(query.session.as_deref(), &state.radio) {
+        Ok(radio) => radio, Err(error) => return bad_request(&error),
+    };
     let scope = match scoped_root(query.root.as_deref()) {
         Ok(scope) => scope,
         Err(error) => return bad_request(&error),
@@ -1211,6 +1246,28 @@ mod tests {
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
         (status, json)
+    }
+
+    #[tokio::test]
+    async fn named_radio_sessions_do_not_share_rounds_or_enabled_state() {
+        let (library, root, save) = fixture(8);
+        let state = state_with_radio(library, root, save.clone());
+        let (_, a) = request(state.clone(), "POST", "/api/radio/enabled?session=phone&incremental=true", Some(serde_json::json!({"enabled":true}))).await;
+        assert_eq!(a["enabled"], true);
+        let (_, b) = request(state.clone(), "GET", "/api/radio?session=web&incremental=true", None).await;
+        assert_eq!(b["enabled"], false);
+        let (_, legacy) = request(state.clone(), "GET", "/api/radio?incremental=true", None).await;
+        assert_eq!(legacy["enabled"], false);
+        request(state.clone(), "POST", "/api/radio/enabled?session=web&incremental=true", Some(serde_json::json!({"enabled":true}))).await;
+        request(state.clone(), "POST", "/api/radio/enabled?session=phone&incremental=true", Some(serde_json::json!({"enabled":false}))).await;
+        let (_, b) = request(state.clone(), "GET", "/api/radio?session=web&incremental=true", None).await;
+        assert_eq!(b["enabled"], true);
+        let phone = state.radio_sessions.get(Some("phone"), &state.radio).unwrap();
+        let web = state.radio_sessions.get(Some("web"), &state.radio).unwrap();
+        assert!(!Arc::ptr_eq(&phone, &web));
+        assert_ne!(lock(&phone.inner).save_path, lock(&web.inner).save_path);
+        assert_ne!(lock(&phone.inner).save_path.as_deref(), Some(save.as_path()));
+        assert_eq!(request(state, "GET", "/api/radio?session=", None).await.0, StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

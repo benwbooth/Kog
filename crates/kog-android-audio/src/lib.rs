@@ -64,6 +64,21 @@ pub extern "system" fn Java_org_kog_player_NativeAudio_nativePolicy(
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_org_kog_player_NativeAudio_nativeSession(
+    mut env: JNIEnv, _receiver: JObject, input: JString,
+) -> jni::sys::jstring {
+    let result = (|| {
+        let input: String = env.get_string(&input).map_err(|e| e.to_string())?.into();
+        let reply = kog_audio::playback_order::session::dispatch_json(&input)?;
+        env.new_string(reply).map_err(|e| e.to_string())
+    })();
+    match result {
+        Ok(reply) => reply.into_raw(),
+        Err(error) => { fail(&mut env, error); std::ptr::null_mut() }
+    }
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_org_kog_player_NativeAudio_nativeSetHelperDirectory(
     mut env: JNIEnv,
     _receiver: JObject,

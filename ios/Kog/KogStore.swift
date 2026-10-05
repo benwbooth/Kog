@@ -26,8 +26,8 @@ final class KogStore: ObservableObject {
     @Published var searchTracks = [Track]()
     @Published var searchScanned = 0
     @Published var searching = false
-    @Published var queue = [Track]() { didSet { saveQueue() } }
-    @Published var currentIndex = -1 { didSet { saveQueue() } }
+    @Published private(set) var queue = [Track]()
+    @Published private(set) var currentIndex = -1
     @Published var playing = false
     @Published var position = 0.0
     @Published var duration = 0.0
@@ -36,7 +36,7 @@ final class KogStore: ObservableObject {
         didSet { UserDefaults.standard.set(repeatMode.rawValue, forKey: "repeat_mode") }
     }
     @Published var volume = UserDefaults.standard.object(forKey: "player_volume") as? Double ?? 1.0 {
-        didSet { UserDefaults.standard.set(volume, forKey: "player_volume"); applyVolume() }
+        didSet { if !applyingSession { sessionCommand(["op": "volume", "value": volume]) } }
     }
     @Published var muted = false { didSet { applyVolume() } }
     @Published var libraryOnDevice = false { didSet { search("") } }
@@ -45,12 +45,11 @@ final class KogStore: ObservableObject {
     @Published var searchPaused = false
     @Published var radioBusy = false
     @Published var notifyTracks = UserDefaults.standard.bool(forKey: "track_notifications")
-    @Published var queueFilter = ""
+    @Published var queueFilter = "" { didSet { if !applyingSession { sessionCommand(["op": "filter", "query": queueFilter]) } } }
     @Published var sortKey = "title"
     @Published var sortDescending = false
     @Published var deviceTreeRoot = UserDefaults.standard.string(forKey: "device_tree_root") ?? ""
     private var radioOnDevice = false
-    private var radioTask: Task<Void, Never>?
     private var interruptedPlayback = false
     private var audioObservers = [NSObjectProtocol]()
     private var exportURL: URL?
@@ -83,16 +82,14 @@ final class KogStore: ObservableObject {
     private var statusObserver: NSKeyValueObservation?
     private var searchTask: Task<Void, Never>?
     private var importScanTask: Task<Void, Never>?
-    private let policy = SharedPlaybackPolicy()
+    private let session: SharedBackendSession
+    private var applyingSession = false
+    private var outputToken: [String: Any]?
+    private var sessionStorageKey: String { "backend_session.\(session.id)" }
     @Published private(set) var queueSelection = Set<Int>()
     @Published private(set) var workspace = PlaylistWorkspaceSnapshot.empty
-    private var lastWorkspaceData: Data?
-    private var workspaceQueueGeneration = 0
-    private var workspaceQueueTask: Task<Void, Never>?
-    private var startingPrevious: Int?
     @Published private(set) var queuedIndices = [Int]()
     @Published private(set) var stopAfterIndices = Set<Int>()
-    private var suppressSave = false
     private var downloadNoticeTask: Task<Void, Never>?
     private var nowPlayingArtTask: Task<Void, Never>?
     private var nowPlayingArtwork: MPMediaItemArtwork?
@@ -118,26 +115,41 @@ final class KogStore: ObservableObject {
         return documents.appendingPathComponent("Kog Imports", isDirectory: true)
     }
 
-    init() {
-        if let data = UserDefaults.standard.data(forKey: "queue"),
-           let tracks = try? JSONDecoder().decode([Track].self, from: data) { queue = tracks }
-        currentIndex = UserDefaults.standard.integer(forKey: "index")
-        if queue.isEmpty { currentIndex = -1 }
-        else { currentIndex = min(max(0, currentIndex), queue.count - 1) }
-        // iOS may move an app container during installation. Persisted local
-        // paths must follow Documents, including archive and synth paths.
-        queue = queue.enumerated().map { index, track in var copy = rebaseDeviceTrack(track); if copy.queueOrder == nil { copy.queueOrder = Int64(index) }; return copy }
+    init(sessionID: String? = nil) {
+        let defaults = UserDefaults.standard
+        let identifier = sessionID ?? defaults.string(forKey: "backend_session_id") ?? "ios:\(UUID().uuidString)"
+        if sessionID == nil { defaults.set(identifier, forKey: "backend_session_id") }
+        session = SharedBackendSession(id: identifier)
         soundfontPath = rebaseDevicePath(soundfontPath)
         sc55RomPath = rebaseDevicePath(sc55RomPath)
         mt32RomPath = rebaseDevicePath(mt32RomPath)
-        let restoredWorkspace = UserDefaults.standard.data(forKey: "playlist_workspace")
-        _ = policyCommand(["op": "init", "seed": UInt32.random(in: 1...UInt32.max), "shuffle": shuffle.rawValue, "repeat": repeatMode.rawValue], sync: false)
-        if let restoredWorkspace, let value = try? JSONSerialization.jsonObject(with: restoredWorkspace) {
-            _ = policyCommand(["op": "workspace_restore", "value": rebaseWorkspace(value)], sync: false)
+        do {
+            if let data = defaults.data(forKey: sessionStorageKey), var saved = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                let tracks = try workspaceTracks(saved["queue"]).map(rebaseDeviceTrack)
+                saved["queue"] = try trackValues(tracks)
+                if let workspace = saved["workspace"] { saved["workspace"] = rebaseWorkspace(workspace) }
+                applySessionReply(try session.send(restore: saved))
+            } else {
+                // Import the old frontend format once; it is never authoritative again.
+                let legacyShuffle = shuffle, legacyRepeat = repeatMode, legacyVolume = volume
+                let legacy = sessionID == nil ? defaults.data(forKey: "queue") : nil
+                let tracks = try legacy.map { try JSONDecoder().decode([Track].self, from: $0) }.map { $0.map(rebaseDeviceTrack) } ?? []
+                sessionCommand(["op": "replace", "tracks": try trackValues(tracks), "current": SharedPlaybackPolicy.index(tracks.isEmpty ? -1 : defaults.integer(forKey: "index"))])
+                sessionCommand(["op": "shuffle", "mode": legacyShuffle.rawValue])
+                sessionCommand(["op": "repeat", "mode": legacyRepeat.rawValue])
+                sessionCommand(["op": "volume", "value": legacyVolume])
+                if sessionID == nil, let data = defaults.data(forKey: "playlist_workspace"), let value = try? JSONSerialization.jsonObject(with: data) {
+                    sessionCommand(["op": "workspace_restore", "value": rebaseWorkspace(value)])
+                }
+            }
+        } catch { report(error) }
+        updateSessionScopes()
+        if let saved = try? session.send()["checkpoint"] as? [String: Any], radio {
+            radioOnDevice = saved["radio_scope"] as? String == "device"
+            sessionCommand(["op": "radio", "enabled": true, "scope": saved["radio_scope"] ?? "device", "root": saved["radio_root"] ?? ""])
         }
-        syncPolicy()
         scanImports()
-        Task { if let saved = try? await deviceAPI.stars() { localStars = saved } }
+        Task { if let saved = try? await deviceAPI.stars() { localStars = saved; updateSessionMetadata() } }
         do {
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
             try AVAudioSession.sharedInstance().setActive(true)
@@ -154,6 +166,7 @@ final class KogStore: ObservableObject {
         UserDefaults.standard.set(codec, forKey: "codec")
         Secrets.write("token", token)
         Secrets.write("password", password)
+        updateSessionScopes()
         Task { await refresh() }
     }
 
@@ -165,7 +178,7 @@ final class KogStore: ObservableObject {
 
     private func restartCurrentMidi() {
         guard let track = current, isMidi(track) else { return }
-        startPlayer(resumeAt: position, shouldPlay: playing)
+        sessionCommand(["op": "reload_output"])
     }
 
     func selectMidiEngine(_ engine: String) {
@@ -221,14 +234,6 @@ final class KogStore: ObservableObject {
             UserDefaults.standard.set(destination.path, forKey: "midi_\(kind == "soundfont" ? "soundfont" : kind + "_roms")")
             if current?.isDevice == true { restartCurrentMidi() }
         } catch { report(error) }
-    }
-
-    private func saveQueue() {
-        guard !suppressSave else { return }
-        UserDefaults.standard.set(try? JSONEncoder().encode(queue), forKey: "queue")
-        UserDefaults.standard.set(currentIndex, forKey: "index")
-        UserDefaults.standard.set(shuffle.rawValue, forKey: "shuffle_mode")
-        UserDefaults.standard.set(repeatMode.rawValue, forKey: "repeat_mode")
     }
 
     private func report(_ failure: Error) {
@@ -296,6 +301,7 @@ final class KogStore: ObservableObject {
             search("")
             playlists = try await client.playlists()
             stars = try await client.stars()
+            updateSessionMetadata()
             if let serverEngine = try? await client.serverMidiEngine(), serverEngine != midiEngine {
                 midiEngine = serverEngine
                 UserDefaults.standard.set(serverEngine, forKey: "midi_engine")
@@ -342,104 +348,115 @@ final class KogStore: ObservableObject {
         }
     }
 
+    private func trackValues(_ tracks: [Track]) throws -> Any { try JSONSerialization.jsonObject(with: JSONEncoder().encode(tracks)) }
     func addFile(_ track: Track, play: Bool = false) async {
-        pendingAdds += 1; defer { pendingAdds -= 1 }
-        do {
-            add(try await (track.isDevice ? deviceAPI : api).expand(track), play: play)
-        } catch { report(error) }
+        do { sessionCommand(["op": "expand", "scope": track.isDevice ? "device" : "server:\(serverKey)", "entries": try trackValues([track]), "action": play ? "play_now" : "add_to_queue"]) }
+        catch { report(error) }
     }
-
     func addDeviceFolder(_ folder: Folder) async {
-        pendingAdds += 1; defer { pendingAdds -= 1 }
-        do { add(try await deviceAPI.collect(folder.path, query: searchText, root: activeDeviceRoot)) }
-        catch { report(error) }
+        sessionCommand(["op": "collect", "scope": "device", "path": folder.path, "query": searchText, "root": activeDeviceRoot])
     }
-
     func addFolder(_ folder: Folder, play: Bool = false) async {
-        pendingAdds += 1; defer { pendingAdds -= 1 }
-        do { add(try await api.collect(folder.path, query: searchText, root: activeTreeRoot), play: play) }
-        catch { report(error) }
+        sessionCommand(["op": "collect", "scope": "server:\(serverKey)", "path": folder.path, "query": searchText, "root": activeTreeRoot, "action": play ? "play_now" : "add_to_queue"])
     }
-
     func add(_ tracks: [Track], play: Bool = false) {
-        guard !tracks.isEmpty else { return }
-        let start = queue.count
-        let order = (queue.compactMap(\.queueOrder).max() ?? -1) + 1
-        queue += tracks.enumerated().map { offset, track in var copy = track; copy.queueOrder = order + Int64(offset); return copy }
-        syncPolicy()
-        if play { playIndex(start) }
-    }
-
-    private func syncPolicy(oldToNew: [Int?]? = nil) {
-        do { try policy.sync(queue, current: currentIndex, oldToNew: oldToNew) }
+        do { sessionCommand(["op": "append", "tracks": try trackValues(tracks), "action": play ? "play_now" : "add_to_queue"]) }
         catch { report(error) }
-        applyPolicySnapshot()
     }
-
-    private func applyPolicySnapshot() {
-        shuffle = ShuffleMode(rawValue: policy.snapshot["shuffle"] as? String ?? "") ?? .off
-        repeatMode = RepeatMode(rawValue: policy.snapshot["repeat"] as? String ?? "") ?? .off
-        UserDefaults.standard.set(shuffle.rawValue, forKey: "shuffle_mode")
-        radio = policy.radio["enabled"] as? Bool ?? false
-        radioBusy = policy.radio["pending"] as? Bool ?? false
-        queueSelection = Set((policy.snapshot["queue_selection"] as? [String: Any])?["indices"] as? [Int] ?? [])
-        queuedIndices = policy.snapshot["queued"] as? [Int] ?? []
-        stopAfterIndices = Set(policy.snapshot["stop_after"] as? [Int] ?? [])
-        if let value = policy.snapshot["workspace"], let data = try? JSONSerialization.data(withJSONObject: value),
+    @discardableResult
+    private func sessionCommand(_ command: [String: Any]) -> [String: Any]? {
+        do { let reply = try session.send(command); applySessionReply(reply); return reply }
+        catch { report(error); return nil }
+    }
+    private func applySessionReply(_ reply: [String: Any]) {
+        let view = session.snapshot
+        applyingSession = true
+        if let tracks = try? workspaceTracks(view["queue"]) { queue = tracks }
+        currentIndex = view["current"] as? Int ?? -1
+        playing = ["playing", "starting"].contains(view["transport"] as? String ?? "")
+        position = view["position"] as? Double ?? 0; duration = view["duration"] as? Double ?? 0
+        volume = view["volume"] as? Double ?? 1
+        shuffle = ShuffleMode(rawValue: view["shuffle"] as? String ?? "") ?? .off
+        repeatMode = RepeatMode(rawValue: view["repeat"] as? String ?? "") ?? .off
+        radio = view["radio_enabled"] as? Bool ?? false; radioBusy = view["radio_pending"] as? Bool ?? false
+        queueFilter = view["filter"] as? String ?? ""; sortKey = view["sort_column"] as? String ?? "index"
+        sortDescending = view["descending"] as? Bool ?? false
+        queueSelection = Set((view["selection"] as? [String: Any])?["indices"] as? [Int] ?? [])
+        queuedIndices = view["queued"] as? [Int] ?? []; stopAfterIndices = Set(view["stop_after"] as? [Int] ?? [])
+        if let value = view["workspace"], let data = try? JSONSerialization.data(withJSONObject: value),
            let snapshot = try? JSONDecoder().decode(PlaylistWorkspaceSnapshot.self, from: data) { workspace = snapshot }
-        if let value = policy.snapshot["workspace_state"], let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]), data != lastWorkspaceData {
-            UserDefaults.standard.set(data, forKey: "playlist_workspace"); lastWorkspaceData = data
+        if let message = view["error"] as? String { error = message }
+        applyingSession = false
+        for effect in reply["effects"] as? [[String: Any]] ?? [] { executeSessionEffect(effect) }
+        updateNowPlaying()
+    }
+    private func executeSessionEffect(_ effect: [String: Any]) {
+        switch effect["action"] as? String {
+        case "persist": if let value = effect["value"], let data = try? JSONSerialization.data(withJSONObject: value) { UserDefaults.standard.set(data, forKey: sessionStorageKey) }
+        case "play":
+            outputToken = effect["token"] as? [String: Any]
+            startPlayer(resumeAt: effect["seconds"] as? Double ?? 0, shouldPlay: effect["playing"] as? Bool ?? true)
+        case "pause":
+            player?.pause()
+            #if KOG_NATIVE_AUDIO
+            nativePlayer?.pause()
+            #endif
+        case "resume":
+            player?.play()
+            #if KOG_NATIVE_AUDIO
+            nativePlayer?.play()
+            #endif
+        case "stop": stopOutput()
+        case "seek": seekOutput(effect["seconds"] as? Double ?? 0)
+        case "volume": applyVolume()
+        case "load", "save", "expand", "collect", "radio":
+            guard let token = effect["token"] as? [String: Any] else { return }
+            pendingAdds += 1
+            Task {
+                defer { pendingAdds -= 1 }
+                do {
+                    var client = try workspaceAPI(effect["scope"] as? String ?? "")
+                    client.sessionID = session.id
+                    var result: [String: Any]
+                    switch effect["action"] as? String {
+                    case "load": result = ["kind": "loaded", "entries": try trackValues(await client.playlist((effect["playlist_id"] as? NSNumber)?.int64Value ?? 0))]
+                    case "save":
+                        try await client.replacePlaylist((effect["playlist_id"] as? NSNumber)?.int64Value ?? 0, tracks: workspaceTracks(effect["entries"]), expected: workspaceTracks(effect["expected_entries"]))
+                        result = ["kind": "saved"]; await loadPlaylists()
+                    case "expand": result = ["kind": "expanded", "tracks": try trackValues(await client.expand(workspaceTracks(effect["entries"])))]
+                    case "collect": result = ["kind": "expanded", "tracks": try trackValues(await client.collect(effect["path"] as? String ?? "", query: effect["query"] as? String ?? "", root: effect["root"] as? String ?? ""))]
+                    default:
+                        let root = effect["root"] as? String ?? ""
+                        let batch: RadioBatch
+                        if effect["reshuffle"] as? Bool == true { batch = try await client.reshuffleRadio(root: root) }
+                        else if effect["reset"] as? Bool == true { batch = try await client.radio(effect["enabled"] as? Bool ?? false, root: root) }
+                        else { batch = try await client.radioAdvance(root: root) }
+                        result = ["kind": "radio", "tracks": try trackValues(batch.tracks), "exhausted": batch.exhausted]
+                    }
+                    updateSessionScopes()
+                    sessionCommand(["op": "complete", "token": token, "result": result])
+                } catch { sessionCommand(["op": "complete", "token": token, "result": ["kind": "failed", "error": error.localizedDescription]]) }
+            }
+        default: break
         }
     }
-
-    @discardableResult
-    private func policyCommand(_ command: [String: Any], sync: Bool = true) -> [String: Any]? {
-        do {
-            if sync { try policy.sync(queue, current: currentIndex) }
-            let reply = try policy.send(command)
-            applyPolicySnapshot()
-            if let message = reply["error"] as? String { self.error = message }
-            return reply
-        } catch { report(error); return nil }
+    private func updateSessionScopes() {
+        sessionCommand(["op": "scopes", "scopes": ["device", "server:\(serverKey)"]])
     }
-
-    func selectShuffle(_ mode: ShuffleMode) {
-        _ = policyCommand(["op": "set_shuffle", "mode": mode.rawValue, "current": SharedPlaybackPolicy.index(currentIndex)])
-        if !radio { radioTask?.cancel() }
+    private func updateSessionMetadata() { sessionCommand(["op": "metadata", "rows": policyRows()]) }
+    private func outputEvent(_ event: [String: Any], token: [String: Any]) {
+        sessionCommand(["op": "output", "token": token, "event": event])
     }
-    func cycleShuffle() {
-        _ = policyCommand(["op": "cycle_shuffle", "current": SharedPlaybackPolicy.index(currentIndex)])
-        if !radio { radioTask?.cancel() }
-    }
-    func selectRepeat(_ mode: RepeatMode) {
-        _ = policyCommand(["op": "set_repeat", "mode": mode.rawValue])
-        if !radio { radioTask?.cancel() }
-    }
-    func cycleRepeat() {
-        _ = policyCommand(["op": "cycle_repeat"])
-        if !radio { radioTask?.cancel() }
-    }
-    func toggleQueued(_ index: Int) { _ = policyCommand(["op": "toggle_queue", "indices": [index]]) }
-    func toggleStopAfter(_ index: Int) { _ = policyCommand(["op": "toggle_stop_after", "indices": [index]]) }
-
-    func playIndex(_ index: Int) {
-        guard queue.indices.contains(index) else { return }
-        _ = policyCommand(["op": "cancel_navigation"])
-        _ = policyCommand(["op": "cancel_waiting"])
-        activateIndex(index)
-    }
-
-    private func activateIndex(_ index: Int) {
-        guard queue.indices.contains(index) else { return }
-        startingPrevious = currentIndex
-        currentIndex = index
-        startPlayer()
-    }
+    func selectShuffle(_ mode: ShuffleMode) { sessionCommand(["op": "shuffle", "mode": mode.rawValue]) }
+    func cycleShuffle() { sessionCommand(["op": "cycle_shuffle"]) }
+    func selectRepeat(_ mode: RepeatMode) { sessionCommand(["op": "repeat", "mode": mode.rawValue]) }
+    func cycleRepeat() { sessionCommand(["op": "cycle_repeat"]) }
+    func toggleQueued(_ index: Int) { sessionCommand(["op": "toggle_queued", "indices": [index]]) }
+    func toggleStopAfter(_ index: Int) { sessionCommand(["op": "toggle_stop_after", "indices": [index]]) }
+    func playIndex(_ index: Int) { sessionCommand(["op": "play", "index": index]) }
 
     private func startPlayer(resumeAt: Double = 0, shouldPlay: Bool = true) {
-        guard let track = current else { return }
-        let previous = startingPrevious ?? currentIndex
-        startingPrevious = nil
+        guard let track = current, let requestToken = outputToken else { return }
         do {
             removePlayerObservers()
             player?.pause()
@@ -461,7 +478,7 @@ final class KogStore: ObservableObject {
                 let soundfont = soundfontPath
                 let sc55 = sc55RomPath
                 let mt32 = mt32RomPath
-                playing = shouldPlay; position = resumeAt; duration = Double(track.duration) / 1000
+                outputEvent(["event": "progress", "seconds": resumeAt, "duration": Double(track.duration) / 1000], token: requestToken)
                 updateNowPlaying()
                 nativeStartTask = Task { [weak self] in
                     do {
@@ -475,25 +492,25 @@ final class KogStore: ObservableObject {
                         let decoder = try NativeAudioPlayer(source: source, visualization: self.visualization, onEnd: { [weak self] in
                             Task { @MainActor [weak self] in
                                 guard let self, self.nativeGeneration == generation else { return }
-                                self.finishedTrack()
+                                self.outputEvent(["event": "ended"], token: requestToken)
                             }
                         }, onError: { [weak self] message in
                             Task { @MainActor [weak self] in
                                 guard let self, self.nativeGeneration == generation else { return }
-                                self.error = message; self.navigate("failed")
+                                self.outputEvent(["event": "failed", "error": message], token: requestToken)
                             }
                         })
                         self.nativePlayer = decoder
-                        _ = self.policyCommand(["op": "started", "previous": SharedPlaybackPolicy.index(previous), "index": self.currentIndex])
+                        self.outputEvent(["event": "started"], token: requestToken)
                         self.applyVolume()
-                        self.duration = streamOffset + decoder.duration
+                        self.outputEvent(["event": "progress", "seconds": resumeAt, "duration": streamOffset + decoder.duration], token: requestToken)
                         if track.isDevice && resumeAt > 0 { decoder.seek(resumeAt) }
                         if self.playing { decoder.play() }
                         self.nativeTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
                             Task { @MainActor [weak self] in
                                 guard let self, self.nativeGeneration == generation,
                                       let decoder = self.nativePlayer else { return }
-                                self.position = streamOffset + decoder.position
+                                self.outputEvent(["event": "progress", "seconds": streamOffset + decoder.position, "duration": streamOffset + decoder.duration], token: requestToken)
                                 self.updateNowPlaying()
                             }
                         }
@@ -504,7 +521,7 @@ final class KogStore: ObservableObject {
                         guard let self, !Task.isCancelled,
                               self.nativeGeneration == generation else { return }
                         self.report(error)
-                        self.navigate("failed")
+                        self.outputEvent(["event": "failed", "error": self.error ?? "Playback failed"], token: requestToken)
                     }
                 }
                 return
@@ -528,12 +545,11 @@ final class KogStore: ObservableObject {
                 if item.status == .readyToPlay {
                     Task { @MainActor [weak self] in
                         guard let self, self.player?.currentItem === item else { return }
-                        _ = self.policyCommand(["op": "started", "previous": SharedPlaybackPolicy.index(previous), "index": self.currentIndex])
+                        self.outputEvent(["event": "started"], token: requestToken)
                     }
                 } else if item.status == .failed {
                     Task { @MainActor [weak self] in
                         guard let self, self.player?.currentItem === item else { return }
-                        self.playing = false
                         let failure = item.error?.localizedDescription ?? "Cannot play this file"
                         if !track.isDevice {
                             await self.checkConnection()
@@ -542,32 +558,33 @@ final class KogStore: ObservableObject {
                         self.error = !track.isDevice && !self.connected
                             ? "The Kog server is no longer reachable. Check that Kog is running on the server, then tap Play to retry."
                             : failure
-                        self.navigate("failed")
+                        self.outputEvent(["event": "failed", "error": self.error ?? "Playback failed"], token: requestToken)
                         self.updateNowPlaying()
                     }
                 }
             }
             timeObserver = player?.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.5, preferredTimescale: 600), queue: .main) { [weak self] time in
                 Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    self.position = time.seconds.isFinite ? time.seconds : 0
+                    guard let self, self.player?.currentItem === item else { return }
                     let seconds = self.player?.currentItem?.duration.seconds ?? 0
-                    self.duration = seconds.isFinite ? seconds : Double(track.duration) / 1000
+                    self.outputEvent(["event": "progress", "seconds": time.seconds.isFinite ? time.seconds : 0, "duration": seconds.isFinite ? seconds : Double(track.duration) / 1000], token: requestToken)
                     self.updateNowPlaying()
                 }
             }
             finishObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime,
                 object: item, queue: .main) { [weak self] _ in
-                Task { @MainActor [weak self] in self?.finishedTrack() }
+                Task { @MainActor [weak self] in
+                    guard let self, self.player?.currentItem === item else { return }
+                    self.outputEvent(["event": "ended"], token: requestToken)
+                }
             }
             if resumeAt > 0 { player?.seek(to: CMTime(seconds: resumeAt, preferredTimescale: 600)) }
             if shouldPlay { player?.play() }
-            playing = shouldPlay
-            position = resumeAt
+            outputEvent(["event": "progress", "seconds": resumeAt, "duration": Double(track.duration) / 1000], token: requestToken)
             loadNowPlayingArt(for: track)
             updateNowPlaying()
             postTrackNotification(track)
-        } catch { report(error); navigate("failed") }
+        } catch { outputEvent(["event": "failed", "error": error.localizedDescription], token: requestToken) }
     }
 
     private func removePlayerObservers() {
@@ -580,121 +597,29 @@ final class KogStore: ObservableObject {
         #endif
     }
 
-    func activateQueueIndex(_ index: Int) {
-        guard let activation = policyCommand(["op": "activate", "index": index, "current": SharedPlaybackPolicy.index(currentIndex)])?["activation"] as? [String: Any] else { return }
-        if activation["action"] as? String == "toggle_playback" { togglePlayback() }
-        else if let index = activation["index"] as? Int { playIndex(index) }
-    }
-
-    func togglePlayback() {
-        if policy.waiting { stop(); return }
-        if queue.isEmpty && radio { navigate("next"); return }
-        if playing {
-            player?.pause()
-            #if KOG_NATIVE_AUDIO
-            nativePlayer?.pause()
-            #endif
-            playing = false
-        }
-        else {
-            if player?.currentItem?.status == .failed {
-                startPlayer(resumeAt: position)
-                return
-            }
-            if player != nil { player?.play(); playing = true }
-            #if KOG_NATIVE_AUDIO
-            if nativePlayer != nil { nativePlayer?.play(); playing = true }
-            #endif
-            if !playing && !queue.isEmpty { playIndex(max(0, currentIndex)) }
-        }
-        updateNowPlaying()
-    }
-
-    func stop() {
-        _ = policyCommand(["op": "cancel_navigation"])
-        _ = policyCommand(["op": "cancel_waiting"])
-        removePlayerObservers()
-        player?.pause(); player = nil; assetLoader = nil
-        #if KOG_NATIVE_AUDIO
-        nativeGeneration += 1; nativeStartTask?.cancel()
-        nativePlayer?.stop(); nativePlayer = nil
-        #endif
-        playing = false; position = 0; updateNowPlaying()
-    }
-    private func finishedTrack() {
-        navigate("ended")
-    }
-    func seek(_ seconds: Double) {
-        guard seconds.isFinite else { return }
-        let target = min(max(0, seconds), duration > 0 ? max(0, duration - 0.01) : max(0, seconds))
-        #if KOG_NATIVE_AUDIO
-        if let track = current, !track.isDevice {
-            startPlayer(resumeAt: target, shouldPlay: playing)
-            return
-        }
-        nativePlayer?.seek(target)
-        #endif
-        player?.seek(to: CMTime(seconds: target, preferredTimescale: 600))
-        position = target
-        updateNowPlaying()
-    }
-
-    private func navigate(_ event: String) {
-        guard let decision = policyCommand(["op": "navigate", "event": event,
-            "current": SharedPlaybackPolicy.index(currentIndex)])?["decision"] as? [String: Any] else { return }
-        switch decision["action"] as? String {
-        case "play": if let index = decision["index"] as? Int { activateIndex(index) }
-        case "radio": advanceRadio()
-        default: stop()
-        }
-    }
-    func next() { navigate("next") }
-    func previous() { navigate("previous") }
-
-    func remove(_ offsets: IndexSet) {
-        let remaining = queue.indices.filter { !offsets.contains($0) }
-        let remap = queue.indices.map { remaining.firstIndex(of: $0) }
-        let removedCurrent = offsets.contains(currentIndex)
-        if removedCurrent { stop() }
-        queue.remove(atOffsets: offsets)
-        currentIndex = remap.indices.contains(currentIndex) ? (remap[currentIndex] ?? -1) : -1
-        syncPolicy(oldToNew: remap)
-        if queue.isEmpty {
-            removePlayerObservers(); player?.pause(); player = nil; assetLoader = nil
-            #if KOG_NATIVE_AUDIO
-            nativeGeneration += 1; nativeStartTask?.cancel()
-            nativePlayer?.stop(); nativePlayer = nil
-            #endif
-            currentIndex = -1; playing = false; position = 0; duration = 0
-            nowPlayingArtTask?.cancel(); nowPlayingArtwork = nil
-            MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
-        }
-
-    }
-
-    func move(_ source: IndexSet, to destination: Int) {
-        var ordering = Array(queue.indices)
-        ordering.move(fromOffsets: source, toOffset: destination)
-        let nextIndex = ordering.firstIndex(of: currentIndex) ?? currentIndex
-        queue.move(fromOffsets: source, toOffset: destination)
-        currentIndex = nextIndex
-        syncPolicy(oldToNew: ordering.indices.map { ordering.firstIndex(of: $0) })
-    }
-
-    func clearQueue() {
-        workspaceQueueGeneration += 1
-        workspaceQueueTask = nil
-        stop()
+    func activateQueueIndex(_ index: Int) { sessionCommand(["op": "activate", "index": index]) }
+    func togglePlayback() { sessionCommand(["op": "toggle"]) }
+    func stop() { sessionCommand(["op": "stop"]) }
+    private func stopOutput() {
+        outputToken = nil
         removePlayerObservers(); player?.pause(); player = nil; assetLoader = nil
         #if KOG_NATIVE_AUDIO
-        nativeGeneration += 1; nativeStartTask?.cancel()
-        nativePlayer?.stop(); nativePlayer = nil
+        nativeGeneration += 1; nativeStartTask?.cancel(); nativePlayer?.stop(); nativePlayer = nil
         #endif
-        queue = []; currentIndex = -1; playing = false; position = 0; duration = 0
-        syncPolicy()
-        nowPlayingArtTask?.cancel(); nowPlayingArtwork = nil
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
     }
+    func seek(_ seconds: Double) { sessionCommand(["op": "seek", "seconds": seconds]) }
+    private func seekOutput(_ seconds: Double) {
+        #if KOG_NATIVE_AUDIO
+        if let track = current, !track.isDevice { sessionCommand(["op": "reload_output"]); return }
+        nativePlayer?.seek(seconds)
+        #endif
+        player?.seek(to: CMTime(seconds: seconds, preferredTimescale: 600))
+    }
+    func next() { sessionCommand(["op": "navigate", "event": "next"]) }
+    func previous() { sessionCommand(["op": "navigate", "event": "previous"]) }
+    func remove(_ offsets: IndexSet) { sessionCommand(["op": "remove", "indices": Array(offsets)]) }
+    func move(_ source: IndexSet, to destination: Int) { sessionCommand(["op": "move", "indices": Array(source), "target": destination]) }
+    func clearQueue() { sessionCommand(["op": "clear"]) }
 
     private func policyRows() -> [[String: Any]] {
         queue.map { track in
@@ -709,21 +634,10 @@ final class KogStore: ObservableObject {
             return row
         }
     }
-    func filteredQueueIndices() -> [Int] {
-        guard !queueFilter.isEmpty else { return Array(queue.indices) }
-        do {
-            return try policy.send(["op": "filter_rows", "rows": policyRows(), "query": queueFilter])["indices"] as? [Int] ?? []
-        } catch { return [] }
-    }
-
+    func filteredQueueIndices() -> [Int] { session.snapshot["visible"] as? [Int] ?? [] }
     func sortQueue(_ key: String) {
-        if sortKey == key { sortDescending.toggle() } else { sortKey = key; sortDescending = false }
-        let selectedIndex = currentIndex
-        let rows = policyRows()
-        guard let ordering = policyCommand(["op": "sort_rows", "rows": rows, "column": key, "descending": sortDescending])?["indices"] as? [Int] else { return }
-        queue = ordering.map { queue[$0] }
-        if selectedIndex >= 0 { currentIndex = ordering.firstIndex(of: selectedIndex) ?? -1 }
-        syncPolicy(oldToNew: ordering.indices.map { ordering.firstIndex(of: $0) })
+        sessionCommand(["op": "metadata", "rows": policyRows()])
+        sessionCommand(["op": "sort", "column": key, "descending": sortKey == key ? !sortDescending : false, "physical": true])
     }
 
     func isStarred(_ track: Track) -> Bool { (track.isDevice ? localStars : stars).contains(track.id) }
@@ -736,62 +650,18 @@ final class KogStore: ObservableObject {
             } else {
                 if enabled { stars.insert(track.id) } else { stars.remove(track.id) }
             }
+            updateSessionMetadata()
             if selectedPlaylist?.id == 0 { playlistTracks.removeAll { $0.id == track.id && !enabled } }
         } catch { report(error) }
     }
 
-    func toggleRadio() async {
-        radio.toggle()
-        prepareRadio(selectSource: true)
+    func toggleRadio() async { prepareRadio(selectSource: true, enabled: !radio) }
+    private func prepareRadio(selectSource: Bool = false, reshuffle: Bool = false, enabled: Bool? = nil) {
+        if selectSource { radioOnDevice = libraryOnDevice }
+        sessionCommand(["op": "radio", "enabled": enabled ?? radio, "scope": radioOnDevice ? "device" : "server:\(serverKey)",
+            "root": radioOnDevice ? activeDeviceRoot : activeTreeRoot, "reshuffle": reshuffle])
     }
-    private func prepareRadio(selectSource: Bool = false, reshuffle: Bool = false) {
-        radioTask?.cancel()
-        if radio && selectSource { radioOnDevice = libraryOnDevice }
-        _ = policyCommand(["op": "radio_reset", "enabled": radio, "current": SharedPlaybackPolicy.index(currentIndex)])
-        requestRadio(initial: true, reshuffle: reshuffle)
-    }
-    private func requestRadio(initial: Bool = false, reshuffle: Bool = false) {
-        guard initial || policy.needsRefill else { return }
-        _ = policyCommand(["op": "radio_begin"])
-        let generation = policy.generation, enabled = radio
-        let client = radioOnDevice ? deviceAPI : api
-        let root = radioOnDevice ? activeDeviceRoot : activeTreeRoot
-        radioTask = Task {
-            do {
-                let response: RadioBatch
-                if reshuffle { response = try await client.reshuffleRadio(root: root) }
-                else if initial { response = try await client.radio(enabled, root: root) }
-                else { response = try await client.radioAdvance(root: root) }
-                guard !Task.isCancelled, policy.generation == generation else { return }
-                let entries = try JSONSerialization.jsonObject(with: JSONEncoder().encode(response.tracks))
-                _ = policyCommand(["op": "radio_accept", "generation": generation, "entries": entries, "exhausted": response.exhausted])
-                consumeRadio("radio_pending")
-                requestRadio()
-            } catch {
-                guard !Task.isCancelled, policy.generation == generation else { return }
-                _ = policyCommand(["op": "radio_fail", "generation": generation])
-                report(error)
-            }
-        }
-    }
-    func reshuffleRadio() async {
-        radio = true
-        prepareRadio(reshuffle: true)
-    }
-    private func consumeRadio(_ operation: String) {
-        guard let reply = policyCommand(["op": operation]) else { return }
-        if let entry = reply["entry"] as? [String: Any],
-           let data = try? JSONSerialization.data(withJSONObject: entry),
-           let track = try? JSONDecoder().decode(Track.self, from: data) {
-            add([track])
-            _ = policyCommand(["op": "radio_candidate", "index": queue.count - 1])
-            activateIndex(queue.count - 1)
-        } else if operation == "radio_next", !policy.waiting { stop() }
-    }
-    private func advanceRadio() {
-        consumeRadio("radio_next")
-        requestRadio()
-    }
+    func reshuffleRadio() async { prepareRadio(reshuffle: true, enabled: true) }
     private var workspaceScope: String { playlistOnDevice ? "device" : "server:\(serverKey)" }
     func openPlaylistTab(_ playlist: SavedPlaylist) {
         workspaceCommand(["op": "open", "key": "\(workspaceScope):\(playlist.id)", "scope": workspaceScope,
@@ -808,8 +678,6 @@ final class KogStore: ObservableObject {
     }
     func workspaceAppend(_ tracks: [Track]) {
         do {
-            let onDevice = workspace.activeTab?.scope == "device"
-            guard tracks.allSatisfy({ $0.kind == "remote" || $0.isDevice == onDevice }) else { throw KogError.response("Choose a playlist in the same library as these tracks.") }
             let entries = try JSONSerialization.jsonObject(with: JSONEncoder().encode(tracks))
             workspaceCommand(["op": "append", "entries": entries])
         } catch { report(error) }
@@ -818,54 +686,11 @@ final class KogStore: ObservableObject {
         workspaceCommand(["op": "selection", "command": ["op": "choose", "index": index, "gesture": "toggle"]])
     }
     func selectQueue(_ command: [String: Any]) {
-        _ = policyCommand(["op": "select_queue", "command": command])
+        sessionCommand(["op": "select", "command": command])
     }
 
-    func workspaceCommand(_ command: [String: Any]) {
-        guard let reply = policyCommand(["op": "workspace", "command": command], sync: false),
-              let effect = reply["workspace_effect"] as? [String: Any], let action = effect["action"] as? String else { return }
-        switch action {
-        case "load":
-            let key = effect["key"] as? String ?? "", generation = effect["generation"] as? Int ?? 0
-            Task {
-                do {
-                    let client = try workspaceAPI(effect["scope"] as? String ?? "")
-                    let tracks = try await client.playlist((effect["playlist_id"] as? NSNumber)?.int64Value ?? 0)
-                    let entries = try JSONSerialization.jsonObject(with: JSONEncoder().encode(tracks))
-                    workspaceCommand(["op": "loaded", "key": key, "generation": generation, "entries": entries])
-                } catch { workspaceCommand(["op": "load_failed", "key": key, "generation": generation, "error": error.localizedDescription]) }
-            }
-        case "save":
-            let key = effect["key"] as? String ?? "", revision = effect["revision"] as? Int ?? 0
-            Task {
-                do {
-                    let client = try workspaceAPI(effect["scope"] as? String ?? "")
-                    try await client.replacePlaylist((effect["playlist_id"] as? NSNumber)?.int64Value ?? 0,
-                        tracks: workspaceTracks(effect["entries"]), expected: workspaceTracks(effect["expected_entries"]))
-                    workspaceCommand(["op": "saved", "key": key, "revision": revision]); await loadPlaylists()
-                } catch { workspaceCommand(["op": "save_failed", "key": key, "revision": revision, "error": error.localizedDescription]) }
-            }
-        case "queue":
-            let generation = workspaceQueueGeneration
-            let source = effect["scope"] as? String ?? ""
-            let previous = workspaceQueueTask
-            workspaceQueueTask = Task {
-                await previous?.value
-                guard generation == workspaceQueueGeneration else { return }
-                do {
-                    let client = try workspaceAPI(source)
-                    let selected = try workspaceTracks(effect["entries"])
-                    var expanded = [Track]()
-                    for track in selected { expanded += try await client.expand(track) }
-                    guard generation == workspaceQueueGeneration, source == "device" || source == "server:\(serverKey)" else { return }
-                    let start = queue.count; add(expanded)
-                    let reply = policyCommand(["op": "apply_queue_action", "action": effect["mode"] as? String ?? "add_to_queue", "start": start, "count": expanded.count])
-                    if let decision = reply?["decision"] as? [String: Any], let index = decision["index"] as? Int { playIndex(index) }
-                } catch { report(error) }
-            }
-        default: break
-        }
-    }
+    func workspaceCommand(_ command: [String: Any]) { sessionCommand(["op": "workspace", "command": command]) }
+    func workspaceAppendQueue(selectedOnly: Bool = false) { sessionCommand(["op": "append_queue_to_workspace", "selected_only": selectedOnly]) }
 
     func loadPlaylists() async {
         do { playlists = try await playlistAPI.playlists() } catch { report(error) }
@@ -1072,7 +897,7 @@ final class KogStore: ObservableObject {
             return .success
         }
         commands.pauseCommand.addTarget { [weak self] _ in
-            Task { @MainActor [weak self] in if self?.playing == true || self?.policy.waiting == true { self?.togglePlayback() } }
+            Task { @MainActor [weak self] in if self?.playing == true || self?.session.waiting == true { self?.togglePlayback() } }
             return .success
         }
         commands.togglePlayPauseCommand.addTarget { [weak self] _ in
@@ -1103,7 +928,7 @@ extension KogStore {
     func selectCodec(_ value: String) {
         guard value != codec else { return }
         codec = value; UserDefaults.standard.set(value, forKey: "codec")
-        if current?.isDevice == false { startPlayer(resumeAt: position, shouldPlay: playing) }
+        if current?.isDevice == false { sessionCommand(["op": "reload_output"]) }
     }
     func toggleSearchPause() async {
         do { try await searchAPI.pauseSearch(!searchPaused); searchPaused.toggle() }
@@ -1155,7 +980,7 @@ extension KogStore {
                     self.interruptedPlayback = false
                     if options & AVAudioSession.InterruptionOptions.shouldResume.rawValue != 0 {
                         try? AVAudioSession.sharedInstance().setActive(true)
-                        self.startPlayer(resumeAt: self.position)
+                        self.sessionCommand(["op": "resume"])
                     }
                 }
             }
@@ -1163,7 +988,7 @@ extension KogStore {
         audioObservers.append(NotificationCenter.default.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { [weak self] note in
             let reason = (note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt) ?? 0
             if reason == AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue {
-                Task { @MainActor [weak self] in if self?.playing == true || self?.policy.waiting == true { self?.togglePlayback() } }
+                Task { @MainActor [weak self] in if self?.playing == true || self?.session.waiting == true { self?.togglePlayback() } }
             }
         })
         audioObservers.append(NotificationCenter.default.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: .main) { [weak self] _ in
@@ -1171,7 +996,7 @@ extension KogStore {
                 guard let self else { return }
                 try? AVAudioSession.sharedInstance().setCategory(.playback)
                 try? AVAudioSession.sharedInstance().setActive(true)
-                if self.current != nil { self.startPlayer(resumeAt: self.position, shouldPlay: self.playing) }
+                if self.current != nil { self.sessionCommand(["op": "reload_output"]) }
             }
         })
     }

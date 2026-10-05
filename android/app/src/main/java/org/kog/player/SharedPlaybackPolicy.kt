@@ -40,3 +40,21 @@ internal class SharedPlaybackPolicy {
         fun index(index: Int): Any = if (index >= 0) index else JSONObject.NULL
     }
 }
+
+/** One opaque Rust application session; this class has no queue or policy logic. */
+internal class SharedBackendSession(val id: String) {
+    private var state: String? = null
+    private val incarnation = System.currentTimeMillis()
+    var snapshot = JSONObject()
+        private set
+    fun send(command: JSONObject? = null, restore: JSONObject? = null): JSONObject {
+        check(NativeAudio.available) { "Kog's shared backend could not load: ${NativeAudio.loadError.orEmpty()}" }
+        val request = JSONObject().put("state", state ?: JSONObject.NULL).put("session_id", id)
+            .put("incarnation", incarnation).put("command", command ?: JSONObject.NULL).put("restore", restore ?: JSONObject.NULL)
+        val reply = JSONObject(NativeAudio.nativeSession(request.toString()))
+        check(!reply.has("error")) { reply.optString("error") }
+        state = reply.getString("state")
+        snapshot = reply.getJSONObject("snapshot")
+        return reply
+    }
+}

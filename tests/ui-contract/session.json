@@ -1,0 +1,555 @@
+{
+  "description": "Application session ownership and platform bridge contract. @name refers to a captured value from an earlier step.",
+  "steps": [
+    {
+      "session": "a",
+      "command": {
+        "op": "append",
+        "tracks": [
+          {
+            "kind": "local",
+            "path": "/A.wav",
+            "title": "A",
+            "album": "Album"
+          },
+          {
+            "kind": "local",
+            "path": "/B.wav",
+            "title": "B",
+            "album": "Album"
+          },
+          {
+            "kind": "local",
+            "path": "/A.wav",
+            "title": "A",
+            "album": "Album"
+          }
+        ]
+      },
+      "expect": {
+        "snapshot.row_ids": [
+          1,
+          2,
+          3
+        ],
+        "snapshot.current": null
+      }
+    },
+    {
+      "session": "b",
+      "command": {
+        "op": "append",
+        "tracks": [
+          {
+            "kind": "local",
+            "path": "/D.wav",
+            "title": "D",
+            "album": "Album"
+          }
+        ]
+      },
+      "expect": {
+        "snapshot.queue.0.title": "D",
+        "snapshot.shuffle": "off"
+      }
+    },
+    {
+      "session": "a",
+      "command": {
+        "op": "shuffle",
+        "mode": "all"
+      },
+      "expect": {
+        "snapshot.shuffle": "all"
+      }
+    },
+    {
+      "session": "b",
+      "command": {
+        "op": "filter",
+        "query": "missing"
+      },
+      "expect": {
+        "snapshot.visible": [],
+        "snapshot.shuffle": "off"
+      }
+    },
+    {
+      "session": "a",
+      "command": {
+        "op": "expand",
+        "scope": "local",
+        "entries": [
+          {
+            "kind": "local",
+            "path": "/E.wav",
+            "title": "E",
+            "album": "Album"
+          }
+        ],
+        "action": "play_now"
+      },
+      "expect": {},
+      "capture": {
+        "first": "effects.1.token"
+      }
+    },
+    {
+      "session": "a",
+      "command": {
+        "op": "expand",
+        "scope": "local",
+        "entries": [
+          {
+            "kind": "local",
+            "path": "/F.wav",
+            "title": "F",
+            "album": "Album"
+          }
+        ],
+        "action": "play_now"
+      },
+      "expect": {},
+      "capture": {
+        "second": "effects.1.token"
+      }
+    },
+    {
+      "session": "a",
+      "command": {
+        "op": "complete",
+        "token": "@second",
+        "result": {
+          "kind": "expanded",
+          "tracks": [
+            {
+              "kind": "local",
+              "path": "/F.wav",
+              "title": "F",
+              "album": "Album"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "snapshot.row_ids": [
+          1,
+          2,
+          3
+        ],
+        "snapshot.current": null
+      }
+    },
+    {
+      "session": "b",
+      "command": {
+        "op": "complete",
+        "token": "@first",
+        "result": {
+          "kind": "expanded",
+          "tracks": [
+            {
+              "kind": "local",
+              "path": "/WRONG.wav",
+              "title": "WRONG",
+              "album": "Album"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "snapshot.row_ids": [
+          1
+        ],
+        "effects": []
+      }
+    },
+    {
+      "session": "a",
+      "command": {
+        "op": "complete",
+        "token": "@first",
+        "result": {
+          "kind": "expanded",
+          "tracks": [
+            {
+              "kind": "local",
+              "path": "/E.wav",
+              "title": "E",
+              "album": "Album"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "snapshot.row_ids": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "snapshot.current": 4,
+        "effects.2.index": 4
+      },
+      "capture": {
+        "output": "snapshot.output_token"
+      }
+    },
+    {
+      "session": "a",
+      "command": {
+        "op": "move",
+        "indices": [
+          4
+        ],
+        "target": 0
+      },
+      "expect": {
+        "snapshot.row_ids": [
+          5,
+          1,
+          2,
+          3,
+          4
+        ],
+        "snapshot.current": 0
+      }
+    },
+    {
+      "session": "a",
+      "command": {
+        "op": "output",
+        "token": "@output",
+        "event": {
+          "event": "started"
+        }
+      },
+      "expect": {
+        "snapshot.transport": "playing",
+        "snapshot.current": 0
+      }
+    },
+    {
+      "session": "a",
+      "command": {
+        "op": "output",
+        "token": "@output",
+        "event": {
+          "event": "progress",
+          "seconds": 12.5,
+          "duration": 40
+        }
+      },
+      "expect": {
+        "snapshot.position": 12.5,
+        "effects": []
+      }
+    },
+    {
+      "session": "a",
+      "command": {
+        "op": "reload_output"
+      },
+      "expect": {
+        "effects.1.index": 0,
+        "effects.1.seconds": 12.5,
+        "effects.1.playing": true
+      },
+      "capture": {
+        "reload": "snapshot.output_token"
+      }
+    },
+    {
+      "session": "a",
+      "command": {
+        "op": "output",
+        "token": "@output",
+        "event": {
+          "event": "ended"
+        }
+      },
+      "expect": {
+        "snapshot.current": 0,
+        "effects": []
+      }
+    },
+    {
+      "session": "a",
+      "command": {
+        "op": "pause"
+      },
+      "expect": {
+        "snapshot.transport": "paused"
+      }
+    },
+    {
+      "session": "a",
+      "command": {
+        "op": "output",
+        "token": "@reload",
+        "event": {
+          "event": "started"
+        }
+      },
+      "expect": {
+        "snapshot.transport": "paused"
+      }
+    },
+    {
+      "session": "a",
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "open",
+          "key": "local:9",
+          "scope": "local",
+          "playlist_id": 9,
+          "name": "Draft",
+          "readonly": false
+        }
+      },
+      "expect": {
+        "snapshot.workspace.active": "local:9"
+      },
+      "capture": {
+        "load": "effects.1.token"
+      }
+    },
+    {
+      "session": "a",
+      "command": {
+        "op": "complete",
+        "token": "@load",
+        "result": {
+          "kind": "loaded",
+          "entries": [
+            {
+              "kind": "local",
+              "path": "/Saved.wav",
+              "title": "Saved",
+              "album": "Album"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "snapshot.workspace.entries.0.title": "Saved"
+      }
+    },
+    {
+      "session": "a",
+      "command": {
+        "op": "append_queue_to_workspace",
+        "selected_only": false
+      },
+      "expect": {
+        "snapshot.workspace.tabs.1.dirty": true
+      }
+    },
+    {
+      "session": "a",
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "save"
+        }
+      },
+      "expect": {},
+      "capture": {
+        "save": "effects.1.token"
+      }
+    },
+    {
+      "session": "a",
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "append",
+          "entries": [
+            {
+              "kind": "local",
+              "path": "/Unsaved.wav",
+              "title": "Unsaved",
+              "album": "Album"
+            }
+          ]
+        }
+      },
+      "expect": {}
+    },
+    {
+      "session": "a",
+      "command": {
+        "op": "complete",
+        "token": "@save",
+        "result": {
+          "kind": "saved"
+        }
+      },
+      "expect": {
+        "snapshot.workspace.tabs.1.dirty": true
+      },
+      "capture": {
+        "checkpoint": "checkpoint"
+      }
+    },
+    {
+      "session": "a",
+      "command": {
+        "op": "expand",
+        "scope": "local",
+        "entries": [
+          {
+            "kind": "local",
+            "path": "/Late.wav",
+            "title": "Late",
+            "album": "Album"
+          }
+        ],
+        "action": "play_now"
+      },
+      "expect": {},
+      "capture": {
+        "late": "effects.1.token"
+      }
+    },
+    {
+      "session": "a",
+      "command": {
+        "op": "clear"
+      },
+      "expect": {
+        "snapshot.queue": [],
+        "snapshot.current": null,
+        "snapshot.transport": "stopped"
+      }
+    },
+    {
+      "session": "a",
+      "command": {
+        "op": "complete",
+        "token": "@late",
+        "result": {
+          "kind": "expanded",
+          "tracks": [
+            {
+              "kind": "local",
+              "path": "/Late.wav",
+              "title": "Late",
+              "album": "Album"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "snapshot.queue": [],
+        "effects": []
+      }
+    },
+    {
+      "session": "a",
+      "restore": "@checkpoint",
+      "expect": {
+        "snapshot.queue.0.title": "F",
+        "snapshot.transport": "stopped",
+        "snapshot.workspace.tabs.1.dirty": true,
+        "snapshot.current": 0
+      }
+    },
+    {
+      "session": "a",
+      "command": {
+        "op": "output",
+        "token": "@reload",
+        "event": {
+          "event": "ended"
+        }
+      },
+      "expect": {
+        "snapshot.current": 0,
+        "effects": []
+      }
+    },
+    {
+      "session": "b",
+      "command": {
+        "op": "filter",
+        "query": ""
+      },
+      "expect": {
+        "snapshot.queue.0.title": "D",
+        "snapshot.current": null,
+        "snapshot.workspace.active": "queue",
+        "snapshot.visible": [
+          0
+        ]
+      }
+    },
+    {
+      "session": "a",
+      "command": {
+        "op": "filter",
+        "query": "no matches"
+      },
+      "expect": {
+        "snapshot.visible": []
+      }
+    },
+    {
+      "session": "a",
+      "command": {
+        "op": "select",
+        "command": {
+          "op": "all"
+        }
+      },
+      "expect": {
+        "snapshot.selection.indices": []
+      }
+    },
+    {
+      "session": "a",
+      "command": {
+        "op": "filter",
+        "query": "a"
+      },
+      "expect": {
+        "snapshot.visible": [
+          0,
+          1,
+          2,
+          3,
+          4
+        ]
+      }
+    },
+    {
+      "session": "a",
+      "command": {
+        "op": "sort",
+        "column": "title",
+        "descending": false,
+        "physical": true
+      },
+      "expect": {
+        "snapshot.queue.0.title": "A",
+        "snapshot.queue.1.title": "A",
+        "snapshot.current": 4
+      }
+    },
+    {
+      "session": "a",
+      "command": {
+        "op": "remove",
+        "indices": [
+          4
+        ]
+      },
+      "expect": {
+        "snapshot.current": null,
+        "snapshot.transport": "stopped"
+      }
+    }
+  ]
+}

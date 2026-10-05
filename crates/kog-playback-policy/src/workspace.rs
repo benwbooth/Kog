@@ -4,11 +4,12 @@ use serde_json::Value;
 
 pub const QUEUE_TAB: &str = "queue";
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum QueueAction {
     PlayNow,
     PlayNext,
+    #[default]
     AddToQueue,
 }
 

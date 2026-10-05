@@ -90,3 +90,70 @@ fn selection_follows_visible_order_and_keeps_the_anchor_when_range_shrinks() {
     );
     assert_eq!(state.indices, [2, 8]);
 }
+
+#[test]
+fn application_sessions_match_across_native_and_wire_ports() {
+    use kog_playback_policy::{
+        RepeatMode, ShuffleMode,
+        session::{Session, dispatch_json},
+    };
+    use std::collections::BTreeMap;
+    fn resolve(value: &Value, captures: &BTreeMap<String, Value>) -> Value {
+        match value {
+            Value::String(s) if s.starts_with('@') => captures.get(&s[1..]).unwrap().clone(),
+            Value::Array(a) => Value::Array(a.iter().map(|v| resolve(v, captures)).collect()),
+            Value::Object(o) => Value::Object(
+                o.iter()
+                    .map(|(k, v)| (k.clone(), resolve(v, captures)))
+                    .collect(),
+            ),
+            _ => value.clone(),
+        }
+    }
+    let fixture: Value =
+        serde_json::from_str(include_str!("../../../tests/ui-contract/session.json")).unwrap();
+    let mut native = BTreeMap::<String, Session<Value>>::new();
+    let mut wire = BTreeMap::<String, String>::new();
+    let mut captures = BTreeMap::new();
+    for (index, step) in fixture["steps"].as_array().unwrap().iter().enumerate() {
+        let id = step["session"].as_str().unwrap();
+        let direct = native
+            .entry(id.to_owned())
+            .or_insert_with(|| Session::new(id, 123, ShuffleMode::Off, RepeatMode::Off));
+        let command = step.get("command").map(|v| resolve(v, &captures));
+        let restore = step.get("restore").map(|v| resolve(v, &captures));
+        if let Some(restore) = restore.clone() {
+            direct.restore(restore, |v| Ok(v.clone())).unwrap();
+        }
+        let effects = command
+            .clone()
+            .map(|c| direct.dispatch(serde_json::from_value(c).unwrap()))
+            .unwrap_or_default();
+        let native_reply = json!({"snapshot":direct.snapshot(),"effects":effects,"checkpoint":direct.checkpoint()});
+        let reply:Value=serde_json::from_str(&dispatch_json(&json!({"state":wire.get(id),"session_id":id,"incarnation":123,"command":command,"restore":restore}).to_string()).unwrap()).unwrap();
+        wire.insert(id.to_owned(), reply["state"].as_str().unwrap().into());
+        for (path, expected) in step["expect"].as_object().unwrap() {
+            let pointer = format!("/{}", path.replace('.', "/"));
+            assert_eq!(
+                reply.pointer(&pointer),
+                Some(expected),
+                "wire step {index}: {path}"
+            );
+            assert_eq!(
+                native_reply.pointer(&pointer),
+                Some(expected),
+                "native step {index}: {path}"
+            );
+        }
+        assert_eq!(
+            native_reply["snapshot"], reply["snapshot"],
+            "full snapshot at step {index}"
+        );
+        if let Some(values) = step["capture"].as_object() {
+            for (name, path) in values {
+                let pointer = format!("/{}", path.as_str().unwrap().replace('.', "/"));
+                captures.insert(name.clone(), reply.pointer(&pointer).unwrap().clone());
+            }
+        }
+    }
+}

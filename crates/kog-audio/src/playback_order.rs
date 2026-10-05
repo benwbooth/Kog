@@ -1,7 +1,7 @@
 //! Native adapter for the platform-neutral playback-order policy.
 
 pub use kog_playback_policy::{NavigationEvent, PlaybackDecision, PlaybackOrder, SelectionState, TrackOrderInfo};
-pub use kog_playback_policy::{bridge, ffi, radio, selection, sort, workspace};
+pub use kog_playback_policy::{bridge, ffi, radio, selection, sort, workspace, session};
 
 impl TrackOrderInfo for crate::track::Track {
     fn album(&self) -> &str {

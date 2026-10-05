@@ -31,6 +31,7 @@ pub struct AppState {
     pub search: Arc<crate::api::SearchState>,
     /// Server-owned random radio, sharing the desktop's round file.
     pub radio: Arc<crate::radio::Radio>,
+    pub radio_sessions: Arc<crate::radio::Sessions>,
 }
 
 impl AppState {
@@ -66,6 +67,7 @@ impl AppState {
             library: Arc::new(library),
             search: Arc::new(crate::api::SearchState::default()),
             radio: Arc::new(radio),
+            radio_sessions: Arc::new(crate::radio::Sessions::default()),
         }
     }
 

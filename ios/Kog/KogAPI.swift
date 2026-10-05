@@ -35,6 +35,7 @@ struct KogAPI {
     var midiEngine: String = "opl3windows"
     var deviceRoot: String?
     var deviceStorage: String?
+    var sessionID: String = ""
 
     func url(_ endpoint: String, _ query: [String: String] = [:]) throws -> URL {
         let origin = server.contains("://") ? server : "http://\(server)"
@@ -167,10 +168,11 @@ struct KogAPI {
         let rows = (try JSONSerialization.jsonObject(with: data) as? [String: Any])?["tracks"] ?? []
         return try await metadata(decodeTracks(rows))
     }
-    func expand(_ track: Track) async throws -> [Track] {
-        let data = try await request("/api/expand", method: "POST", body: [track.locator.merging(["name": track.name]) { _, new in new }])
-        let tracks = (try JSONSerialization.jsonObject(with: data) as? [String: Any])?["tracks"] as? [Any]
-        return try await metadata(decodeTracks(tracks?.first ?? []))
+    func expand(_ track: Track) async throws -> [Track] { try await expand([track]) }
+    func expand(_ entries: [Track]) async throws -> [Track] {
+        let data = try await request("/api/expand", method: "POST", body: entries.map { $0.locator.merging(["name": $0.name]) { _, new in new } })
+        let groups = (try JSONSerialization.jsonObject(with: data) as? [String: Any])?["tracks"] as? [[Any]] ?? []
+        return try await metadata(decodeTracks(groups.flatMap { $0 }))
     }
     func metadata(_ tracks: [Track]) async throws -> [Track] {
         guard !tracks.isEmpty else { return [] }
@@ -241,7 +243,7 @@ struct KogAPI {
         _ = try await request("/api/library/search/pause", method: "POST", body: ["paused": paused])
     }
     private func radioQuery(_ root: String) -> [String: String] {
-        var query = ["incremental": "true"]
+        var query = ["incremental": "true", "session": sessionID]
         if !root.isEmpty { query["root"] = root }
         return query
     }

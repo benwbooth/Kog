@@ -30,7 +30,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 
-/** Queue and selection belong to this Android client; library rules belong to Rust. */
+/** Compose view model. Queue, selection, workspace and transport are session snapshots. */
 class KogState(private val context: Context) {
     val api = KogApi(context)
     val deviceApi = KogApi(context, onDevice = true)
@@ -120,14 +120,8 @@ class KogState(private val context: Context) {
     }
 
     init {
-        runCatching {
-            val rows = JSONArray(prefs.getString("queue", "[]"))
-            for (i in 0 until rows.length()) rows.optJSONObject(i)?.let { queue.add(Track.parse(it)) }
-        }
-        shuffleMode = prefs.getString("shuffle_mode", if (prefs.getBoolean("shuffle", false)) "all" else "off") ?: "off"
-        repeatMode = prefs.getString("repeat_mode", if (prefs.getBoolean("repeat", false)) "all" else "off") ?: "off"
         localRoot = prefs.getString("local_root", "").orEmpty()
-        task { stars = deviceApi.stars() }
+        task { stars = deviceApi.stars(); refreshQueueMetadata() }
         if (localRoot.isNotBlank()) {
             DocumentFile.fromTreeUri(context, Uri.parse(localRoot))?.let(::browseDevice)
         }
@@ -143,12 +137,6 @@ class KogState(private val context: Context) {
         future.addListener({
             runCatching {
                 controller = future.get().also { it.addListener(listener) }
-                if (controller?.mediaItemCount == 0 && queue.isNotEmpty()) {
-                    controller?.setMediaItems(queue.map(::mediaItem),
-                        prefs.getInt("index", 0).coerceIn(0, queue.lastIndex),
-                        prefs.getLong("position", 0))
-                    controller?.prepare()
-                }
                 policyCommand("sync")
                 syncPlayer()
             }.onFailure { error = it.message ?: "Cannot start playback" }
@@ -156,24 +144,13 @@ class KogState(private val context: Context) {
     }
 
     fun release() {
-        saveQueue()
         controller?.removeListener(listener)
         controllerFuture?.let(MediaController::releaseFuture)
         controllerFuture = null
         controller = null
     }
 
-    fun connectionChanged() {
-        val player = controller ?: return
-        val index = player.currentMediaItemIndex.coerceAtLeast(0)
-        val at = player.currentPosition.coerceAtLeast(0)
-        val wasPlaying = player.isPlaying
-        if (queue.isNotEmpty()) {
-            player.setMediaItems(queue.map(::mediaItem), index.coerceAtMost(queue.lastIndex), at)
-            player.prepare()
-            if (wasPlaying) player.play()
-        }
-    }
+    fun connectionChanged() { policyCommand("reload_output") }
 
     private fun restartCurrentMidi() {
         val track = current ?: return
@@ -184,13 +161,7 @@ class KogState(private val context: Context) {
         }
         if (name.substringAfterLast('.', "").lowercase() !in setOf(
                 "kar", "mid", "midi", "rmi", "mids", "mds", "lds", "xmf", "mxmf")) return
-        val player = controller ?: return
-        val index = player.currentMediaItemIndex.coerceAtLeast(0)
-        val at = player.currentPosition.coerceAtLeast(0)
-        val wasPlaying = player.isPlaying
-        player.setMediaItems(queue.map(::mediaItem), index.coerceAtMost(queue.lastIndex), at)
-        player.prepare()
-        if (wasPlaying) player.play()
+        policyCommand("reload_output")
     }
 
     fun selectMidiEngine(engine: String) {
@@ -264,39 +235,34 @@ class KogState(private val context: Context) {
         if (current?.isDevice == true) restartCurrentMidi()
     }
 
-    private fun syncPlayer() {
-        val player = controller ?: return
-        val tracks = (0 until player.mediaItemCount).map { player.getMediaItemAt(it).kogTrack() }
-        if (tracks != queue.toList()) queue.replaceWith(tracks)
-        currentIndex = player.sessionExtras.getString("kog_policy")?.let { JSONObject(it).optInt("current", -1) } ?: -1
-        playing = player.isPlaying
-        position = player.currentPosition.coerceAtLeast(0)
-        duration = player.duration.coerceAtLeast(0)
-        saveQueue()
-    }
-
-    fun tick() {
-        val player = controller ?: return
-        position = player.currentPosition.coerceAtLeast(0)
-        duration = player.duration.coerceAtLeast(0)
-    }
-
-    private fun mediaItem(track: Track): MediaItem = track.mediaItem(api)
+    private fun syncPlayer() { controller?.let { applyPolicy(it.sessionExtras) } }
+    fun tick() { syncPlayer() }
 
     private fun applyPolicy(extras: Bundle) {
         extras.getString("error")?.let { error = it }
         val snapshot = extras.getString("kog_policy")?.let(::JSONObject) ?: return
+        snapshot.optJSONArray("queue")?.let { rows ->
+            val tracks = (0 until rows.length()).map { Track.parse(rows.getJSONObject(it)) }
+            if (tracks != queue.toList()) queue.replaceWith(tracks)
+        }
         currentIndex = snapshot.optInt("current", -1)
+        playing = snapshot.optString("transport") in listOf("starting", "playing")
+        position = (snapshot.optDouble("position") * 1000).toLong()
+        duration = (snapshot.optDouble("duration") * 1000).toLong()
+        filterValue = snapshot.optString("filter")
+        sortField = snapshot.optString("sort_column")
+        sortDescending = snapshot.optBoolean("descending")
+        snapshot.optJSONArray("visible")?.let { rows -> visibleQueue = (0 until rows.length()).map(rows::getInt) }
         shuffleMode = snapshot.optString("shuffle", "off")
         repeatMode = snapshot.optString("repeat", "off")
-        radioOn = snapshot.optJSONObject("radio")?.optBoolean("enabled") ?: false
-        radioWaiting = snapshot.optJSONObject("radio")?.optBoolean("waiting") ?: false
+        radioOn = snapshot.optBoolean("radio_enabled")
+        radioWaiting = snapshot.optBoolean("radio_waiting")
         fun indices(key: String): List<Int> = snapshot.optJSONArray(key)?.let { rows ->
             (0 until rows.length()).map(rows::getInt)
         }.orEmpty()
         queuedIndices = indices("queued")
         stopAfterIndices = indices("stop_after")
-        snapshot.optJSONObject("queue_selection")?.optJSONArray("indices")?.let { indices -> queueSelection = (0 until indices.length()).map(indices::getInt).toSet() }
+        snapshot.optJSONObject("selection")?.optJSONArray("indices")?.let { indices -> queueSelection = (0 until indices.length()).map(indices::getInt).toSet() }
         snapshot.optJSONObject("workspace")?.let { workspace = PlaylistWorkspaceSnapshot.parse(it) }
         if (!snapshot.isNull("error")) snapshot.optString("error").takeIf(String::isNotEmpty)?.let { error = it }
     }
@@ -307,15 +273,6 @@ class KogState(private val context: Context) {
             Bundle().apply { putString("command", fields.toString()) })
         future.addListener({ runCatching { applyPolicy(future.get().extras) }
             .onFailure { error = it.message ?: "Playback command failed" } }, ContextCompat.getMainExecutor(context))
-    }
-
-    private fun saveQueue() {
-        val rows = JSONArray()
-        queue.forEach { rows.put(it.saved()) }
-        prefs.edit().putString("queue", rows.toString())
-            .putInt("index", currentIndex.coerceAtLeast(0))
-            .putLong("position", position)
-            .putString("shuffle_mode", shuffleMode).putString("repeat_mode", repeatMode).apply()
     }
 
     private fun task(work: suspend () -> Unit) {
@@ -376,73 +333,40 @@ class KogState(private val context: Context) {
         }
     }
 
-    fun addFile(track: Track, play: Boolean = false, onAdded: () -> Unit = {}) = task {
-        val tracks = (if (track.isDevice) deviceApi else api).expand(track)
-        add(tracks, play)
-        if (tracks.isNotEmpty()) onAdded()
+    fun addFile(track: Track, play: Boolean = false, onAdded: () -> Unit = {}) {
+        policyCommand("expand", JSONObject().put("scope", if (track.isDevice) "device" else "server:${api.server}")
+            .put("entries", JSONArray().put(track.saved())).put("action", if (play) "play_now" else "add_to_queue"))
+        onAdded()
     }
+    fun addFolder(folder: Folder, play: Boolean = false, onAdded: () -> Unit = {}) {
+        policyCommand("collect", JSONObject().put("scope", "server:${api.server}").put("path", folder.path)
+            .put("query", searchText).put("root", libraryRoot).put("action", if (play) "play_now" else "add_to_queue"))
+        onAdded()
+    }
+    fun add(tracks: List<Track>, play: Boolean = false) = policyCommand("append", JSONObject()
+        .put("tracks", JSONArray(tracks.map { it.saved() })).put("action", if (play) "play_now" else "add_to_queue"))
+    fun play(index: Int) = policyCommand("play", JSONObject().put("index", index))
+    fun toggle() = policyCommand("toggle")
+    fun previous() = policyCommand("navigate", JSONObject().put("event", "previous"))
+    fun next() = policyCommand("navigate", JSONObject().put("event", "next"))
+    fun stop() = policyCommand("stop")
+    fun seek(milliseconds: Long) = policyCommand("seek", JSONObject().put("seconds", milliseconds / 1000.0))
+    fun remove(index: Int) = policyCommand("remove", JSONObject().put("indices", JSONArray().put(index)))
+    fun clear() = policyCommand("clear")
+    fun move(from: Int, to: Int) = policyCommand("move", JSONObject().put("indices", JSONArray().put(from)).put("target", if (to > from) to + 1 else to))
 
-    fun addFolder(folder: Folder, play: Boolean = false, onAdded: () -> Unit = {}) = task {
-        val tracks = api.collect(folder.path, searchText, libraryRoot)
-        add(tracks, play)
-        if (tracks.isNotEmpty()) onAdded()
-    }
-
-    fun add(tracks: List<Track>, play: Boolean = false) {
-        if (tracks.isEmpty()) return
-        val start = queue.size
-        queue.addAll(tracks)
-        controller?.addMediaItems(tracks.map(::mediaItem))
-        controller?.prepare()
-        if (play) {
-            controller?.seekTo(start, 0)
-            controller?.play()
-        }
-        saveQueue()
-    }
-
-    fun play(index: Int) {
-        val player = controller ?: return
-        if (index !in queue.indices) return
-        player.seekTo(index, 0)
-        player.prepare()
-        player.play()
-        syncPlayer()
-    }
-
-    fun toggle() {
-        controller?.let { if (radioWaiting) it.stop() else if (it.isPlaying) it.pause() else it.play() }
-        syncPlayer()
-    }
-    fun previous() { controller?.seekToPreviousMediaItem(); syncPlayer() }
-    fun next() { controller?.seekToNextMediaItem(); syncPlayer() }
-    fun stop() { controller?.stop(); syncPlayer() }
-    fun seek(milliseconds: Long) { controller?.seekTo(milliseconds); syncPlayer() }
-
-    fun remove(index: Int) {
-        if (index !in queue.indices) return
-        queue.removeAt(index)
-        controller?.removeMediaItem(index)
-        syncPlayer()
-        saveQueue()
-    }
-    fun clear() { queue.clear(); controller?.clearMediaItems(); syncPlayer(); saveQueue() }
-    fun move(from: Int, to: Int) {
-        if (from !in queue.indices || to !in queue.indices) return
-        val row = queue.removeAt(from)
-        queue.add(to, row)
-        controller?.moveMediaItem(from, to)
-        syncPlayer()
-        saveQueue()
-    }
-
-    var queueFilter by mutableStateOf("")
+    private var filterValue by mutableStateOf("")
+    var queueFilter: String
+        get() = filterValue
+        set(value) { filterValue = value; policyCommand("filter", JSONObject().put("query", value)) }
     private var sortField = ""
     private var sortDescending = false
+    private var visibleQueue by mutableStateOf(emptyList<Int>())
     fun sortQueue(field: String) {
-        if (field == sortField) sortDescending = !sortDescending else { sortField = field; sortDescending = false }
-        policyCommand("sort_rows", JSONObject().put("rows", policyRows()).put("column", field).put("descending", sortDescending))
+        refreshQueueMetadata()
+        policyCommand("sort", JSONObject().put("column", field).put("descending", field == sortField && !sortDescending).put("physical", true))
     }
+    private fun refreshQueueMetadata() = policyCommand("metadata", JSONObject().put("rows", policyRows()))
     private fun policyRows(): JSONArray = JSONArray(queue.map { track ->
         val row = JSONObject().put("title", track.label).put("artist", track.artist).put("album", track.album)
             .put("track_number", track.trackNumber ?: JSONObject.NULL).put("disc_number", track.discNumber ?: JSONObject.NULL)
@@ -454,12 +378,8 @@ class KogState(private val context: Context) {
             row.put(key, track.metadata[key]?.toDoubleOrNull() ?: JSONObject.NULL)
         row
     })
-    fun filteredQueueIndices(): List<Int> {
-        if (queueFilter.isBlank()) return queue.indices.toList()
-        val rows = SharedPlaybackPolicy.query(JSONObject().put("op", "filter_rows").put("rows", policyRows()).put("query", queueFilter)).getJSONArray("indices")
-        return (0 until rows.length()).map(rows::getInt)
-    }
-    fun selectQueueIndices(indices: List<Int>) = policyCommand("select_queue", JSONObject().put("command",
+    fun filteredQueueIndices(): List<Int> = visibleQueue
+    fun selectQueueIndices(indices: List<Int>) = policyCommand("select", JSONObject().put("command",
         JSONObject().put("op", "set").put("indices", JSONArray(indices)).put("anchor", indices.firstOrNull() ?: JSONObject.NULL)))
 
     fun shuffle() = policyCommand("cycle_shuffle")
@@ -475,7 +395,7 @@ class KogState(private val context: Context) {
     }
     fun radio() = radioRequest("radio_toggle")
     fun reshuffleRadio() = radioRequest("radio_reshuffle")
-    fun toggleQueued(index: Int) = policyCommand("toggle_queue", JSONObject().put("indices", JSONArray().put(index)))
+    fun toggleQueued(index: Int) = policyCommand("toggle_queued", JSONObject().put("indices", JSONArray().put(index)))
     fun toggleStopAfter(index: Int) = policyCommand("toggle_stop_after", JSONObject().put("indices", JSONArray().put(index)))
 
     fun workspaceCommand(op: String, fields: JSONObject = JSONObject()) {
@@ -493,14 +413,10 @@ class KogState(private val context: Context) {
     fun selectQueue(op: String, index: Int? = null) {
         val command = JSONObject().put("op", op)
         if (index != null) command.put("index", index).put("gesture", "toggle")
-        policyCommand("select_queue", JSONObject().put("command", command))
+        policyCommand("select", JSONObject().put("command", command))
     }
-    fun workspaceAppendQueue(selectionOnly: Boolean = false) {
-        val rows = queue.filterIndexed { index, _ -> !selectionOnly || index in queueSelection }
-        val onDevice = workspace.tabs.firstOrNull { it.key == workspace.active }?.scope == "device"
-        if (rows.any { it.kind != "remote" && it.isDevice != onDevice }) { error = "Choose a playlist in the same library as these tracks."; return }
-        workspaceCommand("append", JSONObject().put("entries", JSONArray(rows.map { it.saved() })))
-    }
+    fun workspaceAppendQueue(selectionOnly: Boolean = false) =
+        policyCommand("append_queue_to_workspace", JSONObject().put("selected_only", selectionOnly))
 
     private val playlistApi get() = if (libraryOnDevice) deviceApi else api
     fun loadPlaylists() = task { playlists.replaceWith(playlistApi.playlists()) }
@@ -531,6 +447,7 @@ class KogState(private val context: Context) {
         val newValue = track.key !in stars
         (if (track.isDevice) deviceApi else api).star(track, newValue)
         stars = if (newValue) stars + track.key else stars - track.key
+        refreshQueueMetadata()
     }
 
     fun importFiles(uris: List<Uri>, play: Boolean = false, onAdded: () -> Unit = {}) = task {
@@ -538,9 +455,10 @@ class KogState(private val context: Context) {
             val tree = localRoot.takeIf(String::isNotBlank)?.let { DocumentFile.fromTreeUri(context, Uri.parse(it)) }
             uris.map { deviceLibrary.stageFile(it, tree) }
         }
-        val tracks = files.flatMap { deviceApi.expand(Track(kind = "device", path = it.absolutePath, name = it.name)) }
-        add(tracks, play)
-        if (tracks.isNotEmpty()) onAdded()
+        policyCommand("expand", JSONObject().put("scope", "device").put("entries", JSONArray(files.map {
+            Track(kind = "device", path = it.absolutePath, name = it.name).saved()
+        })).put("action", if (play) "play_now" else "add_to_queue"))
+        if (files.isNotEmpty()) onAdded()
     }
 
     fun importFolder(uri: Uri) = task {
@@ -571,9 +489,9 @@ class KogState(private val context: Context) {
         importing = true
         try {
             val staged = withContext(Dispatchers.IO) { deviceLibrary.stageFolder(folder) }
-            val tracks = deviceApi.collect(staged.absolutePath, root = deviceApi.deviceRoot)
-            add(tracks)
-            if (tracks.isNotEmpty()) onAdded()
+            policyCommand("collect", JSONObject().put("scope", "device").put("path", staged.absolutePath)
+                .put("query", "").put("root", deviceApi.deviceRoot))
+            onAdded()
         } finally {
             importing = false
         }

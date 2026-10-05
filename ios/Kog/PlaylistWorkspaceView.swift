@@ -54,8 +54,8 @@ struct PlaylistWorkspaceEditor: View {
                     Button("Select all") { store.workspaceCommand(["op": "selection", "command": ["op": "all"]]) }.disabled(store.workspace.actions["select_all"] != true)
                     Button("Clear selection") { store.workspaceCommand(["op": "selection", "command": ["op": "clear"]]) }.disabled(store.workspace.actions["clear_selection"] != true)
                     if tab?.readonly != true {
-                        Button("Add Play Queue") { store.workspaceAppend(store.queue) }.disabled(store.workspace.actions["add_play_queue"] != true)
-                        Button("Add Queue Selection") { store.workspaceAppend(queueSelection) }.disabled(store.workspace.actions["add_queue_selection"] != true)
+                        Button("Add Play Queue") { store.workspaceAppendQueue() }.disabled(store.workspace.actions["add_play_queue"] != true)
+                        Button("Add Queue Selection") { store.workspaceAppendQueue(selectedOnly: true) }.disabled(store.workspace.actions["add_queue_selection"] != true)
                         Button("Remove selected", role: .destructive) { send("remove") }.disabled(store.workspace.actions["remove"] != true)
                         Button("Move Up") { store.workspaceCommand(["op": "nudge", "delta": -1]) }.disabled(store.workspace.actions["move_up"] != true)
                         Button("Move Down") { store.workspaceCommand(["op": "nudge", "delta": 1]) }.disabled(store.workspace.actions["move_down"] != true)
