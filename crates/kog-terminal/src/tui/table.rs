@@ -23,6 +23,10 @@ impl Ui {
             self.workspace_active = state.active;
         }
         if switched || self.workspace_entries != state.entries {
+            if self.is_draft() {
+                self.cancel_track_drag();
+            }
+            self.last_click = None;
             self.workspace_tracks = match state.entries.iter().map(session::decode_track).collect()
             {
                 Ok(tracks) => tracks,

@@ -54,6 +54,19 @@ impl Ui {
             selected_only: !all,
         });
     }
+    fn activate_workspace_selected(&mut self) {
+        if !self.table_visible_tracks().contains(&self.workspace_cursor) {
+            return;
+        }
+        self.cancel_track_drag();
+        self.workspace_select(Select::Choose {
+            index: self.workspace_cursor,
+            gesture: Gesture::Replace,
+        });
+        self.workspace_command(Command::Queue {
+            action: QueueAction::PlayNow,
+        });
+    }
     pub(super) fn workspace_key(&mut self, key: Key, size: (usize, usize)) -> bool {
         let state = self
             .session
@@ -135,7 +148,11 @@ impl Ui {
             Key::Esc => Some(Command::Selection {
                 command: Select::Clear,
             }),
-            Key::Char('x') | Key::CtrlSpace | Key::Enter => Some(Command::Selection {
+            Key::Enter => {
+                self.activate_workspace_selected();
+                return true;
+            }
+            Key::Char('x') | Key::CtrlSpace => Some(Command::Selection {
                 command: Select::Choose {
                     index: self.workspace_cursor,
                     gesture: Gesture::Toggle,
@@ -337,13 +354,38 @@ impl Ui {
             let visible = self.table_visible_tracks();
             if let Some(&index) = visible.get(self.workspace_offset + y - layout.track_top) {
                 self.workspace_cursor = index;
-                let gesture = match (button & (4 | 8) != 0, button & 16 != 0) {
+                let pending_range = self.range_click_pending.take();
+                let ranged = button & (4 | 8) != 0 || pending_range == Some(Focus::Tracks);
+                let modified = ranged || button & 16 != 0;
+                let gesture = match (ranged, button & 16 != 0) {
                     (true, true) => Gesture::AddRange,
                     (true, false) => Gesture::Range,
                     (false, true) => Gesture::Toggle,
                     _ => Gesture::Replace,
                 };
-                self.workspace_select(Select::Choose { index, gesture });
+                // Keep a selected group together when beginning a drag.
+                if modified || !state.actions.append || !state.selected.contains(&index) {
+                    self.workspace_select(Select::Choose { index, gesture });
+                }
+                let now = Instant::now();
+                let double = !modified
+                    && self.last_click.is_some_and(|(when, pane, row)| {
+                        pane == 2
+                            && row == index
+                            && now.duration_since(when) < Duration::from_millis(450)
+                    });
+                self.last_click = if double || modified {
+                    None
+                } else {
+                    Some((now, 2, index))
+                };
+                if double {
+                    self.activate_workspace_selected();
+                } else {
+                    self.track_drag = (!modified && state.actions.append)
+                        .then_some(queue_drag::Source::Draft(index));
+                    self.track_drop_target = None;
+                }
             }
         }
         true

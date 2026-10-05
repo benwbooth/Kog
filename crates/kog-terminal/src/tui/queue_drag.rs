@@ -1,6 +1,14 @@
-//! Queue drag preview uses one terminal row for the insertion gap. Both hit
+//! Playlist drag preview uses one terminal row for the insertion gap. Both hit
 //! testing and painting account for that row, so repeated motion stays put.
 use super::*;
+
+#[derive(Clone, Copy)]
+pub(super) enum Source {
+    Queue(u64),
+    // Draft indices remain valid for the gesture: switching tabs, editing the
+    // draft, or receiving different entries cancels the drag.
+    Draft(usize),
+}
 
 pub(super) fn queue_row(offset: usize, row: usize, gap: Option<usize>) -> Option<usize> {
     let position = offset + row;
@@ -17,7 +25,7 @@ impl Ui {
         self.track_drag.take().is_some()
     }
 
-    pub(super) fn queue_drop_gap_at(
+    pub(super) fn track_drop_gap_at(
         &self,
         x: usize,
         y: usize,
@@ -37,7 +45,7 @@ impl Ui {
             return None;
         }
         let workspace = self.session.workspace_model().snapshot();
-        if workspace.active != "queue" || workspace.pending_close.is_some() {
+        if workspace.pending_close.is_some() || (self.is_draft() && !workspace.actions.append) {
             return None;
         }
         let right = size
@@ -49,25 +57,73 @@ impl Ui {
             return None;
         }
         queue_row(
-            self.offsets[2],
+            self.table_offset(),
             y - layout.track_top,
             self.track_drop_target,
         )
         .or(self.track_drop_target)
-        .map(|gap| gap.min(self.visible_track_count()))
+        .map(|gap| gap.min(self.table_visible_count()))
     }
 
     pub(super) fn finish_track_drag(&mut self, x: usize, y: usize, size: (usize, usize)) {
         // A click alone never reorders. Resolve the release against the preview
-        // before clearing it, and reject releases outside the queue viewport.
+        // before clearing it, and reject releases outside the active table.
         let target = self
             .track_drop_target
-            .and_then(|_| self.queue_drop_gap_at(x, y, size));
+            .and_then(|_| self.track_drop_gap_at(x, y, size));
         let source = self.track_drag;
+        // Delay collapsing a selected group until a plain click is released;
+        // a drag instead moves that entire group. Motion clears last_click.
+        let clicked = match source {
+            Some(Source::Draft(index))
+                if self.track_drop_target.is_none()
+                    && self
+                        .last_click
+                        .is_some_and(|(_, pane, row)| pane == 2 && row == index)
+                    && self.track_drop_gap_at(x, y, size).and_then(|position| {
+                        self.table_visible_tracks().get(position).copied()
+                    }) == Some(index) =>
+            {
+                Some(index)
+            }
+            _ => None,
+        };
         self.cancel_track_drag();
+        if let Some(index) = clicked {
+            self.workspace_select(kog_audio::playback_order::selection::Command::Choose {
+                index,
+                gesture: kog_audio::playback_order::selection::Gesture::Replace,
+            });
+        }
         let (Some(source), Some(gap)) = (source, target) else {
             return;
         };
+        if let Source::Draft(from) = source {
+            if !self.is_draft() {
+                return;
+            }
+            let selected = self.session.workspace_model().snapshot().selected;
+            let Some(position) = selected.iter().position(|&index| index == from) else {
+                return;
+            };
+            let target = self
+                .table_visible_tracks()
+                .get(gap)
+                .copied()
+                .unwrap_or(self.workspace_tracks.len());
+            let cursor =
+                target - selected.iter().filter(|&&index| index < target).count() + position;
+            self.workspace_command(kog_audio::playback_order::workspace::Command::Move { target });
+            self.workspace_cursor = cursor;
+            self.workspace_manual_scroll = None;
+            return;
+        }
+        let Source::Queue(source) = source else {
+            return;
+        };
+        if self.is_draft() {
+            return;
+        }
         let Some(from) = self
             .session
             .snapshot()

@@ -1088,7 +1088,7 @@ struct Ui {
     column_scroll_drag: Option<usize>,
     vertical_scroll_drag: Option<(usize, usize)>,
     manual_scroll_selection: [Option<usize>; 3],
-    track_drag: Option<u64>,
+    track_drag: Option<queue_drag::Source>,
     track_drop_target: Option<usize>,
     sort_column: Option<usize>,
     sort_ascending: bool,
@@ -5871,8 +5871,8 @@ impl Ui {
                 row("Enter on ..", "Go to parent folder"),
                 row("J / K", "Move cursor only"),
                 row("Mouse hover", "Read a clipped label"),
-                row("Drag queue row", "Preview insertion; release to move"),
-                row("Wheel / Esc while dragging", "Scroll queue / cancel move"),
+                row("Drag playlist row", "Preview insertion; release to move"),
+                row("Wheel / Esc while dragging", "Scroll table / cancel move"),
                 String::new(),
                 "SELECTION".to_owned(),
                 row("Shift+↑ / ↓", "Extend selected range"),
@@ -5884,6 +5884,7 @@ impl Ui {
                 "PLAYLIST EDITOR TABS".to_owned(),
                 row("Alt+[ / Alt+]", "Previous / next tab"),
                 row("Alt+1 / Ctrl+W", "Play Queue / close tab"),
+                row("Enter / double click", "Play the cursor row"),
                 row("p / n / a", "Play Now / Play Next / Add to Queue"),
                 row("Ctrl+S / u / r", "Save / Undo / Redo draft"),
                 row("A / C", "Copy queue / queue selection into draft"),
@@ -6851,20 +6852,21 @@ impl Ui {
         let layout = self.layout(size);
         if self.track_drag.is_some() {
             if button & 32 != 0 {
-                self.track_drop_target = self.queue_drop_gap_at(x, y, size);
-                self.manual_scroll_selection[2] = Some(self.selected[2]);
+                self.track_drop_target = self.track_drop_gap_at(x, y, size);
+                self.set_pane_scroll(2, self.table_offset());
                 self.last_click = None;
                 return;
             }
             if (button & 0b1100_0000) == 64 {
-                if self.queue_drop_gap_at(x, y, size).is_some() && button & 3 < 2 {
+                if self.track_drop_gap_at(x, y, size).is_some() && button & 3 < 2 {
                     let page = layout.track_page.saturating_sub(1).max(1);
-                    self.offsets[2] = self.offsets[2]
+                    let offset = self
+                        .table_offset()
                         .saturating_add_signed(if button & 1 == 0 { -3 } else { 3 })
-                        .min(self.visible_track_count().saturating_sub(page));
-                    self.manual_scroll_selection[2] = Some(self.selected[2]);
+                        .min(self.table_visible_count().saturating_sub(page));
+                    self.set_pane_scroll(2, offset);
                     self.track_drop_target = None;
-                    self.track_drop_target = self.queue_drop_gap_at(x, y, size);
+                    self.track_drop_target = self.track_drop_gap_at(x, y, size);
                 }
                 return;
             }
@@ -7768,7 +7770,8 @@ impl Ui {
                 self.toggle_star();
                 return;
             }
-            self.track_drag = (!modified).then(|| self.session.snapshot().row_ids[index]);
+            self.track_drag = (!modified)
+                .then(|| queue_drag::Source::Queue(self.session.snapshot().row_ids[index]));
             self.track_drop_target = None;
             let now = Instant::now();
             let double = !modified
@@ -7959,7 +7962,7 @@ impl Ui {
         }
 
         if draft {
-            self.keep_draft_cursor_visible(&visible_tracks, layout.track_page);
+            self.keep_draft_cursor_visible(&visible_tracks, pages[2]);
         }
         let table_offset = self.table_offset();
         let table_selected: HashSet<_> = if draft {
