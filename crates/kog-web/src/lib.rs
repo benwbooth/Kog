@@ -2440,10 +2440,10 @@ fn App() -> impl IntoView {
         callback.forget();
     }
 
-    let playlist_workspace = workspace::Controller { backend };
+    let playlist_workspace = workspace::Controller::new(backend);
     // One table renders either the live queue or the active saved-playlist
     // draft. Transport continues to read `queue`; pane actions use these views.
-    let pane_key = Memo::new(move |_| playlist_workspace.snapshot().active);
+    let pane_key = Memo::new(move |_| playlist_workspace.snapshot().active.clone());
     let pane_entries = Memo::new(move |_| {
         if pane_key.get() == "queue" {
             queue.get()
@@ -2452,7 +2452,7 @@ fn App() -> impl IntoView {
         }
     });
     let pane_selected = Memo::new(move |_| {
-        playlist_workspace.snapshot().selected.into_iter().collect::<HashSet<_>>()
+        playlist_workspace.snapshot().selected.iter().copied().collect::<HashSet<_>>()
     });
     let pane_current = Memo::new(move |_| {
         let index = current.get();
@@ -2477,10 +2477,12 @@ fn App() -> impl IntoView {
             backend.revision.track();
             session_model.with_value(|model| model.visible().to_vec())
         } else {
-            let cache = metadata.get();
-            let starred = stars.get();
             let query = pane_filter.get();
-            pane_entries.get().iter().enumerate()
+            let entries = pane_entries.read();
+            if query.trim().is_empty() { return (0..entries.len()).collect(); }
+            let cache = metadata.read();
+            let starred = stars.read();
+            entries.iter().enumerate()
                 .filter_map(|(index, entry)| entry_sort_row(index, entry, &cache, &starred)
                     .matches(&query).then_some(index))
                 .collect()
@@ -4666,10 +4668,10 @@ fn App() -> impl IntoView {
         }
     };
     let view_rows = move || {
-        let entries = pane_entries.get();
-        let cache = metadata.get();
-        let failed = metadata_failed.get();
-        pane_visible.get().into_iter().filter_map(|index| {
+        let entries = pane_entries.read();
+        let cache = metadata.read();
+        let failed = metadata_failed.read();
+        pane_visible.read().iter().copied().filter_map(|index| {
             entries.get(index).filter(|entry| metadata_ready(&cache, &failed, entry))
                 .map(|entry| (index, entry.clone()))
         }).collect::<Vec<_>>()
@@ -4679,10 +4681,10 @@ fn App() -> impl IntoView {
     // tracks the pane shows (all of the queue, or the filter's matches) and
     // their total probed duration, in the desktop's footer spirit.
     let status_line = move || -> String {
-        let cache = metadata.get();
-        let failed = metadata_failed.get();
+        let cache = metadata.read();
+        let failed = metadata_failed.read();
         let total = pane_entries
-            .get()
+            .read()
             .iter()
             .filter(|entry| metadata_ready(&cache, &failed, entry))
             .count();
@@ -4805,7 +4807,7 @@ fn App() -> impl IntoView {
         if !destination.actions.append {
             return;
         }
-        let key = destination.active;
+        let key = destination.active.clone();
         let scope = base();
         if key == "queue" {
             backend.send(SessionCommand::AppendToTab {
@@ -5345,7 +5347,7 @@ fn App() -> impl IntoView {
                     root: tree_root.get_untracked(), action: QueueAction::AddToQueue,
                 });
             } else {
-                backend.send(SessionCommand::AppendToTab {key:destination.active, scope, entries});
+                backend.send(SessionCommand::AppendToTab {key:destination.active.clone(), scope, entries});
             }
         } else {
             let header = auth().header();
@@ -5362,7 +5364,7 @@ fn App() -> impl IntoView {
                 };
                 match resolved {
                     Ok(entries) if base() == scope => backend.send(SessionCommand::AppendToTab {
-                        key:destination.active, scope,
+                        key:destination.active.clone(), scope,
                         entries:entries.iter().map(|entry| serde_json::to_value(entry).expect("serializable entry")).collect(),
                     }),
                     Ok(_) => set_message.set("Connect to the original playlist server".into()),
@@ -6579,7 +6581,7 @@ fn App() -> impl IntoView {
                         </Show>
                         <workspace::Tabs controller=playlist_workspace />
                         <Show when=move || playlist_workspace.snapshot().error.is_some()>
-                            <p class="empty" role="alert">{move || playlist_workspace.snapshot().error.unwrap_or_default()}</p>
+                            <p class="empty" role="alert">{move || playlist_workspace.snapshot().error.clone().unwrap_or_default()}</p>
                         </Show>
                         <div
                             class="rows"
@@ -6763,7 +6765,7 @@ fn App() -> impl IntoView {
                                                 style="position: relative"
                                                 data-index=move || index.to_string()
                                                 class:current=move || pane_current.get() == Some(index)
-                                                class:selected=move || pane_selected.get().contains(&index)
+                                                class:selected=move || pane_selected.read().contains(&index)
                                                 on:contextmenu=move |ev: web_sys::MouseEvent| {
                                                     ev.prevent_default();
                                                     if !pane_selected.get_untracked().contains(&index) {
@@ -6849,7 +6851,7 @@ fn App() -> impl IntoView {
                                                         let title_icon_show =
                                                             title_icon.is_some();
                                                         let text = move || {
-                                                            let cache = metadata.get();
+                                                            let cache = metadata.read();
                                                             let meta = meta_for(&cache, &entry);
                                                             let live = if pane_current.get() == Some(index)
                                                                 && duration.get() > 0.0
@@ -6859,7 +6861,7 @@ fn App() -> impl IntoView {
                                                                 None
                                                             };
                                                             let starred = stars
-                                                                .get()
+                                                                .read()
                                                                 .contains(&entry_star_locator(&entry));
                                                             let status = if pane_current.get() == Some(index) {
                                                                 if playing.get() {
@@ -6881,7 +6883,7 @@ fn App() -> impl IntoView {
                                                                 return format!("{status}{queued}{stop}");
                                                             }
                                                             if id == ColumnId::Title {
-                                                                display_title(&cache, &metadata_failed.get(), &entry)
+                                                                display_title(&cache, &metadata_failed.read(), &entry)
                                                                     .unwrap_or_default()
                                                             } else {
                                                                 column_text(
@@ -7079,12 +7081,12 @@ fn App() -> impl IntoView {
                                                                         }
                                                                     >{move || if pane_current.get() == Some(index) && !stopped.get() { if playing.get() { "▶" } else { "Ⅱ" } } else { "" }}</span>
                                                                     <span class="mobile-track-title">
-                                                                        {move || display_title(&metadata.get(), &metadata_failed.get(), &mobile_title_entry).unwrap_or_default()}
+                                                                        {move || display_title(&metadata.read(), &metadata_failed.read(), &mobile_title_entry).unwrap_or_default()}
                                                                     </span>
                                                                 </span>
                                                                 <span class="mobile-track-detail">
                                                                     {move || {
-                                                                        let cache = metadata.get();
+                                                                        let cache = metadata.read();
                                                                         let meta = meta_for(&cache, &mobile_detail_entry);
                                                                         let artist = meta.as_ref().and_then(|row| row.artist.as_ref().or(row.album_artist.as_ref())).cloned().unwrap_or_default();
                                                                         let album = meta.as_ref().and_then(|row| row.album.as_ref()).cloned().unwrap_or_default();
@@ -7095,7 +7097,7 @@ fn App() -> impl IntoView {
                                                                 </span>
                                                             </span>
                                                             <span class="mobile-track-duration">
-                                                                {move || meta_for(&metadata.get(), &mobile_duration_entry).and_then(|row| row.duration).map(clock).unwrap_or_default()}
+                                                                {move || meta_for(&metadata.read(), &mobile_duration_entry).and_then(|row| row.duration).map(clock).unwrap_or_default()}
                                                             </span>
                                                             <span
                                                                 class="mobile-track-star"
@@ -7117,7 +7119,7 @@ fn App() -> impl IntoView {
                                                                         mobile_star_key_toggle(item, starred);
                                                                     }
                                                                 }
-                                                            >{move || if stars.get().contains(&entry_star_locator(&mobile_star_label_entry)) { "★" } else { "☆" }}</span>
+                                                            >{move || if stars.read().contains(&entry_star_locator(&mobile_star_label_entry)) { "★" } else { "☆" }}</span>
                                                             <span
                                                                 class="mobile-track-more"
                                                                 role="button"

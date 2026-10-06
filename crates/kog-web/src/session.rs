@@ -66,6 +66,9 @@ impl Controller {
                 ..
             }
         );
+        let focus_only = matches!(&command, SessionCommand::Workspace {
+            command: kog_playback_policy::workspace::Command::Focus { .. }
+        });
         let updated = matches!(&command, SessionCommand::UpdateItem { .. });
         let effects = {
             let mut model = self.model.write_value();
@@ -78,7 +81,11 @@ impl Controller {
             || effects
                 .iter()
                 .any(|e| matches!(e, SessionEffect::QueueChanged { .. }));
-        self.changed.run((changed, progress));
+        // Focusing a draft does not change queue or transport state. Writing
+        // all those signals again invalidates every cell before the pane swaps.
+        if !focus_only || effects.iter().any(|effect| !matches!(effect, SessionEffect::Persist { .. })) {
+            self.changed.run((changed, progress));
+        }
         if !progress {
             self.revision.update(|revision| *revision += 1);
         }

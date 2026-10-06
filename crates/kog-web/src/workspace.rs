@@ -4,11 +4,20 @@ use kog_playback_policy::workspace::{CloseChoice, Command, QueueAction};
 #[derive(Clone, Copy)]
 pub struct Controller {
     pub backend: session::Controller,
+    snapshot: Memo<std::sync::Arc<kog_playback_policy::workspace::Snapshot>>,
 }
 impl Controller {
-    pub fn snapshot(self) -> kog_playback_policy::workspace::Snapshot {
-        self.backend.revision.track();
-        self.backend.model.with_value(|model| model.workspace())
+    pub fn new(backend: session::Controller) -> Self {
+        // Every row/menu/tab reads this view. Build it once per revision;
+        // cloning the active playlist at each read makes rendering quadratic.
+        let snapshot = Memo::new(move |_| {
+            backend.revision.track();
+            std::sync::Arc::new(backend.model.with_value(|model| model.workspace()))
+        });
+        Self { backend, snapshot }
+    }
+    pub fn snapshot(self) -> std::sync::Arc<kog_playback_policy::workspace::Snapshot> {
+        self.snapshot.get()
     }
     pub fn open(self, id: i64, name: String) {
         let scope = self.backend.base.run(());
@@ -29,7 +38,7 @@ pub fn Tabs(controller: Controller) -> impl IntoView {
     view! {
         <Show when=move || { controller.snapshot().tabs.len() > 1 }>
         <div class="playlist-tabs" role="tablist" aria-label="Open playlists">
-            <For each=move || controller.snapshot().tabs key=|tab| (tab.key.clone(), tab.name.clone(), tab.dirty) let:tab>
+            <For each=move || controller.snapshot().tabs.clone() key=|tab| (tab.key.clone(), tab.name.clone(), tab.dirty) let:tab>
                 { let focus = tab.key.clone(); let active = tab.key.clone(); let close = tab.key.clone(); let closable = tab.key != "queue";
                   view! { <div class="playlist-tab" class:active=move || controller.snapshot().active == active>
                     <button role="tab" aria-selected=move || controller.snapshot().active == focus

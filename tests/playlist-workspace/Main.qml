@@ -111,7 +111,13 @@ ApplicationWindow {
                 editor.choose(0, Qt.NoModifier); root.send({op:"queue",action:"play_next"}); root.stage=2
             } else if (root.stage === 2 && controller.playlist_count === 2) {
                 root.check(controller.playback_state !== "playing", "play next should not interrupt")
+                const queueRevision = controller.playlist_revision
+                const cachedLength = controller.workspace_track_value_at(0, "length")
                 root.send({op:"focus",key:"queue"}); root.check(root.snapshot.active === "queue","pinned queue")
+                root.check(controller.playlist_revision === queueRevision, "tab focus must not rebuild the play queue")
+                root.send({op:"focus",key:"local:" + root.playlistId})
+                root.check(controller.workspace_track_value_at(0, "length") === cachedLength && cachedLength.length > 0,
+                    "returning to a tab must show cached metadata immediately")
                 controller.open_playlist_tab(root.playlistId,"Renamed smoke")
                 root.check(root.snapshot.tabs.length === 2,"focus existing tab")
                 controller.set_volume_level(0)

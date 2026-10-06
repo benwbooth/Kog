@@ -13,6 +13,9 @@ use serde_json::Value;
 pub struct WorkspaceTracks {
     entries: Vec<Value>,
     pub rows: Vec<MetadataRow>,
+    // Retain recently viewed metadata across queue/draft tab switches.
+    // Rows alone only cache the tab being left, which loses it on A -> B -> A.
+    cache: HashMap<String, Track>,
     receiver: Option<Receiver<(usize, Result<Track, String>)>>,
     cancel: Arc<AtomicBool>,
 }
@@ -48,14 +51,14 @@ impl WorkspaceTracks {
         self.cancel.store(true, Ordering::Relaxed);
         self.cancel = Arc::new(AtomicBool::new(false));
         self.receiver = None;
-        let mut cache: HashMap<String, Track> = self
-            .rows
-            .iter()
-            .filter_map(|row| Some((entry_key(row.entry.as_ref()?), row.track.clone()?)))
-            .collect();
+        for row in &self.rows {
+            if let (Some(entry), Some(track)) = (&row.entry, &row.track) {
+                self.cache.insert(entry_key(entry), track.clone());
+            }
+        }
         for track in known {
             if let Some(entry) = kog_audio::playback_order::stored_entry_for_track(track) {
-                cache.insert(entry_key(&entry), track.clone());
+                self.cache.insert(entry_key(&entry), track.clone());
             }
         }
         self.rows = entries
@@ -64,7 +67,7 @@ impl WorkspaceTracks {
                 match kog_server::api::stored_entries_from_json(std::slice::from_ref(entry)) {
                     Ok(mut entries) => {
                         let entry = entries.remove(0);
-                        let track = cache.get(&entry_key(&entry)).cloned();
+                        let track = self.cache.get(&entry_key(&entry)).cloned();
                         MetadataRow {
                             entry: Some(entry),
                             track,
@@ -79,6 +82,11 @@ impl WorkspaceTracks {
                 }
             })
             .collect();
+        // Bound memory after visiting many playlists. Keep the current rows;
+        // they can exceed the limit and are already owned by the visible view.
+        if self.cache.len() > 4096 {
+            self.cache.clear();
+        }
         self.entries = entries;
         let missing: Vec<_> = self
             .rows
@@ -99,6 +107,7 @@ impl WorkspaceTracks {
         let (sender, receiver) = std::sync::mpsc::channel();
         self.receiver = Some(receiver);
         std::thread::spawn(move || {
+            let mut cache: HashMap<String, Track> = HashMap::new();
             for (index, entry) in missing {
                 if cancel.load(Ordering::Relaxed) {
                     break;
@@ -224,6 +233,33 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["Two", "One", "Two"]
         );
+    }
+
+    #[test]
+    fn returning_to_a_tab_reuses_metadata_after_other_tabs_and_the_queue() {
+        let mut view = WorkspaceTracks::default();
+        view.refresh(
+            vec![entry("/one.flac")],
+            &[track("/one.flac", "One")],
+            || unreachable!(),
+        );
+        view.refresh(
+            vec![entry("/two.flac")],
+            &[track("/two.flac", "Two")],
+            || unreachable!(),
+        );
+        view.refresh(vec![], &[], || unreachable!());
+        view.refresh(vec![entry("/one.flac"), entry("/one.flac")], &[], || {
+            panic!("returning to a tab must not rebuild decoders or probe files")
+        });
+        assert_eq!(view.rows.len(), 2);
+        assert!(
+            view.rows
+                .iter()
+                .all(|row| row.track.as_ref().unwrap().title == "One")
+        );
+        view.refresh(vec![entry("/two.flac")], &[], || unreachable!());
+        assert_eq!(view.rows[0].track.as_ref().unwrap().title, "Two");
     }
 
     #[test]

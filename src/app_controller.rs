@@ -6424,6 +6424,12 @@ impl qobject::AppController {
     }
 
     fn session_command(mut self: Pin<&mut Self>, command: SessionCommand<Track>) {
+        let focus_only = matches!(
+            &command,
+            SessionCommand::Workspace {
+                command: WorkspaceCommand::Focus { .. }
+            }
+        );
         let progress = matches!(
             &command,
             SessionCommand::Output {
@@ -6436,7 +6442,7 @@ impl qobject::AppController {
             let position = self.as_ref().rust().session.snapshot().position;
             self.as_mut().set_position_seconds(position);
         } else {
-            self.as_mut().flush_session_effects();
+            self.as_mut().flush_session_effects_for_view(focus_only);
         }
     }
     fn report_output_progress(mut self: Pin<&mut Self>) {
@@ -6530,12 +6536,16 @@ impl qobject::AppController {
             self.as_mut().set_status(qstring(error));
         }
     }
-    fn flush_session_effects(mut self: Pin<&mut Self>) {
+    fn flush_session_effects(self: Pin<&mut Self>) {
+        self.flush_session_effects_for_view(false);
+    }
+    fn flush_session_effects_for_view(mut self: Pin<&mut Self>, mut focus_only: bool) {
         loop {
             let effect = self.as_mut().rust_mut().session_effects.pop_front();
             let Some(effect) = effect else {
                 break;
             };
+            focus_only &= matches!(&effect, SessionEffect::Persist { .. });
             match effect {
                 SessionEffect::Persist { value } => {
                     let result = {
@@ -6729,7 +6739,13 @@ impl qobject::AppController {
                 }
             }
         }
-        self.as_mut().apply_session_view();
+        if focus_only {
+            // Tab focus only changes the workspace. Keep queue row bindings
+            // and the playback view intact while showing the new draft.
+            self.as_mut().workspace_changed();
+        } else {
+            self.as_mut().apply_session_view();
+        }
     }
     fn poll_session_ports(mut self: Pin<&mut Self>) {
         let ready = {

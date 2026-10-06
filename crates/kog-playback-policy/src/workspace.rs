@@ -211,7 +211,7 @@ pub enum Effect {
     },
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct TabSnapshot {
     pub key: String,
     pub scope: String,
@@ -223,7 +223,7 @@ pub struct TabSnapshot {
     pub saving: bool,
     pub count: usize,
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Snapshot {
     pub active: String,
     pub tabs: Vec<TabSnapshot>,
@@ -237,7 +237,7 @@ pub struct Snapshot {
 }
 
 /// Presentations render this availability instead of reimplementing eligibility.
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Actions {
     pub append: bool,
     pub queue: bool,
