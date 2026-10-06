@@ -35,12 +35,26 @@ impl Controller {
 }
 #[component]
 pub fn Tabs(controller: Controller) -> impl IntoView {
+    let drag = js_sys::Function::new_with_args("event,move", include_str!("tab-drag.js"));
+    let listener = window_event_listener(leptos::ev::pointerdown, move |event| {
+        let callback = Closure::<dyn FnMut(String, wasm_bindgen::JsValue)>::new(
+            move |key, before: wasm_bindgen::JsValue| {
+                controller.send(Command::MoveTab {
+                    key,
+                    before: before.as_string(),
+                });
+            },
+        )
+        .into_js_value();
+        let _ = drag.call2(&wasm_bindgen::JsValue::NULL, event.as_ref(), &callback);
+    });
+    on_cleanup(move || listener.remove());
     view! {
         <Show when=move || { controller.snapshot().tabs.len() > 1 }>
         <div class="playlist-tabs" role="tablist" aria-label="Open playlists">
             <For each=move || controller.snapshot().tabs.clone() key=|tab| (tab.key.clone(), tab.name.clone(), tab.dirty) let:tab>
                 { let focus = tab.key.clone(); let active = tab.key.clone(); let close = tab.key.clone(); let closable = tab.key != "queue";
-                  view! { <div class="playlist-tab" class:active=move || controller.snapshot().active == active>
+                  view! { <div class="playlist-tab" data-tab-key=tab.key.clone() class:active=move || controller.snapshot().active == active>
                     <button role="tab" aria-selected=move || controller.snapshot().active == focus
                         on:click={let key=tab.key.clone(); move |_| controller.send(Command::Focus { key:key.clone() })}>
                         {format!("{}{}",tab.name,if tab.dirty { " *" } else { "" })}
@@ -77,7 +91,11 @@ pub fn PlaybackMenu(controller: Controller, on_action: Callback<()>) -> impl Int
     }
 }
 #[component]
-pub fn EditMenu(controller: Controller, on_action: Callback<()>, on_select_all: Callback<()>) -> impl IntoView {
+pub fn EditMenu(
+    controller: Controller,
+    on_action: Callback<()>,
+    on_select_all: Callback<()>,
+) -> impl IntoView {
     use kog_playback_policy::selection::Command as Select;
     let send = move |command| {
         controller.send(command);

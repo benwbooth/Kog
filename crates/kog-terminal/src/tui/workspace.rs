@@ -9,6 +9,16 @@ const CLOSE_CHOICES: [(CloseChoice, &str); 3] = [
     (CloseChoice::Cancel, "[Cancel]"),
 ];
 
+pub(super) struct TabDrag {
+    key: String,
+    start: (usize, usize),
+    point: (usize, usize),
+    moved: bool,
+    before: Option<Option<String>>,
+    marker: Option<usize>,
+    scroll_at: Instant,
+}
+
 struct CloseDialog {
     x: usize,
     y: usize,
@@ -113,6 +123,15 @@ impl Ui {
     pub(super) fn workspace_command(&mut self, command: Command) {
         if matches!(
             command,
+            Command::Focus { .. }
+                | Command::Open { .. }
+                | Command::Close { .. }
+                | Command::ResolveClose { .. }
+        ) {
+            self.tab_start = None;
+        }
+        if matches!(
+            command,
             Command::Close { .. } | Command::ResolveClose { .. }
         ) {
             self.workspace_close_selected = 2;
@@ -135,6 +154,14 @@ impl Ui {
         self.workspace_offset = 0;
         self.focus = Focus::Tracks;
         self.keyboard_column = None;
+    }
+    pub(super) fn poll_tab_drag(&mut self, size: (usize, usize)) {
+        if size.0 > 0 && size.1 > 0 {
+            if let Some(drag) = self.tab_drag.as_ref().filter(|d| d.moved) {
+                let (x, y) = drag.point;
+                self.tab_drag_mouse(32, x, y, false, size);
+            }
+        }
     }
     pub(super) fn poll_workspace(&mut self) {
         self.poll_session_ports();
@@ -339,7 +366,10 @@ impl Ui {
             .position(|tab| tab.key == state.active)
             .unwrap_or(0);
         let max_tabs = (width / 20).max(1);
-        let start = active.saturating_sub(max_tabs - 1);
+        let start = self
+            .tab_start
+            .unwrap_or_else(|| active.saturating_sub(max_tabs - 1))
+            .min(state.tabs.len().saturating_sub(1));
         for tab in state.tabs.into_iter().skip(start) {
             let name: String = tab.name.chars().take(19).collect();
             let label = format!(
@@ -476,6 +506,129 @@ impl Ui {
         }
     }
 
+    pub(super) fn tab_drag_mouse(
+        &mut self,
+        button: u16,
+        x: usize,
+        y: usize,
+        release: bool,
+        size: (usize, usize),
+    ) -> bool {
+        let layout = self.layout(size);
+        let left = layout.playlist_left();
+        let state = self.session.workspace_model().snapshot();
+        if self.tab_drag.is_none()
+            && (self.compact_mode
+                || self.modal.is_some()
+                || self.menu_open
+                || self.prompt.is_some()
+                || self.folder_chooser.is_some()
+                || self.exit_confirm_open
+                || state.pending_close.is_some()
+                || self.track_drag.is_some()
+                || self.column_drag.is_some()
+                || self.column_scroll_drag.is_some()
+                || self.vertical_scroll_drag.is_some()
+                || self.split_drag
+                || self.volume_drag
+                || (!layout.show_sidebar && self.focus != Focus::Tracks)
+                || y != layout.tab_row
+                || x < left)
+        {
+            return false;
+        }
+        if self.tab_drag.is_none() {
+            let cells = self.workspace_tab_cells(size.0.saturating_sub(left));
+            if button & 64 != 0 {
+                let start = cells
+                    .first()
+                    .and_then(|cell| state.tabs.iter().position(|t| t.key == cell.2))
+                    .unwrap_or(0);
+                self.tab_start = Some(
+                    start
+                        .saturating_add_signed(if button & 1 == 0 { -1 } else { 1 })
+                        .min(state.tabs.len() - 1),
+                );
+            } else if !release && button & (32 | 128 | 3) == 0 {
+                if let Some((start, len, key, label, _)) = cells
+                    .into_iter()
+                    .find(|(start, len, ..)| (left + start..left + start + len).contains(&x))
+                {
+                    if key != "queue"
+                        && cell_width(&label) == len
+                        && x == left + start + len.saturating_sub(3)
+                    {
+                        self.workspace_command(Command::Close { key });
+                    } else {
+                        self.tab_drag = Some(TabDrag {
+                            key,
+                            start: (x, y),
+                            point: (x, y),
+                            moved: false,
+                            before: None,
+                            marker: None,
+                            scroll_at: Instant::now(),
+                        });
+                    }
+                }
+            }
+            return true;
+        }
+        if !release && button & 32 != 0 && button & 3 == 3 {
+            self.tab_drag = None;
+            return true;
+        }
+        let mut drag = self.tab_drag.take().unwrap();
+        drag.point = (x, y);
+        drag.moved |= x.abs_diff(drag.start.0) + y.abs_diff(drag.start.1) >= 2;
+        drag.before = None;
+        drag.marker = None;
+        if y == layout.tab_row && x >= left && x < size.0 {
+            let cells = self.workspace_tab_cells(size.0.saturating_sub(left));
+            if drag.moved && drag.scroll_at.elapsed() >= Duration::from_millis(150) {
+                let start = cells
+                    .first()
+                    .and_then(|cell| state.tabs.iter().position(|t| t.key == cell.2))
+                    .unwrap_or(0);
+                if x <= left + 2 {
+                    self.tab_start = Some(start.saturating_sub(1));
+                } else if x >= size.0.saturating_sub(3) {
+                    self.tab_start = Some((start + 1).min(state.tabs.len() - 1));
+                }
+                drag.scroll_at = Instant::now();
+            }
+            let cells = self.workspace_tab_cells(size.0.saturating_sub(left));
+            let next = cells
+                .iter()
+                .filter(|c| c.2 != drag.key)
+                .find(|c| x < left + c.0 + c.1 / 2);
+            if let Some(cell) = next {
+                drag.before = Some(Some(cell.2.clone()));
+                drag.marker = Some(left + cell.0);
+            } else if let Some(last) = cells.last() {
+                let index = state.tabs.iter().position(|t| t.key == last.2).unwrap();
+                drag.before = Some(state.tabs.get(index + 1).map(|t| t.key.clone()));
+                drag.marker = Some((left + last.0 + last.1).min(size.0 - 1));
+            }
+        }
+        if release {
+            if drag.moved {
+                if let Some(before) = drag.before {
+                    self.workspace_command(Command::MoveTab {
+                        key: drag.key,
+                        before,
+                    });
+                }
+            } else if y == layout.tab_row && x >= left && x < size.0 {
+                self.workspace_command(Command::Focus { key: drag.key });
+                self.focus = Focus::Tracks;
+            }
+        } else {
+            self.tab_drag = Some(drag);
+        }
+        true
+    }
+
     pub(super) fn workspace_mouse(
         &mut self,
         button: u16,
@@ -503,26 +656,6 @@ impl Ui {
             return false;
         }
         let state = self.session.workspace_model().snapshot();
-        if y == layout.tab_row && state.pending_close.is_none() {
-            if button & 3 == 0 && button & (32 | 64 | 128) == 0 {
-                if let Some((start, len, key, label, _)) = self
-                    .workspace_tab_cells(size.0.saturating_sub(left))
-                    .into_iter()
-                    .find(|(start, len, ..)| (left + start..left + start + len).contains(&x))
-                {
-                    if key != "queue"
-                        && cell_width(&label) == len
-                        && x == left + start + len.saturating_sub(3)
-                    {
-                        self.workspace_command(Command::Close { key });
-                    } else {
-                        self.workspace_command(Command::Focus { key });
-                    }
-                    self.focus = Focus::Tracks;
-                }
-            }
-            return true;
-        }
         if y == layout.footer_top - 1 {
             if button & 3 == 0 && button & (32 | 64 | 128) == 0 {
                 let mut start = left;
@@ -647,6 +780,22 @@ impl Ui {
                     Surface::Header
                 },
                 active,
+            );
+        }
+        if let Some(marker) = self
+            .tab_drag
+            .as_ref()
+            .filter(|d| d.moved)
+            .and_then(|d| d.marker)
+        {
+            paint(
+                screen,
+                layout.tab_row + 1,
+                marker + 1,
+                "│",
+                1,
+                Surface::Selected,
+                true,
             );
         }
         paint(

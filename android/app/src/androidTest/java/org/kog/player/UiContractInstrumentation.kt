@@ -2,6 +2,14 @@ package org.kog.player
 
 import android.app.Activity
 import android.app.Instrumentation
+import android.content.Intent
+import android.graphics.Rect
+import android.os.SystemClock
+import android.view.InputDevice
+import android.view.MotionEvent
+import androidx.activity.compose.setContent
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.material3.MaterialTheme
 import android.os.Bundle
 import org.json.JSONArray
 import org.json.JSONObject
@@ -16,6 +24,7 @@ class UiContractInstrumentation : Instrumentation() {
         }
         sendStatus(1, status)
         try {
+            tabGestureContract()
             persistenceContract()
             librarySessionContract()
             val sessionSteps = sessionContract()
@@ -47,13 +56,73 @@ class UiContractInstrumentation : Instrumentation() {
                     check(equalJson(actual, expected.get(path))) { "Kotlin UI contract step $index $path: expected ${expected.get(path)}, got $actual" }
                 }
             }
-            status.putString("stream", "Kotlin contracts: $sessionSteps application-session steps, two Media3 sessions with restore and native audio EOS, and ${steps.length()} UI steps passed through production JNI and workspace decoder\n")
+            status.putString("stream", "Kotlin contracts: real tab long-press drags and cancellation, $sessionSteps application-session steps, two Media3 sessions with restore and native audio EOS, and ${steps.length()} UI steps passed through production JNI and workspace decoder\n")
             sendStatus(0, status)
             finish(Activity.RESULT_OK, Bundle().apply { putString("stream", status.getString("stream")) })
         } catch (error: Throwable) {
             status.putString("stack", error.stackTraceToString()); status.putString("stream", error.stackTraceToString())
             sendStatus(-2, status); finish(Activity.RESULT_CANCELED, status)
         }
+    }
+    private fun tabGestureContract() {
+        val activity = startActivitySync(Intent(targetContext, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) as MainActivity
+        val initial = PlaylistWorkspaceSnapshot(active = "b", tabs = listOf(
+            PlaylistWorkspaceTab("queue", "Play Queue"), PlaylistWorkspaceTab("a", "Alpha", dirty = true), PlaylistWorkspaceTab("b", "Beta")))
+        val state = mutableStateOf(initial)
+        val commands = mutableListOf<String>()
+        runOnMainSync {
+            activity.setContent { MaterialTheme {
+                PlaylistWorkspaceTabs(state.value) { op, fields ->
+                    commands.add(op)
+                    if (op == "move_tab") {
+                        val next = state.value.tabs.toMutableList()
+                        val tab = next.first { it.key == fields.getString("key") }
+                        next.remove(tab)
+                        val before = if (fields.isNull("before")) null else fields.getString("before")
+                        next.add(if (before == null) next.size else next.indexOfFirst { it.key == before }, tab)
+                        state.value = state.value.copy(tabs = next)
+                    } else if (op == "focus") state.value = state.value.copy(active = fields.getString("key"))
+                }
+            } }
+        }
+        waitForIdleSync()
+        fun bounds(label: String): Rect {
+            repeat(50) {
+                val nodes = uiAutomation.rootInActiveWindow?.findAccessibilityNodeInfosByText(label).orEmpty()
+                if (nodes.isNotEmpty()) return Rect().also { nodes.first().getBoundsInScreen(it) }
+                SystemClock.sleep(100)
+            }
+            error("Missing tab $label")
+        }
+        fun drag(from: Rect, toX: Float, toY: Float) {
+            val down = SystemClock.uptimeMillis()
+            fun pointer(action: Int, x: Float, y: Float) {
+                val event = MotionEvent.obtain(down, SystemClock.uptimeMillis(), action, x, y, 0)
+                event.source = InputDevice.SOURCE_TOUCHSCREEN
+                sendPointerSync(event); event.recycle()
+            }
+            val x = from.centerX().toFloat(); val y = from.centerY().toFloat()
+            pointer(MotionEvent.ACTION_DOWN, x, y); SystemClock.sleep(650)
+            for (step in 1..12) { pointer(MotionEvent.ACTION_MOVE, x+(toX-x)*step/12, y+(toY-y)*step/12); SystemClock.sleep(20) }
+            check(commands.isEmpty()) { "Drag switched tabs or committed before release: $commands" }
+            pointer(MotionEvent.ACTION_UP, toX, toY); waitForIdleSync(); SystemClock.sleep(150)
+        }
+        try {
+            val queue = bounds("Play Queue")
+            drag(bounds("Alpha"), queue.left.toFloat()+3, queue.centerY().toFloat())
+            check(state.value.tabs.map { it.key } == listOf("a", "queue", "b")) { "Long press did not reorder: ${state.value.tabs}" }
+            check(state.value.active == "b" && state.value.tabs[0].dirty)
+            check(commands == listOf("move_tab")) { "Drag fired extra actions: $commands" }
+            commands.clear()
+            val beta = bounds("Beta")
+            drag(bounds("Play Queue"), beta.right.toFloat()+25, beta.centerY().toFloat())
+            check(state.value.tabs.map { it.key } == listOf("a", "b", "queue"))
+            check(state.value.active == "b")
+            commands.clear()
+            val alpha = bounds("Alpha")
+            drag(alpha, alpha.centerX().toFloat()+50, alpha.bottom.toFloat()+150)
+            check(commands.isEmpty() && state.value.tabs.map { it.key } == listOf("a", "b", "queue"))
+        } finally { runOnMainSync { activity.finish() } }
     }
     private fun persistenceContract() {
         val key = "contract:${java.util.UUID.randomUUID()}"

@@ -34,11 +34,69 @@ struct PlaylistEditCommands: View {
     }
 }
 
+private struct PlaylistTabFrames: PreferenceKey {
+    static let defaultValue: [String: CGRect] = [:]
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, next in next })
+    }
+}
+
 struct PlaylistWorkspaceTabs: View {
     @EnvironmentObject private var store: KogStore
+    @State private var frames: [String: CGRect] = [:]
+    @State private var dragging: String?
+    @State private var dragPoint = CGPoint.zero
+    @GestureState private var gestureActive = false
+    private var validDrop: Bool {
+        dragging != nil && store.workspace.pending_close == nil && frames["__strip"]?.contains(dragPoint) == true
+    }
+    private var dropBefore: String? {
+        store.workspace.tabs.first { item in
+            item.key != dragging && frames[item.key].map { dragPoint.x < $0.midX } == true
+        }?.key
+    }
+    private func measure(_ key: String) -> some View {
+        GeometryReader { geometry in
+            Color.clear.preference(key: PlaylistTabFrames.self, value: [key: geometry.frame(in: .global)])
+        }
+    }
+    private func reorder(_ key: String) -> some Gesture {
+        LongPressGesture(minimumDuration: 0.35)
+            .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .global))
+            .updating($gestureActive) { value, active, _ in
+                if case .second(true, _) = value { active = true }
+            }
+            .onChanged { value in
+                if case .second(true, let drag?) = value, store.workspace.pending_close == nil {
+                    dragging = key
+                    dragPoint = drag.location
+                }
+            }
+            .onEnded { value in
+                if case .second(true, let drag?) = value {
+                    dragPoint = drag.location
+                    if validDrop {
+                        store.workspaceCommand(["op": "move_tab", "key": key, "before": dropBefore as Any? ?? NSNull()])
+                    }
+                }
+                dragging = nil
+            }
+    }
+    private func scrollDuringDrag(_ proxy: ScrollViewProxy) {
+        guard validDrop, let strip = frames["__strip"] else { return }
+        let tabs = store.workspace.tabs
+        if dragPoint.x < strip.minX + 28,
+           let item = tabs.last(where: { frames[$0.key].map { $0.minX < strip.minX - 1 } == true }) {
+            withAnimation(.linear(duration: 0.15)) { proxy.scrollTo(item.key, anchor: .leading) }
+        } else if dragPoint.x > strip.maxX - 28,
+                  let item = tabs.first(where: { frames[$0.key].map { $0.maxX > strip.maxX + 1 } == true }) {
+            withAnimation(.linear(duration: 0.15)) { proxy.scrollTo(item.key, anchor: .trailing) }
+        }
+    }
     var body: some View {
         Group {
             if store.workspace.tabs.count > 1 {
+                ScrollViewReader { proxy in
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 4) {
                         ForEach(store.workspace.tabs) { item in
@@ -54,9 +112,35 @@ struct PlaylistWorkspaceTabs: View {
                             }.foregroundStyle(store.workspace.active == item.key ? Palette.accent : Palette.muted)
                                 .background(store.workspace.active == item.key ? Palette.raised : Palette.panel)
                                 .clipShape(RoundedRectangle(cornerRadius: 8))
+                                .opacity(dragging == item.key ? 0.5 : 1)
+                                .background(measure(item.key))
+                                .contentShape(Rectangle())
+                                .highPriorityGesture(reorder(item.key))
+                                .id(item.key)
                         }
                     }.padding(.horizontal, 6).padding(.vertical, 4)
                 }.background(Palette.panel)
+                    .background(measure("__strip"))
+                    .scrollDisabled(dragging != nil)
+                    .overlay(alignment: .topLeading) {
+                        if validDrop, let strip = frames["__strip"] {
+                            let edge = dropBefore.flatMap { frames[$0]?.minX }
+                                ?? store.workspace.tabs.last(where: { $0.key != dragging }).flatMap { frames[$0.key]?.maxX }
+                                ?? strip.minX
+                            Rectangle().fill(Palette.accent).frame(width: 3, height: max(0, strip.height - 8))
+                                .offset(x: max(0, min(strip.width - 3, edge - strip.minX)), y: 4)
+                                .allowsHitTesting(false)
+                        }
+                    }
+                    .onPreferenceChange(PlaylistTabFrames.self) { frames = $0 }
+                    .onChange(of: gestureActive) { _, active in if !active { dragging = nil } }
+                    .task(id: dragging) {
+                        while dragging != nil && !Task.isCancelled {
+                            scrollDuringDrag(proxy)
+                            try? await Task.sleep(for: .milliseconds(180))
+                        }
+                    }
+                }
             }
         }
             .alert("Save playlist changes?", isPresented: Binding(

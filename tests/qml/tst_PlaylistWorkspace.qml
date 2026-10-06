@@ -32,6 +32,13 @@ TestCase {
             const command = JSON.parse(value)
             commands.push(command)
             if (command.op === "focus") test.state = JSON.parse(JSON.stringify(Object.assign({}, test.state, {active:command.key})))
+            if (command.op === "move_tab") {
+                const next = JSON.parse(JSON.stringify(test.state))
+                const moved = next.tabs.splice(next.tabs.findIndex(t => t.key === command.key), 1)[0]
+                const index = command.before === null ? next.tabs.length : next.tabs.findIndex(t => t.key === command.before)
+                next.tabs.splice(index, 0, moved)
+                test.state = next
+            }
             if (command.op === "close" && test.applyClose) {
                 const next = JSON.parse(JSON.stringify(test.state))
                 next.tabs = next.tabs.filter(entry => entry.key !== command.key)
@@ -273,4 +280,33 @@ TestCase {
         editor.searchQuery = ""
     }
 
+    function test_tab_reorder() {
+        test.state = {active:"b", tabs:[{key:"queue",name:"Play Queue"},{key:"a",name:"Alpha",dirty:true},{key:"b",name:"Beta"}],entries:[],selected:[],actions:{}}
+        const native = findChild(tabs, "playlistTabBar")
+        tryCompare(native, "count", 3)
+        const original = native.itemAt(1)
+        const source = original.mapToItem(tabs, 20, original.height / 2)
+        backend.commands = []
+        mousePress(tabs, source.x, source.y)
+        mouseMove(tabs, 4, source.y, 50)
+        compare(test.state.tabs[0].key, "queue", "Motion only previews")
+        verify(tabs.dropX >= 0)
+        mouseRelease(tabs, 4, source.y)
+        compare(test.state.tabs.map(t => t.key).join(","), "a,queue,b")
+        compare(test.state.active, "b")
+        compare(native.itemAt(0), original)
+        compare(backend.commands.length, 1)
+        compare(backend.commands[0].op, "move_tab")
+        const queue = native.itemAt(1).mapToItem(tabs, 20, source.y)
+        mousePress(tabs, queue.x, queue.y)
+        mouseMove(tabs, tabs.width-10, queue.y, 50)
+        mouseRelease(tabs, tabs.width-10, queue.y)
+        compare(test.state.tabs.map(t => t.key).join(","), "a,b,queue")
+        compare(test.state.active, "b")
+        mousePress(tabs, 20, source.y)
+        mouseMove(tabs, 150, source.y+80, 50)
+        mouseRelease(tabs, 150, source.y+80)
+        compare(test.state.tabs.map(t => t.key).join(","), "a,b,queue")
+        compare(test.state.active, "b")
+    }
 }

@@ -7,11 +7,46 @@ Item {
     required property var app
     required property var workspaceState
     property string appendTarget: ""
+    property string draggedKey: ""
+    property real dragX: 0
+    property real dragY: 0
+    property var dropBefore: undefined
+    property real dropX: -1
     readonly property var entries: workspaceState.tabs || []
     readonly property bool multipleTabs: entries.length > 1
     visible: multipleTabs
     implicitHeight: multipleTabs ? tabs.implicitHeight : 0
     function send(command) { app.workspace_command(JSON.stringify(command)) }
+    function updateTabDrop(x, y) {
+        dragX = x; dragY = y; dropX = -1; dropBefore = undefined
+        if (x < 0 || x > width || y < 0 || y > height) return
+        for (let index = 0; index < tabs.count; ++index) {
+            const item = tabs.itemAt(index)
+            if (item.tabKey === draggedKey) continue
+            const point = item.mapToItem(bar, 0, 0)
+            if (x < point.x + item.width / 2) {
+                dropBefore = item.tabKey; dropX = Math.max(1, point.x); return
+            }
+        }
+        dropBefore = null
+        const last = tabs.itemAt(tabs.count - 1)
+        dropX = Math.min(width - 2, last.mapToItem(bar, last.width, 0).x)
+    }
+    function cancelTabDrag() { draggedKey = ""; dropBefore = undefined; dropX = -1 }
+    Timer {
+        interval: 40; repeat: true; running: bar.draggedKey !== ""
+        onTriggered: {
+            if (bar.dragY < 0 || bar.dragY > bar.height) return
+            const view = tabs.contentItem
+            const delta = bar.dragX < 28 ? -12 : bar.dragX > bar.width - 28 ? 12 : 0
+            view.contentX = Math.max(0, Math.min(Math.max(0, view.contentWidth - view.width), view.contentX + delta))
+            bar.updateTabDrop(bar.dragX, bar.dragY)
+        }
+    }
+    Rectangle {
+        z: 10; x: bar.dropX; y: 2; width: 3; height: parent.height - 4
+        color: tabs.palette.highlight; visible: bar.draggedKey !== "" && bar.dropX >= 0
+    }
     function tabAtPoint(from, x, y) {
         const point = from.mapToItem(tabs, x, y)
         if (!visible || point.x < 0 || point.x >= tabs.width || point.y < 0 || point.y >= tabs.height)
@@ -67,7 +102,7 @@ Item {
         // or removed; KDE's default view assumes item zero already exists.
         contentItem: ListView {
             function revealCurrent() {
-                if (width > 0 && currentIndex >= 0 && currentIndex < count)
+                if (bar.draggedKey === "" && width > 0 && currentIndex >= 0 && currentIndex < count)
                     positionViewAtIndex(currentIndex, ListView.Contain)
             }
             implicitWidth: contentWidth
@@ -136,6 +171,35 @@ Item {
                 elide: Text.ElideRight
             }
             onClicked: bar.send({op: "focus", key: tab.tabKey})
+            opacity: bar.draggedKey === tab.tabKey ? 0.55 : 1
+            MouseArea {
+                anchors.fill: parent
+                anchors.rightMargin: closeButton.visible ? closeButton.width + 6 : 0
+                enabled: !bar.workspaceState.pending_close
+                preventStealing: true
+                property real startX: 0
+                property real startY: 0
+                onPressed: mouse => { startX = mouse.x; startY = mouse.y }
+                onPositionChanged: mouse => {
+                    if (!pressed) return
+                    if (!bar.draggedKey && Math.abs(mouse.x - startX) + Math.abs(mouse.y - startY) > Qt.styleHints.startDragDistance)
+                        bar.draggedKey = tab.tabKey
+                    if (bar.draggedKey) {
+                        const point = mapToItem(bar, mouse.x, mouse.y)
+                        bar.updateTabDrop(point.x, point.y)
+                    }
+                }
+                onReleased: mouse => {
+                    if (bar.draggedKey) {
+                        const point = mapToItem(bar, mouse.x, mouse.y)
+                        bar.updateTabDrop(point.x, point.y)
+                        if (bar.dropBefore !== undefined)
+                            bar.send({op: "move_tab", key: bar.draggedKey, before: bar.dropBefore})
+                    } else bar.send({op: "focus", key: tab.tabKey})
+                    bar.cancelTabDrag()
+                }
+                onCanceled: bar.cancelTabDrag()
+            }
             Rectangle {
                 anchors.fill: parent
                 color: "transparent"

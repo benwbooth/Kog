@@ -1,5 +1,16 @@
 package org.kog.player
 
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.unit.toSize
+import kotlinx.coroutines.delay
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
@@ -78,35 +89,92 @@ internal fun EditMenuItems(state: KogState, dismiss: () -> Unit) {
 }
 
 @Composable
-internal fun PlaylistWorkspaceTabs(state: KogState) {
-    if (state.workspace.tabs.size > 1) PrimaryScrollableTabRow(
-        selectedTabIndex = state.workspace.tabs.indexOfFirst { it.key == state.workspace.active }.coerceAtLeast(0),
+internal fun PlaylistWorkspaceTabs(state: KogState) = PlaylistWorkspaceTabs(state.workspace, state::workspaceCommand)
+
+@Composable
+internal fun PlaylistWorkspaceTabs(workspace: PlaylistWorkspaceSnapshot, command: (String, JSONObject) -> Unit) {
+    val currentWorkspace by rememberUpdatedState(workspace)
+    val send by rememberUpdatedState(command)
+    val densityForTabs = androidx.compose.ui.platform.LocalDensity.current.density
+    val scroll = rememberScrollState()
+    val bounds = remember { mutableStateMapOf<String, Rect>() }
+    var strip by remember { mutableStateOf(Rect.Zero) }
+    var dragging by remember { mutableStateOf<String?>(null) }
+    var point by remember { mutableStateOf(Offset.Zero) }
+    val tabs by rememberUpdatedState(currentWorkspace.tabs)
+    val accent = MaterialTheme.colorScheme.primary
+    fun destination(): String? = tabs.firstOrNull {
+        it.key != dragging && bounds[it.key]?.let { rect -> point.x < rect.center.x } == true
+    }?.key
+    fun validDrop() = strip.contains(point) && currentWorkspace.pendingClose == null
+    LaunchedEffect(dragging) {
+        while (dragging != null) {
+            if (validDrop()) {
+                val edge = 28 * densityForTabs
+                val delta = when { point.x < strip.left + edge -> -8f; point.x > strip.right - edge -> 8f; else -> 0f }
+                scroll.scrollBy(delta * densityForTabs)
+            }
+            delay(16)
+        }
+    }
+    if (tabs.size > 1) PrimaryScrollableTabRow(
+        selectedTabIndex = tabs.indexOfFirst { it.key == currentWorkspace.active }.coerceAtLeast(0),
+        scrollState = scroll,
         edgePadding = 8.dp, containerColor = MaterialTheme.colorScheme.surface,
+        modifier = Modifier.onGloballyPositioned { strip = Rect(it.positionInRoot(), it.size.toSize()) }
+            .drawWithContent {
+                drawContent()
+                if (dragging != null && validDrop()) {
+                    val next = destination()
+                    val edge = (if (next != null) bounds[next]?.left else tabs.lastOrNull { it.key != dragging }?.let { bounds[it.key]?.right }) ?: strip.left
+                    val x = (edge - strip.left).coerceIn(1f, size.width - 2f)
+                    drawLine(accent, Offset(x, 2f), Offset(x, size.height - 2f), strokeWidth = 3.dp.toPx())
+                }
+            },
     ) {
-        state.workspace.tabs.forEach { tab ->
-            Tab(selected = state.workspace.active == tab.key,
-                onClick = { state.workspaceCommand("focus", JSONObject().put("key", tab.key)) },
+        tabs.forEach { tab -> key(tab.key) {
+            Tab(selected = currentWorkspace.active == tab.key,
+                modifier = Modifier.onGloballyPositioned { bounds[tab.key] = Rect(it.positionInRoot(), it.size.toSize()) }
+                    .graphicsLayer { alpha = if (dragging == tab.key) 0.5f else 1f }
+                    .pointerInput(tab.key) {
+                        detectDragGesturesAfterLongPress(
+                            onDragStart = { offset ->
+                                if (currentWorkspace.pendingClose == null) {
+                                    dragging = tab.key
+                                    point = (bounds[tab.key]?.topLeft ?: Offset.Zero) + offset
+                                }
+                            },
+                            onDrag = { change, amount -> if (dragging == tab.key) { change.consume(); point += amount } },
+                            onDragCancel = { dragging = null },
+                            onDragEnd = {
+                                if (dragging == tab.key && validDrop()) send("move_tab",
+                                    JSONObject().put("key", tab.key).put("before", destination() ?: JSONObject.NULL))
+                                dragging = null
+                            },
+                        )
+                    },
+                onClick = { send("focus", JSONObject().put("key", tab.key)) },
                 text = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(tab.name + if (tab.dirty) " •" else "", maxLines = 1,
                             overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 220.dp))
                         if (tab.key != "queue") IconButton(
                             modifier = Modifier.size(32.dp),
-                            onClick = { state.workspaceCommand("close", JSONObject().put("key", tab.key)) }) {
+                            onClick = { send("close", JSONObject().put("key", tab.key)) }) {
                             Icon(Icons.Default.Close, "Close ${tab.name}", Modifier.size(16.dp))
                         }
                     }
                 })
-        }
+        } }
     }
-    if (state.workspace.pendingClose != null) AlertDialog(
-        onDismissRequest = { state.workspaceCommand("resolve_close", JSONObject().put("choice", "cancel")) },
+    if (currentWorkspace.pendingClose != null) AlertDialog(
+        onDismissRequest = { send("resolve_close", JSONObject().put("choice", "cancel")) },
         title = { Text("Save playlist changes?") }, text = { Text("The playlist has unsaved changes.") },
-        confirmButton = { TextButton(onClick = { state.workspaceCommand("resolve_close", JSONObject().put("choice", "save")) }) { Text("Save") } },
+        confirmButton = { TextButton(onClick = { send("resolve_close", JSONObject().put("choice", "save")) }) { Text("Save") } },
         dismissButton = {
             Row {
-                TextButton(onClick = { state.workspaceCommand("resolve_close", JSONObject().put("choice", "discard")) }) { Text("Discard") }
-                TextButton(onClick = { state.workspaceCommand("resolve_close", JSONObject().put("choice", "cancel")) }) { Text("Cancel") }
+                TextButton(onClick = { send("resolve_close", JSONObject().put("choice", "discard")) }) { Text("Discard") }
+                TextButton(onClick = { send("resolve_close", JSONObject().put("choice", "cancel")) }) { Text("Cancel") }
             }
         })
 }

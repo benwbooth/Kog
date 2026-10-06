@@ -3501,3 +3501,8 @@ body.touch .track .index-cell {
 
 /* A dragged source stays connected when it leaves the mounted row window. */
 .track.row-drag-anchor { position: absolute !important; left: -10000px; top: 0; }
+
+.playlist-tab { user-select: none; -webkit-user-select: none; }
+.playlist-tab > button[role="tab"] { touch-action: pan-x; }
+.playlist-tab.tab-dragging { opacity: .5; }
+.playlist-tab-insertion { position: fixed; width: 3px; background: var(--highlight); z-index: 10000; pointer-events: none; }

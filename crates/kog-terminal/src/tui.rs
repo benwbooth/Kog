@@ -1092,6 +1092,8 @@ struct Ui {
     column_scroll_drag: Option<usize>,
     vertical_scroll_drag: Option<(usize, usize)>,
     manual_scroll_selection: [Option<usize>; 3],
+    tab_drag: Option<workspace::TabDrag>,
+    tab_start: Option<usize>,
     track_drag: Option<queue_drag::Source>,
     track_drop_target: Option<usize>,
     sort_column: Option<usize>,
@@ -1484,6 +1486,8 @@ impl Ui {
             column_scroll_drag: None,
             vertical_scroll_drag: None,
             manual_scroll_selection: [None; 3],
+            tab_drag: None,
+            tab_start: None,
             track_drag: None,
             track_drop_target: None,
             sort_column: None,
@@ -6150,6 +6154,9 @@ impl Ui {
 
     fn key(&mut self, key: Key, size: (usize, usize)) -> bool {
         self.hover_position = None;
+        if self.tab_drag.take().is_some() && matches!(key, Key::Esc) {
+            return true;
+        }
         if self.cancel_track_drag() && matches!(key, Key::Esc) {
             return true;
         }
@@ -6804,6 +6811,9 @@ impl Ui {
     }
 
     fn mouse(&mut self, button: u16, x: usize, y: usize, release: bool, size: (usize, usize)) {
+        if self.tab_drag_mouse(button, x, y, release, size) {
+            return;
+        }
         if self.workspace_close_mouse(button, x, y, release, size) {
             return;
         }
@@ -12235,6 +12245,7 @@ pub fn run() -> Result<(), String> {
         ui.poll_search();
         ui.poll_folders();
         ui.poll_workspace();
+        ui.poll_tab_drag(last_size);
         ui.poll_remote();
         ui.poll_deletes();
         ui.poll_tags();

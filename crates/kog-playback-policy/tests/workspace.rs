@@ -409,3 +409,90 @@ fn language_bridge_runs_the_same_workspace_without_changing_transport() {
         json!([{"path":"one"},{"path":"two"}])
     );
 }
+
+#[test]
+fn tab_order_including_queue_persists_without_editing_drafts() {
+    let mut w = loaded();
+    let generation = open(&mut w, "other", 5);
+    w.apply(C::Loaded {
+        key: "other".into(),
+        generation,
+        entries: vec![],
+    })
+    .unwrap();
+    w.apply(C::Focus {
+        key: "album".into(),
+    })
+    .unwrap();
+    w.apply(C::Append {
+        entries: vec![json!({"path":"extra"})],
+    })
+    .unwrap();
+    let before = serde_json::to_value(&w).unwrap();
+    w.apply(C::MoveTab {
+        key: "album".into(),
+        before: Some("queue".into()),
+    })
+    .unwrap();
+    w.apply(C::MoveTab {
+        key: "queue".into(),
+        before: None,
+    })
+    .unwrap();
+    let keys = |w: &Workspace| {
+        w.snapshot()
+            .tabs
+            .into_iter()
+            .map(|t| t.key)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(keys(&w), ["album", "other", "queue"]);
+    let after = serde_json::to_value(&w).unwrap();
+    assert_eq!(before["tabs"], after["tabs"]);
+    assert_eq!(before["active"], after["active"]);
+    assert_eq!(keys(&Workspace::restore(after).unwrap()), keys(&w));
+    w.apply(C::MoveTab {
+        key: "missing".into(),
+        before: None,
+    })
+    .unwrap_err();
+    w.apply(C::MoveTab {
+        key: "album".into(),
+        before: Some("missing".into()),
+    })
+    .unwrap_err();
+    w.apply(C::MoveTab {
+        key: "album".into(),
+        before: Some("album".into()),
+    })
+    .unwrap();
+    assert_eq!(keys(&w), ["album", "other", "queue"]);
+    w.apply(C::Close {
+        key: "album".into(),
+    })
+    .unwrap();
+    w.apply(C::MoveTab {
+        key: "queue".into(),
+        before: Some("album".into()),
+    })
+    .unwrap();
+    assert_eq!(keys(&w), ["album", "other", "queue"]);
+    w.apply(C::ResolveClose {
+        choice: CloseChoice::Discard,
+    })
+    .unwrap();
+    assert_eq!(w.snapshot().active, "other");
+    assert_eq!(keys(&w), ["other", "queue"]);
+    w.apply(C::Close {
+        key: "other".into(),
+    })
+    .unwrap();
+    assert_eq!(w.snapshot().active, "queue");
+    assert_eq!(keys(&w), ["queue"]);
+    let mut legacy = before;
+    legacy.as_object_mut().unwrap().remove("queue_position");
+    assert_eq!(
+        keys(&Workspace::restore(legacy).unwrap()),
+        ["queue", "album", "other"]
+    );
+}

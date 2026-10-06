@@ -1457,6 +1457,179 @@
         ],
         "effects.1.action": "play"
       }
+    },
+    {
+      "session": "tab-order",
+      "command": {
+        "op": "append",
+        "tracks": [
+          {
+            "kind": "local",
+            "path": "/queue.wav"
+          }
+        ]
+      },
+      "expect": {}
+    },
+    {
+      "session": "tab-order",
+      "capture": {
+        "tab_order_load": "effects.1.token"
+      },
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "open",
+          "key": "a",
+          "scope": "local",
+          "playlist_id": 1,
+          "name": "Alpha"
+        }
+      },
+      "expect": {}
+    },
+    {
+      "session": "tab-order",
+      "command": {
+        "op": "complete",
+        "token": "@tab_order_load",
+        "result": {
+          "kind": "loaded",
+          "entries": [
+            {
+              "kind": "local",
+              "path": "/a.wav"
+            }
+          ]
+        }
+      },
+      "expect": {}
+    },
+    {
+      "session": "tab-order",
+      "capture": {
+        "tab_order_load_b": "effects.1.token"
+      },
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "open",
+          "key": "b",
+          "scope": "local",
+          "playlist_id": 2,
+          "name": "Beta"
+        }
+      },
+      "expect": {}
+    },
+    {
+      "session": "tab-order",
+      "command": {
+        "op": "complete",
+        "token": "@tab_order_load_b",
+        "result": {
+          "kind": "loaded",
+          "entries": []
+        }
+      },
+      "expect": {}
+    },
+    {
+      "session": "tab-order",
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "focus",
+          "key": "a"
+        }
+      },
+      "expect": {}
+    },
+    {
+      "session": "tab-order",
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "append",
+          "entries": [
+            {
+              "kind": "local",
+              "path": "/dirty.wav"
+            }
+          ]
+        }
+      },
+      "expect": {}
+    },
+    {
+      "session": "tab-order",
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "move_tab",
+          "key": "a",
+          "before": "queue"
+        }
+      },
+      "expect": {
+        "snapshot.workspace.active": "a",
+        "snapshot.workspace.selected": [
+          1
+        ],
+        "snapshot.workspace.can_undo": true,
+        "snapshot.queue.0.path": "/queue.wav",
+        "snapshot.current": null,
+        "snapshot.transport": "stopped",
+        "snapshot.workspace.tabs.0.key": "a",
+        "snapshot.workspace.tabs.0.dirty": true,
+        "snapshot.workspace.tabs.1.key": "queue",
+        "snapshot.workspace.tabs.2.key": "b"
+      }
+    },
+    {
+      "session": "tab-order",
+      "capture": {
+        "tab_order_checkpoint": "checkpoint"
+      },
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "move_tab",
+          "key": "queue",
+          "before": null
+        }
+      },
+      "expect": {
+        "snapshot.workspace.active": "a",
+        "snapshot.workspace.selected": [
+          1
+        ],
+        "snapshot.workspace.can_undo": true,
+        "snapshot.queue.0.path": "/queue.wav",
+        "snapshot.current": null,
+        "snapshot.transport": "stopped",
+        "snapshot.workspace.tabs.0.key": "a",
+        "snapshot.workspace.tabs.1.key": "b",
+        "snapshot.workspace.tabs.2.key": "queue"
+      }
+    },
+    {
+      "session": "tab-order",
+      "restore": "@tab_order_checkpoint",
+      "expect": {
+        "snapshot.workspace.active": "a",
+        "snapshot.workspace.selected": [
+          1
+        ],
+        "snapshot.workspace.can_undo": true,
+        "snapshot.queue.0.path": "/queue.wav",
+        "snapshot.current": null,
+        "snapshot.transport": "stopped",
+        "snapshot.workspace.tabs.0.key": "a",
+        "snapshot.workspace.tabs.0.dirty": true,
+        "snapshot.workspace.tabs.1.key": "b",
+        "snapshot.workspace.tabs.2.key": "queue"
+      }
     }
   ]
 }

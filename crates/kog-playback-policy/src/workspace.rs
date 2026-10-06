@@ -80,6 +80,8 @@ impl Tab {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Workspace {
     tabs: Vec<Tab>,
+    #[serde(default)]
+    queue_position: usize,
     active: String,
     serial: u64,
     pending_close: Option<String>,
@@ -88,6 +90,7 @@ impl Default for Workspace {
     fn default() -> Self {
         Self {
             tabs: vec![],
+            queue_position: 0,
             active: QUEUE_TAB.into(),
             serial: 0,
             pending_close: None,
@@ -118,6 +121,11 @@ pub enum Command {
     },
     Focus {
         key: String,
+    },
+    /// Move a tab before another tab, or to the end when `before` is null.
+    MoveTab {
+        key: String,
+        before: Option<String>,
     },
     Activate {
         index: usize,
@@ -349,7 +357,7 @@ impl Workspace {
                 }
             })
             .unwrap_or_default();
-        let mut tabs = vec![TabSnapshot {
+        let queue = TabSnapshot {
             key: QUEUE_TAB.into(),
             scope: String::new(),
             playlist_id: -1,
@@ -359,18 +367,23 @@ impl Workspace {
             loading: false,
             saving: false,
             count: 0,
-        }];
-        tabs.extend(self.tabs.iter().map(|t| TabSnapshot {
-            key: t.key.clone(),
-            scope: t.scope.clone(),
-            playlist_id: t.playlist_id,
-            name: t.name.clone(),
-            dirty: t.dirty(),
-            readonly: t.readonly,
-            loading: t.loading.is_some(),
-            saving: t.saving.is_some(),
-            count: t.draft.rows.len(),
-        }));
+        };
+        let mut tabs: Vec<_> = self
+            .tabs
+            .iter()
+            .map(|t| TabSnapshot {
+                key: t.key.clone(),
+                scope: t.scope.clone(),
+                playlist_id: t.playlist_id,
+                name: t.name.clone(),
+                dirty: t.dirty(),
+                readonly: t.readonly,
+                loading: t.loading.is_some(),
+                saving: t.saving.is_some(),
+                count: t.draft.rows.len(),
+            })
+            .collect();
+        tabs.insert(self.queue_position.min(tabs.len()), queue);
         Snapshot {
             current: None,
             active: self.active.clone(),
@@ -406,6 +419,7 @@ impl Workspace {
     pub fn restore(value: Value) -> Result<Self, String> {
         let mut workspace: Self = serde_json::from_value(value).map_err(|e| e.to_string())?;
         workspace.pending_close = None;
+        workspace.queue_position = workspace.queue_position.min(workspace.tabs.len());
         for tab in &mut workspace.tabs {
             if tab.loading.take().is_some() {
                 tab.error = Some("Loading was interrupted. Reload this playlist.".into());
@@ -437,18 +451,29 @@ impl Workspace {
     }
     fn close(&mut self, key: &str) {
         if let Some(index) = self.tabs.iter().position(|t| t.key == key) {
+            let keys = self.tab_keys();
+            let visual = keys.iter().position(|k| k == key).unwrap();
+            let neighbor = if visual > 0 {
+                &keys[visual - 1]
+            } else {
+                &keys[1]
+            };
             self.tabs.remove(index);
+            if index < self.queue_position {
+                self.queue_position -= 1;
+            }
             if self.active == key {
-                self.active = if index > 0 {
-                    self.tabs[index - 1].key.clone()
-                } else {
-                    QUEUE_TAB.into()
-                };
+                self.active = neighbor.clone();
             }
         }
         if self.pending_close.as_deref() == Some(key) {
             self.pending_close = None;
         }
+    }
+    fn tab_keys(&self) -> Vec<String> {
+        let mut keys: Vec<_> = self.tabs.iter().map(|tab| tab.key.clone()).collect();
+        keys.insert(self.queue_position.min(keys.len()), QUEUE_TAB.into());
+        keys
     }
     fn save(&mut self, key: &str, close: bool) -> Result<Effect, String> {
         self.serial += 1;
@@ -568,6 +593,31 @@ impl Workspace {
                     return Err("Playlist tab no longer exists".into());
                 }
                 self.active = key;
+            }
+            MoveTab { key, before } => {
+                if self.pending_close.is_some() {
+                    return Ok(Effect::None);
+                }
+                let mut keys = self.tab_keys();
+                let source = keys
+                    .iter()
+                    .position(|k| k == &key)
+                    .ok_or("Playlist tab no longer exists")?;
+                if before.as_ref().is_some_and(|k| !keys.contains(k)) {
+                    return Err("Destination tab no longer exists".into());
+                }
+                if before.as_ref() == Some(&key) {
+                    return Ok(Effect::None);
+                }
+                keys.remove(source);
+                let target = before
+                    .as_ref()
+                    .and_then(|k| keys.iter().position(|v| v == k))
+                    .unwrap_or(keys.len());
+                keys.insert(target, key);
+                self.queue_position = keys.iter().position(|k| k == QUEUE_TAB).unwrap();
+                self.tabs
+                    .sort_by_key(|tab| keys.iter().position(|k| k == &tab.key).unwrap());
             }
             Activate { index } => {
                 let tab = self.active_mut()?;
