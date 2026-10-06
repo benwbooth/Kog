@@ -280,6 +280,42 @@ TestCase {
         editor.searchQuery = ""
     }
 
+    function test_tab_reorder_repeated_visible_data() {
+        return [{tag:"active",active:"phantasy"},{tag:"inactive",active:"b"},{tag:"queue-active",active:"queue"}]
+    }
+    function test_tab_reorder_repeated_visible(data) {
+        test.state = {active:data.active, tabs:[{key:"queue",name:"Play Queue"},{key:"phantasy",name:"Phantasy Star"},{key:"b",name:"Beta"}],entries:[],selected:[],actions:{}}
+        const native = findChild(tabs, "playlistTabBar")
+        tryCompare(native, "count", 3)
+        verify(waitForRendering(tabs))
+        for (let move = 0; move < 10; ++move) {
+            const index = test.state.tabs.findIndex(t => t.key === "phantasy")
+            const item = native.itemAt(index)
+            const start = item.mapToItem(tabs, 20, item.height / 2)
+            const targetX = move % 2 === 0 ? tabs.width - 10 : 4
+            backend.commands = []
+            mousePress(tabs, start.x, start.y)
+            mouseMove(tabs, targetX, start.y, 50)
+            compare(tabs.draggedKey, "phantasy", "The moved tab must still accept the next drag")
+            mouseRelease(tabs, targetX, start.y)
+            compare(test.state.tabs[move % 2 === 0 ? 2 : 0].key, "phantasy")
+            compare(test.state.active, data.active)
+            compare(tabs.draggedKey, "")
+            compare(native.contentItem.interactive, true)
+            compare(backend.commands.length, 1)
+            verify(waitForRendering(tabs))
+            for (let i = 0; i < native.count; ++i) {
+                const tab = native.itemAt(i)
+                verify(tab.visible, "Tab is hidden after move " + move + ": " + tab.tabKey)
+                compare(tab.parent, native.contentItem.contentItem, "The native view owns every tab")
+                compare(tab.opacity, 1)
+                verify(tab.contentItem.visible)
+                verify(tab.width > 20 && tab.height > 20)
+                compare(tabs.tabAtPoint(tab, 20, tab.height / 2), tab.tabKey)
+                if (tab.tabKey !== "queue") verify(findChild(tab, "closePlaylistTab").visible)
+            }
+        }
+    }
     function test_tab_reorder_overflow() {
         const entries = [{key:"queue",name:"Play Queue"}]
         for (let i = 0; i < 7; ++i) entries.push({key:"extra:"+i,name:"Extra playlist "+i})
@@ -295,6 +331,20 @@ TestCase {
         mouseRelease(tabs, tabs.width-3, tabs.height/2)
         compare(test.state.tabs[7].key, "queue")
         compare(test.state.active, "queue")
+        verify(waitForRendering(tabs))
+        const queue = native.itemAt(7)
+        verify(queue.visible)
+        compare(queue.parent, native.contentItem.contentItem)
+        const start = queue.mapToItem(tabs, 20, queue.height/2)
+        mousePress(tabs, start.x, start.y)
+        mouseMove(tabs, 3, start.y, 50)
+        compare(tabs.draggedKey, "queue")
+        tryVerify(() => native.contentItem.contentX <= 1, 6000)
+        mouseRelease(tabs, 3, start.y)
+        compare(test.state.tabs[0].key, "queue")
+        compare(test.state.active, "queue")
+        compare(tabs.draggedKey, "")
+        compare(native.contentItem.interactive, true)
         test.width = 1000
     }
     function test_tab_reorder() {

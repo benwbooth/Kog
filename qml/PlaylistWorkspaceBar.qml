@@ -112,38 +112,47 @@ Item {
         objectName: "playlistTabBar"
         anchors.fill: parent
         clip: true
-        // Keep native styling with a stable height even while tabs are added
-        // or removed; KDE's default view assumes item zero already exists.
-        contentItem: ListView {
-            id: tabView
-            function revealCurrent() {
-                if (bar.draggedKey === "" && width > 0 && currentIndex >= 0 && currentIndex < count)
-                    positionViewAtIndex(currentIndex, ListView.Contain)
-            }
-            implicitWidth: contentWidth
-            implicitHeight: tabMetrics.implicitHeight
-            model: tabs.contentModel
-            // Container also feeds view index changes back into TabBar. Wait
-            // for reconciliation before updating the view to avoid reentry.
-            Binding {
-                target: tabView
-                property: "currentIndex"
-                value: tabs.currentIndex
-                delayed: true
-            }
-            orientation: ListView.Horizontal
-            spacing: tabs.spacing
-            boundsBehavior: Flickable.StopAtBounds
-            interactive: bar.draggedKey === ""
-            flickableDirection: Flickable.AutoFlickIfNeeded
-            snapMode: bar.draggedKey !== "" ? ListView.NoSnap : ListView.SnapToItem
-            highlightMoveDuration: 0
-            highlightRangeMode: bar.draggedKey !== "" ? ListView.NoHighlightRange : ListView.ApplyRange
-            preferredHighlightBegin: 40
-            preferredHighlightEnd: width - 40
-            onWidthChanged: Qt.callLater(revealCurrent)
-            onContentWidthChanged: Qt.callLater(revealCurrent)
-            onCurrentIndexChanged: Qt.callLater(revealCurrent)
+        // Keep the style's view. Replacing KDE's eagerly created ListView
+        // leaves it attached to contentModel, where it can steal tab buttons
+        // into its hidden content item when the model moves them.
+        function revealCurrent() {
+            const view = contentItem
+            if (bar.draggedKey === "" && view.width > 0 && currentIndex >= 0 && currentIndex < count)
+                view.positionViewAtIndex(currentIndex, ListView.Contain)
+        }
+        Binding {
+            target: tabs.contentItem
+            property: "implicitHeight"
+            value: tabMetrics.implicitHeight
+        }
+        // Container also feeds view index changes back into TabBar. Wait
+        // for reconciliation before updating the view to avoid reentry.
+        Binding {
+            target: tabs.contentItem
+            property: "currentIndex"
+            value: tabs.currentIndex
+            delayed: true
+        }
+        Binding {
+            target: tabs.contentItem
+            property: "interactive"
+            value: bar.draggedKey === ""
+        }
+        Binding {
+            target: tabs.contentItem
+            property: "snapMode"
+            value: bar.draggedKey !== "" ? ListView.NoSnap : ListView.SnapToItem
+        }
+        Binding {
+            target: tabs.contentItem
+            property: "highlightRangeMode"
+            value: bar.draggedKey !== "" ? ListView.NoHighlightRange : ListView.ApplyRange
+        }
+        Connections {
+            target: tabs.contentItem
+            function onWidthChanged() { Qt.callLater(tabs.revealCurrent) }
+            function onContentWidthChanged() { Qt.callLater(tabs.revealCurrent) }
+            function onCurrentIndexChanged() { Qt.callLater(tabs.revealCurrent) }
         }
         onCurrentIndexChanged: {
             if (bar.syncingTabs) return
