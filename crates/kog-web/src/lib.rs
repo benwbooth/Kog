@@ -45,6 +45,7 @@ mod selection;
 mod session;
 mod workspace;
 mod persistence;
+mod artwork;
 
 /// The desktop transport's SVG icons (`qml/icons/`), inlined verbatim. CSS
 /// tints them with the button's text color where the desktop picks the
@@ -4407,20 +4408,26 @@ fn App() -> impl IntoView {
         }
     };
 
-    // Album art for the transport thumbnail: the current track's embedded
-    // or sibling cover through the server, falling back to a neutral cover when a
-    // track has none (the img swaps itself back on a load error, and the
-    // src changes with the track so the fallback does not stick).
-    let art_src = move || match queue.with_untracked(|q| q.get(current.get()).cloned()) {
-        Some(entry) if !entry.is_dir() => format!(
-            "{}/api/art?kind={}&path={}&token={}",
-            base(),
-            url_encode(&entry.kind),
-            url_encode(&entry.path),
-            url_encode(&token.get()),
-        ),
-        _ => "/icons/cover-placeholder.svg".to_owned(),
-    };
+    // Missing art is searched in the background. A single short-polling
+    // fetch supplies the thumbnail, enlarged cover and Media Session image.
+    let art_request = Memo::new(move |_| {
+        if !connected.get() {
+            return None;
+        }
+        queue.with(|q| q.get(current.get()).cloned())
+            .filter(|entry| !entry.is_dir())
+            .map(|entry| {
+                format!(
+                    "{}/api/art?kind={}&path={}&token={}&background=true",
+                    base(),
+                    url_encode(&entry.kind),
+                    url_encode(&entry.path),
+                    url_encode(&token.get()),
+                )
+            })
+    });
+    let art_source = artwork::source(art_request);
+    let art_src = move || art_source.get();
 
     // Now-playing notifications: when the playing track changes while the
     // preference is on, post the web twin of the desktop's popup — title,
@@ -4534,13 +4541,7 @@ fn App() -> impl IntoView {
             .map(String::as_str)
             .unwrap_or_default();
         let album = media_session_album(meta.as_ref(), &entry);
-        let artwork = format!(
-            "{}/api/art?kind={}&path={}&token={}",
-            base(),
-            url_encode(&entry.kind),
-            url_encode(&entry.path),
-            url_encode(&token.get()),
-        );
+        let artwork = art_src();
         media_session_metadata(&session, &title, artist, album, &artwork);
     });
 

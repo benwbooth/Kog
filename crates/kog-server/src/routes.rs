@@ -25,6 +25,7 @@ pub struct AppState {
     pub config: Arc<RwLock<ServerConfig>>,
     pub version: &'static str,
     pub streams: Arc<crate::service::StreamService>,
+    pub(crate) covers: Arc<crate::covers::CoverService>,
     /// Library browsing and the playlist/star store.
     pub library: Arc<crate::api::Library>,
     /// Legacy search plus independent named frontend searches.
@@ -65,6 +66,7 @@ impl AppState {
             config: Arc::new(RwLock::new(config)),
             version,
             streams: Arc::new(streams),
+            covers: Arc::new(crate::covers::CoverService::default()),
             library: Arc::new(library),
             search: Arc::new(crate::api::SearchState::default()),
             search_sessions: Arc::new(crate::api::SearchSessions::default()),
