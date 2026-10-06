@@ -63,12 +63,26 @@ with tempfile.TemporaryDirectory(prefix="kog-playlist-tui-") as directory:
         raise AssertionError(message)
     def count():
         with sqlite3.connect(database) as db: return db.execute("SELECT count(*) FROM playlist_entries WHERE playlist_id=1").fetchone()[0]
+    def open_exit_dialog():
+        output.clear()
+        send(b"\x1b")
+        for _ in range(20):
+            if b"Confirm exit" in output: return
+            drain(0.1)
+        raise AssertionError("Escape from a playlist must open exit confirmation")
+    def cancel_exit():
+        before=state()
+        open_exit_dialog()
+        send(b"\x1b")  # Escape in the exit dialog stays in Kog.
+        drain(1.1)
+        assert state()==before, "Requesting/cancelling exit changed the draft or selection"
     try:
         drain(2)
         send(b"\x1b[Z")  # Library -> Playlists
         send(b"\x1b[B")  # Favorites -> saved playlist
         send(b"\r")
         wait(lambda value:value["active"]=="local:1" and len(value["tabs"][0]["draft"]["rows"])==2,"Enter should open a draft tab")
+        cancel_exit()  # clean playlist, without a selection
         send(b"\x13")  # disabled Save on clean draft must be a no-op
         assert count()==2,"Clean Save changed stored contents"
         send(b"\x1b[H")  # Home: replace selection at first row
@@ -76,8 +90,10 @@ with tempfile.TemporaryDirectory(prefix="kog-playlist-tui-") as directory:
         wait(lambda value:len(value["tabs"][0]["draft"]["selected"])==2,"Range selects both rows")
         send(b"\x1b[1;2A")  # Shift+Up: shrink range
         wait(lambda value:len(value["tabs"][0]["draft"]["selected"])==1,"Range shrinks to anchor")
+        cancel_exit()  # clean playlist, with a selection
         send(b"d")
         wait(lambda value:len(value["tabs"][0]["draft"]["rows"])==1,"Delete draft row")
+        cancel_exit()  # unsaved changes must not swallow Escape either
         assert count()==2,"Draft edit wrote through before Save"
         send(b"\x13")  # Ctrl+S
         assert count()==1,"Save did not reach the shared database"
@@ -105,10 +121,17 @@ with tempfile.TemporaryDirectory(prefix="kog-playlist-tui-") as directory:
         drain(2)
         assert len(checkpoint()["queue"])==2 and checkpoint()["current"]==1, "Restored session lost its queue"
         assert b"Ready to play" in output, "Restored output must stay stopped"
-        send(b"\x03")
+        send(b"\x1b[Z\x1b[B\r")  # Open the saved playlist again.
+        wait(lambda value:value["active"]=="local:1" and len(value["tabs"][0]["draft"]["rows"])==1,"Reopen saved playlist")
+        send(b"\x01d")  # Keep an empty, dirty draft open while exiting.
+        wait(lambda value:not value["tabs"][0]["draft"]["rows"],"Create empty draft")
+        before_exit=state()
+        open_exit_dialog()
+        send(b"y")
         os.waitpid(pid,0)
         pid=0
-        print("TUI WORKSPACE PASS: editor/selection/save/undo/close/cancel/discard/native audio/EOS/stopped restore")
+        assert state()==before_exit, "Confirmed exit lost the unsaved playlist"
+        print("TUI WORKSPACE PASS: editor/selection/save/undo/close/cancel/discard/native audio/EOS/stopped restore/Escape exit on clean, selected, dirty and empty playlist tabs")
     finally:
         if pid:
             os.kill(pid,signal.SIGTERM)

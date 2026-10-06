@@ -293,9 +293,6 @@ impl Ui {
             Key::CtrlA => Some(Command::Selection {
                 command: Select::All,
             }),
-            Key::Esc => Some(Command::Selection {
-                command: Select::Clear,
-            }),
             Key::Enter => {
                 self.activate_workspace_selected();
                 return true;
