@@ -368,6 +368,7 @@ enum MenuPage {
     TagEditor,
     Remote,
     Synthesis,
+    MidiBackend,
     Server,
 }
 
@@ -397,6 +398,7 @@ impl MenuPage {
             Self::TagEditor => "Edit Tags",
             Self::Remote => "Remote Server",
             Self::Synthesis => "MIDI Synthesis",
+            Self::MidiBackend => "MIDI Backend",
             Self::Server => "API Server",
         }
     }
@@ -417,6 +419,7 @@ impl MenuPage {
             Self::TagEditor => &TAG_EDITOR_MENU,
             Self::Remote => &REMOTE_MENU,
             Self::Synthesis => &SYNTHESIS_MENU,
+            Self::MidiBackend => &MIDI_BACKEND_MENU,
             Self::Server => &SERVER_MENU,
         }
     }
@@ -2517,12 +2520,18 @@ impl Ui {
                 }
             }
             (MenuPage::Synthesis, 0) => {
-                let next = match self.decoder_settings.midi_engine() {
-                    MidiEngine::RustySynth => MidiEngine::Opl3Windows,
-                    MidiEngine::Opl3Windows => MidiEngine::Sc55,
-                    MidiEngine::Sc55 => MidiEngine::Mt32,
-                    MidiEngine::Mt32 => MidiEngine::RustySynth,
-                };
+                self.open_child_menu(MenuPage::MidiBackend, size);
+                self.menu_selected = MIDI_BACKEND_ENGINES
+                    .iter()
+                    .position(|engine| *engine == self.decoder_settings.midi_engine())
+                    .unwrap_or(0);
+                self.menu_offset = self.menu_selected.saturating_sub(size.1.saturating_sub(5));
+            }
+            (MenuPage::MidiBackend, index) => {
+                let Some(&next) = MIDI_BACKEND_ENGINES.get(index) else { return };
+                if next == self.decoder_settings.midi_engine() {
+                    return;
+                }
                 match AppSettings::save_midi_engine(next) {
                     Ok(()) => {
                         let resume = self.playing.and_then(|index| {
@@ -2541,7 +2550,7 @@ impl Ui {
                         });
                         self.decoder_settings.set_midi_engine(next);
                         self.invalidate_metadata();
-                        self.status = format!("MIDI backend: {}", next.setting_value());
+                        self.status = format!("MIDI backend: {}", MIDI_BACKEND_MENU[index]);
                         if resume.is_some() {
                             self.report_session_progress();
                             self.session_command(SessionCommand::ReloadOutput);
@@ -3006,7 +3015,12 @@ impl Ui {
         }
     }
 
-    fn menu_column_check(&self, page: MenuPage, index: usize) -> Option<bool> {
+    fn menu_item_checked(&self, page: MenuPage, index: usize) -> Option<bool> {
+        if page == MenuPage::MidiBackend {
+            return MIDI_BACKEND_ENGINES
+                .get(index)
+                .map(|engine| *engine == self.decoder_settings.midi_engine());
+        }
         let id = match page {
             MenuPage::Columns | MenuPage::ColumnContext => match index {
                 3 => "artist",
@@ -9293,7 +9307,7 @@ impl Ui {
                     } else {
                         Surface::MenuBody
                     };
-                    let shown = if let Some(checked) = self.menu_column_check(layer.page, index) {
+                    let shown = if let Some(checked) = self.menu_item_checked(layer.page, index) {
                         menu_row_checked(label, panel_width, checked)
                     } else {
                         menu_row(label, panel_width)
@@ -10442,7 +10456,7 @@ const SERVER_MENU: [&str; 17] = [
     "Server Problems…",
 ];
 const SYNTHESIS_MENU: [&str; 8] = [
-    "Cycle MIDI Backend",
+    "MIDI Backend              ›",
     "SoundFont Path…",
     "SC-55 ROM Directory…",
     "MT-32 ROM Directory…",
@@ -10450,6 +10464,18 @@ const SYNTHESIS_MENU: [&str; 8] = [
     "Show Synthesis Settings…",
     "Import SC-55 ROM Archive…",
     "Import MT-32 ROM Archive…",
+];
+const MIDI_BACKEND_ENGINES: [MidiEngine; 4] = [
+    MidiEngine::RustySynth,
+    MidiEngine::Opl3Windows,
+    MidiEngine::Sc55,
+    MidiEngine::Mt32,
+];
+const MIDI_BACKEND_MENU: [&str; 4] = [
+    "RustySynth (SF2)",
+    "OPL3Windows (Nuked OPL3)",
+    "Nuked SC-55",
+    "Munt (MT-32 / CM-32L)",
 ];
 const TREE_MENU: [&str; 10] = [
     "Add to Current Playlist",
@@ -12660,6 +12686,7 @@ mod tests {
             MenuPage::TagEditor,
             MenuPage::Remote,
             MenuPage::Synthesis,
+            MenuPage::MidiBackend,
             MenuPage::Server,
         ] {
             let shortcuts = menu_shortcuts(page);
@@ -12674,7 +12701,11 @@ mod tests {
                 assert!(seen.insert(shortcut));
                 assert_eq!(menu_shortcut_index(page, shortcut), Some(index));
                 for width in [18, 33] {
-                    let row = menu_row(label, width);
+                    let row = if page == MenuPage::MidiBackend {
+                        menu_row_checked(label, width, false)
+                    } else {
+                        menu_row(label, width)
+                    };
                     assert!(
                         menu_mnemonic(&row, shortcut).is_some(),
                         "{label}: {shortcut}"
