@@ -44,6 +44,7 @@ use drag::{clear_track_drop_marker, track_drop_target};
 mod selection;
 mod session;
 mod workspace;
+mod menu;
 mod persistence;
 mod artwork;
 
@@ -274,7 +275,7 @@ struct SearchProgress {
 /// playlist, naming a duplicate, and confirming a delete.
 #[derive(Clone, Debug, PartialEq)]
 enum PlaylistDialogMode {
-    CreateFromPane,
+    CreateFromPane { selected_only: Option<bool> },
     Duplicate,
     ConfirmDelete,
 }
@@ -3169,12 +3170,22 @@ fn App() -> impl IntoView {
     let open_create_playlist_dialog = move || {
         set_playlist_dialog_opened.update(|epoch| *epoch += 1);
         set_playlist_dialog.set(Some(PlaylistDialog {
-            mode: PlaylistDialogMode::CreateFromPane,
+            mode: PlaylistDialogMode::CreateFromPane { selected_only: None },
             title: "Save Playlist",
             value: String::new(),
             id: 0,
             name: String::new(),
         }));
+    };
+
+    let open_save_playlist_dialog = move |selected_only| {
+        open_create_playlist_dialog();
+        set_playlist_dialog.update(|dialog| {
+            if let Some(dialog) = dialog {
+                dialog.mode = PlaylistDialogMode::CreateFromPane { selected_only: Some(selected_only) };
+                dialog.title = if selected_only { "Save Selection As" } else { "Save As" };
+            }
+        });
     };
 
     // Stars live on the server (`GET/POST /api/stars`) under the desktop's
@@ -5026,7 +5037,7 @@ fn App() -> impl IntoView {
     let create_playlist_from_pane = {
         let post_json = post_json;
         let load_playlists = load_playlists.clone();
-        move |name: String| {
+        move |name: String, selected_only: Option<bool>| {
             let url = format!("{}/api/playlists", base());
             let header = auth().header();
             let selected: HashSet<usize> = selected.get_untracked();
@@ -5034,7 +5045,7 @@ fn App() -> impl IntoView {
                 .get_untracked()
                 .into_iter()
                 .enumerate()
-                .filter(|(index, _)| selected.is_empty() || selected.contains(index))
+                .filter(|(index, _)| !selected_only.unwrap_or(!selected.is_empty()) || selected.contains(index))
                 .map(|(_, entry)| entry)
                 .collect();
             leptos::task::spawn_local(async move {
@@ -5057,7 +5068,7 @@ fn App() -> impl IntoView {
     // (or the selection) through the overwrite endpoint.
     let overwrite_playlist_with_pane = {
         let load_playlists = load_playlists.clone();
-        move |id: i64, name: String| {
+        move |id: i64, name: String, selected_only: Option<bool>| {
             let url = format!("{}/api/playlists/{id}/entries", base());
             let header = auth().header();
             let selected: HashSet<usize> = selected.get_untracked();
@@ -5065,7 +5076,7 @@ fn App() -> impl IntoView {
                 .get_untracked()
                 .into_iter()
                 .enumerate()
-                .filter(|(index, _)| selected.is_empty() || selected.contains(index))
+                .filter(|(index, _)| !selected_only.unwrap_or(!selected.is_empty()) || selected.contains(index))
                 .map(|(_, entry)| entry)
                 .collect();
             let count = entries.len();
@@ -5181,13 +5192,13 @@ fn App() -> impl IntoView {
         };
         let name = dialog.value.trim().to_owned();
         match dialog.mode {
-            PlaylistDialogMode::CreateFromPane => {
+            PlaylistDialogMode::CreateFromPane { selected_only } => {
                 if !name.is_empty() {
                     set_playlist_dialog.set(None);
                     if let Some(id) = existing_playlist_id(&name) {
-                        overwrite_playlist_with_pane(id, name);
+                        overwrite_playlist_with_pane(id, name, selected_only);
                     } else {
-                        create_playlist_from_pane(name);
+                        create_playlist_from_pane(name, selected_only);
                     }
                 }
             }
@@ -5790,6 +5801,12 @@ fn App() -> impl IntoView {
                     <button
                         class="flat icon-button"
                         title="Kog menu"
+                        id="app-menu-button"
+                        aria-haspopup="menu"
+                        aria-expanded=move || menu_open.get().to_string()
+                        on:keydown=move |event: web_sys::KeyboardEvent| {
+                            if event.key() == "ArrowDown" { event.prevent_default(); set_menu_open.set(true); }
+                        }
                         on:click=move |_| set_menu_open.update(|open| *open = !*open)
                         inner_html=icons::MENU
                     ></button>
@@ -8172,7 +8189,7 @@ fn App() -> impl IntoView {
                         <p class="hint">
                             {move || match playlist_dialog.get() {
                                 Some(dialog) => match dialog.mode {
-                                    PlaylistDialogMode::CreateFromPane => {
+                                    PlaylistDialogMode::CreateFromPane { selected_only } => {
                                         let name = dialog.value.trim();
                                         if !name.is_empty()
                                             && playlist_name_exists(name.to_owned())
@@ -8181,8 +8198,11 @@ fn App() -> impl IntoView {
                                                 "A playlist named \u{201c}{name}\u{201d} already exists. Saving will replace its tracks."
                                             )
                                         } else {
-                                            "Name the new playlist. The pane is saved into it."
-                                                .to_owned()
+                                            match selected_only {
+                                                Some(true) => "Name the new playlist. Only selected tracks are saved.",
+                                                Some(false) => "Name the new playlist. The entire play queue is saved.",
+                                                None => "Name the new playlist. The selection, or the full queue when nothing is selected, is saved.",
+                                            }.to_owned()
                                         }
                                     }
                                     PlaylistDialogMode::Duplicate => {
@@ -8246,7 +8266,7 @@ fn App() -> impl IntoView {
                                     playlist_dialog
                                         .get()
                                         .map(|dialog| match dialog.mode {
-                                            PlaylistDialogMode::CreateFromPane => {
+                                            PlaylistDialogMode::CreateFromPane { .. } => {
                                                 let name = dialog.value.trim();
                                                 if !name.is_empty()
                                                     && playlist_name_exists(name.to_owned())
@@ -8437,172 +8457,135 @@ fn App() -> impl IntoView {
                 </Show>
 
                 <Show when=move || menu_open.get() fallback=|| ()>
-                    <div class="menu-scrim" on:click=move |_| set_menu_open.set(false)></div>
-                    <div class="context-menu app-menu" role="menu">
-                        <button class="menu-item" on:click=move |_| open_add_url()>
-                            "Add URL…"
-                        </button>
-                        <div class="menu-separator"></div>
-                        <button
-                            class="menu-item"
+                    <menu::Menu on_close=Callback::new(move |_| set_menu_open.set(false))>
+                        <button class="menu-item" role="menuitem" on:click=move |_| open_add_url()>"Add URL…"</button>
+                        <button class="menu-item" role="menuitem" on:click=move |_| open_preferences()>"Connect to Server…"</button>
+                        <button class="menu-item" role="menuitem" disabled=move || !connected.get() on:click=move |event| {
+                            set_menu_open.set(false); open_folder_picker(event);
+                        }>"Choose Music Folder…"</button>
+                        <div class="menu-separator" role="separator"></div>
+                        <button class="menu-item" role="menuitem"
                             disabled=move || playlist_workspace.snapshot().active != "queue" || queue.get().is_empty()
-                            on:click=move |_| {
+                            on:click=move |_| { set_menu_open.set(false); open_save_playlist_dialog(false); }>"Save As…"</button>
+                        <button class="menu-item" role="menuitem"
+                            disabled=move || playlist_workspace.snapshot().active != "queue" || selected.get().is_empty()
+                            on:click=move |_| { set_menu_open.set(false); open_save_playlist_dialog(true); }>"Save Selection As…"</button>
+                        <div class="menu-separator" role="separator"></div>
+                        <menu::Submenu label="Edit" depth=1>
+                            <workspace::EditMenu controller=playlist_workspace on_action=Callback::new(move |_| set_menu_open.set(false)) on_select_all=Callback::new(move |_| select_all_results()) />
+                        </menu::Submenu>
+                        <menu::Submenu label="View" depth=1>
+                            <button class="menu-item" role="menuitemcheckbox" aria-checked=move || sidebar_shown().to_string() on:click=move |_| {
+                                if touch_mode {
+                                    set_files_expanded.set(true);
+                                    set_mobile_view.set(MobileView::Library);
+                                } else { toggle_sidebar(); }
                                 set_menu_open.set(false);
-                                open_create_playlist_dialog();
-                            }
-                        >
-                            "Save Playlist…"
-                        </button>
-                        <div class="menu-separator"></div>
-                        <workspace::PlaybackMenu controller=playlist_workspace on_action=Callback::new(move |_| set_menu_open.set(false)) />
-                        <workspace::EditMenu controller=playlist_workspace on_action=Callback::new(move |_| set_menu_open.set(false)) on_select_all=Callback::new(move |_| select_all_results()) />
-                        <div class="menu-separator"></div>
-                        <div class="menu-group">"View"</div>
-                        <button class="menu-item" on:click=move |_| {
-                            if touch_mode {
-                                set_files_expanded.set(true);
-                                set_mobile_view.set(MobileView::Library);
-                            } else {
-                                toggle_sidebar();
-                            }
-                            set_menu_open.set(false);
-                        }>
-                            <span class="menu-check">
-                                {move || if sidebar_shown() { "✓" } else { "" }}
-                            </span>
-                            {if touch_mode { "Library" } else { "Show File Tree" }}
-                        </button>
-                        <div class="menu-separator"></div>
-                        <div class="menu-group">"Playback"</div>
-                        <button
-                            class="menu-item"
-                            disabled=move || !connected.get()
-                            on:click=move |_| {
-                                set_radio(!radio_on.get_untracked());
-                                set_menu_open.set(false);
-                            }
-                        >
-                            <span class="menu-check">{move || if radio_on.get() { "✓" } else { "" }}</span>
-                            "Random Radio"
-                        </button>
-                        <button
-                            class="menu-item"
-                            disabled=move || queue.get().is_empty() && !radio_on.get()
-                            on:click=move |_| {
-                                toggle_play();
-                                set_menu_open.set(false);
-                            }
-                        >
-                            "Play/Pause"
-                        </button>
-                        <button
-                            class="menu-item"
-                            disabled=move || queue.get().is_empty() && !radio_waiting.get()
-                            on:click=move |_| {
-                                stop_playback();
-                                set_menu_open.set(false);
-                            }
-                        >
-                            "Stop"
-                        </button>
-                        <button
-                            class="menu-item"
-                            disabled=move || queue.get().is_empty()
-                            on:click=move |_| {
-                                step(-1);
-                                set_menu_open.set(false);
-                            }
-                        >
-                            "Previous"
-                        </button>
-                        <button
-                            class="menu-item"
-                            disabled=move || queue.get().is_empty() && !radio_on.get()
-                            on:click=move |_| {
-                                step(1);
-                                set_menu_open.set(false);
-                            }
-                        >
-                            "Next"
-                        </button>
-                        <div class="menu-group">"Shuffle"</div>
-                        <button
-                            class="menu-item"
-                            on:click=move |_| {
-                                select_shuffle(ShuffleMode::Off);
-                                set_menu_open.set(false);
-                            }
-                        >
-                            <span class="menu-check">{move || if shuffle.get() == ShuffleMode::Off { "●" } else { "" }}</span>
-                            "Off"
-                        </button>
-                        <button
-                            class="menu-item"
-                            on:click=move |_| {
-                                select_shuffle(ShuffleMode::All);
-                                set_menu_open.set(false);
-                            }
-                        >
-                            <span class="menu-check">{move || if shuffle.get() == ShuffleMode::All { "●" } else { "" }}</span>
-                            "All Tracks"
-                        </button>
-                        <button class="menu-item" on:click=move |_| { select_shuffle(ShuffleMode::Albums); set_menu_open.set(false); }>
-                            <span class="menu-check">{move || if shuffle.get() == ShuffleMode::Albums { "●" } else { "" }}</span>
-                            "Albums"
-                        </button>
-                        <div class="menu-group">"Repeat"</div>
-                        <button
-                            class="menu-item"
-                            on:click=move |_| {
-                                select_repeat(Repeat::Off);
-                                set_menu_open.set(false);
-                            }
-                        >
-                            <span class="menu-check">{move || if repeat_mode.get() == Repeat::Off { "●" } else { "" }}</span>
-                            "Off"
-                        </button>
-                        <button
-                            class="menu-item"
-                            on:click=move |_| {
-                                select_repeat(Repeat::One);
-                                set_menu_open.set(false);
-                            }
-                        >
-                            <span class="menu-check">{move || if repeat_mode.get() == Repeat::One { "●" } else { "" }}</span>
-                            "One Track"
-                        </button>
-                        <button class="menu-item" on:click=move |_| { select_repeat(Repeat::Album); set_menu_open.set(false); }>
-                            <span class="menu-check">{move || if repeat_mode.get() == Repeat::Album { "●" } else { "" }}</span>
-                            "Album"
-                        </button>
-                        <button
-                            class="menu-item"
-                            on:click=move |_| {
-                                select_repeat(Repeat::All);
-                                set_menu_open.set(false);
-                            }
-                        >
-                            <span class="menu-check">{move || if repeat_mode.get() == Repeat::All { "●" } else { "" }}</span>
-                            "All Tracks"
-                        </button>
-                        <button
-                            class="menu-item"
-                            disabled=move || !radio_on.get()
-                            on:click=move |_| {
-                                reshuffle_radio();
-                                set_menu_open.set(false);
-                            }
-                        >
-                            "Reshuffle Radio"
-                        </button>
-                        <div class="menu-separator"></div>
-                        <button class="menu-item" on:click=move |_| open_preferences()>
-                            "Preferences…"
-                        </button>
-                        <button class="menu-item" on:click=move |_| open_about()>
-                            "About Kog…"
-                        </button>
-                    </div>
+                            }>
+                                <span class="menu-check" aria-hidden="true">{move || if sidebar_shown() { "✓" } else { "" }}</span>"Show File Tree"
+                            </button>
+                            <button class="menu-item" role="menuitem" disabled=move || pane_entries.get().is_empty()
+                                on:click=move |_| {
+                                    let index = pane_selected.get_untracked().iter().copied().min().unwrap_or_else(|| if pane_key.get_untracked() == "queue" { current.get_untracked() } else { 0 });
+                                    if let Some(entry) = pane_entries.get_untracked().get(index).cloned() {
+                                        set_track_details.set(Some((index, entry)));
+                                    }
+                                    set_menu_open.set(false);
+                                }>"Show Info Inspector"</button>
+                            <button class="menu-item" role="menuitem" on:click=move |_| {
+                                set_menu_open.set(false); set_visualizer_open.set(true);
+                            }>"Visualizer"</button>
+                        </menu::Submenu>
+                        <menu::Submenu label="Playback" depth=1>
+                            <button class="menu-item" role="menuitem" disabled=move || queue.get().is_empty() && !radio_on.get()
+                                on:click=move |_| { toggle_play(); set_menu_open.set(false); }>"Play/Pause"</button>
+                            <button class="menu-item" role="menuitem" disabled=move || queue.get().is_empty() && !radio_waiting.get()
+                                on:click=move |_| { stop_playback(); set_menu_open.set(false); }>"Stop"</button>
+                            <div class="menu-separator" role="separator"></div>
+                            <button class="menu-item" role="menuitem" disabled=move || queue.get().is_empty()
+                                on:click=move |_| { step(-1); set_menu_open.set(false); }>"Previous"</button>
+                            <button class="menu-item" role="menuitem" disabled=move || queue.get().is_empty() && !radio_on.get()
+                                on:click=move |_| { step(1); set_menu_open.set(false); }>"Next"</button>
+                            <div class="menu-separator" role="separator"></div>
+                            <menu::Submenu label="Shuffle" depth=2>
+                                <button class="menu-item" role="menuitemradio" aria-checked=move || (shuffle.get() == ShuffleMode::Off).to_string()
+                                    on:click=move |_| { select_shuffle(ShuffleMode::Off); set_menu_open.set(false); }>
+                                    <span class="menu-check" aria-hidden="true">{move || if shuffle.get() == ShuffleMode::Off { "●" } else { "" }}</span>"Off"
+                                </button>
+                                <button class="menu-item" role="menuitemradio" aria-checked=move || (shuffle.get() == ShuffleMode::Albums).to_string()
+                                    on:click=move |_| { select_shuffle(ShuffleMode::Albums); set_menu_open.set(false); }>
+                                    <span class="menu-check" aria-hidden="true">{move || if shuffle.get() == ShuffleMode::Albums { "●" } else { "" }}</span>"Albums"
+                                </button>
+                                <button class="menu-item" role="menuitemradio" aria-checked=move || (shuffle.get() == ShuffleMode::All).to_string()
+                                    on:click=move |_| { select_shuffle(ShuffleMode::All); set_menu_open.set(false); }>
+                                    <span class="menu-check" aria-hidden="true">{move || if shuffle.get() == ShuffleMode::All { "●" } else { "" }}</span>"All Tracks"
+                                </button>
+                            </menu::Submenu>
+                            <menu::Submenu label="Repeat" depth=2>
+                                <button class="menu-item" role="menuitemradio" aria-checked=move || (repeat_mode.get() == Repeat::Off).to_string()
+                                    on:click=move |_| { select_repeat(Repeat::Off); set_menu_open.set(false); }>
+                                    <span class="menu-check" aria-hidden="true">{move || if repeat_mode.get() == Repeat::Off { "●" } else { "" }}</span>"Off"
+                                </button>
+                                <button class="menu-item" role="menuitemradio" aria-checked=move || (repeat_mode.get() == Repeat::One).to_string()
+                                    on:click=move |_| { select_repeat(Repeat::One); set_menu_open.set(false); }>
+                                    <span class="menu-check" aria-hidden="true">{move || if repeat_mode.get() == Repeat::One { "●" } else { "" }}</span>"One Track"
+                                </button>
+                                <button class="menu-item" role="menuitemradio" aria-checked=move || (repeat_mode.get() == Repeat::Album).to_string()
+                                    on:click=move |_| { select_repeat(Repeat::Album); set_menu_open.set(false); }>
+                                    <span class="menu-check" aria-hidden="true">{move || if repeat_mode.get() == Repeat::Album { "●" } else { "" }}</span>"Album"
+                                </button>
+                                <button class="menu-item" role="menuitemradio" aria-checked=move || (repeat_mode.get() == Repeat::All).to_string()
+                                    on:click=move |_| { select_repeat(Repeat::All); set_menu_open.set(false); }>
+                                    <span class="menu-check" aria-hidden="true">{move || if repeat_mode.get() == Repeat::All { "●" } else { "" }}</span>"All Tracks"
+                                </button>
+                            </menu::Submenu>
+                            <button class="menu-item" role="menuitem" disabled=move || !radio_on.get()
+                                on:click=move |_| { reshuffle_radio(); set_menu_open.set(false); }>"Reshuffle Radio"</button>
+                            <div class="menu-separator" role="separator"></div>
+                            <Show when=move || pane_key.get() == "queue">
+                                <button class="menu-item" role="menuitem" disabled=move || selected.get().is_empty()
+                                    on:click=move |_| {
+                                        backend.send(SessionCommand::ToggleQueued { indices: selected.get_untracked().into_iter().collect() });
+                                        set_menu_open.set(false);
+                                    }>{move || {
+                                        policy_revision.track();
+                                        let indices: Vec<_> = selected.get().into_iter().collect();
+                                        match session_model.with_value(|model| model.order().queue_selection_state(&indices)) {
+                                            kog_playback_policy::SelectionState::All => "Remove from Queue",
+                                            kog_playback_policy::SelectionState::Mixed => "Toggle Queue",
+                                            _ => "Add to Queue",
+                                        }
+                                    }}</button>
+                                <button class="menu-item" role="menuitem" disabled=move || selected.get().is_empty()
+                                    on:click=move |_| {
+                                        backend.send(SessionCommand::ToggleStopAfter { indices: selected.get_untracked().into_iter().collect() });
+                                        set_menu_open.set(false);
+                                    }>{move || {
+                                        policy_revision.track();
+                                        let indices: Vec<_> = selected.get().into_iter().collect();
+                                        match session_model.with_value(|model| model.order().stop_after_selection_state(&indices)) {
+                                            kog_playback_policy::SelectionState::All => "Clear Stop After",
+                                            kog_playback_policy::SelectionState::Mixed => "Toggle Stop After",
+                                            _ => "Stop After Selection",
+                                        }
+                                    }}</button>
+                            </Show>
+                            <button class="menu-item" role="menuitem" disabled=move || {
+                                policy_revision.track(); session_model.with_value(|model| model.order().queue_count() == 0)
+                            } on:click=move |_| { backend.send(SessionCommand::ClearQueued); set_menu_open.set(false); }>"Clear Queue"</button>
+                            <div class="menu-separator" role="separator"></div>
+                            <workspace::PlaybackMenu controller=playlist_workspace on_action=Callback::new(move |_| set_menu_open.set(false)) />
+                            <button class="menu-item" role="menuitemcheckbox" aria-checked=move || radio_on.get().to_string()
+                                disabled=move || !connected.get() on:click=move |_| {
+                                    set_radio(!radio_on.get_untracked()); set_menu_open.set(false);
+                                }>
+                                <span class="menu-check" aria-hidden="true">{move || if radio_on.get() { "✓" } else { "" }}</span>"Random Radio"
+                            </button>
+                        </menu::Submenu>
+                        <div class="menu-separator" role="separator"></div>
+                        <button class="menu-item" role="menuitem" on:click=move |_| open_preferences()>"Preferences…"</button>
+                        <button class="menu-item" role="menuitem" on:click=move |_| open_about()>"About Kog…"</button>
+                    </menu::Menu>
                 </Show>
             </div>
         }

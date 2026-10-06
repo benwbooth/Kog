@@ -69,11 +69,10 @@ pub fn PlaybackMenu(controller: Controller, on_action: Callback<()>) -> impl Int
     };
     view! {
         <Show when=move || controller.snapshot().active != "queue">
-            <div class="menu-group">"Playlist"</div>
-            <button class="menu-item" disabled=move || !controller.snapshot().actions.queue on:click=move |_| send(QueueAction::PlayNow)>"Play Now"</button>
-            <button class="menu-item" disabled=move || !controller.snapshot().actions.queue on:click=move |_| send(QueueAction::PlayNext)>"Play Next"</button>
-            <button class="menu-item" disabled=move || !controller.snapshot().actions.queue on:click=move |_| send(QueueAction::AddToQueue)>"Add to Queue"</button>
-            <div class="menu-separator"></div>
+            <button class="menu-item" role="menuitem" disabled=move || !controller.snapshot().actions.queue on:click=move |_| send(QueueAction::PlayNow)>"Play Now"</button>
+            <button class="menu-item" role="menuitem" disabled=move || !controller.snapshot().actions.queue on:click=move |_| send(QueueAction::PlayNext)>"Play Next"</button>
+            <button class="menu-item" role="menuitem" disabled=move || !controller.snapshot().actions.queue on:click=move |_| send(QueueAction::AddToQueue)>"Add to Queue"</button>
+            <div class="menu-separator" role="separator"></div>
         </Show>
     }
 }
@@ -85,29 +84,28 @@ pub fn EditMenu(controller: Controller, on_action: Callback<()>, on_select_all: 
         on_action.run(());
     };
     view! {
-        <div class="menu-group">"Edit"</div>
-        <button class="menu-item" disabled=move || !controller.snapshot().actions.undo on:click=move |_| send(Command::Undo)>
+        <button class="menu-item" role="menuitem" disabled=move || !controller.snapshot().actions.undo on:click=move |_| send(Command::Undo)>
             {move || if controller.snapshot().active == "queue" { "Undo Append" } else { "Undo" }}
         </button>
-        <button class="menu-item" disabled=move || !controller.snapshot().actions.redo on:click=move |_| send(Command::Redo)>
+        <button class="menu-item" role="menuitem" disabled=move || !controller.snapshot().actions.redo on:click=move |_| send(Command::Redo)>
             {move || if controller.snapshot().active == "queue" { "Redo Append" } else { "Redo" }}
         </button>
-        <div class="menu-separator"></div>
-        <button class="menu-item" disabled=move || !controller.snapshot().actions.select_all on:click=move |_| { on_select_all.run(()); on_action.run(()); }>"Select All"</button>
-        <button class="menu-item" disabled=move || !controller.snapshot().actions.clear_selection on:click=move |_| send(Command::Selection {command:Select::Clear})>"Clear Selection"</button>
-        <button class="menu-item" disabled=move || !controller.snapshot().actions.remove on:click=move |_| send(Command::Remove)>"Remove Selected"</button>
-        <button class="menu-item" disabled=move || !controller.snapshot().actions.clear on:click=move |_| send(Command::Clear)>
+        <div class="menu-separator" role="separator"></div>
+        <button class="menu-item" role="menuitem" disabled=move || !controller.snapshot().actions.select_all on:click=move |_| { on_select_all.run(()); on_action.run(()); }>"Select All"</button>
+        <button class="menu-item" role="menuitem" disabled=move || !controller.snapshot().actions.clear_selection on:click=move |_| send(Command::Selection {command:Select::Clear})>"Clear Selection"</button>
+        <button class="menu-item" role="menuitem" disabled=move || !controller.snapshot().actions.remove on:click=move |_| send(Command::Remove)>"Remove Selected"</button>
+        <button class="menu-item" role="menuitem" disabled=move || !controller.snapshot().actions.clear on:click=move |_| send(Command::Clear)>
             {move || if controller.snapshot().active == "queue" { "Clear Play Queue" } else { "Clear Playlist" }}
         </button>
-        <button class="menu-item" disabled=move || !controller.snapshot().actions.move_up on:click=move |_| send(Command::Nudge {delta:-1})>"Move Up"</button>
-        <button class="menu-item" disabled=move || !controller.snapshot().actions.move_down on:click=move |_| send(Command::Nudge {delta:1})>"Move Down"</button>
-        <div class="menu-separator"></div>
-        <button class="menu-item" disabled=move || !controller.snapshot().actions.save on:click=move |_| send(Command::Save)>"Save Changes"</button>
-        <button class="menu-item" disabled=move || !controller.snapshot().actions.reload on:click=move |_| send(Command::Reload)>"Reload Saved Playlist"</button>
-        <button class="menu-item" disabled=move || !controller.snapshot().actions.add_play_queue on:click=move |_| {
+        <button class="menu-item" role="menuitem" disabled=move || !controller.snapshot().actions.move_up on:click=move |_| send(Command::Nudge {delta:-1})>"Move Up"</button>
+        <button class="menu-item" role="menuitem" disabled=move || !controller.snapshot().actions.move_down on:click=move |_| send(Command::Nudge {delta:1})>"Move Down"</button>
+        <div class="menu-separator" role="separator"></div>
+        <button class="menu-item" role="menuitem" disabled=move || !controller.snapshot().actions.save on:click=move |_| send(Command::Save)>"Save Changes"</button>
+        <button class="menu-item" role="menuitem" disabled=move || !controller.snapshot().actions.reload on:click=move |_| send(Command::Reload)>"Reload Saved Playlist"</button>
+        <button class="menu-item" role="menuitem" disabled=move || !controller.snapshot().actions.add_play_queue on:click=move |_| {
             controller.backend.send(SessionCommand::AppendQueueToWorkspace {selected_only:false}); on_action.run(());
         }>"Add Play Queue"</button>
-        <button class="menu-item" disabled=move || !controller.snapshot().actions.add_queue_selection on:click=move |_| {
+        <button class="menu-item" role="menuitem" disabled=move || !controller.snapshot().actions.add_queue_selection on:click=move |_| {
             controller.backend.send(SessionCommand::AppendQueueToWorkspace {selected_only:true}); on_action.run(());
         }>"Add Queue Selection"</button>
     }

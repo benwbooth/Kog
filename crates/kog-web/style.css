@@ -3452,3 +3452,41 @@ body.touch .track .index-cell {
 .playlist { display:flex; flex-direction:column; }
 .playlist > .rows { flex:1; min-height:0; }
 .persistence-warning { flex:none; padding:10px 12px; border-bottom:1px solid #b57b18; background:#fff0c7; color:#573700; font-size:13px; line-height:1.4; }
+
+/* Application flyouts use the Qt hierarchy; narrow screens show one level. */
+.context-menu.app-menu-panel {
+  min-width: 220px;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100dvh - 16px);
+  visibility: visible;
+}
+.context-menu.app-menu-panel.app-menu {
+  max-height: calc(100dvh - var(--toolbar-bottom) - 10px);
+}
+.app-menu-panel .submenu-arrow { margin-left: auto; padding-left: 24px; }
+.app-menu-panel .menu-item:focus-visible,
+.app-menu-panel .menu-item.submenu-open {
+  background: var(--highlight);
+  color: var(--highlight-text);
+  outline: none;
+}
+.app-menu-panel .menu-item:focus-visible .menu-check { color: var(--highlight-text); }
+.app-menu-panel .menu-back,
+.app-menu-panel .menu-back-separator { display: none; }
+@media (max-width: 820px), (pointer: coarse) and (max-width: 1200px) {
+  .context-menu.app-menu-panel, .context-menu.app-menu-panel.app-menu {
+    top: auto !important;
+    left: 0 !important;
+    right: 0;
+    bottom: 0;
+    width: auto;
+    max-width: none;
+    max-height: 82dvh;
+    padding: 12px 12px calc(14px + env(safe-area-inset-bottom));
+    border-radius: 22px 22px 0 0;
+  }
+  .app-menu-panel.is-ancestor { visibility: hidden; pointer-events: none; }
+  .app-menu-panel { pointer-events: auto; }
+  .app-menu-panel .menu-back { display: flex; font-weight: 700; }
+  .app-menu-panel .menu-back-separator { display: block; }
+}
