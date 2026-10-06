@@ -2,7 +2,7 @@
 // Return the source queue index at the visible gap, including filtered rows.
 const pane = document.getElementById("playlist-rows");
 if (!pane) return null;
-const tracks = [...pane.querySelectorAll(".track")];
+const tracks = [...pane.querySelectorAll(".track:not(.row-drag-anchor)")];
 tracks.forEach(row => row.classList.remove("reorder-above", "reorder-below"));
 const bounds = pane.getBoundingClientRect();
 const header = pane.querySelector(".columns")?.getBoundingClientRect();

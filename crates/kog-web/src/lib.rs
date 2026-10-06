@@ -45,6 +45,7 @@ mod selection;
 mod session;
 mod workspace;
 mod menu;
+mod row_window;
 mod persistence;
 mod artwork;
 
@@ -2394,7 +2395,7 @@ fn App() -> impl IntoView {
             session_model.with_value(|model| {
                 let v = model.snapshot();
                 if progress {
-                    set_position.set(v.position);
+                    if position.get_untracked() != v.position { set_position.set(v.position); }
                     return;
                 }
                 if queue_changed {
@@ -2404,27 +2405,27 @@ fn App() -> impl IntoView {
                 if current.get_untracked() != next_current {
                     set_current.set(next_current);
                 }
-                set_playing.set(matches!(
-                    v.transport,
-                    Transport::Playing | Transport::Starting
-                ));
-                set_stopped.set(v.transport == Transport::Stopped);
-                set_position.set(v.position);
-                set_volume.set(v.volume);
-                set_selected.set(v.selection.indices.iter().copied().collect());
-                set_selection_anchor.set(v.selection.anchor);
-                set_radio_on.set(v.radio_enabled);
-                set_radio_waiting.set(v.radio_waiting);
-                set_shuffle.set(v.shuffle);
-                set_repeat_mode.set(v.repeat);
-                set_filter.set(v.filter.to_owned());
-                set_sort_asc.set(!v.descending);
+                let next_playing = matches!(v.transport, Transport::Playing | Transport::Starting);
+                if playing.get_untracked() != next_playing { set_playing.set(next_playing); }
+                let next_stopped = v.transport == Transport::Stopped;
+                if stopped.get_untracked() != next_stopped { set_stopped.set(next_stopped); }
+                if position.get_untracked() != v.position { set_position.set(v.position); }
+                if volume.get_untracked() != v.volume { set_volume.set(v.volume); }
+                let next_selected: HashSet<_> = v.selection.indices.iter().copied().collect();
+                if selected.with_untracked(|selected| selected != &next_selected) { set_selected.set(next_selected); }
+                if selection_anchor.get_untracked() != v.selection.anchor { set_selection_anchor.set(v.selection.anchor); }
+                if radio_on.get_untracked() != v.radio_enabled { set_radio_on.set(v.radio_enabled); }
+                if radio_waiting.get_untracked() != v.radio_waiting { set_radio_waiting.set(v.radio_waiting); }
+                if shuffle.get_untracked() != v.shuffle { set_shuffle.set(v.shuffle); }
+                if repeat_mode.get_untracked() != v.repeat { set_repeat_mode.set(v.repeat); }
+                if filter.with_untracked(|filter| filter != v.filter) { set_filter.set(v.filter.to_owned()); }
+                if sort_asc.get_untracked() != !v.descending { set_sort_asc.set(!v.descending); }
                 let key = ColumnId::ALL
                     .into_iter()
                     .find(|c| c.key() == v.sort_column)
                     .map(|c| c.sort_key())
                     .unwrap_or(SortKey::Index);
-                set_sort_key.set(key);
+                if sort_key.get_untracked() != key { set_sort_key.set(key); }
                 if let Some(error) = v.error {
                     set_message.set(error.to_owned());
                 }
@@ -2482,6 +2483,35 @@ fn App() -> impl IntoView {
                 .collect()
         }
     });
+    let all_rows = Memo::new(move |_| {
+        let entries = pane_entries.read();
+        let cache = metadata.read();
+        let failed = metadata_failed.read();
+        pane_visible.read().iter().copied().filter_map(|index| {
+            entries.get(index).filter(|entry| metadata_ready(&cache, &failed, entry))
+                .map(|entry| (index, entry.clone()))
+        }).collect::<Vec<_>>()
+    });
+    let view_rows = move || all_rows.get();
+    let row_window = row_window::RowWindow::new();
+    let row_range = Memo::new(move |_| row_window.range(all_rows.with(Vec::len)));
+    let mounted_rows = move || {
+        let range = row_range.get();
+        let dragging = dragging_track.get();
+        all_rows.with(|rows| {
+            let mut mounted = rows[range.clone()].iter().cloned().enumerate()
+                .map(|(offset, row)| (range.start + offset, row)).collect::<Vec<_>>();
+            // Keep a drag's source node alive while scrolling to distant rows,
+            // so native drag state and the touch handle's pointer capture survive.
+            if let Some(position) = dragging.and_then(|index| rows.iter().position(|(i, _)| *i == index)) {
+                if !range.contains(&position) {
+                    mounted.push((position, rows[position].clone()));
+                    mounted.sort_unstable_by_key(|(position, _)| *position);
+                }
+            }
+            mounted
+        })
+    };
     let filter_pane = move |query: String| {
         let key = pane_key.get_untracked();
         if key == "queue" {
@@ -4497,6 +4527,11 @@ fn App() -> impl IntoView {
                 if current.get_untracked() != expected || pane_key.get_untracked() != expected_pane {
                     break;
                 }
+                if let Some(index) = pane_current.get_untracked() {
+                    if let Some(position) = all_rows.with_untracked(|rows| rows.iter().position(|(i, _)| *i == index)) {
+                        row_window.reveal(position);
+                    }
+                }
                 let scrolled = js_sys::eval(
                     "(() => { const row = document.querySelector('#playlist-rows .track.current');\
                       if (!row) return 'no';\
@@ -4670,15 +4705,7 @@ fn App() -> impl IntoView {
     let activate_row = move |index| {
         playlist_workspace.send(kog_playback_policy::workspace::Command::Activate { index });
     };
-    let view_rows = move || {
-        let entries = pane_entries.read();
-        let cache = metadata.read();
-        let failed = metadata_failed.read();
-        pane_visible.read().iter().copied().filter_map(|index| {
-            entries.get(index).filter(|entry| metadata_ready(&cache, &failed, entry))
-                .map(|entry| (index, entry.clone()))
-        }).collect::<Vec<_>>()
-    };
+
 
     // The pane's status line, shared by the header and the transport: how many
     // tracks the pane shows (all of the queue, or the filter's matches) and
@@ -6595,6 +6622,8 @@ fn App() -> impl IntoView {
                         <div
                             class="rows"
                             id="playlist-rows"
+                            node_ref=row_window.node
+                            on:scroll=move |_| row_window.refresh()
                             class:drop-active=move || playlist_drop_active.get()
                             on:wheel=move |event: web_sys::WheelEvent| {
                                 if touch_mode {
@@ -6728,7 +6757,7 @@ fn App() -> impl IntoView {
                         </div>
 
                             <Show
-                                when=move || !view_rows().is_empty()
+                                when=move || all_rows.with(|rows| !rows.is_empty())
                                 fallback=move || view! {
                                     <Show when=move || !connected.get() || pane_entries.get().is_empty()>
                                         <p class="empty">
@@ -6758,18 +6787,21 @@ fn App() -> impl IntoView {
                                     </Show>
                                 }
                             >
+                                <div class="row-spacer" aria-hidden="true" style=move || format!("height:{}px", row_window.height(row_range.get().start))></div>
                                 <For
-                                    each=view_rows
-                                    key=move |(index, entry)| format!("{}:{index}:{}", pane_key.get(), meta_key(entry))
+                                    each=mounted_rows
+                                    key=move |(_, (index, entry))| format!("{}:{index}:{}", pane_key.get(), meta_key(entry))
                                     let:row
                                 >
                                     {
-                                        let (index, entry) = row;
+                                        let (row_number, (index, entry)) = row;
                                         let menu_entry = entry.clone();
                                         let mobile_entry = entry.clone();
                                         view! {
                                             <button
                                                 class="track"
+                                                class:alternate=row_number % 2 == 0
+                                                class:row-drag-anchor=move || !row_range.get().contains(&row_number)
                                                 draggable=move || if playlist_workspace.snapshot().actions.append { "true" } else { "false" }
                                                 style="position: relative"
                                                 data-index=move || index.to_string()
@@ -7186,6 +7218,7 @@ fn App() -> impl IntoView {
                                         }
                                     }
                                 </For>
+                                <div class="row-spacer" aria-hidden="true" style=move || format!("height:{}px", row_window.height(all_rows.with(Vec::len).saturating_sub(row_range.get().end)))></div>
                             </Show>
                         </div>
                     </main>

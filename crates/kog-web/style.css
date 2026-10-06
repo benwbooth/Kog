@@ -1043,7 +1043,7 @@ body.touch .track .index-cell {
   background: transparent;
 }
 
-.track:nth-child(even) {
+.track.alternate {
   background: color-mix(in srgb, var(--alternate) 45%, transparent);
 }
 
@@ -3490,3 +3490,14 @@ body.touch .track .index-cell {
   .app-menu-panel .menu-back { display: flex; font-weight: 700; }
   .app-menu-panel .menu-back-separator { display: block; }
 }
+
+/* Keep a full-height scrollbar while mounting only nearby playlist rows. */
+#playlist-rows { overflow-anchor: none; }
+.row-spacer { min-width: var(--table-width); pointer-events: none; }
+@media (max-width: 820px), (pointer: coarse) and (max-width: 1200px) {
+  .row-spacer { min-width: 0; }
+  .track { height: 60px; }
+}
+
+/* A dragged source stays connected when it leaves the mounted row window. */
+.track.row-drag-anchor { position: absolute !important; left: -10000px; top: 0; }
