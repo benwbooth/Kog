@@ -387,7 +387,6 @@ int main(int argc, char **argv)
                     id: wheel
                     objectName: "wheel"
                     view: tree
-                    impulsePerStep: 1600
                 }
                 Connections {
                     target: wheel.momentumAnimation
@@ -588,17 +587,21 @@ int main(int argc, char **argv)
             QWheelEvent wheel(QPointF(100, 100), QPointF(100, 100), {}, QPoint(0, pass % 2 == 0 ? -120 : 120),
                               Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
             QCoreApplication::sendEvent(window, &wheel);
-            std::printf("Wheel pass %d: velocity=%.0f rows=%d\n", pass,
-                        handler->property("velocity").toDouble(), tree->property("rows").toInt());
+            std::printf("Wheel pass %d: velocity=%.0f rows=%d immediate=%.1f px\n", pass,
+                        handler->property("velocity").toDouble(), tree->property("rows").toInt(),
+                        tree->property("contentY").toDouble() - startY);
             QElapsedTimer duration, step;
             duration.start();
             qint64 longest = 0;
+            qint64 settledAt = -1;
             int frames = 0;
             while (duration.elapsed() < 800) {
                 step.start();
                 QCoreApplication::processEvents();
                 // Let the compositor pace frames; a forced grab changes the render loop.
                 const auto frameMs = step.elapsed();
+                if (settledAt < 0 && handler->property("velocity").toDouble() == 0.0)
+                    settledAt = duration.elapsed();
                 longest = qMax(longest, frameMs);
                 if (frameMs > 20)
                     std::printf("Slow wheel pass %d frame %d: %lld ms\n",
@@ -606,9 +609,10 @@ int main(int argc, char **argv)
                 ++frames;
                 QThread::msleep(8);
             }
-            std::printf("Wheel scroll pass %d: rows=%d frames=%d longest=%lld ms finalY=%.1f\n",
+            std::printf("Wheel scroll pass %d: rows=%d frames=%d longest=%lld ms settled=%lld ms finalY=%.1f\n",
                         pass, tree->property("rows").toInt(), frames,
-                        static_cast<long long>(longest), tree->property("contentY").toDouble());
+                        static_cast<long long>(longest), static_cast<long long>(settledAt),
+                        tree->property("contentY").toDouble());
             std::printf("Momentum frames=%d missed=%d longest frameTime=%.3f s reused=%d\n",
                         view->property("momentumFrames").toInt(),
                         view->property("missedMomentumFrames").toInt(),

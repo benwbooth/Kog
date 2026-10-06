@@ -19,7 +19,16 @@ WheelHandler {
     property bool drivingHorizontally: horizontal
     property real velocity: 0
     property real maximumVelocity: 9000
-    property real impulsePerStep: 1250
+    // Browser wheel deltas describe distance, not added kinetic energy.
+    // Move on the input event, then ease the remainder over a short glide.
+    // Keeping a destination also preserves small high-resolution wheel steps
+    // instead of losing them to deceleration between input events.
+    property real wheelStep: 120
+    property real wheelDuration: 0.12
+    property bool wheelAnimating: false
+    property real wheelTarget: 0
+    property real wheelStart: 0
+    property real wheelElapsed: 0
     property real deceleration: 2500
     property double lastPixelEventTime: 0
     property real pixelVelocity: 0
@@ -45,6 +54,7 @@ WheelHandler {
 
     function stop() {
         velocity = 0;
+        wheelAnimating = false;
         momentumAnimation.stop();
         pixelGestureEndTimer.stop();
         lastPixelEventTime = 0;
@@ -56,18 +66,31 @@ WheelHandler {
 
     function start(steps, sideways) {
         const axis = sideways !== undefined ? sideways : horizontal;
-        if (axis !== drivingHorizontally) {
-            // A momentum run left over from the other axis must not carry
-            // into this one.
-            velocity = 0;
-            drivingHorizontally = axis;
-        }
-        if (steps === 0 || maximumContent() <= minimumContent())
+        if (steps === 0)
             return false;
-        const impulse = -steps * impulsePerStep;
-        if (velocity * impulse < 0)
-            velocity *= 0.2;
-        velocity = Math.max(-maximumVelocity, Math.min(maximumVelocity, velocity + impulse));
+        if (axis !== drivingHorizontally)
+            stop();
+        drivingHorizontally = axis;
+        const delta = -steps * wheelStep;
+        const current = currentContent();
+        const pending = wheelAnimating ? wheelTarget - current : 0;
+        // A reversal starts where the content is now, without first finishing
+        // travel requested in the old direction.
+        const origin = pending * delta > 0 ? wheelTarget : current;
+        wheelTarget = Math.max(minimumContent(), Math.min(maximumContent(), origin + delta));
+        pixelGestureEndTimer.stop();
+        lastPixelEventTime = 0;
+        pixelVelocity = 0;
+        if (wheelTarget === current) {
+            stop();
+            return false;
+        }
+        const immediate = Math.sign(delta) * Math.min(Math.abs(delta) * 0.5, Math.abs(wheelTarget - current));
+        moveTo(current + immediate);
+        wheelStart = currentContent();
+        wheelElapsed = 0;
+        wheelAnimating = true;
+        velocity = (wheelTarget - wheelStart) * 3 / wheelDuration;
         momentumAnimation.start();
         return true;
     }
@@ -82,7 +105,11 @@ WheelHandler {
             view.contentY = clamped;
     }
 
-    function applyPixelDelta(pixelDelta) {
+    function applyPixelDelta(pixelDelta, sideways, synthesizeMomentum) {
+        const axis = sideways !== undefined ? sideways : horizontal;
+        if (axis !== drivingHorizontally)
+            stop();
+        drivingHorizontally = axis;
         if (pixelDelta === 0 || maximumContent() <= minimumContent())
             return;
 
@@ -90,8 +117,19 @@ WheelHandler {
         const contentDelta = -pixelDelta;
         const elapsed = lastPixelEventTime > 0 ? (now - lastPixelEventTime) / 1000 : 0;
         momentumAnimation.stop();
+        wheelAnimating = false;
         velocity = 0;
         moveTo(currentContent() + contentDelta);
+
+        // Pixel wheels already supply their distance, and OS-generated
+        // momentum already contains its own deceleration. Neither needs an
+        // extra fling after the event stream ends.
+        if (synthesizeMomentum === false) {
+            pixelGestureEndTimer.stop();
+            lastPixelEventTime = 0;
+            pixelVelocity = 0;
+            return;
+        }
 
         if (elapsed >= 0.004 && elapsed <= 0.08) {
             const instantaneousVelocity = contentDelta / elapsed;
@@ -116,6 +154,16 @@ WheelHandler {
     }
 
     function advance(frameTime) {
+        if (wheelAnimating) {
+            wheelElapsed += Math.max(0, frameTime);
+            const progress = Math.min(1, wheelElapsed / wheelDuration);
+            const remaining = 1 - progress;
+            moveTo(wheelStart + (wheelTarget - wheelStart) * (1 - remaining * remaining * remaining));
+            velocity = (wheelTarget - wheelStart) * 3 * remaining * remaining / wheelDuration;
+            if (progress === 1 || currentContent() === minimumContent() || currentContent() === maximumContent())
+                stop();
+            return;
+        }
         const elapsed = Math.min(0.05, frameTime);
         if (elapsed <= 0)
             return;
@@ -138,55 +186,58 @@ WheelHandler {
             handleVerticalWheel(event);
     }
 
+    function needsPixelMomentum(event) {
+        return event.device.type === PointerDevice.TouchPad && event.phase !== Qt.ScrollMomentum;
+    }
+
     function handleVerticalWheel(event) {
         // Shift turns the wheel sideways. The event stays on the y axis, so
         // this vertical handler is the only one Qt offers it to; drive the
         // horizontal engine from here.
         if (event.modifiers & Qt.ShiftModifier) {
+            if (event.pixelDelta.y !== 0) {
+                applyPixelDelta(event.pixelDelta.y, true, needsPixelMomentum(event));
+                event.accepted = true;
+                return;
+            }
             let sidesteps = event.angleDelta.y / 120;
-            if (sidesteps === 0)
-                sidesteps = event.pixelDelta.y / 40;
             event.accepted = sidesteps !== 0 && start(sidesteps, true);
             return;
         }
 
-        if (event.device.type === PointerDevice.TouchPad && event.pixelDelta.y !== 0) {
-            applyPixelDelta(event.pixelDelta.y);
+        // Precision mice can provide pixel deltas too. Prefer that distance
+        // over angleDelta regardless of the device's reported type.
+        if (event.pixelDelta.y !== 0) {
+            applyPixelDelta(event.pixelDelta.y, false, needsPixelMomentum(event));
             event.accepted = true;
             return;
         }
 
         let steps = event.angleDelta.y / 120;
-        if (steps === 0)
-            steps = event.pixelDelta.y / 40;
         if (steps === 0) {
             event.accepted = false;
             return;
         }
 
-        start(steps);
-        event.accepted = true;
+        event.accepted = start(steps);
     }
 
     function handleHorizontalWheel(event) {
         // Native horizontal wheels and trackpad swipes report on the x axis,
         // which is the only axis Qt delivers to this handler.
-        if (event.device.type === PointerDevice.TouchPad && event.pixelDelta.x !== 0) {
-            applyPixelDelta(event.pixelDelta.x);
+        if (event.pixelDelta.x !== 0) {
+            applyPixelDelta(event.pixelDelta.x, true, needsPixelMomentum(event));
             event.accepted = true;
             return;
         }
 
         let steps = event.angleDelta.x / 120;
-        if (steps === 0)
-            steps = event.pixelDelta.x / 40;
         if (steps === 0) {
             event.accepted = false;
             return;
         }
 
-        start(steps);
-        event.accepted = true;
+        event.accepted = start(steps);
     }
 
     property FrameAnimation momentumAnimation: FrameAnimation {
