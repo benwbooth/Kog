@@ -34,6 +34,7 @@ with tempfile.TemporaryDirectory(prefix="kog-tui-drag-") as directory:
         (root / name).mkdir(parents=True)
     (root / "runtime").chmod(0o700)
     (root / "config/kog/output-volume").write_text("0")
+    (root / "config/kog/tui-column-layout").write_text("status,7,1")
     database = root / "data/kog/kog.db"
     names = [f"{'keep' if n % 2 == 0 else 'other'}-{n:02}.wav" for n in range(12)]
     with sqlite3.connect(database) as db:
@@ -126,6 +127,35 @@ with tempfile.TemporaryDirectory(prefix="kog-tui-drag-") as directory:
                 return
         raise AssertionError(f"Expected queue {expected}, got {order()}")
 
+    def status_cells():
+        start = screen.display[2].index("Status")
+        end = screen.display[2].index("│", start)
+        bottom = next(i for i, line in enumerate(screen.display) if "tracks ·" in line or "[p] Play Now" in line)
+        return [(row, screen.display[row][start:end]) for row in range(3, bottom)]
+
+    def expect_status(name, paused=False):
+        rows = status_cells()
+        row = next(row for row, _ in rows if Path(name).stem in screen.display[row])
+        status = dict(rows)[row]
+        assert ("❚❚" if paused else "▶") in status, f"Missing {'pause' if paused else 'play'} indicator for {name}: {status!r}"
+        assert all("▶" not in value and "❚❚" not in value for other, value in rows if other != row), "Playback indicator leaked to another row"
+        waveform = [char for char in status if "\u2800" <= char <= "\u28ff"]
+        if paused:
+            assert not waveform, "Paused status retained a live waveform"
+        else:
+            # The fixture mutes output, so the audio tap yields blank braille.
+            # Those four cells still distinguish a rendered waveform from spaces.
+            assert len(waveform) == 4, f"Live audio waveform missing: {status!r}"
+        return row
+
+    def save_frame(name):
+        if directory := os.environ.get("KOG_TUI_SCREEN_DIR"):
+            destination = Path(directory)
+            destination.mkdir(parents=True, exist_ok=True)
+            frame = [[screen.buffer[y][x]._asdict() for x in range(screen.columns)] for y in range(screen.lines)]
+            (destination / f"{name}.json").write_text(json.dumps(frame))
+            (destination / f"{name}.txt").write_text("\n".join(screen.display))
+
     def markers():
         return [i + 1 for i, line in enumerate(screen.display) if "Insert here" in line]
 
@@ -152,8 +182,17 @@ with tempfile.TemporaryDirectory(prefix="kog-tui-drag-") as directory:
             assert not checkpoint()["queue"], "Opening a draft changed the queue"
             send(b"\r")  # Enter must play, including when no row was selected.
             wait(lambda: playing(names[0]), "Enter on a draft row did not start native playback")
+            row = expect_status(names[0])
+            save_frame("draft-playing")
+            waveform_x = screen.display[2].index("Status") + 3
+            mouse(0, row + 1, col=waveform_x)
+            mouse(0, row + 1, col=waveform_x, release=True)
+            assert "[1 Waveform]" in "\n".join(screen.display), "Clicking the draft waveform did not open the visualizer"
+            send(b"\x1b")
             send(b"\r")
             wait(lambda: "Paused" in "\n".join(screen.display[-4:]), "Enter on the current row did not pause playback")
+            expect_status(names[0], paused=True)
+            save_frame("draft-paused")
             paused_position = playback_position()
             assert paused_position >= 1, "Enter restarted the current row"
             send(b"\r")
@@ -170,10 +209,16 @@ with tempfile.TemporaryDirectory(prefix="kog-tui-drag-") as directory:
             wait(lambda: playing(names[3]), "Enter did not resume the double-clicked row")
             send(b">")
             wait(lambda: playing(names[4]), "Next left the playing playlist tab")
+            expect_status(names[4])
             send(b"<")
             wait(lambda: playing(names[3]), "Previous left the playing playlist tab")
             send(b" ")
             wait(lambda: "Paused" in "\n".join(screen.display[-4:]), "Second song did not pause")
+            expect_status(names[3], paused=True)
+            send(b"\x1b1")
+            expect_status(names[3], paused=True)
+            send(b"\x1b]")
+            expect_status(names[3], paused=True)
             playing_queue = checkpoint()["queue"]
             playing_current = checkpoint()["current"]
             send(b"\x1b[H")
@@ -202,6 +247,8 @@ with tempfile.TemporaryDirectory(prefix="kog-tui-drag-") as directory:
         mouse(0, 4, release=True)
         names.insert(0, names.pop(3))
         expect_order(names)
+        if draft_mode:
+            expect_status(original[3], paused=True)
 
         mouse(0, 4)
         mouse(32, 19)  # blank space after last track
@@ -235,6 +282,8 @@ with tempfile.TemporaryDirectory(prefix="kog-tui-drag-") as directory:
 
         # Filtered row positions must map to the complete queue's insertion gap.
         send(b"Fkeep\r")
+        if draft_mode:
+            assert all("❚❚" not in value and "▶" not in value for _, value in status_cells()), "Filtered-out playing row left a status indicator"
         filtered = [name for name in names if name.startswith("keep")]
         mouse(0, 4)
         mouse(32, 6)
@@ -304,12 +353,14 @@ with tempfile.TemporaryDirectory(prefix="kog-tui-drag-") as directory:
             send(b"Fkeep\r\x1b[H\r")
             expected = next(name for name in names if name.startswith("keep"))
             wait(lambda: playing(expected) and len(checkpoint()["queue"]) == len(playing_queue) + len(names), "Filtered Enter played the wrong row")
+            expect_status(expected)
+            save_frame("draft-filtered-playing")
             send(b" ")
 
         send(b"\x03")
         os.waitpid(pid, 0)
         pid = 0
-        print(f"TUI {'DRAFT' if draft_mode else 'QUEUE'} DRAG PASS: visible gap, stable motion, release-only moves, first/middle/end, Escape, outside release, filtering, drag scrolling" + (", Enter/double-click native playback, multi-selection, undo/redo, explicit Save, queue isolation" if draft_mode else ""))
+        print(f"TUI {'DRAFT' if draft_mode else 'QUEUE'} DRAG PASS: visible gap, stable motion, release-only moves, first/middle/end, Escape, outside release, filtering, drag scrolling" + (", Enter/double-click native playback, play/pause status, live waveform and visualizer click, status follows reordered/filtered rows, multi-selection, undo/redo, explicit Save, queue isolation" if draft_mode else ""))
     except BaseException:
         print("\n".join(screen.display))
         raise

@@ -571,6 +571,11 @@ impl Ui {
         if button & 3 == 0 && button & 32 == 0 {
             let visible = self.table_visible_tracks();
             if let Some(&index) = visible.get(self.workspace_offset + y - layout.track_top) {
+                let relative = x.saturating_sub(left) + self.columns.scroll;
+                if button & (4 | 8 | 16) == 0 && self.table_waveform_at(index, relative) {
+                    self.show_visualizer();
+                    return true;
+                }
                 self.workspace_cursor = index;
                 let pending_range = self.range_click_pending.take();
                 let ranged = button & (4 | 8) != 0 || pending_range == Some(Focus::Tracks);

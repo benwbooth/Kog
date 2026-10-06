@@ -9,6 +9,8 @@ impl Ui {
 
     pub(super) fn sync_workspace_view(&mut self) {
         let state = self.session.workspace_model().snapshot();
+        // Resolve stable row identities once per session update, not per cell.
+        self.workspace_playing = self.session.workspace_current_index();
         let switched = self.workspace_active != state.active;
         if switched {
             self.cancel_track_drag();
@@ -131,10 +133,35 @@ impl Ui {
         }
     }
 
+    pub(super) fn table_playing(&self) -> Option<usize> {
+        if self.is_draft() {
+            self.workspace_playing
+        } else {
+            self.playing
+        }
+    }
+
+    pub(super) fn table_waveform_at(&self, index: usize, column_offset: usize) -> bool {
+        self.table_playing() == Some(index)
+            && self.player.state() == PlaybackState::Playing
+            && self.columns.positions().any(|(column, start, width)| {
+                self.columns.entries[column].id == "status"
+                    && (start + cell_width(PLAYLIST_PLAY)
+                        ..start
+                            + (cell_width(PLAYLIST_PLAY) + STATUS_WAVEFORM_WIDTH)
+                                .min(width.saturating_sub(1)))
+                        .contains(&column_offset)
+            })
+    }
+
     pub(super) fn table_column_value(&self, index: usize, track: &Track, column: &str) -> String {
-        // Playback state belongs to queue row identities, never draft indices.
         if self.is_draft() && column == "status" {
-            String::new()
+            // Queue flags use queue indices; only the mapped playing row can
+            // inherit them. A draft's index may point to a different queue song.
+            self.playing
+                .filter(|_| self.table_playing() == Some(index))
+                .map(|queue_index| self.column_value(queue_index, track, column))
+                .unwrap_or_default()
         } else {
             self.column_value(index, track, column)
         }

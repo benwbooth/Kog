@@ -969,6 +969,7 @@ struct Ui {
     session_effects: std::collections::VecDeque<SessionEffect>,
     session_jobs: Vec<(Token, Receiver<IoResult<Track>>)>,
     workspace_cursor: usize,
+    workspace_playing: Option<usize>,
     workspace_close_selected: usize,
     workspace_offset: usize,
     workspace_manual_scroll: Option<usize>,
@@ -1375,6 +1376,7 @@ impl Ui {
             session_effects: Default::default(),
             session_jobs: Vec::new(),
             workspace_cursor: 0,
+            workspace_playing: None,
             workspace_close_selected: 2,
             workspace_offset: 0,
             workspace_manual_scroll: None,
@@ -7745,18 +7747,7 @@ impl Ui {
                 return;
             };
             let relative = x.saturating_sub(layout.playlist_left()) + self.columns.scroll;
-            if button & (3 | 4 | 8 | 16) == 0
-                && self.playing == Some(index)
-                && self.player.state() == PlaybackState::Playing
-                && self.columns.positions().any(|(column, start, width)| {
-                    self.columns.entries[column].id == "status"
-                        && (start + cell_width(PLAYLIST_PLAY)
-                            ..start
-                                + (cell_width(PLAYLIST_PLAY) + STATUS_WAVEFORM_WIDTH)
-                                    .min(width.saturating_sub(1)))
-                            .contains(&relative)
-                })
-            {
+            if button & (3 | 4 | 8 | 16) == 0 && self.table_waveform_at(index, relative) {
                 self.show_visualizer();
                 return;
             }
@@ -8585,9 +8576,8 @@ impl Ui {
                                 surface,
                                 false,
                             );
-                            if !draft
-                                && self.columns.entries[column_index].id == "status"
-                                && self.playing == Some(index)
+                            if self.columns.entries[column_index].id == "status"
+                                && self.table_playing() == Some(index)
                                 && self.player.state() == PlaybackState::Playing
                             {
                                 let glyphs = status_waveform.get_or_insert_with(|| {
