@@ -117,12 +117,8 @@ impl Ui {
             return;
         }
         self.cancel_track_drag();
-        self.workspace_select(Select::Choose {
+        self.workspace_command(Command::Activate {
             index: self.workspace_cursor,
-            gesture: Gesture::Replace,
-        });
-        self.workspace_command(Command::Queue {
-            action: QueueAction::PlayNow,
         });
     }
     pub(super) fn workspace_key(&mut self, key: Key, size: (usize, usize)) -> bool {

@@ -3721,18 +3721,9 @@ impl qobject::AppController {
     }
 
     pub fn workspace_current_index(&self) -> i32 {
-        let Some(entry) = usize::try_from(self.rust().current_index)
-            .ok()
-            .and_then(|index| self.rust().tracks.get(index))
-            .and_then(stored_entry_for_track)
-        else {
-            return -1;
-        };
         self.rust()
-            .workspace_tracks
-            .rows
-            .iter()
-            .position(|row| row.entry.as_ref() == Some(&entry))
+            .session
+            .workspace_current_index()
             .map(saturating_i32)
             .unwrap_or(-1)
     }

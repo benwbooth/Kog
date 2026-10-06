@@ -49,8 +49,9 @@ FocusScope {
     }
     function selectAll() { send({op: "select", indices: rows}) }
     function activate(index) {
-        choose(index, Qt.NoModifier)
-        send({op: "queue", action: "play_now"})
+        send({op: "activate", index: index})
+        list.currentIndex = rows.indexOf(index)
+        list.forceActiveFocus()
     }
     function moveCursor(delta, modifiers) {
         if (!rows.length) return

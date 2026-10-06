@@ -14,9 +14,9 @@ pub enum QueueAction {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-struct Row {
-    id: u64,
-    entry: Value,
+pub(crate) struct Row {
+    pub id: u64,
+    pub entry: Value,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct Draft {
@@ -118,6 +118,9 @@ pub enum Command {
     },
     Focus {
         key: String,
+    },
+    Activate {
+        index: usize,
     },
     Select {
         indices: Vec<usize>,
@@ -229,6 +232,7 @@ pub struct Snapshot {
     pub tabs: Vec<TabSnapshot>,
     pub entries: Vec<Value>,
     pub selected: Vec<usize>,
+    pub current: Option<usize>,
     pub can_undo: bool,
     pub can_redo: bool,
     pub pending_close: Option<String>,
@@ -258,7 +262,7 @@ impl Actions {
     pub fn allows(&self, command: &Command) -> bool {
         use Command::*;
         match command {
-            Queue { .. } => self.queue,
+            Queue { .. } | Activate { .. } => self.queue,
             Save => self.save,
             Reload => self.reload,
             Append { .. } | Sort { .. } => self.append,
@@ -283,6 +287,13 @@ impl Actions {
 }
 
 impl Workspace {
+    pub(crate) fn active_rows(&self) -> Option<(&str, &[Row])> {
+        self.tabs
+            .iter()
+            .find(|tab| tab.key == self.active)
+            .map(|tab| (tab.key.as_str(), tab.draft.rows.as_slice()))
+    }
+
     /// Stable draft selection projected into the current row order for views
     /// that apply gestures to a filtered subset of the playlist.
     pub fn selection(&self) -> crate::selection::Selection {
@@ -356,6 +367,7 @@ impl Workspace {
             count: t.draft.rows.len(),
         }));
         Snapshot {
+            current: None,
             active: self.active.clone(),
             tabs,
             entries: active
@@ -551,6 +563,18 @@ impl Workspace {
                     return Err("Playlist tab no longer exists".into());
                 }
                 self.active = key;
+            }
+            Activate { index } => {
+                let tab = self.active_mut()?;
+                if index >= tab.draft.rows.len() || tab.loading.is_some() {
+                    return Ok(Effect::None);
+                }
+                let id = tab.draft.rows[index].id;
+                tab.draft.selected = vec![id];
+                tab.draft.anchor = Some(id);
+                return self.apply(Queue {
+                    action: QueueAction::PlayNow,
+                });
             }
             Select { indices } => {
                 let anchor = indices.first().copied();

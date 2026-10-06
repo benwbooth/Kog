@@ -24,6 +24,15 @@ impl Item for Value {
     }
 }
 
+fn same_locator(a: &Value, b: &Value) -> bool {
+    ["kind", "path", "entry", "fragment"]
+        .into_iter()
+        .all(|key| {
+            let default = if key == "kind" { "local" } else { "" };
+            a[key].as_str().unwrap_or(default) == b[key].as_str().unwrap_or(default)
+        })
+}
+
 /// Common projection for the HTTP, Swift and Kotlin track representations.
 pub fn metadata_from_json(value: &Value) -> SortRow {
     let text = |key: &str| {
@@ -386,6 +395,16 @@ struct QueueAppend {
     rows: Vec<u64>,
 }
 
+/// Stable identities connect draft rows to the queue that plays them, including
+/// separate occurrences of the same song.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct PlaylistPlayback {
+    key: String,
+    source_rows: Vec<u64>,
+    queue_rows: Vec<u64>,
+    targets: Vec<Option<u64>>,
+}
+
 /// Expand the prefix separately so an archive or multi-song file before the
 /// clicked row cannot shift the requested starting song. Both halves commit
 /// together, and a newer transport command invalidates the pending start.
@@ -395,6 +414,8 @@ struct PlaylistRequest<T> {
     transport_epoch: u64,
     before: Option<Vec<T>>,
     after: Option<Vec<T>>,
+    #[serde(default)]
+    source: Option<(String, Vec<(u64, Value)>, usize)>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -424,6 +445,8 @@ pub struct Session<T> {
     expansion_order: VecDeque<u64>,
     #[serde(default)]
     playlist_request: Option<PlaylistRequest<T>>,
+    #[serde(default)]
+    playlist_playback: Option<PlaylistPlayback>,
     #[serde(default)]
     append_undo: Vec<QueueAppend>,
     #[serde(default)]
@@ -498,6 +521,7 @@ impl<T: Item> Session<T> {
             pending: BTreeMap::new(),
             expansion_order: VecDeque::new(),
             playlist_request: None,
+            playlist_playback: None,
             append_undo: vec![],
             append_redo: vec![],
             output: None,
@@ -535,6 +559,7 @@ impl<T: Item> Session<T> {
     }
     pub fn workspace_for_selection(&self, selected: usize) -> workspace::Snapshot {
         let mut view = self.workspace.snapshot_for(self.queue.len(), selected);
+        view.current = self.workspace_current_index();
         if view.active == workspace::QUEUE_TAB && view.pending_close.is_none() {
             view.actions.append = true;
             view.can_undo = !self.append_undo.is_empty();
@@ -558,6 +583,36 @@ impl<T: Item> Session<T> {
         }
         view
     }
+    /// Project the output's stable queue row into the active draft. Identical
+    /// songs at different positions must not highlight (or activate) each other.
+    pub fn workspace_current_index(&self) -> Option<usize> {
+        let current = self.current?;
+        let Some((key, rows)) = self.workspace.active_rows() else {
+            return Some(current);
+        };
+        if let Some(playback) = self.playlist_playback.as_ref().filter(|p| p.key == key) {
+            let queue_row = self.rows.get(current)?;
+            if let Some(source) = playback
+                .targets
+                .iter()
+                .position(|row| row.as_ref() == Some(queue_row))
+            {
+                return rows
+                    .iter()
+                    .position(|row| row.id == playback.source_rows[source]);
+            }
+        }
+        // Playback can also originate in the queue or another tab. A unique
+        // locator is safe to project; duplicate rows require their identities.
+        let entry = self.queue.get(current)?.entry();
+        let mut matching = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| same_locator(&row.entry, &entry));
+        let (index, _) = matching.next()?;
+        matching.next().is_none().then_some(index)
+    }
+
     pub fn snapshot(&self) -> Snapshot<'_, T> {
         let mut stop_after: Vec<_> = self.order.stop_after_indices().collect();
         stop_after.sort_unstable();
@@ -850,6 +905,32 @@ impl<T: Item> Session<T> {
             transport_epoch: self.transport_epoch,
             before: (start == 0).then(Vec::new),
             after: None,
+            source: self.workspace.active_rows().and_then(|(key, rows)| {
+                let selected = self.workspace.snapshot().selected;
+                let candidates: Vec<_> = if rows.len() == entries.len() {
+                    rows.iter().collect()
+                } else {
+                    selected
+                        .iter()
+                        .filter_map(|index| rows.get(*index))
+                        .collect()
+                };
+                (candidates.len() == entries.len()
+                    && candidates
+                        .iter()
+                        .zip(&entries)
+                        .all(|(row, entry)| &row.entry == entry))
+                .then(|| {
+                    (
+                        key.to_owned(),
+                        candidates
+                            .iter()
+                            .map(|row| (row.id, row.entry.clone()))
+                            .collect(),
+                        start,
+                    )
+                })
+            }),
         });
         for (prefix, entries) in [(true, &entries[..start]), (false, &entries[start..])] {
             if entries.is_empty() {
@@ -920,6 +1001,35 @@ impl<T: Item> Session<T> {
         let current = start + tracks.len();
         tracks.extend(after);
         self.append(tracks, workspace::QueueAction::AddToQueue, effects);
+        self.playlist_playback = load.source.map(|(key, source, clicked)| {
+            let expanded: Vec<_> = self.queue[start..].iter().map(Item::entry).collect();
+            let mut targets = vec![None; source.len()];
+            // Match each occurrence in order, separately on either side of the
+            // clicked row so an expanded archive cannot shift its identity.
+            for (source_range, queue_range) in [
+                (0..clicked, 0..current - start),
+                (clicked..source.len(), current - start..expanded.len()),
+            ] {
+                let mut next = queue_range.start;
+                for index in source_range {
+                    if let Some(offset) = expanded[next..queue_range.end]
+                        .iter()
+                        .position(|entry| same_locator(&source[index].1, entry))
+                    {
+                        next += offset;
+                        targets[index] = Some(self.rows[start + next]);
+                        next += 1;
+                    }
+                }
+            }
+            targets[clicked] = Some(self.rows[current]);
+            PlaylistPlayback {
+                key,
+                source_rows: source.into_iter().map(|(id, _)| id).collect(),
+                queue_rows: self.rows[start..].to_vec(),
+                targets,
+            }
+        });
         self.order.clear_queue();
         self.order
             .set_radio_enabled(false, &self.order_tracks(), self.current);
@@ -1003,6 +1113,73 @@ impl<T: Item> Session<T> {
         }
     }
     fn workspace_command(&mut self, command: workspace::Command, effects: &mut Vec<Effect>) {
+        if let workspace::Command::Activate { index } = &command {
+            let index = *index;
+            let view = self.workspace();
+            if view.pending_close.is_some() {
+                return;
+            }
+            if view.active == workspace::QUEUE_TAB {
+                if index < self.queue.len() {
+                    self.selection.apply(
+                        crate::selection::Command::Set {
+                            indices: vec![index],
+                            anchor: Some(index),
+                        },
+                        self.queue.len(),
+                        &self.visible,
+                    );
+                }
+                self.activate(index, false, effects);
+                return;
+            }
+            if !view.actions.queue || index >= view.entries.len() {
+                return;
+            }
+            if view.current == Some(index) {
+                // Moving a draft row does not change the song already playing.
+                let _ = self.workspace.apply(workspace::Command::Select {
+                    indices: vec![index],
+                });
+                self.activate(self.current.unwrap(), true, effects);
+                return;
+            }
+            let target = self.playlist_playback.as_ref().and_then(|playback| {
+                let (key, rows) = self.workspace.active_rows()?;
+                if key != playback.key {
+                    return None;
+                }
+                let source_id = rows.get(index)?.id;
+                let source = playback
+                    .source_rows
+                    .iter()
+                    .position(|id| *id == source_id)?;
+                let id = playback.targets.get(source).copied().flatten()?;
+                let target = self.rows.iter().position(|row| *row == id)?;
+                if rows
+                    .iter()
+                    .map(|row| row.id)
+                    .ne(playback.source_rows.iter().copied())
+                {
+                    return None;
+                }
+                let scope = playback
+                    .queue_rows
+                    .iter()
+                    .map(|id| self.rows.iter().position(|row| row == id))
+                    .collect::<Option<Vec<_>>>()?;
+                Some((target, scope))
+            });
+            if let Some((target, scope)) = target {
+                let _ = self.workspace.apply(workspace::Command::Select {
+                    indices: vec![index],
+                });
+                self.order
+                    .set_playback_scope(Some(scope), &self.order_tracks(), Some(target));
+                self.activate(target, true, effects);
+                return;
+            }
+        }
         if self.workspace().active == workspace::QUEUE_TAB {
             // The Edit menus use the same commands for a queue and a saved
             // draft. Keep command eligibility and selection in the session.
@@ -1460,19 +1637,7 @@ impl<T: Item> Session<T> {
                     self.play(index, false, &mut effects);
                 }
             }
-            Command::Activate { index } => {
-                if index < self.queue.len() {
-                    self.order
-                        .set_playback_scope(None, &self.order_tracks(), Some(index));
-                }
-                match crate::selection::activate(index, self.current, self.queue.len()) {
-                    Some(crate::selection::Activation::Play { index }) => {
-                        self.play(index, false, &mut effects)
-                    }
-                    Some(crate::selection::Activation::TogglePlayback) => self.toggle(&mut effects),
-                    None => (),
-                }
-            }
+            Command::Activate { index } => self.activate(index, false, &mut effects),
             Command::Toggle => self.toggle(&mut effects),
             Command::Pause => {
                 if self.radio.waiting() {
@@ -1666,11 +1831,26 @@ impl<T: Item> Session<T> {
         self.pending
             .retain(|_, p| !matches!(p, Pending::Expand { .. } | Pending::Playlist { .. }));
         self.playlist_request = None;
+        self.playlist_playback = None;
         self.expansion_order.clear();
         self.append_undo.clear();
         self.append_redo.clear();
         self.changed(vec![None; count], effects);
     }
+    fn activate(&mut self, index: usize, keep_scope: bool, effects: &mut Vec<Effect>) {
+        match crate::selection::activate(index, self.current, self.queue.len()) {
+            Some(crate::selection::Activation::Play { index }) => {
+                if !keep_scope {
+                    self.order
+                        .set_playback_scope(None, &self.order_tracks(), Some(index));
+                }
+                self.play(index, false, effects);
+            }
+            Some(crate::selection::Activation::TogglePlayback) => self.toggle(effects),
+            None => (),
+        }
+    }
+
     fn toggle(&mut self, effects: &mut Vec<Effect>) {
         if self.radio.waiting() {
             self.stop(effects)
@@ -1696,7 +1876,7 @@ impl<T: Item> Session<T> {
     pub fn checkpoint(&self) -> Value {
         serde_json::json!({"version":1,"session_id":self.id,"queue":self.queue.iter().map(Item::entry).collect::<Vec<_>>(),
             "metadata":self.metadata,"rows":self.rows,"next_row":self.next_row,"current":self.current,
-            "order":serde_json::to_string(&self.order).expect("serializable playback order"),"selection":self.selection,"workspace":self.workspace,"volume":self.volume,
+            "order":serde_json::to_string(&self.order).expect("serializable playback order"),"selection":self.selection,"workspace":self.workspace,"playlist_playback":self.playlist_playback,"volume":self.volume,
             "filter":self.filter,"sort_column":self.sort_column,"descending":self.descending,"physical_sort":self.physical_sort,
             "radio_enabled":self.radio.enabled(),"radio_scope":self.radio_scope,"radio_root":self.radio_root})
     }
@@ -1717,6 +1897,8 @@ impl<T: Item> Session<T> {
             order: String,
             selection: Selection,
             workspace: Value,
+            #[serde(default)]
+            playlist_playback: Option<PlaylistPlayback>,
             volume: f64,
             filter: String,
             sort_column: String,
@@ -1760,6 +1942,7 @@ impl<T: Item> Session<T> {
         next.selection = saved.selection;
         next.selection.remap(&mapping);
         next.workspace = workspace::Workspace::restore(saved.workspace)?;
+        next.playlist_playback = saved.playlist_playback;
         next.volume = saved.volume.clamp(0.0, 1.0);
         next.filter = saved.filter;
         next.sort_column = saved.sort_column;

@@ -1,7 +1,7 @@
 package org.kog.player
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -141,7 +141,10 @@ internal fun PlaylistWorkspaceEditor(state: KogState) {
         if (tab?.readonly == true) Text("Favorites · use star controls to change this list", Modifier.padding(12.dp), style = MaterialTheme.typography.labelMedium)
         LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
             itemsIndexed(workspace.entries) { index, track ->
-                Row(Modifier.fillMaxWidth().clickable { state.workspaceSelect(index) }.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.fillMaxWidth().combinedClickable(
+                    onClick = { state.workspaceSelect(index) },
+                    onDoubleClick = { state.workspaceCommand("activate", JSONObject().put("index", index)) },
+                ).padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(index in workspace.selected, onCheckedChange = { state.workspaceSelect(index) })
                     Column(Modifier.weight(1f)) {
                         Text(track.label, maxLines = 1, overflow = TextOverflow.Ellipsis)

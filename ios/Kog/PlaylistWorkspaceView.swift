@@ -108,7 +108,11 @@ struct PlaylistWorkspaceEditor: View {
                                 Text(track.detail).font(.caption).foregroundStyle(Palette.muted).lineLimit(1)
                             }
                         }.frame(minHeight: 44).contentShape(Rectangle())
-                    }.buttonStyle(.plain).listRowBackground(Palette.window)
+                    }.buttonStyle(.plain)
+                        .highPriorityGesture(TapGesture(count: 2).onEnded {
+                            store.workspaceCommand(["op": "activate", "index": index])
+                        })
+                        .listRowBackground(Palette.window)
                 }
             }.listStyle(.plain).scrollContentBackground(.hidden)
         }.background(Palette.window)

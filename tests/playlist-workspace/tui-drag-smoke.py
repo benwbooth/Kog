@@ -112,7 +112,12 @@ with tempfile.TemporaryDirectory(prefix="kog-tui-drag-") as directory:
         current = saved["current"]
         footer = "\n".join(screen.display[-4:])
         return (current is not None and Path(saved["queue"][current]["path"]).name == name
-                and "Playing" in footer and re.search(r"\b0:0[1-9]\b", footer))
+                and "Playing" in screen.display[-3] and re.search(r"\b0:0[1-9]\b", footer))
+
+    def playback_position():
+        match = re.search(r"\b(\d+):(\d\d)\b", "\n".join(screen.display[-4:]))
+        assert match, "Missing playback position"
+        return int(match[1]) * 60 + int(match[2])
 
     def expect_order(expected):
         for _ in range(30):
@@ -147,12 +152,22 @@ with tempfile.TemporaryDirectory(prefix="kog-tui-drag-") as directory:
             assert not checkpoint()["queue"], "Opening a draft changed the queue"
             send(b"\r")  # Enter must play, including when no row was selected.
             wait(lambda: playing(names[0]), "Enter on a draft row did not start native playback")
-            send(b" ")
-            wait(lambda: "Paused" in "\n".join(screen.display[-4:]), "Space did not pause playback")
+            send(b"\r")
+            wait(lambda: "Paused" in "\n".join(screen.display[-4:]), "Enter on the current row did not pause playback")
+            paused_position = playback_position()
+            assert paused_position >= 1, "Enter restarted the current row"
+            send(b"\r")
+            wait(lambda: playing(names[0]), "Enter on the paused row did not resume playback")
+            assert playback_position() >= paused_position, "Enter lost the playback position"
             # Send both complete clicks within the application's double-click threshold.
             send(b"\x1b[<0;70;7M\x1b[<0;70;7m\x1b[<0;70;7M\x1b[<0;70;7m")
             wait(lambda: playing(names[3]), "Double-click on a draft row did not play that song")
-            assert len(checkpoint()["queue"]) == 2 * len(original), "Activation did not retain the complete playing playlist"
+            assert len(checkpoint()["queue"]) == len(original), "Activation duplicated the playing playlist"
+            send(b"\x1b[<0;70;7M\x1b[<0;70;7m\x1b[<0;70;7M\x1b[<0;70;7m")
+            wait(lambda: "Paused" in "\n".join(screen.display[-4:]), "Double-click on the current row did not pause")
+            assert playback_position() >= 1, "Double-click restarted the current row"
+            send(b"\r")
+            wait(lambda: playing(names[3]), "Enter did not resume the double-clicked row")
             send(b">")
             wait(lambda: playing(names[4]), "Next left the playing playlist tab")
             send(b"<")

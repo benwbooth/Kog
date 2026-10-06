@@ -9,6 +9,7 @@ Item {
     property int stage: 0
     property int attempts: 0
     property int playlistId: -1
+    property real pausedPosition: 0
     function check(value, message) {
         if (!value) {
             app.create_playlist("PLAYBACK FAIL: " + message)
@@ -54,8 +55,20 @@ Item {
                     smoke.stage++
                 } else if (smoke.stage === 2 && app.playback_state === "playing") {
                     smoke.check(app.playlist_count === 5 && app.current_index === 3, "activation did not start at the middle of the complete playlist")
-                    smoke.press("nextTrackButton")
+                    app.seek(4)
+                    smoke.stage = 20
+                } else if (smoke.stage === 20 && app.position_seconds >= 3.5) {
+                    smoke.editor.activate(1)
                     smoke.stage++
+                } else if (smoke.stage === 21 && app.playback_state === "paused") {
+                    smoke.pausedPosition = app.position_seconds
+                    smoke.check(smoke.pausedPosition >= 3.5 && app.playlist_count === 5, "current row restarted instead of pausing")
+                    smoke.editor.activate(1)
+                    smoke.stage++
+                } else if (smoke.stage === 22 && app.playback_state === "playing") {
+                    smoke.check(app.position_seconds >= smoke.pausedPosition - 0.1 && app.playlist_count === 5, "current row restarted instead of resuming")
+                    smoke.press("nextTrackButton")
+                    smoke.stage = 3
                 } else if (smoke.stage === 3 && app.current_index === 4 && app.playback_state === "playing") {
                     smoke.press("previousTrackButton")
                     smoke.stage++
@@ -72,7 +85,7 @@ Item {
                     smoke.check(JSON.parse(app.workspace_json()).active === "queue", "transport switched the viewed tab")
                     app.stop()
                     app.create_playlist("Playlist navigation complete")
-                    console.warn("PLAYLIST NAVIGATION PASS: native middle-row activation, actual Next/Previous buttons, end of stream and Repeat All stay in the playing tab while another tab is visible")
+                    console.warn("PLAYLIST NAVIGATION PASS: native middle-row activation and pause/resume without restart, actual Next/Previous buttons, end of stream and Repeat All stay in the playing tab while another tab is visible")
                     Qt.quit()
                 }
             } catch (error) { smoke.check(false, "stage " + smoke.stage + ": " + error) }

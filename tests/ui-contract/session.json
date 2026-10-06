@@ -1231,6 +1231,232 @@
         "op": "navigate",
         "event": "next"
       }
+    },
+    {
+      "session": "tab-activation",
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "open",
+          "key": "album",
+          "scope": "local",
+          "playlist_id": 27,
+          "name": "Activation"
+        }
+      },
+      "expect": {},
+      "capture": {
+        "activateLoad": "effects.1.token"
+      }
+    },
+    {
+      "session": "tab-activation",
+      "command": {
+        "op": "complete",
+        "token": "@activateLoad",
+        "result": {
+          "kind": "loaded",
+          "entries": [
+            {
+              "kind": "local",
+              "path": "/same.wav",
+              "fragment": null
+            },
+            {
+              "kind": "local",
+              "path": "/middle.wav",
+              "entry": ""
+            },
+            {
+              "kind": "local",
+              "path": "/same.wav",
+              "fragment": ""
+            }
+          ]
+        }
+      },
+      "expect": {
+        "snapshot.workspace.entries": [
+          {
+            "kind": "local",
+            "path": "/same.wav",
+            "fragment": null
+          },
+          {
+            "kind": "local",
+            "path": "/middle.wav",
+            "entry": ""
+          },
+          {
+            "kind": "local",
+            "path": "/same.wav",
+            "fragment": ""
+          }
+        ]
+      }
+    },
+    {
+      "session": "tab-activation",
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "activate",
+          "index": 2
+        }
+      },
+      "expect": {
+        "snapshot.workspace.selected": [
+          2
+        ]
+      },
+      "capture": {
+        "activatePrefix": "effects.1.token",
+        "activateSuffix": "effects.2.token"
+      }
+    },
+    {
+      "session": "tab-activation",
+      "command": {
+        "op": "complete",
+        "token": "@activateSuffix",
+        "result": {
+          "kind": "expanded",
+          "tracks": [
+            {
+              "kind": "local",
+              "path": "/same.wav",
+              "fragment": "",
+              "title": "Same",
+              "duration": 20000
+            }
+          ]
+        }
+      },
+      "expect": {
+        "snapshot.current": null
+      }
+    },
+    {
+      "session": "tab-activation",
+      "command": {
+        "op": "complete",
+        "token": "@activatePrefix",
+        "result": {
+          "kind": "expanded",
+          "tracks": [
+            {
+              "kind": "local",
+              "path": "/same.wav",
+              "fragment": null
+            },
+            {
+              "kind": "local",
+              "path": "/middle.wav",
+              "entry": ""
+            }
+          ]
+        }
+      },
+      "expect": {
+        "snapshot.current": 2,
+        "snapshot.workspace.current": 2,
+        "snapshot.row_ids": [
+          1,
+          2,
+          3
+        ]
+      },
+      "capture": {
+        "activateOutput": "snapshot.output_token"
+      }
+    },
+    {
+      "session": "tab-activation",
+      "command": {
+        "op": "output",
+        "token": "@activateOutput",
+        "event": {
+          "event": "started"
+        }
+      },
+      "expect": {
+        "snapshot.transport": "playing"
+      }
+    },
+    {
+      "session": "tab-activation",
+      "command": {
+        "op": "output",
+        "token": "@activateOutput",
+        "event": {
+          "event": "progress",
+          "seconds": 7.25,
+          "duration": 20
+        }
+      },
+      "expect": {
+        "snapshot.position": 7.25
+      }
+    },
+    {
+      "session": "tab-activation",
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "activate",
+          "index": 2
+        }
+      },
+      "expect": {
+        "snapshot.transport": "paused",
+        "snapshot.position": 7.25,
+        "snapshot.row_ids": [
+          1,
+          2,
+          3
+        ],
+        "effects.1.action": "pause"
+      }
+    },
+    {
+      "session": "tab-activation",
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "activate",
+          "index": 2
+        }
+      },
+      "expect": {
+        "snapshot.transport": "playing",
+        "snapshot.position": 7.25,
+        "snapshot.row_ids": [
+          1,
+          2,
+          3
+        ],
+        "effects.1.action": "resume"
+      }
+    },
+    {
+      "session": "tab-activation",
+      "command": {
+        "op": "workspace",
+        "command": {
+          "op": "activate",
+          "index": 0
+        }
+      },
+      "expect": {
+        "snapshot.current": 0,
+        "snapshot.workspace.current": 0,
+        "snapshot.row_ids": [
+          1,
+          2,
+          3
+        ],
+        "effects.1.action": "play"
+      }
     }
   ]
 }

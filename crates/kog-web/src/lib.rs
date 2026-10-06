@@ -2399,7 +2399,10 @@ fn App() -> impl IntoView {
                 if queue_changed {
                     set_queue.set(v.queue.to_vec());
                 }
-                set_current.set(v.current.unwrap_or(usize::MAX));
+                let next_current = v.current.unwrap_or(usize::MAX);
+                if current.get_untracked() != next_current {
+                    set_current.set(next_current);
+                }
                 set_playing.set(matches!(
                     v.transport,
                     Transport::Playing | Transport::Starting
@@ -2454,17 +2457,7 @@ fn App() -> impl IntoView {
     let pane_selected = Memo::new(move |_| {
         playlist_workspace.snapshot().selected.iter().copied().collect::<HashSet<_>>()
     });
-    let pane_current = Memo::new(move |_| {
-        let index = current.get();
-        if pane_key.get() == "queue" {
-            (index < queue.get().len()).then_some(index)
-        } else {
-            queue.get().get(index).and_then(|playing| {
-                let locator = entry_star_locator(playing);
-                pane_entries.get().iter().position(|entry| entry_star_locator(entry) == locator)
-            })
-        }
-    });
+    let pane_current = Memo::new(move |_| playlist_workspace.snapshot().current);
     let draft_filters = RwSignal::new(HashMap::<String, String>::new());
     let draft_sorts = RwSignal::new(HashMap::<String, (SortKey, bool)>::new());
     let pane_filter = Memo::new(move |_| {
@@ -4482,15 +4475,19 @@ fn App() -> impl IntoView {
     // is never yanked around. The row renders a tick after the state change
     // (a radio shift appends it), so poll briefly, like the tree's reveal.
     Effect::new(move |_| {
-        current.track();
+        let expected = current.get();
+        let expected_pane = pane_key.get_untracked();
         if queue.get_untracked().is_empty() {
             return;
         }
         leptos::task::spawn_local(async move {
             for _ in 0..10 {
                 sleep_ms(50).await;
+                if current.get_untracked() != expected || pane_key.get_untracked() != expected_pane {
+                    break;
+                }
                 let scrolled = js_sys::eval(
-                    "(() => { const row = document.querySelector('.track.current');\
+                    "(() => { const row = document.querySelector('#playlist-rows .track.current');\
                       if (!row) return 'no';\
                       row.scrollIntoView({ block: 'nearest', inline: 'nearest' });\
                       return 'yes'; })()",
@@ -4660,12 +4657,7 @@ fn App() -> impl IntoView {
     // Every tab shares the queue's rows, columns, metadata, and input handling.
     // Only the source of entries and the destination of edits changes.
     let activate_row = move |index| {
-        if pane_key.get_untracked() == "queue" {
-            backend.send(SessionCommand::Activate { index });
-        } else {
-            select_row(index, false, false);
-            playlist_workspace.send(kog_playback_policy::workspace::Command::Queue { action: QueueAction::PlayNow });
-        }
+        playlist_workspace.send(kog_playback_policy::workspace::Command::Activate { index });
     };
     let view_rows = move || {
         let entries = pane_entries.read();
@@ -6780,7 +6772,6 @@ fn App() -> impl IntoView {
                                                 }
                                                 on:click=move |ev: web_sys::MouseEvent| {
                                                     if touch_mode && !ev.shift_key() && !ev.ctrl_key() && !ev.meta_key() {
-                                                        select_row(index,false,false);
                                                         activate_row(index);
                                                         return;
                                                     }
@@ -6792,7 +6783,6 @@ fn App() -> impl IntoView {
                                                 on:keydown=move |ev: web_sys::KeyboardEvent| {
                                                     if ev.key() == "Enter" && !ev.ctrl_key() && !ev.meta_key() && !ev.alt_key() {
                                                         ev.prevent_default(); ev.stop_propagation();
-                                                        select_row(index, false, false);
                                                         activate_row(index);
                                                     }
                                                 }
@@ -6804,7 +6794,6 @@ fn App() -> impl IntoView {
                                                     if touch_mode {
                                                         return;
                                                     }
-                                                    select_row(index,false,false);
                                                     activate_row(index);
                                                 }
                                             >

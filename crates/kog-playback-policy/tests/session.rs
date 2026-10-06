@@ -811,3 +811,172 @@ fn append_targets_an_inactive_draft_without_changing_queue_or_active_tab() {
         "A stale drop never redirects to the active tab"
     );
 }
+
+fn activate_tab(s: &mut Session<Value>, index: usize) -> Vec<Effect> {
+    let mut effects = workspace_action(s, workspace::Command::Activate { index });
+    for effect in effects.clone().into_iter().rev() {
+        if let Effect::Expand { token, entries, .. } = effect {
+            effects.extend(s.dispatch(Command::Complete {
+                token,
+                result: IoResult::Expanded { tracks: entries },
+            }));
+        }
+    }
+    effects
+}
+
+#[test]
+fn playlist_activation_toggles_the_exact_duplicate_row_without_restarting_or_appending() {
+    let mut s = session("activate-tab");
+    append(&mut s, &["unrelated"]);
+    tab(&mut s, &["same", "middle", "same"]);
+    let token = play_token(activate_tab(&mut s, 2));
+    s.dispatch(Command::Output {
+        token: token.clone(),
+        event: OutputEvent::Started,
+    });
+    s.dispatch(Command::Seek { seconds: 12.0 });
+    assert_eq!(s.current(), Some(3));
+    assert_eq!(s.workspace().current, Some(2));
+    let queued = s.snapshot().row_ids.to_vec();
+    let effects = activate_tab(&mut s, 2);
+    assert!(effects.iter().any(|e| matches!(e, Effect::Pause)));
+    assert!(
+        !effects
+            .iter()
+            .any(|e| matches!(e, Effect::Play { .. } | Effect::Expand { .. }))
+    );
+    assert_eq!(s.snapshot().position, 12.0);
+    assert_eq!(s.snapshot().output_token, Some(&token));
+    assert!(
+        activate_tab(&mut s, 2)
+            .iter()
+            .any(|e| matches!(e, Effect::Resume))
+    );
+    assert_eq!(s.snapshot().row_ids, queued);
+    assert_eq!(s.snapshot().position, 12.0);
+    let effects = activate_tab(&mut s, 0);
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::Play { index: 1, .. }))
+    );
+    assert_eq!(s.workspace().current, Some(0));
+    assert_eq!(s.snapshot().row_ids, queued);
+    s.dispatch(Command::Navigate {
+        event: NavigationEvent::Next,
+    });
+    assert_eq!(s.current(), Some(2));
+    assert_eq!(s.workspace().current, Some(1));
+    assert!(
+        activate_tab(&mut s, 1)
+            .iter()
+            .any(|e| matches!(e, Effect::Pause))
+    );
+}
+
+#[test]
+fn activation_survives_reordering_and_checkpoint_restore_without_mistaking_same_named_songs() {
+    let mut s = session("activate-reorder");
+    tab(&mut s, &["first", "middle", "last"]);
+    activate_tab(&mut s, 1);
+    workspace_action(&mut s, workspace::Command::Move { target: 3 });
+    assert_eq!(s.workspace().current, Some(2));
+    assert!(
+        activate_tab(&mut s, 2)
+            .iter()
+            .any(|e| matches!(e, Effect::Pause))
+    );
+    assert_eq!(s.queue().len(), 3);
+    let saved = s.checkpoint();
+    s.restore(saved, |v| Ok(v.clone())).unwrap();
+    assert_eq!(s.workspace().current, Some(2));
+    assert!(
+        activate_tab(&mut s, 2)
+            .iter()
+            .any(|e| matches!(e, Effect::Play { index: 1, .. }))
+    );
+    assert_eq!(s.queue().len(), 3);
+    s.dispatch(Command::Reorder {
+        indices: vec![2, 0, 1],
+    });
+    assert_eq!(s.workspace().current, Some(2));
+    assert!(
+        activate_tab(&mut s, 2)
+            .iter()
+            .any(|e| matches!(e, Effect::Pause))
+    );
+}
+
+#[test]
+fn queue_pause_resume_preserves_the_playing_playlist_navigation_scope() {
+    let mut s = session("activate-queue");
+    append(&mut s, &["unrelated"]);
+    tab(&mut s, &["first", "last"]);
+    activate_tab(&mut s, 1);
+    workspace_action(
+        &mut s,
+        workspace::Command::Focus {
+            key: "queue".into(),
+        },
+    );
+    assert!(
+        s.dispatch(Command::Activate { index: 2 })
+            .iter()
+            .any(|e| matches!(e, Effect::Pause))
+    );
+    assert!(
+        s.dispatch(Command::Activate { index: 2 })
+            .iter()
+            .any(|e| matches!(e, Effect::Resume))
+    );
+    s.dispatch(Command::Repeat {
+        mode: RepeatMode::All,
+    });
+    s.dispatch(Command::Navigate {
+        event: NavigationEvent::Next,
+    });
+    assert_eq!(
+        s.current(),
+        Some(1),
+        "repeat must stay inside the playlist after pausing from the queue"
+    );
+}
+
+#[test]
+fn activation_recognizes_explicit_selections_and_unique_tracks_started_in_the_queue() {
+    let mut s = session("activate-selection");
+    tab(&mut s, &["same", "middle", "same"]);
+    play_tab(&mut s, vec![0, 2]);
+    assert_eq!(s.workspace().current, Some(0));
+    assert!(
+        activate_tab(&mut s, 0)
+            .iter()
+            .any(|e| matches!(e, Effect::Pause))
+    );
+    assert_eq!(s.queue().len(), 2);
+
+    let mut s = session("activate-queue-source");
+    append(&mut s, &["middle"]);
+    s.dispatch(Command::Play { index: 0 });
+    tab(&mut s, &["same", "middle", "same"]);
+    assert_eq!(s.workspace().current, Some(1));
+    assert!(
+        activate_tab(&mut s, 1)
+            .iter()
+            .any(|e| matches!(e, Effect::Pause))
+    );
+    assert_eq!(s.queue().len(), 1);
+}
+
+#[test]
+fn workspace_queue_activation_selects_and_plays_the_requested_row_atomically() {
+    let mut s = session("activate-queue-workspace");
+    append(&mut s, &["first", "second"]);
+    workspace_action(&mut s, workspace::Command::Activate { index: 1 });
+    assert_eq!(s.current(), Some(1));
+    assert_eq!(s.workspace().selected, vec![1]);
+    assert_eq!(s.snapshot().selection.anchor, Some(1));
+    let effects = workspace_action(&mut s, workspace::Command::Activate { index: 1 });
+    assert!(effects.iter().any(|e| matches!(e, Effect::Pause)));
+}
