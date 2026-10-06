@@ -88,6 +88,17 @@ with tempfile.TemporaryDirectory(prefix="kog-tab-drag-") as directory:
         assert current['queue']==original['queue'] and current['current']==original['current']
         assert sorted(current['workspace']['tabs'],key=lambda t:t['key'])==sorted(original['workspace']['tabs'],key=lambda t:t['key'])
         stop();start();assert keys()==expected;assert checkpoint()['workspace']['active']=='b';stop()
-        print('TUI TAB DRAG PASS: queue and draft moves, release-only commit, outside/Escape cancellation, active/draft/selection/undo/queue preservation, restart order')
+        saved=checkpoint()
+        saved['workspace']['tabs'].extend(tab(f'extra:{i}',f'Extra {i:02}') for i in range(12))
+        with sqlite3.connect(database) as db: db.execute("update app_state set value=? where namespace='sessions' and key='tui:default'",(json.dumps(saved),))
+        start();expected=keys();mouse(45,2,64);x,y=position('Gamma');mouse(x,y);mouse(119,y,32)
+        drain(2.5)
+        assert keys()==expected, 'Overflow scrolling changed the model'
+        assert 'Extra 11' in screen.display[y-1], 'Edge hold did not scroll to the last tab'
+        mouse(119,y,release=True);drain(1.1)
+        expected.remove('c');expected.append('c');assert keys()==expected
+        assert checkpoint()['workspace']['active']=='b'
+        stop()
+        print('TUI TAB DRAG PASS: queue and draft moves, release-only commit, outside/Escape cancellation, active/draft/selection/undo/queue preservation, restart order, overflow edge scrolling')
     finally:
         if pid: os.kill(pid,signal.SIGTERM);os.waitpid(pid,0);os.close(terminal)

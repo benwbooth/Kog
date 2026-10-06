@@ -7,7 +7,6 @@ import android.graphics.Rect
 import android.os.SystemClock
 import android.view.InputDevice
 import android.view.MotionEvent
-import androidx.activity.compose.setContent
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.material3.MaterialTheme
 import android.os.Bundle
@@ -65,13 +64,13 @@ class UiContractInstrumentation : Instrumentation() {
         }
     }
     private fun tabGestureContract() {
-        val activity = startActivitySync(Intent(targetContext, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) as MainActivity
+        val automation = uiAutomation
         val initial = PlaylistWorkspaceSnapshot(active = "b", tabs = listOf(
             PlaylistWorkspaceTab("queue", "Play Queue"), PlaylistWorkspaceTab("a", "Alpha", dirty = true), PlaylistWorkspaceTab("b", "Beta")))
         val state = mutableStateOf(initial)
         val commands = mutableListOf<String>()
         runOnMainSync {
-            activity.setContent { MaterialTheme {
+            TabGestureTestActivity.content = { MaterialTheme {
                 PlaylistWorkspaceTabs(state.value) { op, fields ->
                     commands.add(op)
                     if (op == "move_tab") {
@@ -85,14 +84,23 @@ class UiContractInstrumentation : Instrumentation() {
                 }
             } }
         }
+        val activity = startActivitySync(Intent(targetContext, TabGestureTestActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) as TabGestureTestActivity
         waitForIdleSync()
         fun bounds(label: String): Rect {
+            fun find(node: android.view.accessibility.AccessibilityNodeInfo?): android.view.accessibility.AccessibilityNodeInfo? {
+                if (node == null) return null
+                val text = node.text?.toString().orEmpty()
+                if (text == label || text.startsWith("$label •")) return node
+                for (index in 0 until node.childCount) find(node.getChild(index))?.let { return it }
+                return null
+            }
             repeat(50) {
-                val nodes = uiAutomation.rootInActiveWindow?.findAccessibilityNodeInfosByText(label).orEmpty()
-                if (nodes.isNotEmpty()) return Rect().also { nodes.first().getBoundsInScreen(it) }
+                find(automation.rootInActiveWindow)?.let { node -> return Rect().also { node.getBoundsInScreen(it) } }
                 SystemClock.sleep(100)
             }
-            error("Missing tab $label")
+            fun tree(node: android.view.accessibility.AccessibilityNodeInfo?): String = if (node == null) "null" else
+                "${node.className}:${node.text}:${node.contentDescription} " + (0 until node.childCount).joinToString { tree(node.getChild(it)) }
+            error("Missing tab $label: ${tree(automation.rootInActiveWindow)}")
         }
         fun drag(from: Rect, toX: Float, toY: Float) {
             val down = SystemClock.uptimeMillis()
@@ -115,14 +123,14 @@ class UiContractInstrumentation : Instrumentation() {
             check(commands == listOf("move_tab")) { "Drag fired extra actions: $commands" }
             commands.clear()
             val beta = bounds("Beta")
-            drag(bounds("Play Queue"), beta.right.toFloat()+25, beta.centerY().toFloat())
-            check(state.value.tabs.map { it.key } == listOf("a", "b", "queue"))
+            drag(bounds("Play Queue"), activity.window.decorView.width.toFloat()-12, beta.centerY().toFloat())
+            check(state.value.tabs.map { it.key } == listOf("a", "b", "queue")) { "Queue drop failed: ${state.value.tabs}, actions=$commands" }
             check(state.value.active == "b")
             commands.clear()
             val alpha = bounds("Alpha")
             drag(alpha, alpha.centerX().toFloat()+50, alpha.bottom.toFloat()+150)
             check(commands.isEmpty() && state.value.tabs.map { it.key } == listOf("a", "b", "queue"))
-        } finally { runOnMainSync { activity.finish() } }
+        } finally { runOnMainSync { activity.finish(); TabGestureTestActivity.content = null } }
     }
     private fun persistenceContract() {
         val key = "contract:${java.util.UUID.randomUUID()}"

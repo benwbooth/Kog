@@ -280,10 +280,28 @@ TestCase {
         editor.searchQuery = ""
     }
 
+    function test_tab_reorder_overflow() {
+        const entries = [{key:"queue",name:"Play Queue"}]
+        for (let i = 0; i < 7; ++i) entries.push({key:"extra:"+i,name:"Extra playlist "+i})
+        test.width = 350
+        test.state = {active:"queue",tabs:entries,entries:[],selected:[],actions:{}}
+        const native = findChild(tabs, "playlistTabBar")
+        tryCompare(native, "count", 8)
+        wait(50)
+        mousePress(tabs, 20, tabs.height/2)
+        mouseMove(tabs, tabs.width-3, tabs.height/2, 50)
+        tryVerify(() => native.contentItem.contentX >= native.contentItem.contentWidth-native.contentItem.width-1, 6000)
+        compare(test.state.tabs[0].key, "queue")
+        mouseRelease(tabs, tabs.width-3, tabs.height/2)
+        compare(test.state.tabs[7].key, "queue")
+        compare(test.state.active, "queue")
+        test.width = 1000
+    }
     function test_tab_reorder() {
         test.state = {active:"b", tabs:[{key:"queue",name:"Play Queue"},{key:"a",name:"Alpha",dirty:true},{key:"b",name:"Beta"}],entries:[],selected:[],actions:{}}
         const native = findChild(tabs, "playlistTabBar")
         tryCompare(native, "count", 3)
+        waitForRendering(panel)
         const original = native.itemAt(1)
         const source = original.mapToItem(tabs, 20, original.height / 2)
         backend.commands = []
@@ -306,6 +324,13 @@ TestCase {
         mousePress(tabs, 20, source.y)
         mouseMove(tabs, 150, source.y+80, 50)
         mouseRelease(tabs, 150, source.y+80)
+        compare(test.state.tabs.map(t => t.key).join(","), "a,b,queue")
+        compare(test.state.active, "b")
+        mousePress(tabs, 20, source.y)
+        mouseMove(tabs, 170, source.y, 50)
+        keyClick(Qt.Key_Escape)
+        compare(tabs.draggedKey, "")
+        mouseRelease(tabs, 170, source.y)
         compare(test.state.tabs.map(t => t.key).join(","), "a,b,queue")
         compare(test.state.active, "b")
     }

@@ -8,6 +8,8 @@ Item {
     required property var workspaceState
     property string appendTarget: ""
     property string draggedKey: ""
+    property bool dragCanceled: false
+    property bool syncingTabs: false
     property real dragX: 0
     property real dragY: 0
     property var dropBefore: undefined
@@ -33,6 +35,11 @@ Item {
         dropX = Math.min(width - 2, last.mapToItem(bar, last.width, 0).x)
     }
     function cancelTabDrag() { draggedKey = ""; dropBefore = undefined; dropX = -1 }
+    Shortcut {
+        sequence: "Escape"
+        enabled: bar.draggedKey !== ""
+        onActivated: { bar.dragCanceled = true; bar.cancelTabDrag() }
+    }
     Timer {
         interval: 40; repeat: true; running: bar.draggedKey !== ""
         onTriggered: {
@@ -63,6 +70,7 @@ Item {
     // native controls by key so TabBar keeps ownership of existing buttons.
     function syncTabs() {
         if (!tabs) return
+        syncingTabs = true
         for (let index = 0; index < entries.length; ++index) {
             const entry = entries[index]
             let existing = index
@@ -83,8 +91,15 @@ Item {
             const item = tabs.takeItem(tabs.count - 1)
             item.destroy()
         }
+        syncActive()
+        syncingTabs = false
+    }
+    function syncActive() {
+        if (tabs && tabs.count === entries.length)
+            tabs.setCurrentIndex(Math.max(0, entries.findIndex(tab => tab.key === workspaceState.active)))
     }
     onEntriesChanged: syncTabs()
+    onWorkspaceStateChanged: Qt.callLater(syncActive)
     Component.onCompleted: syncTabs()
     TabButton {
         id: tabMetrics
@@ -97,10 +112,10 @@ Item {
         objectName: "playlistTabBar"
         anchors.fill: parent
         clip: true
-        currentIndex: Math.max(0, bar.entries.findIndex(tab => tab.key === bar.workspaceState.active))
         // Keep native styling with a stable height even while tabs are added
         // or removed; KDE's default view assumes item zero already exists.
         contentItem: ListView {
+            id: tabView
             function revealCurrent() {
                 if (bar.draggedKey === "" && width > 0 && currentIndex >= 0 && currentIndex < count)
                     positionViewAtIndex(currentIndex, ListView.Contain)
@@ -108,28 +123,39 @@ Item {
             implicitWidth: contentWidth
             implicitHeight: tabMetrics.implicitHeight
             model: tabs.contentModel
-            currentIndex: tabs.currentIndex
+            // Container also feeds view index changes back into TabBar. Wait
+            // for reconciliation before updating the view to avoid reentry.
+            Binding {
+                target: tabView
+                property: "currentIndex"
+                value: tabs.currentIndex
+                delayed: true
+            }
             orientation: ListView.Horizontal
             spacing: tabs.spacing
             boundsBehavior: Flickable.StopAtBounds
+            interactive: bar.draggedKey === ""
             flickableDirection: Flickable.AutoFlickIfNeeded
-            snapMode: ListView.SnapToItem
+            snapMode: bar.draggedKey !== "" ? ListView.NoSnap : ListView.SnapToItem
             highlightMoveDuration: 0
-            highlightRangeMode: ListView.ApplyRange
+            highlightRangeMode: bar.draggedKey !== "" ? ListView.NoHighlightRange : ListView.ApplyRange
             preferredHighlightBegin: 40
             preferredHighlightEnd: width - 40
             onWidthChanged: Qt.callLater(revealCurrent)
             onContentWidthChanged: Qt.callLater(revealCurrent)
             onCurrentIndexChanged: Qt.callLater(revealCurrent)
         }
-        onCurrentIndexChanged: Qt.callLater(function() {
-            // Model updates can change the current index while bindings are
-            // evaluating. Dispatch keyboard navigation after they settle.
-            const entry = bar.entries[tabs.currentIndex]
-            if (tabs.activeFocus && entry && tabs.count === bar.entries.length
-                    && entry.key !== bar.workspaceState.active)
-                bar.send({op: "focus", key: entry.key})
-        })
+        onCurrentIndexChanged: {
+            if (bar.syncingTabs) return
+            Qt.callLater(function() {
+                // Model updates can change the current index while bindings are
+                // evaluating. Dispatch keyboard navigation after they settle.
+                const entry = bar.entries[tabs.currentIndex]
+                if (tabs.activeFocus && entry && tabs.count === bar.entries.length
+                        && entry.key !== bar.workspaceState.active)
+                    bar.send({op: "focus", key: entry.key})
+            })
+        }
     }
     Component {
         id: tabButton
@@ -179,9 +205,9 @@ Item {
                 preventStealing: true
                 property real startX: 0
                 property real startY: 0
-                onPressed: mouse => { startX = mouse.x; startY = mouse.y }
+                onPressed: mouse => { startX = mouse.x; startY = mouse.y; bar.dragCanceled = false }
                 onPositionChanged: mouse => {
-                    if (!pressed) return
+                    if (!pressed || bar.dragCanceled) return
                     if (!bar.draggedKey && Math.abs(mouse.x - startX) + Math.abs(mouse.y - startY) > Qt.styleHints.startDragDistance)
                         bar.draggedKey = tab.tabKey
                     if (bar.draggedKey) {
@@ -195,7 +221,7 @@ Item {
                         bar.updateTabDrop(point.x, point.y)
                         if (bar.dropBefore !== undefined)
                             bar.send({op: "move_tab", key: bar.draggedKey, before: bar.dropBefore})
-                    } else bar.send({op: "focus", key: tab.tabKey})
+                    } else if (!bar.dragCanceled) bar.send({op: "focus", key: tab.tabKey})
                     bar.cancelTabDrag()
                 }
                 onCanceled: bar.cancelTabDrag()
