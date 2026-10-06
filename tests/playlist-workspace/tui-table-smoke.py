@@ -108,6 +108,19 @@ with tempfile.TemporaryDirectory(prefix="kog-tui-table-") as directory:
             (destination / f"{name}.json").write_text(json.dumps(frame))
             (destination / f"{name}.txt").write_text("\n".join(screen.display))
 
+    def resize(columns, lines):
+        screen.resize(lines=lines, columns=columns)
+        fcntl.ioctl(terminal, termios.TIOCSWINSZ, struct.pack("HHHH", lines, columns, 0, 0))
+        drain(0.5)
+
+    def button(label):
+        row, text = next((row, text) for row, text in enumerate(screen.display) if label in text)
+        return text.index(label) + 1, row + 1
+
+    def stored_paths():
+        with closing(sqlite3.connect(database)) as db:
+            return [row[0] for row in db.execute("SELECT path FROM playlist_entries WHERE playlist_id=1 ORDER BY position")]
+
     try:
         drain(2)
         assert "Play Queue" in screen.display[1], "Queue tab is missing at the top"
@@ -181,13 +194,66 @@ with tempfile.TemporaryDirectory(prefix="kog-tui-table-") as directory:
         close_x = screen.display[1].index("×") + 1
         click(close_x, 2)
         wait(lambda: checkpoint()["workspace"]["pending_close"] == "local:1", "Tab close button missed dirty confirmation")
-        assert "Unsaved changes:" in "\n".join(screen.display)
-        send(b"c")
-        wait(lambda: checkpoint()["workspace"]["pending_close"] is None, "Dirty close cancellation failed")
+        assert "Unsaved changes" in screen.display[6], "Close dialog is not centered"
+        assert "Reference playlist" in screen.display[7], "Dialog does not identify the playlist"
+        assert all(label in screen.display[10] for label in ("[Save]", "[Discard]", "[Cancel]"))
+        save_frame("unsaved-narrow")
+        original_paths = stored_paths()
+        draft_before = checkpoint()["workspace"]["tabs"][0]["draft"]
+        click(1, 1)  # Background menu, sidebar, transport, and wheel must not act.
+        click(2, 4)
+        click(15, 19)
+        mouse(65, 40, 4)
+        send(b"p\x1b1")
+        assert checkpoint()["workspace"]["active"] == "local:1"
+        assert checkpoint()["workspace"]["tabs"][0]["draft"] == draft_before
+        assert "Unsaved changes" in screen.display[6], "Background input dismissed the dialog"
+        send(b"\r")  # Cancel is the initial selection.
+        wait(lambda: checkpoint()["workspace"]["pending_close"] is None, "Default Cancel failed")
+        assert stored_paths() == original_paths, "Cancel wrote the draft"
+
+        send(b"\x17")
+        resize(120, 34)
+        assert "Unsaved changes" in screen.display[13], "Resized dialog is not centered"
+        save_frame("unsaved-wide")
+        save_x, save_y = button("[Save]")
+        cancel_x, cancel_y = button("[Cancel]")
+        selected_background = screen.buffer[cancel_y - 1][cancel_x].bg
+        send(b"\t")
+        assert screen.buffer[save_y - 1][save_x].bg == selected_background, "Tab did not select Save"
+        send(b"\x1b[Z")
+        assert screen.buffer[cancel_y - 1][cancel_x].bg == selected_background, "BackTab did not select Cancel"
+        send(b"\x1b[D\x1b[C")
+        assert screen.buffer[cancel_y - 1][cancel_x].bg == selected_background, "Arrow navigation failed"
+        click(*button("[Cancel]"))
+        wait(lambda: checkpoint()["workspace"]["pending_close"] is None, "Mouse Cancel failed")
+
+        send(b"\x17")
+        resize(24, 14)
+        assert "Unsaved changes" in screen.display[2]
+        assert button("[Save]")[1] < button("[Discard]")[1] < button("[Cancel]")[1], "Small dialog buttons must stack"
+        save_frame("unsaved-small")
+        send(b"\x1b")
+        wait(lambda: checkpoint()["workspace"]["pending_close"] is None, "Escape did not cancel")
+
+        resize(120, 34)
+        send(b"\x17\t\r")  # Tab from Cancel to Save, then confirm.
+        wait(lambda: checkpoint()["workspace"]["active"] == "queue", "Save did not close the draft")
+        expected_paths = [row["entry"]["path"] for row in draft_before["rows"]]
+        assert expected_paths != original_paths, "Fixture did not edit the saved order"
+        assert stored_paths() == expected_paths, "Save did not persist the draft order"
+        send(b"\t\r")  # Tracks -> saved playlists; reopen the selected playlist.
+        wait(lambda: checkpoint()["workspace"]["active"] == "local:1", "Could not reopen saved playlist")
+        send(b"\x1b[Hd\x17")
+        wait(lambda: checkpoint()["workspace"]["pending_close"] == "local:1", "Removal did not create a dirty draft")
+        click(*button("[Discard]"))
+        wait(lambda: checkpoint()["workspace"]["active"] == "queue", "Mouse Discard did not close the draft")
+        assert stored_paths() == expected_paths, "Discard changed saved contents"
+        assert checkpoint()["queue"] == queue, "Close dialog controls changed the queue"
         send(b"\x03")
         os.waitpid(pid, 0)
         pid = 0
-        print("TUI TABLE PASS: top tabs, identical queue/draft cells, metadata, shared resize/scroll controls, draft sort/filter, scrolled selection, narrow layout, close/cancel, queue isolation")
+        print("TUI TABLE PASS: shared table controls, centered close dialog at 120/50/24 columns, modal input, keyboard navigation, default/mouse/Esc Cancel, Save, mouse Discard, queue isolation")
     except BaseException:
         print("\n".join(screen.display))
         print("Saved active tab:", checkpoint()["workspace"]["active"])

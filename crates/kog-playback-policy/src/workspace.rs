@@ -310,6 +310,11 @@ impl Workspace {
             .unwrap_or_default()
     }
 
+    /// The playlist awaiting a Save / Discard / Cancel decision, if any.
+    pub fn pending_close(&self) -> Option<&str> {
+        self.pending_close.as_deref()
+    }
+
     pub fn snapshot(&self) -> Snapshot {
         self.snapshot_for(0, 0)
     }

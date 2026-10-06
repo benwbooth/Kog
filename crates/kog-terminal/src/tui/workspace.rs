@@ -3,6 +3,49 @@ use super::*;
 use kog_audio::playback_order::selection::{Command as Select, Gesture};
 use kog_audio::playback_order::workspace::{CloseChoice, Command, QueueAction};
 
+const CLOSE_CHOICES: [(CloseChoice, &str); 3] = [
+    (CloseChoice::Save, "[Save]"),
+    (CloseChoice::Discard, "[Discard]"),
+    (CloseChoice::Cancel, "[Cancel]"),
+];
+
+struct CloseDialog {
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+}
+
+impl CloseDialog {
+    fn new(size: (usize, usize)) -> Self {
+        let width = size.0.saturating_sub(4).clamp(20, 64).min(size.0);
+        let height = if width >= 31 { 9 } else { 11 };
+        Self {
+            x: size.0.saturating_sub(width) / 2,
+            y: size.1.saturating_sub(height) / 2,
+            width,
+            height,
+        }
+    }
+
+    fn button(&self, index: usize) -> (usize, usize, usize) {
+        let width = cell_width(CLOSE_CHOICES[index].1);
+        if self.width >= 31 {
+            let preceding: usize = CLOSE_CHOICES[..index]
+                .iter()
+                .map(|(_, label)| cell_width(label) + 2)
+                .sum();
+            (
+                self.x + (self.width - 27) / 2 + preceding,
+                self.y + 5,
+                width,
+            )
+        } else {
+            (self.x + 2, self.y + 4 + index, width)
+        }
+    }
+}
+
 pub(super) fn restore() -> Option<serde_json::Value> {
     kog_audio::settings::setting_path("playlist-tabs-tui.json")
         .and_then(|p| std::fs::read(p).ok())
@@ -68,6 +111,13 @@ impl Ui {
         self.workspace_command(command);
     }
     pub(super) fn workspace_command(&mut self, command: Command) {
+        if matches!(
+            command,
+            Command::Close { .. } | Command::ResolveClose { .. }
+        ) {
+            self.workspace_close_selected = 2;
+            self.cancel_track_drag();
+        }
         self.session_command(SessionCommand::Workspace { command });
     }
     pub(super) fn open_playlist_tab(&mut self, index: usize) {
@@ -128,9 +178,18 @@ impl Ui {
             .snapshot_for(self.tracks.len(), self.selected_tracks.len());
         if state.pending_close.is_some() {
             let choice = match key {
-                Key::Char('s') | Key::CtrlS => Some(CloseChoice::Save),
-                Key::Char('d') => Some(CloseChoice::Discard),
-                Key::Esc | Key::Char('c') => Some(CloseChoice::Cancel),
+                Key::Char('s' | 'S') | Key::CtrlS => Some(CloseChoice::Save),
+                Key::Char('d' | 'D') => Some(CloseChoice::Discard),
+                Key::Esc | Key::Char('c' | 'C') => Some(CloseChoice::Cancel),
+                Key::Enter | Key::Char(' ') => Some(CLOSE_CHOICES[self.workspace_close_selected].0),
+                Key::Left | Key::Up | Key::BackTab => {
+                    self.workspace_close_selected = (self.workspace_close_selected + 2) % 3;
+                    None
+                }
+                Key::Right | Key::Down | Key::Tab => {
+                    self.workspace_close_selected = (self.workspace_close_selected + 1) % 3;
+                    None
+                }
                 _ => None,
             };
             if let Some(choice) = choice {
@@ -300,14 +359,6 @@ impl Ui {
     }
     fn workspace_controls(&self) -> Vec<(&'static str, Key, bool)> {
         let state = self.session.workspace_model().snapshot();
-        if state.pending_close.is_some() {
-            return vec![
-                ("Unsaved changes: ", Key::Esc, false),
-                ("[s] Save ", Key::Char('s'), true),
-                ("[d] Discard ", Key::Char('d'), true),
-                ("[c] Cancel ", Key::Char('c'), true),
-            ];
-        }
         if !self.is_draft() {
             return Vec::new();
         }
@@ -318,6 +369,111 @@ impl Ui {
             ("[s] Save ", Key::CtrlS, state.actions.save),
             ("[W] Close ", Key::CtrlW, true),
         ]
+    }
+
+    pub(super) fn workspace_close_mouse(
+        &mut self,
+        button: u16,
+        x: usize,
+        y: usize,
+        release: bool,
+        size: (usize, usize),
+    ) -> bool {
+        if self.session.workspace_model().pending_close().is_none() {
+            return false;
+        }
+        // The dialog owns all pointer input, including the sidebar and transport.
+        if !release && button & 3 == 0 && button & (32 | 64 | 128) == 0 {
+            let dialog = CloseDialog::new(size);
+            for (index, &(choice, _)) in CLOSE_CHOICES.iter().enumerate() {
+                let (left, row, width) = dialog.button(index);
+                if y == row && (left..left + width).contains(&x) {
+                    self.workspace_command(Command::ResolveClose { choice });
+                    break;
+                }
+            }
+        }
+        true
+    }
+
+    pub(super) fn draw_workspace_close_dialog(&self, screen: &mut String, size: (usize, usize)) {
+        let Some(key) = self.session.workspace_model().pending_close() else {
+            return;
+        };
+        let state = self.session.workspace();
+        let name = state
+            .tabs
+            .iter()
+            .find(|tab| tab.key == key)
+            .map(|tab| tab.name.as_str())
+            .unwrap_or("Playlist");
+        let dialog = CloseDialog::new(size);
+        screen.push_str("\x1b[?25l");
+        for row in 0..dialog.height {
+            let border = if row == 0 {
+                format!("╭{}╮", "─".repeat(dialog.width.saturating_sub(2)))
+            } else if row == dialog.height - 1 {
+                format!("╰{}╯", "─".repeat(dialog.width.saturating_sub(2)))
+            } else {
+                format!("│{}│", " ".repeat(dialog.width.saturating_sub(2)))
+            };
+            paint(
+                screen,
+                dialog.y + row + 1,
+                dialog.x + 1,
+                &border,
+                dialog.width,
+                Surface::Toolbar,
+                false,
+            );
+        }
+        let mut line = |row, text: &str, surface, bold| {
+            paint(
+                screen,
+                dialog.y + row + 1,
+                dialog.x + 3,
+                text,
+                dialog.width.saturating_sub(4),
+                surface,
+                bold,
+            );
+        };
+        line(1, "Unsaved changes", Surface::Accent, true);
+        line(2, name, Surface::Toolbar, true);
+        line(
+            3,
+            if dialog.width >= 32 {
+                "Save changes before closing?"
+            } else {
+                "Save changes?"
+            },
+            Surface::Toolbar,
+            false,
+        );
+        if dialog.width >= 31 {
+            line(7, "Tab/←→ · Enter · Esc cancels", Surface::Muted, false);
+        } else {
+            line(8, "↑↓ Tab · Enter", Surface::Muted, false);
+            line(9, "Esc: cancel", Surface::Muted, false);
+        }
+        for (index, &(_, label)) in CLOSE_CHOICES.iter().enumerate() {
+            let (x, y, width) = dialog.button(index);
+            let selected = index == self.workspace_close_selected;
+            let surface = if selected {
+                Surface::Selected
+            } else {
+                Surface::Header
+            };
+            paint(screen, y + 1, x + 1, label, width, surface, selected);
+            paint_mnemonic(
+                screen,
+                y + 1,
+                x + 2,
+                label.chars().nth(1).unwrap(),
+                surface,
+                selected,
+            );
+        }
     }
 
     pub(super) fn workspace_mouse(

@@ -969,6 +969,7 @@ struct Ui {
     session_effects: std::collections::VecDeque<SessionEffect>,
     session_jobs: Vec<(Token, Receiver<IoResult<Track>>)>,
     workspace_cursor: usize,
+    workspace_close_selected: usize,
     workspace_offset: usize,
     workspace_manual_scroll: Option<usize>,
     workspace_anchor: Option<usize>,
@@ -1374,6 +1375,7 @@ impl Ui {
             session_effects: Default::default(),
             session_jobs: Vec::new(),
             workspace_cursor: 0,
+            workspace_close_selected: 2,
             workspace_offset: 0,
             workspace_manual_scroll: None,
             workspace_anchor: None,
@@ -6149,13 +6151,7 @@ impl Ui {
         if self.cancel_track_drag() && matches!(key, Key::Esc) {
             return true;
         }
-        if self
-            .session
-            .workspace_model()
-            .snapshot()
-            .pending_close
-            .is_some()
-        {
+        if self.session.workspace_model().pending_close().is_some() {
             self.workspace_key(key, size);
             return true;
         }
@@ -6806,6 +6802,9 @@ impl Ui {
     }
 
     fn mouse(&mut self, button: u16, x: usize, y: usize, release: bool, size: (usize, usize)) {
+        if self.workspace_close_mouse(button, x, y, release, size) {
+            return;
+        }
         if !release && button & 32 != 0 && button & 3 == 3 {
             self.cancel_track_drag();
             if self.hover_position != Some((x, y)) {
@@ -7903,7 +7902,9 @@ impl Ui {
                 &mut screen,
                 1,
                 1,
-                if self.exit_confirm_open {
+                if self.session.workspace_model().pending_close().is_some() {
+                    "Unsaved: S/D/Esc"
+                } else if self.exit_confirm_open {
                     "Exit Kog? Y/N"
                 } else {
                     "Kog · Enlarge terminal"
@@ -7912,6 +7913,9 @@ impl Ui {
                 Surface::Toolbar,
                 true,
             );
+            if width >= 20 && height >= 11 {
+                self.draw_workspace_close_dialog(&mut screen, size);
+            }
             return screen;
         }
         let marquee_tick = (self.marquee_started.elapsed().as_millis() / 180) as usize;
@@ -9631,6 +9635,7 @@ impl Ui {
             && !self.menu_open
             && self.prompt.is_none()
             && !self.exit_confirm_open
+            && self.session.workspace_model().pending_close().is_none()
             && let Some(pointer) = hover_labels.pointer
             && let Some(label) = hover_labels.label.as_ref()
         {
@@ -9640,6 +9645,7 @@ impl Ui {
             screen.push_str("\x1b[?25l");
             draw_exit_confirmation(&mut screen, size, self.exit_confirm_yes);
         }
+        self.draw_workspace_close_dialog(&mut screen, size);
         screen
     }
 }
