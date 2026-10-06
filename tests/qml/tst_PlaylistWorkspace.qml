@@ -95,8 +95,19 @@ TestCase {
         compare(test.state.active, "local:1", "Finding a drop target must not switch tabs")
         for (let i = 0; i < native.count; ++i) {
             const tab = native.itemAt(i)
-            if (tab.background && "text" in tab.background && tab.background.text.length)
-                compare(tab.contentItem, null, "A style-painted tab label must not have a second label")
+            const label = tab.contentItem
+            verify(label !== null)
+            compare(label.text, tab.text)
+            fuzzyCompare(label.x, 12, 0.5, "Every tab title has the same leading inset")
+            if (tab.background && "text" in tab.background)
+                compare(tab.background.text, "", "Native background must not draw a second label")
+            const close = findChild(tab, "closePlaylistTab")
+            if (close.visible) {
+                fuzzyCompare(close.x - (label.x + label.width), 6, 0.5, "Title ends before the close control")
+                fuzzyCompare(tab.width - close.x - close.width, 6, 0.5, "Close control keeps its trailing inset")
+            } else {
+                fuzzyCompare(tab.width - label.x - label.width, 12, 0.5)
+            }
         }
         compare(view.count, 2)
         compare(header.height, 30)
@@ -148,6 +159,7 @@ TestCase {
             compare(native.count, pid, "Reopening the playlist must focus its existing tab")
             compare(native.itemAt(pid - 1), added, "Snapshot refresh must retain the native control")
         }
+        verify(waitForRendering(tabs), "Tab geometry must settle before clicking a close button")
         const retained = native.itemAt(3)
         const close = findChild(native.itemAt(2), "closePlaylistTab")
         mouseClick(close, close.width / 2, close.height / 2)
@@ -189,6 +201,16 @@ TestCase {
             }
         }
         grabImage(panel).save("/tmp/kog-playlist-refreshed-tabs.png")
+        test.width = 360
+        tryCompare(native, "width", 360)
+        verify(waitForRendering(tabs))
+        const last = native.itemAt(native.count - 1)
+        tryVerify(() => {
+            const position = last.mapToItem(native, 0, 0)
+            return position.x >= 0 && position.x + last.width <= native.width + 1
+        }, 1000, "The active tab and its close button remain visible in a narrow pane")
+        grabImage(panel).save("/tmp/kog-playlist-narrow-tabs.png")
+        test.width = 1000
     }
     function test_track_drag_insertion_marker() {
         const view = findChild(editor, "workspacePlaylistView")

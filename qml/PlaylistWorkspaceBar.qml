@@ -66,6 +66,10 @@ Item {
         // Keep native styling with a stable height even while tabs are added
         // or removed; KDE's default view assumes item zero already exists.
         contentItem: ListView {
+            function revealCurrent() {
+                if (width > 0 && currentIndex >= 0 && currentIndex < count)
+                    positionViewAtIndex(currentIndex, ListView.Contain)
+            }
             implicitWidth: contentWidth
             implicitHeight: tabMetrics.implicitHeight
             model: tabs.contentModel
@@ -79,6 +83,9 @@ Item {
             highlightRangeMode: ListView.ApplyRange
             preferredHighlightBegin: 40
             preferredHighlightEnd: width - 40
+            onWidthChanged: Qt.callLater(revealCurrent)
+            onContentWidthChanged: Qt.callLater(revealCurrent)
+            onCurrentIndexChanged: Qt.callLater(revealCurrent)
         }
         onCurrentIndexChanged: Qt.callLater(function() {
             // Model updates can change the current index while bindings are
@@ -96,11 +103,38 @@ Item {
             required property string tabKey
             required property string title
             required property bool dirty
+            readonly property bool nativePaintedLabel: !!background && "text" in background
             text: title + (dirty ? " •" : "")
-            // Keep the style's own label. KDE paints its text in the
-            // background, so replacing contentItem draws it twice.
-            width: implicitWidth + (tabKey !== "queue" ? closeButton.width : 0)
-            rightPadding: leftPadding + (tabKey !== "queue" ? closeButton.width + 6 : 0)
+            width: implicitWidth
+            implicitWidth: Math.ceil(implicitContentWidth) + leftPadding + rightPadding
+            leftPadding: 12
+            rightPadding: tabKey !== "queue" ? closeButton.width + 12 : leftPadding
+            // KDE normally paints its label inside the native background,
+            // centered across the whole tab regardless of content padding.
+            // Draw just the label ourselves so it shares the close button's
+            // layout, retaining the native frame, hover and selection states.
+            Binding {
+                target: tab.nativePaintedLabel ? tab.background : null
+                property: "text"
+                value: ""
+            }
+            Binding {
+                target: tab
+                property: "contentItem"
+                value: tabLabel
+                when: tab.nativePaintedLabel
+            }
+            Text {
+                id: tabLabel
+                objectName: "playlistTabLabel"
+                visible: tab.nativePaintedLabel
+                text: tab.text
+                font: tab.font
+                color: tab.palette.buttonText
+                horizontalAlignment: Text.AlignLeft
+                verticalAlignment: Text.AlignVCenter
+                elide: Text.ElideRight
+            }
             onClicked: bar.send({op: "focus", key: tab.tabKey})
             Rectangle {
                 anchors.fill: parent
@@ -119,7 +153,7 @@ Item {
                 objectName: "closePlaylistTab"
                 visible: tab.tabKey !== "queue"
                 anchors.right: parent.right
-                anchors.rightMargin: 5
+                anchors.rightMargin: 6
                 anchors.verticalCenter: parent.verticalCenter
                 width: 24; height: 24
                 text: "×"
