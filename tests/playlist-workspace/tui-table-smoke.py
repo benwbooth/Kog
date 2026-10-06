@@ -121,6 +121,34 @@ with tempfile.TemporaryDirectory(prefix="kog-tui-table-") as directory:
         with closing(sqlite3.connect(database)) as db:
             return [row[0] for row in db.execute("SELECT path FROM playlist_entries WHERE playlist_id=1 ORDER BY position")]
 
+    def selected_rows():
+        saved = checkpoint()
+        if saved["workspace"]["active"] == "queue":
+            return set(saved["selection"]["indices"])
+        draft = saved["workspace"]["tabs"][0]["draft"]
+        return {index for index, row in enumerate(draft["rows"]) if row["id"] in draft["selected"]}
+
+    def visible_rows():
+        start = screen.display[2].index("#")
+        end = screen.display[2].index("│", start)
+        return {int(line[start:end]) - 1: row for row, line in enumerate(screen.display[3:], 3)
+                if line[start:end].strip().isdecimal()}
+
+    def expect_selection(expected):
+        expected = set(expected)
+        wait(lambda: selected_rows() == expected, f"Wrong selected tracks: expected {sorted(expected)}")
+        visible = visible_rows()
+        column = screen.display[2].index("Title")
+        painted = {index for index, row in visible.items() if screen.buffer[row][column].bg == selection_background}
+        if painted != expected.intersection(visible):
+            save_frame("selection-failure")
+        assert painted == expected.intersection(visible), f"Persisted selection {sorted(expected)}, highlighted rows {sorted(painted)}"
+
+    def choose(index, modifiers=0):
+        row = visible_rows()[index] + 1
+        mouse(modifiers, 70, row)
+        mouse(modifiers, 70, row, True)
+
     try:
         drain(2)
         assert "Play Queue" in screen.display[1], "Queue tab is missing at the top"
@@ -135,10 +163,57 @@ with tempfile.TemporaryDirectory(prefix="kog-tui-table-") as directory:
         save_frame("draft")
         send(b"\x1b1")
         wait(lambda: checkpoint()["workspace"]["active"] == "queue", "Queue focus failed")
+        send(b"\x1b[H")  # Compare equal selections as well as equal content.
         assert [cells(row) for row in range(2, 23)] == draft_cells, "Queue and draft table cells/styles differ"
         save_frame("queue")
         queue = checkpoint()["queue"]
         current = checkpoint()["current"]
+
+        # Alt-click ranges followed by individual Ctrl-click toggles must repaint
+        # the clicked row immediately, without needing another pointer event.
+        for key in ("queue", "local:1"):
+            if key != "queue":
+                click(screen.display[1].index("Reference playlist") + 3, 2)
+                wait(lambda: checkpoint()["workspace"]["active"] == key, "Draft tab focus failed")
+            choose(0)
+            selection_background = screen.buffer[3][screen.display[2].index("Title")].bg
+            choose(7, 8)
+            expect_selection(range(8))
+            remaining = set(range(8))
+            for index in (3, 5, 1, 0, 7, 4, 6, 2):
+                choose(index, 16)
+                remaining.remove(index)
+                expect_selection(remaining)
+                row = visible_rows()[index]
+                assert screen.buffer[row][screen.display[2].index("Title")].bold, "Deselected cursor lost its keyboard focus cue"
+                if key == "queue":
+                    assert f"Selected {len(remaining)} tracks" in screen.display[-1], "Selection count is stale"
+            save_frame(f"{key.replace(':', '-')}-deselected")
+            choose(2, 16)
+            expect_selection({2})
+            choose(2, 16)
+            expect_selection(set())
+
+            send(b"Ftrack-1\r")
+            choose(10)
+            choose(14, 8)
+            choose(12, 16)
+            expect_selection({10, 11, 13, 14})
+            send(b"F\x01\x7f\r\x1b[H")
+
+            resize(120, 14)
+            mouse(65, 120, 5)  # Scroll using the shared vertical scrollbar.
+            visible = sorted(visible_rows())
+            assert visible[0] > 0, "Selection test did not scroll"
+            choose(visible[0])
+            choose(visible[-1], 8)
+            choose(visible[len(visible) // 2], 16)
+            expect_selection(set(visible) - {visible[len(visible) // 2]})
+            resize(120, 34)
+            send(b"\x1b[H")
+        assert checkpoint()["queue"] == queue, "Selection gestures changed queue contents"
+        send(b"\x1b1")
+        wait(lambda: checkpoint()["workspace"]["active"] == "queue", "Queue refocus failed")
 
         # The top tab hitbox must choose the draft, not sort/select a queue row.
         click(screen.display[1].index("Reference playlist") + 3, 2)
@@ -253,7 +328,7 @@ with tempfile.TemporaryDirectory(prefix="kog-tui-table-") as directory:
         send(b"\x03")
         os.waitpid(pid, 0)
         pid = 0
-        print("TUI TABLE PASS: shared table controls, centered close dialog at 120/50/24 columns, modal input, keyboard navigation, default/mouse/Esc Cancel, Save, mouse Discard, queue isolation")
+        print("TUI TABLE PASS: shared table controls, Alt-range/Ctrl-deselect matches persisted selection and highlights in queue/draft/filtered/scrolled views, distinct cursor cue, selection counts, centered close dialog at 120/50/24 columns, keyboard/mouse controls, Save/Discard/Cancel, queue isolation")
     except BaseException:
         print("\n".join(screen.display))
         print("Saved active tab:", checkpoint()["workspace"]["active"])

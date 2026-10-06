@@ -7754,7 +7754,7 @@ impl Ui {
             let ranged = button & (4 | 8) != 0 || range_pending == Some(Focus::Tracks);
             let modified = ranged || button & 16 != 0;
             self.select_track(index, ranged, button & 16 != 0);
-            if ranged {
+            if modified {
                 self.status = format!("Selected {} tracks", self.selected_tracks.len());
             }
             let starred_cell = self
@@ -8534,9 +8534,11 @@ impl Ui {
                 let index = position
                     .and_then(|position| visible_tracks.get(position))
                     .copied();
-                let surface = if index.is_some_and(|index| table_selected.contains(&index))
-                    || index == Some(table_cursor) && self.focus == Focus::Tracks
-                {
+                // Ctrl-click can leave the cursor on an unselected row. Keep its
+                // bold focus cue separate from the selection background.
+                let selected = index.is_some_and(|index| table_selected.contains(&index));
+                let focused = index == Some(table_cursor) && self.focus == Focus::Tracks;
+                let surface = if selected {
                     Surface::Selected
                 } else if y % 2 == 1 {
                     Surface::MainAlt
@@ -8574,7 +8576,7 @@ impl Ui {
                                 &value,
                                 marquee_tick,
                                 surface,
-                                false,
+                                focused && !selected,
                             );
                             if self.columns.entries[column_index].id == "status"
                                 && self.table_playing() == Some(index)
