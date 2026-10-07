@@ -335,6 +335,10 @@ pub mod qobject {
         #[qinvokable]
         fn channel_snapshot(self: &AppController, include_tracker: bool) -> QString;
         #[qinvokable]
+        fn mml_state(self: Pin<&mut AppController>) -> QString;
+        #[qinvokable]
+        fn mml_bar(self: &AppController, index: i32) -> QString;
+        #[qinvokable]
         fn skin_state(self: &AppController, include_tracks: bool) -> QString;
         #[qinvokable]
         fn update_skin_equalizer_band(self: Pin<&mut AppController>, index: i32, gain_db: f64);
@@ -1888,6 +1892,7 @@ pub struct AppControllerRust {
     radio_active: bool,
     radio: Option<RadioState>,
     cover_art: Option<CoverArtState>,
+    mml: crate::mml_view::MmlView,
     cover_art_generation: u64,
     directory_scan_active: bool,
     directory_scan_files_scanned: i32,
@@ -2155,6 +2160,7 @@ impl Default for AppControllerRust {
             tree_delete: None,
             mpris: MprisService::default(),
             api_server: None,
+            mml: crate::mml_view::MmlView::default(),
         };
 
         // Restore the remembered tree root and expanded folders before radio
@@ -5350,6 +5356,28 @@ impl qobject::AppController {
             snapshot.current_row = None;
         }
         QString::from(serde_json::to_string(&snapshot).unwrap_or_else(|_| "{}".into()))
+    }
+
+    /// The playing song's MML score state; recording starts on first use.
+    pub fn mml_state(mut self: Pin<&mut Self>) -> QString {
+        let this = self.as_ref();
+        let state = this.rust();
+        let playing = state.playback.state() != PlaybackState::Stopped;
+        let track = usize::try_from(state.current_index)
+            .ok()
+            .filter(|_| playing)
+            .and_then(|index| state.tracks.get(index))
+            .cloned();
+        let title = state.now_title.to_string();
+        let settings = state.decoder_settings.clone();
+        let position = state.playback.position().as_secs_f64();
+        let mut rust = self.as_mut().rust_mut();
+        rust.mml.follow(track.as_ref().map(|track| &track.source), &title, &settings);
+        QString::from(rust.mml.state(position).to_string())
+    }
+
+    pub fn mml_bar(&self, index: i32) -> QString {
+        QString::from(usize::try_from(index).map(|index| self.rust().mml.bar(index)).unwrap_or_default())
     }
 
     pub fn visualizer_frame(&self) -> QString {

@@ -23,8 +23,20 @@ ApplicationWindow {
     property var rows: []
     property bool follow: true
     property int mode: 2
+    // MML score: the playing bar arrives as highlighted rich text, the other
+    // bars are fetched once per score revision by their delegates.
+    property var mml: ({ revision: 0, bars: 0, current: -1, message: "", header: "", currentHtml: "" })
+    property int mmlRevision: 0
     function refresh() {
         if (!visible || visibility === Window.Minimized) return
+        if (mode === 3) {
+            try {
+                const next = JSON.parse(app.mml_state())
+                if (next.revision !== mmlRevision) mmlRevision = next.revision
+                mml = next
+            } catch (_) { }
+            return
+        }
         try {
             const next = JSON.parse(app.channel_snapshot(mode !== 0))
             const nextRows = mode === 0 ? [] : (next.rows || [])
@@ -76,7 +88,7 @@ ApplicationWindow {
             Label { text: qsTr("Channels"); font.bold: true }
             ComboBox {
                 objectName: "channelInspectorMode"
-                model: [qsTr("Keyboards"), qsTr("Tracker"), qsTr("Keyboards + tracker")]
+                model: [qsTr("Keyboards"), qsTr("Tracker"), qsTr("Keyboards + tracker"), qsTr("MML score")]
                 currentIndex: root.mode
                 onActivated: root.mode = currentIndex
                 Layout.preferredWidth: 200
@@ -101,7 +113,55 @@ ApplicationWindow {
             color: "#a8bdc9"; wrapMode: Text.Wrap; textFormat: Text.PlainText; Layout.fillWidth: true
         }
         Label { text: root.fields(root.frame.global); color: "#83d4bb"; textFormat: Text.PlainText; elide: Text.ElideRight; Layout.fillWidth: true }
+        Label {
+            visible: root.mode === 3 && root.mml.message.length > 0
+            text: root.mml.message
+            color: "#a8bdc9"; textFormat: Text.PlainText; Layout.fillWidth: true
+        }
+        ListView {
+            id: mmlBars
+            objectName: "mmlScore"
+            visible: root.mode === 3
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            clip: true
+            spacing: 6
+            model: root.mode === 3 ? root.mml.bars : 0
+            boundsBehavior: Flickable.StopAtBounds
+            ScrollBar.vertical: ScrollBar { }
+            KineticWheelHandler { view: mmlBars }
+            readonly property int playing: root.mml.current
+            onPlayingChanged: if (root.follow && playing >= 0) positionViewAtIndex(playing, ListView.Beginning)
+            header: Text {
+                width: mmlBars.width
+                text: "<p style=\"white-space:pre-wrap\">" + (root.mml.header || "").replace(/\n/g, "<br/>") + "</p>"
+                textFormat: Text.RichText; wrapMode: Text.Wrap
+                color: "#6f8794"; font.family: "monospace"; font.pixelSize: 12
+                bottomPadding: 8
+            }
+            delegate: Rectangle {
+                id: mmlBar
+                required property int index
+                readonly property bool current: index === root.mml.current
+                // Re-fetch when a newer partial or final score arrives.
+                readonly property string html: root.mmlRevision >= 0 ? root.app.mml_bar(index) : ""
+                width: mmlBars.width
+                height: barText.implicitHeight + 12
+                radius: 6
+                color: current ? "#173946" : "#121f27"
+                border.color: current ? "#50c8ef" : "transparent"
+                Text {
+                    id: barText
+                    x: 8; y: 6
+                    width: parent.width - 16
+                    text: mmlBar.current && root.mml.currentHtml ? root.mml.currentHtml : mmlBar.html
+                    textFormat: Text.RichText; wrapMode: Text.Wrap
+                    color: "#d7e6ed"; font.family: "monospace"; font.pixelSize: 12
+                }
+            }
+        }
         SplitView {
+            visible: root.mode !== 3
             Layout.fillWidth: true
             Layout.fillHeight: true
             orientation: Qt.Vertical
@@ -263,7 +323,7 @@ ApplicationWindow {
             }
         }
         Label {
-            visible: root.channels.length === 0
+            visible: root.mode !== 3 && root.channels.length === 0
             text: root.frame.seeking ? qsTr("Waiting for the decoder to finish seeking…") : qsTr("No channel data at this position.")
             color: "#a8bdc9"; Layout.fillWidth: true
         }

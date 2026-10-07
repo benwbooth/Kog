@@ -1,6 +1,7 @@
 mod app_controller;
 mod desktop_integration;
 mod file_tree_model;
+mod mml_view;
 mod rom_import;
 mod skin_library;
 mod tag_editor;

@@ -20,6 +20,13 @@ TestCase {
         property int requests: 0
         function channel_snapshot() { requests++; return JSON.stringify(test.state) }
         function play_pause() { test.state = Object.assign({}, test.state, {playing:!test.state.playing}) }
+        property int barRequests: 0
+        property int mmlCurrent: 1
+        function mml_state() {
+            return JSON.stringify({revision: 2, message: "", bars: 3, current: mmlCurrent, header: "#KOG-MML 1",
+                currentHtml: "<p>A | c4 <span style=\"background-color:#50c8ef\">e4</span> |</p>"})
+        }
+        function mml_bar(index) { barRequests++; return "<p>; bar " + (index + 1) + "<br/>A | c4 e4 |</p>" }
     }
     Kog.ChannelInspector { id: inspector; app: backend }
     SignalSpy { id: backgroundPaints; signalName: "painted" }
@@ -47,6 +54,31 @@ TestCase {
         const picture = grabImage(inspector.contentItem)
         verify(picture.width > 600)
         picture.save("/tmp/kog-channel-inspector-qt.png")
+    }
+
+    function test_mml_score_highlights_the_playing_bar() {
+        inspector.mode = 3
+        inspector.refresh()
+        const score = findChild(inspector.contentItem, "mmlScore")
+        verify(score.visible)
+        tryCompare(score, "count", 3)
+        compare(findChild(inspector.contentItem, "channelKeyboards").visible, false)
+        tryVerify(() => score.itemAtIndex(1) !== null)
+        const playing = score.itemAtIndex(1)
+        verify(playing.current)
+        verify(playing.children[0].text.indexOf("background-color") >= 0)
+        score.positionViewAtBeginning()
+        tryVerify(() => score.itemAtIndex(0) !== null)
+        verify(!score.itemAtIndex(0).current)
+        // Other bars are fetched once per score revision, not on every refresh.
+        const requests = backend.barRequests
+        inspector.refresh()
+        inspector.refresh()
+        compare(backend.barRequests, requests)
+        backend.mmlCurrent = 2
+        inspector.refresh()
+        tryVerify(() => score.itemAtIndex(2) !== null && score.itemAtIndex(2).current)
+        grabImage(inspector.contentItem).save("/tmp/kog-channel-inspector-mml-qt.png")
     }
 
     function test_hidden_view_stops_polling() {
