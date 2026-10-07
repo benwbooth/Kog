@@ -1,5 +1,9 @@
 # Kog MML
 
+The full guide, with a chapter for every part of the language, is in
+[docs/mml-guide](mml-guide/01-introduction.md) and opens from the **Guide**
+button in every MML view. This page is a summary.
+
 Kog MML is one text notation for every chip and sequencer Kog can inspect:
 MIDI, trackers, OPL, NES/Game Boy/SNES/PlayStation sound chips, and the rest
 of the families in [Channel Inspector](CHANNEL_INSPECTOR.md). It reads like
