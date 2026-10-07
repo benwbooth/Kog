@@ -155,6 +155,13 @@ pub unsafe extern "C" fn kog_audio_channel_snapshot(handle: *const KogAudioHandl
     serde_json::to_string(&snapshot).ok().and_then(|json| CString::new(json).ok()).map_or(ptr::null_mut(), CString::into_raw)
 }
 
+/// The Kog MML guide's chapters as JSON: `[{title, markdown}, …]`. Free the
+/// reply with `kog_audio_string_free`.
+#[unsafe(no_mangle)]
+pub extern "C" fn kog_mml_guide() -> *mut c_char {
+    CString::new(kog_audio::inspection::guide::json()).map_or(ptr::null_mut(), CString::into_raw)
+}
+
 /// The local track's MML score as `/api/mml`-style JSON, or null for a stream.
 /// Recording starts on the first call; `have` is the revision already held,
 /// or -1. Free the reply with `kog_audio_string_free`.

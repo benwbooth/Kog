@@ -12,9 +12,15 @@ struct MmlScoreView: View {
     @State private var lastRequest = Date.distantPast
     @State private var barCache = [Int: AttributedString]()
     @AppStorage("mmlBarsPerLine") private var bars = 4
+    @State private var showGuide = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Button("Guide") { showGuide = true }.font(.caption)
+                Spacer()
+            }
+            .sheet(isPresented: $showGuide) { MmlGuideView() }
             Stepper("Bars per line: \(bars)", value: $bars, in: 1...16)
                 .font(.caption)
                 .onChange(of: bars) { _, _ in

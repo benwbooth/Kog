@@ -25,6 +25,8 @@ char *kog_audio_channel_snapshot(const KogAudioHandle *handle, uint64_t position
 // stream. have is the revision already held, or -1 (always -1 after changing
 // bars_per_line). Free with kog_audio_string_free.
 char *kog_audio_mml(const KogAudioHandle *handle, int64_t have, uint32_t bars_per_line);
+// The Kog MML guide's chapters as JSON. Free with kog_audio_string_free.
+char *kog_mml_guide(void);
 int64_t kog_audio_duration_ms(const KogAudioHandle *handle);
 intptr_t kog_audio_read(KogAudioHandle *handle, uint8_t *output, size_t capacity,
                         char *error, size_t error_capacity);

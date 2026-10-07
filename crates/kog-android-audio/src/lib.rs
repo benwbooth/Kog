@@ -222,6 +222,20 @@ pub extern "system" fn Java_org_kog_player_NativeAudio_nativeInspection(
     }
 }
 
+/// The Kog MML guide's chapters as JSON: `[{title, markdown}, …]`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_kog_player_NativeAudio_nativeMmlGuide(
+    mut env: JNIEnv, _receiver: JObject,
+) -> jni::sys::jstring {
+    match env.new_string(kog_audio::inspection::guide::json()) {
+        Ok(reply) => reply.into_raw(),
+        Err(error) => {
+            fail(&mut env, error.to_string());
+            std::ptr::null_mut()
+        }
+    }
+}
+
 /// The open track's MML score as `/api/mml`-style JSON. Recording starts on
 /// the first call; `have` is the revision the caller already holds, or -1.
 #[unsafe(no_mangle)]

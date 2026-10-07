@@ -1,6 +1,9 @@
 package org.kog.player
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -164,7 +167,10 @@ internal fun MmlScore(state: KogState, follow: Boolean, modifier: Modifier) {
         if (follow && currentBar >= 0) list.animateScrollToItem(currentBar + 1)
     }
     Column(modifier) {
+        var guide by remember { mutableStateOf(false) }
+        if (guide) MmlGuide { guide = false }
         Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+            TextButton(onClick = { guide = true }) { Text("Guide") }
             Text("Bars per line", fontSize = 12.sp, color = Color(0xffadb7c0))
             TextButton(onClick = { bars = (bars - 1).coerceAtLeast(1) }, enabled = bars > 1) { Text("−") }
             Text("$bars", fontSize = 13.sp, fontFamily = FontFamily.Monospace)
@@ -189,6 +195,138 @@ internal fun MmlScore(state: KogState, follow: Boolean, modifier: Modifier) {
                     Text(text, Modifier.weight(1f).padding(horizontal = 8.dp, vertical = 6.dp),
                         fontSize = 11.sp, fontFamily = FontFamily.Monospace, color = Color(0xffdce3e8))
                 }
+            }
+        }
+    }
+}
+
+/** One chapter of the Kog MML guide (docs/mml-guide). */
+internal class GuideChapter(val title: String, val markdown: String)
+
+internal fun loadGuide(): List<GuideChapter> = runCatching {
+    val array = org.json.JSONArray(NativeAudio.nativeMmlGuide())
+    List(array.length()) { i -> array.getJSONObject(i).let { GuideChapter(it.getString("title"), it.getString("markdown")) } }
+}.getOrDefault(emptyList())
+
+/** The Kog MML guide as a book: a chapter picker and the chapter's text. */
+@Composable
+internal fun MmlGuide(dismiss: () -> Unit) {
+    val chapters = remember { loadGuide() }
+    var chapter by rememberSaveable { mutableIntStateOf(0) }
+    var contents by remember { mutableStateOf(false) }
+    androidx.compose.ui.window.Dialog(onDismissRequest = dismiss,
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)) {
+        androidx.compose.material3.Surface(Modifier.fillMaxSize().padding(8.dp), color = Color(0xff10191f)) {
+            Column(Modifier.padding(12.dp)) {
+                Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                    Text("Kog MML Guide", Modifier.weight(1f), fontSize = 20.sp, color = Color(0xffedf4f7))
+                    TextButton(onClick = { contents = !contents }) { Text(if (contents) "Hide chapters" else "Chapters") }
+                    TextButton(onClick = dismiss) { Text("Close") }
+                }
+                if (chapters.isEmpty()) {
+                    Text("The guide is unavailable on this device.", color = Color(0xffadb7c0))
+                    return@Column
+                }
+                if (contents) {
+                    LazyColumn(Modifier.weight(1f)) {
+                        itemsIndexed(chapters) { index, entry ->
+                            TextButton(onClick = { chapter = index; contents = false }) {
+                                Text(entry.title, color = if (index == chapter) Color(0xff50c8ef) else Color(0xffdce3e8))
+                            }
+                        }
+                    }
+                } else {
+                    val list = rememberLazyListState()
+                    LaunchedEffect(chapter) { list.scrollToItem(0) }
+                    val blocks = remember(chapter) { guideBlocks(chapters[chapter].markdown) }
+                    LazyColumn(Modifier.weight(1f), state = list, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(blocks.size) { i -> GuideBlock(blocks[i]) }
+                    }
+                    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                        TextButton(onClick = { chapter-- }, enabled = chapter > 0) { Text("‹ Previous") }
+                        Text("${chapter + 1} of ${chapters.size}", Modifier.weight(1f), color = Color(0xffadb7c0),
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                        TextButton(onClick = { chapter++ }, enabled = chapter < chapters.size - 1) { Text("Next ›") }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** A heading, a paragraph or list item, or a preformatted block (code or table). */
+internal sealed class GuideText {
+    class Heading(val text: String, val level: Int) : GuideText()
+    class Paragraph(val text: String) : GuideText()
+    class Preformatted(val text: String) : GuideText()
+}
+
+internal fun guideBlocks(markdown: String): List<GuideText> {
+    val blocks = mutableListOf<GuideText>()
+    val paragraph = StringBuilder()
+    fun flush() { if (paragraph.isNotEmpty()) { blocks += GuideText.Paragraph(paragraph.toString()); paragraph.clear() } }
+    val lines = markdown.lines()
+    var i = 0
+    while (i < lines.size) {
+        val line = lines[i]; val trimmed = line.trim()
+        when {
+            trimmed.startsWith("```") -> {
+                flush(); i++
+                val code = StringBuilder()
+                while (i < lines.size && !lines[i].trim().startsWith("```")) { code.appendLine(lines[i]); i++ }
+                blocks += GuideText.Preformatted(code.toString().trimEnd())
+            }
+            trimmed.startsWith("#") -> { flush(); val level = trimmed.takeWhile { it == '#' }.length; blocks += GuideText.Heading(trimmed.drop(level).trim(), level) }
+            trimmed.startsWith("|") -> {
+                flush()
+                val table = StringBuilder()
+                while (i < lines.size && lines[i].trim().startsWith("|")) {
+                    if (!lines[i].trim().startsWith("| ---")) table.appendLine(lines[i].trim().replace("\\|", "¦"))
+                    i++
+                }
+                blocks += GuideText.Preformatted(table.toString().trimEnd().replace("¦", "|"))
+                continue
+            }
+            trimmed.isEmpty() -> flush()
+            trimmed.startsWith("- ") || Regex("^\\d+\\. ").containsMatchIn(trimmed) && line == trimmed -> { flush(); paragraph.append(trimmed.replace(Regex("^- "), "• ")) }
+            else -> { if (paragraph.isNotEmpty()) paragraph.append(' '); paragraph.append(trimmed) }
+        }
+        i++
+    }
+    flush()
+    return blocks
+}
+
+@Composable
+private fun GuideBlock(block: GuideText) {
+    when (block) {
+        is GuideText.Heading -> Text(block.text, fontSize = if (block.level == 1) 22.sp else 17.sp,
+            fontWeight = FontWeight.Bold, color = Color(0xffedf4f7), modifier = Modifier.padding(top = 8.dp))
+        is GuideText.Paragraph -> Text(inlineMarkdown(block.text), fontSize = 14.sp, color = Color(0xffdce3e8))
+        is GuideText.Preformatted -> Text(block.text, fontSize = 11.sp, fontFamily = FontFamily.Monospace,
+            color = Color(0xffdce3e8), modifier = Modifier.fillMaxWidth().background(Color(0xff0b1216)).padding(8.dp)
+                .horizontalScroll(rememberScrollState()))
+    }
+}
+
+/** `code` in monospace green and **bold** in bold. */
+private fun inlineMarkdown(text: String) = buildAnnotatedString {
+    var rest = text
+    while (rest.isNotEmpty()) {
+        when {
+            rest.startsWith("`") && rest.indexOf('`', 1) > 0 -> {
+                val end = rest.indexOf('`', 1)
+                withStyle(SpanStyle(fontFamily = FontFamily.Monospace, color = Color(0xffc3e88d))) { append(rest.substring(1, end)) }
+                rest = rest.substring(end + 1)
+            }
+            rest.startsWith("**") && rest.indexOf("**", 2) > 0 -> {
+                val end = rest.indexOf("**", 2)
+                withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(rest.substring(2, end)) }
+                rest = rest.substring(end + 2)
+            }
+            else -> {
+                val next = listOf(rest.indexOf('`', 1), rest.indexOf("**", 1)).filter { it > 0 }.minOrNull() ?: rest.length
+                append(rest.substring(0, next)); rest = rest.substring(next)
             }
         }
     }

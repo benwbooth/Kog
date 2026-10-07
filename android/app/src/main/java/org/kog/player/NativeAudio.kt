@@ -24,6 +24,7 @@ internal object NativeAudio {
     external fun nativeSetInspectionDirectory(path: String)
     external fun nativeInspection(handle: Long, positionMs: Long, playing: Boolean): String
     external fun nativeMml(handle: Long, have: Long, bars: Int): String
+    external fun nativeMmlGuide(): String
     /** The open track's MML score status; null until the track has been opened. */
     internal fun mml(track: Track, have: Long, bars: Int): String? =
         inspectionHandles[uri(track).toString()]?.let { nativeMml(it, have, bars) }
