@@ -27,13 +27,18 @@ ApplicationWindow {
     // bars are fetched once per score revision by their delegates.
     property var mml: ({ revision: 0, bars: 0, current: -1, message: "", header: "", currentHtml: "" })
     property int mmlRevision: 0
+    // Only these change while a bar plays, so other bars are not re-laid out.
+    property int mmlCurrent: -1
+    property string mmlCurrentHtml: ""
     function refresh() {
         if (!visible || visibility === Window.Minimized) return
         if (mode === 3) {
             try {
                 const next = JSON.parse(app.mml_state())
-                if (next.revision !== mmlRevision) mmlRevision = next.revision
-                mml = next
+                if (next.revision !== mmlRevision) { mml = next; mmlRevision = next.revision }
+                else if (next.message !== mml.message || next.bars !== mml.bars) mml = next
+                if (next.current !== mmlCurrent) mmlCurrent = next.current
+                if (next.currentHtml !== mmlCurrentHtml) mmlCurrentHtml = next.currentHtml
             } catch (_) { }
             return
         }
@@ -125,38 +130,44 @@ ApplicationWindow {
             Layout.fillWidth: true
             Layout.fillHeight: true
             clip: true
-            spacing: 6
+            spacing: 0
             model: root.mode === 3 ? root.mml.bars : 0
             boundsBehavior: Flickable.StopAtBounds
             ScrollBar.vertical: ScrollBar { }
             KineticWheelHandler { view: mmlBars }
-            readonly property int playing: root.mml.current
+            readonly property int playing: root.mmlCurrent
+            reuseItems: true
+            cacheBuffer: height
             onPlayingChanged: if (root.follow && playing >= 0) positionViewAtIndex(playing, ListView.Beginning)
             header: Text {
                 width: mmlBars.width
-                text: "<p style=\"white-space:pre-wrap\">" + (root.mml.header || "").replace(/\n/g, "<br/>") + "</p>"
-                textFormat: Text.RichText; wrapMode: Text.Wrap
+                text: root.mml.header || ""
+                textFormat: Text.StyledText; wrapMode: Text.Wrap
                 color: "#6f8794"; font.family: "monospace"; font.pixelSize: 12
                 bottomPadding: 8
             }
             delegate: Rectangle {
                 id: mmlBar
                 required property int index
-                readonly property bool current: index === root.mml.current
+                readonly property bool current: index === root.mmlCurrent
                 // Re-fetch when a newer partial or final score arrives.
                 readonly property string html: root.mmlRevision >= 0 ? root.app.mml_bar(index) : ""
                 width: mmlBars.width
                 height: barText.implicitHeight + 12
-                radius: 6
-                color: current ? "#173946" : "#121f27"
-                border.color: current ? "#50c8ef" : "transparent"
+                radius: 0
+                color: current ? "#13303b" : index % 2 ? "#111b21" : "#0f171c"
+                Rectangle { width: 3; height: parent.height; color: "#50c8ef"; visible: mmlBar.current }
                 Text {
                     id: barText
+                    objectName: "mmlBarText"
                     x: 8; y: 6
                     width: parent.width - 16
-                    text: mmlBar.current && root.mml.currentHtml ? root.mml.currentHtml : mmlBar.html
-                    textFormat: Text.RichText; wrapMode: Text.Wrap
-                    color: "#d7e6ed"; font.family: "monospace"; font.pixelSize: 12
+                    text: mmlBar.current && root.mmlCurrentHtml ? root.mmlCurrentHtml : mmlBar.html
+                    // StyledText lays out much faster; only the playing bar
+                    // needs RichText for its highlight backgrounds.
+                    textFormat: mmlBar.current ? Text.RichText : Text.StyledText
+                    wrapMode: Text.Wrap
+                    color: "#dce3e8"; font.family: "monospace"; font.pixelSize: 12
                 }
             }
         }

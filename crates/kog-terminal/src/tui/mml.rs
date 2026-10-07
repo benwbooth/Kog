@@ -6,7 +6,7 @@ use std::sync::mpsc::{self, Receiver};
 use kog_audio::inspection::score::Progress;
 
 use super::{Surface, paint};
-use kog_audio::inspection::mml::Document;
+use kog_audio::inspection::mml::{Document, STYLES};
 
 /// A document and whether recording has finished, or why it failed.
 type Result = std::result::Result<(Document, bool), String>;
@@ -157,31 +157,43 @@ impl Mml {
         }
         self.scroll = self.scroll.min(self.rows.len().saturating_sub(height));
         for (n, &(from, to)) in self.rows.iter().skip(self.scroll).take(height).enumerate() {
-            let line = &document.text[from..to];
             let in_bar = bar.is_some_and(|bar| from >= bar.from && to <= bar.to);
-            let surface = if line.starts_with(';') {
-                if in_bar { Surface::Accent } else { Surface::Muted }
-            } else if line.starts_with('#') {
-                Surface::Muted
-            } else if in_bar {
-                Surface::MainAlt
-            } else {
-                Surface::Main
-            };
-            paint(out, y + n, x, line, width, surface, line.starts_with("; bar"));
+            let background = if in_bar { "23;46;56" } else { "25;27;29" };
+            // Paint the row as colour runs, then the sounding notes over them.
+            let mut line = format!("\x1b[{};{}H\x1b[48;2;{background}m", y + n, x);
+            let mut cursor = from;
+            let colour = |class: u8| rgb(&document.palette[usize::from(class).min(document.palette.len() - 1)]);
+            for &(start, end, class) in document.styles_in(from, to) {
+                let (start, end) = ((start as usize).max(from), (end as usize).min(to));
+                if start > cursor {
+                    line.push_str(&format!("\x1b[22;38;2;220;224;228m{}", &document.text[cursor..start]));
+                }
+                let bold = if matches!(STYLES[usize::from(class)].0, "note" | "label") { "1" } else { "22" };
+                line.push_str(&format!("\x1b[{bold};38;2;{}m{}", colour(class), &document.text[start..end]));
+                cursor = end;
+            }
+            if cursor < to {
+                line.push_str(&format!("\x1b[22;38;2;220;224;228m{}", &document.text[cursor..to]));
+            }
+            line.push_str(&" ".repeat(width.saturating_sub(to - from)));
+            line.push_str("\x1b[0m");
+            out.push_str(&line);
             for span in active.iter().filter(|span| span.from < to && span.to > from) {
                 let start = span.from.max(from);
                 let end = span.to.min(to);
-                paint(
-                    out,
+                out.push_str(&format!(
+                    "\x1b[{};{}H\x1b[1;38;2;11;16;22;48;2;80;200;239m{}\x1b[0m",
                     y + n,
                     x + start - from,
-                    &document.text[start..end],
-                    end - start,
-                    Surface::Selected,
-                    true,
-                );
+                    &document.text[start..end]
+                ));
             }
         }
     }
+}
+
+/// `#rrggbb` as an ANSI `r;g;b` triple.
+fn rgb(hex: &str) -> String {
+    let channel = |at: usize| u8::from_str_radix(hex.get(at..at + 2).unwrap_or("cc"), 16).unwrap_or(204);
+    format!("{};{};{}", channel(1), channel(3), channel(5))
 }

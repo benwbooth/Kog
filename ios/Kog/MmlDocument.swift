@@ -4,17 +4,41 @@ import Foundation
 struct MmlDocument: Decodable {
     struct Span: Decodable { let track: Int; let start: Int64; let end: Int64; let from: Int; let to: Int; let kind: String; let sound: Int64? }
     struct Bar: Decodable { let index: Int; let start: Int64; let end: Int64; let from: Int; let to: Int }
+    struct Style { let from: Int; let to: Int; let style: Int }
     let text: String
     let tickSeconds: Double
     let spans: [Span]
     let bars: [Bar]
-
-    enum CodingKeys: String, CodingKey { case text, tickSeconds = "tick_seconds", spans, bars }
-
+    /// Colour runs in text order; `style` indexes `palette`.
+    let styles: [Style]
+    let palette: [String]
     /// The text is ASCII, so byte offsets are character offsets.
+    let bytes: [UInt8]
+
+    enum CodingKeys: String, CodingKey { case text, tickSeconds = "tick_seconds", spans, bars, styles, palette }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        text = try container.decode(String.self, forKey: .text)
+        tickSeconds = try container.decode(Double.self, forKey: .tickSeconds)
+        spans = try container.decode([Span].self, forKey: .spans)
+        bars = try container.decode([Bar].self, forKey: .bars)
+        styles = try container.decode([[Int]].self, forKey: .styles).map { Style(from: $0[0], to: $0[1], style: $0[2]) }
+        palette = try container.decode([String].self, forKey: .palette)
+        bytes = Array(text.utf8)
+    }
+
     func slice(_ from: Int, _ to: Int) -> String {
-        let bytes = Array(text.utf8)
-        return String(decoding: bytes[max(0, from)..<min(bytes.count, to)], as: UTF8.self)
+        String(decoding: bytes[max(0, from)..<min(bytes.count, max(from, to))], as: UTF8.self)
+    }
+
+    /// Colour runs overlapping from..to, found by binary search.
+    func styles(from: Int, to: Int) -> ArraySlice<Style> {
+        var low = 0, high = styles.count
+        while low < high { let mid = (low + high) / 2; if styles[mid].to <= from { low = mid + 1 } else { high = mid } }
+        var end = low
+        while end < styles.count && styles[end].from < to { end += 1 }
+        return styles[low..<end]
     }
 
     /// Every piece of each sounding note, plus the playing bar.

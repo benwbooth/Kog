@@ -66,7 +66,7 @@ TestCase {
         tryVerify(() => score.itemAtIndex(1) !== null)
         const playing = score.itemAtIndex(1)
         verify(playing.current)
-        verify(playing.children[0].text.indexOf("background-color") >= 0)
+        verify(findChild(playing, "mmlBarText").text.indexOf("background-color") >= 0)
         score.positionViewAtBeginning()
         tryVerify(() => score.itemAtIndex(0) !== null)
         verify(!score.itemAtIndex(0).current)

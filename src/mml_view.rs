@@ -105,7 +105,7 @@ impl MmlView {
             "message": message,
             "bars": document.bars.len(),
             "current": current.map_or(-1, |index| index as i64),
-            "header": escape(&document.text[..document.bars.first().map_or(0, |bar| bar.from)]),
+            "header": self.header(),
             "currentHtml": current.map(|index| self.bar_html(index, &active)).unwrap_or_default(),
         })
     }
@@ -114,31 +114,57 @@ impl MmlView {
         self.bar_html(index, &[])
     }
 
+    /// One bar as Qt rich text. Other bars use plain font colours (Qt's
+    /// light StyledText); the playing bar adds highlight backgrounds.
     fn bar_html(&self, index: usize, active: &[usize]) -> String {
         let Some(document) = &self.document else { return String::new() };
         let Some(bar) = document.bars.get(index) else { return String::new() };
         let text = &document.text;
+        let lit: Vec<(usize, usize)> = active
+            .iter()
+            .filter_map(|i| document.spans.get(*i))
+            .filter(|span| span.from >= bar.from && span.to <= bar.to)
+            .map(|span| (span.from, span.to))
+            .collect();
         let mut html = String::new();
         let mut cursor = bar.from;
-        // Spans are in text order, so only this bar's slice is visited.
-        let first = document.spans.partition_point(|span| span.from < bar.from);
-        let last = document.spans.partition_point(|span| span.from < bar.to);
-        for (span_index, span) in document.spans.iter().enumerate().take(last).skip(first) {
-            let style = if active.contains(&span_index) {
-                "background-color:#50c8ef;color:#0b1016;font-weight:bold"
-            } else if span.kind == "rest" {
-                "color:#6f8794"
-            } else if span.kind == "command" {
-                "color:#83d4bb"
+        let plain = |html: &mut String, from: usize, to: usize| {
+            html.push_str(&escape(&text[from..to]).replace('\n', "<br/>"));
+        };
+        for &(start, end, class) in document.styles_in(bar.from, bar.to) {
+            let (start, end) = ((start as usize).max(bar.from), (end as usize).min(bar.to));
+            plain(&mut html, cursor, start);
+            let colour = &document.palette[usize::from(class).min(document.palette.len() - 1)];
+            let piece = escape(&text[start..end]);
+            let bold = matches!(kog_audio::inspection::mml::STYLES[usize::from(class)].0, "note" | "label");
+            let piece = if bold { format!("<b>{piece}</b>") } else { piece };
+            if lit.iter().any(|(from, to)| start >= *from && end <= *to) {
+                html.push_str(&format!(
+                    "<span style=\"background-color:#50c8ef;color:#0b1016\">{piece}</span>"
+                ));
             } else {
-                continue;
-            };
-            html.push_str(&escape(&text[cursor..span.from]));
-            html.push_str(&format!("<span style=\"{style}\">{}</span>", escape(&text[span.from..span.to])));
-            cursor = span.to;
+                html.push_str(&format!("<font color=\"{colour}\">{piece}</font>"));
+            }
+            cursor = end;
         }
-        html.push_str(&escape(&text[cursor..bar.to]));
-        format!("<p style=\"white-space:pre-wrap\">{}</p>", html.trim_end().replace('\n', "<br/>"))
+        plain(&mut html, cursor, bar.to);
+        let html = html.trim_end_matches("<br/>").to_owned();
+        if lit.is_empty() { html } else { format!("<p style=\"white-space:pre-wrap\">{html}</p>") }
+    }
+
+    pub fn header(&self) -> String {
+        let Some(document) = &self.document else { return String::new() };
+        let end = document.bars.first().map_or(0, |bar| bar.from);
+        let mut html = String::new();
+        let mut cursor = 0;
+        for &(start, stop, class) in document.styles_in(0, end) {
+            html.push_str(&escape(&document.text[cursor..start as usize]).replace('\n', "<br/>"));
+            let colour = &document.palette[usize::from(class).min(document.palette.len() - 1)];
+            html.push_str(&format!("<font color=\"{colour}\">{}</font>", escape(&document.text[start as usize..stop as usize])));
+            cursor = stop as usize;
+        }
+        html.push_str(&escape(&document.text[cursor..end]).replace('\n', "<br/>"));
+        html.trim_end_matches("<br/>").to_owned()
     }
 }
 
@@ -163,6 +189,7 @@ mod tests {
         assert!(state["current"].as_i64().unwrap() >= 0, "{state}");
         let current = state["currentHtml"].as_str().unwrap();
         assert!(current.contains("; bar") && current.contains("background-color"), "{current}");
+        assert!(view.bar(0).contains("<font color="));
         assert!(!view.bar(0).contains("background-color"));
         // The same source keeps its score; a different one starts over.
         let revision = state["revision"].clone();

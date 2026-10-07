@@ -292,12 +292,12 @@ fn verify_mml(name: &str, pitched: bool) {
         eprintln!("{}", document.text);
     }
     eprintln!(
-        "{name}: {} tracks, {} notes, {} bytes of MML, {} ticks of {} samples",
+        "{name}: {} tracks, {} notes, {} bytes of MML, {} ticks at {:.3} BPM",
         score.tracks.len(),
         roll.len(),
         document.text.len(),
         score.length,
-        score.tick_samples
+        f64::from(score.tempo) / 1000.0
     );
 }
 

@@ -5,11 +5,9 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -44,7 +42,40 @@ internal class MmlDocument(json: JSONObject) {
             MmlBar(getInt("index"), getLong("start"), getLong("end"), getInt("from"), getInt("to"))
         } }
     }
-    val header: String = text.substring(0, bars.firstOrNull()?.from ?: text.length).trimEnd()
+    /** Colour runs as from, to, class triples in text order. */
+    val styles: IntArray = json.getJSONArray("styles").let { array ->
+        IntArray(array.length() * 3) { i -> array.getJSONArray(i / 3).getInt(i % 3) }
+    }
+    val palette: List<Color> = json.getJSONArray("palette").let { array ->
+        List(array.length()) { i -> Color(android.graphics.Color.parseColor(array.getString(i))) }
+    }
+    val headerEnd: Int = bars.firstOrNull()?.from ?: text.length
+
+    /** Index of the first style run ending after [from], by binary search. */
+    private fun firstStyle(from: Int): Int {
+        var low = 0; var high = styles.size / 3
+        while (low < high) { val mid = (low + high) / 2; if (styles[mid * 3 + 1] <= from) low = mid + 1 else high = mid }
+        return low
+    }
+
+    /** The text in from..to with token colours; [lit] ranges get the playing highlight. */
+    fun styled(from: Int, to: Int, lit: List<IntRange> = emptyList()) = buildAnnotatedString {
+        var cursor = from
+        var run = firstStyle(from)
+        while (run < styles.size / 3 && styles[run * 3] < to) {
+            val start = maxOf(styles[run * 3], from); val end = minOf(styles[run * 3 + 1], to)
+            val classIndex = styles[run * 3 + 2]
+            append(text.substring(cursor, start))
+            val playing = lit.any { start >= it.first && end <= it.last }
+            val style = if (playing) SpanStyle(background = Color(0xff50c8ef), color = Color(0xff0b1016), fontWeight = FontWeight.Bold)
+                else SpanStyle(color = palette.getOrElse(classIndex) { Color(0xffdce3e8) },
+                    fontWeight = if (classIndex == 2 || classIndex == 4) FontWeight.Bold else null)
+            withStyle(style) { append(text.substring(start, end)) }
+            cursor = end
+            run++
+        }
+        append(text.substring(cursor, to).trimEnd())
+    }
 
     /** Every piece of each sounding note, plus the playing bar. */
     fun active(seconds: Double): Pair<Set<Int>, Int> {
@@ -101,35 +132,30 @@ internal fun MmlScore(state: KogState, follow: Boolean, modifier: Modifier) {
         }
     }
     val list = rememberLazyListState()
-    LaunchedEffect(active.second, follow) {
-        if (follow && active.second >= 0) list.animateScrollToItem(active.second + 1)
+    val currentBar = active.second
+    LaunchedEffect(currentBar, follow) {
+        if (follow && currentBar >= 0) list.animateScrollToItem(currentBar + 1)
     }
     Column(modifier) {
         if (message.isNotEmpty()) Text(message, fontSize = 11.sp, color = Color(0xffadb7c0))
         val score = document ?: return@Column
-        LazyColumn(state = list, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            item { Text(score.header, fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = Color(0xff6f8794)) }
+        LazyColumn(state = list, modifier = Modifier.background(Color(0xff0f171c))) {
+            item { Text(remember(score) { score.styled(0, score.headerEnd) }, Modifier.padding(8.dp),
+                fontSize = 10.sp, fontFamily = FontFamily.Monospace) }
             itemsIndexed(score.bars, key = { _, bar -> bar.index }) { _, bar ->
-                val playing = bar.index == active.second
-                val text = buildAnnotatedString {
-                    var cursor = bar.from
-                    for ((index, span) in score.spans.withIndex()) {
-                        if (span.from < bar.from || span.to > bar.to) continue
-                        val style = when {
-                            playing && index in active.first -> SpanStyle(background = Color(0xff50c8ef), color = Color(0xff0b1016), fontWeight = FontWeight.Bold)
-                            span.kind == "rest" -> SpanStyle(color = Color(0xff6f8794))
-                            span.kind == "command" -> SpanStyle(color = Color(0xff83d4bb))
-                            else -> null
-                        } ?: continue
-                        append(score.text.substring(cursor, span.from))
-                        withStyle(style) { append(score.text.substring(span.from, span.to)) }
-                        cursor = span.to
-                    }
-                    append(score.text.substring(cursor, bar.to).trimEnd())
+                val playing = bar.index == currentBar
+                // Only the playing bar reads the sounding spans, so the other
+                // bars keep their cached text while playback advances.
+                val text = if (playing) {
+                    val lit = active.first.mapNotNull { score.spans.getOrNull(it) }
+                        .filter { it.from >= bar.from && it.to <= bar.to }.map { it.from..it.to }
+                    score.styled(bar.from, bar.to, lit)
+                } else remember(score, bar.index) { score.styled(bar.from, bar.to) }
+                Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min).background(if (playing) Color(0xff13303b) else if (bar.index % 2 == 0) Color(0xff0f171c) else Color(0xff111b21))) {
+                    Box(Modifier.width(3.dp).fillMaxHeight().background(if (playing) Color(0xff50c8ef) else Color.Transparent))
+                    Text(text, Modifier.weight(1f).padding(horizontal = 8.dp, vertical = 6.dp),
+                        fontSize = 11.sp, fontFamily = FontFamily.Monospace, color = Color(0xffdce3e8))
                 }
-                Text(text, Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp))
-                    .background(if (playing) Color(0xff173946) else Color(0xff121f27)).padding(8.dp),
-                    fontSize = 11.sp, fontFamily = FontFamily.Monospace, color = Color(0xffd7e6ed))
             }
         }
     }

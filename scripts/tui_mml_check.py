@@ -70,20 +70,20 @@ with tempfile.TemporaryDirectory(prefix="kog-tui-mml-") as base:
         raise AssertionError((label, screen.display))
 
     def highlighted():
-        # Sounding notes are painted bold on the selection colour.
+        # Sounding notes are painted on the highlight colour.
         cells = []
         for y in range(4, ROWS - 1):
             run = ""
             for x in range(COLUMNS):
                 cell = screen.buffer[y][x]
-                if cell.bold and cell.bg not in ("default",) and not screen.display[y].lstrip().startswith(";"):
+                if cell.bg == "50c8ef":
                     run += cell.data
                 elif run:
                     cells.append(run.strip())
                     run = ""
             if run:
                 cells.append(run.strip())
-        return [cell for cell in cells if cell and cell[-1:].isalnum() and cell[0] in "abcdefgx&^"]
+        return [cell for cell in cells if cell and cell[0] in "abcdefgx&^"]
 
     try:
         wait_for("Search playlist")

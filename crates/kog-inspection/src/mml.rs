@@ -6,23 +6,8 @@
 //! tracks and bars, and [`parse`] reads that text back into the identical
 //! score, so the notation can be edited or stored without losing events.
 //!
-//! The syntax follows classic MML (`o4 l8 c d+ e-4. r ^`) with these
-//! extensions:
-//!
-//! | Syntax | Meaning |
-//! | --- | --- |
-//! | `%n` | length of exactly `n` ticks |
-//! | `c(+37)` | note detuned by +37 cents at its onset |
-//! | `&c` | legato: the pitch changes without a new key-on |
-//! | `^8` | continue the previous note or rest |
-//! | `x` | unpitched hit (noise, drums, untuned samples) |
-//! | `P+12` | pitch offset in cents from the sounding note's semitone |
-//! | `V100` | key-on velocity, 0-127 |
-//! | `v750` / `p-250` | channel level / pan in thousandths |
-//! | `@"Duty 25%"` | instrument |
-//! | `{"Name"="value" …}` | chip-specific parameters |
-//! | `~3` | start macro 3: the steps of `#MACRO 3`, timed from this tick |
-//! | `\|` | bar line |
+//! The syntax follows classic MML (`o4 l8 c d+ > e-4. r ^16`) with a few
+//! extensions; see `docs/KOG_MML.md`.
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
@@ -35,20 +20,23 @@ pub const FORMAT: &str = "KOG-MML 1";
 pub struct Score {
     pub title: String,
     pub backend: String,
-    /// Ticks are `tick_samples / rate` seconds long.
-    pub rate: u32,
-    pub tick_samples: u32,
-    /// Ticks per quarter note and per bar. Bars only lay out the text; event
-    /// times are absolute ticks and do not depend on them.
+    /// Quarter notes per minute, in thousandths.
+    pub tempo: u32,
+    /// Ticks per quarter note. A multiple of 32 lets every length be written
+    /// with note values down to 1/128.
     pub quarter: u32,
-    pub bar: u32,
-    /// True when the beat was estimated from note onsets.
+    /// Quarter notes per bar. Bars only lay out the text.
+    pub beats: u32,
+    /// True when the tempo was estimated from note onsets.
     pub inferred: bool,
     pub length: u64,
     pub tracks: Vec<Track>,
     /// Per-note automation (envelopes, vibrato, duty sequences) shared by
     /// every note that repeats it.
     pub macros: Vec<Macro>,
+    /// Octave shifts for instruments whose pitch is only relative (sample
+    /// playback rates), applied when notes are written and read back.
+    pub transpose: Vec<(String, i32)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -75,6 +63,101 @@ pub struct Track {
     pub kind: String,
     /// Sorted by tick. Commands at a note's onset tick precede the note.
     pub events: Vec<Event>,
+    /// Registers that follow the note's pitch (for example a period or
+    /// frequency register): set at each note whose pitch changes them, so they
+    /// are listed once per pitch instead of at every note.
+    pub pitched: Vec<PitchedParam>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PitchedParam {
+    pub name: String,
+    /// Key, cents, and the register value for that pitch.
+    pub values: Vec<(i32, i32, String)>,
+}
+
+impl PitchedParam {
+    fn value(&self, key: i32, cents: i32) -> Option<&str> {
+        self.values
+            .iter()
+            .find(|(k, c, _)| *k == key && *c == cents)
+            .map(|(_, _, value)| value.as_str())
+    }
+}
+
+/// Keep only the last value a command sets at each tick.
+fn drop_overwritten(events: &mut Vec<Event>) {
+    let mut keep = vec![true; events.len()];
+    for (index, event) in events.iter().enumerate() {
+        let Some((target, _)) = target_value(&event.kind) else { continue };
+        keep[index] = !events[index + 1..]
+            .iter()
+            .take_while(|later| later.tick == event.tick)
+            .any(|later| target_value(&later.kind).is_some_and(|(t, _)| t == target));
+    }
+    let mut index = 0;
+    events.retain(|_| {
+        index += 1;
+        keep[index - 1]
+    });
+}
+
+/// Move registers that are a function of the pitch into a per-track table.
+/// A note's register value is the one in force at its onset; the settings
+/// made at note onsets are dropped from the events and implied by the table.
+fn extract_pitched(track: &mut Track) {
+    let mut names: Vec<String> = Vec::new();
+    for event in &track.events {
+        if let EventKind::Param(name, _) = &event.kind {
+            if !names.contains(name) {
+                names.push(name.clone());
+            }
+        }
+    }
+    for name in names {
+        let mut table = PitchedParam { name: name.clone(), values: Vec::new() };
+        let mut current: Option<String> = None;
+        let mut onset_settings = Vec::new();
+        let mut consistent = true;
+        for (index, event) in track.events.iter().enumerate() {
+            match &event.kind {
+                EventKind::Param(n, value) if *n == name => current = Some(value.clone()),
+                EventKind::Note { key, cents, .. } => {
+                    let Some(value) = current.clone() else {
+                        consistent = false;
+                        break;
+                    };
+                    match table.value(*key, *cents) {
+                        Some(known) if known != value => {
+                            consistent = false;
+                            break;
+                        }
+                        Some(_) => {}
+                        None => table.values.push((*key, *cents, value.clone())),
+                    }
+                    // The last setting at this tick, made for this note.
+                    if let Some(setting) = (0..index).rev().take_while(|i| track.events[*i].tick == event.tick).find(|i| {
+                        matches!(&track.events[*i].kind, EventKind::Param(n, _) if *n == name)
+                    }) {
+                        onset_settings.push(setting);
+                    }
+                }
+                _ => {}
+            }
+        }
+        // A register that never varies with the pitch is not pitch-tied.
+        let distinct = table.values.iter().any(|(_, _, value)| *value != table.values[0].2);
+        if !consistent || onset_settings.len() < 4 || !distinct {
+            continue;
+        }
+        table.values.sort();
+        let mut index = 0;
+        track.events.retain(|_| {
+            index += 1;
+            !onset_settings.contains(&(index - 1))
+        });
+        track.pitched.push(table);
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -130,7 +213,11 @@ pub struct RollNote {
 
 impl Score {
     pub fn tick_seconds(&self) -> f64 {
-        f64::from(self.tick_samples.max(1)) / f64::from(self.rate.max(1))
+        60_000.0 / f64::from(self.tempo.max(1)) / f64::from(self.quarter.max(1))
+    }
+
+    pub fn bar_ticks(&self) -> u64 {
+        u64::from(self.quarter.max(1)) * u64::from(self.beats.max(1))
     }
 
     pub fn piano_roll(&self) -> Vec<RollNote> {
@@ -177,6 +264,8 @@ struct Sounding {
 
 #[derive(Clone, Default)]
 struct ChannelState {
+    /// Pitches are sample playback rates without a known tuning.
+    relative: bool,
     name: String,
     kind: String,
     voices: Vec<Option<i32>>,
@@ -457,6 +546,7 @@ impl ScoreBuilder {
         for channel in &frame.data.channels {
             let state = channels.entry(channel.id).or_default();
             state.name.clone_from(&channel.name);
+            state.relative |= channel.has_relative_pitch();
             if state.kind.is_empty() || !channel.notes.is_empty() {
                 state.kind.clone_from(&channel.kind);
             }
@@ -606,7 +696,7 @@ impl ScoreBuilder {
         if self.timebase.is_none() {
             self.start();
         }
-        let (rate, tick_samples, tick_seconds) = self.timebase.unwrap_or((self.rate, 1, 1.0));
+        let tick_seconds = self.timebase.map_or(1.0, |(_, _, seconds)| seconds);
         let last_tick = self.last_tick;
         let end = duration
             .map(|seconds| self.to_tick(seconds))
@@ -621,11 +711,13 @@ impl ScoreBuilder {
         }
 
         let mut tracks = Vec::new();
+        let mut relative = Vec::new();
         for (id, state) in channels {
             for (voice, events) in state.events.into_iter().enumerate() {
                 if events.is_empty() && voice > 0 {
                     continue;
                 }
+                relative.push(state.relative);
                 tracks.push(Track {
                     label: String::new(),
                     channel: id,
@@ -637,10 +729,56 @@ impl ScoreBuilder {
                         state.kind.clone()
                     },
                     events,
+                    pitched: Vec::new(),
                 });
             }
         }
+        let mut index = 0;
+        relative.retain(|_| {
+            index += 1;
+            !tracks[index - 1].events.is_empty()
+        });
         tracks.retain(|track| !track.events.is_empty());
+
+        // Frames arrive every few milliseconds, but music moves on a beat.
+        // Re-time every event onto 1/128 notes of the tempo so lengths can be
+        // written as ordinary note values.
+        let quarter_frames = match self.tempo {
+            Some(bpm) => (60.0 / bpm) / tick_seconds,
+            None => f64::from(infer_quarter(&tracks, tick_seconds)),
+        }
+        .max(1.0);
+        let scale = f64::from(QUARTER) / quarter_frames;
+        let map = |tick: u64| (tick as f64 * scale).round() as u64;
+        for track in &mut tracks {
+            let mut events: Vec<Event> = std::mem::take(&mut track.events)
+                .into_iter()
+                .filter_map(|mut event| {
+                    let start = map(event.tick);
+                    match &mut event.kind {
+                        EventKind::Note { length, .. } | EventKind::Hit { length, .. } => {
+                            *length = map(event.tick + *length).saturating_sub(start);
+                            if *length == 0 {
+                                return None;
+                            }
+                        }
+                        _ => {}
+                    }
+                    event.tick = start;
+                    Some(event)
+                })
+                .collect();
+            events.sort_by_key(|event| (event.tick, event.kind.length() > 0));
+            track.events = events;
+        }
+        let length = map(end).max(1);
+        let tempo = (60_000.0 / (quarter_frames * tick_seconds)).round().max(1.0) as u32;
+
+        let transpose = relative_transpose(&tracks, &relative);
+        for track in &mut tracks {
+            drop_overwritten(&mut track.events);
+            extract_pitched(track);
+        }
         let mut macros = Vec::new();
         for track in &mut tracks {
             fold_macros(&mut track.events, &mut macros);
@@ -648,25 +786,49 @@ impl ScoreBuilder {
         for (index, track) in tracks.iter_mut().enumerate() {
             track.label = track_label(index);
         }
-
-        let (quarter, inferred) = match self.tempo {
-            Some(bpm) => (((60.0 / bpm) / tick_seconds).round().max(1.0) as u32, false),
-            None => (infer_quarter(&tracks, tick_seconds), true),
-        };
-        let bar = quarter * self.meter.unwrap_or(4).max(1);
         Score {
             title: title.into(),
             backend: description.backend.clone(),
-            rate,
-            tick_samples,
-            quarter,
-            bar,
-            inferred,
-            length: end,
+            tempo,
+            quarter: QUARTER,
+            beats: self.meter.unwrap_or(4).max(1),
+            inferred: self.tempo.is_none(),
+            length,
             tracks,
             macros,
+            transpose,
         }
     }
+}
+
+/// Ticks per quarter note in recorded scores: 1/128 notes are one tick.
+pub const QUARTER: u32 = 32;
+
+/// Sample playback rates give pitches relative to an unknown original key, so
+/// they can sit many octaves away from the music. Move each sample by whole
+/// octaves until its middle note is near middle C.
+fn relative_transpose(tracks: &[Track], relative: &[bool]) -> Vec<(String, i32)> {
+    let mut keys: BTreeMap<String, Vec<i32>> = BTreeMap::new();
+    for (track, _) in tracks.iter().zip(relative).filter(|(_, relative)| **relative) {
+        let mut instrument = String::new();
+        for event in &track.events {
+            match &event.kind {
+                EventKind::Instrument(name) => instrument.clone_from(name),
+                EventKind::Note { key, .. } if !instrument.is_empty() => {
+                    keys.entry(instrument.clone()).or_default().push(*key);
+                }
+                _ => {}
+            }
+        }
+    }
+    keys.into_iter()
+        .filter_map(|(instrument, mut keys)| {
+            keys.sort_unstable();
+            let middle = keys[keys.len() / 2];
+            let shift = ((60 - middle) as f64 / 12.0).round() as i32 * 12;
+            (shift != 0).then_some((instrument, shift))
+        })
+        .collect()
 }
 
 fn target_value(kind: &EventKind) -> Option<(Target, String)> {
@@ -718,6 +880,13 @@ fn fold_macros(events: &mut Vec<Event>, macros: &mut Vec<Macro>) {
         for (target, members) in groups {
             if members.len() < 2 {
                 continue;
+            }
+            let mut members = members;
+            // The value set at the note's own onset starts the macro.
+            if let Some(onset) = (0..sound).rev().take_while(|i| events[*i].tick == start).find(|i| {
+                !removed[*i] && target_value(&events[*i].kind).is_some_and(|(t, _)| t == target)
+            }) {
+                members.insert(0, onset);
             }
             let steps: Vec<(u64, String)> = members
                 .iter()
@@ -846,6 +1015,31 @@ pub struct Bar {
     pub to: usize,
 }
 
+/// Token classes for syntax colouring, with the colour every frontend uses.
+pub const STYLES: [(&str, &str); 17] = [
+    ("header", "#6f8794"),
+    ("comment", "#7d9aa8"),
+    ("label", "#ffcb6b"),
+    ("bar", "#46606e"),
+    ("note", "#f4f7f9"),
+    ("cents", "#f78c6c"),
+    ("length", "#6fb3d9"),
+    ("tie", "#6fb3d9"),
+    ("octave", "#c792ea"),
+    ("rest", "#5f7482"),
+    ("hit", "#f78c6c"),
+    ("key", "#82aaff"),
+    ("value", "#c3e88d"),
+    ("instrument", "#ffcb6b"),
+    ("macro", "#c792ea"),
+    ("control", "#89ddff"),
+    ("legato", "#f07178"),
+];
+
+fn style(name: &str) -> u8 {
+    STYLES.iter().position(|(style, _)| *style == name).unwrap_or(0) as u8
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Document {
     pub text: String,
@@ -853,6 +1047,10 @@ pub struct Document {
     pub spans: Vec<Span>,
     pub bars: Vec<Bar>,
     pub tracks: Vec<TrackInfo>,
+    /// `[from, to, class]` runs in text order; classes index [`Document::palette`].
+    pub styles: Vec<(u32, u32, u8)>,
+    /// `#rrggbb` for each class in [`STYLES`].
+    pub palette: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -892,6 +1090,21 @@ impl Document {
         let bar = self.bars.iter().find(|bar| bar.start <= tick && tick < bar.end);
         (indices, bar)
     }
+
+    /// The colour runs inside `from..to`, for drawing one bar or line.
+    pub fn styles_in(&self, from: usize, to: usize) -> &[(u32, u32, u8)] {
+        let first = self.styles.partition_point(|run| (run.1 as usize) <= from);
+        let last = self.styles.partition_point(|run| (run.0 as usize) < to);
+        &self.styles[first..last.max(first)]
+    }
+}
+
+/// Words that need no quotes: printable ASCII without spaces or MML syntax.
+fn bare(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_graphic() && !matches!(b, b'"' | b'=' | b'|' | b';' | b'\\'))
 }
 
 fn quote(value: &str) -> String {
@@ -910,25 +1123,59 @@ fn quote(value: &str) -> String {
     out
 }
 
+fn word(value: &str) -> String {
+    if bare(value) { value.to_owned() } else { quote(value) }
+}
+
+/// `1 2 4 … 128` with up to two dots, as a fraction of a whole note.
+fn standard_lengths(quarter: u64) -> Vec<(u64, String)> {
+    let whole = quarter * 4;
+    let mut lengths = Vec::new();
+    for divisor in [1u64, 2, 4, 8, 16, 32, 64, 128] {
+        if whole % divisor != 0 {
+            continue;
+        }
+        let base = whole / divisor;
+        lengths.push((base, divisor.to_string()));
+        if base % 2 == 0 {
+            lengths.push((base + base / 2, format!("{divisor}.")));
+            if base % 4 == 0 {
+                lengths.push((base + base / 2 + base / 4, format!("{divisor}..")));
+            }
+        }
+    }
+    lengths
+}
+
+/// A length as one note value, or tied note values (`4^16`). Empty when it
+/// equals the track's default length.
 fn length_text(ticks: u64, quarter: u64, default: Option<u64>) -> String {
     if Some(ticks) == default {
         return String::new();
     }
-    let whole = quarter * 4;
-    for divisor in [1, 2, 4, 8, 16, 32, 64] {
-        if whole % divisor == 0 && whole / divisor == ticks {
-            return divisor.to_string();
-        }
-        let plain = whole / divisor;
-        if whole % (divisor * 2) == 0 && plain + plain / 2 == ticks {
-            return format!("{divisor}.");
-        }
+    let lengths = standard_lengths(quarter);
+    if let Some((_, text)) = lengths.iter().find(|(length, _)| *length == ticks) {
+        return text.clone();
     }
-    format!("%{ticks}")
-}
-
-fn standard_length(ticks: u64, quarter: u64) -> bool {
-    !length_text(ticks, quarter, None).starts_with('%')
+    // Whole notes first, then the largest plain values that fit.
+    let mut parts = Vec::new();
+    let mut left = ticks;
+    let whole = quarter * 4;
+    while left >= whole {
+        parts.push("1".to_owned());
+        left -= whole;
+    }
+    let plain: Vec<_> = lengths.iter().filter(|(_, text)| !text.ends_with('.')).collect();
+    while left > 0 {
+        let Some((length, text)) = plain.iter().find(|(length, _)| *length <= left) else {
+            // Unreachable for scores whose quarter is a multiple of 32.
+            parts.push(format!("{left}t"));
+            break;
+        };
+        parts.push(text.clone());
+        left -= length;
+    }
+    parts.join("^")
 }
 
 const NAMES: [&str; 12] = ["c", "c+", "d", "d+", "e", "f", "f+", "g", "g+", "a", "a+", "b"];
@@ -937,25 +1184,14 @@ struct Writer<'a> {
     score: &'a Score,
     text: String,
     spans: Vec<Span>,
-    octave: Vec<i32>,
+    octave: Vec<Option<i32>>,
     velocity: Vec<Option<u8>>,
+    instrument: Vec<Option<String>>,
     default: Vec<u64>,
 }
 
 impl Writer<'_> {
-    fn token(&mut self, track: usize, start: u64, end: u64, kind: &str, text: &str) {
-        self.sound_token(track, start, end, kind, text, None);
-    }
-
-    fn sound_token(
-        &mut self,
-        track: usize,
-        start: u64,
-        end: u64,
-        kind: &str,
-        text: &str,
-        sound: Option<u64>,
-    ) {
+    fn token(&mut self, track: usize, start: u64, end: u64, kind: &str, text: &str, sound: Option<u64>) {
         if !self.text.ends_with(' ') && !self.text.ends_with('\n') {
             self.text.push(' ');
         }
@@ -977,82 +1213,84 @@ impl Writer<'_> {
             EventKind::Bend(cents) => format!("P{cents:+}"),
             EventKind::Level(level) => format!("v{level}"),
             EventKind::Pan(pan) => format!("p{pan}"),
-            EventKind::Instrument(name) => format!("@{}", quote(name)),
-            EventKind::Param(name, value) => format!("{{{}={}}}", quote(name), quote(value)),
+            EventKind::Instrument(name) => {
+                self.instrument[track] = Some(name.clone());
+                format!("@{}", word(name))
+            }
+            EventKind::Param(name, value) => format!("{}={}", word(name), word(value)),
             EventKind::Macro(id) => format!("~{id}"),
             _ => return,
         };
-        self.token(track, tick, tick, "command", &text);
+        self.token(track, tick, tick, "command", &text, None);
     }
 
-    fn sound(
-        &mut self,
-        track: usize,
-        start: u64,
-        ticks: u64,
-        kind: &EventKind,
-        first: bool,
-        onset: Option<u64>,
-    ) {
+    fn transpose(&self, track: usize) -> i32 {
+        self.instrument[track]
+            .as_ref()
+            .and_then(|name| self.score.transpose.iter().find(|(n, _)| n == name))
+            .map_or(0, |(_, shift)| *shift)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn sound(&mut self, track: usize, start: u64, ticks: u64, kind: &EventKind, first: bool, onset: Option<u64>) {
         let quarter = u64::from(self.score.quarter);
+        let end = start + ticks;
+        let kind_name = match kind {
+            EventKind::Note { .. } => "note",
+            EventKind::Hit { .. } => "hit",
+            _ => "rest",
+        };
+        if !first && onset.is_some() {
+            let text = format!("^{}", length_text(ticks, quarter, None));
+            self.token(track, start, end, kind_name, &text, onset);
+            return;
+        }
         let length = length_text(ticks, quarter, Some(self.default[track]));
-        let text = match (first, kind) {
-            (false, _) => format!("^{}", length_text(ticks, quarter, None)),
-            (true, EventKind::Note {
+        match kind {
+            EventKind::Note {
                 key,
                 cents,
                 velocity,
                 legato,
                 ..
-            }) => {
-                let mut text = String::new();
+            } => {
                 if self.velocity[track] != Some(*velocity) {
                     self.velocity[track] = Some(*velocity);
-                    let _ = write!(text, "V{velocity} ");
+                    self.token(track, start, start, "command", &format!("V{velocity}"), None);
                 }
-                let octave = key.div_euclid(12) - 1;
-                let current = self.octave[track];
-                if octave == current + 1 {
-                    text.push_str("> ");
-                } else if octave == current - 1 {
-                    text.push_str("< ");
-                } else if octave != current {
-                    let _ = write!(text, "o{octave} ");
+                let written = key + self.transpose(track);
+                let octave = written.div_euclid(12) - 1;
+                match self.octave[track].map(|current| octave - current) {
+                    Some(0) => {}
+                    Some(shift @ 1..=2) => {
+                        self.token(track, start, start, "command", &">".repeat(shift as usize), None)
+                    }
+                    Some(shift @ -2..=-1) => {
+                        self.token(track, start, start, "command", &"<".repeat(-shift as usize), None)
+                    }
+                    _ => self.token(track, start, start, "command", &format!("o{octave}"), None),
                 }
-                self.octave[track] = octave;
+                self.octave[track] = Some(octave);
+                let mut text = String::new();
                 if *legato {
                     text.push('&');
                 }
-                text.push_str(NAMES[key.rem_euclid(12) as usize]);
+                text.push_str(NAMES[written.rem_euclid(12) as usize]);
                 if *cents != 0 {
                     let _ = write!(text, "({cents:+})");
                 }
                 text.push_str(&length);
-                text
+                self.token(track, start, end, "note", &text, onset);
             }
-            (true, EventKind::Hit { velocity, .. }) => {
-                let mut text = String::new();
+            EventKind::Hit { velocity, .. } => {
                 if self.velocity[track] != Some(*velocity) {
                     self.velocity[track] = Some(*velocity);
-                    let _ = write!(text, "V{velocity} ");
+                    self.token(track, start, start, "command", &format!("V{velocity}"), None);
                 }
-                text.push('x');
-                text.push_str(&length);
-                text
+                self.token(track, start, end, "hit", &format!("x{length}"), onset);
             }
-            _ => format!("r{length}"),
-        };
-        let kind = match kind {
-            EventKind::Note { .. } => "note",
-            EventKind::Hit { .. } => "hit",
-            _ => "rest",
-        };
-        // Velocity and octave prefixes are separate tokens for highlighting.
-        let (prefix, sound) = text.rsplit_once(' ').map_or(("", text.as_str()), |(a, b)| (a, b));
-        for word in prefix.split_whitespace() {
-            self.token(track, start, start, "command", word);
+            _ => self.token(track, start, end, "rest", &format!("r{length}"), None),
         }
-        self.sound_token(track, start, start + ticks, kind, sound, onset);
     }
 }
 
@@ -1111,16 +1349,26 @@ fn items(events: &[Event], length: u64, bar: u64) -> Vec<Item> {
     items
 }
 
+fn macro_target(target: &Target) -> String {
+    match target {
+        Target::Level => "v".into(),
+        Target::Pan => "p".into(),
+        Target::Bend => "P".into(),
+        Target::Param(name) => format!("{}=", word(name)),
+    }
+}
+
 pub fn encode(score: &Score) -> Document {
     let quarter = u64::from(score.quarter.max(1));
-    let bar = u64::from(score.bar.max(1));
+    let bar = score.bar_ticks();
     let tracks = score.tracks.len();
     let mut writer = Writer {
         score,
         text: String::new(),
         spans: Vec::new(),
-        octave: vec![4; tracks],
+        octave: vec![None; tracks],
         velocity: vec![None; tracks],
+        instrument: vec![None; tracks],
         default: Vec::with_capacity(tracks),
     };
     let text = &mut writer.text;
@@ -1129,43 +1377,54 @@ pub fn encode(score: &Score) -> Document {
     let _ = writeln!(text, "#SOURCE {}", quote(&score.backend));
     let _ = writeln!(
         text,
-        "#TIMEBASE {} {} ; tick = {} / {} s",
-        score.rate, score.tick_samples, score.tick_samples, score.rate
+        "#TEMPO {}.{:03}{}",
+        score.tempo / 1000,
+        score.tempo % 1000,
+        if score.inferred { " inferred" } else { "" }
     );
-    let _ = writeln!(
-        text,
-        "#METER {} {}{} ; ticks per quarter, per bar; {:.2} BPM",
-        score.quarter,
-        score.bar,
-        if score.inferred { " inferred" } else { "" },
-        60.0 / (f64::from(score.quarter.max(1)) * score.tick_seconds())
-    );
-    let _ = writeln!(text, "#LENGTH {}", score.length);
+    let _ = writeln!(text, "#TICKS {} ; per quarter note", score.quarter);
+    let _ = writeln!(text, "#BAR {} ; quarter notes", score.beats);
+    let _ = writeln!(text, "#LENGTH {} ; ticks", score.length);
+    for (instrument, shift) in &score.transpose {
+        let _ = writeln!(
+            text,
+            "#TRANSPOSE {} {shift:+} ; relative sample pitch, moved by octaves",
+            word(instrument)
+        );
+    }
     for track in &score.tracks {
         let lengths = track.events.iter().map(|e| e.kind.length()).filter(|l| *l > 0);
-        let default = mode(lengths.filter(|l| standard_length(*l, quarter))).unwrap_or(quarter);
+        let standard = standard_lengths(quarter);
+        let default = mode(lengths.filter(|l| standard.iter().any(|(s, _)| s == l))).unwrap_or(quarter);
         writer.default.push(default);
         let _ = writeln!(
             writer.text,
-            "#TRACK {} {} {} {} {} l{}",
+            "#TRACK {} {} channel={} voice={} kind={} l{}",
             track.label,
+            word(&track.name),
             track.channel,
             track.voice,
-            quote(&track.kind),
-            quote(&track.name),
+            word(&track.kind),
             length_text(default, quarter, None)
         );
     }
+    for track in &score.tracks {
+        for table in &track.pitched {
+            let _ = write!(writer.text, "#PITCH {} {}=", track.label, word(&table.name));
+            for (key, cents, value) in &table.values {
+                let _ = write!(writer.text, " {key}");
+                if *cents != 0 {
+                    let _ = write!(writer.text, "({cents:+})");
+                }
+                let _ = write!(writer.text, ":{}", word(value));
+            }
+            writer.text.push('\n');
+        }
+    }
     for (id, found) in score.macros.iter().enumerate() {
-        let target = match &found.target {
-            Target::Level => "v".to_owned(),
-            Target::Pan => "p".to_owned(),
-            Target::Bend => "P".to_owned(),
-            Target::Param(name) => format!("{{{}}}", quote(name)),
-        };
-        let _ = write!(writer.text, "#MACRO {id} {target}");
+        let _ = write!(writer.text, "#MACRO {id} {}", macro_target(&found.target));
         for (offset, value) in &found.steps {
-            let _ = write!(writer.text, " {offset}:{}", quote(value));
+            let _ = write!(writer.text, " {offset}:{}", word(value));
         }
         writer.text.push('\n');
     }
@@ -1231,6 +1490,7 @@ pub fn encode(score: &Score) -> Document {
             to: writer.text.len(),
         });
     }
+    let styles = lex(&writer.text);
     Document {
         text: writer.text,
         tick_seconds: score.tick_seconds(),
@@ -1245,7 +1505,112 @@ pub fn encode(score: &Score) -> Document {
                 kind: track.kind.clone(),
             })
             .collect(),
+        styles,
+        palette: STYLES.iter().map(|(_, colour)| (*colour).to_owned()).collect(),
     }
+}
+
+/// Colour runs for Kog MML text. Only needs to be good enough to paint.
+pub fn lex(text: &str) -> Vec<(u32, u32, u8)> {
+    let bytes = text.as_bytes();
+    let mut runs = Vec::new();
+    let mut push = |from: usize, to: usize, name: &str| {
+        if to > from {
+            runs.push((from as u32, to as u32, style(name)));
+        }
+    };
+    let mut line_start = 0;
+    while line_start < bytes.len() {
+        let line_end = text[line_start..].find('\n').map_or(bytes.len(), |at| line_start + at);
+        let line = &bytes[line_start..line_end];
+        let at = |offset: usize| line_start + offset;
+        match line.first() {
+            Some(b'#') => {
+                let comment = line.iter().position(|b| *b == b';').unwrap_or(line.len());
+                push(at(0), at(comment), "header");
+                push(at(comment), at(line.len()), "comment");
+            }
+            Some(b';') => push(at(0), at(line.len()), "comment"),
+            Some(_) => {
+                let label = line.iter().position(|b| *b == b' ').unwrap_or(line.len());
+                push(at(0), at(label), "label");
+                let mut i = label;
+                let skip_string = |mut i: usize| {
+                    i += 1;
+                    while i < line.len() && line[i] != b'"' {
+                        i += if line[i] == b'\\' { 2 } else { 1 };
+                    }
+                    (i + 1).min(line.len())
+                };
+                let word_end = |mut i: usize| {
+                    if line.get(i) == Some(&b'"') {
+                        return skip_string(i);
+                    }
+                    while i < line.len() && line[i] != b' ' && line[i] != b'=' {
+                        i += 1;
+                    }
+                    i
+                };
+                while i < line.len() {
+                    if line[i] == b' ' {
+                        i += 1;
+                        continue;
+                    }
+                    let token_end = word_end(i);
+                    if line.get(token_end) == Some(&b'=') {
+                        push(at(i), at(token_end + 1), "key");
+                        let value_end = word_end(token_end + 1);
+                        push(at(token_end + 1), at(value_end), "value");
+                        i = value_end;
+                        continue;
+                    }
+                    let end = line[i..].iter().position(|b| *b == b' ').map_or(line.len(), |n| i + n);
+                    match line[i] {
+                        b'|' => push(at(i), at(end), "bar"),
+                        b'@' => {
+                            let end = if line.get(i + 1) == Some(&b'"') { skip_string(i + 1) } else { end };
+                            push(at(i), at(end), "instrument");
+                            i = end;
+                            continue;
+                        }
+                        b'~' => push(at(i), at(end), "macro"),
+                        b'o' | b'<' | b'>' => push(at(i), at(end), "octave"),
+                        b'V' | b'v' | b'p' | b'P' => push(at(i), at(end), "control"),
+                        b'r' => push(at(i), at(end), "rest"),
+                        b'^' => push(at(i), at(end), "tie"),
+                        b'x' => {
+                            push(at(i), at(i + 1), "hit");
+                            push(at(i + 1), at(end), "length");
+                        }
+                        b'&' | b'a'..=b'g' => {
+                            let mut j = i;
+                            if line[j] == b'&' {
+                                push(at(j), at(j + 1), "legato");
+                                j += 1;
+                            }
+                            let name = j;
+                            j += 1;
+                            while j < end && matches!(line[j], b'+' | b'#' | b'-') {
+                                j += 1;
+                            }
+                            push(at(name), at(j), "note");
+                            if line.get(j) == Some(&b'(') {
+                                let close = line[j..end].iter().position(|b| *b == b')').map_or(end, |n| j + n + 1);
+                                push(at(j), at(close), "cents");
+                                j = close;
+                            }
+                            push(at(j), at(end), "length");
+                        }
+                        _ => {}
+                    }
+                    i = end;
+                }
+            }
+            None => {}
+        }
+        line_start = line_end + 1;
+    }
+    runs
 }
 
 // ---------------------------------------------------------------------------
@@ -1296,14 +1661,6 @@ impl Cursor<'_> {
             false
         }
     }
-    fn word(&mut self) -> &str {
-        self.skip_space();
-        let start = self.at;
-        while self.peek().is_some_and(|b| !b.is_ascii_whitespace()) {
-            self.at += 1;
-        }
-        std::str::from_utf8(&self.bytes[start..self.at]).unwrap_or_default()
-    }
     fn number(&mut self) -> Result<i64, ParseError> {
         let start = self.at;
         if matches!(self.peek(), Some(b'+' | b'-')) {
@@ -1315,11 +1672,10 @@ impl Cursor<'_> {
         let text = std::str::from_utf8(&self.bytes[start..self.at]).unwrap_or_default();
         match text.parse() {
             Ok(value) => Ok(value),
-            Err(_) => self.error(format!("expected a number at {:?}", text)),
+            Err(_) => self.error(format!("expected a number at {text:?}")),
         }
     }
     fn string(&mut self) -> Result<String, ParseError> {
-        self.skip_space();
         if !self.eat(b'"') {
             return self.error("expected a quoted string");
         }
@@ -1344,9 +1700,7 @@ impl Cursor<'_> {
                                 self.at += 1;
                             }
                             let hex = std::str::from_utf8(&self.bytes[start..self.at]).unwrap_or_default();
-                            let character = u32::from_str_radix(hex, 16)
-                                .ok()
-                                .and_then(char::from_u32);
+                            let character = u32::from_str_radix(hex, 16).ok().and_then(char::from_u32);
                             if !self.eat(b'}') || character.is_none() {
                                 return self.error("invalid \\u{hex} escape");
                             }
@@ -1360,7 +1714,6 @@ impl Cursor<'_> {
                     }
                 }
                 Some(byte) => {
-                    // Strings are written as ASCII, but accept UTF-8 input.
                     let rest = std::str::from_utf8(&self.bytes[self.at..]).unwrap_or_default();
                     let character = rest.chars().next().unwrap_or(char::from(byte));
                     self.at += character.len_utf8();
@@ -1369,29 +1722,74 @@ impl Cursor<'_> {
             }
         }
     }
-    fn length(&mut self, quarter: u64, default: u64) -> Result<u64, ParseError> {
-        if self.eat(b'%') {
-            let ticks = self.number()?;
-            return if ticks > 0 {
-                Ok(ticks as u64)
-            } else {
-                self.error("a %length must be positive")
-            };
+    /// A bare word or a quoted string.
+    fn word(&mut self) -> Result<String, ParseError> {
+        self.skip_space();
+        if self.peek() == Some(b'"') {
+            return self.string();
         }
-        if !self.peek().is_some_and(|b| b.is_ascii_digit()) {
-            return Ok(default);
+        let start = self.at;
+        while self
+            .peek()
+            .is_some_and(|b| b.is_ascii_graphic() && !matches!(b, b'"' | b'=' | b'|' | b';'))
+        {
+            self.at += 1;
         }
-        let divisor = self.number()? as u64;
+        if start == self.at {
+            return self.error("expected a word");
+        }
+        Ok(String::from_utf8_lossy(&self.bytes[start..self.at]).into_owned())
+    }
+    /// Whether the token here is `name=value`.
+    fn at_assignment(&self) -> bool {
+        let mut i = self.at;
+        if self.bytes.get(i) == Some(&b'"') {
+            i += 1;
+            while i < self.bytes.len() && self.bytes[i] != b'"' {
+                i += if self.bytes[i] == b'\\' { 2 } else { 1 };
+            }
+            return self.bytes.get(i + 1) == Some(&b'=');
+        }
+        while i < self.bytes.len() && self.bytes[i].is_ascii_graphic() && !matches!(self.bytes[i], b'=' | b'"') {
+            i += 1;
+        }
+        i > self.at && self.bytes.get(i) == Some(&b'=')
+    }
+    /// One note value: a divisor of the whole note with dots, or `Nt` ticks.
+    fn note_value(&mut self, quarter: u64) -> Result<u64, ParseError> {
+        let divisor = self.number()?;
+        if self.eat(b't') {
+            return u64::try_from(divisor)
+                .ok()
+                .filter(|ticks| *ticks > 0)
+                .map_or_else(|| self.error("tick lengths must be positive"), Ok);
+        }
         let whole = quarter * 4;
+        let divisor = u64::try_from(divisor).unwrap_or(0);
         if divisor == 0 || whole % divisor != 0 {
             return self.error(format!("length {divisor} is not a whole number of ticks"));
         }
-        let mut ticks = whole / divisor;
-        if self.eat(b'.') {
-            if ticks % 2 != 0 {
+        let base = whole / divisor;
+        let mut ticks = base;
+        let mut part = base;
+        while self.eat(b'.') {
+            if part % 2 != 0 {
                 return self.error("dotted length is not a whole number of ticks");
             }
-            ticks += ticks / 2;
+            part /= 2;
+            ticks += part;
+        }
+        Ok(ticks)
+    }
+    /// A length, possibly tied (`4^16`), or the default when none is written.
+    fn length(&mut self, quarter: u64, default: u64) -> Result<u64, ParseError> {
+        if !self.peek().is_some_and(|b| b.is_ascii_digit()) {
+            return Ok(default);
+        }
+        let mut ticks = self.note_value(quarter)?;
+        while self.peek() == Some(b'^') && self.bytes.get(self.at + 1).is_some_and(u8::is_ascii_digit) {
+            self.at += 1;
+            ticks += self.note_value(quarter)?;
         }
         Ok(ticks)
     }
@@ -1402,6 +1800,7 @@ struct TrackParse {
     octave: i32,
     velocity: u8,
     default: u64,
+    instrument: Option<String>,
     /// Index of the last sound event, for `^` continuation.
     last: Option<usize>,
     rest: bool,
@@ -1427,72 +1826,108 @@ pub fn parse(text: &str) -> Result<Score, ParseError> {
                     return cursor.error("headers must precede the bars");
                 }
                 cursor.at += 1;
-                let name = cursor.word().to_owned();
+                let name = cursor.word()?;
+                cursor.skip_space();
                 match name.as_str() {
                     "KOG-MML" => {
-                        if cursor.word() != "1" {
+                        if cursor.word()? != "1" {
                             return cursor.error("unsupported KOG-MML version");
                         }
                         seen_format = true;
                     }
                     "TITLE" => score.title = cursor.string()?,
                     "SOURCE" => score.backend = cursor.string()?,
-                    "TIMEBASE" => {
-                        cursor.skip_space();
-                        score.rate = cursor.number()? as u32;
-                        cursor.skip_space();
-                        score.tick_samples = cursor.number()? as u32;
-                    }
-                    "METER" => {
-                        cursor.skip_space();
-                        score.quarter = cursor.number()? as u32;
-                        cursor.skip_space();
-                        score.bar = cursor.number()? as u32;
+                    "TEMPO" => {
+                        let whole = cursor.number()?;
+                        let mut milli = 0;
+                        if cursor.eat(b'.') {
+                            let start = cursor.at;
+                            let fraction = cursor.number()?;
+                            let digits = cursor.at - start;
+                            if digits != 3 {
+                                return cursor.error("#TEMPO has three decimal places");
+                            }
+                            milli = fraction;
+                        }
+                        score.tempo = u32::try_from(whole * 1000 + milli).unwrap_or(0);
                         cursor.skip_space();
                         score.inferred = line[cursor.at..].starts_with("inferred");
-                        if score.quarter == 0 || score.bar == 0 {
-                            return cursor.error("#METER values must be positive");
+                        if score.tempo == 0 {
+                            return cursor.error("#TEMPO must be positive");
                         }
                     }
-                    "LENGTH" => {
+                    "TICKS" => score.quarter = cursor.number()?.max(0) as u32,
+                    "BAR" => score.beats = cursor.number()?.max(0) as u32,
+                    "LENGTH" => score.length = cursor.number()?.max(0) as u64,
+                    "TRANSPOSE" => {
+                        let instrument = cursor.word()?;
                         cursor.skip_space();
-                        score.length = cursor.number()? as u64;
+                        let shift = cursor.number()? as i32;
+                        score.transpose.push((instrument, shift));
+                    }
+                    "PITCH" => {
+                        let label = cursor.word()?;
+                        let Some(&index) = labels.get(&label) else {
+                            return cursor.error(format!("#PITCH names undeclared track {label}"));
+                        };
+                        cursor.skip_space();
+                        if !cursor.at_assignment() {
+                            return cursor.error("#PITCH needs a register name followed by =");
+                        }
+                        let name = cursor.word()?;
+                        cursor.eat(b'=');
+                        let mut table = PitchedParam { name, values: Vec::new() };
+                        loop {
+                            cursor.skip_space();
+                            if matches!(cursor.peek(), None | Some(b';')) {
+                                break;
+                            }
+                            let key = cursor.number()? as i32;
+                            let cents = if cursor.eat(b'(') {
+                                let cents = cursor.number()? as i32;
+                                if !cursor.eat(b')') {
+                                    return cursor.error("expected ) after cents");
+                                }
+                                cents
+                            } else {
+                                0
+                            };
+                            if !cursor.eat(b':') {
+                                return cursor.error("#PITCH entries are key:value");
+                            }
+                            table.values.push((key, cents, cursor.word()?));
+                        }
+                        score.tracks[index].pitched.push(table);
                     }
                     "MACRO" => {
-                        cursor.skip_space();
                         let id = cursor.number()? as usize;
                         if id != score.macros.len() {
                             return cursor.error("macros must be numbered in order from 0");
                         }
                         cursor.skip_space();
-                        let target = match cursor.peek() {
-                            Some(b'v') => Target::Level,
-                            Some(b'p') => Target::Pan,
-                            Some(b'P') => Target::Bend,
-                            Some(b'{') => {
-                                cursor.at += 1;
-                                let name = cursor.string()?;
-                                if !cursor.eat(b'}') {
-                                    return cursor.error("expected } after the parameter name");
-                                }
-                                cursor.at -= 1;
-                                Target::Param(name)
+                        let target = if cursor.at_assignment() {
+                            let name = cursor.word()?;
+                            cursor.eat(b'=');
+                            Target::Param(name)
+                        } else {
+                            match cursor.word()?.as_str() {
+                                "v" => Target::Level,
+                                "p" => Target::Pan,
+                                "P" => Target::Bend,
+                                other => return cursor.error(format!("unknown macro target {other}")),
                             }
-                            _ => return cursor.error("a macro targets v, p, P, or {\"name\"}"),
                         };
-                        cursor.at += 1;
                         let mut steps = Vec::new();
                         loop {
                             cursor.skip_space();
-                            match cursor.peek() {
-                                None | Some(b';') => break,
-                                _ => {}
+                            if matches!(cursor.peek(), None | Some(b';')) {
+                                break;
                             }
                             let offset = cursor.number()? as u64;
                             if !cursor.eat(b':') {
-                                return cursor.error("macro steps are tick:\"value\"");
+                                return cursor.error("macro steps are tick:value");
                             }
-                            let value = cursor.string()?;
+                            let value = cursor.word()?;
                             if target_event(&target, &value).is_none() {
                                 return cursor.error(format!("invalid macro value {value:?}"));
                             }
@@ -1501,37 +1936,56 @@ pub fn parse(text: &str) -> Result<Score, ParseError> {
                         score.macros.push(Macro { target, steps });
                     }
                     "TRACK" => {
-                        let label = cursor.word().to_owned();
-                        cursor.skip_space();
-                        let channel = cursor.number()? as u32;
-                        cursor.skip_space();
-                        let voice = cursor.number()? as u32;
-                        let kind = cursor.string()?;
-                        let name = cursor.string()?;
-                        cursor.skip_space();
-                        if !cursor.eat(b'l') {
-                            return cursor.error("#TRACK needs a default length");
+                        if score.quarter == 0 || score.beats == 0 {
+                            return cursor.error("#TICKS and #BAR must precede the tracks");
                         }
-                        let default = cursor.length(u64::from(score.quarter.max(1)), 0)?;
+                        let label = cursor.word()?;
+                        let name = cursor.word()?;
+                        let mut track = Track {
+                            label: label.clone(),
+                            name,
+                            kind: "tonal".into(),
+                            ..Track::default()
+                        };
+                        let mut default = None;
+                        loop {
+                            cursor.skip_space();
+                            if matches!(cursor.peek(), None | Some(b';')) {
+                                break;
+                            }
+                            if cursor.at_assignment() {
+                                let key = cursor.word()?;
+                                cursor.eat(b'=');
+                                let value = cursor.word()?;
+                                let number = || value.parse::<u32>().ok();
+                                match key.as_str() {
+                                    "channel" => track.channel = number().map_or_else(|| cursor.error("channel is a number"), Ok)?,
+                                    "voice" => track.voice = number().map_or_else(|| cursor.error("voice is a number"), Ok)?,
+                                    "kind" => track.kind = value,
+                                    other => return cursor.error(format!("unknown track property {other}")),
+                                }
+                            } else if cursor.eat(b'l') {
+                                default = Some(cursor.length(u64::from(score.quarter), 0)?);
+                            } else {
+                                return cursor.error("expected key=value or a default length");
+                            }
+                        }
+                        let Some(default) = default.filter(|length| *length > 0) else {
+                            return cursor.error("#TRACK needs a default length");
+                        };
                         if label.is_empty() || !label.bytes().all(|b| b.is_ascii_uppercase()) {
                             return cursor.error("track labels are uppercase letters");
                         }
                         if labels.insert(label.clone(), score.tracks.len()).is_some() {
                             return cursor.error(format!("track {label} is declared twice"));
                         }
-                        score.tracks.push(Track {
-                            label,
-                            channel,
-                            voice,
-                            name,
-                            kind,
-                            events: Vec::new(),
-                        });
+                        score.tracks.push(track);
                         states.push(TrackParse {
                             tick: 0,
                             octave: 4,
                             velocity: 0,
                             default,
+                            instrument: None,
                             last: None,
                             rest: false,
                         });
@@ -1544,7 +1998,7 @@ pub fn parse(text: &str) -> Result<Score, ParseError> {
                     return cursor.error(format!("missing #{FORMAT} header"));
                 }
                 header_done = true;
-                let label = cursor.word().to_owned();
+                let label = cursor.word()?;
                 let Some(&index) = labels.get(&label) else {
                     return cursor.error(format!("undeclared track {label}"));
                 };
@@ -1579,39 +2033,44 @@ fn parse_track_line(
     state: &mut TrackParse,
 ) -> Result<(), ParseError> {
     let quarter = u64::from(score.quarter.max(1));
-    let bar = u64::from(score.bar.max(1));
+    let bar = score.bar_ticks();
     let mut bar_start: Option<u64> = None;
     loop {
         cursor.skip_space();
         let Some(byte) = cursor.peek() else {
             return Ok(());
         };
+        let tick = state.tick;
+        if cursor.at_assignment() {
+            let name = cursor.word()?;
+            cursor.eat(b'=');
+            let value = cursor.word()?;
+            score.tracks[index].events.push(Event { tick, kind: EventKind::Param(name, value) });
+            continue;
+        }
         cursor.at += 1;
         let events = &mut score.tracks[index].events;
-        let tick = state.tick;
         let mut command = |kind| events.push(Event { tick, kind });
         match byte {
             b';' => return Ok(()),
-            b'|' => {
+            b'|' => match bar_start {
                 // Bar lines must fall on the bar grid; this catches lost ticks.
-                match bar_start {
-                    None => {
-                        if state.tick % bar != 0 {
-                            return cursor.error("a bar starts off the bar grid");
-                        }
-                        bar_start = Some(state.tick);
+                None => {
+                    if state.tick % bar != 0 {
+                        return cursor.error("a bar starts off the bar grid");
                     }
-                    Some(start) => {
-                        if state.tick != (start + bar).min(score.length) {
-                            return cursor.error(format!(
-                                "bar holds {} ticks instead of {}",
-                                state.tick - start,
-                                bar
-                            ));
-                        }
+                    bar_start = Some(state.tick);
+                }
+                Some(start) => {
+                    if state.tick != (start + bar).min(score.length) {
+                        return cursor.error(format!(
+                            "bar holds {} ticks instead of {}",
+                            state.tick - start,
+                            bar
+                        ));
                     }
                 }
-            }
+            },
             b'o' => state.octave = cursor.number()? as i32,
             b'>' => state.octave += 1,
             b'<' => state.octave -= 1,
@@ -1619,40 +2078,26 @@ fn parse_track_line(
             b'v' => command(EventKind::Level(cursor.number()? as i32)),
             b'p' => command(EventKind::Pan(cursor.number()? as i32)),
             b'P' => command(EventKind::Bend(cursor.number()? as i32)),
-            b'@' => command(EventKind::Instrument(cursor.string()?)),
+            b'@' => {
+                let name = if cursor.peek() == Some(b'"') { cursor.string()? } else { cursor.word()? };
+                state.instrument = Some(name.clone());
+                command(EventKind::Instrument(name));
+            }
             b'~' => {
                 let id = cursor.number()? as usize;
                 if id >= score.macros.len() {
                     return cursor.error(format!("undefined macro {id}"));
                 }
-                score.tracks[index].events.push(Event {
-                    tick: state.tick,
-                    kind: EventKind::Macro(id),
-                });
+                command(EventKind::Macro(id));
             }
-            b'{' => loop {
-                cursor.skip_space();
-                if cursor.eat(b'}') {
-                    break;
-                }
-                let name = cursor.string()?;
-                if !cursor.eat(b'=') {
-                    return cursor.error("expected = in a parameter");
-                }
-                let value = cursor.string()?;
-                score.tracks[index].events.push(Event {
-                    tick: state.tick,
-                    kind: EventKind::Param(name, value),
-                });
-            },
             b'^' => {
                 let length = cursor.length(quarter, state.default)?;
-                if state.rest || state.last.is_none() {
-                    state.rest = true;
-                } else if let Some(last) = state.last {
-                    match &mut score.tracks[index].events[last].kind {
-                        EventKind::Note { length: l, .. } | EventKind::Hit { length: l, .. } => *l += length,
-                        _ => {}
+                if !state.rest {
+                    if let Some(last) = state.last {
+                        match &mut score.tracks[index].events[last].kind {
+                            EventKind::Note { length: l, .. } | EventKind::Hit { length: l, .. } => *l += length,
+                            _ => {}
+                        }
                     }
                 }
                 state.tick += length;
@@ -1715,10 +2160,15 @@ fn parse_track_line(
                     0
                 };
                 let length = cursor.length(quarter, state.default)?;
+                let shift = state
+                    .instrument
+                    .as_ref()
+                    .and_then(|name| score.transpose.iter().find(|(n, _)| n == name))
+                    .map_or(0, |(_, shift)| *shift);
                 score.tracks[index].events.push(Event {
                     tick: state.tick,
                     kind: EventKind::Note {
-                        key,
+                        key: key - shift,
                         cents,
                         velocity: state.velocity,
                         legato,
@@ -1758,10 +2208,9 @@ mod tests {
         Score {
             title: "Test \"tune\" é".into(),
             backend: "GME".into(),
-            rate: 48_000,
-            tick_samples: 800,
-            quarter: 24,
-            bar: 96,
+            tempo: 150_000,
+            quarter: 32,
+            beats: 3,
             inferred: true,
             length: 300,
             tracks: vec![
@@ -1771,6 +2220,7 @@ mod tests {
                     voice: 0,
                     name: "Pulse 1".into(),
                     kind: "tonal".into(),
+                    pitched: Vec::new(),
                     events: vec![
                         Event { tick: 0, kind: EventKind::Instrument("Duty 25%".into()) },
                         Event { tick: 0, kind: EventKind::Level(750) },
@@ -1789,6 +2239,7 @@ mod tests {
                     voice: 0,
                     name: "Noise".into(),
                     kind: "noise".into(),
+                    pitched: Vec::new(),
                     events: vec![
                         Event { tick: 12, kind: EventKind::Hit { velocity: 90, length: 6 } },
                         Event { tick: 96, kind: EventKind::Pan(-250) },
@@ -1801,6 +2252,7 @@ mod tests {
                 target: Target::Param("Envelope \"x\"".into()),
                 steps: vec![(1, "14".into()), (3, "1 3".into())],
             }],
+            transpose: vec![("Duty 25%".into(), 24)],
         }
     }
 
@@ -1822,7 +2274,7 @@ mod tests {
         assert_eq!(bar.unwrap().index, 0);
         let texts: Vec<_> = active.iter().map(|s| &document.text[s.from..s.to]).collect();
         // Every piece of the sounding note lights up, across its bar line.
-        assert_eq!(texts, ["&e(+12)%26", "^%46", "^%4", "^%14"]);
+        assert_eq!(texts, ["&e(+12)8^16^64", "^4^16^32^64", "^32", "^16.."]);
         let sounds = |active: &[&Span]| {
             let mut sounds: Vec<_> = active.iter().map(|s| (s.track, s.sound)).collect();
             sounds.dedup();
@@ -1866,15 +2318,14 @@ mod tests {
             seed % limit.max(1)
         };
         for case in 0..300 {
-            let quarter = [1, 3, 12, 24, 25, 48, 96][next(7) as usize];
-            let bar = quarter * (1 + next(6)) as u32;
+            let quarter = [32, 64, 96, 128][next(4) as usize];
             let mut score = Score {
                 title: format!("case {case}"),
                 backend: "Random".into(),
-                rate: 44_100,
-                tick_samples: 1 + next(900) as u32,
+                tempo: 1 + next(400_000) as u32,
                 quarter,
-                bar,
+                beats: 1 + next(6) as u32,
+                transpose: (0..next(3)).map(|i| (format!("I{i} \"q\" ü"), (next(11) as i32 - 5) * 12)).collect(),
                 inferred: next(2) == 0,
                 length: 0,
                 tracks: Vec::new(),
@@ -1948,6 +2399,12 @@ mod tests {
                     name: format!("Voice {index}"),
                     kind: "tonal".into(),
                     events,
+                    pitched: (0..next(2))
+                        .map(|i| PitchedParam {
+                            name: format!("Period {i}"),
+                            values: (0..1 + next(5)).map(|k| (k as i32 * 7 - 10, next(3) as i32 - 1, format!("{:03X}", next(4096)))).collect(),
+                        })
+                        .collect(),
                 });
             }
             let text = encode(&score).text;
@@ -2017,27 +2474,33 @@ mod tests {
             ..Description::default()
         };
         let score = score_from_frames(&frames, &description, "t", 48_000, Some(4.0));
-        assert_eq!(score.tick_samples, 800);
+        // Onsets every half second become quarter notes of 120 BPM.
+        assert_eq!((score.tempo, score.quarter, score.inferred), (120_000, 32, true));
+        let seconds = |tick: u64| tick as f64 * score.tick_seconds();
         let roll = score.piano_roll();
-        let starts: Vec<_> = roll.iter().map(|n| (n.cents, n.start, n.end)).collect();
+        let notes: Vec<_> = roll.iter().map(|n| (n.cents, seconds(n.start), seconds(n.end))).collect();
         assert_eq!(
-            starts,
+            notes,
             vec![
-                (Some(6000), 0, 90),
-                (Some(6000), 90, 120),
-                (Some(6200), 150, 180),
-                (Some(6400), 180, 240),
+                (Some(6000), 0.0, 1.5),
+                (Some(6000), 1.5, 2.0),
+                (Some(6200), 2.5, 3.0),
+                (Some(6400), 3.0, 4.0),
             ]
         );
         let events = &score.tracks[0].events;
+        let onsets: Vec<u64> = roll.iter().map(|n| n.start).collect();
         assert!(
-            !events.iter().any(|e| matches!(&e.kind, EventKind::Param(name, _) if name == "Envelope")
-                && e.tick % 60 != 0
-                && !matches!(e.tick, 0 | 90 | 150 | 180)),
+            events
+                .iter()
+                .filter(|e| matches!(&e.kind, EventKind::Param(name, _) if name == "Envelope"))
+                .all(|e| onsets.contains(&e.tick)),
             "envelope steps are recorded at key-on only"
         );
         let expanded = score.expanded_events(&score.tracks[0]);
-        assert!(expanded.iter().any(|e| e.kind == EventKind::Bend(29) && e.tick == 89));
+        assert!(expanded
+            .iter()
+            .any(|e| e.kind == EventKind::Bend(29) && (seconds(e.tick) - 89.0 / 60.0).abs() < score.tick_seconds()));
         assert!(
             !events.iter().any(|e| matches!(e.kind, EventKind::Bend(_))),
             "the slide inside one note becomes a macro"

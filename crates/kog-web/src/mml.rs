@@ -19,35 +19,56 @@ fn escape(text: &str) -> String {
     text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
-/// Bars become blocks and sounding tokens get an index for highlighting.
-fn render(document: &Document) -> String {
+/// Text in `from..to` as colour runs; sounding tokens get an index so their
+/// highlight can be toggled without re-rendering.
+fn styled(document: &Document, from: usize, to: usize, html: &mut String) {
     let text = &document.text;
-    let mut html = String::new();
-    let mut cursor = 0;
-    let header_end = document.bars.first().map_or(text.len(), |bar| bar.from);
-    html.push_str("<pre class=\"mml-header\">");
-    html.push_str(&escape(&text[..header_end]));
-    html.push_str("</pre>");
-    cursor = cursor.max(header_end);
-    let mut spans = document
-        .spans
+    let first = document.spans.partition_point(|span| span.from < from);
+    let mut sounds = document.spans[first..]
         .iter()
         .enumerate()
+        .map(|(offset, span)| (first + offset, span))
+        .take_while(|(_, span)| span.from < to)
         .filter(|(_, span)| span.sound.is_some())
         .peekable();
+    let mut cursor = from;
+    let mut open: Option<usize> = None;
+    for &(start, end, class) in document.styles_in(from, to) {
+        let (start, end) = ((start as usize).max(from), (end as usize).min(to));
+        if open.is_some_and(|close| start >= close) {
+            html.push_str("</span>");
+            open = None;
+        }
+        if let Some((index, span)) = sounds.next_if(|(_, span)| span.from <= start) {
+            html.push_str(&escape(&text[cursor..span.from]));
+            cursor = span.from;
+            html.push_str(&format!("<span class=\"mml-sound\" data-i=\"{index}\">"));
+            open = Some(span.to);
+        }
+        html.push_str(&escape(&text[cursor..start]));
+        html.push_str(&format!("<span class=\"k{class}\">{}</span>", escape(&text[start..end])));
+        cursor = end;
+    }
+    if open.is_some() {
+        html.push_str("</span>");
+    }
+    html.push_str(&escape(&text[cursor..to]));
+}
+
+/// Bars become blocks; the palette becomes one class per token kind.
+fn render(document: &Document) -> String {
+    let mut html = String::from("<style>");
+    for (class, colour) in document.palette.iter().enumerate() {
+        html.push_str(&format!(".channel-mml .k{class}{{color:{colour}}}"));
+    }
+    html.push_str("</style>");
+    let header_end = document.bars.first().map_or(document.text.len(), |bar| bar.from);
+    html.push_str("<pre class=\"mml-header\">");
+    styled(document, 0, header_end, &mut html);
+    html.push_str("</pre>");
     for bar in &document.bars {
         html.push_str(&format!("<pre class=\"mml-bar\" data-bar=\"{}\">", bar.index));
-        while let Some((index, span)) = spans.next_if(|(_, span)| span.from < bar.to) {
-            html.push_str(&escape(&text[cursor..span.from]));
-            html.push_str(&format!(
-                "<span class=\"mml-{}\" data-i=\"{index}\">{}</span>",
-                span.kind,
-                escape(&text[span.from..span.to])
-            ));
-            cursor = span.to;
-        }
-        html.push_str(&escape(&text[cursor..bar.to]));
-        cursor = bar.to;
+        styled(document, bar.from, bar.to, &mut html);
         html.push_str("</pre>");
     }
     html
