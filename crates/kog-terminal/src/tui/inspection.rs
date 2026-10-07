@@ -11,6 +11,7 @@ pub(super) struct View {
     detail: bool,
     scroll: usize,
     pub mml: super::mml::Mml,
+    guide: super::guide::Guide,
 }
 impl Default for View {
     fn default() -> Self {
@@ -24,12 +25,18 @@ impl Default for View {
             detail: false,
             scroll: 0,
             mml: super::mml::Mml::default(),
+            guide: super::guide::Guide::default(),
         }
     }
 }
 impl View {
     pub fn key(&mut self, key: Key) {
+        if self.guide.open {
+            self.guide.key(key);
+            return;
+        }
         match key {
+            Key::Char('g') | Key::Char('G') if self.mode == 4 => self.guide.open = true,
             Key::Esc | Key::Char('q') => self.open = false,
             Key::Char('1') => self.mode = 1,
             Key::Char('2') => self.mode = 2,
@@ -98,6 +105,10 @@ impl View {
         if width < 24 || height < 10 {
             return;
         }
+        if self.guide.open {
+            self.guide.draw(out, size);
+            return;
+        }
         for y in 1..=height {
             paint(out, y, 1, &" ".repeat(width), width, Surface::Main, false);
         }
@@ -144,7 +155,7 @@ impl View {
                 height,
                 2,
                 &format!(
-                    "Highlighted notes are sounding · +/- bars per line ({}) · ↑↓ PgUp/PgDn scroll · F follow · Space play/pause",
+                    "Highlighted notes are sounding · G guide · +/- bars per line ({}) · ↑↓ scroll · F follow · Space play/pause",
                     self.mml.bars_label()
                 ),
                 width - 3,

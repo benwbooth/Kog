@@ -120,6 +120,14 @@ with tempfile.TemporaryDirectory(prefix="kog-tui-mml-") as base:
         assert lines and all(line.count("|") <= 2 for line in lines), screen.display
         send("+++")
         wait_for("bars per line (4)")
+        # The guide opens over the score and pages through its chapters.
+        send("g")
+        wait_for("Kog MML Guide")
+        wait_for("1. INTRODUCTION")
+        send(b"\x1b[C")
+        wait_for("2. THE MML VIEW")
+        send("g")
+        wait_for("bars per line (4)")
         if os.environ.get("KOG_MML_SCREEN"):
             print("\n".join(screen.display))
         send(b"\x1b")

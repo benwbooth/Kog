@@ -34,6 +34,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 mod queue_drag;
+mod guide;
 mod inspection;
 mod mml;
 mod session;
