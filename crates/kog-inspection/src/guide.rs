@@ -105,6 +105,46 @@ mod tests {
     }
 }
 
+/// Qt's rich text understands a small part of CSS: block margins, colours,
+/// fonts and line height, but no padding or borders on blocks. Spacing that
+/// matches the web guide comes from margins, and boxes from tables.
+const QT_STYLE: &str = "
+body { color: #dce3e8; font-size: 15px; line-height: 140%; }
+h1 { color: #edf4f7; font-size: 28px; font-weight: 600; margin-top: 4px; margin-bottom: 18px; }
+h2 { color: #edf4f7; font-size: 20px; font-weight: 600; margin-top: 30px; margin-bottom: 10px; }
+h3 { color: #edf4f7; font-size: 17px; font-weight: 600; margin-top: 22px; margin-bottom: 8px; }
+h4 { color: #edf4f7; font-size: 15px; font-weight: 600; margin-top: 18px; margin-bottom: 6px; }
+p { margin-top: 0px; margin-bottom: 14px; }
+ul, ol { margin-top: 0px; margin-bottom: 14px; }
+li { margin-bottom: 6px; }
+code { font-family: monospace; color: #c3e88d; background-color: #18262e; }
+pre { font-family: monospace; font-size: 14px; line-height: 135%; margin: 0px; color: #dce3e8; }
+pre code { color: #dce3e8; background-color: #0b1216; }
+th { color: #edf4f7; font-weight: 600; text-align: left; line-height: 120%; }
+td { vertical-align: top; line-height: 120%; }
+";
+
+/// A chapter as HTML for Qt's rich text, laid out like the web guide.
+pub fn rich_text(markdown: &str) -> String {
+    let body = html(markdown)
+        // A trailing newline would leave an empty line at the box's foot.
+        .replace("\n</code></pre>", "</code></pre>")
+        // Code blocks get a padded dark box from a one-cell table.
+        .replace(
+            "<pre>",
+            "<table width=\"100%\" cellspacing=\"0\" cellpadding=\"14\" bgcolor=\"#0b1216\" \
+             style=\"margin-top: 4px; margin-bottom: 18px; border-color: #1f2f38; border-style: solid;\" border=\"1\"><tr><td><pre>",
+        )
+        .replace("</pre>", "</pre></td></tr></table>")
+        .replace("<th>", "<th bgcolor=\"#152229\">")
+        .replace(
+            "<table>",
+            "<table cellspacing=\"0\" cellpadding=\"7\" border=\"1\" \
+             style=\"margin-top: 6px; margin-bottom: 18px; border-color: #253944; border-style: solid; border-collapse: collapse;\">",
+        );
+    format!("<html><head><style>{QT_STYLE}</style></head><body>{body}</body></html>")
+}
+
 /// Render a chapter's Markdown as HTML. Handles the subset the guide uses:
 /// headings, paragraphs, lists, tables, fenced code, and inline code,
 /// bold and italics.

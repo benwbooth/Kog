@@ -5406,9 +5406,20 @@ impl qobject::AppController {
         }
     }
 
-    /// The Kog MML guide's chapters as JSON.
+    /// The Kog MML guide's chapters as JSON, each with its page as rich text.
     pub fn mml_guide(&self) -> QString {
-        QString::from(kog_audio::inspection::guide::json())
+        // Qt's Markdown reader leaves almost no space between blocks, so the
+        // desktop shows the guide as styled HTML instead.
+        let chapters: Vec<_> = kog_audio::inspection::guide::CHAPTERS
+            .iter()
+            .map(|chapter| {
+                serde_json::json!({
+                    "title": chapter.title,
+                    "html": kog_audio::inspection::guide::rich_text(chapter.markdown),
+                })
+            })
+            .collect();
+        QString::from(serde_json::Value::from(chapters).to_string())
     }
 
     pub fn set_mml_bars_per_line(mut self: Pin<&mut Self>, bars: i32) {

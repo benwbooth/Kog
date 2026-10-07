@@ -33,8 +33,8 @@ TestCase {
         function mml_text() { return "#KOG-MML 1\n" }
         function export_mml(file) { exported = file; return "" }
         function mml_guide() {
-            return JSON.stringify([{title: "1. Introduction", markdown: "# 1. Introduction\n\nKog MML is a notation."},
-                                   {title: "2. Notes", markdown: "# 2. Notes\n\nA note is `c`."}])
+            return JSON.stringify([{title: "1. Introduction", html: "<h1>1. Introduction</h1><p>Kog MML is a notation.</p>"},
+                                   {title: "2. Notes", html: "<h1>2. Notes</h1><p>A note is <code>c</code>.</p>"}])
         }
         property string mmlMessage: ""
         function set_mml_bars_per_line(bars) { barsPerLine = bars }

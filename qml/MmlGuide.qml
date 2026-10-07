@@ -65,16 +65,20 @@ ApplicationWindow {
                 TextEdit {
                     id: body
                     objectName: "mmlGuideText"
-                    width: page.availableWidth
-                    padding: 28
+                    // A readable measure, as in the web guide.
+                    width: Math.min(page.availableWidth, 920)
+                    leftPadding: 36
+                    rightPadding: 36
+                    topPadding: 24
+                    bottomPadding: 36
                     readOnly: true
                     selectByMouse: true
                     wrapMode: TextEdit.Wrap
-                    textFormat: TextEdit.MarkdownText
+                    textFormat: TextEdit.RichText
                     color: "#dce3e8"
                     selectionColor: "#2e6f86"
                     font.pixelSize: 15
-                    text: root.chapters.length ? root.chapters[root.chapter].markdown : ""
+                    text: root.chapters.length ? root.chapters[root.chapter].html : ""
                     onTextChanged: page.ScrollBar.vertical.position = 0
                 }
             }
