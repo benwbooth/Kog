@@ -1580,12 +1580,19 @@ pub struct Span {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Bar {
+    /// Index of this block of bars (one line per track).
     pub index: usize,
+    /// Zero-based number of the first bar in the block.
+    #[serde(default)]
+    pub first_bar: usize,
     pub start: u64,
     pub end: u64,
     pub from: usize,
     pub to: usize,
 }
+
+/// Bars written on each line of every track.
+pub const BARS_PER_LINE: usize = 4;
 
 /// Token classes for syntax colouring, with the colour every frontend uses.
 pub const STYLES: [(&str, &str); 17] = [
@@ -2063,55 +2070,62 @@ pub fn encode(score: &Score) -> Document {
     let mut cursors = vec![0usize; tracks];
     let mut bars = Vec::new();
     let bar_count = score.bar_count();
-    for index in 0..bar_count {
-        let start = score.bar_start(index);
-        let end = score.bar_start(index + 1).min(score.length).max(start);
-        let last = index + 1 == bar_count;
+    // Bars are written BARS_PER_LINE to a line; each group is one block that
+    // frontends draw, follow, and highlight together.
+    for (block, first) in (0..bar_count).step_by(BARS_PER_LINE).enumerate() {
+        let group = first..(first + BARS_PER_LINE).min(bar_count);
+        let block_start = score.bar_start(first);
+        let block_end = score.bar_start(group.end).min(score.length).max(block_start);
         let from = writer.text.len();
-        let seconds = score.seconds_at(start);
-        let _ = writeln!(
-            writer.text,
-            "; bar {} {}:{:06.3}",
-            index + 1,
-            (seconds / 60.0) as u64,
-            seconds % 60.0
-        );
+        let seconds = score.seconds_at(block_start);
+        let numbers = if group.len() > 1 {
+            format!("bars {}-{}", first + 1, group.end)
+        } else {
+            format!("bar {}", first + 1)
+        };
+        let _ = writeln!(writer.text, "; {numbers} {}:{:06.3}", (seconds / 60.0) as u64, seconds % 60.0);
         for (track_index, track) in score.tracks.iter().enumerate() {
             let _ = write!(writer.text, "{:<label_width$} |", track.label);
-            let plan = &plans[track_index];
-            let mut cursor = cursors[track_index];
-            while let Some(item) = plan.get(cursor) {
-                match *item {
-                    Item::Command(tick, event) => {
-                        if tick >= end && !last {
-                            break;
+            for index in group.clone() {
+                let end = score.bar_start(index + 1).min(score.length).max(score.bar_start(index));
+                let last = index + 1 == bar_count;
+                let plan = &plans[track_index];
+                let mut cursor = cursors[track_index];
+                while let Some(item) = plan.get(cursor) {
+                    match *item {
+                        Item::Command(tick, event) => {
+                            if tick >= end && !last {
+                                break;
+                            }
+                            writer.command(track_index, tick, &track.events[event].kind);
                         }
-                        writer.command(track_index, tick, &track.events[event].kind);
-                    }
-                    Item::Piece(piece_start, piece_end, sound, first) => {
-                        if piece_start >= end {
-                            break;
+                        Item::Piece(piece_start, piece_end, sound, first) => {
+                            if piece_start >= end {
+                                break;
+                            }
+                            let kind = sound.map_or(EventKind::Bend(0), |i| track.events[i].kind.clone());
+                            writer.sound(
+                                track_index,
+                                piece_start,
+                                piece_end - piece_start,
+                                &kind,
+                                first,
+                                sound.map(|i| track.events[i].tick),
+                            );
                         }
-                        let kind = sound.map_or(EventKind::Bend(0), |i| track.events[i].kind.clone());
-                        writer.sound(
-                            track_index,
-                            piece_start,
-                            piece_end - piece_start,
-                            &kind,
-                            first,
-                            sound.map(|i| track.events[i].tick),
-                        );
                     }
+                    cursor += 1;
                 }
-                cursor += 1;
+                cursors[track_index] = cursor;
+                writer.text.push_str(" |");
             }
-            cursors[track_index] = cursor;
-            writer.text.push_str(" |\n");
+            writer.text.push('\n');
         }
         bars.push(Bar {
-            index,
-            start,
-            end,
+            index: block,
+            first_bar: first,
+            start: block_start,
+            end: block_end,
             from,
             to: writer.text.len(),
         });
@@ -2735,6 +2749,8 @@ fn parse_track_line(
                             end - start
                         ));
                     }
+                    // Several bars share a line: this bar line opens the next.
+                    bar_start = Some(state.tick);
                 }
             },
             b'o' => state.octave = cursor.number()? as i32,
@@ -2934,7 +2950,9 @@ mod tests {
         let parsed = parse(&document.text).unwrap_or_else(|e| panic!("{e}\n{}", document.text));
         assert_eq!(parsed, score, "\n{}", document.text);
         assert_eq!(parsed.piano_roll(), score.piano_roll());
-        assert_eq!(document.bars.len(), 4);
+        // Four bars of 96 ticks share one block of lines.
+        assert_eq!(document.bars.len(), 1);
+        assert_eq!(document.text.lines().filter(|line| line.starts_with("A ")).next().unwrap().matches('|').count(), 5);
     }
 
     #[test]
@@ -2956,7 +2974,7 @@ mod tests {
         for tick in [0, 30, 149, 150, 151, 299, 400] {
             assert_eq!(document.tick_at(score.seconds_at(tick) + 1e-9), tick, "timing round trip at {tick}");
         }
-        assert_eq!(bar.unwrap().index, 1);
+        assert_eq!(bar.unwrap().index, 0);
         assert_eq!(sounds(&active), [(0, Some(24)), (1, Some(96))]);
     }
 

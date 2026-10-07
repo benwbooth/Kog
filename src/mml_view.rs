@@ -185,7 +185,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(50));
             state = view.state(3.0);
         }
-        assert!(state["bars"].as_u64().unwrap() > 1, "{state}");
+        assert!(state["bars"].as_u64().unwrap() >= 1, "{state}");
         assert!(state["current"].as_i64().unwrap() >= 0, "{state}");
         let current = state["currentHtml"].as_str().unwrap();
         assert!(current.contains("; bar") && current.contains("background-color"), "{current}");

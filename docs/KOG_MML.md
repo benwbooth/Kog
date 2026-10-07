@@ -45,9 +45,9 @@ without a length are recorded for ten minutes.
 #PITCH A Period= 69(+2):0FD 73(+7):0C8 78(+2):096
 #MACRO 1 v 0:1000 1:933 4:867 6:800
 #MACRO 2 Envelope= 0:15 1:14 4:13 6:12
-; bar 1 0:00.000
-A | r128 @"Pulse duty 1" p0 Sweep=00 ~1 ~2 V127 o4 a > c+ f+ c+ < g+ |
-B | r128 @"Pulse duty 1" p0 ~1 ~2 V127 o3 f+4 > f+ f < f+ |
+; bars 1-4 0:00.025
+A | @"Pulse duty 1" p0 Sweep=0 ~1 ~2 V127 o4 a > c+ f+ c+ < g+ > c+ < a > c+ | < f+ > c+ < f … | … | … |
+B | @"Pulse duty 1" p0 Sweep=0 ~1 ~2 V127 o3 f+ > f+ f < f+ a | > c+ f+ d c+ | … | … |
 ```
 
 Headers come first. `#TEMPO` uses the MIDI tempo when the source has one.
@@ -56,8 +56,9 @@ through the song as the tempo drifts, placing each note on the nearest beat,
 half, third or quarter of one, and marks the tempo `inferred`. `#TIMING
 tick:seconds …` records where the beat drifted from a steady tempo, for
 highlighting. `#PICKUP` lengthens the first bar so bar lines fall where the
-biggest chords land. Bars only lay out the text, and the
-parser checks that each one holds exactly `#BAR` quarter notes.
+biggest chords land. Bars only lay out the text: each
+line holds four bars of one track, separated by `|`, and the parser checks
+that each bar holds exactly `#BAR` quarter notes.
 
 `#TRACK label name key=value … l<length>` declares one track per voice.
 Polyphonic channels such as MIDI get one track per simultaneous voice
