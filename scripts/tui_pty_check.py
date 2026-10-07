@@ -117,8 +117,21 @@ def choose_music_folder(path):
     assert 'Select Music Folder' not in '\n'.join(screen.display)
 def folder_row(name):
     for i,line in enumerate(screen.display):
-        if line.find('▱ '+name)>15:return i
+        if line.find('🗀 '+name)>15:return i
     raise AssertionError((name,'not in folder chooser',screen.display))
+def underlined(label,letter):
+    # Menus mark their Alt shortcut by underlining one letter of the label.
+    for y,line in enumerate(screen.display):
+        x=line.find(label)
+        if x>=0:return screen.buffer[y][x+label.index(letter)].underscore
+    raise AssertionError((label,screen.display))
+def load_session():
+    # The terminal queue checkpoint is stored in the shared Kog database.
+    databases=list((Path(base)/'data').rglob('kog.db'))
+    if not databases:return None
+    with sqlite3.connect(databases[0]) as db:
+        found=db.execute("SELECT value FROM app_state WHERE namespace='sessions' AND key='tui:default'").fetchone()
+    return json.loads(found[0]) if found else None
 def row(text):
     for i,line in enumerate(screen.display):
         if text in line:return i
@@ -168,16 +181,16 @@ try:
     send(b'\x17',.3)
     wait_for(base+'/',5)
     send(b'\r',.3)
-    assert '▱ Music' in '\n'.join(screen.display),screen.display
+    assert '🗀 Music' in '\n'.join(screen.display),screen.display
     send('.',.3)
-    assert '▱ .HiddenMusic' in '\n'.join(screen.display)
+    assert '🗀 .HiddenMusic' in '\n'.join(screen.display)
     send('.',.3)
-    assert '▱ .HiddenMusic' not in '\n'.join(screen.display)
+    assert '🗀 .HiddenMusic' not in '\n'.join(screen.display)
     if folder_snapshot:=os.environ.get('KOG_TUI_FOLDER_SNAPSHOT_PATH'):
         save_snapshot(folder_snapshot)
     folder_y=folder_row('Music')
     click(30,folder_y);click(30,folder_y)
-    assert '▱ album' in '\n'.join(screen.display)
+    assert '🗀 album' in '\n'.join(screen.display)
     choose_y=row('[ Choose This Folder ]')
     click(screen.display[choose_y].find('[ Choose This Folder ]')+4,choose_y)
     assert 'Select Music Folder' not in '\n'.join(screen.display)
@@ -196,10 +209,9 @@ try:
     assert 'deep.wav' in '\n'.join(screen.display)
     click(10,y);click(10,y);drain(.5)
     assert 'Added 4 tracks' in screen.display[-1], screen.display[-1]
-    session_path=Path(base)/'config/kog/tui-session.json'
     until=time.time()+5
     while time.time()<until:
-        if session_path.exists() and len(json.loads(session_path.read_text())['tracks'])>=4:
+        if len((load_session() or {}).get('queue',[]))>=4:
             break
         drain(.1)
     else:
@@ -251,7 +263,7 @@ try:
     click(45,36)
     assert 'Shuffle: albums' in screen.display[-1],screen.display[-1]
     click(5,0)
-    assert 'Save Current Playlist' in '\n'.join(screen.display) and 'Alt+S' in '\n'.join(screen.display)
+    assert underlined('Save Current Playlist','S')
     click(10,6);send('PTY Saved\r',.3)
     wait_for('Saved 4 tracks')
     click(60,2);click(60,4,8)
@@ -344,7 +356,7 @@ try:
     send('m');send(b'\x1b[B'*7);send(b'\r')
     assert '╭─ Kog' in '\n'.join(screen.display)
     assert '╭─ View' in '\n'.join(screen.display)
-    assert screen.display[row('Alt+V')].find('╭─ View') > screen.display[row('Alt+V')].find('Alt+V')
+    view=screen.display[row('╭─ View')];assert view.find('╭─ View') > view.find(' View ') >= 0
     if menu_snapshot:=os.environ.get('KOG_TUI_MENU_SNAPSHOT_PATH'):
         save_snapshot(menu_snapshot)
     menu_item('Kog',10)
@@ -522,7 +534,7 @@ try:
     click(38,18)
     assert '%' in screen.display[18]
     click(5,0)
-    assert 'Save Current' in '\n'.join(screen.display) and 'Alt+S' in '\n'.join(screen.display)
+    assert underlined('Save Current','S')
     menu_item('Kog',9)
     assert '╭─ Kog' in '\n'.join(screen.display) and '╭─ View' in '\n'.join(screen.display)
     resize(72,24);screen.resize(lines=24,columns=72);os.kill(p.pid,signal.SIGWINCH);drain(.5)
@@ -690,7 +702,7 @@ try:
     wait_for('kept.wav')
     assert 'long.wav' not in '\n'.join(line[:50] for line in screen.display[:20])
     click(10,row('kept.wav'),2);send(b'\x1b[B'*9+b'\r')
-    assert any('▸ ▱ RadioOnly' in line[:50] for line in screen.display[:20]),screen.display[:20]
+    assert any('▸ 🗀 RadioOnly' in line[:50] for line in screen.display[:20]),screen.display[:20]
     artwork_path=os.path.join(base,'cover.png')
     def png_chunk(kind,payload):
         return struct.pack('>I',len(payload))+kind+payload+struct.pack('>I',zlib.crc32(kind+payload))
@@ -731,8 +743,8 @@ try:
     wait_for('Authentication failed',10)
     click(5,0);click(10,15);menu_item('Remote Server',1);send('PTY remote token\r',.4)
     wait_for('Connected to '+remote_address,10)
-    assert any('▱ album' in line[:50] for line in screen.display[:20]),screen.display[:20]
-    click(10,row('▱ album'));wait_for('remote.wav',10)
+    assert any('🗀 album' in line[:50] for line in screen.display[:20]),screen.display[:20]
+    click(10,row('🗀 album'));wait_for('remote.wav',10)
     click(10,row('remote.wav'));click(10,row('remote.wav'))
     wait_for('Playing remote.wav',10)
     assert any(path=='/api/stream' and query.get('token')==['PTY remote token'] for path,query,_ in remote_requests),remote_requests
@@ -846,10 +858,10 @@ try:
     print('search, local/remote tree/archive navigation/trash/blacklist/group selection, divider/column drag/visibility/reorder, volume, radio/blacklist/queue/stop-after, playback/seek/completion/order/error recovery, saved-list CRUD/export/prune/multi-selection, tag fields/artwork/playback resume, selection/reorder/sort, menus/dialogs, equalizer/visualizer, narrow wheel/keyboard navigation, resize: PASS')
     send(b'\x1b',.3);send('q')
     p.wait(timeout=5)
-    session=json.loads(session_path.read_text())
-    saved_paths=[track['path'] for track in session['tracks']]
+    session=load_session()
+    saved_paths=[track['path'] for track in session['queue']]
     assert all(path in saved_paths for path in recover_paths),saved_paths
-    assert session['selectedIndex'] < len(saved_paths),session
+    assert all(index < len(saved_paths) for index in session['selection']['indices']),session
     os.close(master)
     master,slave=pty.openpty()
     resize(120,40)
@@ -858,8 +870,8 @@ try:
     screen=pyte.Screen(120,40);stream=pyte.Stream(screen)
     wait_for('recover3.wav')
     send('q');p.wait(timeout=5)
-    restored=json.loads(session_path.read_text())
-    assert [track['path'] for track in restored['tracks']]==saved_paths,restored
+    restored=load_session()
+    assert [track['path'] for track in restored['queue']]==saved_paths,restored
     print('terminal playlist survives quit and relaunch: PASS')
 finally:
     if p.poll() is None:p.terminate();p.wait(timeout=5)

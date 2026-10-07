@@ -92,6 +92,8 @@ with tempfile.TemporaryDirectory(prefix="kog-tui-size-") as base:
         wait_for("160044")
         wait_for("156.3 KiB")
         send("q")
+        wait_for("Confirm exit")
+        send("y")
         process.wait(timeout=5)
         assert process.returncode == 0, process.returncode
         print("TUI exact and readable file-size columns: PASS")

@@ -5,6 +5,7 @@ import os
 import pty
 import select
 import signal
+import sqlite3
 import struct
 import subprocess
 import tempfile
@@ -14,6 +15,28 @@ import wave
 from pathlib import Path
 
 import pyte
+
+
+class ColumnLayout:
+    """The TUI column layout preference, stored in the shared Kog database."""
+
+    def __init__(self, data_home):
+        self.data_home = data_home
+
+    def read_text(self):
+        (database,) = self.data_home.rglob("kog.db")
+        with sqlite3.connect(database) as db:
+            row = db.execute(
+                "SELECT value FROM app_state WHERE namespace='preferences' AND key='tui-column-layout'"
+            ).fetchone()
+        return row[0] if row else ""
+
+    def width(self, column):
+        for entry in self.read_text().split(";"):
+            name, width, _ = entry.split(",")
+            if name == column:
+                return int(width)
+        raise AssertionError((column, self.read_text()))
 
 
 with tempfile.TemporaryDirectory(prefix="kog-tui-keyboard-") as base:
@@ -80,6 +103,24 @@ with tempfile.TemporaryDirectory(prefix="kog-tui-keyboard-") as base:
             drain(0.1)
         raise AssertionError((text, screen.display[:18], screen.display[-4:]))
 
+    def underlined(label, letter):
+        # Menus mark their Alt shortcut by underlining one letter of the label.
+        for y, line in enumerate(screen.display):
+            x = line.find(label)
+            if x >= 0:
+                return screen.buffer[y][x + label.index(letter)].underscore
+        raise AssertionError((label, screen.display))
+
+    def shortcut(label):
+        # Return the underlined Alt shortcut letter of a visible menu item.
+        for y, line in enumerate(screen.display):
+            x = line.find(label)
+            if x >= 0:
+                for offset, character in enumerate(label):
+                    if screen.buffer[y][x + offset].underscore:
+                        return character.lower().encode()
+        raise AssertionError((label, screen.display))
+
     try:
         wait_for("Search playlist")
         send("?")
@@ -87,7 +128,8 @@ with tempfile.TemporaryDirectory(prefix="kog-tui-keyboard-") as base:
         send(b"\x1b", 0.4)
         send(b"\x1bv")  # Alt+V opens View directly from the main menu.
         wait_for("╭─ View")
-        wait_for("Alt+F")
+        wait_for("Supported Formats")
+        assert underlined("Supported Formats", "F")
         send(b"\x1bf")  # Alt+F activates Supported Formats within View.
         wait_for(".m3u")
         send(b"\x1b", 0.4)
@@ -100,19 +142,20 @@ with tempfile.TemporaryDirectory(prefix="kog-tui-keyboard-") as base:
         send("o")
         wait_for("Select Music Folder")
         send(b"\x0c\x01" + os.fsencode(music) + b"\r", 0.5)
-        wait_for("Album")
+        wait_for("🗀 Album")
         send(b"\x0f", 0.5)
-        wait_for("Album")
+        wait_for("🗀 Album")
 
         send("z")
         wait_for("▸ Files")
         send("z")
         wait_for("▾ Files")
         send(b"\x12")  # Ctrl+R refreshes Files.
-        wait_for("Album")
+        wait_for("🗀 Album")
         send("u")  # Printable fallback for terminals that do not forward Ctrl+R.
-        wait_for("Album")
+        wait_for("🗀 Album")
 
+        send(b"\x1b[B")  # Move past the "↑ .." parent row.
         send(b"\r")  # Expand Album.
         wait_for("a.wav")
         send(b"\x1b[B")  # Focus a.wav.
@@ -129,14 +172,16 @@ with tempfile.TemporaryDirectory(prefix="kog-tui-keyboard-") as base:
         send(b"\x1b[21;2~")  # Shift+F10 opens the selected file's context menu.
         wait_for("File")
         send(b"\x1ba", 0.5)  # Alt+A adds selected a.wav and b.wav.
-        wait_for("Added 2 track(s)")
+        wait_for("Added 2 tracks")
 
         send(b"\t")  # Playlist pane.
         send("H")  # Focus playlist header.
         wait_for("Title column")
+        layouts = [ColumnLayout(Path(env["XDG_DATA_HOME"]))]
         send("+")
-        layouts = list(Path(env["XDG_CONFIG_HOME"]).rglob("tui-column-layout"))
-        assert len(layouts) == 1 and "title,40,1" in layouts[0].read_text(), layouts
+        widened = layouts[0].width("title")
+        send("+")
+        assert layouts[0].width("title") == widened + 1, layouts[0].read_text()
         send(b"\x1b[C")  # Artist column.
         wait_for("Artist column")
         send(b"\x1b[1;5D")  # Move Artist left.
@@ -155,7 +200,7 @@ with tempfile.TemporaryDirectory(prefix="kog-tui-keyboard-") as base:
         send("v")  # Hide Artist without a header right click.
         assert any(entry.startswith("artist,") and entry.endswith(",0") for entry in layouts[0].read_text().split(";"))
         send("a")  # Auto fit columns without double clicking a boundary.
-        assert "title,40,1" not in layouts[0].read_text()
+        wait_for("│Title│")  # Fitted back to the short titles, without the extra width.
         send("H")  # Leave column focus.
 
         send(b"\x1b[1;5C")  # Resize sidebar without dragging.
@@ -198,10 +243,14 @@ with tempfile.TemporaryDirectory(prefix="kog-tui-keyboard-") as base:
         wait_for("Title column")
         send("M")
         wait_for("Columns")
-        assert "Alt+" in "\n".join(screen.display)
-        send(b"\x1bc")  # Open the column visibility submenu by its accelerator.
-        wait_for("Visible Columns")
-        send(b"\x1bu")  # Toggle Bitrate, below the visible page of the narrow menu.
+        assert any(cell.underscore for row in screen.buffer.values() for cell in row.values())
+        send(b"\x1b" + shortcut("Visible Columns"))  # Open the visibility submenu.
+        wait_for("╭─ Visible Columns")
+        send(b"\x1b[F")  # End shows Bitrate so its shortcut can be read.
+        bitrate = shortcut("Bitrate")
+        send(b"\x1b[H")
+        assert "Bitrate" not in "\n".join(screen.display)
+        send(b"\x1b" + bitrate)  # Toggle Bitrate, below the visible page of the narrow menu.
         assert any(entry.startswith("bitrate,") and entry.endswith(",1") for entry in layouts[0].read_text().split(";"))
         send("H")
         send("?")
@@ -215,6 +264,8 @@ with tempfile.TemporaryDirectory(prefix="kog-tui-keyboard-") as base:
         send(os.fsencode(album / "c.wav") + b"\r")
         wait_for("Added c.wav")
         send("q")
+        wait_for("Confirm exit")
+        send("y")
         process.wait(timeout=5)
         assert process.returncode == 0, process.returncode
         print("keyboard-only TUI navigation, selection, context menus, columns, seek, compact view: PASS")

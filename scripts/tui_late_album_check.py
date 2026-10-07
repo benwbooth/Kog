@@ -126,15 +126,10 @@ class Tui:
         self.wait_footer(expected)
 
     def quit(self):
-        self.send("q", 0.5)
-        if "Confirm exit" in self.text():
-            y = self.row("[Exit]")
-            x = self.screen.display[y].find("[Exit]") + 2
-            self.send(f"\x1b[<0;{x + 1};{y + 1}M\x1b[<0;{x + 1};{y + 1}m")
-        try:
-            self.process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            raise AssertionError(self.screen.display)
+        self.send("q")
+        self.wait_for("Confirm exit")
+        self.send("y")
+        self.process.wait(timeout=5)
         assert self.process.returncode == 0, self.process.returncode
 
     def close(self):

@@ -148,6 +148,7 @@ impl Ui {
                     playing,
                 } => {
                     self.apply_session_view();
+                    let name = self.tracks.get(index).map(|track| track.name.clone());
                     let result = self
                         .tracks
                         .get(index)
@@ -177,7 +178,7 @@ impl Ui {
                                 token,
                                 event: OutputEvent::Started,
                             });
-                            self.status = "Playing".into();
+                            self.status = format!("Playing {}", name.unwrap_or_default());
                         }
                         Err(error) => self.queue_session(SessionCommand::Output {
                             token,
@@ -313,9 +314,17 @@ impl Ui {
     }
     pub(super) fn poll_session_ports(&mut self) {
         let mut ready = self.radio.poll();
+        let mut added = None;
         self.session_jobs
             .retain(|(token, receiver)| match receiver.try_recv() {
                 Ok(result) => {
+                    if let IoResult::Expanded { tracks } = &result {
+                        added = Some(match tracks.as_slice() {
+                            [] => "No playable tracks to add".into(),
+                            [track] => format!("Added {}", track.name),
+                            tracks => format!("Added {} tracks", tracks.len()),
+                        });
+                    }
                     ready.push((token.clone(), result));
                     false
                 }
@@ -330,6 +339,9 @@ impl Ui {
                     false
                 }
             });
+        if let Some(added) = added {
+            self.status = added;
+        }
         for (token, result) in ready {
             self.session_command(SessionCommand::Complete { token, result });
         }
