@@ -31,7 +31,11 @@ pub unsafe extern "C" fn kog_backend_session(
 
 pub struct KogAudioHandle {
     reader: PcmReader,
+    /// A sandbox-local source, so its MML score can be recorded separately.
+    score_source: Option<(PathBuf, Option<u32>, DecoderSettings)>,
 }
+
+static MML: std::sync::OnceLock<kog_server::mml::MmlJobs> = std::sync::OnceLock::new();
 
 pub(crate) unsafe fn error_to_buffer(message: &str, output: *mut c_char, capacity: usize) {
     if output.is_null() || capacity == 0 {
@@ -95,13 +99,11 @@ pub unsafe extern "C" fn kog_audio_open(
             return ptr::null_mut();
         }
     };
-    let reader = PcmReader::open_path_subsong(
-        path,
-        (subsong >= 0).then_some(subsong as u32),
-        options,
-    );
+    let subsong = (subsong >= 0).then_some(subsong as u32);
+    let score_source = Some((path.clone(), subsong, options.clone()));
+    let reader = PcmReader::open_path_subsong(path, subsong, options);
     match reader {
-        Ok(reader) => Box::into_raw(Box::new(KogAudioHandle { reader })),
+        Ok(reader) => Box::into_raw(Box::new(KogAudioHandle { reader, score_source })),
         Err(message) => {
             unsafe { error_to_buffer(&message, error, error_capacity) };
             ptr::null_mut()
@@ -124,7 +126,7 @@ pub unsafe extern "C" fn kog_audio_open_stream(
         PcmReader::open_stream(location, headers, (duration_ms > 0).then(|| Duration::from_millis(duration_ms)))
     })();
     match result {
-        Ok(reader) => Box::into_raw(Box::new(KogAudioHandle { reader })),
+        Ok(reader) => Box::into_raw(Box::new(KogAudioHandle { reader, score_source: None })),
         Err(message) => { unsafe { error_to_buffer(&message, error, error_capacity) }; ptr::null_mut() }
     }
 }
@@ -139,7 +141,8 @@ pub unsafe extern "C" fn kog_audio_open_reader(
 ) -> *mut KogAudioHandle {
     match unsafe { kog_audio::ffmpeg::Ffmpeg::open_reader(read, close, context) } {
         Ok(decoder) => Box::into_raw(Box::new(KogAudioHandle {
-            reader: PcmReader::from_stream_decoder(decoder, (duration_ms > 0).then(|| Duration::from_millis(duration_ms)))
+            reader: PcmReader::from_stream_decoder(decoder, (duration_ms > 0).then(|| Duration::from_millis(duration_ms))),
+            score_source: None,
         })),
         Err(message) => { unsafe { error_to_buffer(&message, error, error_capacity) }; ptr::null_mut() }
     }
@@ -150,6 +153,35 @@ pub unsafe extern "C" fn kog_audio_open_reader(
 pub unsafe extern "C" fn kog_audio_channel_snapshot(handle: *const KogAudioHandle, position_ms: u64, playing: bool) -> *mut c_char {
     let snapshot = (unsafe { handle.as_ref() }).map(|handle| handle.reader.channel_snapshot(Duration::from_millis(position_ms), playing)).unwrap_or_default();
     serde_json::to_string(&snapshot).ok().and_then(|json| CString::new(json).ok()).map_or(ptr::null_mut(), CString::into_raw)
+}
+
+/// The local track's MML score as `/api/mml`-style JSON, or null for a stream.
+/// Recording starts on the first call; `have` is the revision already held,
+/// or -1. Free the reply with `kog_audio_string_free`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kog_audio_mml(handle: *const KogAudioHandle, have: i64) -> *mut c_char {
+    let Some((path, subsong, settings)) =
+        (unsafe { handle.as_ref() }).and_then(|handle| handle.score_source.clone())
+    else {
+        return ptr::null_mut();
+    };
+    let key = format!("{}\0{subsong:?}\0{}", path.display(), settings.midi_engine().setting_value());
+    let title = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    let status = MML.get_or_init(Default::default).status_with(
+        key,
+        u64::try_from(have).ok(),
+        move |progress, partial| {
+            let mut pcm = PcmReader::open_path_subsong(path, subsong, settings)?;
+            kog_audio::inspection::score::record(
+                &mut pcm,
+                &title,
+                progress,
+                kog_audio::inspection::score::MAX_SECONDS,
+                partial,
+            )
+        },
+    );
+    serde_json::to_string(&status).ok().and_then(|json| CString::new(json).ok()).map_or(ptr::null_mut(), CString::into_raw)
 }
 
 #[unsafe(no_mangle)]

@@ -16,19 +16,23 @@ struct ChannelInspectorView: View {
         NavigationStack {
             VStack(spacing: 10) {
                 Picker("Inspector view", selection: $mode) {
-                    Text("Keyboards").tag(0); Text("Tracker").tag(1); Text("Both").tag(2)
+                    Text("Keyboards").tag(0); Text("Tracker").tag(1); Text("Both").tag(2); Text("MML").tag(3)
                 }.pickerStyle(.segmented)
                 Text(snapshot.description.backend).font(.caption.bold()).foregroundStyle(Palette.accent)
                 Text(snapshot.description.detail).font(.caption2).foregroundStyle(Palette.muted)
                 if !snapshot.global.isEmpty { Text(snapshot.global.map(\.label).joined(separator: " · ")).font(.caption2) }
-                if mode != 1 {
+                if mode == 3 {
+                    Toggle("Follow playback", isOn: $follow).font(.caption)
+                    MmlScoreView(follow: follow).frame(maxHeight: .infinity)
+                }
+                if mode == 0 || mode == 2 {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 14) {
                             ForEach(snapshot.channels) { channel in ChannelKeyboardView(channel: channel) }
                         }
                     }.frame(maxHeight: .infinity)
                 }
-                if mode != 0 {
+                if mode == 1 || mode == 2 {
                     Toggle("Follow playback", isOn: $follow).font(.caption)
                     ChannelTrackerView(snapshot: snapshot, follow: follow).frame(maxHeight: .infinity)
                 }

@@ -97,6 +97,18 @@ struct KogAPI {
         return try decoder.decode(ChannelWindowReply.self, from: data)
     }
 
+    /// The streamed track's MML score; `have` is the revision already held, or -1.
+    func mmlScore(stream: String, have: Int64) async throws -> MmlScoreReply {
+        guard let components = URLComponents(string: stream), components.path.hasSuffix("/api/stream") else {
+            throw KogError.response("An MML score is unavailable for this source")
+        }
+        var query = Dictionary((components.queryItems ?? []).map { ($0.name, $0.value ?? "") }, uniquingKeysWith: { _,last in last })
+        query.removeValue(forKey: "start_ms")
+        if have >= 0 { query["have"] = String(have) }
+        let data = try await request("/api/mml", query: query, timeout: 20)
+        return try JSONDecoder().decode(MmlScoreReply.self, from: data)
+    }
+
     func setMidiEngine(_ engine: String) async throws {
         _ = try await request("/api/settings/midi", method: "POST", body: ["engine": engine])
     }

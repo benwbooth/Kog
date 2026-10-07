@@ -21,6 +21,9 @@ KogAudioHandle *kog_audio_open_reader(KogAudioStreamRead read, KogAudioStreamClo
                                      char *error, size_t error_capacity);
 // Free the JSON result with kog_audio_string_free. Position is device-consumed time.
 char *kog_audio_channel_snapshot(const KogAudioHandle *handle, uint64_t position_ms, bool playing);
+// The local track's MML score as JSON (see docs/KOG_MML.md), or NULL for a
+// stream. have is the revision already held, or -1. Free with kog_audio_string_free.
+char *kog_audio_mml(const KogAudioHandle *handle, int64_t have);
 int64_t kog_audio_duration_ms(const KogAudioHandle *handle);
 intptr_t kog_audio_read(KogAudioHandle *handle, uint8_t *output, size_t capacity,
                         char *error, size_t error_capacity);
