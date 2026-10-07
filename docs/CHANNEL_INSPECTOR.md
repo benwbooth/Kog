@@ -4,7 +4,9 @@ Open **View → Channel Inspector** in Qt, the web player, or the terminal.
 Qt and the web player also use **Ctrl+Shift+I**. On Android and iOS, open
 **Channel Inspector** from Now Playing.
 
-Choose **Keyboards**, **Tracker**, or **Both**. Each musical channel has its
+Choose **Keyboards**, **Tracker**, or **Both**. **MML score** (key **4** in the
+terminal) shows the whole song as [Kog MML](KOG_MML.md), split into tracks and
+bars, with the sounding notes highlighted as it plays. Each musical channel has its
 own keyboard. Cyan keys are held; green keys are retained by sustain. Multiple
 keys can light together. Fractional pitches have an orange bend marker. Noise,
 percussion, and untuned sample activity are labelled without inventing keys.
@@ -19,7 +21,7 @@ or changes in chip state. **Follow playback** keeps the current row visible.
 Qt cells have tooltips for long effect strings. The web and mobile keyboards
 have expandable controls and effects.
 
-In the terminal, **1/2/3** choose the view, **D** opens full channel/row details,
+In the terminal, **1/2/3/4** choose the view, **D** opens full channel/row details,
 **F** toggles following, arrows navigate, **[ / ]** change the keyboard octave,
 and **Esc** closes the inspector. **Space** still pauses playback.
 Keyboards expand across the terminal width and share the available pane
