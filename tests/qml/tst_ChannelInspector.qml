@@ -29,6 +29,9 @@ TestCase {
                 currentHtml: "<p>A | c4 <span style=\"background-color:#50c8ef\">e4</span> |</p>"})
         }
         property int barsPerLine: 4
+        property string exported: ""
+        function mml_text() { return "#KOG-MML 1\n" }
+        function export_mml(file) { exported = file; return "" }
         function mml_guide() {
             return JSON.stringify([{title: "1. Introduction", markdown: "# 1. Introduction\n\nKog MML is a notation."},
                                    {title: "2. Notes", markdown: "# 2. Notes\n\nA note is `c`."}])
@@ -88,6 +91,17 @@ TestCase {
         inspector.refresh()
         tryVerify(() => score.itemAtIndex(2) !== null && score.itemAtIndex(2).current)
         grabImage(inspector.contentItem).save("/tmp/kog-channel-inspector-mml-qt.png")
+    }
+
+    function test_mml_copy_and_export() {
+        inspector.mode = 3
+        inspector.refresh()
+        const copy = findChild(inspector, "mmlCopyButton")
+        verify(copy.visible && copy.enabled)
+        copy.clicked()
+        compare(inspector.mmlNotice, "Copied the MML score")
+        const exportButton = findChild(inspector, "mmlExportButton")
+        verify(exportButton.visible && exportButton.enabled)
     }
 
     function test_mml_guide_opens_with_chapters() {

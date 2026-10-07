@@ -132,6 +132,12 @@ impl MmlView {
         })
     }
 
+    /// The whole MML text, and whether recording is still adding to it.
+    pub fn text(&mut self) -> Option<(String, bool)> {
+        self.poll();
+        self.document.as_ref().map(|document| (document.text.clone(), self.receiver.is_some()))
+    }
+
     pub fn bar(&self, index: usize) -> String {
         self.bar_html(index, &[])
     }
@@ -213,6 +219,8 @@ mod tests {
         assert!(current.contains("; bar") && current.contains("background-color"), "{current}");
         assert!(view.bar(0).contains("<font color="));
         assert!(!view.bar(0).contains("background-color"));
+        // Copy and export take the whole text.
+        assert!(view.text().unwrap().0.starts_with("#KOG-MML 1\n"));
         // Fewer bars per line re-wraps the same score into more blocks.
         let blocks = view.state(3.0)["bars"].as_u64().unwrap();
         view.set_bars(1);

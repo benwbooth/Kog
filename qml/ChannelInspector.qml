@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import Qt.labs.platform as Platform
 
 ApplicationWindow {
     id: root
@@ -115,6 +116,29 @@ ApplicationWindow {
                 onValueModified: root.app.set_mml_bars_per_line(value)
             }
             Button {
+                objectName: "mmlCopyButton"
+                visible: root.mode === 3
+                text: qsTr("Copy")
+                enabled: root.mmlRevision > 0
+                ToolTip.visible: hovered
+                ToolTip.text: qsTr("Copy the whole MML score")
+                onClicked: {
+                    mmlClipboard.text = root.app.mml_text()
+                    mmlClipboard.selectAll()
+                    mmlClipboard.copy()
+                    root.mmlNotice = root.mmlMessage.length ? qsTr("Copied the score recorded so far") : qsTr("Copied the MML score")
+                }
+            }
+            Button {
+                objectName: "mmlExportButton"
+                visible: root.mode === 3
+                text: qsTr("Export…")
+                enabled: root.mmlRevision > 0
+                ToolTip.visible: hovered
+                ToolTip.text: qsTr("Save the MML score as a .mml file")
+                onClicked: mmlExportDialog.open()
+            }
+            Button {
                 objectName: "mmlGuideButton"
                 visible: root.mode === 3
                 text: qsTr("Guide")
@@ -142,6 +166,12 @@ ApplicationWindow {
             color: "#a8bdc9"; wrapMode: Text.Wrap; textFormat: Text.PlainText; Layout.fillWidth: true
         }
         Label { text: root.fields(root.frame.global); color: "#83d4bb"; textFormat: Text.PlainText; elide: Text.ElideRight; Layout.fillWidth: true }
+        Label {
+            objectName: "mmlNotice"
+            visible: root.mode === 3 && root.mmlNotice.length > 0
+            text: root.mmlNotice
+            color: "#83d4bb"; textFormat: Text.PlainText; Layout.fillWidth: true
+        }
         Label {
             visible: root.mode === 3 && root.mmlMessage.length > 0
             text: root.mmlMessage
@@ -369,4 +399,21 @@ ApplicationWindow {
         }
     }
     MmlGuide { id: mmlGuide; app: root.app }
+    // Copies the score to the system clipboard.
+    TextEdit { id: mmlClipboard; visible: false }
+    property string mmlNotice: ""
+    Timer { interval: 4000; running: root.mmlNotice.length > 0; onTriggered: root.mmlNotice = "" }
+    Platform.FileDialog {
+        id: mmlExportDialog
+        title: qsTr("Export MML score")
+        fileMode: Platform.FileDialog.SaveFile
+        defaultSuffix: "mml"
+        nameFilters: [qsTr("Kog MML (*.mml)"), qsTr("All files (*)")]
+        currentFile: Platform.StandardPaths.writableLocation(Platform.StandardPaths.DocumentsLocation)
+            + "/" + ((root.app.now_title || "score").replace(/[\\/:*?"<>|]/g, "_")) + ".mml"
+        onAccepted: {
+            const error = root.app.export_mml(file.toString())
+            root.mmlNotice = error.length ? error : qsTr("Exported %1").arg(decodeURIComponent(file.toString().replace(/^file:\/\//, "")))
+        }
+    }
 }

@@ -343,6 +343,10 @@ pub mod qobject {
         #[qinvokable]
         fn mml_guide(self: &AppController) -> QString;
         #[qinvokable]
+        fn mml_text(self: Pin<&mut AppController>) -> QString;
+        #[qinvokable]
+        fn export_mml(self: Pin<&mut AppController>, file: QString) -> QString;
+        #[qinvokable]
         fn skin_state(self: &AppController, include_tracks: bool) -> QString;
         #[qinvokable]
         fn update_skin_equalizer_band(self: Pin<&mut AppController>, index: i32, gain_db: f64);
@@ -5378,6 +5382,28 @@ impl qobject::AppController {
         let mut rust = self.as_mut().rust_mut();
         rust.mml.follow(track.as_ref().map(|track| &track.source), &title, &settings);
         QString::from(rust.mml.state(position).to_string())
+    }
+
+    /// The playing song's whole MML text ("" until recording has started).
+    pub fn mml_text(mut self: Pin<&mut Self>) -> QString {
+        QString::from(self.as_mut().rust_mut().mml.text().map(|(text, _)| text).unwrap_or_default())
+    }
+
+    /// Write the MML text to `file` (a path or file: URL). Returns an error
+    /// message, or "" when written.
+    pub fn export_mml(mut self: Pin<&mut Self>, file: QString) -> QString {
+        let file = file.to_string();
+        let path = file.strip_prefix("file://").map(|path| {
+            percent_encoding::percent_decode_str(path).decode_utf8_lossy().into_owned()
+        });
+        let path = std::path::PathBuf::from(path.unwrap_or(file));
+        let Some((text, _)) = self.as_mut().rust_mut().mml.text() else {
+            return QString::from("There is no MML score to export yet.");
+        };
+        match std::fs::write(&path, text) {
+            Ok(()) => QString::default(),
+            Err(error) => QString::from(format!("Could not write {}: {error}", path.display())),
+        }
     }
 
     /// The Kog MML guide's chapters as JSON.
