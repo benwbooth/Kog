@@ -984,6 +984,17 @@ impl ScoreBuilder {
             (60_000.0 / (unit_frames * steps * tick_seconds)).round().max(1.0) as u32
         };
 
+        // Values that move on most frames (sample playback addresses, raw
+        // envelope levels) are measurements, not settings a score could
+        // reproduce; the channel inspector still shows them live.
+        for track in &mut tracks {
+            let channel = track.channel;
+            let continuity = &self.continuity;
+            track.events.retain(|event| {
+                !matches!(&event.kind, EventKind::Param(name, _) if continuity.continuous(channel, name))
+            });
+            decimal_params(&mut track.events);
+        }
         let transpose = relative_transpose(&tracks, &relative);
         for track in &mut tracks {
             drop_overwritten(&mut track.events);
@@ -1133,6 +1144,84 @@ fn simplify(points: &[(u64, f64)], tolerance: f64) -> Vec<(u64, f64)> {
     left.pop();
     left.extend(simplify(&points[worst..], tolerance));
     left
+}
+
+/// Registers are reported in hex. Write a parameter in decimal when every
+/// value it takes is made only of hex numbers (separated by spaces, `/` or
+/// `:`) and at least one of them uses a hex letter, so `Period=0FD` becomes
+/// `Period=253` and `"Volume L/R"=02EE/0120` becomes `750/288`. Values wider
+/// than 16 bits stay hex: they are memory addresses or packed registers,
+/// which read better that way.
+fn decimal_params(events: &mut [Event]) {
+    let mut names: BTreeMap<String, bool> = BTreeMap::new();
+    for event in events.iter() {
+        if let EventKind::Param(name, value) = &event.kind {
+            let tokens: Vec<&str> = value.split([' ', '/', ':']).filter(|t| !t.is_empty()).collect();
+            let all_hex = !tokens.is_empty() && tokens.iter().all(|t| t.bytes().all(|b| b.is_ascii_hexdigit()) && t.len() <= 4);
+            let letters = tokens.iter().any(|t| t.bytes().any(|b| matches!(b, b'A'..=b'F' | b'a'..=b'f')));
+            let zero_padded = tokens.iter().any(|t| t.len() > 1 && t.starts_with('0'));
+            let entry = names.entry(name.clone()).or_insert(true);
+            *entry &= all_hex;
+            if all_hex && (letters || zero_padded) {
+                names.entry(format!("\0{name}")).or_insert(true);
+            }
+        }
+    }
+    let convert: Vec<&String> = names
+        .iter()
+        .filter(|(name, hex)| **hex && !name.starts_with('\0') && names.contains_key(&format!("\0{name}")))
+        .map(|(name, _)| name)
+        .collect();
+    if convert.is_empty() {
+        return;
+    }
+    let convert: Vec<String> = convert.into_iter().cloned().collect();
+    // In mixed values such as "7FFF7FFF state 4", only tokens that are clearly
+    // hex numbers (hex letters and at least one digit) are converted.
+    let clearly_hex = |token: &str| {
+        token.len() >= 3
+            && token.bytes().all(|b| b.is_ascii_digit() || matches!(b, b'A'..=b'F'))
+            && token.bytes().any(|b| b.is_ascii_digit())
+            && token.bytes().any(|b| matches!(b, b'A'..=b'F'))
+            && token.len() <= 4
+    };
+    for event in events.iter_mut() {
+        if let EventKind::Param(name, value) = &mut event.kind {
+            if !convert.contains(name) {
+                if value.split(' ').any(clearly_hex) {
+                    *value = value
+                        .split(' ')
+                        .map(|token| {
+                            if clearly_hex(token) {
+                                u64::from_str_radix(token, 16).unwrap_or(0).to_string()
+                            } else {
+                                token.to_owned()
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                }
+                continue;
+            }
+            {
+                let mut out = String::new();
+                let mut digits = String::new();
+                for character in value.chars().chain(std::iter::once(' ')) {
+                    if character.is_ascii_hexdigit() {
+                        digits.push(character);
+                    } else {
+                        if !digits.is_empty() {
+                            out.push_str(&u64::from_str_radix(&digits, 16).unwrap_or(0).to_string());
+                            digits.clear();
+                        }
+                        out.push(character);
+                    }
+                }
+                out.pop();
+                *value = out;
+            }
+        }
+    }
 }
 
 /// Seconds at `tick` through `timing` points, or at a fixed rate without them.

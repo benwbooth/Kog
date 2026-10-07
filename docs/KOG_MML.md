@@ -88,7 +88,7 @@ Polyphonic channels such as MIDI get one track per simultaneous voice
 | `v750`, `p-250` | channel level and pan in thousandths |
 | `P+12` | pitch offset in cents from the sounding note's semitone |
 | `@"Duty 25%"`, `@Square` | instrument |
-| `Name=value`, `"Volume L/R"=1000/1000` | chip parameter, named as in the channel inspector; quotes only when needed |
+| `Name=value`, `"Volume L/R"=750/288` | chip parameter, named as in the channel inspector; quotes only when needed. Register values are decimal; addresses and packed registers wider than 16 bits stay hex |
 | `~3` | start macro 3 at this tick |
 | `\|` | bar line |
 | `;` | comment to the end of the line |

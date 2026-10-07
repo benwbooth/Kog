@@ -22,8 +22,10 @@ TestCase {
         function play_pause() { test.state = Object.assign({}, test.state, {playing:!test.state.playing}) }
         property int barRequests: 0
         property int mmlCurrent: 1
+        property int mmlRevision: 2
+        property int mmlBars: 3
         function mml_state() {
-            return JSON.stringify({revision: 2, message: "", bars: 3, current: mmlCurrent, header: "#KOG-MML 1",
+            return JSON.stringify({revision: mmlRevision, message: "", bars: mmlBars, current: mmlCurrent, header: "#KOG-MML 1",
                 currentHtml: "<p>A | c4 <span style=\"background-color:#50c8ef\">e4</span> |</p>"})
         }
         function mml_bar(index) { barRequests++; return "<p>; bar " + (index + 1) + "<br/>A | c4 e4 |</p>" }
@@ -79,6 +81,27 @@ TestCase {
         inspector.refresh()
         tryVerify(() => score.itemAtIndex(2) !== null && score.itemAtIndex(2).current)
         grabImage(inspector.contentItem).save("/tmp/kog-channel-inspector-mml-qt.png")
+    }
+
+    function test_mml_update_keeps_scroll_position() {
+        backend.mmlBars = 200
+        backend.mmlRevision = 10
+        backend.mmlCurrent = -1
+        inspector.mode = 3
+        inspector.refresh()
+        const score = findChild(inspector.contentItem, "mmlScore")
+        tryCompare(score, "count", 200)
+        score.contentY = 1500
+        // A longer partial score arrives while recording continues.
+        backend.mmlBars = 220
+        backend.mmlRevision = 11
+        inspector.refresh()
+        tryCompare(score, "count", 220)
+        wait(50)
+        compare(score.contentY, 1500)
+        backend.mmlBars = 3
+        backend.mmlRevision = 2
+        backend.mmlCurrent = 1
     }
 
     function test_hidden_view_stops_polling() {

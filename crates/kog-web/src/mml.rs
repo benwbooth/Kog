@@ -205,7 +205,11 @@ pub fn MmlView(
             match result {
                 Ok(reply) => {
                     if let Some(new) = reply.document {
+                        // Keep the reader's place while a longer score replaces
+                        // the partial one; replacing the HTML resets scrolling.
+                        let scroll = container.scroll_top();
                         container.set_inner_html(&render(&new));
+                        container.set_scroll_top(scroll);
                         lit.borrow_mut().clear();
                         current_bar.set(None);
                         *document.borrow_mut() = Some(new);

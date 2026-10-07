@@ -35,7 +35,13 @@ ApplicationWindow {
         if (mode === 3) {
             try {
                 const next = JSON.parse(app.mml_state())
-                if (next.revision !== mmlRevision) { mml = next; mmlRevision = next.revision }
+                if (next.revision !== mmlRevision) {
+                    // A longer partial score resets the list; keep the reader's place.
+                    const y = mmlBars.contentY
+                    mml = next
+                    mmlRevision = next.revision
+                    Qt.callLater(() => mmlBars.contentY = y)
+                }
                 else if (next.message !== mml.message || next.bars !== mml.bars) mml = next
                 if (next.current !== mmlCurrent) mmlCurrent = next.current
                 if (next.currentHtml !== mmlCurrentHtml) mmlCurrentHtml = next.currentHtml
