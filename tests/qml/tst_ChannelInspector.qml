@@ -29,6 +29,10 @@ TestCase {
                 currentHtml: "<p>A | c4 <span style=\"background-color:#50c8ef\">e4</span> |</p>"})
         }
         property int barsPerLine: 4
+        function mml_guide() {
+            return JSON.stringify([{title: "1. Introduction", markdown: "# 1. Introduction\n\nKog MML is a notation."},
+                                   {title: "2. Notes", markdown: "# 2. Notes\n\nA note is `c`."}])
+        }
         property string mmlMessage: ""
         function set_mml_bars_per_line(bars) { barsPerLine = bars }
         function mml_bar(index) { barRequests++; return "<p>; bar " + (index + 1) + "<br/>A | c4 e4 |</p>" }
@@ -84,6 +88,21 @@ TestCase {
         inspector.refresh()
         tryVerify(() => score.itemAtIndex(2) !== null && score.itemAtIndex(2).current)
         grabImage(inspector.contentItem).save("/tmp/kog-channel-inspector-mml-qt.png")
+    }
+
+    function test_mml_guide_opens_with_chapters() {
+        inspector.mode = 3
+        const button = findChild(inspector, "mmlGuideButton")
+        verify(button !== null && button.visible)
+        button.clicked()
+        const window = inspector.guide
+        tryCompare(window, "visible", true)
+        compare(window.chapters.length, 2)
+        const text = findChild(window.contentItem, "mmlGuideText")
+        verify(text.text.indexOf("Kog MML is a notation") >= 0)
+        window.chapter = 1
+        verify(text.text.indexOf("A note is") >= 0)
+        window.hide()
     }
 
     function test_mml_bars_per_line_control() {

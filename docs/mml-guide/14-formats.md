@@ -1,0 +1,103 @@
+# 14. Formats and chips
+
+Every format Kog can inspect can be written as MML. What appears in the score
+depends on what the decoder can see. Parameter names are the ones shown in
+the Channel Inspector; this chapter describes what to expect.
+
+## MIDI
+
+MIDI files, including all four selectable synths and supported containers.
+Notes come straight from the sequence, so lengths, velocities, tempo
+(`#TEMPO` without `inferred`) and time signature (`#BAR`) are those of the
+file. Each MIDI channel becomes as many tracks as it has simultaneous notes.
+Instruments are bank and program (`@"Bank 0:0 \u{b7} Program 1"`); controllers, sustain, pitch bend
+and pressure appear as parameters and bends.
+
+## HMI, HMP, HMQ, MUS, XMI
+
+Legacy game MIDI formats played through libADLMIDI. Notes, controllers and
+events come from the running sequencer, much like MIDI.
+
+## Tracker modules (OpenMPT)
+
+MOD, S3M, XM, IT and the other OpenMPT formats. Pitches are the mixer's real
+playing pitches, so slides and vibrato effects appear as bends and macros.
+Background voices kept by "new note actions" are assigned to the channel that
+started them and show up as extra voices.
+
+## Hively and AHX
+
+Amiga-style chip trackers. Notes come from the real channel periods, with the
+instrument and both effect columns available as parameters.
+
+## Organya
+
+Cave Story's format. Wavetable pitches, original note lengths, volume and pan
+events, and drum hits.
+
+## Syntrax
+
+Live voice pitch, instruments, arpeggio and modulation state.
+
+## AdPlug (OPL2 and OPL3)
+
+FM synthesis. Key gates and frequencies give notes; operator settings appear
+as parameters. Levels are the programmed attenuation, not the sound's actual
+loudness. Rhythm-mode drums are hits.
+
+## Game Music Emu: NSF, NSFE, GBS, AY, HES, KSS, SAP, SPC
+
+Live hardware voices and registers, including NES expansion chips. Tonal
+voices get keys from their frequency, which is where `#TUNE` tables come from:
+fixed period registers make each key a few cents off. Period and frequency
+registers usually become `#PITCH` tables. Envelopes and duty sequences become
+macros. Noise channels are hits.
+
+## VGM, VGZ, S98, DRO, GYM
+
+Register logs played through the matching sound cores. Mapped chips give
+voices, key gates, frequencies and controls. Programmable DSP devices without
+individual voices appear only as register parameters.
+
+## SID and RSID
+
+Three voices per SID chip: waveform, frequency, pulse width, gate, ADSR and
+filter. Release tails and software sample playback are not reconstructed.
+
+## PlayStation: PSF, PSF2, miniPSF, miniPSF2
+
+24 or 48 SPU sample voices. Keys are relative sample pitch (chapter 12) and
+instruments are sample addresses (`@"ADPCM 065010"`). The SPU reports
+key-ons, so retriggers are exact and legato is marked. Sample read positions
+and raw envelope levels are measurements and are left out. Key-on reports
+can arrive tens of milliseconds late, which the beat tracking absorbs.
+
+## SNES: SNSF, SFM, SPC
+
+Eight DSP voices with sample identity and rate, envelope, noise, echo and
+pitch modulation.
+
+## Nintendo DS: 2SF and NCSF
+
+Sixteen hardware voices. NCSF also knows the sequence's source notes, so its
+pitches are real keys; 2SF voices are hardware pitch and sample state.
+
+## GBA: GSF
+
+Four PSG voices and the two Direct Sound mixes. Software voices mixed by the
+game into Direct Sound cannot be separated and appear as one mixed track.
+
+## QSound, Saturn and Dreamcast: QSF, SSF, DSF
+
+QSound PCM and ADPCM voices, 32 SCSP voices, or 64 AICA voices with sample
+playback, envelopes, looping and LFO settings.
+
+## Nintendo 64: USF
+
+Only the stereo output and its registers are visible; the game's own
+sequencer voices are mixed before Kog sees them.
+
+## Recordings
+
+MP3, FLAC and other recorded audio have no voices to read. The MML view says
+so instead of showing a score.

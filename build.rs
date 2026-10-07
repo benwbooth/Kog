@@ -34,6 +34,7 @@ fn main() {
         "qml/SkinSprite.qml",
         "qml/Visualizer.qml",
         "qml/ChannelInspector.qml",
+        "qml/MmlGuide.qml",
         "qml/ChannelKeyboard.qml",
         "qml/Equalizer.qml",
         "qml/InfoInspector.qml",

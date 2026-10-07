@@ -30,6 +30,7 @@ ApplicationWindow {
     property string mmlMessage: ""
     property string mmlHeader: ""
     property int mmlRevision: 0
+    readonly property var guide: mmlGuide
     // Only these change while a bar plays, so other bars are not re-laid out.
     property int mmlCurrent: -1
     property string mmlCurrentHtml: ""
@@ -112,6 +113,14 @@ ApplicationWindow {
                 visible: root.mode === 3
                 from: 1; to: 16; value: 4
                 onValueModified: root.app.set_mml_bars_per_line(value)
+            }
+            Button {
+                objectName: "mmlGuideButton"
+                visible: root.mode === 3
+                text: qsTr("Guide")
+                ToolTip.visible: hovered
+                ToolTip.text: qsTr("Read the Kog MML guide")
+                onClicked: { mmlGuide.show(); mmlGuide.raise(); mmlGuide.requestActivate() }
             }
             Item { Layout.fillWidth: true }
             Label { text: root.frame.seeking ? qsTr("Seeking…") : root.frame.playing ? qsTr("Playing") : qsTr("Paused / stopped") }
@@ -359,4 +368,5 @@ ApplicationWindow {
             color: "#dfba78"; font.pixelSize: 10
         }
     }
+    MmlGuide { id: mmlGuide; app: root.app }
 }
