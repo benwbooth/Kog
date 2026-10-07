@@ -9,7 +9,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use kog_audio::decoder::{DecoderRegistry, DecoderSettings, PlaybackSource};
-use kog_audio::inspection::mml::{Document, Score, encode};
+use kog_audio::inspection::mml::{Document, Score, encode_lines};
 use kog_audio::inspection::score::{Progress, analyze_progressively};
 use kog_audio::playlist::PlaylistEntry;
 use kog_audio::streaming::resolve_entry;
@@ -19,9 +19,11 @@ const KEPT_JOBS: usize = 6;
 
 #[derive(Default)]
 struct State {
-    /// Bumped whenever a newer document replaces the previous one.
+    /// Bumped whenever a newer score replaces the previous one.
     revision: u64,
-    document: Option<Arc<Document>>,
+    score: Option<Arc<Score>>,
+    /// The last document written, and its bars per line.
+    document: Option<(usize, Arc<Document>)>,
     done: bool,
     error: Option<String>,
 }
@@ -59,8 +61,9 @@ impl MmlJobs {
         settings: DecoderSettings,
         scratch: PathBuf,
         have: Option<u64>,
+        bars: usize,
     ) -> Status {
-        self.status_with(key, have, move |progress, partial| {
+        self.status_with(key, have, bars, move |progress, partial| {
             let decoders = DecoderRegistry::new(settings.clone());
             let source = resolve_entry(&entry, &decoders, &scratch)?;
             analyze_progressively(source, settings, &title, progress, partial)
@@ -75,8 +78,9 @@ impl MmlJobs {
         source: PlaybackSource,
         settings: DecoderSettings,
         have: Option<u64>,
+        bars: usize,
     ) -> Status {
-        self.status_with(key, have, move |progress, partial| {
+        self.status_with(key, have, bars, move |progress, partial| {
             analyze_progressively(source, settings, &title, progress, partial)
         })
     }
@@ -87,10 +91,24 @@ impl MmlJobs {
         &self,
         key: String,
         have: Option<u64>,
+        bars: usize,
         record: impl FnOnce(&Progress, &mut dyn FnMut(Score)) -> Result<Score, String> + Send + 'static,
     ) -> Status {
         let job = self.job(key, record);
-        let state = job.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = job.state.lock().unwrap_or_else(|e| e.into_inner());
+        // Write the score with the caller's bars per line, reusing the last
+        // document when nothing changed. Callers changing the setting send no
+        // `have`, so they always receive the rewrapped text.
+        let document = if have == Some(state.revision) {
+            None
+        } else {
+            let cached = state.document.clone().filter(|(width, _)| *width == bars).map(|(_, d)| d);
+            cached.or_else(|| {
+                let document = Arc::new(encode_lines(state.score.as_deref()?, bars));
+                state.document = Some((bars, Arc::clone(&document)));
+                Some(document)
+            })
+        };
         Status {
             status: if state.error.is_some() {
                 "error"
@@ -103,10 +121,7 @@ impl MmlJobs {
             recorded_ms: job.progress.recorded_ms.load(Ordering::Relaxed),
             total_ms: job.progress.total_ms.load(Ordering::Relaxed),
             detail: state.error.clone(),
-            document: state
-                .document
-                .clone()
-                .filter(|_| have != Some(state.revision)),
+            document,
         }
     }
 
@@ -136,15 +151,16 @@ impl MmlJobs {
         let spawned = std::thread::Builder::new()
             .name("kog-mml-score".into())
             .spawn(move || {
-                let publish = |document: Document, done: bool| {
+                let publish = |score: Score, done: bool| {
                     let mut state = worker.state.lock().unwrap_or_else(|e| e.into_inner());
                     state.revision += 1;
-                    state.document = Some(Arc::new(document));
+                    state.score = Some(Arc::new(score));
+                    state.document = None;
                     state.done = done;
                 };
                 let progress = Arc::clone(&worker.progress);
-                match record(&progress, &mut |score| publish(encode(&score), false)) {
-                    Ok(score) => publish(encode(&score), true),
+                match record(&progress, &mut |score| publish(score, false)) {
+                    Ok(score) => publish(score, true),
                     Err(error) => {
                         let mut state = worker.state.lock().unwrap_or_else(|e| e.into_inner());
                         state.error = Some(error);

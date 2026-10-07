@@ -91,6 +91,16 @@ pub fn MmlView(
     let pending = Rc::new(Cell::new(false));
     let done = Rc::new(Cell::new(false));
     let last_request = Rc::new(Cell::new(0.0));
+    // Bars on each track's line, remembered in this browser.
+    let storage = window().local_storage().ok().flatten();
+    let initial_bars = storage
+        .as_ref()
+        .and_then(|storage| storage.get_item("kog.mml.bars").ok().flatten())
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(4)
+        .clamp(1, 16);
+    let bars = RwSignal::new(initial_bars);
+    let rewrap = RwSignal::new(false);
     let lit = Rc::new(RefCell::new(Vec::<usize>::new()));
     let current_bar = Rc::new(Cell::new(None::<usize>));
     let tick = Closure::<dyn FnMut()>::new(move || {
@@ -99,6 +109,13 @@ pub fn MmlView(
             return;
         };
         let location = audio.current_src();
+        if rewrap.get_untracked() {
+            rewrap.set(false);
+            // A new width needs the whole text again, without a full re-record.
+            revision.set(None);
+            done.set(false);
+            last_request.set(0.0);
+        }
         if *source.borrow() != location {
             *source.borrow_mut() = location.clone();
             *document.borrow_mut() = None;
@@ -170,6 +187,7 @@ pub fn MmlView(
         last_request.set(js_sys::Date::now());
         url.set_pathname(&url.pathname().replace("/api/stream", "/api/mml"));
         url.search_params().delete("start_ms");
+        url.search_params().set("bars", &bars.get_untracked().to_string());
         if let Some(have) = revision.get() {
             url.search_params().set("have", &have.to_string());
         }
@@ -246,7 +264,23 @@ pub fn MmlView(
         }
     });
     view! {
-        <p class="mml-status">{move || message.get()}</p>
+        <div class="mml-tools">
+            <label>"Bars per line "
+                <select aria-label="Bars per line" on:change=move |ev| {
+                    let value = event_target_value(&ev).parse::<usize>().unwrap_or(4);
+                    bars.set(value);
+                    if let Some(storage) = window().local_storage().ok().flatten() {
+                        let _ = storage.set_item("kog.mml.bars", &value.to_string());
+                    }
+                    rewrap.set(true);
+                }>
+                    {[1usize, 2, 3, 4, 6, 8, 12, 16].into_iter().map(|n| view! {
+                        <option value=n.to_string() selected=move || bars.get() == n>{n}</option>
+                    }).collect_view()}
+                </select>
+            </label>
+            <p class="mml-status">{move || message.get()}</p>
+        </div>
         <div class="channel-mml" node_ref=container aria-label="Kog MML score"></div>
     }
 }

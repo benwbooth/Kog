@@ -69,6 +69,11 @@ with tempfile.TemporaryDirectory(prefix="kog-server-mml-") as base:
             unchanged = score(reply["revision"])
             assert "document" not in unchanged, "a held revision is not resent"
             document = score()["document"]
+            # One bar per line re-wraps the recorded score into more blocks.
+            query["bars"] = "1"
+            narrow = score()["document"]
+            del query["bars"]
+            assert len(narrow["bars"]) > 3 * len(document["bars"]) - 3, (len(narrow["bars"]), len(document["bars"]))
             text = document["text"]
             assert text.startswith("#KOG-MML 1\n"), text[:80]
             assert document["bars"] and document["tracks"], document.keys()

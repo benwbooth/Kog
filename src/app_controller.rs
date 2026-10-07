@@ -339,6 +339,8 @@ pub mod qobject {
         #[qinvokable]
         fn mml_bar(self: &AppController, index: i32) -> QString;
         #[qinvokable]
+        fn set_mml_bars_per_line(self: Pin<&mut AppController>, bars: i32);
+        #[qinvokable]
         fn skin_state(self: &AppController, include_tracks: bool) -> QString;
         #[qinvokable]
         fn update_skin_equalizer_band(self: Pin<&mut AppController>, index: i32, gain_db: f64);
@@ -5374,6 +5376,10 @@ impl qobject::AppController {
         let mut rust = self.as_mut().rust_mut();
         rust.mml.follow(track.as_ref().map(|track| &track.source), &title, &settings);
         QString::from(rust.mml.state(position).to_string())
+    }
+
+    pub fn set_mml_bars_per_line(mut self: Pin<&mut Self>, bars: i32) {
+        self.as_mut().rust_mut().mml.set_bars(usize::try_from(bars).unwrap_or(1));
     }
 
     pub fn mml_bar(&self, index: i32) -> QString {

@@ -3557,6 +3557,16 @@ body.touch .track .index-cell {
 .channel-mml .sounding span {
   color: #0b1016;
 }
+.mml-tools {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+.mml-tools label {
+  font-size: 0.85rem;
+  opacity: 0.85;
+}
 .mml-status {
   margin: 0.25rem 0;
   opacity: 0.75;

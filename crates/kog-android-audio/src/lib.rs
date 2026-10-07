@@ -226,7 +226,7 @@ pub extern "system" fn Java_org_kog_player_NativeAudio_nativeInspection(
 /// the first call; `have` is the revision the caller already holds, or -1.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_org_kog_player_NativeAudio_nativeMml(
-    mut env: JNIEnv, _receiver: JObject, handle: jlong, have: jlong,
+    mut env: JNIEnv, _receiver: JObject, handle: jlong, have: jlong, bars: jint,
 ) -> jni::sys::jstring {
     let Some((path, subsong, settings)) = get_handle(handle)
         .and_then(|handle| handle.lock().ok().map(|guard| guard.score_source.clone()))
@@ -239,6 +239,7 @@ pub extern "system" fn Java_org_kog_player_NativeAudio_nativeMml(
     let status = MML.get_or_init(Default::default).status_with(
         key,
         u64::try_from(have).ok(),
+        usize::try_from(bars).unwrap_or(4).clamp(1, 64),
         move |progress, partial| {
             let mut pcm = PcmReader::open_path_subsong(path, subsong, settings)?;
             kog_audio::inspection::score::record(

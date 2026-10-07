@@ -87,9 +87,9 @@ final class KogStore: ObservableObject {
         return position
     }
     var channelInspectionStream: String? { inspectionStreamURL }
-    func localMmlScore(have: Int64) async -> MmlScoreReply? {
+    func localMmlScore(have: Int64, bars: Int) async -> MmlScoreReply? {
         #if KOG_NATIVE_AUDIO
-        if let decoder = nativePlayer { return await decoder.mmlScore(have: have) }
+        if let decoder = nativePlayer { return await decoder.mmlScore(have: have, bars: bars) }
         #endif
         return nil
     }

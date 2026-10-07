@@ -6,7 +6,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.SpanStyle
@@ -110,12 +112,19 @@ internal fun MmlScore(state: KogState, follow: Boolean, modifier: Modifier) {
     var document by remember { mutableStateOf<MmlDocument?>(null) }
     var message by remember { mutableStateOf("Recording every channel of this song…") }
     var active by remember { mutableStateOf(emptySet<Int>() to -1) }
+    var bars by rememberSaveable { mutableIntStateOf(4) }
+    val currentBars by rememberUpdatedState(bars)
     LaunchedEffect(state) {
         var identity = ""
         var revision = -1L
         var done = false
         var lastRequest = 0L
+        var requestedBars = currentBars
         while (isActive) {
+            if (requestedBars != currentBars) {
+                // A new width needs the whole text again; the score is kept.
+                requestedBars = currentBars; revision = -1; done = false; lastRequest = 0
+            }
             val track = state.current
             val source = state.inspectionStream().orEmpty()
             val key = track?.key.orEmpty() + source
@@ -127,8 +136,8 @@ internal fun MmlScore(state: KogState, follow: Boolean, modifier: Modifier) {
                 lastRequest = android.os.SystemClock.elapsedRealtime()
                 val reply = runCatching {
                     withContext(Dispatchers.IO) {
-                        if (track.isDevice) NativeAudio.mml(track, revision)?.let(::JSONObject)
-                        else state.api.mmlScore(source, revision)
+                        if (track.isDevice) NativeAudio.mml(track, revision, requestedBars)?.let(::JSONObject)
+                        else state.api.mmlScore(source, revision, requestedBars)
                     }
                 }
                 reply.onSuccess { json ->
@@ -155,6 +164,12 @@ internal fun MmlScore(state: KogState, follow: Boolean, modifier: Modifier) {
         if (follow && currentBar >= 0) list.animateScrollToItem(currentBar + 1)
     }
     Column(modifier) {
+        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+            Text("Bars per line", fontSize = 12.sp, color = Color(0xffadb7c0))
+            TextButton(onClick = { bars = (bars - 1).coerceAtLeast(1) }, enabled = bars > 1) { Text("−") }
+            Text("$bars", fontSize = 13.sp, fontFamily = FontFamily.Monospace)
+            TextButton(onClick = { bars = (bars + 1).coerceAtMost(16) }, enabled = bars < 16) { Text("+") }
+        }
         if (message.isNotEmpty()) Text(message, fontSize = 11.sp, color = Color(0xffadb7c0))
         val score = document ?: return@Column
         LazyColumn(state = list, modifier = Modifier.background(Color(0xff0f171c))) {

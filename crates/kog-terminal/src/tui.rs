@@ -1677,11 +1677,11 @@ impl Ui {
                             &title,
                             &progress,
                             &mut |score| {
-                                let _ = sender.send(Ok((kog_audio::inspection::mml::encode(&score), false)));
+                                let _ = sender.send(Ok((score, false)));
                             },
                         )
                     })
-                    .map(|score| (kog_audio::inspection::mml::encode(&score), true));
+                    .map(|score| (score, true));
                 let _ = sender.send(result);
             });
             receiver

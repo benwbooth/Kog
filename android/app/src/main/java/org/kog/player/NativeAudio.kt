@@ -23,10 +23,10 @@ internal object NativeAudio {
     private val inspectionHandles = java.util.concurrent.ConcurrentHashMap<String, Long>()
     external fun nativeSetInspectionDirectory(path: String)
     external fun nativeInspection(handle: Long, positionMs: Long, playing: Boolean): String
-    external fun nativeMml(handle: Long, have: Long): String
+    external fun nativeMml(handle: Long, have: Long, bars: Int): String
     /** The open track's MML score status; null until the track has been opened. */
-    internal fun mml(track: Track, have: Long): String? =
-        inspectionHandles[uri(track).toString()]?.let { nativeMml(it, have) }
+    internal fun mml(track: Track, have: Long, bars: Int): String? =
+        inspectionHandles[uri(track).toString()]?.let { nativeMml(it, have, bars) }
     internal fun opened(uri: Uri, handle: Long) { inspectionHandles[uri.toString()] = handle }
     internal fun closed(uri: Uri?, handle: Long) { uri?.let { inspectionHandles.remove(it.toString(), handle) } }
     internal fun snapshot(track: Track, positionMs: Long, playing: Boolean): String =

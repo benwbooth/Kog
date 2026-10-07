@@ -24,7 +24,7 @@ private func decoderSeek(_ handle: UnsafeMutableRawPointer, _ milliseconds: UInt
 @_silgen_name("kog_audio_channel_snapshot")
 private func decoderChannels(_ handle: UnsafeRawPointer, _ milliseconds: UInt64, _ playing: Bool) -> UnsafeMutablePointer<CChar>?
 @_silgen_name("kog_audio_mml")
-private func decoderMml(_ handle: UnsafeRawPointer, _ have: Int64) -> UnsafeMutablePointer<CChar>?
+private func decoderMml(_ handle: UnsafeRawPointer, _ have: Int64, _ bars: UInt32) -> UnsafeMutablePointer<CChar>?
 @_silgen_name("kog_audio_string_free")
 private func decoderFreeString(_ string: UnsafeMutablePointer<CChar>)
 @_silgen_name("kog_audio_close")
@@ -226,10 +226,10 @@ final class NativeAudioPlayer {
     }
 
     /// The local track's MML score; nil for a stream.
-    func mmlScore(have: Int64) async -> MmlScoreReply? {
+    func mmlScore(have: Int64, bars: Int) async -> MmlScoreReply? {
         await withCheckedContinuation { continuation in
             queue.async { [weak self] in
-                guard let self, let handle = self.handle, let json = decoderMml(handle, have) else {
+                guard let self, let handle = self.handle, let json = decoderMml(handle, have, UInt32(max(1, bars))) else {
                     continuation.resume(returning: nil); return
                 }
                 let data = Data(String(cString: json).utf8)

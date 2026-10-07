@@ -159,7 +159,7 @@ pub unsafe extern "C" fn kog_audio_channel_snapshot(handle: *const KogAudioHandl
 /// Recording starts on the first call; `have` is the revision already held,
 /// or -1. Free the reply with `kog_audio_string_free`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn kog_audio_mml(handle: *const KogAudioHandle, have: i64) -> *mut c_char {
+pub unsafe extern "C" fn kog_audio_mml(handle: *const KogAudioHandle, have: i64, bars: u32) -> *mut c_char {
     let Some((path, subsong, settings)) =
         (unsafe { handle.as_ref() }).and_then(|handle| handle.score_source.clone())
     else {
@@ -170,6 +170,7 @@ pub unsafe extern "C" fn kog_audio_mml(handle: *const KogAudioHandle, have: i64)
     let status = MML.get_or_init(Default::default).status_with(
         key,
         u64::try_from(have).ok(),
+        (bars as usize).clamp(1, 64),
         move |progress, partial| {
             let mut pcm = PcmReader::open_path_subsong(path, subsong, settings)?;
             kog_audio::inspection::score::record(
@@ -343,7 +344,7 @@ mod mml_tests {
         assert!(!handle.is_null());
         let deadline = std::time::Instant::now() + Duration::from_secs(120);
         let reply = loop {
-            let json = unsafe { kog_audio_mml(handle, -1) };
+            let json = unsafe { kog_audio_mml(handle, -1, 4) };
             assert!(!json.is_null());
             let reply: serde_json::Value = serde_json::from_str(unsafe { CStr::from_ptr(json) }.to_str().unwrap()).unwrap();
             unsafe { crate::catalog::kog_audio_string_free(json) };

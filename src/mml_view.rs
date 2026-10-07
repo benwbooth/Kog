@@ -6,19 +6,22 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, Receiver};
 
 use kog_audio::decoder::{DecoderSettings, PlaybackSource};
-use kog_audio::inspection::mml::{Document, encode};
+use kog_audio::inspection::mml::{BARS_PER_LINE, Document, Score, encode_lines};
 use kog_audio::inspection::score::{Progress, analyze_progressively};
 
-type Update = Result<(Document, bool), String>;
+type Update = Result<(Score, bool), String>;
 
 #[derive(Default)]
 pub struct MmlView {
     key: String,
     progress: Arc<Progress>,
     receiver: Option<Receiver<Update>>,
+    score: Option<Score>,
     document: Option<Document>,
     error: Option<String>,
     revision: u64,
+    /// Bars written on each track's line (0 means the default).
+    bars: usize,
 }
 
 fn escape(text: &str) -> String {
@@ -37,6 +40,7 @@ impl MmlView {
         self.progress = Arc::new(Progress::default());
         self.key = key;
         self.document = None;
+        self.score = None;
         self.error = None;
         self.revision += 1;
         if source.remote_url.is_some() {
@@ -49,18 +53,36 @@ impl MmlView {
             (source.clone(), title.to_owned(), settings.clone(), Arc::clone(&self.progress));
         let _ = std::thread::Builder::new().name("kog-mml-score".into()).spawn(move || {
             let result = analyze_progressively(source, settings, &title, &progress, &mut |score| {
-                let _ = sender.send(Ok((encode(&score), false)));
+                let _ = sender.send(Ok((score, false)));
             });
-            let _ = sender.send(result.map(|score| (encode(&score), true)));
+            let _ = sender.send(result.map(|score| (score, true)));
         });
         self.receiver = Some(receiver);
+    }
+
+    fn bars(&self) -> usize {
+        if self.bars == 0 { BARS_PER_LINE } else { self.bars }
+    }
+
+    /// Re-wrap the recorded score with `bars` bars on each track's line.
+    pub fn set_bars(&mut self, bars: usize) {
+        let bars = bars.clamp(1, 64);
+        if bars == self.bars() {
+            return;
+        }
+        self.bars = bars;
+        if let Some(score) = &self.score {
+            self.document = Some(encode_lines(score, bars));
+            self.revision += 1;
+        }
     }
 
     fn poll(&mut self) {
         while let Some(receiver) = &self.receiver {
             match receiver.try_recv() {
-                Ok(Ok((document, done))) => {
-                    self.document = Some(document);
+                Ok(Ok((score, done))) => {
+                    self.document = Some(encode_lines(&score, self.bars()));
+                    self.score = Some(score);
                     self.revision += 1;
                     if done {
                         self.receiver = None;
@@ -191,6 +213,11 @@ mod tests {
         assert!(current.contains("; bar") && current.contains("background-color"), "{current}");
         assert!(view.bar(0).contains("<font color="));
         assert!(!view.bar(0).contains("background-color"));
+        // Fewer bars per line re-wraps the same score into more blocks.
+        let blocks = view.state(3.0)["bars"].as_u64().unwrap();
+        view.set_bars(1);
+        assert!(view.state(3.0)["bars"].as_u64().unwrap() > blocks);
+        view.set_bars(4);
         // The same source keeps its score; a different one starts over.
         let revision = state["revision"].clone();
         view.follow(Some(&source), "test", &settings);

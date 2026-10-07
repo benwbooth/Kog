@@ -6,17 +6,20 @@ use std::sync::mpsc::{self, Receiver};
 use kog_audio::inspection::score::Progress;
 
 use super::{Surface, paint};
-use kog_audio::inspection::mml::{Document, STYLES};
+use kog_audio::inspection::mml::{BARS_PER_LINE, Document, STYLES, Score, encode_lines};
 
-/// A document and whether recording has finished, or why it failed.
-type Result = std::result::Result<(Document, bool), String>;
+/// A score and whether recording has finished, or why it failed.
+type Result = std::result::Result<(Score, bool), String>;
 
 #[derive(Default)]
 pub(super) struct Mml {
     key: String,
     pending: Option<Receiver<Result>>,
     progress: Arc<Progress>,
+    score: Option<Score>,
     document: Option<std::result::Result<Document, String>>,
+    /// Bars written on each track's line; `+` and `-` change it.
+    pub bars: usize,
     /// Wrapped rows as byte ranges of the text, for the width they fit.
     rows: Vec<(usize, usize)>,
     wrapped_for: usize,
@@ -34,17 +37,37 @@ impl Mml {
         self.progress = Arc::new(Progress::default());
         self.key = key.to_owned();
         self.document = None;
+        self.score = None;
         self.rows.clear();
         self.scroll = 0;
         self.follow = true;
         self.pending = Some(start(Arc::clone(&self.progress)));
     }
 
+    fn bars(&self) -> usize {
+        if self.bars == 0 { BARS_PER_LINE } else { self.bars }
+    }
+
+    /// Re-wrap the recorded score with more or fewer bars on each line.
+    pub fn change_bars(&mut self, more: bool) {
+        let bars = self.bars();
+        self.bars = if more { (bars + 1).min(16) } else { bars.saturating_sub(1).max(1) };
+        if let Some(score) = &self.score {
+            self.document = Some(Ok(encode_lines(score, self.bars)));
+            self.wrapped_for = 0;
+        }
+    }
+
+    pub fn bars_label(&self) -> usize {
+        self.bars()
+    }
+
     fn poll(&mut self) {
         while let Some(receiver) = &self.pending {
             match receiver.try_recv() {
-                Ok(Ok((document, done))) => {
-                    self.document = Some(Ok(document));
+                Ok(Ok((score, done))) => {
+                    self.document = Some(Ok(encode_lines(&score, self.bars())));
+                    self.score = Some(score);
                     self.wrapped_for = 0;
                     if done {
                         self.pending = None;

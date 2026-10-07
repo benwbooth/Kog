@@ -104,6 +104,13 @@ ApplicationWindow {
                 onActivated: root.mode = currentIndex
                 Layout.preferredWidth: 200
             }
+            Label { visible: root.mode === 3; text: qsTr("Bars per line") }
+            SpinBox {
+                objectName: "mmlBarsPerLine"
+                visible: root.mode === 3
+                from: 1; to: 16; value: 4
+                onValueModified: root.app.set_mml_bars_per_line(value)
+            }
             Item { Layout.fillWidth: true }
             Label { text: root.frame.seeking ? qsTr("Seeking…") : root.frame.playing ? qsTr("Playing") : qsTr("Paused / stopped") }
             Button { text: root.frame.playing ? qsTr("Pause") : qsTr("Play"); onClicked: root.app.play_pause() }

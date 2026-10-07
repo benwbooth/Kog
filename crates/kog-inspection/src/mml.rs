@@ -1591,7 +1591,7 @@ pub struct Bar {
     pub to: usize,
 }
 
-/// Bars written on each line of every track.
+/// Bars written on each line of every track unless a view asks otherwise.
 pub const BARS_PER_LINE: usize = 4;
 
 /// Token classes for syntax colouring, with the colour every frontend uses.
@@ -1976,6 +1976,12 @@ fn macro_target(target: &Target) -> String {
 }
 
 pub fn encode(score: &Score) -> Document {
+    encode_lines(score, BARS_PER_LINE)
+}
+
+/// Like [`encode`], with `bars_per_line` bars on each track's line (at least 1).
+pub fn encode_lines(score: &Score, bars_per_line: usize) -> Document {
+    let bars_per_line = bars_per_line.max(1);
     let quarter = u64::from(score.quarter.max(1));
     let tracks = score.tracks.len();
     let mut writer = Writer {
@@ -2070,10 +2076,10 @@ pub fn encode(score: &Score) -> Document {
     let mut cursors = vec![0usize; tracks];
     let mut bars = Vec::new();
     let bar_count = score.bar_count();
-    // Bars are written BARS_PER_LINE to a line; each group is one block that
+    // Bars are written bars_per_line to a line; each group is one block that
     // frontends draw, follow, and highlight together.
-    for (block, first) in (0..bar_count).step_by(BARS_PER_LINE).enumerate() {
-        let group = first..(first + BARS_PER_LINE).min(bar_count);
+    for (block, first) in (0..bar_count).step_by(bars_per_line).enumerate() {
+        let group = first..(first + bars_per_line).min(bar_count);
         let block_start = score.bar_start(first);
         let block_end = score.bar_start(group.end).min(score.length).max(block_start);
         let from = writer.text.len();
@@ -2950,6 +2956,10 @@ mod tests {
         let parsed = parse(&document.text).unwrap_or_else(|e| panic!("{e}\n{}", document.text));
         assert_eq!(parsed, score, "\n{}", document.text);
         assert_eq!(parsed.piano_roll(), score.piano_roll());
+        for bars in [1, 2, 3, 8] {
+            let text = encode_lines(&score, bars).text;
+            assert_eq!(parse(&text).unwrap(), score, "{bars} bars per line\n{text}");
+        }
         // Four bars of 96 ticks share one block of lines.
         assert_eq!(document.bars.len(), 1);
         assert_eq!(document.text.lines().filter(|line| line.starts_with("A ")).next().unwrap().matches('|').count(), 5);

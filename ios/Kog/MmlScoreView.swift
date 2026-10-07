@@ -11,9 +11,16 @@ struct MmlScoreView: View {
     @State private var done = false
     @State private var lastRequest = Date.distantPast
     @State private var barCache = [Int: AttributedString]()
+    @AppStorage("mmlBarsPerLine") private var bars = 4
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
+            Stepper("Bars per line: \(bars)", value: $bars, in: 1...16)
+                .font(.caption)
+                .onChange(of: bars) { _, _ in
+                    // A new width needs the whole text again; the score is kept.
+                    revision = -1; done = false; lastRequest = .distantPast
+                }
             if !message.isEmpty { Text(message).font(.caption2).foregroundStyle(Palette.muted) }
             if let document {
                 ScrollViewReader { proxy in
@@ -100,8 +107,8 @@ struct MmlScoreView: View {
             lastRequest = Date()
             do {
                 let reply: MmlScoreReply? = track.isDevice
-                    ? await store.localMmlScore(have: revision)
-                    : try await store.api.mmlScore(stream: stream, have: revision)
+                    ? await store.localMmlScore(have: revision, bars: bars)
+                    : try await store.api.mmlScore(stream: stream, have: revision, bars: bars)
                 guard identity == key, let reply else { return }
                 if let next = reply.document { document = next; revision = reply.revision; barCache = [:] }
                 let time = { (ms: Int64) in String(format: "%d:%02d", ms / 60_000, ms / 1000 % 60) }

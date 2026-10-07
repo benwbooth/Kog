@@ -100,10 +100,11 @@ impl StreamService {
         key: &StreamKey,
         title: String,
         have: Option<u64>,
+        bars: usize,
     ) -> crate::mml::Status {
         let settings = self.render_settings(key);
         let job_key = format!("{}\0{}", key.locator, key.render_profile.as_deref().unwrap_or_default());
-        self.mml.status(job_key, title, entry, settings, self.scratch.join("mml"), have)
+        self.mml.status(job_key, title, entry, settings, self.scratch.join("mml"), have, bars)
     }
 
     fn render_settings(&self, key: &StreamKey) -> DecoderSettings {

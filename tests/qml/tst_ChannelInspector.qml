@@ -28,6 +28,8 @@ TestCase {
             return JSON.stringify({revision: mmlRevision, message: "", bars: mmlBars, current: mmlCurrent, header: "#KOG-MML 1",
                 currentHtml: "<p>A | c4 <span style=\"background-color:#50c8ef\">e4</span> |</p>"})
         }
+        property int barsPerLine: 4
+        function set_mml_bars_per_line(bars) { barsPerLine = bars }
         function mml_bar(index) { barRequests++; return "<p>; bar " + (index + 1) + "<br/>A | c4 e4 |</p>" }
     }
     Kog.ChannelInspector { id: inspector; app: backend }
@@ -81,6 +83,18 @@ TestCase {
         inspector.refresh()
         tryVerify(() => score.itemAtIndex(2) !== null && score.itemAtIndex(2).current)
         grabImage(inspector.contentItem).save("/tmp/kog-channel-inspector-mml-qt.png")
+    }
+
+    function test_mml_bars_per_line_control() {
+        inspector.mode = 3
+        const spin = findChild(inspector.contentItem.parent.parent, "mmlBarsPerLine") || findChild(inspector, "mmlBarsPerLine")
+        verify(spin !== null)
+        verify(spin.visible)
+        spin.value = 2
+        spin.valueModified()
+        compare(backend.barsPerLine, 2)
+        inspector.mode = 2
+        verify(!spin.visible)
     }
 
     function test_mml_update_keeps_scroll_position() {

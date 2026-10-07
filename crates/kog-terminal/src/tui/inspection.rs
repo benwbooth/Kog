@@ -36,6 +36,8 @@ impl View {
             Key::Char('3') => self.mode = 3,
             Key::Char('4') => self.mode = 4,
             Key::Char('f') if self.mode == 4 => self.mml.follow = !self.mml.follow,
+            Key::Char('+') | Key::Char('=') if self.mode == 4 => self.mml.change_bars(true),
+            Key::Char('-') if self.mode == 4 => self.mml.change_bars(false),
             Key::Up if self.mode == 4 => {
                 self.mml.follow = false;
                 self.mml.scroll = self.mml.scroll.saturating_sub(1);
@@ -141,7 +143,10 @@ impl View {
                 out,
                 height,
                 2,
-                "Highlighted notes are sounding · ↑↓ PgUp/PgDn scroll · F follow · Space play/pause",
+                &format!(
+                    "Highlighted notes are sounding · +/- bars per line ({}) · ↑↓ PgUp/PgDn scroll · F follow · Space play/pause",
+                    self.mml.bars_label()
+                ),
                 width - 3,
                 Surface::Muted,
                 false,

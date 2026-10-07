@@ -113,6 +113,13 @@ with tempfile.TemporaryDirectory(prefix="kog-tui-mml-") as base:
         first = wait_highlight()
         drain(1.5)
         second = wait_highlight()
+        # Fewer bars per line: one bar per block.
+        send("---")
+        wait_for("bars per line (1)")
+        lines = [line for line in screen.display if line.startswith(" A |")]
+        assert lines and all(line.count("|") <= 2 for line in lines), screen.display
+        send("+++")
+        wait_for("bars per line (4)")
         if os.environ.get("KOG_MML_SCREEN"):
             print("\n".join(screen.display))
         send(b"\x1b")

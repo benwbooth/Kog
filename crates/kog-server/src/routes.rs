@@ -312,6 +312,8 @@ fn stream_key_for_request(
 struct MmlQuery {
     /// Revision the client already has; its document is not sent again.
     have: Option<u64>,
+    /// Bars written on each track's line.
+    bars: Option<usize>,
 }
 
 /// The whole song as Kog MML. The first request starts recording; clients
@@ -340,7 +342,7 @@ async fn mml_score(
     let title = std::path::Path::new(if stream.entry.is_empty() { &stream.path } else { &stream.entry })
         .file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
     let streams = state.streams.clone();
-    let status = tokio::task::spawn_blocking(move || streams.mml(entry, &key, title, query.have)).await;
+    let status = tokio::task::spawn_blocking(move || streams.mml(entry, &key, title, query.have, query.bars.unwrap_or(kog_audio::inspection::mml::BARS_PER_LINE).clamp(1, 64))).await;
     let mut response = match status {
         Ok(status) => axum::Json(status).into_response(),
         Err(error) => bad_request(&error.to_string()),
