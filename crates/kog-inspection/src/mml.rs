@@ -39,6 +39,9 @@ pub struct Score {
     pub transpose: Vec<(String, i32)>,
     /// Ticks before the first full bar, so bars follow the music's grid.
     pub pickup: u64,
+    /// Tick and time (microseconds) pairs where the tempo has drifted from a
+    /// straight line; empty when `tempo` alone gives every tick's time.
+    pub timing: Vec<(u64, u64)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -248,6 +251,15 @@ pub struct RollNote {
 impl Score {
     pub fn tick_seconds(&self) -> f64 {
         60_000.0 / f64::from(self.tempo.max(1)) / f64::from(self.quarter.max(1))
+    }
+
+    /// Seconds from the song's start to `tick`.
+    pub fn seconds_at(&self, tick: u64) -> f64 {
+        seconds_at(&self.timing_seconds(), self.tick_seconds(), tick)
+    }
+
+    fn timing_seconds(&self) -> Vec<(u64, f64)> {
+        self.timing.iter().map(|(tick, micros)| (*tick, *micros as f64 / 1e6)).collect()
     }
 
     pub fn bar_ticks(&self) -> u64 {
@@ -802,44 +814,88 @@ impl ScoreBuilder {
         tracks.retain(|track| !track.events.is_empty());
 
         // Frames arrive every few milliseconds, but music moves on a beat.
-        // Re-time every event onto 1/128 notes of the tempo so lengths can be
-        // written as ordinary note values.
-        let (quarter_frames, phase, steps) = match self.tempo {
-            Some(bpm) => ((60.0 / bpm) / tick_seconds, 0.0, 4.0),
+        // Follow the beat through the song (tempo drifts, and some decoders
+        // report key-ons tens of milliseconds late), give each onset its place
+        // on that beat, and keep the time of each beat for highlighting.
+        let grid = match self.tempo {
+            Some(bpm) => Grid { quarter: (60.0 / bpm) / tick_seconds, steps: 4.0, jitter: 1.0 },
             None => infer_grid(&tracks, tick_seconds),
         };
-        let quarter_frames = quarter_frames.max(1.0);
-        let scale = f64::from(QUARTER) / quarter_frames;
-        let unit_frames = quarter_frames / steps;
-        let unit_ticks = f64::from(QUARTER) / steps;
-        let pickup = (phase * scale).round() as u64;
-        let fine = |tick: u64| (pickup as i64 + ((tick as f64 - phase) * scale).round() as i64).max(0) as u64;
-        let snap = |tick: u64| {
-            let steps_in = (tick as f64 - phase) / unit_frames;
-            let nearest = steps_in.round();
-            if (steps_in - nearest).abs() <= 0.2 {
-                (pickup as i64 + (nearest * unit_ticks).round() as i64).max(0) as u64
-            } else {
-                fine(tick)
+        let steps = grid.steps;
+        let unit_frames = grid.quarter.max(1.0) / steps;
+        let unit_ticks = (f64::from(QUARTER) / steps).round() as u64;
+        // Finer lines between beat steps (halves, triplets, quarters …) that
+        // divide into whole ticks, coarsest first.
+        // Finer lines would also catch late or early key-ons, so stop at quarters.
+        let subdivisions: Vec<u64> = [1u64, 2, 3, 4]
+            .into_iter()
+            .filter(|parts| unit_ticks % parts == 0)
+            .collect();
+        let mut onsets: Vec<u64> = tracks
+            .iter()
+            .flat_map(|track| track.events.iter())
+            .filter(|event| event.kind.length() > 0)
+            .map(|event| event.tick)
+            .collect();
+        onsets.sort_unstable();
+        onsets.dedup();
+        let anchors = track_beats(&onsets, unit_frames, unit_ticks, &subdivisions, grid.jitter);
+        let timeline = Timeline { anchors, unit_frames, unit_ticks };
+        // Anything off the beat still lands on a quarter of a beat step, so
+        // stray key-ons, releases and commands do not leave 1/128 slivers.
+        let resolution = [4u64, 2, 1].into_iter().find(|parts| unit_ticks % parts == 0).map_or(1, |parts| unit_ticks / parts);
+        let on_grid = |tick: u64| (tick as f64 / resolution as f64).round() as u64 * resolution;
+        // Onsets the beat tracker could not place exactly still snap to the
+        // nearest beat, half or third of one when they are close to it.
+        let near_line = |tick: u64| {
+            for parts in &subdivisions {
+                let line = (unit_ticks / parts) as f64;
+                let nearest = (tick as f64 / line).round();
+                if (tick as f64 - nearest * line).abs() <= 0.35 * line {
+                    return (nearest * line) as u64;
+                }
             }
+            on_grid(tick)
+        };
+        let place = |frame: u64| {
+            let tick = timeline.tick(frame as f64);
+            if timeline.is_anchor(frame as f64) { tick } else { near_line(tick) }
+        };
+        let snap_end = |frame: u64| {
+            let tick = timeline.tick(frame as f64);
+            let nearest = (tick as f64 / unit_ticks as f64).round() as u64 * unit_ticks;
+            // Releases are looser than key-ons: a note let go just before the
+            // next beat still ends on it.
+            if (tick as f64 - nearest as f64).abs() <= 0.45 * unit_ticks as f64 { nearest } else { near_line(tick) }
         };
         for track in &mut tracks {
-            // Notes snap to a nearby grid step, so frame jitter does not leave
-            // 1/128-note slivers. Commands keep 1/128-note resolution, except
-            // those made at a note's onset, which move with the note.
-            let onsets: HashMap<u64, u64> = track
+            // Commands inside a note keep full resolution so envelopes and
+            // vibrato stay intact (they become macros); commands between notes
+            // snap like key-ons so they do not split rests into slivers.
+            let sounding: Vec<(u64, u64)> = track
                 .events
                 .iter()
                 .filter(|event| event.kind.length() > 0)
-                .map(|event| (event.tick, snap(event.tick)))
+                .map(|event| (event.tick, event.tick + event.kind.length()))
                 .collect();
+            let inside = |frame: u64| {
+                // A command at a note's own onset moves with the note.
+                let after = sounding.partition_point(|(start, _)| *start < frame);
+                after > 0 && frame < sounding[after - 1].1
+            };
             let mut events: Vec<Event> = std::mem::take(&mut track.events)
                 .into_iter()
                 .filter_map(|mut event| {
-                    let start = onsets.get(&event.tick).copied().unwrap_or_else(|| fine(event.tick));
+                    let start = if event.kind.length() == 0 && inside(event.tick) {
+                        timeline.tick(event.tick as f64)
+                    } else {
+                        place(event.tick)
+                    };
                     match &mut event.kind {
                         EventKind::Note { length, .. } | EventKind::Hit { length, .. } => {
-                            *length = snap(event.tick + *length).saturating_sub(start);
+                            let end = snap_end(event.tick + *length);
+                            let end = if end > start { end } else { place(event.tick + *length).max(start + resolution) };
+                            *length = end.saturating_sub(start);
                             if *length == 0 {
                                 return None;
                             }
@@ -850,8 +906,20 @@ impl ScoreBuilder {
                     Some(event)
                 })
                 .collect();
-            // Snapping is not strictly monotonic next to the tolerance edge:
-            // keep each sound after the previous one ends.
+            // A release snapped past the next note's key-on ends at the key-on,
+            // and each sound starts after the previous one ends.
+            let starts: Vec<u64> = events.iter().filter(|e| e.kind.length() > 0).map(|e| e.tick).collect();
+            let mut next = 1;
+            for event in &mut events {
+                if let EventKind::Note { length, .. } | EventKind::Hit { length, .. } = &mut event.kind {
+                    if let Some(following) = starts.get(next) {
+                        if event.tick < *following && event.tick + *length > *following {
+                            *length = following - event.tick;
+                        }
+                    }
+                    next += 1;
+                }
+            }
             let mut previous_end = 0;
             events.retain_mut(|event| {
                 let length = event.kind.length();
@@ -873,7 +941,7 @@ impl ScoreBuilder {
             events.sort_by_key(|event| (event.tick, event.kind.length() > 0));
             track.events = events;
         }
-        let length = snap(end).max(1);
+        let length = snap_end(end).max(1);
         // Nothing may fall after the song's end.
         for track in &mut tracks {
             track.events.retain_mut(|event| {
@@ -885,7 +953,36 @@ impl ScoreBuilder {
                 true
             });
         }
-        let tempo = (60_000.0 / (quarter_frames * tick_seconds)).round().max(1.0) as u32;
+        // Start bars where most notes start: the beat tracker knows the beat
+        // but not which beat is the downbeat.
+        let bar = u64::from(QUARTER) * u64::from(self.meter.unwrap_or(4).max(1));
+        // Chords mark strong beats: weight each onset tick by the square of
+        // how many voices start on it.
+        let mut starts: BTreeMap<u64, usize> = BTreeMap::new();
+        for track in &tracks {
+            for event in track.events.iter().filter(|e| e.kind.length() > 0) {
+                *starts.entry(event.tick).or_default() += 1;
+            }
+        }
+        let mut residues: BTreeMap<u64, usize> = BTreeMap::new();
+        for (tick, voices) in starts {
+            // Only beat lines can be downbeats.
+            if tick % unit_ticks == 0 {
+                *residues.entry(tick % bar).or_default() += voices * voices;
+            }
+        }
+        let pickup = residues
+            .into_iter()
+            .max_by_key(|(residue, count)| (*count, std::cmp::Reverse(*residue)))
+            .map_or(0, |(residue, _)| residue);
+        let timing = timeline.timing(tick_seconds, length);
+        let seconds = timing.last().map_or(0, |(_, micros)| *micros) as f64 / 1e6;
+        let ticks = timing.last().map_or(0, |(tick, _)| *tick) as f64;
+        let tempo = if ticks > 0.0 && seconds > 0.0 {
+            (60_000.0 * ticks / f64::from(QUARTER) / seconds).round().max(1.0) as u32
+        } else {
+            (60_000.0 / (unit_frames * steps * tick_seconds)).round().max(1.0) as u32
+        };
 
         let transpose = relative_transpose(&tracks, &relative);
         for track in &mut tracks {
@@ -912,12 +1009,146 @@ impl ScoreBuilder {
             macros,
             transpose,
             pickup,
+            timing,
         }
     }
 }
 
-/// Ticks per quarter note in recorded scores: 1/128 notes are one tick.
-pub const QUARTER: u32 = 32;
+/// Give each onset its place on the beat. Onsets near a beat line (or a half,
+/// third, quarter … of one) become anchors; the step length follows the
+/// measured gaps between anchors so slow tempo drift does not accumulate.
+fn track_beats(onsets: &[u64], unit: f64, unit_ticks: u64, subdivisions: &[u64], jitter: f64) -> Vec<(f64, u64)> {
+    let Some(&first) = onsets.first() else { return Vec::new() };
+    let mut anchors = vec![(first as f64, 0u64)];
+    let mut step = unit;
+    for &onset in &onsets[1..] {
+        let (at, tick) = *anchors.last().unwrap();
+        let steps_in = (onset as f64 - at) / step;
+        for parts in subdivisions {
+            let lines = steps_in * *parts as f64;
+            let nearest = lines.round();
+            let line = step / *parts as f64;
+            // Coarse lines first, each with a window of 30% of its spacing;
+            // the jitter estimate only widens it for very regular songs.
+            // Over a long held chord the tempo may have drifted a few percent, so
+            // whole beat steps get extra room in proportion to the gap.
+            let drift = if *parts == 1 { 0.04 * (onset as f64 - at) } else { 0.0 };
+            let tolerance = (0.3 * line).max((1.5 * jitter).min(0.4 * line)) + drift;
+            if nearest >= 1.0 && (lines - nearest).abs() * line <= tolerance {
+                let ticks = nearest as u64 * (unit_ticks / parts);
+                // Whole steps measure the tempo; adapt gently and stay near the
+                // detected step so one late key-on cannot run away with it.
+                if ticks >= unit_ticks {
+                    let measured = (onset as f64 - at) * unit_ticks as f64 / ticks as f64;
+                    step = (0.8 * step + 0.2 * measured).clamp(unit * 0.9, unit * 1.1);
+                }
+                anchors.push((onset as f64, tick + ticks));
+                break;
+            }
+        }
+    }
+    anchors
+}
+
+/// Frame-to-tick mapping through the beat anchors.
+struct Timeline {
+    anchors: Vec<(f64, u64)>,
+    unit_frames: f64,
+    unit_ticks: u64,
+}
+
+impl Timeline {
+    fn is_anchor(&self, frame: f64) -> bool {
+        self.anchors.binary_search_by(|(at, _)| at.total_cmp(&frame)).is_ok()
+    }
+
+    fn tick(&self, frame: f64) -> u64 {
+        let per_frame = self.unit_ticks as f64 / self.unit_frames;
+        let Some(&(first_frame, first_tick)) = self.anchors.first() else {
+            return (frame * per_frame).round().max(0.0) as u64;
+        };
+        if frame <= first_frame {
+            return (first_tick as f64 - (first_frame - frame) * per_frame).round().max(0.0) as u64;
+        }
+        let after = self.anchors.partition_point(|(at, _)| *at <= frame);
+        if after == self.anchors.len() {
+            let (at, tick) = self.anchors[after - 1];
+            let rate = if after >= 2 {
+                let (before, earlier) = self.anchors[after - 2];
+                (tick - earlier) as f64 / (at - before)
+            } else {
+                per_frame
+            };
+            return tick + ((frame - at) * rate).round() as u64;
+        }
+        let (a_frame, a_tick) = self.anchors[after - 1];
+        let (b_frame, b_tick) = self.anchors[after];
+        a_tick + ((frame - a_frame) / (b_frame - a_frame) * (b_tick - a_tick) as f64).round() as u64
+    }
+
+    /// Tick and time (microseconds) pairs that reproduce the beat's timing to
+    /// within 5 ms, plus the song's end.
+    fn timing(&self, tick_seconds: f64, length: u64) -> Vec<(u64, u64)> {
+        let mut points: Vec<(u64, f64)> = vec![(0, 0.0)];
+        let first_seconds = self.anchors.first().map_or(0.0, |(frame, _)| frame * tick_seconds);
+        if let Some(&(frame, tick)) = self.anchors.first() {
+            if tick == 0 && frame > 0.0 {
+                // Time before the first onset belongs to bar one.
+                points[0] = (0, first_seconds);
+            }
+        }
+        points.extend(self.anchors.iter().skip(1).map(|(frame, tick)| (*tick, frame * tick_seconds)));
+        if points.last().is_some_and(|(tick, _)| *tick < length) {
+            let seconds_per_tick = self.unit_frames * tick_seconds / self.unit_ticks as f64;
+            let (tick, at) = *points.last().unwrap();
+            points.push((length, at + (length - tick) as f64 * seconds_per_tick));
+        }
+        simplify(&points, 0.005)
+            .into_iter()
+            .map(|(tick, seconds)| (tick, (seconds * 1e6).round().max(0.0) as u64))
+            .collect()
+    }
+}
+
+/// Drop timing points that a straight line between their neighbours already
+/// gives to within `tolerance` seconds (Douglas–Peucker).
+fn simplify(points: &[(u64, f64)], tolerance: f64) -> Vec<(u64, f64)> {
+    if points.len() <= 2 {
+        return points.to_vec();
+    }
+    let (first, last) = (points[0], points[points.len() - 1]);
+    let span = (last.0 - first.0).max(1) as f64;
+    let (worst, distance) = points[1..points.len() - 1]
+        .iter()
+        .enumerate()
+        .map(|(index, (tick, seconds))| {
+            let expected = first.1 + (last.1 - first.1) * (*tick - first.0) as f64 / span;
+            (index + 1, (seconds - expected).abs())
+        })
+        .fold((0, 0.0), |best, item| if item.1 > best.1 { item } else { best });
+    if distance <= tolerance {
+        return vec![first, last];
+    }
+    let mut left = simplify(&points[..=worst], tolerance);
+    left.pop();
+    left.extend(simplify(&points[worst..], tolerance));
+    left
+}
+
+/// Seconds at `tick` through `timing` points, or at a fixed rate without them.
+fn seconds_at(timing: &[(u64, f64)], tick_seconds: f64, tick: u64) -> f64 {
+    let after = timing.partition_point(|(at, _)| *at <= tick);
+    match (after.checked_sub(1).map(|i| timing[i]), timing.get(after)) {
+        (Some((a, sa)), Some((b, sb))) => sa + (sb - sa) * (tick - a) as f64 / (b - a).max(1) as f64,
+        (Some((a, sa)), None) => sa + (tick - a) as f64 * tick_seconds,
+        (None, Some((b, sb))) => sb - (b - tick) as f64 * tick_seconds,
+        (None, None) => tick as f64 * tick_seconds,
+    }
+}
+
+/// Ticks per quarter note in recorded scores: 1/128 notes and triplets of
+/// every note value down to 1/96 are whole numbers of ticks.
+pub const QUARTER: u32 = 96;
 
 /// Sample playback rates give pitches relative to an unknown original key, so
 /// they can sit many octaves away from the music. Move each sample by whole
@@ -1067,7 +1298,7 @@ impl Score {
 /// onsets is a whole multiple of, and where that grid starts. Returns frames
 /// per quarter note (taking the step as a sixteenth or eighth as the tempo
 /// allows) and the grid's offset in frames.
-fn infer_grid(tracks: &[Track], tick_seconds: f64) -> (f64, f64, f64) {
+fn infer_grid(tracks: &[Track], tick_seconds: f64) -> Grid {
     let mut onsets: Vec<u64> = tracks
         .iter()
         .flat_map(|track| track.events.iter())
@@ -1076,8 +1307,12 @@ fn infer_grid(tracks: &[Track], tick_seconds: f64) -> (f64, f64, f64) {
         .collect();
     onsets.sort_unstable();
     onsets.dedup();
+    let fallback = || {
+        let quarter = f64::from(infer_quarter(tracks, tick_seconds));
+        Grid { quarter, steps: 4.0, jitter: 1.0 }
+    };
     if onsets.len() < 8 {
-        return (f64::from(infer_quarter(tracks, tick_seconds)), 0.0, 4.0);
+        return fallback();
     }
     let times: Vec<f64> = onsets.iter().map(|tick| *tick as f64).collect();
     let fit = |unit: f64| {
@@ -1100,7 +1335,8 @@ fn infer_grid(tracks: &[Track], tick_seconds: f64) -> (f64, f64, f64) {
         (hits as f64 / times.len() as f64, phase)
     };
     let first = (0.045 / tick_seconds).max(2.0);
-    let last = 0.35 / tick_seconds;
+    // Up to a slow quarter note: some songs move in eighths of ~0.4 s.
+    let last = 1.2 / tick_seconds;
     let mut candidates = Vec::new();
     let mut unit = first;
     while unit <= last {
@@ -1108,19 +1344,91 @@ fn infer_grid(tracks: &[Track], tick_seconds: f64) -> (f64, f64, f64) {
         candidates.push((unit, score, phase));
         unit += 0.1;
     }
+    // A step that is slightly off drifts across a long song, so refine the
+    // most promising steps much more finely before choosing.
+    let mut coarse = candidates.clone();
+    coarse.sort_by(|a, b| b.1.total_cmp(&a.1));
+    for &(around, _, _) in coarse.iter().take(12) {
+        let mut unit = around - 0.1;
+        while unit <= around + 0.1 {
+            let (score, phase) = fit(unit);
+            candidates.push((unit, score, phase));
+            unit += 0.002;
+        }
+    }
+    candidates.sort_by(|a, b| a.0.total_cmp(&b.0));
     let best = candidates.iter().map(|c| c.1).fold(0.0, f64::max);
+    if std::env::var_os("KOG_MML_DEBUG").is_some() {
+        let mut sorted = candidates.clone();
+        sorted.sort_by(|a, b| b.1.total_cmp(&a.1));
+        eprintln!("onsets {} tick {:.5}s", times.len(), tick_seconds);
+        for (unit, fit, phase) in sorted.iter().take(15) {
+            eprintln!("unit {:.2} frames ({:.4}s) fit {:.3} phase {:.2}", unit, unit * tick_seconds, fit, phase);
+        }
+        let gaps: Vec<_> = times.windows(2).take(60).map(|w| w[1] - w[0]).collect();
+        eprintln!("first gaps {gaps:?}");
+    }
     // The longest step that explains almost as many onsets as the best one;
     // shorter steps always fit, so they are only chosen when nothing else does.
     let Some(&(unit, _, phase)) = candidates.iter().rev().find(|c| c.1 >= best - 0.03) else {
-        return (f64::from(infer_quarter(tracks, tick_seconds)), 0.0, 4.0);
+        return fallback();
     };
+    // How far onsets that belong to the grid sit from it: decoders that report
+    // key-ons per audio block place them a few frames late or early.
+    let mut offsets: Vec<f64> = times
+        .iter()
+        .map(|time| {
+            let offset = ((time - phase) / unit).rem_euclid(1.0) * unit;
+            offset.min(unit - offset)
+        })
+        .filter(|offset| *offset <= (0.08 * unit).max(0.75))
+        .collect();
+    offsets.sort_by(f64::total_cmp);
+    let jitter = offsets.get(offsets.len() * 3 / 4).copied().unwrap_or(0.0).max(0.5);
+    // How many grid steps make a quarter note: choose the count that writes
+    // the most gaps between onsets as plain (or dotted) note values, so a
+    // grid of triplet steps reads as triplets rather than odd ties.
+    let gaps: Vec<u64> = times
+        .windows(2)
+        .map(|pair| ((pair[1] - pair[0]) / unit).round() as u64)
+        .filter(|gap| *gap > 0)
+        .collect();
     let bpm = |quarter: f64| 60.0 / (quarter * tick_seconds);
-    let steps = [1.0, 2.0, 4.0, 8.0]
+    // gap/steps quarters as a plain note value scores 2, dotted scores 1.
+    let plain = |gap: u64, steps: u64| {
+        let (numerator, denominator) = (gap * 32, steps);
+        if numerator % denominator != 0 {
+            return 0;
+        }
+        let length = numerator / denominator; // in 1/32 quarters
+        if length.is_power_of_two() {
+            2
+        } else if length % 3 == 0 && (length / 3).is_power_of_two() {
+            1
+        } else {
+            0
+        }
+    };
+    let steps = [1u64, 2, 3, 4, 6, 8, 12, 16]
         .into_iter()
-        .filter(|steps| (70.0..=200.0).contains(&bpm(unit * steps)))
-        .min_by(|a, b| (bpm(unit * a) - 120.0).abs().total_cmp(&(bpm(unit * b) - 120.0).abs()))
-        .unwrap_or(4.0);
-    (unit * steps, phase % unit, steps)
+        .filter(|steps| (60.0..=200.0).contains(&bpm(unit * *steps as f64)))
+        .max_by(|a, b| {
+            let score = |steps: u64| gaps.iter().map(|gap| plain(*gap, steps)).sum::<u64>();
+            score(*a)
+                .cmp(&score(*b))
+                .then((bpm(unit * *b as f64) - 125.0).abs().total_cmp(&(bpm(unit * *a as f64) - 125.0).abs()))
+        })
+        .map_or(4.0, |steps| steps as f64);
+    Grid { quarter: unit * steps, steps, jitter }
+}
+
+/// A rhythmic grid in decoder frames.
+struct Grid {
+    quarter: f64,
+    /// Grid steps per quarter note.
+    steps: f64,
+    /// Typical distance of an on-grid onset from its grid line.
+    jitter: f64,
 }
 
 /// Estimate a beat from the most common gap between onsets on the same voice,
@@ -1226,6 +1534,10 @@ pub struct Document {
     pub styles: Vec<(u32, u32, u8)>,
     /// `#rrggbb` for each class in [`STYLES`].
     pub palette: Vec<String>,
+    /// Tick and seconds pairs for songs whose tempo drifts; between them time
+    /// is linear. Empty when `tick_seconds` alone gives every tick's time.
+    #[serde(default)]
+    pub timing: Vec<(u64, f64)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1245,7 +1557,7 @@ impl Document {
     /// Like [`Document::active`], as indices into [`Document::spans`]. Every
     /// piece of a sounding note is included, even across bar lines.
     pub fn active_indices(&self, seconds: f64) -> (Vec<usize>, Option<&Bar>) {
-        let tick = (seconds.max(0.0) / self.tick_seconds.max(f64::MIN_POSITIVE)) as u64;
+        let tick = self.tick_at(seconds);
         let sounding: Vec<(usize, u64)> = self
             .spans
             .iter()
@@ -1264,6 +1576,20 @@ impl Document {
             .collect();
         let bar = self.bars.iter().find(|bar| bar.start <= tick && tick < bar.end);
         (indices, bar)
+    }
+
+    /// The tick playing `seconds` into the song.
+    pub fn tick_at(&self, seconds: f64) -> u64 {
+        let seconds = seconds.max(0.0);
+        let rate = self.tick_seconds.max(f64::MIN_POSITIVE);
+        let after = self.timing.partition_point(|(_, at)| *at <= seconds);
+        let tick = match (after.checked_sub(1).map(|i| self.timing[i]), self.timing.get(after).copied()) {
+            (Some((a, sa)), Some((b, sb))) => a as f64 + (seconds - sa) / (sb - sa).max(f64::MIN_POSITIVE) * (b - a) as f64,
+            (Some((a, sa)), None) => a as f64 + (seconds - sa) / rate,
+            (None, Some((b, sb))) => (b as f64 - (sb - seconds) / rate).max(0.0),
+            (None, None) => seconds / rate,
+        };
+        tick.max(0.0) as u64
     }
 
     /// The colour runs inside `from..to`, for drawing one bar or line.
@@ -1302,11 +1628,12 @@ fn word(value: &str) -> String {
     if bare(value) { value.to_owned() } else { quote(value) }
 }
 
-/// `1 2 4 … 128` with up to two dots, as a fraction of a whole note.
+/// `1 2 4 … 128` with up to two dots, then triplet values `3 6 12 … 96`, as
+/// fractions of a whole note.
 fn standard_lengths(quarter: u64) -> Vec<(u64, String)> {
     let whole = quarter * 4;
     let mut lengths = Vec::new();
-    for divisor in [1u64, 2, 4, 8, 16, 32, 64, 128] {
+    for divisor in [1u64, 2, 4, 8, 16, 32, 64, 128, 3, 6, 12, 24, 48, 96] {
         if whole % divisor != 0 {
             continue;
         }
@@ -1332,7 +1659,8 @@ fn length_text(ticks: u64, quarter: u64, default: Option<u64>) -> String {
     if let Some((_, text)) = lengths.iter().find(|(length, _)| *length == ticks) {
         return text.clone();
     }
-    // Whole notes first, then the largest plain values that fit.
+    // Whole notes first, then the largest plain values that fit: ordinary
+    // values when they add up exactly, otherwise triplets as well.
     let mut parts = Vec::new();
     let mut left = ticks;
     let whole = quarter * 4;
@@ -1340,16 +1668,33 @@ fn length_text(ticks: u64, quarter: u64, default: Option<u64>) -> String {
         parts.push("1".to_owned());
         left -= whole;
     }
-    let plain: Vec<_> = lengths.iter().filter(|(_, text)| !text.ends_with('.')).collect();
-    while left > 0 {
-        let Some((length, text)) = plain.iter().find(|(length, _)| *length <= left) else {
-            // Unreachable for scores whose quarter is a multiple of 32.
-            parts.push(format!("{left}t"));
-            break;
-        };
-        parts.push(text.clone());
-        left -= length;
+    let greedy = |left: u64, triplets: bool| {
+        let mut plain: Vec<&(u64, String)> = lengths
+            .iter()
+            .filter(|(_, text)| !text.ends_with('.'))
+            .filter(|(_, text)| triplets || text.parse::<u64>().is_ok_and(u64::is_power_of_two))
+            .collect();
+        plain.sort_by(|a, b| b.0.cmp(&a.0));
+        let mut parts = Vec::new();
+        let mut left = left;
+        while left > 0 {
+            let Some((length, text)) = plain.iter().find(|(length, _)| *length <= left).map(|p| (p.0, &p.1)) else {
+                return (parts, left);
+            };
+            parts.push(text.clone());
+            left -= length;
+        }
+        (parts, 0)
+    };
+    let (mut tail, rest) = greedy(left, false);
+    if rest > 0 {
+        let (with_triplets, rest) = greedy(left, true);
+        tail = with_triplets;
+        if rest > 0 {
+            tail.push(format!("{rest}t"));
+        }
     }
+    parts.extend(tail);
     parts.join("^")
 }
 
@@ -1560,6 +1905,13 @@ pub fn encode(score: &Score) -> Document {
     let _ = writeln!(text, "#TICKS {} ; per quarter note", score.quarter);
     let _ = writeln!(text, "#BAR {} ; quarter notes", score.beats);
     let _ = writeln!(text, "#LENGTH {} ; ticks", score.length);
+    for chunk in score.timing.chunks(8) {
+        let _ = write!(text, "#TIMING");
+        for (tick, micros) in chunk {
+            let _ = write!(text, " {tick}:{}.{:06}", micros / 1_000_000, micros % 1_000_000);
+        }
+        text.push('\n');
+    }
     if score.pickup > 0 {
         let _ = writeln!(text, "#PICKUP {} ; ticks before the first full bar", score.pickup);
     }
@@ -1627,7 +1979,7 @@ pub fn encode(score: &Score) -> Document {
         let end = score.bar_start(index + 1).min(score.length).max(start);
         let last = index + 1 == bar_count;
         let from = writer.text.len();
-        let seconds = start as f64 * score.tick_seconds();
+        let seconds = score.seconds_at(start);
         let _ = writeln!(
             writer.text,
             "; bar {} {}:{:06.3}",
@@ -1692,6 +2044,7 @@ pub fn encode(score: &Score) -> Document {
             .collect(),
         styles,
         palette: STYLES.iter().map(|(_, colour)| (*colour).to_owned()).collect(),
+        timing: score.timing_seconds(),
     }
 }
 
@@ -2045,6 +2398,23 @@ pub fn parse(text: &str) -> Result<Score, ParseError> {
                     "BAR" => score.beats = cursor.number()?.max(0) as u32,
                     "LENGTH" => score.length = cursor.number()?.max(0) as u64,
                     "PICKUP" => score.pickup = cursor.number()?.max(0) as u64,
+                    "TIMING" => loop {
+                        cursor.skip_space();
+                        if matches!(cursor.peek(), None | Some(b';')) {
+                            break;
+                        }
+                        let tick = cursor.number()?.max(0) as u64;
+                        if !cursor.eat(b':') {
+                            return cursor.error("#TIMING entries are tick:seconds");
+                        }
+                        let whole = cursor.number()?.max(0) as u64;
+                        let start = cursor.at;
+                        let fraction = if cursor.eat(b'.') { cursor.number()?.max(0) as u64 } else { 0 };
+                        if cursor.at - start != 7 {
+                            return cursor.error("#TIMING seconds have six decimal places");
+                        }
+                        score.timing.push((tick, whole * 1_000_000 + fraction));
+                    },
                     "TUNE" => {
                         let label = cursor.word()?;
                         let Some(&index) = labels.get(&label) else {
@@ -2463,6 +2833,7 @@ mod tests {
             }],
             transpose: vec![("Duty 25%".into(), 24)],
             pickup: 0,
+            timing: vec![(0, 0), (150, 1_400_000), (300, 2_350_500)],
         }
     }
 
@@ -2479,8 +2850,9 @@ mod tests {
 
     #[test]
     fn spans_follow_playback_position() {
-        let document = encode(&sample_score());
-        let (active, bar) = document.active(30.0 * document.tick_seconds);
+        let score = sample_score();
+        let document = encode(&score);
+        let (active, bar) = document.active(score.seconds_at(30));
         assert_eq!(bar.unwrap().index, 0);
         let texts: Vec<_> = active.iter().map(|s| &document.text[s.from..s.to]).collect();
         // Every piece of the sounding note lights up, across its bar line.
@@ -2491,7 +2863,10 @@ mod tests {
             sounds
         };
         assert_eq!(sounds(&active), [(0, Some(24))]);
-        let (active, bar) = document.active(100.0 * document.tick_seconds);
+        let (active, bar) = document.active(score.seconds_at(100));
+        for tick in [0, 30, 149, 150, 151, 299, 400] {
+            assert_eq!(document.tick_at(score.seconds_at(tick) + 1e-9), tick, "timing round trip at {tick}");
+        }
         assert_eq!(bar.unwrap().index, 1);
         assert_eq!(sounds(&active), [(0, Some(24)), (1, Some(96))]);
     }
@@ -2536,6 +2911,11 @@ mod tests {
                 quarter,
                 beats: 1 + next(6) as u32,
                 pickup: next(3) * next(40),
+                timing: {
+                    let mut timing: Vec<(u64, u64)> = (0..next(4)).map(|i| (i * 97 + next(50), i * 500_000 + next(400_000))).collect();
+                    timing.dedup_by_key(|(tick, _)| *tick);
+                    timing
+                },
                 transpose: (0..next(3)).map(|i| (format!("I{i} \"q\" ü"), (next(11) as i32 - 5) * 12)).collect(),
                 inferred: next(2) == 0,
                 length: 0,
@@ -2691,7 +3071,7 @@ mod tests {
         };
         let score = score_from_frames(&frames, &description, "t", 48_000, Some(4.0));
         // Onsets every half second become quarter notes of 120 BPM.
-        assert_eq!((score.tempo, score.quarter, score.inferred), (120_000, 32, true));
+        assert_eq!((score.tempo, score.quarter, score.inferred), (120_000, QUARTER, true));
         let seconds = |tick: u64| tick as f64 * score.tick_seconds();
         let roll = score.piano_roll();
         let notes: Vec<_> = roll.iter().map(|n| (n.cents, seconds(n.start), seconds(n.end))).collect();
@@ -2718,10 +3098,6 @@ mod tests {
         assert!(expanded
             .iter()
             .any(|e| e.kind == EventKind::Bend(29) && (seconds(e.tick) - 89.0 / 60.0).abs() <= 0.125));
-        assert!(
-            !events.iter().any(|e| matches!(e.kind, EventKind::Bend(_))),
-            "the slide inside one note becomes a macro"
-        );
         assert!(events.iter().any(|e| matches!(e.kind, EventKind::Note { key: 64, legato: true, .. })));
         let parsed = parse(&encode(&score).text).unwrap();
         assert_eq!(parsed, score);

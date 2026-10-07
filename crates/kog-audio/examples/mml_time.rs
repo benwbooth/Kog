@@ -9,6 +9,9 @@ fn main() {
     let score = kog_audio::inspection::score::record(&mut pcm, "t", &progress, seconds, &mut |_| {}).unwrap();
     let recorded = started.elapsed();
     let document = kog_audio::inspection::mml::encode(&score);
+    if let Some(path) = std::env::var_os("KOG_MML_OUT") {
+        std::fs::write(path, &document.text).unwrap();
+    }
     println!(
         "open {:.2?}, record {:.2?} for {:.1}s of audio, encode {:.2?}, {} bytes",
         opened,

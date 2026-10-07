@@ -50,6 +50,24 @@ internal class MmlDocument(json: JSONObject) {
         List(array.length()) { i -> Color(android.graphics.Color.parseColor(array.getString(i))) }
     }
     val headerEnd: Int = bars.firstOrNull()?.from ?: text.length
+    /** Tick and seconds pairs for songs whose tempo drifts; linear between them. */
+    private val timing: List<Pair<Long, Double>> = json.optJSONArray("timing")?.let { array ->
+        List(array.length()) { i -> array.getJSONArray(i).let { it.getLong(0) to it.getDouble(1) } }
+    } ?: emptyList()
+
+    /** The tick playing [seconds] into the song (kog_inspection::mml::Document::tick_at). */
+    fun tickAt(seconds: Double): Long {
+        val at = seconds.coerceAtLeast(0.0)
+        val after = timing.indexOfFirst { it.second > at }.let { if (it < 0) timing.size else it }
+        val before = timing.getOrNull(after - 1); val next = timing.getOrNull(after)
+        val tick = when {
+            before != null && next != null -> before.first + (at - before.second) / maxOf(next.second - before.second, Double.MIN_VALUE) * (next.first - before.first)
+            before != null -> before.first + (at - before.second) / tickSeconds
+            next != null -> maxOf(0.0, next.first - (next.second - at) / tickSeconds)
+            else -> at / tickSeconds
+        }
+        return tick.coerceAtLeast(0.0).toLong()
+    }
 
     /** Index of the first style run ending after [from], by binary search. */
     private fun firstStyle(from: Int): Int {
@@ -79,7 +97,7 @@ internal class MmlDocument(json: JSONObject) {
 
     /** Every piece of each sounding note, plus the playing bar. */
     fun active(seconds: Double): Pair<Set<Int>, Int> {
-        val tick = (seconds.coerceAtLeast(0.0) / tickSeconds).toLong()
+        val tick = tickAt(seconds)
         val sounding = spans.filter { it.sound != null && it.start <= tick && tick < it.end }
             .map { it.track to it.sound }.toSet()
         val indices = spans.indices.filter { spans[it].sound != null && (spans[it].track to spans[it].sound) in sounding }.toSet()
