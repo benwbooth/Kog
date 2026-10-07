@@ -340,7 +340,7 @@ fn draw_keyboard(
                 }
                 if let Some(note) = note {
                     let bend = note.key - note.key.round();
-                    if bend.abs() > 0.02 {
+                    if !channel.has_relative_pitch() && bend.abs() > 0.02 {
                         ctx.set_fill_style_str("#ea6c24");
                         ctx.fill_rect(x + w / 2.0 + f64::from(bend) * w - 1.0, 2.0, 2.0, h - 4.0);
                     }

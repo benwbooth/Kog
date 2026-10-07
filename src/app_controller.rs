@@ -333,7 +333,7 @@ pub mod qobject {
         #[qinvokable]
         fn visualizer_frame(self: &AppController) -> QString;
         #[qinvokable]
-        fn channel_snapshot(self: &AppController) -> QString;
+        fn channel_snapshot(self: &AppController, include_tracker: bool) -> QString;
         #[qinvokable]
         fn skin_state(self: &AppController, include_tracks: bool) -> QString;
         #[qinvokable]
@@ -5343,8 +5343,13 @@ impl qobject::AppController {
         self.as_mut().set_audio_level_high(f64::from(levels[4]));
     }
 
-    pub fn channel_snapshot(&self) -> QString {
-        QString::from(serde_json::to_string(&self.rust().playback.channel_snapshot()).unwrap_or_else(|_| "{}".into()))
+    pub fn channel_snapshot(&self, include_tracker: bool) -> QString {
+        let mut snapshot = self.rust().playback.channel_snapshot();
+        if !include_tracker {
+            snapshot.rows.clear();
+            snapshot.current_row = None;
+        }
+        QString::from(serde_json::to_string(&snapshot).unwrap_or_else(|_| "{}".into()))
     }
 
     pub fn visualizer_frame(&self) -> QString {

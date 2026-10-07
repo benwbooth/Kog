@@ -144,6 +144,11 @@ fn verify(name: &str, count: usize, pitched: bool) {
                 .iter()
                 .any(|f| f.name == "Pitch basis" && f.value.contains("Relative"))
         );
+        assert_eq!(voice.field("Gate"), Some("On"));
+        assert!(
+            voice.field("Key on").unwrap().parse::<u64>().unwrap() > 0,
+            "the actual SPU key-on write must reach the inspection stream"
+        );
     }
     assert!(!latest.rows.is_empty(), "{name}: no tracker rows");
     let mut ids = latest.channels.iter().map(|c| c.id).collect::<Vec<_>>();

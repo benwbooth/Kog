@@ -50,6 +50,12 @@ voices get keys when the format or sequencer supplies tuning or a source note.
 PSF/PSF2 additionally provide explicitly labelled relative keys: doubling the
 sample playback rate moves up an octave from the C4 reference. This shows
 transposition and pitch slides while leaving original sample tuning unknown.
+Their fractional sample-rate offsets are not shown as red bend markers or
+musical cents. PSF tracker rows follow hardware key-on writes (including
+same-pitch retriggers), key-off/release, and changed control registers. Held
+notes, continuous volume/pitch automation, envelope progress, and advancing
+sample addresses do not create rows; those live values remain in the channel
+details and meters. Onset rows include their starting pitch and controls.
 The inspector does not estimate fundamentals from recorded audio.
 
 Register displays report observed state and programmed controls, which can

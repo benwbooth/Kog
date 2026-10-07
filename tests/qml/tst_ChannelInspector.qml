@@ -10,6 +10,7 @@ TestCase {
     visible: true
     width: 1120
     height: 740
+    property string initialState: ""
     property var state: ({version:1, description:{backend:"Test MIDI",kind:"events",detail:"Sequenced keys and commands"}, playing:true, seeking:false, current_row:0,
         channels:[{id:0,name:"MIDI 1",kind:"tonal",instrument:"Piano",level:0.8,pan:0,active:true,notes:[{key:60,velocity:0.8,held:true},{key:64.3,velocity:0.6,held:false}],fields:[{name:"Sustain",value:"On"}]}],
         rows:[{time:0,label:"0000.000",cells:[{channel:0,notes:"C-4 E-4",instrument:"01",volume:"64",effects:[{name:"CC64 Sustain",value:"127"}]}],global:[{name:"Tempo",value:"120 BPM"}]}],global:[]})
@@ -21,7 +22,9 @@ TestCase {
         function play_pause() { test.state = Object.assign({}, test.state, {playing:!test.state.playing}) }
     }
     Kog.ChannelInspector { id: inspector; app: backend }
-    function init() { inspector.width = 1800; inspector.show(); inspector.mode = 2; inspector.refresh() }
+    SignalSpy { id: backgroundPaints; signalName: "painted" }
+    function initTestCase() { initialState = JSON.stringify(state) }
+    function init() { state = JSON.parse(initialState); inspector.width = 1800; inspector.show(); inspector.mode = 2; inspector.refresh() }
     function cleanup() { inspector.hide() }
 
     function test_modes_and_polyphonic_keyboard() {
@@ -69,5 +72,64 @@ TestCase {
         wait(80)
         grabImage(inspector.contentItem).save("/tmp/kog-channel-inspector-qt-narrow.png")
         keyboards.contentX = 0
+    }
+
+    function test_relative_sample_pitch_has_no_cents_or_bend_marker() {
+        state.channels[0].fields.push({name:"Pitch basis", value:"Relative (C4 = normal sample rate)"})
+        inspector.refresh()
+        const keyboards = findChild(inspector.contentItem, "channelKeyboards")
+        tryCompare(keyboards, "count", 1)
+        const piano = findChild(keyboards.itemAtIndex(0), "channelKeyboard")
+        compare(piano.showPitchOffsets, false)
+        compare(inspector.noteText(state.channels[0].notes, false), "C4  E4")
+        const highlights = findChild(piano, "channelKeyHighlights")
+        tryCompare(highlights, "count", 2)
+        const marker = findChild(highlights.itemAt(1), "channelPitchOffset")
+        compare(marker.visible, false)
+        state.channels[0].fields.pop()
+        inspector.refresh()
+        compare(piano.showPitchOffsets, true)
+        compare(marker.visible, true, "a known MIDI bend remains visible")
+    }
+
+    function test_playback_reuses_keyboard_background_and_tracker_rows() {
+        const keyboards = findChild(inspector.contentItem, "channelKeyboards")
+        tryCompare(keyboards, "count", 1)
+        const piano = findChild(keyboards.itemAtIndex(0), "channelKeyboard")
+        backgroundPaints.target = findChild(piano, "channelKeyboardBackground")
+        wait(80)
+        backgroundPaints.clear()
+        const rows = inspector.rows
+        const highlights = findChild(piano, "channelKeyHighlights")
+        const highlight = highlights.itemAt(0)
+        for (let i = 0; i < 8; ++i) {
+            state.channels[0].notes[0].velocity = 0.2 + i * 0.05
+            state.channels[0].notes[0].key = 60 + i % 3
+            inspector.refresh()
+            wait(20)
+        }
+        compare(backgroundPaints.count, 0)
+        verify(highlights.itemAt(0) === highlight)
+        verify(inspector.rows === rows)
+        state.rows[0].cells[0].notes = "D-4"
+        inspector.refresh()
+        compare(inspector.rows[0].cells[0].notes, "D-4")
+        backgroundPaints.target = null
+    }
+
+    function test_wheel_moves_twenty_four_channels_immediately() {
+        const template = state.channels[0]
+        state.channels = []
+        for (let i = 0; i < 24; ++i) state.channels.push(Object.assign({}, template, {id:i,name:"SPU voice " + i}))
+        inspector.mode = 0
+        inspector.refresh()
+        const keyboards = findChild(inspector.contentItem, "channelKeyboards")
+        tryCompare(keyboards, "count", 24)
+        keyboards.contentY = 0
+        wait(40)
+        mouseWheel(keyboards, 400, 100, 0, -120, Qt.NoButton, Qt.NoModifier)
+        verify(keyboards.contentY >= 40, "scroll input must move on the input event")
+        tryVerify(() => keyboards.contentY >= 119, 250)
+        keyboards.contentY = 0
     }
 }

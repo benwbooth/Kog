@@ -40,6 +40,22 @@ pub struct Channel {
     pub fields: Vec<Field>,
 }
 
+impl Channel {
+    pub fn field(&self, name: &str) -> Option<&str> {
+        self.fields
+            .iter()
+            .find(|field| field.name == name)
+            .map(|field| field.value.as_str())
+    }
+
+    /// Sample-rate transposition has no known equal-tempered tuning reference.
+    /// Its fractional part must not be presented as musical cents or a bend.
+    pub fn has_relative_pitch(&self) -> bool {
+        self.field("Pitch basis")
+            .is_some_and(|value| value.starts_with("Relative"))
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Cell {
     pub channel: u32,
@@ -135,6 +151,9 @@ pub fn changes_row(previous: &[Channel], data: &FrameData, time: f64) -> Option<
         .iter()
         .filter_map(|channel| {
             let before = previous.iter().find(|before| before.id == channel.id);
+            if channel.has_relative_pitch() {
+                return spu_event_cell(before, channel);
+            }
             let changed = before.is_none_or(|before| {
                 before.active != channel.active
                     || before.notes != channel.notes
@@ -169,6 +188,67 @@ pub fn changes_row(previous: &[Channel], data: &FrameData, time: f64) -> Option<
         label: format!("{time:08.3}"),
         cells,
         global: data.global.clone(),
+    })
+}
+
+/// SPU tracker rows describe key gates and register commands, not each sample
+/// of the running envelope or ADPCM address. Key-on counters retain same-note
+/// retriggers even when a short release falls between inspection snapshots.
+fn spu_event_cell(before: Option<&Channel>, channel: &Channel) -> Option<Cell> {
+    let gate = |c: &Channel| c.active && c.field("Gate") != Some("Off");
+    let down = gate(channel);
+    let was_down = before.is_some_and(gate);
+    let retrigger = before.is_some_and(|old| {
+        channel.field("Key on").is_some() && old.field("Key on") != channel.field("Key on")
+    });
+    let started = down && (!was_down || retrigger);
+    let stopped = was_down && !down;
+    let effects = channel
+        .fields
+        .iter()
+        .filter(|field| {
+            matches!(
+                field.name.as_str(),
+                "Pitch rate" | "ADSR" | "Volume L/R" | "Loop" | "Reverb" | "Control"
+            ) && (started
+                || (down
+                    && !matches!(field.name.as_str(), "Pitch rate" | "Volume L/R")
+                    && before
+                        .is_some_and(|old| old.field(&field.name) != Some(field.value.as_str()))))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if !started && !stopped && effects.is_empty() {
+        return None;
+    }
+    Some(Cell {
+        channel: channel.id,
+        notes: if stopped {
+            "OFF".into()
+        } else if started {
+            channel
+                .notes
+                .iter()
+                .map(|note| note_name(note.key))
+                .collect::<Vec<_>>()
+                .join(" ")
+        } else {
+            String::new()
+        },
+        instrument: if started {
+            channel.instrument.clone()
+        } else {
+            String::new()
+        },
+        volume: if started {
+            format!(
+                "{:02X}",
+                (channel.level.clamp(0.0, 1.0) * 255.0).round() as u8
+            )
+        } else {
+            String::new()
+        },
+        effects,
     })
 }
 
@@ -338,6 +418,108 @@ pub fn missing_window_position(windows: &[Window], position: f64, lookahead: f64
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn spu_rows_follow_gates_retriggers_and_commands_without_envelope_spam() {
+        let mut channel = Channel {
+            id: 0,
+            active: true,
+            kind: "sample".into(),
+            instrument: "ADPCM 065010".into(),
+            level: 0.8,
+            notes: vec![Note {
+                key: 56.285213,
+                velocity: 0.8,
+                held: true,
+            }],
+            fields: vec![
+                Field::new("Pitch basis", "Relative (C4 = normal sample rate)"),
+                Field::new("Gate", "On"),
+                Field::new("Key on", 1),
+                Field::new("Envelope", "7FFFFFFF state 4"),
+                Field::new("Current", "065010"),
+                Field::new("Pitch rate", "35582.1 Hz (0CE8)"),
+                Field::new("Volume L/R", "1000/1000"),
+            ],
+            ..Channel::default()
+        };
+        let row = |before: &[Channel], channel: &Channel| {
+            changes_row(
+                before,
+                &FrameData {
+                    channels: vec![channel.clone()],
+                    ..FrameData::default()
+                },
+                1.0,
+            )
+        };
+        assert!(channel.has_relative_pitch());
+        let first = row(&[], &channel).unwrap();
+        assert_eq!(first.cells[0].notes, "G#3");
+        assert!(
+            !first.cells[0]
+                .effects
+                .iter()
+                .any(|f| matches!(f.name.as_str(), "Envelope" | "Current" | "Key on"))
+        );
+        let old = channel.clone();
+        channel.level = 0.4;
+        channel.notes[0].velocity = 0.4;
+        channel.fields[3].value = "3FFFFFFF state 4".into();
+        channel.fields[4].value = "065123".into();
+        assert!(
+            row(&[old], &channel).is_none(),
+            "a held note is not another note-on"
+        );
+        let old = channel.clone();
+        channel.fields[2].value = "2".into();
+        assert_eq!(
+            row(&[old], &channel).unwrap().cells[0].notes,
+            "G#3",
+            "real same-note retrigger"
+        );
+        let old = channel.clone();
+        channel.fields[6].value = "0800/0800".into();
+        assert!(
+            row(&[old], &channel).is_none(),
+            "continuous volume automation stays in the live details"
+        );
+        let old = channel.clone();
+        channel.fields.push(Field::new("ADSR", "00FF 5FC5"));
+        let command = row(&[old], &channel).unwrap();
+        assert!(
+            command.cells[0].notes.is_empty(),
+            "a control command does not retrigger the note"
+        );
+        assert_eq!(
+            command.cells[0].effects,
+            vec![Field::new("ADSR", "00FF 5FC5")]
+        );
+        let old = channel.clone();
+        channel.fields[1].value = "Off".into();
+        channel.notes[0].held = false;
+        assert_eq!(
+            row(&[old], &channel).unwrap().cells[0].notes,
+            "OFF",
+            "key-off precedes the release tail ending"
+        );
+        let old = channel.clone();
+        channel.level = 0.1;
+        channel.notes[0].velocity = 0.1;
+        channel.fields[3].value = "01000000 state 5".into();
+        assert!(row(&[old], &channel).is_none());
+        let old = channel.clone();
+        channel.active = false;
+        channel.notes.clear();
+        assert!(
+            row(&[old], &channel).is_none(),
+            "ending the release is not a second key-off"
+        );
+        assert!(
+            row(&[], &channel).is_none(),
+            "silent voices do not populate the tracker"
+        );
+    }
+
     #[test]
     fn inspection_tracker_keeps_upcoming_rows_across_window_boundary() {
         let row = |time: f64| Row {

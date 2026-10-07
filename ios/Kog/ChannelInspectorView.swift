@@ -115,7 +115,7 @@ private struct ChannelKeyboardView: View {
                                 if !black && key % 12 == 0 {
                                     context.draw(Text("C\(key / 12 - 1)").font(.system(size:8)).foregroundColor(.black),at:CGPoint(x:x+4,y:size.height-5))
                                 }
-                                if let note, abs(note.key - note.key.rounded()) > 0.02 {
+                                if let note, !channel.fields.contains(where: { $0.name == "Pitch basis" && $0.value.hasPrefix("Relative") }), abs(note.key - note.key.rounded()) > 0.02 {
                                     let bend = x + width/2 + (note.key-note.key.rounded())*width
                                     context.fill(Path(CGRect(x:bend-1,y:2,width:2,height:height-4)),with:.color(.orange))
                                 }

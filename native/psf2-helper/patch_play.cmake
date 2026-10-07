@@ -42,12 +42,23 @@ foreach(bios IN ITEMS "iop/IopBios" "psx/PsxBios")
 endforeach()
 
 get_target_property(play_sources PlayCore SOURCES)
-list(REMOVE_ITEM play_sources iop/Iop_SubSystem.cpp iop/IopBios.cpp psx/PsxBios.cpp)
+# Observe real key-on writes so same-pitch retriggers survive between rendered
+# snapshots. The hook only counts events; all SPU register behavior is retained.
+file(READ "${PLAY_SOURCE}/Source/iop/Iop_SpuBase.cpp" spu_source)
+kog_replace_checked(spu_source "#include \"Iop_SpuBase.h\""
+    "#include \"Iop_SpuBase.h\"\n#include \"spu_events.h\"")
+kog_replace_checked(spu_source "memset(m_channel, 0, sizeof(m_channel));"
+    "memset(m_channel, 0, sizeof(m_channel));\n\tkog_spu_reset_events(this);")
+kog_replace_checked(spu_source "channel.status = KEY_ON;"
+    "kog_spu_note_on(this, i);\n\t\t\tchannel.status = KEY_ON;")
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/Kog_Iop_SpuBase.cpp" "${spu_source}")
+list(REMOVE_ITEM play_sources iop/Iop_SubSystem.cpp iop/IopBios.cpp psx/PsxBios.cpp iop/Iop_SpuBase.cpp)
 set_property(TARGET PlayCore PROPERTY SOURCES "${play_sources}")
 target_sources(PlayCore PRIVATE
     "${CMAKE_CURRENT_BINARY_DIR}/Kog_Iop_SubSystem.cpp"
     "${CMAKE_CURRENT_BINARY_DIR}/Kog_IopBios.cpp"
     "${CMAKE_CURRENT_BINARY_DIR}/Kog_PsxBios.cpp"
+    "${CMAKE_CURRENT_BINARY_DIR}/Kog_Iop_SpuBase.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/iop_interpreter.cpp")
 target_include_directories(PlayCore PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}"
     "${PLAY_SOURCE}/Source/iop" "${PLAY_SOURCE}/Source/psx")

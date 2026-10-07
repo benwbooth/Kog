@@ -137,7 +137,7 @@ private fun ChannelPiano(channel: InspectionChannel) {
                         drawRect(color,Offset(x,0f),Size(width,height),alpha = note?.let { 0.5f + 0.5f * it.velocity.coerceIn(0f,1f) } ?: 1f)
                         note?.let {
                             val bend = it.key - it.key.roundToInt()
-                            if (kotlin.math.abs(bend) > 0.02f) drawLine(Color(0xffea6c24),Offset(x+width/2+bend*width,2f),Offset(x+width/2+bend*width,height-2f),2f)
+                            if (!channel.fields.any { f -> f.name == "Pitch basis" && f.value.startsWith("Relative") } && kotlin.math.abs(bend) > 0.02f) drawLine(Color(0xffea6c24),Offset(x+width/2+bend*width,2f),Offset(x+width/2+bend*width,height-2f),2f)
                         }
                     }
                     if (!black) white++

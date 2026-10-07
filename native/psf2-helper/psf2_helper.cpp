@@ -36,6 +36,7 @@
 #include <zstd_zlibwrapper.h>
 
 #include "Kog_PsfSubSystem.h"
+#include "spu_events.h"
 #include "PsfBase.h"
 #include "Ps2Const.h"
 #include "StdStreamUtils.h"
@@ -786,7 +787,9 @@ public:
                     v.key = c.pitch ? 60.0f + 12.0f * std::log2(c.pitch / 4096.0f) : -1.0f;
                     std::snprintf(v.instrument, sizeof(v.instrument), "ADPCM %06X", c.address);
                     std::snprintf(v.details, sizeof(v.details),
-                        "Pitch basis=Relative (C4 = normal sample rate) | Pitch rate=%.1f Hz (%04X) | Envelope=%08X state %u | ADSR=%04X %04X | Volume L/R=%04X/%04X | Current=%06X | Loop=%06X | Reverb=%u | Control=%04X",
+                        "Pitch basis=Relative (C4 = normal sample rate) | Gate=%s | Key on=%llu | Pitch rate=%.1f Hz (%04X) | Envelope=%08X state %u | ADSR=%04X %04X | Volume L/R=%04X/%04X | Current=%06X | Loop=%06X | Reverb=%u | Control=%04X",
+                        c.status != Iop::CSpuBase::STOPPED && c.status != Iop::CSpuBase::RELEASE ? "On" : "Off",
+                        static_cast<unsigned long long>(kog_spu_note_on_count(&spu, i)),
                         (m_ps2 ? 48000.0 : 44100.0) * c.pitch / 4096.0, c.pitch, c.adsrVolume, c.status,
                         unsigned(uint16(c.adsrLevel)), unsigned(uint16(c.adsrRate)),
                         unsigned(uint16(c.volumeLeft)), unsigned(uint16(c.volumeRight)), c.current, c.repeat,

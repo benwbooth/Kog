@@ -20,19 +20,45 @@ ApplicationWindow {
     palette.highlight: "#50c8ef"
     property var frame: ({ channels: [], rows: [], description: {}, global: [] })
     readonly property var channels: frame.channels || []
-    readonly property var rows: frame.rows || []
+    property var rows: []
     property bool follow: true
     property int mode: 2
     function refresh() {
         if (!visible || visibility === Window.Minimized) return
-        try { frame = JSON.parse(app.channel_snapshot()) } catch (_) { }
+        try {
+            const next = JSON.parse(app.channel_snapshot(mode !== 0))
+            const nextRows = mode === 0 ? [] : (next.rows || [])
+            if (!sameRows(rows, nextRows)) rows = nextRows
+            frame = next
+        } catch (_) { }
+    }
+    function sameFields(a, b) {
+        if (a.length !== b.length) return false
+        for (let i = 0; i < a.length; ++i)
+            if (a[i].name !== b[i].name || a[i].value !== b[i].value) return false
+        return true
+    }
+    function sameRows(a, b) {
+        if (a.length !== b.length) return false
+        for (let i = 0; i < a.length; ++i) {
+            const x = a[i], y = b[i]
+            if (x.time !== y.time || x.label !== y.label || x.cells.length !== y.cells.length || !sameFields(x.global || [], y.global || [])) return false
+            for (let j = 0; j < x.cells.length; ++j) {
+                const p = x.cells[j], q = y.cells[j]
+                if (p.channel !== q.channel || p.notes !== q.notes || p.instrument !== q.instrument || p.volume !== q.volume || !sameFields(p.effects || [], q.effects || [])) return false
+            }
+        }
+        return true
     }
     function fields(items) { return (items || []).map(f => f.name + " " + f.value).join(" · ") }
-    function noteText(notes) {
+    function relativePitch(channel) {
+        return (channel.fields || []).some(f => f.name === "Pitch basis" && f.value.indexOf("Relative") === 0)
+    }
+    function noteText(notes, showOffsets = true) {
         return (notes || []).map(n => {
             const k = Math.round(n.key)
             const names = ["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B"]
-            return names[((k % 12) + 12) % 12] + (Math.floor(k / 12) - 1) + (Math.abs(n.key - k) > 0.02 ? " " + Math.round((n.key - k) * 100) + "¢" : "")
+            return names[((k % 12) + 12) % 12] + (Math.floor(k / 12) - 1) + (showOffsets && Math.abs(n.key - k) > 0.02 ? " " + Math.round((n.key - k) * 100) + "¢" : "")
         }).join("  ")
     }
     function cellText(row, channel) {
@@ -88,7 +114,14 @@ ApplicationWindow {
                 SplitView.fillHeight: root.mode === 0
                 SplitView.preferredHeight: root.height * 0.43
                 SplitView.minimumHeight: 100
-                model: root.channels.length
+                model: root.mode === 1 ? 0 : root.channels.length
+                reuseItems: true
+                cacheBuffer: height
+                boundsBehavior: Flickable.StopAtBounds
+                maximumFlickVelocity: 12000
+                flickDeceleration: 2200
+                KineticWheelHandler { view: keyboards }
+                KineticWheelHandler { view: keyboards; orientation: Qt.Horizontal }
                 // Keep the full keyboard readable in narrow windows. All
                 // channels share the horizontal scroll position.
                 contentWidth: Math.max(width, 1742)
@@ -111,13 +144,14 @@ ApplicationWindow {
                             Label { text: channel.name || ""; textFormat: Text.PlainText; color: "#eff5f7"; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
                             Label { text: channel.instrument || channel.kind || ""; textFormat: Text.PlainText; color: "#a8bdc9"; font.pixelSize: 10; elide: Text.ElideRight; Layout.fillWidth: true }
                             ProgressBar { from: 0; to: 1; value: channel.level || 0; Layout.fillWidth: true; Layout.preferredHeight: 6 }
-                            Label { text: root.noteText(channel.notes) || (channel.active ? (channel.kind || qsTr("Active")).toUpperCase() : "—"); textFormat: Text.PlainText; color: "#50c8ef"; font.pixelSize: 10; elide: Text.ElideRight; Layout.fillWidth: true }
+                            Label { text: root.noteText(channel.notes, !root.relativePitch(channel)) || (channel.active ? (channel.kind || qsTr("Active")).toUpperCase() : "—"); textFormat: Text.PlainText; color: "#50c8ef"; font.pixelSize: 10; elide: Text.ElideRight; Layout.fillWidth: true }
                         }
                         ColumnLayout {
                             Layout.fillWidth: true
                             ChannelKeyboard {
                                 objectName: "channelKeyboard"
                                 notes: channel.notes || []
+                                showPitchOffsets: !root.relativePitch(channel)
                                 Layout.minimumWidth: implicitWidth
                                 Layout.preferredWidth: implicitWidth
                                 Layout.maximumWidth: implicitWidth
@@ -153,7 +187,7 @@ ApplicationWindow {
                             height: 26
                             Label { width: 112; text: qsTr("Position"); color: "#a8bdc9" }
                             Repeater {
-                                model: root.channels.length
+                                model: root.mode === 0 ? 0 : root.channels.length
                                 Label { required property int index; width: 230; text: root.channels[index].name; color: "#a8bdc9"; textFormat: Text.PlainText; elide: Text.ElideRight }
                             }
                         }
@@ -162,12 +196,12 @@ ApplicationWindow {
                             objectName: "channelTracker"
                             width: parent.width; height: parent.height - 26
                             clip: true
-                            model: root.rows.length
+                            model: root.mode === 0 ? 0 : root.rows.length
                             currentIndex: root.frame.current_row === null || root.frame.current_row === undefined ? -1 : root.frame.current_row
                             function followRow() { if (root.follow && currentIndex >= 0) positionViewAtIndex(currentIndex, ListView.Center) }
                             onCurrentIndexChanged: followRow()
                             onCountChanged: followRow()
-                            Connections { target: root; function onFrameChanged() { tracker.followRow() } }
+                            Connections { target: root; function onRowsChanged() { tracker.followRow() } }
                             ScrollBar.vertical: ScrollBar { }
                             delegate: Rectangle {
                                 required property int index

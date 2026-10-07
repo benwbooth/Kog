@@ -46,6 +46,17 @@ pub(crate) fn frame(voices: &[Voice]) -> FrameData {
             .iter()
             .map(|voice| {
                 let active = voice.active != 0;
+                let fields = string(&voice.details)
+                    .split(" | ")
+                    .filter(|item| !item.is_empty())
+                    .map(|item| {
+                        let (name, value) = item.split_once('=').unwrap_or(("State", item));
+                        Field::new(name, value)
+                    })
+                    .collect::<Vec<_>>();
+                let held = !fields
+                    .iter()
+                    .any(|field| field.name == "Gate" && field.value == "Off");
                 Channel {
                     id: voice.id,
                     name: string(&voice.name),
@@ -65,19 +76,12 @@ pub(crate) fn frame(voices: &[Voice]) -> FrameData {
                         vec![Note {
                             key: voice.key,
                             velocity: voice.level.clamp(0.0, 1.0),
-                            held: true,
+                            held,
                         }]
                     } else {
                         Vec::new()
                     },
-                    fields: string(&voice.details)
-                        .split(" | ")
-                        .filter(|item| !item.is_empty())
-                        .map(|item| {
-                            let (name, value) = item.split_once('=').unwrap_or(("State", item));
-                            Field::new(name, value)
-                        })
-                        .collect(),
+                    fields,
                 }
             })
             .collect(),
@@ -89,4 +93,25 @@ pub(crate) fn capture(capacity: usize, read: impl FnOnce(*mut Voice, usize) -> u
     let mut voices = vec![Voice::default(); capacity];
     let count = read(voices.as_mut_ptr(), capacity).min(capacity);
     frame(&voices[..count])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn native_gate_off_keeps_the_release_visible_without_a_held_key() {
+        let mut voice = Voice {
+            active: 1,
+            key: 60.0,
+            level: 0.5,
+            ..Voice::default()
+        };
+        let detail = b"Gate=Off | Key on=3 | Pitch basis=Relative (C4 = normal sample rate)";
+        voice.details[..detail.len()].copy_from_slice(detail);
+        let channel = frame(&[voice]).channels.remove(0);
+        assert!(channel.active);
+        assert!(channel.has_relative_pitch());
+        assert!(!channel.notes[0].held);
+        assert_eq!(channel.field("Key on"), Some("3"));
+    }
 }
