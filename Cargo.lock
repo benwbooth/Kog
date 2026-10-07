@@ -1726,6 +1726,7 @@ name = "kog-inspection"
 version = "0.10.1"
 dependencies = [
  "serde",
+ "serde_json",
 ]
 
 [[package]]
