@@ -865,6 +865,13 @@ pub struct TrackInfo {
 impl Document {
     /// Spans sounding at `seconds`, plus the bar containing it.
     pub fn active(&self, seconds: f64) -> (Vec<&Span>, Option<&Bar>) {
+        let (indices, bar) = self.active_indices(seconds);
+        (indices.into_iter().map(|index| &self.spans[index]).collect(), bar)
+    }
+
+    /// Like [`Document::active`], as indices into [`Document::spans`]. Every
+    /// piece of a sounding note is included, even across bar lines.
+    pub fn active_indices(&self, seconds: f64) -> (Vec<usize>, Option<&Bar>) {
         let tick = (seconds.max(0.0) / self.tick_seconds.max(f64::MIN_POSITIVE)) as u64;
         let sounding: Vec<(usize, u64)> = self
             .spans
@@ -872,13 +879,18 @@ impl Document {
             .filter(|span| span.start <= tick && tick < span.end)
             .filter_map(|span| span.sound.map(|sound| (span.track, sound)))
             .collect();
-        let spans = self
+        let indices = self
             .spans
             .iter()
-            .filter(|span| span.sound.is_some_and(|sound| sounding.contains(&(span.track, sound))))
+            .enumerate()
+            .filter(|(_, span)| {
+                span.sound
+                    .is_some_and(|sound| sounding.contains(&(span.track, sound)))
+            })
+            .map(|(index, _)| index)
             .collect();
         let bar = self.bars.iter().find(|bar| bar.start <= tick && tick < bar.end);
-        (spans, bar)
+        (indices, bar)
     }
 }
 

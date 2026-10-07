@@ -44,6 +44,7 @@ pub struct StreamService {
     /// Bounds concurrent metadata expansion and native decoder probes.
     probe_lock: Arc<Mutex<()>>,
     inspection_active: Arc<Mutex<HashMap<String, PathBuf>>>,
+    mml: crate::mml::MmlJobs,
 }
 
 impl StreamService {
@@ -62,6 +63,7 @@ impl StreamService {
             scratch,
             probe_lock: Arc::new(Mutex::new(())),
             inspection_active: Arc::new(Mutex::new(HashMap::new())),
+            mml: crate::mml::MmlJobs::default(),
         }
     }
 
@@ -89,6 +91,28 @@ impl StreamService {
         // extraction workspace, which is deleted when the registry drops:
         // keep it alive for the whole encode.
         self.start_encode(source, key, decoders)
+    }
+
+    /// The track's MML score, recorded with the same synth as its stream.
+    pub fn mml(
+        &self,
+        entry: PlaylistEntry,
+        key: &StreamKey,
+        title: String,
+        have: Option<u64>,
+    ) -> crate::mml::Status {
+        let settings = self.render_settings(key);
+        let job_key = format!("{}\0{}", key.locator, key.render_profile.as_deref().unwrap_or_default());
+        self.mml.status(job_key, title, entry, settings, self.scratch.join("mml"), have)
+    }
+
+    fn render_settings(&self, key: &StreamKey) -> DecoderSettings {
+        let engine = key.render_profile.as_deref().and_then(kog_audio::settings::MidiEngine::from_setting)
+            .unwrap_or_else(|| self.decoder_settings.midi_engine());
+        DecoderSettings::new(self.decoder_settings.soundfont_path(), engine)
+            .with_sc55_rom_path(self.decoder_settings.sc55_rom_path())
+            .with_mt32_rom_path(self.decoder_settings.mt32_rom_path())
+            .with_mt32_gm_program_mapping(self.decoder_settings.mt32_gm_program_mapping())
     }
 
     pub fn channel_window(&self, key: &StreamKey, position: f64) -> Result<Option<kog_inspection::Window>, String> {
@@ -220,12 +244,7 @@ impl StreamService {
     ) -> Result<(), String> {
         // Freeze the render profile that named this stream and its channel
         // recording, even if the user changes synths during an encode.
-        let engine = key.render_profile.as_deref().and_then(kog_audio::settings::MidiEngine::from_setting)
-            .unwrap_or_else(|| self.decoder_settings.midi_engine());
-        let settings = DecoderSettings::new(self.decoder_settings.soundfont_path(), engine)
-            .with_sc55_rom_path(self.decoder_settings.sc55_rom_path())
-            .with_mt32_rom_path(self.decoder_settings.mt32_rom_path())
-            .with_mt32_gm_program_mapping(self.decoder_settings.mt32_gm_program_mapping());
+        let settings = self.render_settings(key);
         let mut pcm = PcmReader::open(source, settings)?;
         if key.start_ms > 0 {
             pcm.seek(std::time::Duration::from_millis(key.start_ms))?;

@@ -13,6 +13,7 @@ mod cover_network;
 mod covers;
 pub mod devices;
 pub mod media_filter;
+pub mod mml;
 pub mod persistence;
 pub mod radio;
 pub mod radio_client;

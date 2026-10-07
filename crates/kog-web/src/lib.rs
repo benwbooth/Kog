@@ -49,6 +49,7 @@ mod row_window;
 mod persistence;
 mod artwork;
 mod inspection;
+mod mml;
 
 /// The desktop transport's SVG icons (`qml/icons/`), inlined verbatim. CSS
 /// tints them with the button's text color where the desktop picks the

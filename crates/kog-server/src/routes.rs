@@ -97,6 +97,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/devices", get(list_devices))
         .route("/api/devices/block", post(set_device_blocked))
         .route("/api/stream", get(stream_audio))
+        .route("/api/mml", get(mml_score))
         .route("/api/inspection", get(channel_inspection)
             .layer(tower_http::compression::CompressionLayer::new()))
         .merge(crate::api::router())
@@ -305,6 +306,47 @@ fn stream_key_for_request(
     } else {
         key
     }
+}
+
+#[derive(serde::Deserialize)]
+struct MmlQuery {
+    /// Revision the client already has; its document is not sent again.
+    have: Option<u64>,
+}
+
+/// The whole song as Kog MML. The first request starts recording; clients
+/// poll and receive partial scores until the status is `ready`.
+async fn mml_score(
+    State(state): State<AppState>,
+    axum::extract::Query(query): axum::extract::Query<MmlQuery>,
+    axum::extract::Query(stream): axum::extract::Query<StreamQuery>,
+) -> Response {
+    let location = match stream.location() {
+        Ok(location) => location,
+        Err(error) => return bad_request(&error),
+    };
+    let entry = kog_audio::playlist::PlaylistEntry {
+        location,
+        fragment: (!stream.fragment.trim().is_empty()).then(|| stream.fragment.trim().to_owned()),
+    };
+    let codec = match stream.codec(state.config.read().await.default_codec) {
+        Ok(codec) => codec,
+        Err(error) => return bad_request(&error),
+    };
+    let engine = stream.midi_engine.as_deref().and_then(kog_audio::settings::MidiEngine::from_setting)
+        .unwrap_or_else(|| state.streams.midi_engine());
+    let key = stream_key_for_request(&stream, codec,
+        stream.bitrate.unwrap_or(crate::stream::DEFAULT_BITRATE_KBPS), engine);
+    let title = std::path::Path::new(if stream.entry.is_empty() { &stream.path } else { &stream.entry })
+        .file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    let streams = state.streams.clone();
+    let status = tokio::task::spawn_blocking(move || streams.mml(entry, &key, title, query.have)).await;
+    let mut response = match status {
+        Ok(status) => axum::Json(status).into_response(),
+        Err(error) => bad_request(&error.to_string()),
+    };
+    response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
 
 #[derive(serde::Deserialize)]

@@ -26,6 +26,7 @@ pub fn Inspector(
     let message = RwSignal::new(String::new());
     let mode = RwSignal::new("both".to_owned());
     let follow = RwSignal::new(true);
+    let follow_read = follow.read_only();
     let tracker = NodeRef::<leptos::html::Div>::new();
     let windows = Rc::new(RefCell::new(Vec::<ChannelWindow>::new()));
     let source = Rc::new(RefCell::new(String::new()));
@@ -223,18 +224,21 @@ pub fn Inspector(
                 <div class="channel-tools">
                     <button type="button" on:click=move |_| toggle_play.run(())>{move || if state.with(|s| s.playing) { "Pause" } else { "Play" }}</button>
                     <select aria-label="Inspector view" on:change=move |ev| mode.set(event_target_value(&ev))>
-                        <option value="both">"Keyboards and tracker"</option><option value="keyboards">"Keyboards"</option><option value="tracker">"Tracker"</option>
+                        <option value="both">"Keyboards and tracker"</option><option value="keyboards">"Keyboards"</option><option value="tracker">"Tracker"</option><option value="mml">"MML score"</option>
                     </select>
                     <label><input type="checkbox" prop:checked=move || follow.get() on:change=move |ev| follow.set(event_target_checked(&ev))/>{"Follow playback"}</label>
                     <span>{move || state.with(|s| format!("{} · {:.3} s", s.description.backend, s.position))}</span>
                 </div>
                 <p class="channel-description">{move || message.get()}</p>
-                <Show when=move || mode.get() != "tracker">
+                <Show when=move || mode.get() == "mml">
+                    <super::mml::MmlView audio=audio follow=follow_read authorization=authorization/>
+                </Show>
+                <Show when=move || matches!(mode.get().as_str(), "both" | "keyboards")>
                     <div class="channel-keyboards">
                         <For each=move || columns.with(|c| c.iter().map(|(id,_)| *id).collect::<Vec<_>>()) key=|id| *id children=move |id| { view! { <Keyboard id=id state=state/> } }/>
                     </div>
                 </Show>
-                <Show when=move || mode.get() != "keyboards">
+                <Show when=move || matches!(mode.get().as_str(), "both" | "tracker")>
                     <div class="channel-tracker" node_ref=tracker>
                         <table><thead><tr><th>"Time / row"</th>{move || columns.get().into_iter().map(|(_,name)| view!{<th>{name}</th>}).collect_view()}<th>"Song data"</th></tr></thead>
                         <tbody><For each=move || rows.get() key=|row| (row.time.to_bits(),row.label.clone()) children=move |row| {
