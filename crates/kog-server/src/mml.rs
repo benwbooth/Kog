@@ -8,8 +8,8 @@ use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
-use kog_audio::decoder::{DecoderRegistry, DecoderSettings};
-use kog_audio::inspection::mml::{Document, encode};
+use kog_audio::decoder::{DecoderRegistry, DecoderSettings, PlaybackSource};
+use kog_audio::inspection::mml::{Document, Score, encode};
 use kog_audio::inspection::score::{Progress, analyze_progressively};
 use kog_audio::playlist::PlaylistEntry;
 use kog_audio::streaming::resolve_entry;
@@ -50,6 +50,7 @@ pub struct Status {
 }
 
 impl MmlJobs {
+    /// Score a playlist entry, resolved like its audio stream.
     pub fn status(
         &self,
         key: String,
@@ -59,7 +60,36 @@ impl MmlJobs {
         scratch: PathBuf,
         have: Option<u64>,
     ) -> Status {
-        let job = self.job(key, title, entry, settings, scratch);
+        self.status_with(key, have, move |progress, partial| {
+            let decoders = DecoderRegistry::new(settings.clone());
+            let source = resolve_entry(&entry, &decoders, &scratch)?;
+            analyze_progressively(source, settings, &title, progress, partial)
+        })
+    }
+
+    /// Score a source a native player has already resolved on the device.
+    pub fn status_for_source(
+        &self,
+        key: String,
+        title: String,
+        source: PlaybackSource,
+        settings: DecoderSettings,
+        have: Option<u64>,
+    ) -> Status {
+        self.status_with(key, have, move |progress, partial| {
+            analyze_progressively(source, settings, &title, progress, partial)
+        })
+    }
+
+    /// Score with a custom recorder, for native players that open sources
+    /// their own way. Jobs with the same key are shared.
+    pub fn status_with(
+        &self,
+        key: String,
+        have: Option<u64>,
+        record: impl FnOnce(&Progress, &mut dyn FnMut(Score)) -> Result<Score, String> + Send + 'static,
+    ) -> Status {
+        let job = self.job(key, record);
         let state = job.state.lock().unwrap_or_else(|e| e.into_inner());
         Status {
             status: if state.error.is_some() {
@@ -83,10 +113,7 @@ impl MmlJobs {
     fn job(
         &self,
         key: String,
-        title: String,
-        entry: PlaylistEntry,
-        settings: DecoderSettings,
-        scratch: PathBuf,
+        record: impl FnOnce(&Progress, &mut dyn FnMut(Score)) -> Result<Score, String> + Send + 'static,
     ) -> Arc<Job> {
         let mut jobs = self.0.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(index) = jobs.iter().position(|job| job.key == key) {
@@ -115,13 +142,8 @@ impl MmlJobs {
                     state.document = Some(Arc::new(document));
                     state.done = done;
                 };
-                let decoders = DecoderRegistry::new(settings.clone());
-                let result = resolve_entry(&entry, &decoders, &scratch).and_then(|source| {
-                    analyze_progressively(source, settings, &title, &worker.progress, &mut |score| {
-                        publish(encode(&score), false)
-                    })
-                });
-                match result {
+                let progress = Arc::clone(&worker.progress);
+                match record(&progress, &mut |score| publish(encode(&score), false)) {
                     Ok(score) => publish(encode(&score), true),
                     Err(error) => {
                         let mut state = worker.state.lock().unwrap_or_else(|e| e.into_inner());

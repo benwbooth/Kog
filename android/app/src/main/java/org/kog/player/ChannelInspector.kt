@@ -90,13 +90,14 @@ internal fun ChannelInspector(state: KogState, dismiss: () -> Unit) {
                     TextButton(onClick = { state.toggle() }) { Text(if (state.playing) "Pause" else "Play") }
                     TextButton(onClick = dismiss) { Text("Close") }
                 }
-                Row { listOf("Keyboards", "Tracker", "Both").forEachIndexed { index,label ->
+                Row { listOf("Keyboards", "Tracker", "Both", "MML").forEachIndexed { index,label ->
                     TextButton(onClick = { mode = index }, enabled = mode != index) { Text(label) }
                 } }
                 Text(snapshot.backend, color = Color(0xff72d0fc), fontSize = 12.sp)
                 Text(snapshot.detail, fontSize = 11.sp, color = Color(0xffadb7c0))
                 if (snapshot.global.isNotEmpty()) Text(snapshot.global.joinToString(" · ") { it.label() },fontSize = 11.sp)
-                if (mode != 1) {
+                if (mode == 3) MmlScore(state, follow, Modifier.weight(1f))
+                if (mode == 0 || mode == 2) {
                     LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         items(snapshot.channels, key = { it.id }) { channel ->
                             var details by remember(channel.id) { mutableStateOf(false) }
@@ -113,7 +114,7 @@ internal fun ChannelInspector(state: KogState, dismiss: () -> Unit) {
                         }
                     }
                 }
-                if (mode != 0) {
+                if (mode == 1 || mode == 2) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Checkbox(checked = follow, onCheckedChange = { follow = it }); Text("Follow playback", fontSize = 12.sp)
                     }

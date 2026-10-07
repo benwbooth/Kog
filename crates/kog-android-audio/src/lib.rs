@@ -16,7 +16,11 @@ struct Handle {
     reader: kog_audio::inspection::recording::CaptureReader,
     inspection_file: tempfile::NamedTempFile,
     scratch: Vec<u8>,
+    /// What was opened, so its MML score can be recorded separately.
+    score_source: (PathBuf, Option<u32>, DecoderSettings),
 }
+
+static MML: OnceLock<kog_server::mml::MmlJobs> = OnceLock::new();
 
 static HANDLES: OnceLock<Mutex<HashMap<jlong, Arc<Mutex<Handle>>>>> = OnceLock::new();
 static INSPECTION_DIRECTORY: OnceLock<PathBuf> = OnceLock::new();
@@ -168,7 +172,9 @@ pub extern "system" fn Java_org_kog_player_NativeAudio_nativeOpen(
         }
     };
     let path = PathBuf::from(path);
-    let reader = PcmReader::open_path_subsong(path, (subsong >= 0).then_some(subsong as u32), settings);
+    let subsong = (subsong >= 0).then_some(subsong as u32);
+    let score_source = (path.clone(), subsong, settings.clone());
+    let reader = PcmReader::open_path_subsong(path, subsong, settings);
     match reader {
         Ok(reader) => {
             let recording = (|| -> Result<_, String> {
@@ -186,6 +192,7 @@ pub extern "system" fn Java_org_kog_player_NativeAudio_nativeOpen(
                             reader,
                             inspection_file,
                             scratch: Vec::new(),
+                            score_source,
                         })),
                     );
                     id
@@ -212,6 +219,43 @@ pub extern "system" fn Java_org_kog_player_NativeAudio_nativeInspection(
     })).unwrap_or_default();
     match serde_json::to_string(&snapshot).ok().and_then(|json| env.new_string(json).ok()) {
         Some(reply)=>reply.into_raw(), None=>{fail(&mut env,"Could not read channel data");std::ptr::null_mut()}
+    }
+}
+
+/// The open track's MML score as `/api/mml`-style JSON. Recording starts on
+/// the first call; `have` is the revision the caller already holds, or -1.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_kog_player_NativeAudio_nativeMml(
+    mut env: JNIEnv, _receiver: JObject, handle: jlong, have: jlong,
+) -> jni::sys::jstring {
+    let Some((path, subsong, settings)) = get_handle(handle)
+        .and_then(|handle| handle.lock().ok().map(|guard| guard.score_source.clone()))
+    else {
+        fail(&mut env, "The track is no longer open");
+        return std::ptr::null_mut();
+    };
+    let key = format!("{}\0{subsong:?}\0{}", path.display(), settings.midi_engine().setting_value());
+    let title = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    let status = MML.get_or_init(Default::default).status_with(
+        key,
+        u64::try_from(have).ok(),
+        move |progress, partial| {
+            let mut pcm = PcmReader::open_path_subsong(path, subsong, settings)?;
+            kog_audio::inspection::score::record(
+                &mut pcm,
+                &title,
+                progress,
+                kog_audio::inspection::score::MAX_SECONDS,
+                partial,
+            )
+        },
+    );
+    match serde_json::to_string(&status).ok().and_then(|json| env.new_string(json).ok()) {
+        Some(reply) => reply.into_raw(),
+        None => {
+            fail(&mut env, "Could not read the MML score");
+            std::ptr::null_mut()
+        }
     }
 }
 

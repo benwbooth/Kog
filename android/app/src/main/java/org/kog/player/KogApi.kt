@@ -140,6 +140,16 @@ class KogApi(private val context: Context, val onDevice: Boolean = false) {
         return JSONObject(request(endpoint))
     }
 
+    /** The streamed track's MML score; `have` is the revision already held, or -1. */
+    internal suspend fun mmlScore(stream: String, have: Long): JSONObject {
+        val original = Uri.parse(stream)
+        require(original.path?.endsWith("/api/stream") == true) { "An MML score is unavailable for this source" }
+        val builder = original.buildUpon().path(original.path!!.removeSuffix("stream") + "mml").clearQuery()
+        for (name in original.queryParameterNames) if (name != "start_ms") original.getQueryParameter(name)?.let { builder.appendQueryParameter(name, it) }
+        if (have >= 0) builder.appendQueryParameter("have", have.toString())
+        return JSONObject(request(builder.build().toString()))
+    }
+
     suspend fun setMidiEngine(engine: String) {
         request(uri("/api/settings/midi"), "POST", JSONObject().put("engine", engine))
     }
