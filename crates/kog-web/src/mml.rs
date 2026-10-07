@@ -63,9 +63,12 @@ fn render(document: &Document) -> String {
     }
     html.push_str("</style>");
     let header_end = document.bars.first().map_or(document.text.len(), |bar| bar.from);
-    html.push_str("<pre class=\"mml-header\">");
+    // Tracks, pitch tables and macros can run to hundreds of lines; keep them
+    // folded so the bars start at the top.
+    let lines = document.text[..header_end].lines().count();
+    html.push_str(&format!("<details><summary>Header · {lines} lines</summary><pre class=\"mml-header\">"));
     styled(document, 0, header_end, &mut html);
-    html.push_str("</pre>");
+    html.push_str("</pre></details>");
     for bar in &document.bars {
         html.push_str(&format!("<pre class=\"mml-bar\" data-bar=\"{}\">", bar.index));
         styled(document, bar.from, bar.to, &mut html);

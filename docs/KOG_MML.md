@@ -2,30 +2,30 @@
 
 Kog MML is one text notation for every chip and sequencer Kog can inspect:
 MIDI, trackers, OPL, NES/Game Boy/SNES/PlayStation sound chips, and the rest
-of the families in [Channel Inspector](CHANNEL_INSPECTOR.md). It follows
-classic MML (`o4 l8 c d+ e-4. r`) and adds what is needed to describe any of
-those sources exactly.
+of the families in [Channel Inspector](CHANNEL_INSPECTOR.md). It reads like
+classic MML (`o4 l8 c d+ > e-4. r ^16`) and adds what is needed to describe
+any of those sources.
 
-Open **Channel Inspector → MML score** in Qt or the web player, or press **4**
-in the terminal inspector. Kog records the song once with the same decoder and
-synth settings used for playback. Bars appear while recording continues. The
-playing bar follows playback and every piece of each sounding note is
-highlighted.
+Open **Channel Inspector → MML score** in Qt, the web player, Android, or iOS,
+or press **4** in the terminal inspector. Kog records the song once with the
+same decoder and synth settings used for playback. Bars appear while recording
+continues. The playing bar follows playback and every piece of each sounding
+note is highlighted.
 
 ## Exactness
 
-A score is the piano roll recorded from the decoder: per-voice notes on an
-integer tick grid, plus the chip parameters that changed while they played.
-`kog_inspection::mml::encode` writes it as text, and `parse` reads that text
-back into the identical score. Tests check this for random scores and for a
-recording from every inspected decoder family.
+A score is the piano roll recorded from the decoder: per-voice notes, plus the
+chip parameters that changed while they played. `kog_inspection::mml::encode`
+writes it as text, and `parse` reads that text back into the identical score.
+Tests check this for random scores and for a recording from every inspected
+decoder family.
 
 Recording is subject to the inspector's limits. State is sampled at the
-decoder's frame rate (up to 200 Hz), so changes shorter than one frame are not
-seen. Values that move on most frames (sample addresses, fine-grained
-envelope levels, measured levels) are written at key-on only; their live
-values stay in the channel inspector. Songs without a length are recorded for
-ten minutes.
+decoder's frame rate (up to 200 Hz). Events are then placed on 1/128 notes of
+the tempo, so timing is kept to that resolution. Values that move on most
+frames (sample addresses, fine-grained envelope levels, measured levels) are
+written at key-on only; their live values stay in the channel inspector. Songs
+without a length are recorded for ten minutes.
 
 ## File layout
 
@@ -33,45 +33,54 @@ ten minutes.
 #KOG-MML 1
 #TITLE "Stage 1"
 #SOURCE "Game Music Emu 0.6.5"
-#TIMEBASE 528000 2646      ; one tick is 2646 / 528000 seconds
-#METER 80 320 inferred      ; ticks per quarter note, ticks per bar
-#LENGTH 601                 ; song length in ticks
-#TRACK A 0 0 "tonal" "2A03 Pulse 1" l8
-#TRACK B 1 0 "tonal" "2A03 Pulse 2" l4
-#MACRO 0 v 3:"933" 10:"867" 16:"800"
-#MACRO 1 {"Envelope"} 3:"14" 10:"13" 16:"12"
+#TEMPO 149.660 inferred     ; quarter notes per minute
+#TICKS 32                   ; ticks per quarter note: one tick is a 1/128 note
+#BAR 4                      ; quarter notes per bar
+#LENGTH 240                 ; song length in ticks
+#TRACK A "2A03 Pulse 1" channel=0 voice=0 kind=tonal l8
+#TRACK B "2A03 Pulse 2" channel=1 voice=0 kind=tonal l4
+#PITCH A Period= 69(+2):0FD 73(+7):0C8 78(+2):096
+#MACRO 1 v 0:1000 1:933 4:867 6:800
+#MACRO 2 Envelope= 0:15 1:14 4:13 6:12
 ; bar 1 0:00.000
-A | @"Pulse duty 1" v1000 {"Period"="0FD"} ~0 ~1 V127 a(+2)%35 > c+(+7) |
-B | r2 < f+(+2)2 |
+A | r64 @"Pulse duty 1" p0 Sweep=00 ~1 ~2 V127 o4 a(+2)16.. > c+(+7) |
+B | r64 @"Pulse duty 1" p0 ~1 ~2 V127 o3 f+(+2)8^16^32^64 > f+(+2) |
 ```
 
-Headers come first. `#TIMEBASE` scales the decoder's frame step to a whole
-number of ticks. `#METER` uses the MIDI tempo and time signature when the
-source has them; otherwise the beat is estimated from note onsets and marked
-`inferred`. Bars only lay out the text: every event has an absolute tick, and
-the parser checks that each bar holds exactly `#METER`'s bar length.
+Headers come first. `#TEMPO` uses the MIDI tempo when the source has one;
+otherwise it is estimated from note onsets and marked `inferred`. Bars only lay
+out the text, and the parser checks that each one holds exactly `#BAR` quarter
+notes.
 
-`#TRACK label channel voice "kind" "name" l<length>` declares one track per
-voice. Polyphonic channels such as MIDI get one track per simultaneous voice
-(`voice` 0, 1, …). Channel commands are written on voice 0.
+`#TRACK label name key=value … l<length>` declares one track per voice.
+Polyphonic channels such as MIDI get one track per simultaneous voice
+(`voice=0`, `1`, …). Channel commands are written on voice 0.
+
+## Notes and lengths
+
+| Syntax | Meaning |
+| --- | --- |
+| `c d e f g a b`, `+` `#` `-` | note and accidentals |
+| `o4`, `>`, `<` | octave (MIDI key 60 is `o4 c`); `>` and `<` move one octave |
+| `1 2 4 8 16 32 64 128` | whole, half, quarter … 1/128 note |
+| `4.`, `8..` | dotted and double-dotted lengths |
+| `4^16` | tie: a quarter note plus a sixteenth |
+| `l8` | default length (on `#TRACK`), used when a note has none |
+| `c(+37)` | note detuned by +37 cents at its onset |
+| `&c` | legato: the pitch changes without a new key-on (chips that report key-ons) |
+| `^8` | continue the previous note across a bar line or command |
+| `r` | rest |
+| `x` | unpitched hit: noise, drums, untuned samples |
 
 ## Commands
 
 | Syntax | Meaning |
 | --- | --- |
-| `c d e f g a b`, `+` `#` `-` | note and accidentals |
-| `o4`, `>`, `<` | octave (MIDI key 60 is `o4 c`) |
-| `4`, `8.`, `%n` | length: standard note values against `#METER`'s quarter, or exactly `n` ticks |
-| `c(+37)` | note detuned by +37 cents at its onset |
-| `&c` | legato: the pitch changes without a new key-on (chips that report key-ons) |
-| `^8` | continue the previous note or rest |
-| `r` | rest |
-| `x` | unpitched hit: noise, drums, untuned samples |
 | `V100` | key-on velocity, 0–127 |
 | `v750`, `p-250` | channel level and pan in thousandths |
 | `P+12` | pitch offset in cents from the sounding note's semitone |
-| `@"Duty 25%"` | instrument |
-| `{"Name"="value" …}` | chip-specific parameters, named as in the channel inspector |
+| `@"Duty 25%"`, `@Square` | instrument |
+| `Name=value`, `"Volume L/R"=1000/1000` | chip parameter, named as in the channel inspector; quotes only when needed |
 | `~3` | start macro 3 at this tick |
 | `\|` | bar line |
 | `;` | comment to the end of the line |
@@ -79,17 +88,39 @@ voice. Polyphonic channels such as MIDI get one track per simultaneous voice
 A command takes effect at the tick where it appears. Commands inside a note
 split it into `^` pieces, so a note can carry parameter changes while held.
 
+## Pitch tables
+
+Registers that only follow the pitch, such as a period or frequency register,
+are listed once per track instead of before every note:
+
+```
+#PITCH A Period= 69(+2):0FD 73(+7):0C8
+```
+
+Each entry is `MIDI key(cents):value`. A note sets the register to its entry.
+
 ## Macros
 
 A value that steps more than once while a note sounds, such as a volume
 envelope, a duty sequence, or vibrato, becomes a macro:
 
 ```
-#MACRO 2 v 1:"1000" 7:"933" 14:"867" 21:"800"
-A | ~2 c+(+7)4 |
+#MACRO 1 v 0:1000 1:933 4:867 6:800
+A | ~1 c+(+7)4 |
 ```
 
-Each step is `ticks after the macro starts:"value"`. The target is `v`, `p`,
-`P`, or a chip parameter `{"Name"}`. Notes with the same automation share one
+Each step is `ticks after the macro starts:value`. The target is `v`, `p`,
+`P`, or a chip parameter `Name=`. Notes with the same automation share one
 macro. `Score::expanded_events` replaces macros with the commands they stand
 for.
+
+## Relative sample pitch
+
+PlayStation and similar sample chips report playback rates, not musical keys,
+so a sample recorded at a low rate can sit several octaves below the music.
+Such instruments are moved by whole octaves until their middle note is near
+middle C, and the shift is recorded so the score still reads back exactly:
+
+```
+#TRANSPOSE "ADPCM 065010" +48
+```

@@ -3527,13 +3527,17 @@ body.touch .track .index-cell {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   border-left: 3px solid transparent;
-  /* Off-screen bars skip layout and paint while scrolling. */
-  content-visibility: auto;
-  contain-intrinsic-size: auto 5.5em;
+}
+.channel-mml details {
+  border-bottom: 1px solid #21313a;
+}
+.channel-mml summary {
+  cursor: pointer;
+  padding: 0.35rem 0.75rem;
+  color: #7d9aa8;
 }
 .channel-mml .mml-header {
-  opacity: 0.8;
-  border-bottom: 1px solid #21313a;
+  opacity: 0.85;
 }
 .channel-mml .mml-bar + .mml-bar {
   border-top: 1px solid #172229;
