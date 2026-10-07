@@ -101,6 +101,7 @@ pub fn MmlView(
         .clamp(1, 16);
     let bars = RwSignal::new(initial_bars);
     let rewrap = RwSignal::new(false);
+    let guide_open = RwSignal::new(false);
     let lit = Rc::new(RefCell::new(Vec::<usize>::new()));
     let current_bar = Rc::new(Cell::new(None::<usize>));
     let tick = Closure::<dyn FnMut()>::new(move || {
@@ -279,8 +280,53 @@ pub fn MmlView(
                     }).collect_view()}
                 </select>
             </label>
+            <button type="button" class="mml-guide-button" on:click=move |_| guide_open.set(true)>"Guide"</button>
             <p class="mml-status">{move || message.get()}</p>
         </div>
+        <MmlGuide open=guide_open/>
         <div class="channel-mml" node_ref=container aria-label="Kog MML score"></div>
+    }
+}
+
+/// The Kog MML guide as a book: chapters on the left, the chapter on the right.
+#[component]
+pub fn MmlGuide(open: RwSignal<bool>) -> impl IntoView {
+    use kog_inspection::guide::{CHAPTERS, html};
+    let chapter = RwSignal::new(0usize);
+    let page = NodeRef::<leptos::html::Div>::new();
+    Effect::new(move |_| {
+        let index = chapter.get();
+        if let Some(page) = page.get() {
+            page.set_inner_html(&html(CHAPTERS[index].markdown));
+            page.set_scroll_top(0);
+        }
+    });
+    view! {
+        <Show when=move || open.get()>
+            <div class="mml-guide-scrim" on:click=move |_| open.set(false)></div>
+            <section class="mml-guide" role="dialog" aria-modal="true" aria-label="Kog MML Guide"
+                on:keydown=move |ev| if ev.key() == "Escape" { open.set(false) }>
+                <nav aria-label="Chapters">
+                    <h2>"Kog MML"</h2>
+                    {CHAPTERS.iter().enumerate().map(|(index, entry)| view! {
+                        <button type="button" class:current=move || chapter.get() == index
+                            on:click=move |_| chapter.set(index)>{entry.title}</button>
+                    }).collect_view()}
+                </nav>
+                <div class="mml-guide-body">
+                    <header>
+                        <button type="button" aria-label="Close the guide" on:click=move |_| open.set(false)>"×"</button>
+                    </header>
+                    <div class="mml-guide-page" node_ref=page></div>
+                    <footer>
+                        <button type="button" prop:disabled=move || chapter.get() == 0
+                            on:click=move |_| chapter.update(|c| *c = c.saturating_sub(1))>"‹ Previous"</button>
+                        <span>{move || format!("{} of {}", chapter.get() + 1, CHAPTERS.len())}</span>
+                        <button type="button" prop:disabled=move || chapter.get() + 1 == CHAPTERS.len()
+                            on:click=move |_| chapter.update(|c| *c = (*c + 1).min(CHAPTERS.len() - 1))>"Next ›"</button>
+                    </footer>
+                </div>
+            </section>
+        </Show>
     }
 }

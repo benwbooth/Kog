@@ -64,6 +64,20 @@ mod tests {
     use crate::mml::parse;
 
     #[test]
+    fn chapters_render_as_html() {
+        for chapter in CHAPTERS {
+            let page = html(chapter.markdown);
+            assert!(page.starts_with("<h1>"), "{}", chapter.title);
+            assert!(!page.contains("```") && !page.contains("**"), "{}", chapter.title);
+            assert_eq!(page.matches("<table>").count(), page.matches("</table>").count());
+            assert_eq!(page.matches("<pre>").count(), chapter.markdown.matches("```").count() / 2);
+        }
+        let sample = html("A `c4` and **bold** *it* < 3\n\n| a | b \\| c |\n| --- | --- |\n| 1 | `x\\|y` |\n");
+        assert!(sample.contains("<code>c4</code>") && sample.contains("<strong>bold</strong>") && sample.contains("&lt; 3"), "{sample}");
+        assert!(sample.contains("<th>b | c</th>"), "{sample}");
+    }
+
+    #[test]
     fn chapters_have_titles_and_text() {
         for (index, chapter) in CHAPTERS.iter().enumerate() {
             assert!(chapter.title.starts_with(&format!("{}. ", index + 1)), "{}", chapter.title);
@@ -89,4 +103,143 @@ mod tests {
         }
         assert!(checked >= 1, "the grammar chapter has a complete example");
     }
+}
+
+/// Render a chapter's Markdown as HTML. Handles the subset the guide uses:
+/// headings, paragraphs, lists, tables, fenced code, and inline code,
+/// bold and italics.
+pub fn html(markdown: &str) -> String {
+    let mut out = String::new();
+    let lines: Vec<&str> = markdown.lines().collect();
+    let mut index = 0;
+    let mut paragraph: Vec<&str> = Vec::new();
+    let flush = |paragraph: &mut Vec<&str>, out: &mut String| {
+        if !paragraph.is_empty() {
+            out.push_str(&format!("<p>{}</p>\n", inline(&paragraph.join(" "))));
+            paragraph.clear();
+        }
+    };
+    while index < lines.len() {
+        let line = lines[index];
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") {
+            flush(&mut paragraph, &mut out);
+            index += 1;
+            let mut code = String::new();
+            while index < lines.len() && !lines[index].trim_start().starts_with("```") {
+                code.push_str(&escape(lines[index]));
+                code.push('\n');
+                index += 1;
+            }
+            out.push_str(&format!("<pre><code>{code}</code></pre>\n"));
+        } else if let Some(level) = (1..=4).find(|n| trimmed.starts_with(&format!("{} ", "#".repeat(*n)))) {
+            flush(&mut paragraph, &mut out);
+            out.push_str(&format!("<h{level}>{}</h{level}>\n", inline(&trimmed[level + 1..])));
+        } else if trimmed.starts_with('|') {
+            flush(&mut paragraph, &mut out);
+            let row = |line: &str| -> Vec<String> {
+                let inner = line.trim().trim_start_matches('|').trim_end_matches('|');
+                // `\|` inside a cell is a literal bar.
+                inner
+                    .replace("\\|", "\u{0}")
+                    .split('|')
+                    .map(|cell| cell.trim().replace('\u{0}', "|"))
+                    .collect()
+            };
+            out.push_str("<table>\n<thead><tr>");
+            for cell in row(line) {
+                out.push_str(&format!("<th>{}</th>", inline(&cell)));
+            }
+            out.push_str("</tr></thead>\n<tbody>\n");
+            index += 2; // header and separator rows
+            while index < lines.len() && lines[index].trim_start().starts_with('|') {
+                out.push_str("<tr>");
+                for cell in row(lines[index]) {
+                    out.push_str(&format!("<td>{}</td>", inline(&cell)));
+                }
+                out.push_str("</tr>\n");
+                index += 1;
+            }
+            out.push_str("</tbody></table>\n");
+            continue;
+        } else if trimmed.starts_with("- ") || ordered(trimmed).is_some() {
+            flush(&mut paragraph, &mut out);
+            let tag = if trimmed.starts_with("- ") { "ul" } else { "ol" };
+            out.push_str(&format!("<{tag}>\n"));
+            while index < lines.len() {
+                let item = lines[index].trim_start();
+                let text = if let Some(rest) = item.strip_prefix("- ") {
+                    rest
+                } else if let Some(rest) = ordered(item) {
+                    rest
+                } else {
+                    break;
+                };
+                let mut text = text.to_owned();
+                // Continuation lines are indented under their item.
+                while index + 1 < lines.len()
+                    && lines[index + 1].starts_with("  ")
+                    && !lines[index + 1].trim_start().starts_with("- ")
+                    && ordered(lines[index + 1].trim_start()).is_none()
+                {
+                    index += 1;
+                    text.push(' ');
+                    text.push_str(lines[index].trim());
+                }
+                out.push_str(&format!("<li>{}</li>\n", inline(&text)));
+                index += 1;
+            }
+            out.push_str(&format!("</{tag}>\n"));
+            continue;
+        } else if trimmed.is_empty() {
+            flush(&mut paragraph, &mut out);
+        } else {
+            paragraph.push(trimmed);
+        }
+        index += 1;
+    }
+    flush(&mut paragraph, &mut out);
+    out
+}
+
+fn ordered(line: &str) -> Option<&str> {
+    let digits = line.bytes().take_while(u8::is_ascii_digit).count();
+    (digits > 0).then(|| line[digits..].strip_prefix(". ")).flatten()
+}
+
+fn escape(text: &str) -> String {
+    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+/// Inline code, bold and italics; everything else is escaped text.
+fn inline(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while !rest.is_empty() {
+        if let Some(code) = rest.strip_prefix('`') {
+            if let Some(end) = code.find('`') {
+                out.push_str(&format!("<code>{}</code>", escape(&code[..end])));
+                rest = &code[end + 1..];
+                continue;
+            }
+        }
+        if let Some(bold) = rest.strip_prefix("**") {
+            if let Some(end) = bold.find("**") {
+                out.push_str(&format!("<strong>{}</strong>", inline(&bold[..end])));
+                rest = &bold[end + 2..];
+                continue;
+            }
+        }
+        if let Some(italic) = rest.strip_prefix('*') {
+            if let Some(end) = italic.find('*') {
+                out.push_str(&format!("<em>{}</em>", inline(&italic[..end])));
+                rest = &italic[end + 1..];
+                continue;
+            }
+        }
+        let next = rest[1..].find(['`', '*']).map_or(rest.len(), |at| at + 1);
+        out.push_str(&escape(&rest[..next]));
+        rest = &rest[next..];
+    }
+    out
 }

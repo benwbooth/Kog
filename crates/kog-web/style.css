@@ -3571,3 +3571,111 @@ body.touch .track .index-cell {
   margin: 0.25rem 0;
   opacity: 0.75;
 }
+
+.mml-guide-button {
+  font-size: 0.85rem;
+}
+.mml-guide-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 130;
+  background: #0008;
+}
+.mml-guide {
+  position: fixed;
+  z-index: 131;
+  inset: 4vh 5vw;
+  display: grid;
+  grid-template-columns: minmax(180px, 260px) 1fr;
+  background: #10191f;
+  color: #dce3e8;
+  border: 1px solid #253944;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 12px 60px #000a;
+}
+.mml-guide nav {
+  overflow: auto;
+  border-right: 1px solid #253944;
+  padding: 0.5rem 0;
+}
+.mml-guide nav h2 {
+  margin: 0.5rem 1rem 0.75rem;
+  font-size: 1.2rem;
+}
+.mml-guide nav button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 0.45rem 1rem;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+.mml-guide nav button.current {
+  background: #173946;
+  box-shadow: inset 3px 0 0 #50c8ef;
+}
+.mml-guide-body {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.mml-guide-body header {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0.4rem 0.6rem 0;
+}
+.mml-guide-body footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.6rem 1rem;
+  border-top: 1px solid #253944;
+}
+.mml-guide-page {
+  flex: 1;
+  overflow: auto;
+  padding: 0 2rem 2rem;
+  line-height: 1.6;
+  max-width: 54rem;
+}
+.mml-guide-page h1 { font-size: 1.8rem; margin: 0.2rem 0 1rem; }
+.mml-guide-page h2 { font-size: 1.25rem; margin: 1.6rem 0 0.6rem; }
+.mml-guide-page code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: #18262e;
+  padding: 0.05rem 0.3rem;
+  border-radius: 4px;
+  color: #c3e88d;
+}
+.mml-guide-page pre {
+  background: #0b1216;
+  border: 1px solid #1f2f38;
+  border-radius: 8px;
+  padding: 0.8rem 1rem;
+  overflow: auto;
+}
+.mml-guide-page pre code {
+  background: none;
+  padding: 0;
+  color: #dce3e8;
+}
+.mml-guide-page table {
+  border-collapse: collapse;
+  margin: 0.8rem 0;
+}
+.mml-guide-page th, .mml-guide-page td {
+  border: 1px solid #253944;
+  padding: 0.35rem 0.7rem;
+  text-align: left;
+  vertical-align: top;
+}
+.mml-guide-page th { background: #152229; }
+@media (max-width: 700px) {
+  .mml-guide { inset: 1vh 1vw; grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+  .mml-guide nav { max-height: 30vh; border-right: 0; border-bottom: 1px solid #253944; }
+}
