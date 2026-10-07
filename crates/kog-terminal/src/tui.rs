@@ -7925,6 +7925,16 @@ impl Ui {
             self.modal = Some(self.info_content());
         }
         let (width, height) = size;
+        if self.inspector.open {
+            let mut screen = String::from("\x1b[H\x1b[?25l");
+            if width < 24 || height < 10 {
+                screen.push_str("\x1b[2J");
+                paint(&mut screen, 1, 1, "Channel Inspector · Enlarge terminal", width, Surface::Toolbar, true);
+            } else {
+                self.inspector.draw(&mut screen, size, &self.player.channel_snapshot());
+            }
+            return screen;
+        }
         let search_busy = self.search_activity().is_some();
         if width < 20 || height < 14 {
             let mut screen = String::from("\x1b[H\x1b[2J\x1b[?25l");
@@ -9382,9 +9392,7 @@ impl Ui {
                 }
             }
         }
-        if self.inspector.open {
-            self.inspector.draw(&mut screen, size, &self.player.channel_snapshot());
-        } else if self.visualizer_open {
+        if self.visualizer_open {
             draw_visualizer_modal(
                 &mut screen,
                 size,

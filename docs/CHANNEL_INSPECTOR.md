@@ -22,6 +22,9 @@ have expandable controls and effects.
 In the terminal, **1/2/3** choose the view, **D** opens full channel/row details,
 **F** toggles following, arrows navigate, **[ / ]** change the keyboard octave,
 and **Esc** closes the inspector. **Space** still pauses playback.
+Keyboards expand across the terminal width and share the available pane
+height. Tracker columns also expand to use the available width. Resizing the
+terminal updates both layouts; **1** or **2** gives that view the full height.
 
 ## What each decoder can report
 

@@ -1,5 +1,5 @@
 use super::{Key, Surface, paint, truncate};
-use kog_audio::inspection::{Snapshot, note_name};
+use kog_audio::inspection::{Channel, Snapshot, note_name};
 
 pub(super) struct View {
     pub open: bool,
@@ -135,7 +135,7 @@ impl View {
             self.draw_details(out, size, state);
             return;
         }
-        let available = height.saturating_sub(5);
+        let available = height.saturating_sub(4);
         let keyboard_height = if self.mode == 1 {
             available
         } else if self.mode == 3 {
@@ -144,14 +144,17 @@ impl View {
             0
         };
         if keyboard_height > 0 {
+            let visible = (keyboard_height / 3).min(state.channels.len() - self.channel);
             for (n, channel) in state
                 .channels
                 .iter()
                 .skip(self.channel)
-                .take(keyboard_height / 3)
+                .take(visible)
                 .enumerate()
             {
-                let y = 4 + n * 3;
+                let top = n * keyboard_height / visible;
+                let bottom = (n + 1) * keyboard_height / visible;
+                let y = 4 + top;
                 let notes = channel
                     .notes
                     .iter()
@@ -196,62 +199,25 @@ impl View {
                     Surface::Accent,
                     false,
                 );
-                let octaves = ((width - 4) / 14).clamp(1, 10);
-                let first = (self.octave * 12).min(120);
-                let white = [0, 2, 4, 5, 7, 9, 11];
-                for octave in 0..octaves {
-                    for (index, offset) in white.iter().enumerate() {
-                        let key = first + octave * 12 + offset;
-                        if key > 127 {
-                            continue;
-                        }
-                        let x = 2 + octave * 14 + index * 2;
-                        let active = channel.notes.iter().find(|n| n.key.round() as usize == key);
-                        let bg = match active {
-                            Some(n) if n.held => "79;195;247",
-                            Some(_) => "112;217;170",
-                            None => "224;227;233",
-                        };
-                        out.push_str(&format!(
-                            "\x1b[{};{}H\x1b[38;2;25;29;37;48;2;{}m  \x1b[{};{}H{}\x1b[0m",
-                            y + 1,
-                            x,
-                            bg,
-                            y + 2,
-                            x,
-                            if *offset == 0 {
-                                format!("C{}", key as i32 / 12 - 1)
-                            } else {
-                                "  ".into()
-                            }
-                        ));
-                    }
-                }
-                for octave in 0..octaves {
-                    for (offset, xoff) in [(1, 1), (3, 3), (6, 7), (8, 9), (10, 11)] {
-                        let key = first + octave * 12 + offset;
-                        if key > 127 {
-                            continue;
-                        }
-                        let active = channel.notes.iter().find(|n| n.key.round() as usize == key);
-                        let bg = match active {
-                            Some(n) if n.held => "79;195;247",
-                            Some(_) => "112;217;170",
-                            None => "15;19;24",
-                        };
-                        out.push_str(&format!(
-                            "\x1b[{};{}H\x1b[48;2;{}m \x1b[0m",
-                            y + 1,
-                            2 + octave * 14 + xoff,
-                            bg
-                        ));
-                    }
-                }
+                draw_keyboard(
+                    out,
+                    channel,
+                    (2, y + 1, width - 3, bottom - top - 1),
+                    (self.octave * 12).min(120),
+                );
             }
         }
         if self.mode != 1 {
             let y = 4 + keyboard_height;
-            let count = (width.saturating_sub(15) / 23).max(1);
+            let column_space = width - 16;
+            let count = (column_space / 23)
+                .max(1)
+                .min(state.channels.len() - self.channel);
+            let column = |index: usize| {
+                let start = index * column_space / count;
+                let end = (index + 1) * column_space / count;
+                (15 + start, end - start)
+            };
             let channels = state
                 .channels
                 .iter()
@@ -260,9 +226,10 @@ impl View {
                 .collect::<Vec<_>>();
             paint(out, y, 2, "Time / row", 12, Surface::Header, true);
             for (n, c) in channels.iter().enumerate() {
-                paint(out, y, 15 + n * 23, &c.name, 22, Surface::Header, true);
+                let (x, width) = column(n);
+                paint(out, y, x, &c.name, width - 1, Surface::Header, true);
             }
-            let rows = height.saturating_sub(y + 2);
+            let rows = height.saturating_sub(y + 1);
             let first = self.row.saturating_sub(rows / 2);
             for (n, row) in state.rows.iter().enumerate().skip(first).take(rows) {
                 let line = y + 1 + n - first;
@@ -291,7 +258,8 @@ impl View {
                         })
                         .collect::<Vec<_>>()
                         .join(" · ");
-                    paint(out, line, 15 + index * 23, &cell, 22, surface, false);
+                    let (x, width) = column(index);
+                    paint(out, line, x, &cell, width - 1, surface, false);
                 }
             }
         }
@@ -358,8 +326,8 @@ impl View {
         );
         self.scroll = self
             .scroll
-            .min(lines.len().saturating_sub(size.1.saturating_sub(5)));
-        for (n, line) in lines.iter().skip(self.scroll).take(size.1 - 5).enumerate() {
+            .min(lines.len().saturating_sub(size.1.saturating_sub(4)));
+        for (n, line) in lines.iter().skip(self.scroll).take(size.1 - 4).enumerate() {
             paint(
                 out,
                 4 + n,
@@ -379,6 +347,84 @@ impl View {
             Surface::Muted,
             false,
         );
+    }
+}
+
+/// Divide the entire pane into white keys; wider or taller terminals grow
+/// the keys after the visible pitch range has reached MIDI's upper limit.
+fn draw_keyboard(
+    out: &mut String,
+    channel: &Channel,
+    area: (usize, usize, usize, usize),
+    first: usize,
+) {
+    let (x, y, width, height) = area;
+    let black = |key: usize| matches!(key % 12, 1 | 3 | 6 | 8 | 10);
+    let whites = (first..128)
+        .filter(|key| !black(*key))
+        .take(width / 2)
+        .collect::<Vec<_>>();
+    let color = |key: usize, idle| match channel
+        .notes
+        .iter()
+        .find(|note| note.key.round() as usize == key)
+    {
+        Some(note) if note.held => "79;195;247",
+        Some(_) => "112;217;170",
+        None => idle,
+    };
+    for (index, key) in whites.iter().enumerate() {
+        let start = index * width / whites.len();
+        let end = (index + 1) * width / whites.len();
+        let key_width = end - start;
+        let fill = if index == 0 {
+            " ".repeat(key_width)
+        } else {
+            format!("│{}", " ".repeat(key_width - 1))
+        };
+        let bg = color(*key, "224;227;233");
+        for row in 0..height {
+            out.push_str(&format!(
+                "\x1b[{};{}H\x1b[38;2;70;77;85;48;2;{}m{}\x1b[0m",
+                y + row,
+                x + start,
+                bg,
+                fill
+            ));
+        }
+        if key % 12 == 0 {
+            out.push_str(&format!(
+                "\x1b[{};{}H\x1b[38;2;25;29;37;48;2;{}m{}\x1b[0m",
+                y + height - 1,
+                x + start,
+                bg,
+                truncate(&format!("C{}", *key as i32 / 12 - 1), key_width)
+            ));
+        }
+    }
+    for (index, key) in whites
+        .iter()
+        .enumerate()
+        .take(whites.len().saturating_sub(1))
+    {
+        if !black(key + 1) {
+            continue;
+        }
+        let start = index * width / whites.len();
+        let end = (index + 1) * width / whites.len();
+        let black_width = (end - start).div_ceil(2);
+        let black_height = (height * 3 / 5).max(1).min(height - 1);
+        let fill = " ".repeat(black_width);
+        let bg = color(key + 1, "15;19;24");
+        for row in 0..black_height {
+            out.push_str(&format!(
+                "\x1b[{};{}H\x1b[48;2;{}m{}\x1b[0m",
+                y + row,
+                x + end - black_width.div_ceil(2),
+                bg,
+                fill
+            ));
+        }
     }
 }
 
