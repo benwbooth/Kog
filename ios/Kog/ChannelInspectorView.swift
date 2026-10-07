@@ -97,7 +97,7 @@ private struct ChannelKeyboardView: View {
             Text(channel.instrument).font(.caption).foregroundStyle(Palette.muted)
             Text(channel.notes.isEmpty ? (channel.active ? channel.kind.uppercased() : "—") : channel.notes.map { $0.name + ($0.held ? "" : "~") }.joined(separator: " "))
                 .font(.system(.caption, design: .monospaced))
-            ProgressView(value: min(1, max(0, channel.level)))
+            ChannelLevelMeter(channel: channel)
             ScrollView(.horizontal) {
                 Canvas { context, size in
                     let whiteWidth = size.width / 75
@@ -129,6 +129,28 @@ private struct ChannelKeyboardView: View {
                 Text(channel.fields.map(\.label).joined(separator:" · ")).font(.caption2).frame(maxWidth:.infinity,alignment:.leading)
             }.font(.caption)
         }.padding(8).background(Palette.panel,in:RoundedRectangle(cornerRadius:8))
+    }
+}
+
+private struct ChannelLevelMeter: View {
+    let channel: MusicalChannel
+    private var level: Double { channel.level.isFinite ? min(1, max(0, channel.level)) : 0 }
+    var body: some View {
+        HStack(spacing: 8) {
+            Text("Level").font(.caption2).foregroundStyle(Palette.muted)
+            GeometryReader { geometry in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Palette.muted.opacity(0.25))
+                    Capsule().fill(Palette.accent).frame(width: geometry.size.width * level)
+                }
+            }.frame(height: 8)
+            Text("\(Int((level * 100).rounded()))%")
+                .font(.system(.caption2, design: .monospaced)).foregroundStyle(Palette.muted)
+                .frame(width: 36, alignment: .trailing)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(channel.name) level")
+        .accessibilityValue("\(Int((level * 100).rounded())) percent")
     }
 }
 

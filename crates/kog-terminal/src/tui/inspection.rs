@@ -172,18 +172,29 @@ impl View {
                         notes
                     }
                 );
+                let meter = level_meter(channel.level, if width >= 50 { 10 } else { 4 });
+                let meter_width = meter.chars().count();
                 paint(
                     out,
                     y,
                     2,
                     &text,
-                    width - 3,
+                    width - meter_width - 4,
                     if n == 0 {
                         Surface::Selected
                     } else {
                         Surface::Main
                     },
                     n == 0,
+                );
+                paint(
+                    out,
+                    y,
+                    width - meter_width - 1,
+                    &meter,
+                    meter_width,
+                    Surface::Accent,
+                    false,
                 );
                 let octaves = ((width - 4) / 14).clamp(1, 10);
                 let first = (self.octave * 12).min(120);
@@ -298,6 +309,7 @@ impl View {
         let channel = &state.channels[self.channel];
         let mut lines = vec![
             format!("{} · {}", channel.name, channel.instrument),
+            level_meter(channel.level, 10),
             format!(
                 "Notes: {}",
                 channel
@@ -368,4 +380,19 @@ impl View {
             false,
         );
     }
+}
+
+fn level_meter(level: f32, cells: usize) -> String {
+    let level = if level.is_finite() {
+        level.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let filled = (level * cells as f32).round() as usize;
+    format!(
+        "Level {}{} {:3.0}%",
+        "█".repeat(filled),
+        "░".repeat(cells - filled),
+        level * 100.0
+    )
 }

@@ -8,6 +8,10 @@ Choose **Keyboards**, **Tracker**, or **Both**. Each musical channel has its
 own keyboard. Cyan keys are held; green keys are retained by sustain. Multiple
 keys can light together. Fractional pitches have an orange bend marker. Noise,
 percussion, and untuned sample activity are labelled without inventing keys.
+Each channel also has a live level meter. Qt, Android, iOS, and the terminal
+label it **Level** and show a percentage alongside the bar. It uses the same
+decoder-reported level as the web meter; depending on the format, this is a
+voice envelope, programmed volume, or measured output level.
 
 The tracker includes notes, instruments, volume, effects, and song data.
 Original tracker rows are used when available; otherwise it shows MIDI events

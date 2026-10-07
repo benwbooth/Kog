@@ -10,13 +10,19 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.progressBarRangeInfo
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -99,7 +105,7 @@ internal fun ChannelInspector(state: KogState, dismiss: () -> Unit) {
                                 Text(channel.instrument, fontSize = 11.sp, color = Color(0xffadb7c0))
                                 Text(if (channel.notes.isNotEmpty()) channel.notes.joinToString(" ") { noteName(it.key) + if (it.held) "" else "~" }
                                     else if (channel.active) channel.kind.uppercase() else "—", fontFamily = FontFamily.Monospace, fontSize = 11.sp)
-                                LinearProgressIndicator(progress = { channel.level.coerceIn(0f,1f) }, modifier = Modifier.fillMaxWidth().height(3.dp))
+                                ChannelLevelMeter(channel)
                                 ChannelPiano(channel)
                                 TextButton(onClick = { details = !details }) { Text(if (details) "Hide controls" else "Controls and effects", fontSize = 11.sp) }
                                 if (details) Text(channel.fields.joinToString(" · ") { it.label() }, fontSize = 11.sp)
@@ -115,6 +121,26 @@ internal fun ChannelInspector(state: KogState, dismiss: () -> Unit) {
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun ChannelLevelMeter(channel: InspectionChannel) {
+    val level = if (channel.level.isFinite()) channel.level.coerceIn(0f,1f) else 0f
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 4.dp).semantics(mergeDescendants = true) {
+            contentDescription = "${channel.name} level"
+            progressBarRangeInfo = ProgressBarRangeInfo(level, 0f..1f)
+        },
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text("Level", fontSize = 11.sp, color = Color(0xffadb7c0))
+        Box(Modifier.weight(1f).height(8.dp).clip(RoundedCornerShape(3.dp)).background(Color(0xff33434d))) {
+            Box(Modifier.fillMaxWidth(level).fillMaxHeight().background(Color(0xff72d0fc)))
+        }
+        Text("${(level * 100).roundToInt()}%", fontSize = 11.sp, fontFamily = FontFamily.Monospace,
+            color = Color(0xffadb7c0), modifier = Modifier.width(36.dp), textAlign = androidx.compose.ui.text.style.TextAlign.End)
     }
 }
 

@@ -143,7 +143,36 @@ ApplicationWindow {
                             Layout.maximumWidth: 180
                             Label { text: channel.name || ""; textFormat: Text.PlainText; color: "#eff5f7"; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
                             Label { text: channel.instrument || channel.kind || ""; textFormat: Text.PlainText; color: "#a8bdc9"; font.pixelSize: 10; elide: Text.ElideRight; Layout.fillWidth: true }
-                            ProgressBar { from: 0; to: 1; value: channel.level || 0; Layout.fillWidth: true; Layout.preferredHeight: 6 }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 5
+                                Label { text: qsTr("Level"); color: "#a8bdc9"; font.pixelSize: 10 }
+                                ProgressBar {
+                                    id: channelLevel
+                                    objectName: "channelLevelMeter"
+                                    from: 0; to: 1
+                                    value: Number.isFinite(channel.level) ? Math.max(0, Math.min(1, channel.level)) : 0
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: 8
+                                    padding: 0
+                                    Accessible.name: qsTr("%1 level").arg(channel.name || "")
+                                    background: Rectangle { color: "#33434d"; radius: 3 }
+                                    contentItem: Item {
+                                        Rectangle {
+                                            width: parent.width * channelLevel.position
+                                            height: parent.height
+                                            color: "#50c8ef"
+                                            radius: 3
+                                        }
+                                    }
+                                }
+                                Label {
+                                    text: Math.round(channelLevel.value * 100) + "%"
+                                    color: "#a8bdc9"; font.pixelSize: 10
+                                    Layout.minimumWidth: 31
+                                    horizontalAlignment: Text.AlignRight
+                                }
+                            }
                             Label { text: root.noteText(channel.notes, !root.relativePitch(channel)) || (channel.active ? (channel.kind || qsTr("Active")).toUpperCase() : "—"); textFormat: Text.PlainText; color: "#50c8ef"; font.pixelSize: 10; elide: Text.ElideRight; Layout.fillWidth: true }
                         }
                         ColumnLayout {
