@@ -57,7 +57,7 @@ impl StreamKey {
     /// directory stays browsable without colliding.
     pub fn stem(&self) -> String {
         let mut fingerprint = String::with_capacity(self.locator.len() + 16);
-        fingerprint.push_str("channel-recording-v1\0");
+        fingerprint.push_str("channel-recording-v2\0");
         fingerprint.push_str(&self.locator);
         fingerprint.push('\0');
         fingerprint.push_str(self.codec.setting_value());

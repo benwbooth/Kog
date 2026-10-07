@@ -1,9 +1,10 @@
 //! Musical channel inspector. Cached windows are selected against the browser
 //! audio clock; the encoder's current position never drives the highlighted row.
 use super::*;
-use kog_inspection::{Channel, Snapshot, Window as ChannelWindow, note_name};
+use kog_inspection::{
+    Channel, Snapshot, Window as ChannelWindow, missing_window_position, note_name,
+};
 use std::cell::Cell;
-use std::collections::VecDeque;
 
 #[derive(Deserialize)]
 struct Reply {
@@ -26,10 +27,12 @@ pub fn Inspector(
     let mode = RwSignal::new("both".to_owned());
     let follow = RwSignal::new(true);
     let tracker = NodeRef::<leptos::html::Div>::new();
-    let windows = Rc::new(RefCell::new(VecDeque::<ChannelWindow>::new()));
+    let windows = Rc::new(RefCell::new(Vec::<ChannelWindow>::new()));
     let source = Rc::new(RefCell::new(String::new()));
     let pending = Rc::new(Cell::new(false));
     let last_request = Rc::new(Cell::new(0.0));
+    let last_data_position = Cell::new(f64::NEG_INFINITY);
+    let request_generation = Rc::new(Cell::new(0u64));
     let tick = Closure::<dyn FnMut()>::new(move || {
         if !open.get_untracked() {
             return;
@@ -49,8 +52,11 @@ pub fn Inspector(
             *source.borrow_mut() = location.clone();
             windows.borrow_mut().clear();
             state.set(Snapshot::default());
+            message.set("Waiting for channel data…".into());
+            last_data_position.set(f64::NEG_INFINITY);
             last_request.set(0.0);
             pending.set(false);
+            request_generation.set(request_generation.get().wrapping_add(1));
         }
         let Ok(url) = web_sys::Url::new(&location) else {
             return;
@@ -72,19 +78,37 @@ pub fn Inspector(
                 .iter()
                 .find(|w| position >= w.start && position < w.end)
             {
-                state.set(window.snapshot(position, !audio.paused(), audio.seeking()));
+                let mut snapshot = window.snapshot(position, !audio.paused(), audio.seeking());
+                if let Some(next) = windows.iter().find(|next| next.start == window.end) {
+                    snapshot.append_upcoming_rows(next);
+                }
+                state.set(snapshot);
+                last_data_position.set(position);
                 message.set(window.description.detail.clone());
-                (position > window.end - 0.3 && !windows.iter().any(|w| w.start >= window.end))
-                    .then_some(window.end + 0.001)
             } else {
-                state.set(Snapshot {
-                    position,
-                    playing: !audio.paused(),
-                    seeking: audio.seeking(),
-                    ..Snapshot::default()
+                // Preserve the mounted channel rows through a late HTTP window.
+                // Brief gaps hold the last frame; a seek or prolonged gap clears
+                // its note activity without tearing down the entire inspector.
+                state.update(|snapshot| {
+                    snapshot.position = position;
+                    snapshot.playing = !audio.paused();
+                    snapshot.seeking = audio.seeking();
+                    if audio.seeking()
+                        || !(0.0..=0.5).contains(&(position - last_data_position.get()))
+                    {
+                        for channel in &mut snapshot.channels {
+                            channel.notes.clear();
+                            channel.active = false;
+                            channel.level = 0.0;
+                        }
+                        snapshot.current_row = None;
+                    }
                 });
-                Some(position)
+                if !windows.is_empty() {
+                    message.set("Waiting for channel data…".into());
+                }
             }
+            missing_window_position(&windows, position, 2.0)
         };
         let Some(requested) = requested else { return };
         if pending.get() || js_sys::Date::now() - last_request.get() < 400.0 {
@@ -98,6 +122,8 @@ pub fn Inspector(
         let windows = windows.clone();
         let source = source.clone();
         let pending = pending.clone();
+        let request_generation = request_generation.clone();
+        let generation = request_generation.get();
         let header = authorization.get_untracked();
         leptos::task::spawn_local(async move {
             let mut request = Request::get(&endpoint);
@@ -115,7 +141,7 @@ pub fn Inspector(
                 response.json::<Reply>().await.map_err(|e| e.to_string())
             }
             .await;
-            if *source.borrow() != location {
+            if *source.borrow() != location || request_generation.get() != generation {
                 return;
             }
             pending.set(false);
@@ -124,9 +150,9 @@ pub fn Inspector(
                     if let Some(window) = reply.window {
                         let mut windows = windows.borrow_mut();
                         windows.retain(|old| old.start != window.start);
-                        windows.push_back(window);
-                        while windows.len() > 3 {
-                            windows.pop_front();
+                        windows.push(window);
+                        while windows.len() > 4 {
+                            windows.remove(0);
                         }
                     }
                 }
@@ -156,8 +182,27 @@ pub fn Inspector(
             window().clear_interval_with_handle(timer);
         }
     });
+    // Keep snapshots out of each channel's reactive read, and reuse tracker
+    // rows while the audio clock advances. A 24-voice window can contain MBs
+    // of register data; rebuilding its table every 33 ms stalls the browser.
+    let columns = Memo::new(move |_| {
+        state.with(|s| {
+            s.channels
+                .iter()
+                .map(|c| (c.id, c.name.clone()))
+                .collect::<Vec<_>>()
+        })
+    });
+    let rows = Memo::new(move |_| state.with(|s| s.rows.clone()));
+    let current = Memo::new(move |_| {
+        state.with(|s| {
+            s.current_row
+                .and_then(|i| s.rows.get(i))
+                .map(|r| (r.time.to_bits(), r.label.clone()))
+        })
+    });
     Effect::new(move |_| {
-        let _ = state.get().current_row;
+        let _ = current.get();
         if follow.get() {
             if let Some(container) = tracker.get() {
                 if let Ok(Some(row)) = container.query_selector("tr.current") {
@@ -176,34 +221,32 @@ pub fn Inspector(
             <section class="channel-inspector" role="dialog" aria-modal="true" aria-label="Channel Inspector">
                 <header><h2>"Channel Inspector"</h2><button type="button" aria-label="Close Channel Inspector" on:click=move |_| close.run(())>"×"</button></header>
                 <div class="channel-tools">
-                    <button type="button" on:click=move |_| toggle_play.run(())>{move || if state.get().playing { "Pause" } else { "Play" }}</button>
+                    <button type="button" on:click=move |_| toggle_play.run(())>{move || if state.with(|s| s.playing) { "Pause" } else { "Play" }}</button>
                     <select aria-label="Inspector view" on:change=move |ev| mode.set(event_target_value(&ev))>
                         <option value="both">"Keyboards and tracker"</option><option value="keyboards">"Keyboards"</option><option value="tracker">"Tracker"</option>
                     </select>
                     <label><input type="checkbox" prop:checked=move || follow.get() on:change=move |ev| follow.set(event_target_checked(&ev))/>{"Follow playback"}</label>
-                    <span>{move || format!("{} · {:.3} s", state.get().description.backend, state.get().position)}</span>
+                    <span>{move || state.with(|s| format!("{} · {:.3} s", s.description.backend, s.position))}</span>
                 </div>
                 <p class="channel-description">{move || message.get()}</p>
                 <Show when=move || mode.get() != "tracker">
                     <div class="channel-keyboards">
-                        <For each=move || { state.get().channels.into_iter().map(|c| c.id).collect::<Vec<_>>() } key=|id| *id children=move |id| { view! { <Keyboard id=id state=state/> } }/>
+                        <For each=move || columns.with(|c| c.iter().map(|(id,_)| *id).collect::<Vec<_>>()) key=|id| *id children=move |id| { view! { <Keyboard id=id state=state/> } }/>
                     </div>
                 </Show>
                 <Show when=move || mode.get() != "keyboards">
                     <div class="channel-tracker" node_ref=tracker>
-                        <table><thead><tr><th>"Time / row"</th>{move || state.get().channels.into_iter().map(|channel| view!{<th>{channel.name}</th>}).collect_view()}<th>"Song data"</th></tr></thead>
-                        <tbody>{move || {
-                            let snapshot = state.get();
-                            snapshot.rows.iter().enumerate().map(|(index,row)| {
-                                let cells = snapshot.channels.iter().map(|channel| {
-                                    let cells = row.cells.iter().filter(|cell| cell.channel == channel.id).collect::<Vec<_>>();
+                        <table><thead><tr><th>"Time / row"</th>{move || columns.get().into_iter().map(|(_,name)| view!{<th>{name}</th>}).collect_view()}<th>"Song data"</th></tr></thead>
+                        <tbody><For each=move || rows.get() key=|row| (row.time.to_bits(),row.label.clone()) children=move |row| {
+                                let key = (row.time.to_bits(),row.label.clone());
+                                let cells = columns.with(|columns| columns.iter().map(|(id,_)| {
+                                    let cells = row.cells.iter().filter(|cell| cell.channel == *id).collect::<Vec<_>>();
                                     let text = cells.iter().map(|cell| format!("{} {} {}", cell.notes,cell.instrument,cell.volume)).collect::<Vec<_>>().join(" · ");
                                     let effects = cells.iter().flat_map(|cell| &cell.effects).map(|f| format!("{} {}",f.name,f.value)).collect::<Vec<_>>().join(" · ");
                                     view! {<td title=effects.clone()><b>{text}</b><small>{effects.clone()}</small></td>}
-                                }).collect_view();
-                                view!{<tr class:current=snapshot.current_row==Some(index)><th>{row.label.clone()}</th>{cells}<td>{row.global.iter().map(|f| format!("{} {}",f.name,f.value)).collect::<Vec<_>>().join(" · ")}</td></tr>}
-                            }).collect_view()
-                        }}</tbody></table>
+                                }).collect_view());
+                                view!{<tr class:current=move || current.with(|c| c.as_ref()==Some(&key))><th>{row.label.clone()}</th>{cells}<td>{row.global.iter().map(|f| format!("{} {}",f.name,f.value)).collect::<Vec<_>>().join(" · ")}</td></tr>}
+                        }/></tbody></table>
                     </div>
                 </Show>
             </section>
@@ -214,12 +257,13 @@ pub fn Inspector(
 #[component]
 fn Keyboard(id: u32, state: RwSignal<Snapshot>) -> impl IntoView {
     let channel = Memo::new(move |_| {
-        state
-            .get()
-            .channels
-            .into_iter()
-            .find(|c| c.id == id)
-            .unwrap_or_default()
+        state.with(|s| {
+            s.channels
+                .iter()
+                .find(|c| c.id == id)
+                .cloned()
+                .unwrap_or_default()
+        })
     });
     let canvas = NodeRef::<leptos::html::Canvas>::new();
     Effect::new(move |_| {
@@ -233,7 +277,7 @@ fn Keyboard(id: u32, state: RwSignal<Snapshot>) -> impl IntoView {
         else {
             return;
         };
-        draw_keyboard(&context, &channel, 760.0, 64.0);
+        draw_keyboard(&context, &channel, 1520.0, 64.0);
     });
     view! {
         <div class="channel-voice">
@@ -241,7 +285,7 @@ fn Keyboard(id: u32, state: RwSignal<Snapshot>) -> impl IntoView {
                 <meter min="0" max="1" prop:value=move || channel.get().level></meter>
                 <span>{move || {let c=channel.get(); if c.notes.is_empty() {if c.active {c.kind.to_uppercase()} else {"—".into()}} else {c.notes.iter().map(|n|note_name(n.key)).collect::<Vec<_>>().join(" ")}}}</span>
             </div>
-            <div class="channel-keys"><canvas node_ref=canvas width="760" height="64" aria-label=move || format!("{} active piano keys",channel.get().name)></canvas>
+            <div class="channel-keys"><canvas node_ref=canvas width="1520" height="64" aria-label=move || format!("{} active piano keys",channel.get().name)></canvas>
                 <details><summary>"Controls and effects"</summary><p>{move || channel.get().fields.iter().map(|f|format!("{}: {}",f.name,f.value)).collect::<Vec<_>>().join(" · ")}</p></details>
             </div>
         </div>
@@ -286,9 +330,13 @@ fn draw_keyboard(
                 ctx.fill_rect(x, 0.0, w, h);
                 if !is_black && key % 12 == 0 {
                     ctx.set_fill_style_str("#303845");
-                    ctx.set_font("8px sans-serif");
-                    let _ =
-                        ctx.fill_text(&format!("C{}", key as i32 / 12 - 1), x + 1.0, height - 3.0);
+                    ctx.set_font("16px sans-serif");
+                    let _ = ctx.fill_text_with_max_width(
+                        &format!("C{}", key as i32 / 12 - 1),
+                        x + 1.0,
+                        height - 3.0,
+                        w - 2.0,
+                    );
                 }
                 if let Some(note) = note {
                     let bend = note.key - note.key.round();

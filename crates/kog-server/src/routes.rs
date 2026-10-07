@@ -97,7 +97,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/devices", get(list_devices))
         .route("/api/devices/block", post(set_device_blocked))
         .route("/api/stream", get(stream_audio))
-        .route("/api/inspection", get(channel_inspection))
+        .route("/api/inspection", get(channel_inspection)
+            .layer(tower_http::compression::CompressionLayer::new()))
         .merge(crate::api::router())
         .merge(crate::radio::router())
         .layer(middleware::from_fn_with_state(state.clone(), require_auth));
@@ -311,6 +312,12 @@ struct InspectionQuery {
     position: f64,
 }
 
+#[derive(serde::Serialize)]
+struct ReadyInspection {
+    status: &'static str,
+    window: kog_inspection::Window,
+}
+
 async fn channel_inspection(
     State(state): State<AppState>,
     axum::extract::Query(query): axum::extract::Query<InspectionQuery>,
@@ -338,7 +345,7 @@ async fn channel_inspection(
     let streams = state.streams.clone();
     let result = tokio::task::spawn_blocking(move || streams.channel_window(&key, query.position)).await;
     let mut response = match result {
-        Ok(Ok(Some(window))) => axum::Json(serde_json::json!({"status":"ready","window":window})).into_response(),
+        Ok(Ok(Some(window))) => axum::Json(ReadyInspection { status: "ready", window }).into_response(),
         Ok(Ok(None)) => axum::Json(serde_json::json!({"status":"pending","detail":"Channel data is not yet available for this stream."})).into_response(),
         Ok(Err(error)) => bad_request(&error),
         Err(error) => bad_request(&error.to_string()),

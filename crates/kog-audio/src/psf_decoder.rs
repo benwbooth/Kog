@@ -69,7 +69,12 @@ impl DecoderBackend for PsfBackend {
 
     fn append_observed(&self, source: &PlaybackSource, player: &Player, monitor: &crate::inspection::Monitor) -> Result<(), String> {
         let mut decoder = Self::open(source)?;
-        monitor.describe("Psf", "registers", "Live hardware voices, sample addresses, envelopes, pitch rates and effects. Sample tuning is not inferred.");
+        let detail = if matches!(decoder.format_version(), 1 | 2) {
+            "Live SPU voices and effects. Keys show relative sample pitch: C4 = normal playback rate. Original instrument tuning is unavailable."
+        } else {
+            "Live hardware voices, sample addresses, envelopes, pitch rates and effects. Sample tuning is not inferred."
+        };
+        monitor.describe("Psf", "registers", detail);
         decoder.inspect(monitor.clone());
         player.append(PsfSource::new(decoder));
         Ok(())

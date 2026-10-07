@@ -34,7 +34,7 @@ and **Esc** closes the inspector. **Space** still pauses playback.
 | VGM/VGZ, S98, DRO, GYM | Writes sent to the sound cores producing the audio. Mapped chips expose tone or sample voices, key gates, frequencies, and controls. Other programmable DSP devices expose a labelled register view; their individual voices are not reconstructed. |
 | SID/RSID | Three voices per SID, waveform, frequency, pulse width, gate, ADSR, and filter controls. Release envelopes and software digi voices are not reconstructed. |
 | NCSF | Sixteen DS voices with source notes, pitch changes, instruments, envelopes, and sequence state. |
-| PSF/PSF2 | 24/48 SPU voices, live envelopes, sample addresses, rate, volume, ADSR, and reverb. |
+| PSF/PSF2, including miniPSF/miniPSF2 | 24/48 SPU voices, live envelopes, sample addresses, rate, volume, ADSR, and reverb. Keys show relative sample pitch, with C4 at normal playback rate (SPU pitch 0x1000); original instrument tuning is unavailable. |
 | SNSF/SFM/SPC | Eight SNES DSP voices, sample identity/rate, envelope, noise, echo, and modulation controls. |
 | 2SF | Sixteen DS hardware voices, including pitched PSG and sample/noise state. |
 | GSF | Four GBA PSG voices and the two Direct Sound mixes. Game-specific software voices inside the mixes are not separated. |
@@ -47,6 +47,9 @@ A periodic oscillator's frequency maps directly to a piano key:
 `69 + 12 * log2(frequency / 440)`. A sample playback rate measures samples per
 second, which does not establish the waveform's fundamental frequency. Sample
 voices get keys when the format or sequencer supplies tuning or a source note.
+PSF/PSF2 additionally provide explicitly labelled relative keys: doubling the
+sample playback rate moves up an octave from the C4 reference. This shows
+transposition and pitch slides while leaving original sample tuning unknown.
 The inspector does not estimate fundamentals from recorded audio.
 
 Register displays report observed state and programmed controls, which can

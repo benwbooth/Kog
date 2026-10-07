@@ -21,7 +21,7 @@ TestCase {
         function play_pause() { test.state = Object.assign({}, test.state, {playing:!test.state.playing}) }
     }
     Kog.ChannelInspector { id: inspector; app: backend }
-    function init() { inspector.show(); inspector.mode = 2; inspector.refresh() }
+    function init() { inspector.width = 1800; inspector.show(); inspector.mode = 2; inspector.refresh() }
     function cleanup() { inspector.hide() }
 
     function test_modes_and_polyphonic_keyboard() {
@@ -51,5 +51,23 @@ TestCase {
         const before = backend.requests
         wait(120)
         compare(backend.requests, before)
+    }
+
+    function test_narrow_window_scrolls_full_width_keyboard() {
+        const keyboards = findChild(inspector.contentItem, "channelKeyboards")
+        tryCompare(keyboards, "count", 1)
+        const piano = findChild(keyboards.itemAtIndex(0), "channelKeyboard")
+        verify(piano !== null)
+        tryCompare(piano, "width", 1520)
+        tryCompare(piano, "height", 64)
+        inspector.width = 800
+        tryVerify(() => keyboards.contentWidth > keyboards.width)
+        compare(piano.width, 1520)
+        compare(piano.height, 64)
+        keyboards.contentX = keyboards.contentWidth - keyboards.width
+        verify(keyboards.contentX > 0)
+        wait(80)
+        grabImage(inspector.contentItem).save("/tmp/kog-channel-inspector-qt-narrow.png")
+        keyboards.contentX = 0
     }
 }

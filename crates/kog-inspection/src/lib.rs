@@ -88,6 +88,28 @@ pub struct Snapshot {
     pub dropped_frames: u64,
 }
 
+impl Snapshot {
+    /// Keep the tracker's lookahead stable across an HTTP window boundary.
+    /// This adds future rows without advancing the current row or keyboard.
+    pub fn append_upcoming_rows(&mut self, next: &Window) {
+        if self.seeking || self.current_row.is_none() {
+            return;
+        }
+        for row in next
+            .rows
+            .iter()
+            .chain(next.frames.iter().filter_map(|frame| frame.row.as_ref()))
+        {
+            if self.rows.len() >= 48 {
+                break;
+            }
+            if self.rows.last().is_some_and(|last| row.time > last.time) {
+                self.rows.push(row.clone());
+            }
+        }
+    }
+}
+
 pub fn note_name(key: f32) -> String {
     if !key.is_finite() {
         return "—".into();
@@ -251,35 +273,168 @@ impl Window {
         if seeking || !position.is_finite() || position < self.start || position >= self.end {
             return snapshot;
         }
-        let mut data = self.initial.clone();
+        // Resolve references first: cloning every intermediate 24/48-voice
+        // register frame at every UI tick is needlessly expensive.
+        let mut channels = self
+            .initial
+            .channels
+            .iter()
+            .map(|channel| (channel.id, channel))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let mut global = &self.initial.global;
         for frame in self
             .frames
             .iter()
             .take_while(|frame| frame.time <= position + 0.000_001)
         {
-            frame.apply(&mut data);
+            for id in &frame.removed {
+                channels.remove(id);
+            }
+            for channel in &frame.channels {
+                channels.insert(channel.id, channel);
+            }
+            if let Some(fields) = &frame.global {
+                global = fields;
+            }
         }
-        snapshot.channels = data.channels;
-        snapshot.global = data.global;
-        let mut rows = self.rows.clone();
+        snapshot.channels = channels.into_values().cloned().collect();
+        snapshot.global = global.clone();
+        let mut rows = self.rows.iter().collect::<Vec<_>>();
         for row in self.frames.iter().filter_map(|frame| frame.row.as_ref()) {
             if rows.last().is_none_or(|last| {
                 last.label != row.label || last.cells != row.cells || last.global != row.global
             }) {
-                rows.push(row.clone());
+                rows.push(row);
             }
         }
         let cursor = rows.partition_point(|row| row.time <= position + 0.000_001);
         let begin = cursor.saturating_sub(24);
-        snapshot.rows = rows.into_iter().skip(begin).take(48).collect();
+        snapshot.rows = rows.into_iter().skip(begin).take(48).cloned().collect();
         snapshot.current_row = cursor.checked_sub(1).and_then(|i| i.checked_sub(begin));
         snapshot
     }
 }
 
+/// First missing window in a contiguous lookahead from the audible position.
+/// A later cached window (for example after a backwards seek) cannot fill a gap.
+pub fn missing_window_position(windows: &[Window], position: f64, lookahead: f64) -> Option<f64> {
+    if !position.is_finite() || !lookahead.is_finite() || lookahead < 0.0 {
+        return None;
+    }
+    let target = position + lookahead;
+    let mut cursor = position;
+    for _ in 0..=windows.len() {
+        let Some(window) = windows.iter().find(|w| cursor >= w.start && cursor < w.end) else {
+            return Some(cursor);
+        };
+        if window.end >= target {
+            return None;
+        }
+        cursor = window.end;
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn inspection_tracker_keeps_upcoming_rows_across_window_boundary() {
+        let row = |time: f64| Row {
+            time,
+            label: time.to_string(),
+            ..Row::default()
+        };
+        let mut snapshot = Snapshot {
+            position: 0.99,
+            rows: (0..24).map(|i| row(0.75 + f64::from(i) * 0.01)).collect(),
+            current_row: Some(23),
+            ..Snapshot::default()
+        };
+        let next = Window {
+            rows: snapshot.rows.clone(),
+            frames: (0..30)
+                .map(|i| Delta {
+                    time: 1.0 + f64::from(i) * 0.01,
+                    row: Some(row(1.0 + f64::from(i) * 0.01)),
+                    ..Delta::default()
+                })
+                .collect(),
+            ..Window::default()
+        };
+        snapshot.append_upcoming_rows(&next);
+        assert_eq!(snapshot.rows.len(), 48);
+        assert_eq!(snapshot.current_row, Some(23));
+        assert_eq!(snapshot.position, 0.99);
+        assert_eq!(snapshot.rows[24].time, 1.0);
+        snapshot.append_upcoming_rows(&next);
+        assert_eq!(snapshot.rows.len(), 48);
+    }
+    #[test]
+    fn inspection_prefetch_fills_gaps_after_backwards_seek() {
+        let window = |start| Window {
+            start,
+            end: start + 1.0,
+            ..Window::default()
+        };
+        let mut windows = vec![window(6.0), window(7.0), window(0.0)];
+        assert_eq!(missing_window_position(&windows, 0.1, 2.0), Some(1.0));
+        windows.push(window(1.0));
+        assert_eq!(missing_window_position(&windows, 0.1, 2.0), Some(2.0));
+        windows.push(window(2.0));
+        assert_eq!(missing_window_position(&windows, 0.9, 2.0), None);
+        assert_eq!(missing_window_position(&windows, 3.0, 2.0), Some(3.0));
+        assert_eq!(missing_window_position(&windows, 6.9, 2.0), Some(8.0));
+    }
+
+    #[test]
+    fn inspection_snapshot_matches_delta_replay_with_removed_voices_and_globals() {
+        let voice = |id, key| Channel {
+            id,
+            notes: vec![Note {
+                key,
+                held: true,
+                velocity: 1.0,
+            }],
+            ..Channel::default()
+        };
+        let initial = FrameData {
+            channels: vec![voice(0, 60.0), voice(1, 64.0)],
+            global: vec![Field::new("Tempo", 120)],
+            ..FrameData::default()
+        };
+        let frames = vec![
+            Delta {
+                time: 0.1,
+                channels: vec![voice(1, 65.0)],
+                removed: vec![0],
+                global: Some(vec![Field::new("Tempo", 140)]),
+                ..Delta::default()
+            },
+            Delta {
+                time: 0.2,
+                channels: vec![voice(0, 67.0)],
+                ..Delta::default()
+            },
+        ];
+        let window = Window {
+            start: 0.0,
+            end: 1.0,
+            initial: initial.clone(),
+            frames,
+            ..Window::default()
+        };
+        for position in [0.0, 0.1, 0.15, 0.2, 0.5] {
+            let mut expected = initial.clone();
+            for frame in window.frames.iter().filter(|frame| frame.time <= position) {
+                frame.apply(&mut expected);
+            }
+            let actual = window.snapshot(position, true, false);
+            assert_eq!(actual.channels, expected.channels);
+            assert_eq!(actual.global, expected.global);
+        }
+    }
+
     #[test]
     fn buffered_windows_follow_the_consumer_clock_in_both_directions() {
         let channel = |key| Channel {

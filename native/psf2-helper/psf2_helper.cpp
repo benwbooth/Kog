@@ -780,9 +780,13 @@ public:
                     char name[64]; std::snprintf(name, sizeof(name), "SPU %u · Voice %u", core + 1, i + 1);
                     auto& v = voices.add(name, 2, c.status != Iop::CSpuBase::STOPPED,
                         0, c.adsrVolume / 2147483647.0f * std::max(left, right), right - left);
+                    // SPU pitch is a sample-rate ratio. Anchor unity to C4 so
+                    // keyboards show relative transposition without assuming
+                    // the original instrument sample's tuning.
+                    v.key = c.pitch ? 60.0f + 12.0f * std::log2(c.pitch / 4096.0f) : -1.0f;
                     std::snprintf(v.instrument, sizeof(v.instrument), "ADPCM %06X", c.address);
                     std::snprintf(v.details, sizeof(v.details),
-                        "Pitch rate=%.1f Hz (%04X) | Envelope=%08X state %u | ADSR=%04X %04X | Volume L/R=%04X/%04X | Current=%06X | Loop=%06X | Reverb=%u | Control=%04X",
+                        "Pitch basis=Relative (C4 = normal sample rate) | Pitch rate=%.1f Hz (%04X) | Envelope=%08X state %u | ADSR=%04X %04X | Volume L/R=%04X/%04X | Current=%06X | Loop=%06X | Reverb=%u | Control=%04X",
                         (m_ps2 ? 48000.0 : 44100.0) * c.pitch / 4096.0, c.pitch, c.adsrVolume, c.status,
                         unsigned(uint16(c.adsrLevel)), unsigned(uint16(c.adsrRate)),
                         unsigned(uint16(c.volumeLeft)), unsigned(uint16(c.volumeRight)), c.current, c.repeat,

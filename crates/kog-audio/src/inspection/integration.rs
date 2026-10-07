@@ -128,6 +128,23 @@ fn verify(name: &str, count: usize, pitched: bool) {
         latest.description
     );
     assert!(!pitched || saw_pitch, "{name}: no pitch observed");
+    if matches!(name, "psf" | "psf2") {
+        let voice = latest
+            .channels
+            .iter()
+            .find(|c| !c.notes.is_empty())
+            .expect("active SPU voice");
+        assert!(
+            (voice.notes[0].key - 60.0).abs() < 0.001,
+            "unity SPU pitch is relative C4"
+        );
+        assert!(
+            voice
+                .fields
+                .iter()
+                .any(|f| f.name == "Pitch basis" && f.value.contains("Relative"))
+        );
+    }
     assert!(!latest.rows.is_empty(), "{name}: no tracker rows");
     let mut ids = latest.channels.iter().map(|c| c.id).collect::<Vec<_>>();
     ids.sort_unstable();
@@ -223,9 +240,9 @@ decoder_test!(inspection_ssf, "ssf", 32, false);
 decoder_test!(inspection_dsf, "dsf", 64, false);
 decoder_test!(inspection_usf, "usf", 2, false);
 #[cfg(not(windows))]
-decoder_test!(inspection_psf, "psf", 24, false);
+decoder_test!(inspection_psf, "psf", 24, true);
 #[cfg(not(windows))]
-decoder_test!(inspection_psf2, "psf2", 48, false);
+decoder_test!(inspection_psf2, "psf2", 48, true);
 #[cfg(not(windows))]
 decoder_test!(inspection_snsf, "snsf", 8, false);
 #[cfg(not(windows))]

@@ -6,7 +6,7 @@ ApplicationWindow {
     id: root
     required property var app
     title: qsTr("Kog — Channel Inspector")
-    width: 1120
+    width: Math.min(1800, Screen.desktopAvailableWidth)
     height: 740
     minimumWidth: 640
     minimumHeight: 400
@@ -89,12 +89,17 @@ ApplicationWindow {
                 SplitView.preferredHeight: root.height * 0.43
                 SplitView.minimumHeight: 100
                 model: root.channels.length
+                // Keep the full keyboard readable in narrow windows. All
+                // channels share the horizontal scroll position.
+                contentWidth: Math.max(width, 1742)
+                flickableDirection: Flickable.AutoFlickIfNeeded
                 ScrollBar.vertical: ScrollBar { }
+                ScrollBar.horizontal: ScrollBar { }
                 delegate: Rectangle {
                     required property int index
                     readonly property var channel: root.channels[index] || ({})
-                    width: keyboards.width - 14
-                    height: 90
+                    width: keyboards.contentWidth - 14
+                    height: 108
                     radius: 5
                     color: "#192832"
                     RowLayout {
@@ -110,7 +115,15 @@ ApplicationWindow {
                         }
                         ColumnLayout {
                             Layout.fillWidth: true
-                            ChannelKeyboard { notes: channel.notes || []; Layout.fillWidth: true; Layout.preferredHeight: 46 }
+                            ChannelKeyboard {
+                                objectName: "channelKeyboard"
+                                notes: channel.notes || []
+                                Layout.minimumWidth: implicitWidth
+                                Layout.preferredWidth: implicitWidth
+                                Layout.maximumWidth: implicitWidth
+                                Layout.preferredHeight: implicitHeight
+                                Layout.alignment: Qt.AlignHCenter
+                            }
                             Label { text: root.fields(channel.fields); textFormat: Text.PlainText; color: "#91aab8"; font.pixelSize: 10; elide: Text.ElideRight; Layout.fillWidth: true }
                         }
                     }
