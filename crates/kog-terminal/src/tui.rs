@@ -1119,6 +1119,9 @@ impl Ui {
         let (metadata_requests, worker_requests) = mpsc::channel::<(u64, String, StoredEntry)>();
         let (worker_results, metadata_results) = mpsc::channel();
         let worker_requests = Arc::new(Mutex::new(worker_requests));
+        // Terminal regression fixtures hold tag probes while this file exists,
+        // so album metadata can arrive after playback has already started.
+        let metadata_hold = std::env::var_os("KOG_TUI_TEST_METADATA_HOLD").map(PathBuf::from);
         // Metadata for a slow file must not hold every newly added row blank.
         // Each worker needs its own scratch playlist: resolve_entry writes a
         // temporary M3U there before expanding an archive or local source.
@@ -1126,6 +1129,7 @@ impl Ui {
             let requests = Arc::clone(&worker_requests);
             let results = worker_results.clone();
             let metadata_settings = decoder_settings.clone();
+            let metadata_hold = metadata_hold.clone();
             std::thread::spawn(move || {
                 let decoders = DecoderRegistry::new(metadata_settings);
                 let scratch = kog_server::service::scratch_root()
@@ -1138,6 +1142,9 @@ impl Ui {
                     let Ok((generation, key, entry)) = request else {
                         break;
                     };
+                    while metadata_hold.as_deref().is_some_and(Path::exists) {
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
                     let resolved = PlaylistEntry::try_from(&entry).and_then(|playlist_entry| {
                         kog_audio::streaming::resolve_entry(&playlist_entry, &decoders, &scratch)
                     });

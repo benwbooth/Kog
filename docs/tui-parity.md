@@ -2,7 +2,7 @@
 
 This is the feature inventory for the terminal frontend, checked against `qml/Main.qml` and `crates/kog-web/src/lib.rs`. A checked item has been exercised in the isolated PTY test at the terminal sizes where the control is visible. Unchecked items still need implementation, verification, or both; the TUI should not be described as fully equivalent while they remain.
 
-Run `nix develop --command cargo build -p kog --bin kog`, then `uv run --python 3.13 --with pyte --with mutagen scripts/tui_pty_check.py`, `uv run --python 3.13 --with pyte scripts/tui_keyboard_check.py`, `uv run --python 3.13 --with pyte scripts/tui_size_columns_check.py`, `uv run --python 3.13 --with pyte scripts/tui_transport_check.py`, `nix develop --command uv run --with pyte scripts/tui_server_interop_check.py`, and `uv run --with pyte scripts/tui_server_controls_check.py`. Set `KOG_TUI_TEST_BINARY` to an absolute `kog-tui` path to test the standalone executable instead. The tests create their own music trees, archives, settings directories, and SQLite databases. They do not write to the user's library or playlists.
+Run `nix develop --command cargo build -p kog --bin kog`, then `uv run --python 3.13 --with pyte --with mutagen scripts/tui_pty_check.py`, `uv run --python 3.13 --with pyte scripts/tui_keyboard_check.py`, `uv run --python 3.13 --with pyte scripts/tui_size_columns_check.py`, `uv run --python 3.13 --with pyte scripts/tui_transport_check.py`, `uv run --python 3.13 --with pyte --with mutagen scripts/tui_late_album_check.py`, `nix develop --command uv run --with pyte scripts/tui_server_interop_check.py`, and `uv run --with pyte scripts/tui_server_controls_check.py`. Set `KOG_TUI_TEST_BINARY` to an absolute `kog-tui` path to test the standalone executable instead. The tests create their own music trees, archives, settings directories, and SQLite databases. They do not write to the user's library or playlists.
 
 The provider smoke test is opt-in because it contacts public services: `nix develop --command cargo test -p kog-terminal --lib live_super_mario_galaxy_cover -- --ignored`.
 
@@ -92,7 +92,7 @@ The printable alternatives for range selection, context actions, resizing, reord
 - [x] Per-row queue and stop-after markers change playback order in PTY playback.
 - [x] Queue positions and stop-after markers stay with their tracks across sort, move, and removal.
 - [x] Late album metadata regroups only the unplayed part of album shuffle; a focused playback-order test verifies the played prefix and remaining album sequence.
-- [ ] Album metadata arriving during playback has a dedicated terminal regression fixture for shuffle and repeat order.
+- [x] Album metadata arriving during playback has a dedicated terminal regression fixture for shuffle and repeat order. `scripts/tui_late_album_check.py` holds tag probes with `KOG_TUI_TEST_METADATA_HOLD`, starts playback, then releases the tags and checks that album shuffle plays the rest of the current album next and Repeat Album wraps to that album's first track.
 - [x] Current track, elapsed time, duration, and play/pause state update during PTY playback.
 - [x] Music root, volume, equalizer preset, preamp, and output device controls are reachable from menus.
 - [x] The Qt opening-files preference is saved and applied to activated files; the PTY fixture checks replace-and-play and enqueue without interrupting playback.
@@ -123,7 +123,7 @@ The Qt hamburger, playlist and file context menus, playlist header, and the web 
 | --- | --- |
 | File tree | Remote multi-song files expand through `/api/expand`; the real server fixture checks a three-song NSF and remote nested archive playback. |
 | Saved playlists | Remote track save, reload, and M3U export are checked against the real server. |
-| Playback | Terminal timing fixture for late album tags and output device test on real hardware. Missing-track recovery is checked in the PTY. |
+| Playback | Output device test on real hardware. Late album tags and missing-track recovery are checked in the PTY. |
 | Library settings | Read CUE and M3U/PLS menu controls and folder behavior are checked. |
 | Synthesis | SC-55 and MT-32 archive controls reject incomplete fixtures; validating a complete proprietary ROM set needs user supplied files. |
 | Server settings | Shared configuration, embedded start/stop, device blocking, token/basic authentication, self-signed HTTPS, and PEM import are checked through real requests. |

@@ -76,6 +76,16 @@ with tempfile.TemporaryDirectory(prefix="kog-tui-transport-") as base:
             drain(0.1)
         raise AssertionError((value, screen.display[-5:]))
 
+    def wait_playing(title, timeout=8):
+        # The status line says only "Playing"; the footer names the track.
+        until = time.monotonic() + timeout
+        while time.monotonic() < until:
+            footer = screen.display[20].split()
+            if "Playing" in screen.display[21] and title in footer[:3]:
+                return
+            drain(0.1)
+        raise AssertionError((title, screen.display[-5:]))
+
     def glyph_x(glyph, row=20):
         for column in range(screen.columns):
             if screen.buffer[row][column].data == glyph:
@@ -95,18 +105,23 @@ with tempfile.TemporaryDirectory(prefix="kog-tui-transport-") as base:
         click_glyph("⚄")
         wait_for("Random Radio: off")
 
-        for path in paths:
+        for count, path in enumerate(paths, 1):
             send(b"\x1ba")  # Main-menu Add File accelerator.
             wait_for("Add file or folder")
             send(os.fsencode(path) + b"\r")
-            wait_for(f"Added {path.name}")
+            # Track preparation replaces the "Added" status, so count rows.
+            wait_for(f"{count} tracks")
         click_glyph("▶")
-        wait_for("Playing a.wav")
+        wait_playing("a")
         click_glyph("⏭")
-        wait_for("Playing b.wav")
+        wait_playing("b")
         click_glyph("⏮")
-        wait_for("Playing a.wav")
-        send("q")
+        wait_playing("a")
+        send("q", 0.5)
+        if "Confirm exit" in "\n".join(screen.display):
+            y = next(y for y, line in enumerate(screen.display) if "[Exit]" in line)
+            x = screen.display[y].find("[Exit]") + 2
+            send(f"\x1b[<0;{x + 1};{y + 1}M\x1b[<0;{x + 1};{y + 1}m")
         process.wait(timeout=5)
         assert process.returncode == 0, process.returncode
         print("72-column TUI transport glyph clicks and Radio/volume separation: PASS")
