@@ -48,6 +48,22 @@ By default each line holds four bars of one track. Change it with:
 
 Changing it rearranges the recorded score; it does not record the song again.
 
+## Copying and saving
+
+**Copy** puts the whole score on the clipboard, and **Export** saves it as a
+`.mml` file named after the song's title. Both take the full text, headers
+included, laid out with the current bars per line; a score that is still
+recording is copied as far as it has got.
+
+| Player | Copy | Export |
+| --- | --- | --- |
+| Desktop | **Copy** | **Export…**, then choose where to save |
+| Web player | **Copy** | **Export** downloads the file |
+| Terminal | **Y** (through the terminal's clipboard, OSC 52) | **E** saves into the folder Kog was started from |
+| Android and iOS | **Copy** | **Export**, then choose where to save |
+
+The file can be read back exactly: see chapter 17.
+
 ## Colours
 
 Tokens are coloured by what they are:

@@ -45,6 +45,8 @@ impl View {
             Key::Char('f') if self.mode == 4 => self.mml.follow = !self.mml.follow,
             Key::Char('+') | Key::Char('=') if self.mode == 4 => self.mml.change_bars(true),
             Key::Char('-') if self.mode == 4 => self.mml.change_bars(false),
+            Key::Char('y') | Key::Char('Y') if self.mode == 4 => self.mml.copy(),
+            Key::Char('e') | Key::Char('E') if self.mode == 4 => self.mml.export(),
             Key::Up if self.mode == 4 => {
                 self.mml.follow = false;
                 self.mml.scroll = self.mml.scroll.saturating_sub(1);
@@ -154,10 +156,14 @@ impl View {
                 out,
                 height,
                 2,
-                &format!(
-                    "Highlighted notes are sounding · G guide · +/- bars per line ({}) · ↑↓ scroll · F follow · Space play/pause",
-                    self.mml.bars_label()
-                ),
+                &if self.mml.notice.is_empty() {
+                    format!(
+                        "Highlighted notes are sounding · G guide · +/- bars per line ({}) · Y copy · E export · ↑↓ scroll · F follow · Space play/pause",
+                        self.mml.bars_label()
+                    )
+                } else {
+                    format!("{} · G guide · Y copy · E export · F follow", self.mml.notice)
+                },
                 width - 3,
                 Surface::Muted,
                 false,

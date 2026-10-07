@@ -25,6 +25,10 @@ pub(super) struct Mml {
     wrapped_for: usize,
     pub scroll: usize,
     pub follow: bool,
+    /// What the last copy or export did.
+    pub notice: String,
+    /// Text to hand to the terminal's clipboard on the next draw.
+    clipboard: Option<String>,
 }
 
 impl Mml {
@@ -41,6 +45,7 @@ impl Mml {
         self.rows.clear();
         self.scroll = 0;
         self.follow = true;
+        self.notice.clear();
         self.pending = Some(start(Arc::clone(&self.progress)));
     }
 
@@ -56,6 +61,40 @@ impl Mml {
             self.document = Some(Ok(encode_lines(score, self.bars)));
             self.wrapped_for = 0;
         }
+    }
+
+    /// Copy the whole score through the terminal (OSC 52).
+    pub fn copy(&mut self) {
+        let Some(Ok(document)) = &self.document else {
+            self.notice = "No score to copy yet".into();
+            return;
+        };
+        self.clipboard = Some(document.text.clone());
+        self.notice = "Copied the MML score (needs a terminal with OSC 52 clipboard support)".into();
+    }
+
+    /// Save the whole score as `<title>.mml` in the working directory.
+    pub fn export(&mut self) {
+        let Some(Ok(document)) = &self.document else {
+            self.notice = "No score to export yet".into();
+            return;
+        };
+        let title = document
+            .text
+            .lines()
+            .find_map(|line| line.strip_prefix("#TITLE "))
+            .map(|title| title.trim().trim_matches('"').to_owned())
+            .filter(|title| !title.is_empty())
+            .unwrap_or_else(|| "score".into());
+        let name: String = title
+            .chars()
+            .map(|c| if c.is_control() || "\\/:*?\"<>|".contains(c) { '_' } else { c })
+            .collect();
+        let path = std::env::current_dir().unwrap_or_default().join(format!("{name}.mml"));
+        self.notice = match std::fs::write(&path, &document.text) {
+            Ok(()) => format!("Saved {}", path.display()),
+            Err(error) => format!("Could not save {}: {error}", path.display()),
+        };
     }
 
     pub fn bars_label(&self) -> usize {
@@ -123,6 +162,12 @@ impl Mml {
     pub fn draw(&mut self, out: &mut String, area: (usize, usize, usize, usize), seconds: f64) {
         let (x, y, width, height) = area;
         self.poll();
+        if let Some(text) = self.clipboard.take() {
+            use base64::Engine;
+            out.push_str("\x1b]52;c;");
+            out.push_str(&base64::engine::general_purpose::STANDARD.encode(text));
+            out.push_str("\x07");
+        }
         let document = match &self.document {
             None => {
                 let text = if self.pending.is_some() {

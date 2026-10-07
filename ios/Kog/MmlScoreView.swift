@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct MmlScoreView: View {
     @EnvironmentObject private var store: KogStore
@@ -13,14 +14,36 @@ struct MmlScoreView: View {
     @State private var barCache = [Int: AttributedString]()
     @AppStorage("mmlBarsPerLine") private var bars = 4
     @State private var showGuide = false
+    @State private var exporting = false
+    @State private var notice = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Button("Guide") { showGuide = true }.font(.caption)
+                Button("Copy") {
+                    UIPasteboard.general.string = document?.text
+                    notice = "Copied the MML score"
+                }
+                .font(.caption)
+                .disabled(document == nil)
+                Button("Export") { exporting = true }
+                    .font(.caption)
+                    .disabled(document == nil)
                 Spacer()
             }
             .sheet(isPresented: $showGuide) { MmlGuideView() }
+            .fileExporter(
+                isPresented: $exporting,
+                document: MmlFile(text: document?.text ?? ""),
+                contentType: MmlFile.type,
+                defaultFilename: MmlFile.name(document?.text ?? "")
+            ) { result in
+                switch result {
+                case .success: notice = "Saved the MML score"
+                case .failure(let error): notice = "Could not save: \(error.localizedDescription)"
+                }
+            }
             Stepper("Bars per line: \(bars)", value: $bars, in: 1...16)
                 .font(.caption)
                 .onChange(of: bars) { _, _ in
@@ -28,6 +51,7 @@ struct MmlScoreView: View {
                     revision = -1; done = false; lastRequest = .distantPast
                 }
             if !message.isEmpty { Text(message).font(.caption2).foregroundStyle(Palette.muted) }
+            if !notice.isEmpty { Text(notice).font(.caption2).foregroundStyle(Palette.muted) }
             if let document {
                 ScrollViewReader { proxy in
                     ScrollView {
@@ -135,5 +159,34 @@ struct MmlScoreView: View {
             }
             active = document.active(at: seconds)
         }
+    }
+}
+
+/// A whole MML score as a `.mml` text file, for Export.
+struct MmlFile: FileDocument {
+    static let type = UTType(filenameExtension: "mml", conformingTo: .plainText) ?? .plainText
+    static var readableContentTypes: [UTType] { [type, .plainText] }
+
+    var text: String
+
+    init(text: String) { self.text = text }
+
+    init(configuration: ReadConfiguration) throws {
+        text = configuration.file.regularFileContents.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: Data(text.utf8))
+    }
+
+    /// The score's `#TITLE`, made safe for a file name.
+    static func name(_ text: String) -> String {
+        let title = text.split(separator: "\n").lazy
+            .compactMap { $0.hasPrefix("#TITLE ") ? $0.dropFirst(7) : nil }
+            .first
+            .map { $0.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "\"")) }
+            .flatMap { $0.isEmpty ? nil : $0 } ?? "score"
+        let unsafe = CharacterSet(charactersIn: "\\/:*?\"<>|").union(.controlCharacters)
+        return String(String.UnicodeScalarView(title.unicodeScalars.map { unsafe.contains($0) ? "_" : $0 }))
     }
 }

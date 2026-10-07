@@ -27,11 +27,12 @@ with tempfile.TemporaryDirectory(prefix="kog-tui-mml-") as base:
     fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLUMNS, 0, 0))
     process = subprocess.Popen(
         [str(BINARY)] if BINARY.name == "kog-tui" else [str(BINARY), "--tui"],
-        stdin=slave, stdout=slave, stderr=slave, env=env, close_fds=True,
+        stdin=slave, stdout=slave, stderr=slave, env=env, close_fds=True, cwd=base,
     )
     os.close(slave)
     screen = pyte.Screen(COLUMNS, ROWS)
     stream = pyte.Stream(screen)
+    raw = bytearray()
 
     def drain(seconds=0.2):
         until = time.monotonic() + seconds
@@ -43,6 +44,7 @@ with tempfile.TemporaryDirectory(prefix="kog-tui-mml-") as base:
                     break
                 if not data:
                     break
+                raw.extend(data)
                 stream.feed(data.decode("utf8", "replace"))
 
     def send(data, seconds=0.25):
@@ -128,6 +130,14 @@ with tempfile.TemporaryDirectory(prefix="kog-tui-mml-") as base:
         wait_for("2. THE MML VIEW")
         send("g")
         wait_for("bars per line (4)")
+        raw.clear()
+        send("y")
+        wait_for("Copied the MML score")
+        assert b"\x1b]52;c;" in raw, "no OSC 52 copy"
+        send("e")
+        wait_for("Saved ")
+        exported = list(Path(base).glob("*.mml"))
+        assert exported and exported[0].read_text().startswith("#KOG-MML 1"), exported
         if os.environ.get("KOG_MML_SCREEN"):
             print("\n".join(screen.display))
         send(b"\x1b")

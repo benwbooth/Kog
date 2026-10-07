@@ -24,6 +24,7 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
@@ -116,6 +117,7 @@ internal fun MmlScore(state: KogState, follow: Boolean, modifier: Modifier) {
     var message by remember { mutableStateOf("Recording every channel of this song…") }
     var active by remember { mutableStateOf(emptySet<Int>() to -1) }
     var bars by rememberSaveable { mutableIntStateOf(4) }
+    var notice by remember { mutableStateOf("") }
     val currentBars by rememberUpdatedState(bars)
     LaunchedEffect(state) {
         var identity = ""
@@ -169,14 +171,40 @@ internal fun MmlScore(state: KogState, follow: Boolean, modifier: Modifier) {
     Column(modifier) {
         var guide by remember { mutableStateOf(false) }
         if (guide) MmlGuide { guide = false }
-        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+        val context = androidx.compose.ui.platform.LocalContext.current
+        val scope = rememberCoroutineScope()
+        val export = androidx.activity.compose.rememberLauncherForActivityResult(
+            androidx.activity.result.contract.ActivityResultContracts.CreateDocument("text/plain")
+        ) { uri ->
+            val text = document?.text ?: return@rememberLauncherForActivityResult
+            if (uri == null) return@rememberLauncherForActivityResult
+            scope.launch {
+                notice = runCatching {
+                    withContext(Dispatchers.IO) {
+                        context.contentResolver.openOutputStream(uri, "wt")!!.use { it.write(text.toByteArray()) }
+                    }
+                }.fold({ "Saved the MML score" }, { "Could not save: ${it.message}" })
+            }
+        }
+        Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
             TextButton(onClick = { guide = true }) { Text("Guide") }
+            TextButton(enabled = document != null, onClick = {
+                val text = document?.text ?: return@TextButton
+                notice = runCatching {
+                    val clipboard = context.getSystemService(android.content.ClipboardManager::class.java)
+                    clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Kog MML", text))
+                }.fold({ "Copied the MML score" }, { "Could not copy: ${it.message}" })
+            }) { Text("Copy") }
+            TextButton(enabled = document != null, onClick = {
+                export.launch("${mmlFileName(document?.text.orEmpty())}.mml")
+            }) { Text("Export") }
             Text("Bars per line", fontSize = 12.sp, color = Color(0xffadb7c0))
             TextButton(onClick = { bars = (bars - 1).coerceAtLeast(1) }, enabled = bars > 1) { Text("−") }
             Text("$bars", fontSize = 13.sp, fontFamily = FontFamily.Monospace)
             TextButton(onClick = { bars = (bars + 1).coerceAtMost(16) }, enabled = bars < 16) { Text("+") }
         }
         if (message.isNotEmpty()) Text(message, fontSize = 11.sp, color = Color(0xffadb7c0))
+        if (notice.isNotEmpty()) Text(notice, fontSize = 11.sp, color = Color(0xffadb7c0))
         val score = document ?: return@Column
         LazyColumn(state = list, modifier = Modifier.background(Color(0xff0f171c))) {
             item { Text(remember(score) { score.styled(0, score.headerEnd) }, Modifier.padding(8.dp),
@@ -201,6 +229,13 @@ internal fun MmlScore(state: KogState, follow: Boolean, modifier: Modifier) {
 }
 
 /** One chapter of the Kog MML guide (docs/mml-guide). */
+/** The score's `#TITLE`, made safe for a file name. */
+internal fun mmlFileName(text: String): String {
+    val title = text.lineSequence().firstNotNullOfOrNull { it.removePrefix("#TITLE ").takeIf { rest -> rest != it } }
+        ?.trim()?.trim('"')?.takeIf { it.isNotEmpty() } ?: "score"
+    return title.map { if (it.isISOControl() || it in "\\/:*?\"<>|") '_' else it }.joinToString("")
+}
+
 internal class GuideChapter(val title: String, val markdown: String)
 
 internal fun loadGuide(): List<GuideChapter> = runCatching {

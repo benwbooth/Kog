@@ -19,6 +19,51 @@ fn escape(text: &str) -> String {
     text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
+/// Put text on the clipboard. Returns false when the browser offers no
+/// clipboard (for example over plain HTTP).
+fn copy_text(text: &str) -> bool {
+    let Ok(navigator) = js_sys::Reflect::get(&window(), &"navigator".into()) else { return false };
+    let Ok(clipboard) = js_sys::Reflect::get(&navigator, &"clipboard".into()) else { return false };
+    if clipboard.is_undefined() {
+        return false;
+    }
+    let Ok(write) = js_sys::Reflect::get(&clipboard, &"writeText".into()) else { return false };
+    write
+        .dyn_ref::<js_sys::Function>()
+        .is_some_and(|write| write.call1(&clipboard, &text.into()).is_ok())
+}
+
+/// Save text as a file through a temporary download link.
+fn download(name: &str, text: &str) {
+    let parts = js_sys::Array::of1(&text.into());
+    let options = web_sys::BlobPropertyBag::new();
+    options.set_type("text/plain;charset=utf-8");
+    let Ok(blob) = web_sys::Blob::new_with_str_sequence_and_options(&parts, &options) else { return };
+    let Ok(url) = web_sys::Url::create_object_url_with_blob(&blob) else { return };
+    if let Some(link) = document().create_element("a").ok() {
+        let _ = link.set_attribute("href", &url);
+        let _ = link.set_attribute("download", name);
+        if let Some(link) = link.dyn_ref::<web_sys::HtmlElement>() {
+            link.click();
+        }
+    }
+    let _ = web_sys::Url::revoke_object_url(&url);
+}
+
+/// The score's title from its `#TITLE` header, made safe for a file name.
+fn file_name(text: &str) -> String {
+    let title = text
+        .lines()
+        .find_map(|line| line.strip_prefix("#TITLE "))
+        .map(|title| title.trim().trim_matches('"').to_owned())
+        .filter(|title| !title.is_empty())
+        .unwrap_or_else(|| "score".into());
+    title
+        .chars()
+        .map(|c| if c.is_control() || "\\/:*?\"<>|".contains(c) { '_' } else { c })
+        .collect()
+}
+
 /// Text in `from..to` as colour runs; sounding tokens get an index so their
 /// highlight can be toggled without re-rendering.
 fn styled(document: &Document, from: usize, to: usize, html: &mut String) {
@@ -102,6 +147,8 @@ pub fn MmlView(
     let bars = RwSignal::new(initial_bars);
     let rewrap = RwSignal::new(false);
     let guide_open = RwSignal::new(false);
+    // The whole text, for Copy and Export.
+    let score_text = RwSignal::new(String::new());
     let lit = Rc::new(RefCell::new(Vec::<usize>::new()));
     let current_bar = Rc::new(Cell::new(None::<usize>));
     let tick = Closure::<dyn FnMut()>::new(move || {
@@ -228,6 +275,7 @@ pub fn MmlView(
                         // the partial one; replacing the HTML resets scrolling.
                         let scroll = container.scroll_top();
                         container.set_inner_html(&render(&new));
+                        score_text.set(new.text.clone());
                         container.set_scroll_top(scroll);
                         lit.borrow_mut().clear();
                         current_bar.set(None);
@@ -280,6 +328,13 @@ pub fn MmlView(
                     }).collect_view()}
                 </select>
             </label>
+            <button type="button" prop:disabled=move || score_text.with(String::is_empty)
+                on:click=move |_| {
+                    let copied = score_text.with_untracked(|text| copy_text(text));
+                    message.set(if copied { "Copied the MML score".into() } else { "Copying needs clipboard access in this browser".into() });
+                }>"Copy"</button>
+            <button type="button" prop:disabled=move || score_text.with(String::is_empty)
+                on:click=move |_| score_text.with_untracked(|text| download(&format!("{}.mml", file_name(text)), text))>"Export"</button>
             <button type="button" class="mml-guide-button" on:click=move |_| guide_open.set(true)>"Guide"</button>
             <p class="mml-status">{move || message.get()}</p>
         </div>
