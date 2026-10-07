@@ -25,7 +25,10 @@ ApplicationWindow {
     property int mode: 2
     // MML score: the playing bar arrives as highlighted rich text, the other
     // bars are fetched once per score revision by their delegates.
-    property var mml: ({ revision: 0, bars: 0, current: -1, message: "", header: "", currentHtml: "" })
+    // Each piece of the MML state is its own property so a change in one (the
+    // recording progress message ticks every second) does not rebuild the list.
+    property string mmlMessage: ""
+    property string mmlHeader: ""
     property int mmlRevision: 0
     // Only these change while a bar plays, so other bars are not re-laid out.
     property int mmlCurrent: -1
@@ -35,14 +38,13 @@ ApplicationWindow {
         if (mode === 3) {
             try {
                 const next = JSON.parse(app.mml_state())
-                if (next.revision !== mmlRevision) {
-                    // A longer partial score resets the list; keep the reader's place.
-                    const y = mmlBars.contentY
-                    mml = next
-                    mmlRevision = next.revision
-                    Qt.callLater(() => mmlBars.contentY = y)
-                }
-                else if (next.message !== mml.message || next.bars !== mml.bars) mml = next
+                if (next.message !== mmlMessage) mmlMessage = next.message
+                if ((next.header || "") !== mmlHeader) mmlHeader = next.header || ""
+                // Grow or shrink the list in place: replacing the model would
+                // reset the view to the top.
+                while (mmlModel.count < next.bars) mmlModel.append({})
+                if (mmlModel.count > next.bars) mmlModel.remove(next.bars, mmlModel.count - next.bars)
+                if (next.revision !== mmlRevision) mmlRevision = next.revision
                 if (next.current !== mmlCurrent) mmlCurrent = next.current
                 if (next.currentHtml !== mmlCurrentHtml) mmlCurrentHtml = next.currentHtml
             } catch (_) { }
@@ -132,8 +134,8 @@ ApplicationWindow {
         }
         Label { text: root.fields(root.frame.global); color: "#83d4bb"; textFormat: Text.PlainText; elide: Text.ElideRight; Layout.fillWidth: true }
         Label {
-            visible: root.mode === 3 && root.mml.message.length > 0
-            text: root.mml.message
+            visible: root.mode === 3 && root.mmlMessage.length > 0
+            text: root.mmlMessage
             color: "#a8bdc9"; textFormat: Text.PlainText; Layout.fillWidth: true
         }
         ListView {
@@ -144,7 +146,7 @@ ApplicationWindow {
             Layout.fillHeight: true
             clip: true
             spacing: 0
-            model: root.mode === 3 ? root.mml.bars : 0
+            model: ListModel { id: mmlModel }
             boundsBehavior: Flickable.StopAtBounds
             ScrollBar.vertical: ScrollBar { }
             KineticWheelHandler { view: mmlBars }
@@ -154,7 +156,7 @@ ApplicationWindow {
             onPlayingChanged: if (root.follow && playing >= 0) positionViewAtIndex(playing, ListView.Beginning)
             header: Text {
                 width: mmlBars.width
-                text: root.mml.header || ""
+                text: root.mmlHeader
                 textFormat: Text.StyledText; wrapMode: Text.Wrap
                 color: "#6f8794"; font.family: "monospace"; font.pixelSize: 12
                 bottomPadding: 8

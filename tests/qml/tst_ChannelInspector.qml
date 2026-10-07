@@ -25,17 +25,18 @@ TestCase {
         property int mmlRevision: 2
         property int mmlBars: 3
         function mml_state() {
-            return JSON.stringify({revision: mmlRevision, message: "", bars: mmlBars, current: mmlCurrent, header: "#KOG-MML 1",
+            return JSON.stringify({revision: mmlRevision, message: mmlMessage, bars: mmlBars, current: mmlCurrent, header: "#KOG-MML 1",
                 currentHtml: "<p>A | c4 <span style=\"background-color:#50c8ef\">e4</span> |</p>"})
         }
         property int barsPerLine: 4
+        property string mmlMessage: ""
         function set_mml_bars_per_line(bars) { barsPerLine = bars }
         function mml_bar(index) { barRequests++; return "<p>; bar " + (index + 1) + "<br/>A | c4 e4 |</p>" }
     }
     Kog.ChannelInspector { id: inspector; app: backend }
     SignalSpy { id: backgroundPaints; signalName: "painted" }
     function initTestCase() { initialState = JSON.stringify(state) }
-    function init() { state = JSON.parse(initialState); inspector.width = 1800; inspector.show(); inspector.mode = 2; inspector.refresh() }
+    function init() { backend.mmlBars = 3; backend.mmlRevision = 2; backend.mmlCurrent = 1; backend.mmlMessage = ""; state = JSON.parse(initialState); inspector.width = 1800; inspector.show(); inspector.mode = 2; inspector.refresh() }
     function cleanup() { inspector.hide() }
 
     function test_modes_and_polyphonic_keyboard() {
@@ -97,6 +98,35 @@ TestCase {
         verify(!spin.visible)
     }
 
+    function test_mml_follow_never_jumps_back_to_the_top() {
+        backend.mmlBars = 200
+        backend.mmlRevision = 20
+        backend.mmlCurrent = 0
+        inspector.mode = 3
+        inspector.refresh()
+        const score = findChild(inspector.contentItem, "mmlScore")
+        tryCompare(score, "count", 200)
+        let previous = score.contentY
+        for (let block = 1; block < 40; ++block) {
+            // Recording progress changes the message on every refresh.
+            backend.mmlMessage = "Still recording... " + block
+            inspector.refresh()
+            wait(5)
+            if (block % 3 === 0) {
+                backend.mmlCurrent = block / 3
+                inspector.refresh()
+                wait(20)
+            }
+            verify(score.contentY >= previous, "scrolled back from " + previous + " to " + score.contentY + " at " + block)
+            previous = score.contentY
+        }
+        verify(previous > 200)
+        backend.mmlMessage = ""
+        backend.mmlBars = 3
+        backend.mmlRevision = 2
+        backend.mmlCurrent = 1
+    }
+
     function test_mml_update_keeps_scroll_position() {
         backend.mmlBars = 200
         backend.mmlRevision = 10
@@ -110,6 +140,8 @@ TestCase {
         backend.mmlBars = 220
         backend.mmlRevision = 11
         inspector.refresh()
+        // Not even momentarily back at the top.
+        compare(score.contentY, 1500)
         tryCompare(score, "count", 220)
         wait(50)
         compare(score.contentY, 1500)
