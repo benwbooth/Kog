@@ -129,7 +129,10 @@ struct KogGmeInspector {
         }
     }
     void spc(Spc_Emu &emu) {
-        ahead += double(emu.resampler.avail()) / (2 * emu.sample_rate());
+        // At the native 32 kHz rate the resampler is unused and its buffer
+        // is never allocated, so it holds nothing ahead of the output.
+        if (emu.sample_rate() != Spc_Emu::native_sample_rate)
+            ahead += double(emu.resampler.avail()) / (2 * emu.sample_rate());
         const auto &dsp = emu.apu.dsp;
         const auto *regs = dsp.m.regs;
         for (int i = 0; i < 8; ++i) {

@@ -5,7 +5,8 @@ fn main() {
     let progress = kog_audio::inspection::score::Progress::default();
     let mut pcm = kog_audio::streaming::PcmReader::open_path(path.into(), Default::default()).unwrap();
     let opened = started.elapsed();
-    let score = kog_audio::inspection::score::record(&mut pcm, "t", &progress, 600.0, &mut |_| {}).unwrap();
+    let seconds = std::env::args().nth(2).and_then(|s| s.parse().ok()).unwrap_or(600.0);
+    let score = kog_audio::inspection::score::record(&mut pcm, "t", &progress, seconds, &mut |_| {}).unwrap();
     let recorded = started.elapsed();
     let document = kog_audio::inspection::mml::encode(&score);
     println!(

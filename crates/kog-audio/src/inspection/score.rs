@@ -17,6 +17,7 @@ const DRAIN_SECONDS: f64 = 0.25;
 
 /// Audio seconds between partial scores while a song is still recording.
 const PARTIAL_SECONDS: f64 = 20.0;
+const FIRST_PARTIAL_SECONDS: f64 = 4.0;
 
 /// Songs without a length (endless loops) are scored up to this point.
 pub const MAX_SECONDS: f64 = 10.0 * 60.0;
@@ -103,7 +104,10 @@ pub fn record(
             progress
                 .recorded_ms
                 .store((seconds * 1000.0) as u64, Ordering::Relaxed);
-            if seconds - shared >= PARTIAL_SECONDS && frames > 0 {
+            // The first bars appear quickly; later updates are spaced out
+            // because each one encodes the whole score so far.
+            let due = if shared == 0.0 { FIRST_PARTIAL_SECONDS } else { PARTIAL_SECONDS };
+            if seconds - shared >= due && frames > 0 {
                 shared = seconds;
                 let description = monitor.snapshot(Duration::ZERO, false, false).description;
                 partial(builder.clone().finish(&description, title, Some(seconds)));

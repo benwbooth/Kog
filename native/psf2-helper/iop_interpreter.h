@@ -26,6 +26,15 @@ private:
     uint32 m_pc = 0;
     bool m_delaySlot = false, m_exception = false;
     bool m_delayedTargetIsOne = false;
+    // The memory region the last instruction came from. Code runs from the
+    // same RAM region almost always, so fetches skip the memory map search.
+    uint32 m_fetchStart = 1, m_fetchEnd = 0;
+    const uint8* m_fetchBase = nullptr;
+    // Likewise for plain-memory data reads and writes (RAM and scratchpad).
+    struct Region { uint32 start = 1, end = 0; uint8* base = nullptr; };
+    Region m_readRegion, m_writeRegion;
+    uint8* region(Region& cache, const CMemoryMap::MEMORYMAPELEMENT* (CMemoryMap::*lookup)(uint32) const,
+                  uint32 physical, unsigned width);
 #ifdef DEBUGGER_INCLUDED
     bool m_break = false, m_ignoreBreakpoint = false;
 #endif

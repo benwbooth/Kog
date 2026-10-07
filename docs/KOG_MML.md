@@ -36,21 +36,24 @@ without a length are recorded for ten minutes.
 #TEMPO 149.660 inferred     ; quarter notes per minute
 #TICKS 32                   ; ticks per quarter note: one tick is a 1/128 note
 #BAR 4                      ; quarter notes per bar
-#LENGTH 240                 ; song length in ticks
+#LENGTH 241                 ; song length in ticks
+#PICKUP 1                   ; extra ticks at the start of bar 1
 #TRACK A "2A03 Pulse 1" channel=0 voice=0 kind=tonal l8
 #TRACK B "2A03 Pulse 2" channel=1 voice=0 kind=tonal l4
+#TUNE A 69:+2 73:+7 78:+2
 #PITCH A Period= 69(+2):0FD 73(+7):0C8 78(+2):096
 #MACRO 1 v 0:1000 1:933 4:867 6:800
 #MACRO 2 Envelope= 0:15 1:14 4:13 6:12
 ; bar 1 0:00.000
-A | r64 @"Pulse duty 1" p0 Sweep=00 ~1 ~2 V127 o4 a(+2)16.. > c+(+7) |
-B | r64 @"Pulse duty 1" p0 ~1 ~2 V127 o3 f+(+2)8^16^32^64 > f+(+2) |
+A | r128 @"Pulse duty 1" p0 Sweep=00 ~1 ~2 V127 o4 a > c+ f+ c+ < g+ |
+B | r128 @"Pulse duty 1" p0 ~1 ~2 V127 o3 f+4 > f+ f < f+ |
 ```
 
-Headers come first. `#TEMPO` uses the MIDI tempo when the source has one;
-otherwise it is estimated from note onsets and marked `inferred`. Bars only lay
-out the text, and the parser checks that each one holds exactly `#BAR` quarter
-notes.
+Headers come first. `#TEMPO` uses the MIDI tempo when the source has one.
+Otherwise Kog finds the rhythmic step that note onsets fall on, snaps notes
+near a step onto it, and marks the tempo `inferred`; `#PICKUP` lengthens the
+first bar so bar lines follow that grid. Bars only lay out the text, and the
+parser checks that each one holds exactly `#BAR` quarter notes.
 
 `#TRACK label name key=value … l<length>` declares one track per voice.
 Polyphonic channels such as MIDI get one track per simultaneous voice
@@ -66,7 +69,7 @@ Polyphonic channels such as MIDI get one track per simultaneous voice
 | `4.`, `8..` | dotted and double-dotted lengths |
 | `4^16` | tie: a quarter note plus a sixteenth |
 | `l8` | default length (on `#TRACK`), used when a note has none |
-| `c(+37)` | note detuned by +37 cents at its onset |
+| `c(+37)` | note detuned by +37 cents (only written when it differs from `#TUNE`) |
 | `&c` | legato: the pitch changes without a new key-on (chips that report key-ons) |
 | `^8` | continue the previous note across a bar line or command |
 | `r` | rest |
@@ -87,6 +90,19 @@ Polyphonic channels such as MIDI get one track per simultaneous voice
 
 A command takes effect at the tick where it appears. Commands inside a note
 split it into `^` pieces, so a note can carry parameter changes while held.
+
+## Tuning tables
+
+Chips often play each pitch a few cents off equal temperament, because their
+period registers only hold whole numbers. Each track lists every key's usual
+detune once:
+
+```
+#TUNE A 69:+2 73:+7
+```
+
+Each entry is `MIDI key:cents`. A note uses its key's detune unless it is
+written explicitly, as in `a(+0)` or `a(-12)`.
 
 ## Pitch tables
 

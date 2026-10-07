@@ -22,6 +22,10 @@ void KogIopInterpreter::Reset()
     m_loadRegister = m_nextLoadRegister = m_writtenRegister = 0;
     m_loadValue = m_nextLoadValue = 0;
     m_delayedTargetIsOne = false;
+    m_fetchStart = 1;
+    m_fetchEnd = 0;
+    m_fetchBase = nullptr;
+    m_readRegion = m_writeRegion = Region();
 #ifdef DEBUGGER_INCLUDED
     m_break = m_ignoreBreakpoint = false;
 #endif
@@ -46,7 +50,28 @@ void KogIopInterpreter::PrepareInterrupt()
 }
 uint32 KogIopInterpreter::address(uint32 value) const
 {
+    // Play!'s translator only masks to the physical range; skip the indirect call.
+    if(m_cpu.m_pAddrTranslator == &CMIPS::TranslateAddress64) return value & 0x1FFFFFFFU;
     return m_cpu.m_pAddrTranslator ? m_cpu.m_pAddrTranslator(&m_cpu, value) : value;
+}
+/// Host memory for `width` bytes at `physical` when it lies in a plain-memory
+/// region (the same storage CMemoryMap reads and writes), else null.
+uint8* KogIopInterpreter::region(Region& cache, const CMemoryMap::MEMORYMAPELEMENT* (CMemoryMap::*lookup)(uint32) const,
+                                 uint32 physical, unsigned width)
+{
+    if(physical < cache.start || uint64(physical) + width - 1 > cache.end)
+    {
+        auto* map = m_cpu.m_pMemoryMap;
+        const auto* element = (map->*lookup)(physical);
+        // Only cache a region that owns its whole range, so a cached hit is
+        // exactly what the memory map's first-match search would return.
+        if(!element || element->nType != CMemoryMap::MEMORYMAP_TYPE_MEMORY ||
+           uint64(physical) + width - 1 > element->nEnd ||
+           (map->*lookup)(element->nStart) != element || (map->*lookup)(element->nEnd) != element)
+            return nullptr;
+        cache = Region{element->nStart, element->nEnd, static_cast<uint8*>(element->pPointer)};
+    }
+    return cache.base + (physical - cache.start);
 }
 uint32 KogIopInterpreter::read(uint32 value, unsigned width)
 {
@@ -55,6 +80,12 @@ uint32 KogIopInterpreter::read(uint32 value, unsigned width)
     auto* map = m_cpu.m_pMemoryMap;
     // Cache-control reads do not touch the host. This is the R3000 BIU register.
     if(value == 0xfffe0130U) return 0;
+    if(const uint8* host = region(m_readRegion, &CMemoryMap::GetReadMap, physical, width))
+    {
+        if(width == 1) return *host;
+        if(width == 2) { uint16 half; std::memcpy(&half, host, 2); return half; }
+        uint32 word; std::memcpy(&word, host, 4); return word;
+    }
     if(width == 1) return map->GetByte(physical);
     if(width == 2) return map->GetHalf(physical);
     return map->GetWord(physical);
@@ -67,6 +98,13 @@ void KogIopInterpreter::store(uint32 value, unsigned width, uint32 data)
     if((m_cpu.m_State.nCOP0[CCOP_SCU::STATUS] & (1U << 16)) && value < 0xa0000000U) return;
     auto* map = m_cpu.m_pMemoryMap;
     const uint32 physical = address(value);
+    if(uint8* host = region(m_writeRegion, &CMemoryMap::GetWriteMap, physical, width))
+    {
+        if(width == 1) *host = static_cast<uint8>(data);
+        else if(width == 2) { const uint16 half = static_cast<uint16>(data); std::memcpy(host, &half, 2); }
+        else std::memcpy(host, &data, 4);
+        return;
+    }
     if(width == 1) map->SetByte(physical, static_cast<uint8>(data));
     else if(width == 2) map->SetHalf(physical, static_cast<uint16>(data));
     else map->SetWord(physical, data);
@@ -134,14 +172,31 @@ int KogIopInterpreter::Execute(int quota)
         else
         {
             const uint32 physical = address(m_pc);
-            const auto* mapping = m_cpu.m_pMemoryMap->GetInstructionMap(physical);
-            if(!mapping || uint64(physical) + 3 > mapping->nEnd)
+            if(physical < m_fetchStart || uint64(physical) + 3 > m_fetchEnd)
             {
-                char message[128];
-                std::snprintf(message, sizeof(message), "PSF interpreter fetched unmapped code at 0x%08x", m_pc);
-                throw std::runtime_error(message);
+                const auto* mapping = m_cpu.m_pMemoryMap->GetInstructionMap(physical);
+                if(!mapping || uint64(physical) + 3 > mapping->nEnd)
+                {
+                    char message[128];
+                    std::snprintf(message, sizeof(message), "PSF interpreter fetched unmapped code at 0x%08x", m_pc);
+                    throw std::runtime_error(message);
+                }
+                if(mapping->nType != CMemoryMap::MEMORYMAP_TYPE_MEMORY)
+                {
+                    step(m_cpu.m_pMemoryMap->GetInstruction(physical));
+                    goto retire;
+                }
+                m_fetchStart = mapping->nStart;
+                m_fetchEnd = mapping->nEnd;
+                m_fetchBase = static_cast<const uint8*>(mapping->pPointer);
             }
-            step(m_cpu.m_pMemoryMap->GetInstruction(physical));
+            {
+                // Same little-endian word read as CMemoryMap_LSBF::GetInstruction.
+                uint32 instruction;
+                std::memcpy(&instruction, m_fetchBase + (physical - m_fetchStart), sizeof(instruction));
+                step(instruction);
+            }
+        retire:;
         }
         // A following ALU write or a second load to the same register wins. LWL/
         // LWR below explicitly forward the pending value to merge paired loads.
