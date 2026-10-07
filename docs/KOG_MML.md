@@ -21,8 +21,9 @@ Tests check this for random scores and for a recording from every inspected
 decoder family.
 
 Recording is subject to the inspector's limits. State is sampled at the
-decoder's frame rate (up to 200 Hz). Events are then placed on 1/128 notes of
-the tempo, so timing is kept to that resolution. Values that move on most
+decoder's frame rate (up to 200 Hz), and key-ons from some decoders arrive tens
+of milliseconds late. Notes are placed on the beat as described below, so the
+score keeps the music's rhythm rather than every millisecond of the recording. Values that move on most
 frames (sample addresses, fine-grained envelope levels, measured levels) are
 written at key-on only; their live values stay in the channel inspector. Songs
 without a length are recorded for ten minutes.
@@ -34,7 +35,7 @@ without a length are recorded for ten minutes.
 #TITLE "Stage 1"
 #SOURCE "Game Music Emu 0.6.5"
 #TEMPO 149.660 inferred     ; quarter notes per minute
-#TICKS 32                   ; ticks per quarter note: one tick is a 1/128 note
+#TICKS 96                   ; ticks per quarter note
 #BAR 4                      ; quarter notes per bar
 #LENGTH 241                 ; song length in ticks
 #PICKUP 1                   ; extra ticks at the start of bar 1
@@ -50,9 +51,12 @@ B | r128 @"Pulse duty 1" p0 ~1 ~2 V127 o3 f+4 > f+ f < f+ |
 ```
 
 Headers come first. `#TEMPO` uses the MIDI tempo when the source has one.
-Otherwise Kog finds the rhythmic step that note onsets fall on, snaps notes
-near a step onto it, and marks the tempo `inferred`; `#PICKUP` lengthens the
-first bar so bar lines follow that grid. Bars only lay out the text, and the
+Otherwise Kog finds the rhythmic step that note onsets fall on and follows it
+through the song as the tempo drifts, placing each note on the nearest beat,
+half, third or quarter of one, and marks the tempo `inferred`. `#TIMING
+tick:seconds …` records where the beat drifted from a steady tempo, for
+highlighting. `#PICKUP` lengthens the first bar so bar lines fall where the
+biggest chords land. Bars only lay out the text, and the
 parser checks that each one holds exactly `#BAR` quarter notes.
 
 `#TRACK label name key=value … l<length>` declares one track per voice.
@@ -66,6 +70,7 @@ Polyphonic channels such as MIDI get one track per simultaneous voice
 | `c d e f g a b`, `+` `#` `-` | note and accidentals |
 | `o4`, `>`, `<` | octave (MIDI key 60 is `o4 c`); `>` and `<` move one octave |
 | `1 2 4 8 16 32 64 128` | whole, half, quarter … 1/128 note |
+| `3 6 12 24 48 96` | triplets: `12` is a triplet eighth |
 | `4.`, `8..` | dotted and double-dotted lengths |
 | `4^16` | tie: a quarter note plus a sixteenth |
 | `l8` | default length (on `#TRACK`), used when a note has none |
