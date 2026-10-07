@@ -254,3 +254,82 @@ decoder_test!(inspection_snsf, "snsf", 8, false);
 decoder_test!(inspection_twosf, "2sf", 16, false);
 decoder_test!(inspection_sfm, "sfm", 8, false);
 decoder_test!(inspection_syntrax, "jxs", 1, true);
+
+/// The MML view records the whole track with the same decoder, and its text
+/// must parse back to exactly the recorded score.
+fn verify_mml(name: &str, pitched: bool) {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join(format!("fixture.{name}"));
+    std::fs::write(&path, fixture(name)).unwrap();
+    if name == "org" {
+        std::fs::write(
+            directory.path().join("soundbank.wdb"),
+            crate::organya::test_soundbank_wdb_bytes(),
+        )
+        .unwrap();
+    }
+    let mut pcm = PcmReader::open(
+        PlaybackSource {
+            path,
+            ..PlaybackSource::default()
+        },
+        DecoderSettings::default(),
+    )
+    .unwrap();
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let score = super::score::record(&mut pcm, name, &cancel, 3.0).unwrap();
+    let document = kog_inspection::mml::encode(&score);
+    let parsed = kog_inspection::mml::parse(&document.text)
+        .unwrap_or_else(|error| panic!("{name}: {error}\n{}", document.text));
+    assert_eq!(parsed, score, "{name}: MML did not round-trip");
+    let roll = score.piano_roll();
+    assert!(
+        !pitched || roll.iter().any(|note| note.cents.is_some()),
+        "{name}: no pitched notes in the score"
+    );
+    assert!(!score.tracks.is_empty(), "{name}: no tracks");
+    if std::env::var_os("KOG_MML_DUMP").is_some() {
+        eprintln!("{}", document.text);
+    }
+    eprintln!(
+        "{name}: {} tracks, {} notes, {} bytes of MML, {} ticks of {} samples",
+        score.tracks.len(),
+        roll.len(),
+        document.text.len(),
+        score.length,
+        score.tick_samples
+    );
+}
+
+macro_rules! mml_test {
+    ($test:ident,$ext:literal,$pitch:literal) => {
+        #[test]
+        fn $test() {
+            verify_mml($ext, $pitch);
+        }
+    };
+}
+mml_test!(mml_mod, "mod", true);
+mml_test!(mml_mus, "mus", true);
+mml_test!(mml_nsf, "nsf", true);
+mml_test!(mml_cmf, "cmf", false);
+mml_test!(mml_opl_tone, "wlf", true);
+mml_test!(mml_sid, "sid", true);
+mml_test!(mml_hvl, "hvl", true);
+mml_test!(mml_org, "org", true);
+mml_test!(mml_ncsf, "ncsf", true);
+mml_test!(mml_gsf, "gsf", true);
+mml_test!(mml_qsf, "qsf", false);
+mml_test!(mml_ssf, "ssf", false);
+mml_test!(mml_dsf, "dsf", false);
+mml_test!(mml_usf, "usf", false);
+#[cfg(not(windows))]
+mml_test!(mml_psf, "psf", true);
+#[cfg(not(windows))]
+mml_test!(mml_psf2, "psf2", true);
+#[cfg(not(windows))]
+mml_test!(mml_snsf, "snsf", false);
+#[cfg(not(windows))]
+mml_test!(mml_twosf, "2sf", false);
+mml_test!(mml_sfm, "sfm", false);
+mml_test!(mml_syntrax, "jxs", true);

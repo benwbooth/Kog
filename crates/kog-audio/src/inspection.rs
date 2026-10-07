@@ -19,6 +19,7 @@ mod integration;
 pub mod midi;
 pub(crate) mod native;
 pub mod recording;
+pub mod score;
 pub(crate) mod remote;
 
 const QUEUE_FRAMES: usize = 1024;

@@ -1,4 +1,6 @@
 //! Platform-neutral channel inspection data and playback-clock selection.
+pub mod mml;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
