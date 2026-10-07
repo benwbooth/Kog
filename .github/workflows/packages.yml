@@ -1,10 +1,8 @@
 name: Cross-platform packages
 
+# Manual only until the Actions quota resets on 2026-11-01; restore the push
+# and pull_request triggers then.
 on:
-  push:
-    branches: [main]
-    tags: ["v*"]
-  pull_request:
   workflow_dispatch:
     inputs:
       platform:
