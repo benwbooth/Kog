@@ -327,3 +327,32 @@ mod tests {
         unsafe { kog_audio_close(handle) };
     }
 }
+
+#[cfg(test)]
+mod mml_tests {
+    use super::*;
+
+    #[test]
+    fn local_handles_record_an_mml_score() {
+        let path = CString::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../native/game-music-emu/test.nsf")).unwrap();
+        let engine = CString::new("opl3windows").unwrap();
+        let mut error = [0 as c_char; 256];
+        let handle = unsafe {
+            kog_audio_open(path.as_ptr(), -1, engine.as_ptr(), ptr::null(), ptr::null(), ptr::null(), error.as_mut_ptr(), error.len())
+        };
+        assert!(!handle.is_null());
+        let deadline = std::time::Instant::now() + Duration::from_secs(120);
+        let reply = loop {
+            let json = unsafe { kog_audio_mml(handle, -1) };
+            assert!(!json.is_null());
+            let reply: serde_json::Value = serde_json::from_str(unsafe { CStr::from_ptr(json) }.to_str().unwrap()).unwrap();
+            unsafe { crate::catalog::kog_audio_string_free(json) };
+            if reply["document"].is_object() || std::time::Instant::now() > deadline {
+                break reply;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        assert!(reply["document"]["text"].as_str().unwrap().starts_with("#KOG-MML 1"), "{reply}");
+        unsafe { kog_audio_close(handle) };
+    }
+}

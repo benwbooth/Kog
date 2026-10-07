@@ -1834,6 +1834,26 @@ mod tests {
         assert_eq!(sounds(&active), [(0, Some(24)), (1, Some(96))]);
     }
 
+    /// Set KOG_MML_FIXTURE to a file path to export a document with the spans
+    /// expected at several positions, for the Swift and Kotlin ports.
+    #[test]
+    fn export_active_span_fixture() {
+        let Some(path) = std::env::var_os("KOG_MML_FIXTURE") else { return };
+        let document = encode(&sample_score());
+        let expected: Vec<_> = (0..40)
+            .map(|step| {
+                let seconds = f64::from(step) * 8.0 * document.tick_seconds;
+                let (spans, bar) = document.active_indices(seconds);
+                serde_json::json!({"seconds": seconds, "spans": spans, "bar": bar.map_or(-1, |bar| bar.index as i64)})
+            })
+            .collect();
+        let reply = serde_json::json!({
+            "status": "ready", "revision": 3, "recorded_ms": 1000, "total_ms": 1000,
+            "document": document, "expected": expected,
+        });
+        std::fs::write(path, reply.to_string()).unwrap();
+    }
+
     /// Random scores with every event kind, odd lengths, and commands inside
     /// notes and on bar lines must survive encode -> parse unchanged.
     #[test]
