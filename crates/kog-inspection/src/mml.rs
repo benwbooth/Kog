@@ -166,6 +166,7 @@ impl Score {
 // ---------------------------------------------------------------------------
 // Recording frames -> score
 
+#[derive(Clone)]
 struct Sounding {
     key: i32,
     voice: usize,
@@ -174,7 +175,7 @@ struct Sounding {
     bend: i32,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct ChannelState {
     name: String,
     kind: String,
@@ -255,44 +256,41 @@ fn velocity(value: f32) -> u8 {
 /// Values that move on nearly every frame (envelopes, sample addresses,
 /// measured levels) are recorded at key-on only. Writing every 5 ms sample of
 /// them would bury the notes; the live values remain in the channel inspector.
-#[derive(Default)]
+/// Rates are measured as frames arrive, so long songs need not be buffered.
+#[derive(Clone, Default)]
 struct Continuity {
+    previous: HashMap<u32, crate::Channel>,
     active: HashMap<u32, u32>,
     changes: HashMap<(u32, String), u32>,
 }
 
 impl Continuity {
-    fn measure(frames: &[TimedFrame]) -> Self {
-        let mut result = Self::default();
-        let mut previous: HashMap<u32, &crate::Channel> = HashMap::new();
-        for frame in frames {
-            for channel in &frame.data.channels {
-                if gate(channel) {
-                    *result.active.entry(channel.id).or_default() += 1;
-                    if let Some(old) = previous.get(&channel.id).filter(|old| gate(old)) {
-                        let mut changed = |name: &str| {
-                            *result
-                                .changes
-                                .entry((channel.id, name.to_owned()))
-                                .or_default() += 1;
-                        };
-                        if unit(old.level) != unit(channel.level) {
-                            changed("\0level");
-                        }
-                        if unit(old.pan) != unit(channel.pan) {
-                            changed("\0pan");
-                        }
-                        for field in &channel.fields {
-                            if old.field(&field.name) != Some(field.value.as_str()) {
-                                changed(&field.name);
-                            }
+    fn observe(&mut self, frame: &TimedFrame) {
+        for channel in &frame.data.channels {
+            if gate(channel) {
+                *self.active.entry(channel.id).or_default() += 1;
+                if let Some(old) = self.previous.get(&channel.id).filter(|old| gate(old)) {
+                    let mut changed = |name: &str| {
+                        *self
+                            .changes
+                            .entry((channel.id, name.to_owned()))
+                            .or_default() += 1;
+                    };
+                    if unit(old.level) != unit(channel.level) {
+                        changed("\0level");
+                    }
+                    if unit(old.pan) != unit(channel.pan) {
+                        changed("\0pan");
+                    }
+                    for field in &channel.fields {
+                        if old.field(&field.name) != Some(field.value.as_str()) {
+                            changed(&field.name);
                         }
                     }
                 }
-                previous.insert(channel.id, channel);
             }
+            self.previous.insert(channel.id, channel.clone());
         }
-        result
     }
 
     fn continuous(&self, channel: u32, name: &str) -> bool {
@@ -317,34 +315,30 @@ fn mode(values: impl Iterator<Item = u64>) -> Option<u64> {
         .map(|(value, _)| value)
 }
 
-fn tempo_bpm(frames: &[TimedFrame]) -> Option<f64> {
-    frames.iter().find_map(|frame| {
-        frame
-            .data
-            .global
-            .iter()
-            .find(|field| field.name == "Tempo")
-            .and_then(|field| field.value.split_whitespace().next()?.parse::<f64>().ok())
-            .filter(|bpm| bpm.is_finite() && *bpm > 0.0)
-    })
+fn tempo_bpm(frame: &TimedFrame) -> Option<f64> {
+    frame
+        .data
+        .global
+        .iter()
+        .find(|field| field.name == "Tempo")
+        .and_then(|field| field.value.split_whitespace().next()?.parse::<f64>().ok())
+        .filter(|bpm| bpm.is_finite() && *bpm > 0.0)
 }
 
-fn meter(frames: &[TimedFrame]) -> Option<u32> {
-    frames.iter().find_map(|frame| {
-        let field = frame
-            .data
-            .global
-            .iter()
-            .find(|field| field.name == "Event FF:58")?;
-        let bytes: Vec<u32> = field
-            .value
-            .split_whitespace()
-            .filter_map(|byte| u32::from_str_radix(byte, 16).ok())
-            .collect();
-        let (numerator, denominator) = (*bytes.first()?, *bytes.get(1)?);
-        // Quarters per bar: 6/8 is three quarters.
-        (numerator > 0 && denominator < 8).then(|| numerator * 4 / (1 << denominator))
-    })
+fn meter(frame: &TimedFrame) -> Option<u32> {
+    let field = frame
+        .data
+        .global
+        .iter()
+        .find(|field| field.name == "Event FF:58")?;
+    let bytes: Vec<u32> = field
+        .value
+        .split_whitespace()
+        .filter_map(|byte| u32::from_str_radix(byte, 16).ok())
+        .collect();
+    let (numerator, denominator) = (*bytes.first()?, *bytes.get(1)?);
+    // Quarters per bar: 6/8 is three quarters.
+    (numerator > 0 && denominator < 8).then(|| numerator * 4 / (1 << denominator))
 }
 
 /// Build the score from every frame a decoder produced for one track.
@@ -355,34 +349,104 @@ pub fn score_from_frames(
     rate: u32,
     duration: Option<f64>,
 ) -> Score {
-    // Decoders report frames at their own rate (for example every 220
-    // samples at 44.1 kHz), which is rarely a whole number of output samples.
-    // Scale the timebase so the typical frame step is a whole number of ticks.
-    let mut steps: Vec<f64> = frames
-        .windows(2)
-        .map(|pair| (pair[1].time - pair[0].time) * f64::from(rate.max(1)))
-        .filter(|step| step.is_finite() && *step > 0.5)
-        .collect();
-    steps.sort_by(f64::total_cmp);
-    let step = steps.get(steps.len() / 2).copied().unwrap_or(f64::from(rate.max(1)) / 200.0);
-    let scale = (1..=20u32)
-        .find(|scale| {
-            let scaled = step * f64::from(*scale);
-            (scaled - scaled.round()).abs() < 0.02
-        })
-        .unwrap_or(1);
-    let tick_samples = ((step * f64::from(scale)).round() as u32).max(1);
-    let rate = rate.max(1) * scale;
-    let tick_seconds = f64::from(tick_samples) / f64::from(rate);
-    let to_tick = |time: f64| (time.max(0.0) / tick_seconds).round() as u64;
-    let continuity = Continuity::measure(frames);
-    let mut channels: BTreeMap<u32, ChannelState> = BTreeMap::new();
-    let mut last_tick = 0;
+    let mut builder = ScoreBuilder::new(rate);
     for frame in frames {
-        let tick = to_tick(frame.time);
-        last_tick = last_tick.max(tick);
+        builder.push(frame.clone());
+    }
+    builder.finish(description, title, duration)
+}
+
+/// Frames used to find the decoder's frame step before streaming begins.
+const WARMUP_FRAMES: usize = 256;
+
+/// Turns a decoder's frames into a score as they arrive, so a long song never
+/// has to be held in memory as raw channel snapshots.
+#[derive(Clone)]
+pub struct ScoreBuilder {
+    rate: u32,
+    warmup: Vec<TimedFrame>,
+    timebase: Option<(u32, u32, f64)>,
+    continuity: Continuity,
+    channels: BTreeMap<u32, ChannelState>,
+    last_tick: u64,
+    tempo: Option<f64>,
+    meter: Option<u32>,
+}
+
+impl ScoreBuilder {
+    pub fn new(rate: u32) -> Self {
+        Self {
+            rate: rate.max(1),
+            warmup: Vec::new(),
+            timebase: None,
+            continuity: Continuity::default(),
+            channels: BTreeMap::new(),
+            last_tick: 0,
+            tempo: None,
+            meter: None,
+        }
+    }
+
+    pub fn push(&mut self, frame: TimedFrame) {
+        if self.timebase.is_some() {
+            self.process(&frame);
+            return;
+        }
+        self.warmup.push(frame);
+        if self.warmup.len() >= WARMUP_FRAMES {
+            self.start();
+        }
+    }
+
+    /// Decoders report frames at their own rate (for example every 220
+    /// samples at 44.1 kHz), which is rarely a whole number of output samples.
+    /// Scale the timebase so the typical frame step is a whole number of ticks.
+    fn start(&mut self) {
+        let rate = self.rate;
+        let mut steps: Vec<f64> = self
+            .warmup
+            .windows(2)
+            .map(|pair| (pair[1].time - pair[0].time) * f64::from(rate))
+            .filter(|step| step.is_finite() && *step > 0.5)
+            .collect();
+        steps.sort_by(f64::total_cmp);
+        let step = steps
+            .get(steps.len() / 2)
+            .copied()
+            .unwrap_or(f64::from(rate) / 200.0);
+        let scale = (1..=20u32)
+            .find(|scale| {
+                let scaled = step * f64::from(*scale);
+                (scaled - scaled.round()).abs() < 0.02
+            })
+            .unwrap_or(1);
+        let tick_samples = ((step * f64::from(scale)).round() as u32).max(1);
+        let rate = rate * scale;
+        self.timebase = Some((rate, tick_samples, f64::from(tick_samples) / f64::from(rate)));
+        for frame in std::mem::take(&mut self.warmup) {
+            self.process(&frame);
+        }
+    }
+
+    fn to_tick(&self, time: f64) -> u64 {
+        let tick_seconds = self.timebase.map_or(1.0, |(_, _, seconds)| seconds);
+        (time.max(0.0) / tick_seconds).round() as u64
+    }
+
+    fn process(&mut self, frame: &TimedFrame) {
+        if self.tempo.is_none() {
+            self.tempo = tempo_bpm(frame);
+        }
+        if self.meter.is_none() {
+            self.meter = meter(frame);
+        }
+        self.continuity.observe(frame);
+        let continuity = &self.continuity;
+        let tick = self.to_tick(frame.time);
+        let channels = &mut self.channels;
+        self.last_tick = self.last_tick.max(tick);
         let present: Vec<u32> = frame.data.channels.iter().map(|c| c.id).collect();
-        for (id, state) in &mut channels {
+        for (id, state) in channels.iter_mut() {
             if !present.contains(id) {
                 while !state.sounding.is_empty() {
                     state.end(0, tick);
@@ -537,62 +601,71 @@ pub fn score_from_frames(
             }
         }
     }
-    let end = duration
-        .map(to_tick)
-        .unwrap_or(last_tick)
-        .max(last_tick + 1);
-    for state in channels.values_mut() {
-        while !state.sounding.is_empty() {
-            state.end(0, end);
-        }
-        state.end_hit(end);
-    }
 
-    let mut tracks = Vec::new();
-    for (id, state) in channels {
-        for (voice, events) in state.events.into_iter().enumerate() {
-            if events.is_empty() && voice > 0 {
-                continue;
+    pub fn finish(mut self, description: &Description, title: &str, duration: Option<f64>) -> Score {
+        if self.timebase.is_none() {
+            self.start();
+        }
+        let (rate, tick_samples, tick_seconds) = self.timebase.unwrap_or((self.rate, 1, 1.0));
+        let last_tick = self.last_tick;
+        let end = duration
+            .map(|seconds| self.to_tick(seconds))
+            .unwrap_or(last_tick)
+            .max(last_tick + 1);
+        let mut channels = std::mem::take(&mut self.channels);
+        for state in channels.values_mut() {
+            while !state.sounding.is_empty() {
+                state.end(0, end);
             }
-            tracks.push(Track {
-                label: String::new(),
-                channel: id,
-                voice: voice as u32,
-                name: state.name.clone(),
-                kind: if state.kind.is_empty() {
-                    "tonal".into()
-                } else {
-                    state.kind.clone()
-                },
-                events,
-            });
+            state.end_hit(end);
         }
-    }
-    tracks.retain(|track| !track.events.is_empty());
-    let mut macros = Vec::new();
-    for track in &mut tracks {
-        fold_macros(&mut track.events, &mut macros);
-    }
-    for (index, track) in tracks.iter_mut().enumerate() {
-        track.label = track_label(index);
-    }
 
-    let (quarter, inferred) = match tempo_bpm(frames) {
-        Some(bpm) => (((60.0 / bpm) / tick_seconds).round().max(1.0) as u32, false),
-        None => (infer_quarter(&tracks, tick_seconds), true),
-    };
-    let bar = quarter * meter(frames).unwrap_or(4).max(1);
-    Score {
-        title: title.into(),
-        backend: description.backend.clone(),
-        rate,
-        tick_samples,
-        quarter,
-        bar,
-        inferred,
-        length: end,
-        tracks,
-        macros,
+        let mut tracks = Vec::new();
+        for (id, state) in channels {
+            for (voice, events) in state.events.into_iter().enumerate() {
+                if events.is_empty() && voice > 0 {
+                    continue;
+                }
+                tracks.push(Track {
+                    label: String::new(),
+                    channel: id,
+                    voice: voice as u32,
+                    name: state.name.clone(),
+                    kind: if state.kind.is_empty() {
+                        "tonal".into()
+                    } else {
+                        state.kind.clone()
+                    },
+                    events,
+                });
+            }
+        }
+        tracks.retain(|track| !track.events.is_empty());
+        let mut macros = Vec::new();
+        for track in &mut tracks {
+            fold_macros(&mut track.events, &mut macros);
+        }
+        for (index, track) in tracks.iter_mut().enumerate() {
+            track.label = track_label(index);
+        }
+
+        let (quarter, inferred) = match self.tempo {
+            Some(bpm) => (((60.0 / bpm) / tick_seconds).round().max(1.0) as u32, false),
+            None => (infer_quarter(&tracks, tick_seconds), true),
+        };
+        let bar = quarter * self.meter.unwrap_or(4).max(1);
+        Score {
+            title: title.into(),
+            backend: description.backend.clone(),
+            rate,
+            tick_samples,
+            quarter,
+            bar,
+            inferred,
+            length: end,
+            tracks,
+            macros,
+        }
     }
 }
 
@@ -758,6 +831,10 @@ pub struct Span {
     pub to: usize,
     /// note, hit, rest, or command
     pub kind: String,
+    /// Onset tick of the note or hit this piece belongs to. A note split by
+    /// bar lines or commands has several pieces that share it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sound: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -789,12 +866,16 @@ impl Document {
     /// Spans sounding at `seconds`, plus the bar containing it.
     pub fn active(&self, seconds: f64) -> (Vec<&Span>, Option<&Bar>) {
         let tick = (seconds.max(0.0) / self.tick_seconds.max(f64::MIN_POSITIVE)) as u64;
+        let sounding: Vec<(usize, u64)> = self
+            .spans
+            .iter()
+            .filter(|span| span.start <= tick && tick < span.end)
+            .filter_map(|span| span.sound.map(|sound| (span.track, sound)))
+            .collect();
         let spans = self
             .spans
             .iter()
-            .filter(|span| {
-                matches!(span.kind.as_str(), "note" | "hit") && span.start <= tick && tick < span.end
-            })
+            .filter(|span| span.sound.is_some_and(|sound| sounding.contains(&(span.track, sound))))
             .collect();
         let bar = self.bars.iter().find(|bar| bar.start <= tick && tick < bar.end);
         (spans, bar)
@@ -851,6 +932,18 @@ struct Writer<'a> {
 
 impl Writer<'_> {
     fn token(&mut self, track: usize, start: u64, end: u64, kind: &str, text: &str) {
+        self.sound_token(track, start, end, kind, text, None);
+    }
+
+    fn sound_token(
+        &mut self,
+        track: usize,
+        start: u64,
+        end: u64,
+        kind: &str,
+        text: &str,
+        sound: Option<u64>,
+    ) {
         if !self.text.ends_with(' ') && !self.text.ends_with('\n') {
             self.text.push(' ');
         }
@@ -863,6 +956,7 @@ impl Writer<'_> {
             from,
             to: self.text.len(),
             kind: kind.into(),
+            sound,
         });
     }
 
@@ -879,7 +973,15 @@ impl Writer<'_> {
         self.token(track, tick, tick, "command", &text);
     }
 
-    fn sound(&mut self, track: usize, start: u64, ticks: u64, kind: &EventKind, first: bool) {
+    fn sound(
+        &mut self,
+        track: usize,
+        start: u64,
+        ticks: u64,
+        kind: &EventKind,
+        first: bool,
+        onset: Option<u64>,
+    ) {
         let quarter = u64::from(self.score.quarter);
         let length = length_text(ticks, quarter, Some(self.default[track]));
         let text = match (first, kind) {
@@ -938,7 +1040,7 @@ impl Writer<'_> {
         for word in prefix.split_whitespace() {
             self.token(track, start, start, "command", word);
         }
-        self.token(track, start, start + ticks, kind, sound);
+        self.sound_token(track, start, start + ticks, kind, sound, onset);
     }
 }
 
@@ -1094,7 +1196,14 @@ pub fn encode(score: &Score) -> Document {
                             break;
                         }
                         let kind = sound.map_or(EventKind::Bend(0), |i| track.events[i].kind.clone());
-                        writer.sound(track_index, piece_start, piece_end - piece_start, &kind, first);
+                        writer.sound(
+                            track_index,
+                            piece_start,
+                            piece_end - piece_start,
+                            &kind,
+                            first,
+                            sound.map(|i| track.events[i].tick),
+                        );
                     }
                 }
                 cursor += 1;
@@ -1700,11 +1809,17 @@ mod tests {
         let (active, bar) = document.active(30.0 * document.tick_seconds);
         assert_eq!(bar.unwrap().index, 0);
         let texts: Vec<_> = active.iter().map(|s| &document.text[s.from..s.to]).collect();
-        assert_eq!(active.len(), 1, "{texts:?}");
-        assert!(texts[0].contains('e'), "{texts:?}");
+        // Every piece of the sounding note lights up, across its bar line.
+        assert_eq!(texts, ["&e(+12)%26", "^%46", "^%4", "^%14"]);
+        let sounds = |active: &[&Span]| {
+            let mut sounds: Vec<_> = active.iter().map(|s| (s.track, s.sound)).collect();
+            sounds.dedup();
+            sounds
+        };
+        assert_eq!(sounds(&active), [(0, Some(24))]);
         let (active, bar) = document.active(100.0 * document.tick_seconds);
         assert_eq!(bar.unwrap().index, 1);
-        assert_eq!(active.len(), 2);
+        assert_eq!(sounds(&active), [(0, Some(24)), (1, Some(96))]);
     }
 
     /// Random scores with every event kind, odd lengths, and commands inside

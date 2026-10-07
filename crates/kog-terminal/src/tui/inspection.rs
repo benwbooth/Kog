@@ -10,6 +10,7 @@ pub(super) struct View {
     octave: usize,
     detail: bool,
     scroll: usize,
+    pub mml: super::mml::Mml,
 }
 impl Default for View {
     fn default() -> Self {
@@ -22,6 +23,7 @@ impl Default for View {
             octave: 2,
             detail: false,
             scroll: 0,
+            mml: super::mml::Mml::default(),
         }
     }
 }
@@ -32,6 +34,24 @@ impl View {
             Key::Char('1') => self.mode = 1,
             Key::Char('2') => self.mode = 2,
             Key::Char('3') => self.mode = 3,
+            Key::Char('4') => self.mode = 4,
+            Key::Char('f') if self.mode == 4 => self.mml.follow = !self.mml.follow,
+            Key::Up if self.mode == 4 => {
+                self.mml.follow = false;
+                self.mml.scroll = self.mml.scroll.saturating_sub(1);
+            }
+            Key::Down if self.mode == 4 => {
+                self.mml.follow = false;
+                self.mml.scroll = self.mml.scroll.saturating_add(1);
+            }
+            Key::PageUp if self.mode == 4 => {
+                self.mml.follow = false;
+                self.mml.scroll = self.mml.scroll.saturating_sub(16);
+            }
+            Key::PageDown if self.mode == 4 => {
+                self.mml.follow = false;
+                self.mml.scroll = self.mml.scroll.saturating_add(16);
+            }
             Key::Enter | Key::Char('d') => {
                 self.detail = !self.detail;
                 self.scroll = 0;
@@ -64,6 +84,10 @@ impl View {
             _ => {}
         }
     }
+    /// The MML view records the whole song, so it is only started on demand.
+    pub fn wants_mml(&self) -> bool {
+        self.open && self.mode == 4
+    }
     pub fn wheel(&mut self, down: bool) {
         self.key(if down { Key::Down } else { Key::Up });
     }
@@ -94,8 +118,8 @@ impl View {
             2,
             2,
             &format!(
-                "[1 Keyboards] [2 Tracker] [3 Both] [D Details] [F Follow: {}] [Esc Close]",
-                if self.follow { "on" } else { "off" }
+                "[1 Keyboards] [2 Tracker] [3 Both] [4 MML] [D Details] [F Follow: {}] [Esc Close]",
+                if (self.mode == 4 && self.mml.follow) || (self.mode != 4 && self.follow) { "on" } else { "off" }
             ),
             width - 3,
             Surface::Header,
@@ -110,6 +134,20 @@ impl View {
             Surface::Muted,
             false,
         );
+        if self.mode == 4 {
+            self.mml
+                .draw(out, (2, 4, width - 3, height.saturating_sub(4)), state.position);
+            paint(
+                out,
+                height,
+                2,
+                "Highlighted notes are sounding · ↑↓ PgUp/PgDn scroll · F follow · Space play/pause",
+                width - 3,
+                Surface::Muted,
+                false,
+            );
+            return;
+        }
         self.channel = self.channel.min(state.channels.len().saturating_sub(1));
         self.row = self.row.min(state.rows.len().saturating_sub(1));
         if self.follow {

@@ -276,8 +276,8 @@ fn verify_mml(name: &str, pitched: bool) {
         DecoderSettings::default(),
     )
     .unwrap();
-    let cancel = std::sync::atomic::AtomicBool::new(false);
-    let score = super::score::record(&mut pcm, name, &cancel, 3.0).unwrap();
+    let progress = super::score::Progress::default();
+    let score = super::score::record(&mut pcm, name, &progress, 3.0, &mut |_| {}).unwrap();
     let document = kog_inspection::mml::encode(&score);
     let parsed = kog_inspection::mml::parse(&document.text)
         .unwrap_or_else(|error| panic!("{name}: {error}\n{}", document.text));

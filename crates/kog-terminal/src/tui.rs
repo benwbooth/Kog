@@ -35,6 +35,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 mod queue_drag;
 mod inspection;
+mod mml;
 mod session;
 mod table;
 mod workspace;
@@ -1644,6 +1645,47 @@ impl Ui {
         if !changed_keys.is_empty() {
             self.refresh_session_metadata();
         }
+    }
+
+    /// Record the playing song's MML score on a worker when the view asks.
+    fn request_mml(&mut self) {
+        if !self.inspector.wants_mml() {
+            return;
+        }
+        let Some(track) = self.playing.and_then(|index| self.tracks.get(index)) else {
+            return;
+        };
+        let entry = track.entry.clone();
+        let title = self.title_for(track);
+        let settings = self.decoder_settings.clone();
+        self.inspector.mml.request(&metadata_key(&entry), move |progress| {
+            let (sender, receiver) = mpsc::channel();
+            std::thread::spawn(move || {
+                let result = PlaylistEntry::try_from(&entry)
+                    .and_then(|entry| {
+                        let decoders = DecoderRegistry::new(settings.clone());
+                        kog_audio::streaming::resolve_entry(
+                            &entry,
+                            &decoders,
+                            &kog_server::service::scratch_root().join("tui-mml"),
+                        )
+                    })
+                    .and_then(|source| {
+                        kog_audio::inspection::score::analyze_progressively(
+                            source,
+                            settings,
+                            &title,
+                            &progress,
+                            &mut |score| {
+                                let _ = sender.send(Ok((kog_audio::inspection::mml::encode(&score), false)));
+                            },
+                        )
+                    })
+                    .map(|score| (kog_audio::inspection::mml::encode(&score), true));
+                let _ = sender.send(result);
+            });
+            receiver
+        });
     }
 
     fn refresh_cover_request(&mut self) {
@@ -6843,7 +6885,7 @@ impl Ui {
         if self.inspector.open {
             if button == 64 || button == 65 { self.inspector.wheel(button == 65); }
             if !release && button == 0 && y == 1 {
-                self.inspector.key(if x < 14 {Key::Char('1')} else if x < 26 {Key::Char('2')} else if x < 36 {Key::Char('3')} else if x < 48 {Key::Char('d')} else if x < 65 {Key::Char('f')} else {Key::Esc});
+                self.inspector.key(if x < 14 {Key::Char('1')} else if x < 26 {Key::Char('2')} else if x < 36 {Key::Char('3')} else if x < 44 {Key::Char('4')} else if x < 56 {Key::Char('d')} else if x < 73 {Key::Char('f')} else {Key::Esc});
             }
             return;
         }
@@ -7938,6 +7980,7 @@ impl Ui {
                 screen.push_str("\x1b[2J");
                 paint(&mut screen, 1, 1, "Channel Inspector · Enlarge terminal", width, Surface::Toolbar, true);
             } else {
+                self.request_mml();
                 self.inspector.draw(&mut screen, size, &self.player.channel_snapshot());
             }
             return screen;
