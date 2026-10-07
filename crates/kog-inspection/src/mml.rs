@@ -37,6 +37,8 @@ pub struct Score {
     /// Octave shifts for instruments whose pitch is only relative (sample
     /// playback rates), applied when notes are written and read back.
     pub transpose: Vec<(String, i32)>,
+    /// Ticks before the first full bar, so bars follow the music's grid.
+    pub pickup: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -67,6 +69,38 @@ pub struct Track {
     /// frequency register): set at each note whose pitch changes them, so they
     /// are listed once per pitch instead of at every note.
     pub pitched: Vec<PitchedParam>,
+    /// Each key's usual detune in cents. Notes with that detune omit it; a
+    /// chip's fixed period table gives every pitch its own small offset.
+    pub tuning: Vec<(i32, i32)>,
+}
+
+impl Track {
+    fn tuning(&self, key: i32) -> i32 {
+        self.tuning.iter().find(|(k, _)| *k == key).map_or(0, |(_, cents)| *cents)
+    }
+}
+
+/// Record each key's most common detune on this track.
+fn extract_tuning(track: &mut Track) {
+    let mut counts: BTreeMap<(i32, i32), usize> = BTreeMap::new();
+    for event in &track.events {
+        if let EventKind::Note { key, cents, .. } = event.kind {
+            *counts.entry((key, cents)).or_default() += 1;
+        }
+    }
+    // Most common detune per key; ties go to the detune nearest zero.
+    let mut best: BTreeMap<i32, (usize, i32)> = BTreeMap::new();
+    for (&(key, cents), &count) in &counts {
+        let entry = best.entry(key).or_insert((0, 0));
+        if (count, -cents.abs()) > (entry.0, -entry.1.abs()) {
+            *entry = (count, cents);
+        }
+    }
+    track.tuning = best
+        .into_iter()
+        .filter(|(_, (_, cents))| *cents != 0)
+        .map(|(key, (_, cents))| (key, cents))
+        .collect();
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -218,6 +252,24 @@ impl Score {
 
     pub fn bar_ticks(&self) -> u64 {
         u64::from(self.quarter.max(1)) * u64::from(self.beats.max(1))
+    }
+
+    /// The first bar line after `tick`. The pickup lengthens the first bar.
+    pub fn next_bar(&self, tick: u64) -> u64 {
+        let bar = self.bar_ticks();
+        self.pickup + (tick.saturating_sub(self.pickup) / bar + 1) * bar
+    }
+
+    fn bar_start(&self, index: usize) -> u64 {
+        if index == 0 { 0 } else { self.pickup + index as u64 * self.bar_ticks() }
+    }
+
+    fn bar_count(&self) -> usize {
+        let mut count = 1;
+        while self.bar_start(count) < self.length {
+            count += 1;
+        }
+        count
     }
 
     pub fn piano_roll(&self) -> Vec<RollNote> {
@@ -378,7 +430,13 @@ impl Continuity {
                     }
                 }
             }
-            self.previous.insert(channel.id, channel.clone());
+        }
+    }
+
+    /// Keep this frame's channels for the next comparison, without copying.
+    fn remember(&mut self, frame: TimedFrame) {
+        for channel in frame.data.channels {
+            self.previous.insert(channel.id, channel);
         }
     }
 
@@ -479,6 +537,7 @@ impl ScoreBuilder {
     pub fn push(&mut self, frame: TimedFrame) {
         if self.timebase.is_some() {
             self.process(&frame);
+            self.continuity.remember(frame);
             return;
         }
         self.warmup.push(frame);
@@ -514,6 +573,7 @@ impl ScoreBuilder {
         self.timebase = Some((rate, tick_samples, f64::from(tick_samples) / f64::from(rate)));
         for frame in std::mem::take(&mut self.warmup) {
             self.process(&frame);
+            self.continuity.remember(frame);
         }
     }
 
@@ -730,6 +790,7 @@ impl ScoreBuilder {
                     },
                     events,
                     pitched: Vec::new(),
+                    tuning: Vec::new(),
                 });
             }
         }
@@ -743,21 +804,42 @@ impl ScoreBuilder {
         // Frames arrive every few milliseconds, but music moves on a beat.
         // Re-time every event onto 1/128 notes of the tempo so lengths can be
         // written as ordinary note values.
-        let quarter_frames = match self.tempo {
-            Some(bpm) => (60.0 / bpm) / tick_seconds,
-            None => f64::from(infer_quarter(&tracks, tick_seconds)),
-        }
-        .max(1.0);
+        let (quarter_frames, phase, steps) = match self.tempo {
+            Some(bpm) => ((60.0 / bpm) / tick_seconds, 0.0, 4.0),
+            None => infer_grid(&tracks, tick_seconds),
+        };
+        let quarter_frames = quarter_frames.max(1.0);
         let scale = f64::from(QUARTER) / quarter_frames;
-        let map = |tick: u64| (tick as f64 * scale).round() as u64;
+        let unit_frames = quarter_frames / steps;
+        let unit_ticks = f64::from(QUARTER) / steps;
+        let pickup = (phase * scale).round() as u64;
+        let fine = |tick: u64| (pickup as i64 + ((tick as f64 - phase) * scale).round() as i64).max(0) as u64;
+        let snap = |tick: u64| {
+            let steps_in = (tick as f64 - phase) / unit_frames;
+            let nearest = steps_in.round();
+            if (steps_in - nearest).abs() <= 0.2 {
+                (pickup as i64 + (nearest * unit_ticks).round() as i64).max(0) as u64
+            } else {
+                fine(tick)
+            }
+        };
         for track in &mut tracks {
+            // Notes snap to a nearby grid step, so frame jitter does not leave
+            // 1/128-note slivers. Commands keep 1/128-note resolution, except
+            // those made at a note's onset, which move with the note.
+            let onsets: HashMap<u64, u64> = track
+                .events
+                .iter()
+                .filter(|event| event.kind.length() > 0)
+                .map(|event| (event.tick, snap(event.tick)))
+                .collect();
             let mut events: Vec<Event> = std::mem::take(&mut track.events)
                 .into_iter()
                 .filter_map(|mut event| {
-                    let start = map(event.tick);
+                    let start = onsets.get(&event.tick).copied().unwrap_or_else(|| fine(event.tick));
                     match &mut event.kind {
                         EventKind::Note { length, .. } | EventKind::Hit { length, .. } => {
-                            *length = map(event.tick + *length).saturating_sub(start);
+                            *length = snap(event.tick + *length).saturating_sub(start);
                             if *length == 0 {
                                 return None;
                             }
@@ -768,16 +850,48 @@ impl ScoreBuilder {
                     Some(event)
                 })
                 .collect();
+            // Snapping is not strictly monotonic next to the tolerance edge:
+            // keep each sound after the previous one ends.
+            let mut previous_end = 0;
+            events.retain_mut(|event| {
+                let length = event.kind.length();
+                if length == 0 {
+                    return true;
+                }
+                let start = event.tick.max(previous_end);
+                let end = (event.tick + length).max(start);
+                if end == start {
+                    return false;
+                }
+                if let EventKind::Note { length, .. } | EventKind::Hit { length, .. } = &mut event.kind {
+                    *length = end - start;
+                }
+                event.tick = start;
+                previous_end = end;
+                true
+            });
             events.sort_by_key(|event| (event.tick, event.kind.length() > 0));
             track.events = events;
         }
-        let length = map(end).max(1);
+        let length = snap(end).max(1);
+        // Nothing may fall after the song's end.
+        for track in &mut tracks {
+            track.events.retain_mut(|event| {
+                event.tick = event.tick.min(length);
+                if let EventKind::Note { length: l, .. } | EventKind::Hit { length: l, .. } = &mut event.kind {
+                    *l = (*l).min(length - event.tick);
+                    return *l > 0;
+                }
+                true
+            });
+        }
         let tempo = (60_000.0 / (quarter_frames * tick_seconds)).round().max(1.0) as u32;
 
         let transpose = relative_transpose(&tracks, &relative);
         for track in &mut tracks {
             drop_overwritten(&mut track.events);
             extract_pitched(track);
+            extract_tuning(track);
         }
         let mut macros = Vec::new();
         for track in &mut tracks {
@@ -797,6 +911,7 @@ impl ScoreBuilder {
             tracks,
             macros,
             transpose,
+            pickup,
         }
     }
 }
@@ -946,6 +1061,66 @@ impl Score {
         events.sort_by_key(|event| (event.tick, event.kind.length() > 0));
         events
     }
+}
+
+/// Find the rhythmic grid: the longest step that nearly every gap between
+/// onsets is a whole multiple of, and where that grid starts. Returns frames
+/// per quarter note (taking the step as a sixteenth or eighth as the tempo
+/// allows) and the grid's offset in frames.
+fn infer_grid(tracks: &[Track], tick_seconds: f64) -> (f64, f64, f64) {
+    let mut onsets: Vec<u64> = tracks
+        .iter()
+        .flat_map(|track| track.events.iter())
+        .filter(|event| matches!(event.kind, EventKind::Note { .. } | EventKind::Hit { .. }))
+        .map(|event| event.tick)
+        .collect();
+    onsets.sort_unstable();
+    onsets.dedup();
+    if onsets.len() < 8 {
+        return (f64::from(infer_quarter(tracks, tick_seconds)), 0.0, 4.0);
+    }
+    let times: Vec<f64> = onsets.iter().map(|tick| *tick as f64).collect();
+    let fit = |unit: f64| {
+        // The grid phase is the circular mean of each onset's position in a step.
+        let (mut x, mut y) = (0.0, 0.0);
+        for time in &times {
+            let angle = std::f64::consts::TAU * (time / unit).fract();
+            x += angle.cos();
+            y += angle.sin();
+        }
+        let phase = (y.atan2(x) / std::f64::consts::TAU).rem_euclid(1.0) * unit;
+        let tolerance = (0.08 * unit).max(0.75);
+        let hits = times
+            .iter()
+            .filter(|time| {
+                let offset = ((**time - phase) / unit).rem_euclid(1.0) * unit;
+                offset.min(unit - offset) <= tolerance
+            })
+            .count();
+        (hits as f64 / times.len() as f64, phase)
+    };
+    let first = (0.045 / tick_seconds).max(2.0);
+    let last = 0.35 / tick_seconds;
+    let mut candidates = Vec::new();
+    let mut unit = first;
+    while unit <= last {
+        let (score, phase) = fit(unit);
+        candidates.push((unit, score, phase));
+        unit += 0.1;
+    }
+    let best = candidates.iter().map(|c| c.1).fold(0.0, f64::max);
+    // The longest step that explains almost as many onsets as the best one;
+    // shorter steps always fit, so they are only chosen when nothing else does.
+    let Some(&(unit, _, phase)) = candidates.iter().rev().find(|c| c.1 >= best - 0.03) else {
+        return (f64::from(infer_quarter(tracks, tick_seconds)), 0.0, 4.0);
+    };
+    let bpm = |quarter: f64| 60.0 / (quarter * tick_seconds);
+    let steps = [1.0, 2.0, 4.0, 8.0]
+        .into_iter()
+        .filter(|steps| (70.0..=200.0).contains(&bpm(unit * steps)))
+        .min_by(|a, b| (bpm(unit * a) - 120.0).abs().total_cmp(&(bpm(unit * b) - 120.0).abs()))
+        .unwrap_or(4.0);
+    (unit * steps, phase % unit, steps)
 }
 
 /// Estimate a beat from the most common gap between onsets on the same voice,
@@ -1276,7 +1451,8 @@ impl Writer<'_> {
                     text.push('&');
                 }
                 text.push_str(NAMES[written.rem_euclid(12) as usize]);
-                if *cents != 0 {
+                // Detune listed in #TUNE is implied; anything else is spelled out.
+                if *cents != self.score.tracks[track].tuning(*key) {
                     let _ = write!(text, "({cents:+})");
                 }
                 text.push_str(&length);
@@ -1302,7 +1478,7 @@ enum Item {
 
 /// A track as commands and sound pieces in time order. Sounds and gaps are
 /// split where a command falls inside them and at bar lines.
-fn items(events: &[Event], length: u64, bar: u64) -> Vec<Item> {
+fn items(events: &[Event], length: u64, score: &Score) -> Vec<Item> {
     let mut sounds = Vec::new();
     let mut cursor = 0;
     for (index, event) in events.iter().enumerate() {
@@ -1333,7 +1509,7 @@ fn items(events: &[Event], length: u64, bar: u64) -> Vec<Item> {
                 items.push(Item::Command(commands[next_command].0, commands[next_command].1));
                 next_command += 1;
             }
-            let bar_end = (piece_start / bar + 1) * bar;
+            let bar_end = score.next_bar(piece_start);
             let command_tick = commands.get(next_command).map_or(u64::MAX, |c| c.0);
             let piece_end = end.min(bar_end).min(command_tick);
             items.push(Item::Piece(piece_start, piece_end, sound, piece_start == start));
@@ -1360,7 +1536,6 @@ fn macro_target(target: &Target) -> String {
 
 pub fn encode(score: &Score) -> Document {
     let quarter = u64::from(score.quarter.max(1));
-    let bar = score.bar_ticks();
     let tracks = score.tracks.len();
     let mut writer = Writer {
         score,
@@ -1385,6 +1560,9 @@ pub fn encode(score: &Score) -> Document {
     let _ = writeln!(text, "#TICKS {} ; per quarter note", score.quarter);
     let _ = writeln!(text, "#BAR {} ; quarter notes", score.beats);
     let _ = writeln!(text, "#LENGTH {} ; ticks", score.length);
+    if score.pickup > 0 {
+        let _ = writeln!(text, "#PICKUP {} ; ticks before the first full bar", score.pickup);
+    }
     for (instrument, shift) in &score.transpose {
         let _ = writeln!(
             text,
@@ -1409,6 +1587,13 @@ pub fn encode(score: &Score) -> Document {
         );
     }
     for track in &score.tracks {
+        if !track.tuning.is_empty() {
+            let _ = write!(writer.text, "#TUNE {}", track.label);
+            for (key, cents) in &track.tuning {
+                let _ = write!(writer.text, " {key}:{cents:+}");
+            }
+            writer.text.push('\n');
+        }
         for table in &track.pitched {
             let _ = write!(writer.text, "#PITCH {} {}=", track.label, word(&table.name));
             for (key, cents, value) in &table.values {
@@ -1432,14 +1617,14 @@ pub fn encode(score: &Score) -> Document {
     let plans: Vec<_> = score
         .tracks
         .iter()
-        .map(|track| items(&track.events, score.length, bar))
+        .map(|track| items(&track.events, score.length, score))
         .collect();
     let mut cursors = vec![0usize; tracks];
     let mut bars = Vec::new();
-    let bar_count = score.length.div_ceil(bar).max(1) as usize;
+    let bar_count = score.bar_count();
     for index in 0..bar_count {
-        let start = index as u64 * bar;
-        let end = (start + bar).min(score.length).max(start);
+        let start = score.bar_start(index);
+        let end = score.bar_start(index + 1).min(score.length).max(start);
         let last = index + 1 == bar_count;
         let from = writer.text.len();
         let seconds = start as f64 * score.tick_seconds();
@@ -1859,6 +2044,25 @@ pub fn parse(text: &str) -> Result<Score, ParseError> {
                     "TICKS" => score.quarter = cursor.number()?.max(0) as u32,
                     "BAR" => score.beats = cursor.number()?.max(0) as u32,
                     "LENGTH" => score.length = cursor.number()?.max(0) as u64,
+                    "PICKUP" => score.pickup = cursor.number()?.max(0) as u64,
+                    "TUNE" => {
+                        let label = cursor.word()?;
+                        let Some(&index) = labels.get(&label) else {
+                            return cursor.error(format!("#TUNE names undeclared track {label}"));
+                        };
+                        loop {
+                            cursor.skip_space();
+                            if matches!(cursor.peek(), None | Some(b';')) {
+                                break;
+                            }
+                            let key = cursor.number()? as i32;
+                            if !cursor.eat(b':') {
+                                return cursor.error("#TUNE entries are key:cents");
+                            }
+                            let cents = cursor.number()? as i32;
+                            score.tracks[index].tuning.push((key, cents));
+                        }
+                    }
                     "TRANSPOSE" => {
                         let instrument = cursor.word()?;
                         cursor.skip_space();
@@ -2033,7 +2237,6 @@ fn parse_track_line(
     state: &mut TrackParse,
 ) -> Result<(), ParseError> {
     let quarter = u64::from(score.quarter.max(1));
-    let bar = score.bar_ticks();
     let mut bar_start: Option<u64> = None;
     loop {
         cursor.skip_space();
@@ -2056,17 +2259,21 @@ fn parse_track_line(
             b'|' => match bar_start {
                 // Bar lines must fall on the bar grid; this catches lost ticks.
                 None => {
-                    if state.tick % bar != 0 {
+                    let on_grid = state.tick == 0
+                        || (state.tick >= score.pickup + score.bar_ticks()
+                            && (state.tick - score.pickup) % score.bar_ticks() == 0);
+                    if !on_grid {
                         return cursor.error("a bar starts off the bar grid");
                     }
                     bar_start = Some(state.tick);
                 }
                 Some(start) => {
-                    if state.tick != (start + bar).min(score.length) {
+                    let end = score.next_bar(start).min(score.length);
+                    if state.tick != end {
                         return cursor.error(format!(
                             "bar holds {} ticks instead of {}",
                             state.tick - start,
-                            bar
+                            end - start
                         ));
                     }
                 }
@@ -2150,6 +2357,11 @@ fn parse_track_line(
                         break;
                     }
                 }
+                let shift = state
+                    .instrument
+                    .as_ref()
+                    .and_then(|name| score.transpose.iter().find(|(n, _)| n == name))
+                    .map_or(0, |(_, shift)| *shift);
                 let cents = if cursor.eat(b'(') {
                     let cents = cursor.number()? as i32;
                     if !cursor.eat(b')') {
@@ -2157,14 +2369,9 @@ fn parse_track_line(
                     }
                     cents
                 } else {
-                    0
+                    score.tracks[index].tuning(key - shift)
                 };
                 let length = cursor.length(quarter, state.default)?;
-                let shift = state
-                    .instrument
-                    .as_ref()
-                    .and_then(|name| score.transpose.iter().find(|(n, _)| n == name))
-                    .map_or(0, |(_, shift)| *shift);
                 score.tracks[index].events.push(Event {
                     tick: state.tick,
                     kind: EventKind::Note {
@@ -2221,6 +2428,7 @@ mod tests {
                     name: "Pulse 1".into(),
                     kind: "tonal".into(),
                     pitched: Vec::new(),
+                    tuning: Vec::new(),
                     events: vec![
                         Event { tick: 0, kind: EventKind::Instrument("Duty 25%".into()) },
                         Event { tick: 0, kind: EventKind::Level(750) },
@@ -2240,6 +2448,7 @@ mod tests {
                     name: "Noise".into(),
                     kind: "noise".into(),
                     pitched: Vec::new(),
+                    tuning: Vec::new(),
                     events: vec![
                         Event { tick: 12, kind: EventKind::Hit { velocity: 90, length: 6 } },
                         Event { tick: 96, kind: EventKind::Pan(-250) },
@@ -2253,6 +2462,7 @@ mod tests {
                 steps: vec![(1, "14".into()), (3, "1 3".into())],
             }],
             transpose: vec![("Duty 25%".into(), 24)],
+            pickup: 0,
         }
     }
 
@@ -2325,6 +2535,7 @@ mod tests {
                 tempo: 1 + next(400_000) as u32,
                 quarter,
                 beats: 1 + next(6) as u32,
+                pickup: next(3) * next(40),
                 transpose: (0..next(3)).map(|i| (format!("I{i} \"q\" ü"), (next(11) as i32 - 5) * 12)).collect(),
                 inferred: next(2) == 0,
                 length: 0,
@@ -2399,6 +2610,11 @@ mod tests {
                     name: format!("Voice {index}"),
                     kind: "tonal".into(),
                     events,
+                    tuning: {
+                        let mut tuning: Vec<(i32, i32)> = (0..next(4)).map(|k| (k as i32 * 13 - 10, next(41) as i32 - 20)).collect();
+                        tuning.dedup_by_key(|(key, _)| *key);
+                        tuning
+                    },
                     pitched: (0..next(2))
                         .map(|i| PitchedParam {
                             name: format!("Period {i}"),
@@ -2498,9 +2714,10 @@ mod tests {
             "envelope steps are recorded at key-on only"
         );
         let expanded = score.expanded_events(&score.tracks[0]);
+        // Commands near a grid step snap to it, so allow one sixteenth.
         assert!(expanded
             .iter()
-            .any(|e| e.kind == EventKind::Bend(29) && (seconds(e.tick) - 89.0 / 60.0).abs() < score.tick_seconds()));
+            .any(|e| e.kind == EventKind::Bend(29) && (seconds(e.tick) - 89.0 / 60.0).abs() <= 0.125));
         assert!(
             !events.iter().any(|e| matches!(e.kind, EventKind::Bend(_))),
             "the slide inside one note becomes a macro"

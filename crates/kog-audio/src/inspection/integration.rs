@@ -281,6 +281,18 @@ fn verify_mml(name: &str, pitched: bool) {
     let document = kog_inspection::mml::encode(&score);
     let parsed = kog_inspection::mml::parse(&document.text)
         .unwrap_or_else(|error| panic!("{name}: {error}\n{}", document.text));
+    for (left, right) in parsed.tracks.iter().zip(&score.tracks) {
+        if let Some(at) = (0..left.events.len().max(right.events.len()))
+            .find(|i| left.events.get(*i) != right.events.get(*i))
+        {
+            panic!(
+                "{name}: track {} differs at event {at}: parsed {:?}, recorded {:?}",
+                left.label,
+                &left.events[at.saturating_sub(2)..(at + 2).min(left.events.len())],
+                &right.events[at.saturating_sub(2)..(at + 2).min(right.events.len())]
+            );
+        }
+    }
     assert_eq!(parsed, score, "{name}: MML did not round-trip");
     let roll = score.piano_roll();
     assert!(

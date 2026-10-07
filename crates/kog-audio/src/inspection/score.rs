@@ -76,7 +76,9 @@ pub fn record(
     let mut after = None;
     let mut frames = 0usize;
     let drain = |through: f64, after: &mut Option<f64>, builder: &mut ScoreBuilder, frames: &mut usize| {
-        let batch = monitor.recording_frames(*after, Duration::from_secs_f64(through));
+        let batch = monitor
+            .take_frames()
+            .unwrap_or_else(|| monitor.recording_frames(*after, Duration::from_secs_f64(through)));
         if let Some(last) = batch.last() {
             *after = Some(last.time);
         }

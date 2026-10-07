@@ -218,6 +218,24 @@ impl Monitor {
             .collect()
     }
 
+    /// Move queued decoder frames out for a private score recorder. Unlike
+    /// [`Monitor::recording_frames`] this skips the live tracker rows and
+    /// history copies, which no one reads on a recorder's own monitor.
+    /// Returns `None` for MIDI, whose frames come from its event timeline.
+    pub fn take_frames(&self) -> Option<Vec<TimedFrame>> {
+        if self.0.midi.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
+            return None;
+        }
+        let mut frames = Vec::with_capacity(self.0.queue.len());
+        while let Ok(frame) = self.0.queue.pop() {
+            frames.push(TimedFrame {
+                time: frame.time,
+                data: frame.data,
+            });
+        }
+        Some(frames)
+    }
+
     pub fn json(&self, position: Duration, playing: bool, seeking: bool) -> String {
         serde_json::to_string(&self.snapshot(position, playing, seeking))
             .unwrap_or_else(|_| "{}".into())
