@@ -26,6 +26,20 @@ type OpenMptLogFunc = Option<unsafe extern "C" fn(*const c_char, *mut c_void)>;
 type OpenMptErrorFunc = Option<unsafe extern "C" fn(c_int, *mut c_void) -> c_int>;
 
 unsafe extern "C" {
+    fn kog_openmpt_voices(module: *mut OpenMptModule, output: *mut f32, capacity: usize) -> usize;
+    fn openmpt_module_get_num_channels(module: *mut OpenMptModule) -> i32;
+    fn openmpt_module_get_num_instruments(module: *mut OpenMptModule) -> i32;
+    fn openmpt_module_get_num_samples(module: *mut OpenMptModule) -> i32;
+    fn openmpt_module_get_channel_name(module: *mut OpenMptModule, channel: i32) -> *const c_char;
+    fn openmpt_module_get_instrument_name(module: *mut OpenMptModule, instrument: i32) -> *const c_char;
+    fn openmpt_module_get_sample_name(module: *mut OpenMptModule, sample: i32) -> *const c_char;
+    fn openmpt_module_get_current_pattern(module: *mut OpenMptModule) -> i32;
+    fn openmpt_module_get_current_order(module: *mut OpenMptModule) -> i32;
+    fn openmpt_module_get_current_row(module: *mut OpenMptModule) -> i32;
+    fn openmpt_module_get_current_speed(module: *mut OpenMptModule) -> i32;
+    fn openmpt_module_get_current_tempo2(module: *mut OpenMptModule) -> f64;
+    fn openmpt_module_get_current_channel_vu_mono(module: *mut OpenMptModule, channel: i32) -> f32;
+    fn openmpt_module_format_pattern_row_channel_command(module: *mut OpenMptModule, pattern: i32, row: i32, channel: i32, command: i32) -> *const c_char;
     fn openmpt_free_string(value: *const c_char);
     fn openmpt_get_supported_extensions() -> *const c_char;
     fn openmpt_is_extension_supported(extension: *const c_char) -> c_int;
@@ -93,6 +107,8 @@ pub struct OpenMpt {
     subsongs: u32,
     selected_subsong: u32,
     metadata: OpenMptMetadata,
+    inspection_names: Option<(Vec<String>, Vec<String>, Vec<String>)>,
+    inspection_row: Option<(i32, i32, i32, crate::inspection::Row)>,
 }
 
 impl OpenMpt {
@@ -142,6 +158,8 @@ impl OpenMpt {
             subsongs: 0,
             selected_subsong: subsong.unwrap_or(0),
             metadata: OpenMptMetadata::default(),
+            inspection_names: None,
+            inspection_row: None,
         };
         let subsongs = unsafe { openmpt_module_get_num_subsongs(module.handle.as_ptr()) };
         module.subsongs =
@@ -220,6 +238,59 @@ impl OpenMpt {
                     .collect()
             })
             .contains(&lowered)
+    }
+
+    pub fn inspection(&mut self) -> crate::inspection::FrameData {
+        use crate::inspection::{Cell, Channel, Field, FrameData, Note, Row};
+        let handle = self.handle.as_ptr();
+        let (names, instruments, samples) = self.inspection_names.get_or_insert_with(|| unsafe {
+            let names = (0..openmpt_module_get_num_channels(handle)).map(|i| {
+                let name = take_native_string(openmpt_module_get_channel_name(handle, i)).unwrap_or_default();
+                if name.is_empty() { format!("Channel {}", i + 1) } else { name }
+            }).collect::<Vec<_>>();
+            let instruments = (0..openmpt_module_get_num_instruments(handle)).map(|i| take_native_string(openmpt_module_get_instrument_name(handle, i)).unwrap_or_default()).collect();
+            let samples = (0..openmpt_module_get_num_samples(handle)).map(|i| take_native_string(openmpt_module_get_sample_name(handle, i)).unwrap_or_default()).collect();
+            (names, instruments, samples)
+        });
+        let mut channels = names.iter().enumerate().map(|(id, name)| Channel {
+            id: id as u32, name: name.clone(), kind: "sample".into(),
+            level: unsafe { openmpt_module_get_current_channel_vu_mono(handle, id as i32) }.clamp(0.0, 1.0),
+            ..Channel::default()
+        }).collect::<Vec<_>>();
+        let mut voices = [0.0_f32; 8 * 256];
+        let count = unsafe { kog_openmpt_voices(handle, voices.as_mut_ptr(), 256) }.min(256);
+        for voice in voices[..count * 8].chunks_exact(8) {
+            let Some(channel) = channels.get_mut(voice[0] as usize) else { continue; };
+            channel.active = true;
+            if voice[1].is_finite() && voice[1] >= 0.0 {
+                channel.notes.push(Note { key: voice[1], velocity: voice[2].clamp(0.0, 1.0), held: voice[6] > 0.0 });
+            }
+            channel.pan = voice[3];
+            let sample = voice[4] as usize;
+            let instrument = voice[5] as usize;
+            let name = instrument.checked_sub(1).and_then(|i| instruments.get(i)).filter(|name| !name.is_empty())
+                .or_else(|| sample.checked_sub(1).and_then(|i| samples.get(i))).cloned().unwrap_or_default();
+            if channel.instrument.is_empty() { channel.instrument = format!("{:02X} {}", if instruments.is_empty() { sample } else { instrument }, name); }
+            channel.fields.push(Field::new("Sample", sample));
+            channel.fields.push(Field::new("Period", voice[7]));
+        }
+        let pattern = unsafe { openmpt_module_get_current_pattern(handle) };
+        let order = unsafe { openmpt_module_get_current_order(handle) };
+        let row = unsafe { openmpt_module_get_current_row(handle) };
+        if self.inspection_row.as_ref().is_none_or(|(p, o, r, _)| (*p, *o, *r) != (pattern, order, row)) {
+            let cells = (0..channels.len()).map(|channel| {
+                let commands = (0..6).map(|command| take_native_string(unsafe {
+                    openmpt_module_format_pattern_row_channel_command(handle, pattern, row, channel as i32, command)
+                }).unwrap_or_default()).collect::<Vec<_>>();
+                Cell { channel: channel as u32, notes: commands[0].clone(), instrument: commands[1].clone(),
+                    volume: format!("{}{}", commands[2], commands[4]), effects: vec![Field::new("FX", format!("{}{}", commands[3], commands[5]))] }
+            }).collect();
+            self.inspection_row = Some((pattern, order, row, Row { label: format!("{order:02X}:{pattern:02X}:{row:02X}"), cells, ..Row::default() }));
+        }
+        let global = vec![Field::new("Order", order), Field::new("Pattern", pattern), Field::new("Row", row),
+            Field::new("Speed", unsafe { openmpt_module_get_current_speed(handle) }),
+            Field::new("Tempo", format!("{:.2} BPM", unsafe { openmpt_module_get_current_tempo2(handle) }))];
+        FrameData { channels, row: self.inspection_row.as_ref().map(|(_, _, _, row)| row.clone()), global }
     }
 
     pub fn duration(&self) -> Duration {

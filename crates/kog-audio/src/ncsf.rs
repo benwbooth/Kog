@@ -11,6 +11,7 @@ struct NativeNcsf {
 }
 
 unsafe extern "C" {
+    fn kog_ncsf_inspection(decoder: *mut NativeNcsf, voices: *mut crate::inspection::native::Voice, capacity: usize) -> usize;
     fn kog_ncsf_open(
         path: *const c_char,
         default_length_milliseconds: u32,
@@ -103,6 +104,10 @@ impl Ncsf {
             total_frames,
             metadata,
         })
+    }
+
+    pub fn inspection(&mut self) -> crate::inspection::FrameData {
+        crate::inspection::native::capture(16, |out, capacity| unsafe { kog_ncsf_inspection(self.handle.as_ptr(), out, capacity) })
     }
 
     pub fn duration(&self) -> Duration {

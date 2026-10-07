@@ -33,6 +33,8 @@ fn main() {
         "qml/SkinBrowser.qml",
         "qml/SkinSprite.qml",
         "qml/Visualizer.qml",
+        "qml/ChannelInspector.qml",
+        "qml/ChannelKeyboard.qml",
         "qml/Equalizer.qml",
         "qml/InfoInspector.qml",
         "qml/AboutKog.qml",

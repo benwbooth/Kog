@@ -11,6 +11,7 @@ struct NativeGsf {
 }
 
 unsafe extern "C" {
+    fn kog_gsf_inspect(decoder: *mut NativeGsf, out: *mut crate::inspection::native::Voice, capacity: usize, ahead: *mut f64) -> usize;
     fn kog_gsf_open(
         path: *const c_char,
         default_length_milliseconds: u32,
@@ -100,6 +101,12 @@ impl Gsf {
             total_frames,
             metadata,
         })
+    }
+
+    pub fn inspection(&self) -> (crate::inspection::FrameData, f64) {
+        let mut ahead = 0.0;
+        let data = crate::inspection::native::capture(6, |out, capacity| unsafe { kog_gsf_inspect(self.handle.as_ptr(), out, capacity, &mut ahead) });
+        (data, ahead)
     }
 
     pub fn duration(&self) -> Duration {

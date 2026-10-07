@@ -24,6 +24,7 @@ pub struct Sfm {
     copyright: String,
     date: String,
     native_bytes: Vec<u8>,
+    inspection: Option<crate::inspection::Monitor>,
 }
 
 struct SfmProcess {
@@ -68,7 +69,15 @@ impl Sfm {
             copyright: header.copyright,
             date: header.date,
             native_bytes: Vec::new(),
+            inspection: None,
         })
+    }
+
+    pub fn inspect(&mut self, monitor: crate::inspection::Monitor) {
+        if let Some(process) = self.process.as_mut() {
+            process.stdout.inspect(&monitor, self.sample_rate);
+        }
+        self.inspection = Some(monitor);
     }
 
     pub fn duration(&self) -> Duration {
@@ -171,6 +180,7 @@ impl Sfm {
         if let Some(mut old_process) = self.process.replace(process) {
             stop_process(&mut old_process);
         }
+        if let Some(monitor) = self.inspection.clone() { self.inspect(monitor); }
         self.rendered_frames = target;
         Ok(duration_from_frames(target, self.sample_rate))
     }

@@ -11,6 +11,7 @@ struct NativeUsf {
 }
 
 unsafe extern "C" {
+    fn kog_usf_inspect(decoder: *mut NativeUsf, out: *mut crate::inspection::native::Voice, capacity: usize) -> usize;
     fn kog_usf_open(
         path: *const c_char,
         default_length_milliseconds: u32,
@@ -100,6 +101,10 @@ impl Usf {
             total_frames,
             metadata,
         })
+    }
+
+    pub fn inspection(&self) -> crate::inspection::FrameData {
+        crate::inspection::native::capture(2, |out, capacity| unsafe { kog_usf_inspect(self.handle.as_ptr(), out, capacity) })
     }
 
     pub fn duration(&self) -> Duration {

@@ -62,6 +62,14 @@ impl DecoderBackend for OrganyaBackend {
         })
     }
 
+    fn append_observed(&self, source: &PlaybackSource, player: &Player, monitor: &crate::inspection::Monitor) -> Result<(), String> {
+        let mut audio = OrganyaSource::new(Self::open(source)?);
+        monitor.describe(self.display_name(), "patterns", "Original Organya note, length, volume and panning events; keyboards follow the actual wavetable phase rate. Drum rate is shown without assuming a tuned sample.");
+        audio.inspection = Some(monitor.producer(ORGANYA_SAMPLE_RATE));
+        player.append(audio);
+        Ok(())
+    }
+
     fn append(&self, source: &PlaybackSource, player: &Player) -> Result<(), String> {
         player.append(OrganyaSource::new(Self::open(source)?));
         Ok(())
@@ -70,6 +78,7 @@ impl DecoderBackend for OrganyaBackend {
 
 struct OrganyaSource {
     decoder: Organya,
+    inspection: Option<crate::inspection::Producer>,
     duration: Duration,
     pcm: Vec<f32>,
     pcm_samples: usize,
@@ -81,6 +90,7 @@ impl OrganyaSource {
         let duration = decoder.duration();
         Self {
             decoder,
+            inspection: None,
             duration,
             pcm: vec![0.0; ORGANYA_RENDER_FRAMES * usize::from(ORGANYA_CHANNELS)],
             pcm_samples: 0,
@@ -90,17 +100,23 @@ impl OrganyaSource {
 
     fn fill_pcm(&mut self) {
         self.pcm_index = 0;
-        self.pcm_samples = match self.decoder.render(&mut self.pcm) {
+        let frames = self.inspection.as_ref().map_or(ORGANYA_RENDER_FRAMES, |p| p.render_frames(ORGANYA_RENDER_FRAMES));
+        self.pcm_samples = match self.decoder.render(&mut self.pcm[..frames * usize::from(ORGANYA_CHANNELS)]) {
             Ok(frames) => frames * usize::from(ORGANYA_CHANNELS),
             Err(error) => {
                 eprintln!("Kog Organya playback error: {error}");
                 0
             }
         };
+        if let Some(producer) = &mut self.inspection {
+            if producer.enabled() { producer.publish(self.decoder.inspection()); }
+            producer.advance(self.pcm_samples / usize::from(ORGANYA_CHANNELS));
+        }
     }
 
     fn seek_to(&mut self, position: Duration) -> Result<(), String> {
-        self.decoder.seek(position)?;
+        let actual = self.decoder.seek(position)?;
+        if let Some(producer) = &mut self.inspection { producer.seek(actual); }
         self.pcm_samples = 0;
         self.pcm_index = 0;
         Ok(())

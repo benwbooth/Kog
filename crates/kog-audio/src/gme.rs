@@ -6,6 +6,8 @@ use std::ptr::NonNull;
 use std::time::Duration;
 
 unsafe extern "C" {
+    fn kog_gme_inspection_enable(emu: *mut c_void, enabled: c_int);
+    fn kog_gme_inspection(emu: *mut c_void, voices: *mut crate::inspection::native::Voice, capacity: usize, ahead: *mut f64) -> usize;
     fn gme_identify_extension(path_or_extension: *const c_char) -> *const c_void;
     fn gme_new_emu(music_type: *const c_void, sample_rate: c_int) -> *mut c_void;
     fn gme_load_data(emu: *mut c_void, data: *const c_void, size: c_long) -> *const c_char;
@@ -219,6 +221,17 @@ impl GameMusicEmu {
             .map_err(|_| "GME fade length exceeds the native API limit".to_owned())?;
         unsafe { gme_set_fade_msecs(self.handle.as_ptr(), fade_start, fade_length) };
         Ok(())
+    }
+
+    pub fn enable_inspection(&mut self, enabled: bool) {
+        unsafe { kog_gme_inspection_enable(self.handle.as_ptr(), i32::from(enabled)) };
+    }
+
+    pub fn inspection(&mut self) -> (crate::inspection::FrameData, f64) {
+        let mut voices = vec![crate::inspection::native::Voice::default(); 64];
+        let mut ahead = 0.0;
+        let count = unsafe { kog_gme_inspection(self.handle.as_ptr(), voices.as_mut_ptr(), voices.len(), &mut ahead) }.min(voices.len());
+        (crate::inspection::native::frame(&voices[..count]), ahead)
     }
 
     pub fn render(&mut self, output: &mut [i16]) -> Result<(), String> {

@@ -48,6 +48,7 @@ mod menu;
 mod row_window;
 mod persistence;
 mod artwork;
+mod inspection;
 
 /// The desktop transport's SVG icons (`qml/icons/`), inlined verbatim. CSS
 /// tints them with the button's text color where the desktop picks the
@@ -2244,6 +2245,7 @@ fn App() -> impl IntoView {
     // meter: five 0..1 values polled from the server while it decodes.
     let (audio_levels, set_audio_levels) = signal([0.0_f32; 5]);
     let (visualizer_open, set_visualizer_open) = signal(false);
+    let (inspector_open, set_inspector_open) = signal(false);
     let (visualizer_spectrum_mode, set_visualizer_spectrum_mode) = signal(false);
     let (visualizer_wave, set_visualizer_wave) = signal(Vec::<f32>::new());
     let (visualizer_spectrum, set_visualizer_spectrum) = signal(Vec::<f32>::new());
@@ -3858,8 +3860,12 @@ fn App() -> impl IntoView {
                 remove_selected();
                 return;
             }
+            if (ev.ctrl_key() || ev.meta_key()) && ev.shift_key() && ev.key().eq_ignore_ascii_case("i") {
+                ev.prevent_default(); set_inspector_open.update(|open| *open = !*open); return;
+            }
             if ev.key() == "Escape" {
                 set_visualizer_open.set(false);
+                set_inspector_open.set(false);
                 set_cover_open.set(false);
                 set_menu_open.set(false);
                 set_mobile_sort_open.set(false);
@@ -7529,6 +7535,7 @@ fn App() -> impl IntoView {
                     </For>
                 </footer>
 
+                <inspection::Inspector audio=audio_ref open=inspector_open stopped=stopped toggle_play=Callback::new(move |_| toggle_play()) close=Callback::new(move |_| set_inspector_open.set(false)) authorization=Signal::derive(move || auth().header())/>
                 <Show when=move || visualizer_open.get() fallback=|| ()>
                     <div class="scrim" on:click=move |_| set_visualizer_open.set(false)></div>
                     <section class="audio-visualizer" role="dialog" aria-modal="true" aria-label="Audio visualizer">
@@ -8528,6 +8535,7 @@ fn App() -> impl IntoView {
                             <button class="menu-item" role="menuitem" on:click=move |_| {
                                 set_menu_open.set(false); set_visualizer_open.set(true);
                             }>"Visualizer"</button>
+                            <button class="menu-item" role="menuitem" on:click=move |_| {set_menu_open.set(false);set_inspector_open.set(true);}>"Channel Inspector"</button>
                         </menu::Submenu>
                         <menu::Submenu label="Playback" depth=1>
                             <button class="menu-item" role="menuitem" disabled=move || queue.get().is_empty() && !radio_on.get()

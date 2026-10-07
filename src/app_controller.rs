@@ -333,6 +333,8 @@ pub mod qobject {
         #[qinvokable]
         fn visualizer_frame(self: &AppController) -> QString;
         #[qinvokable]
+        fn channel_snapshot(self: &AppController) -> QString;
+        #[qinvokable]
         fn skin_state(self: &AppController, include_tracks: bool) -> QString;
         #[qinvokable]
         fn update_skin_equalizer_band(self: Pin<&mut AppController>, index: i32, gain_db: f64);
@@ -5339,6 +5341,10 @@ impl qobject::AppController {
         self.as_mut().set_audio_level_mid(f64::from(levels[2]));
         self.as_mut().set_audio_level_high_mid(f64::from(levels[3]));
         self.as_mut().set_audio_level_high(f64::from(levels[4]));
+    }
+
+    pub fn channel_snapshot(&self) -> QString {
+        QString::from(serde_json::to_string(&self.rust().playback.channel_snapshot()).unwrap_or_else(|_| "{}".into()))
     }
 
     pub fn visualizer_frame(&self) -> QString {

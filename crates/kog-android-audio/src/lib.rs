@@ -13,11 +13,13 @@ use kog_audio::settings::MidiEngine;
 use kog_audio::streaming::PcmReader;
 
 struct Handle {
-    reader: PcmReader,
+    reader: kog_audio::inspection::recording::CaptureReader,
+    inspection_file: tempfile::NamedTempFile,
     scratch: Vec<u8>,
 }
 
 static HANDLES: OnceLock<Mutex<HashMap<jlong, Arc<Mutex<Handle>>>>> = OnceLock::new();
+static INSPECTION_DIRECTORY: OnceLock<PathBuf> = OnceLock::new();
 static NEXT_HANDLE: AtomicI64 = AtomicI64::new(1);
 
 fn handles() -> &'static Mutex<HashMap<jlong, Arc<Mutex<Handle>>>> {
@@ -95,6 +97,14 @@ pub extern "system" fn Java_org_kog_player_NativeAudio_nativeSession(
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_org_kog_player_NativeAudio_nativeSetInspectionDirectory(mut env: JNIEnv, _receiver: JObject, path: JString) {
+    if let Ok(path) = env.get_string(&path) {
+        let directory = PathBuf::from(String::from(path));
+        if std::fs::create_dir_all(&directory).is_ok() { let _ = INSPECTION_DIRECTORY.set(directory); }
+    }
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_org_kog_player_NativeAudio_nativeSetHelperDirectory(
     mut env: JNIEnv,
     _receiver: JObject,
@@ -161,6 +171,12 @@ pub extern "system" fn Java_org_kog_player_NativeAudio_nativeOpen(
     let reader = PcmReader::open_path_subsong(path, (subsong >= 0).then_some(subsong as u32), settings);
     match reader {
         Ok(reader) => {
+            let recording = (|| -> Result<_, String> {
+                let file = tempfile::NamedTempFile::new_in(INSPECTION_DIRECTORY.get().cloned().unwrap_or_else(std::env::temp_dir)).map_err(|e|e.to_string())?;
+                let reader = kog_audio::inspection::recording::CaptureReader::new(reader, file.reopen().map_err(|e|e.to_string())?, 0)?;
+                Ok((reader,file))
+            })();
+            let (reader,inspection_file) = match recording { Ok(value)=>value, Err(error)=>{fail(&mut env,error);return 0;} };
             let id = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
             match handles().lock() {
                 Ok(mut all) => {
@@ -168,6 +184,7 @@ pub extern "system" fn Java_org_kog_player_NativeAudio_nativeOpen(
                         id,
                         Arc::new(Mutex::new(Handle {
                             reader,
+                            inspection_file,
                             scratch: Vec::new(),
                         })),
                     );
@@ -183,6 +200,18 @@ pub extern "system" fn Java_org_kog_player_NativeAudio_nativeOpen(
             fail(&mut env, error);
             0
         }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_kog_player_NativeAudio_nativeInspection(
+    mut env: JNIEnv, _receiver: JObject, handle: jlong, position_ms: jlong, playing: jboolean,
+) -> jni::sys::jstring {
+    let snapshot = get_handle(handle).and_then(|handle| handle.lock().ok().map(|guard| {
+        guard.reader.channel_snapshot(guard.inspection_file.path(), Duration::from_millis(position_ms.max(0) as u64), playing != JNI_FALSE)
+    })).unwrap_or_default();
+    match serde_json::to_string(&snapshot).ok().and_then(|json| env.new_string(json).ok()) {
+        Some(reply)=>reply.into_raw(), None=>{fail(&mut env,"Could not read channel data");std::ptr::null_mut()}
     }
 }
 
@@ -232,7 +261,7 @@ pub extern "system" fn Java_org_kog_player_NativeAudio_nativeRead(
     }
     handle.scratch.resize(samples * 4, 0);
     let read = {
-        let Handle { reader, scratch } = &mut *handle;
+        let Handle { reader, scratch, .. } = &mut *handle;
         reader.read(scratch)
     };
     let read = match read {

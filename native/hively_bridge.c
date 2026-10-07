@@ -4,8 +4,12 @@
 
 #include <limits.h>
 #include <stdlib.h>
+#include <math.h>
+#include <stdio.h>
+#include <string.h>
 
 void hvl_play_irq(struct hvl_tune *tune);
+void hvl_mixchunk(struct hvl_tune *tune, uint32_t samples, int8 *left, int8 *right, int32_t stride);
 
 struct KogHively {
     struct hvl_tune *tune;
@@ -18,6 +22,8 @@ struct KogHively {
     size_t pcm_frames;
     size_t pcm_position;
     size_t frame_block;
+    uint32_t inspection_order;
+    uint32_t inspection_row;
 };
 
 void kog_hively_init(void) {
@@ -101,8 +107,8 @@ KogHively *kog_hively_open(
         set_error(error, KOG_HIVELY_DURATION_LIMIT);
         return NULL;
     }
-    decoder->frame_block =
-        (sample_rate / 50 / tune->ht_SpeedMultiplier) * tune->ht_SpeedMultiplier;
+    // One IRQ per buffer lets the channel view retain every instrument tick.
+    decoder->frame_block = sample_rate / 50 / tune->ht_SpeedMultiplier;
     if (decoder->frame_block == 0 || decoder->frame_block > SIZE_MAX / (sizeof(int16_t) * 2)) {
         kog_hively_free(decoder);
         set_error(error, KOG_HIVELY_DURATION_LIMIT);
@@ -147,14 +153,54 @@ uint64_t kog_hively_total_frames(const KogHively *decoder) {
 }
 
 static void decode_frame(KogHively *decoder) {
-    hvl_DecodeFrame(
+    decoder->inspection_order = decoder->tune->ht_PosNr;
+    decoder->inspection_row = decoder->tune->ht_NoteNr;
+    hvl_play_irq(decoder->tune);
+    hvl_mixchunk(
         decoder->tune,
+        (uint32_t)decoder->frame_block,
         (int8 *)decoder->pcm,
         (int8 *)decoder->pcm + sizeof(int16_t),
         sizeof(int16_t) * 2
     );
     decoder->pcm_frames = decoder->frame_block;
     decoder->pcm_position = 0;
+}
+
+size_t kog_hively_inspection(KogHively *decoder, KogVoice *voices, uint8_t *steps, size_t capacity, uint32_t *position, double *seconds) {
+    if (!decoder || !voices || !steps || !position || !seconds) return 0;
+    struct hvl_tune *tune = decoder->tune;
+    size_t count = tune->ht_Channels < capacity ? tune->ht_Channels : capacity;
+    position[0] = decoder->inspection_order;
+    position[1] = decoder->inspection_row;
+    position[2] = tune->ht_Tempo;
+    position[3] = tune->ht_SpeedMultiplier;
+    *seconds = (double)(decoder->frames_read - decoder->pcm_position) / tune->ht_Frequency;
+    for (size_t i = 0; i < count; ++i) {
+        struct hvl_voice *voice = &tune->ht_Voices[i];
+        KogVoice *v = &voices[i];
+        memset(v, 0, sizeof(*v));
+        v->id = (uint32_t)i;
+        v->kind = voice->vc_Waveform == 3 ? 1 : 0;
+        v->active = voice->vc_TrackOn && voice->vc_VoiceVolume > 0;
+        v->level = voice->vc_VoiceVolume / 64.0f;
+        v->pan = (voice->vc_Pan - 128.0f) / 128.0f;
+        v->key = -1.0f;
+        if (v->kind == 0 && voice->vc_VoicePeriod > 0) {
+            const double hz = (double)AMIGA_PAULA_PAL_CLK / (voice->vc_VoicePeriod * (4u << voice->vc_WaveLength));
+            v->key = (float)(69.0 + 12.0 * log2(hz / 440.0));
+        }
+        snprintf(v->name, sizeof(v->name), "Hively %zu", i + 1);
+        snprintf(v->instrument, sizeof(v->instrument), "%s", voice->vc_Instrument ? voice->vc_Instrument->ins_Name : "");
+        snprintf(v->details, sizeof(v->details), "Waveform=%u | Period=%d | ADSR=%d | Filter=%d | Square=%d | Performance=%d | Ring period=%d | Transpose=%d",
+            voice->vc_Waveform, voice->vc_VoicePeriod, voice->vc_ADSRVolume, voice->vc_FilterPos, voice->vc_SquarePos, voice->vc_PerfCurrent, voice->vc_RingAudioPeriod, voice->vc_Transpose);
+        const struct hvl_step *step = &tune->ht_Tracks[voice->vc_Track & 255][decoder->inspection_row & 63];
+        uint8_t *s = steps + i * 6;
+        s[0] = step->stp_Note; s[1] = step->stp_Instrument;
+        s[2] = step->stp_FX; s[3] = step->stp_FXParam;
+        s[4] = step->stp_FXb; s[5] = step->stp_FXbParam;
+    }
+    return count;
 }
 
 size_t kog_hively_render(KogHively *decoder, float *output, size_t frames) {
@@ -217,7 +263,7 @@ uint64_t kog_hively_seek(KogHively *decoder, uint64_t frame) {
     full_blocks = frame / decoder->frame_block;
     remainder = (size_t)(frame % decoder->frame_block);
     for (block = 0; block < full_blocks; ++block) {
-        for (irq = 0; irq < decoder->tune->ht_SpeedMultiplier; ++irq) {
+        for (irq = 0; irq < 1; ++irq) {
             hvl_play_irq(decoder->tune);
         }
     }

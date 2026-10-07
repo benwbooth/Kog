@@ -19,6 +19,8 @@ typedef void (*KogAudioStreamClose)(void *context);
 KogAudioHandle *kog_audio_open_reader(KogAudioStreamRead read, KogAudioStreamClose close,
                                      void *context, uint64_t duration_ms,
                                      char *error, size_t error_capacity);
+// Free the JSON result with kog_audio_string_free. Position is device-consumed time.
+char *kog_audio_channel_snapshot(const KogAudioHandle *handle, uint64_t position_ms, bool playing);
 int64_t kog_audio_duration_ms(const KogAudioHandle *handle);
 intptr_t kog_audio_read(KogAudioHandle *handle, uint8_t *output, size_t capacity,
                         char *error, size_t error_capacity);

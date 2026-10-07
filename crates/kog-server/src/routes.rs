@@ -97,6 +97,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/devices", get(list_devices))
         .route("/api/devices/block", post(set_device_blocked))
         .route("/api/stream", get(stream_audio))
+        .route("/api/inspection", get(channel_inspection))
         .merge(crate::api::router())
         .merge(crate::radio::router())
         .layer(middleware::from_fn_with_state(state.clone(), require_auth));
@@ -244,6 +245,7 @@ pub struct StreamQuery {
     /// Seek the original decoder before encoding, even when no cache exists.
     #[serde(default)]
     pub start_ms: u64,
+    pub midi_engine: Option<String>,
 }
 
 impl StreamQuery {
@@ -304,6 +306,47 @@ fn stream_key_for_request(
     }
 }
 
+#[derive(serde::Deserialize)]
+struct InspectionQuery {
+    position: f64,
+}
+
+async fn channel_inspection(
+    State(state): State<AppState>,
+    axum::extract::Query(query): axum::extract::Query<InspectionQuery>,
+    axum::extract::Query(stream): axum::extract::Query<StreamQuery>,
+) -> Response {
+    if !query.position.is_finite() || !(0.0..=72.0*60.0*60.0).contains(&query.position) {
+        return bad_request("invalid channel inspection position");
+    }
+    // Validate the locator with the same rules as the audio endpoint.
+    if let Err(error) = stream.location() { return bad_request(&error); }
+    if stream.kind == "local" && stream.start_ms == 0 && stream.entry.is_empty()
+        && stream.fragment.trim().is_empty()
+        && std::path::Path::new(&stream.path).extension().and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("mp3"))
+    {
+        return axum::Json(serde_json::json!({"status":"unavailable","detail":"This source contains mixed audio without musical channel data."})).into_response();
+    }
+    let codec = match stream.codec(state.config.read().await.default_codec) {
+        Ok(codec) => codec, Err(error) => return bad_request(&error),
+    };
+    let engine = stream.midi_engine.as_deref().and_then(kog_audio::settings::MidiEngine::from_setting)
+        .unwrap_or_else(|| state.streams.midi_engine());
+    let key = stream_key_for_request(&stream, codec,
+        stream.bitrate.unwrap_or(crate::stream::DEFAULT_BITRATE_KBPS), engine);
+    let streams = state.streams.clone();
+    let result = tokio::task::spawn_blocking(move || streams.channel_window(&key, query.position)).await;
+    let mut response = match result {
+        Ok(Ok(Some(window))) => axum::Json(serde_json::json!({"status":"ready","window":window})).into_response(),
+        Ok(Ok(None)) => axum::Json(serde_json::json!({"status":"pending","detail":"Channel data is not yet available for this stream."})).into_response(),
+        Ok(Err(error)) => bad_request(&error),
+        Err(error) => bad_request(&error.to_string()),
+    };
+    response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
 /// Serve one track. Local MP3 files can go straight to the browser with byte
 /// ranges; transcoding an hours-long MP3 would leave it unseekable until the
 /// entire encode finished. Other sources use the cached or progressive encode.
@@ -340,7 +383,9 @@ async fn stream_audio(
         return serve_file(std::path::Path::new(&query.path), "audio/mpeg", &headers).await;
     }
     let bitrate = query.bitrate.unwrap_or(crate::stream::DEFAULT_BITRATE_KBPS);
-    let key = stream_key_for_request(&query, codec, bitrate, state.streams.midi_engine());
+    let engine = query.midi_engine.as_deref().and_then(kog_audio::settings::MidiEngine::from_setting)
+        .unwrap_or_else(|| state.streams.midi_engine());
+    let key = stream_key_for_request(&query, codec, bitrate, engine);
 
     // Cache lookup, decoder resolution and the encoder check all touch the
     // filesystem, so they run on a blocking thread; failures come back as a
@@ -977,6 +1022,7 @@ mod tests {
             codec: None,
             bitrate: None,
             start_ms: 0,
+            midi_engine: None,
         };
         assert_eq!(local.locator(), "/music/a.flac");
         assert_eq!(local.codec(StreamCodec::Aac).unwrap(), StreamCodec::Aac);
@@ -994,6 +1040,7 @@ mod tests {
             codec: Some("opus".to_owned()),
             bitrate: None,
             start_ms: 0,
+            midi_engine: None,
         };
         assert_eq!(archived.locator(), "/music/pack.zip::Disc/a.wav#2");
         assert_eq!(archived.codec(StreamCodec::Aac).unwrap(), StreamCodec::Opus);
@@ -1004,6 +1051,17 @@ mod tests {
             ..local
         };
         assert!(unknown.codec(StreamCodec::Aac).is_err());
+    }
+
+    #[test]
+    fn inspection_query_keeps_audio_seek_and_synth_parameters() {
+        let uri="/api/inspection?kind=local&path=song.mid&codec=flac&bitrate=192&start_ms=1200&midi_engine=opl3windows&position=1.3".parse().unwrap();
+        let query=axum::extract::Query::<InspectionQuery>::try_from_uri(&uri).unwrap().0;
+        let stream=axum::extract::Query::<StreamQuery>::try_from_uri(&uri).unwrap().0;
+        assert_eq!(stream.start_ms,1200);
+        assert_eq!(stream.bitrate,Some(192));
+        assert_eq!(stream.midi_engine.as_deref(),Some("opl3windows"));
+        assert_eq!(query.position,1.3);
     }
 
     #[test]
@@ -1022,6 +1080,7 @@ mod tests {
                 codec: None,
                 bitrate: None,
                 start_ms: 0,
+            midi_engine: None,
             };
             let sf2 = stream_key_for_request(&query, StreamCodec::Aac, 192, MidiEngine::RustySynth);
             let opl3 =
@@ -1036,6 +1095,7 @@ mod tests {
             codec: None,
             bitrate: None,
             start_ms: 0,
+            midi_engine: None,
         };
         assert_eq!(
             stream_key_for_request(&non_midi, StreamCodec::Aac, 192, MidiEngine::RustySynth),
@@ -1053,6 +1113,7 @@ mod tests {
             codec: None,
             bitrate: None,
             start_ms: 0,
+            midi_engine: None,
         };
         assert!(missing.location().is_err());
         let bogus = StreamQuery {
@@ -1068,6 +1129,7 @@ mod tests {
             codec: None,
             bitrate: None,
             start_ms: 0,
+            midi_engine: None,
         };
         assert!(archive_without_member.location().is_err());
     }

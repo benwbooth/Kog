@@ -16,6 +16,7 @@ struct NativeAdPlug {
 }
 
 unsafe extern "C" {
+    fn kog_adplug_inspection(decoder: *mut NativeAdPlug, voices: *mut crate::inspection::native::Voice, capacity: usize, position: *mut u32) -> usize;
     fn kog_adplug_open(
         path: *const c_char,
         subsong: u32,
@@ -105,6 +106,16 @@ impl AdPlug {
                     .collect()
             })
             .contains(&lowered)
+    }
+
+    pub fn inspection(&mut self) -> crate::inspection::FrameData {
+        let mut position = [0_u32; 4];
+        let mut frame = crate::inspection::native::capture(32, |out, capacity| unsafe {
+            kog_adplug_inspection(self.handle.as_ptr(), out, capacity, position.as_mut_ptr())
+        });
+        frame.global = ["Order", "Pattern", "Player row", "Speed"].into_iter().zip(position)
+            .map(|(name, value)| crate::inspection::Field::new(name, value)).collect();
+        frame
     }
 
     pub fn duration(&self) -> Duration {

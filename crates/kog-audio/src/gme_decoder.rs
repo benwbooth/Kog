@@ -128,6 +128,19 @@ impl DecoderBackend for GmeBackend {
         })
     }
 
+    fn append_observed(&self, source: &PlaybackSource, player: &Player, monitor: &crate::inspection::Monitor) -> Result<(), String> {
+        let sample_rate = Self::sample_rate(&source.path);
+        let mut emu = GameMusicEmu::open(&source.path, sample_rate as i32)?;
+        let (track, _, plan) = Self::track_and_plan(&emu, source)?;
+        emu.enable_inspection(true);
+        emu.start_track(track, plan)?;
+        let mut audio = GmeSource::new(emu, sample_rate, plan)?;
+        monitor.describe(self.display_name(), "registers", "Live chip voices, pitch, envelopes and registers. Sample voices show playback rate and identity when available; an unknown sample tuning has no piano key. Internal audio buffering is included in snapshot timing.");
+        audio.inspection = Some(monitor.producer(sample_rate));
+        player.append(audio);
+        Ok(())
+    }
+
     fn append(&self, source: &PlaybackSource, player: &Player) -> Result<(), String> {
         let sample_rate = Self::sample_rate(&source.path);
         let mut emu = GameMusicEmu::open(
@@ -147,6 +160,7 @@ fn nonempty(value: String) -> Option<String> {
 
 struct GmeSource {
     emu: GameMusicEmu,
+    inspection: Option<crate::inspection::Producer>,
     sample_rate: u32,
     duration: Duration,
     nominal_total_frames: u64,
@@ -166,6 +180,7 @@ impl GmeSource {
             .map_err(|_| "Game Music Emu duration exceeds Kog's limit".to_owned())?;
         Ok(Self {
             emu,
+            inspection: None,
             sample_rate,
             duration: Duration::from_millis(plan.total_length_ms),
             nominal_total_frames: total_frames,
@@ -187,10 +202,11 @@ impl GmeSource {
         }
         let frames = usize::try_from(self.total_frames.saturating_sub(self.frames_rendered))
             .unwrap_or(usize::MAX)
-            .min(GME_RENDER_FRAMES);
+            .min(self.inspection.as_ref().map_or(GME_RENDER_FRAMES, |p| p.render_frames(GME_RENDER_FRAMES)));
         if frames == 0 {
             return;
         }
+        self.emu.enable_inspection(self.inspection.as_ref().is_some_and(|p| p.enabled()));
         if let Err(error) = self.emu.render(&mut self.pcm[..frames * 2]) {
             eprintln!("Kog Game Music Emu playback error: {error}");
             self.total_frames = self.frames_rendered;
@@ -202,11 +218,19 @@ impl GmeSource {
                 .map(|sample| f32::from(*sample) * (1.0 / 32_768.0)),
         );
         self.frames_rendered += frames as u64;
+        if let Some(producer) = &mut self.inspection {
+            producer.advance(frames);
+            if producer.enabled() {
+                let (data, ahead) = self.emu.inspection();
+                producer.publish_offset(data, ahead);
+            }
+        }
     }
 
     fn seek_to(&mut self, position: Duration) -> Result<(), String> {
         let target = position.min(self.duration);
         self.emu.seek(target)?;
+        if let Some(producer) = &mut self.inspection { producer.seek(Duration::from_millis(target.as_millis() as u64)); }
         let target_frames = target
             .as_millis()
             .saturating_mul(u128::from(self.sample_rate))

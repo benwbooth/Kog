@@ -1197,6 +1197,7 @@ ApplicationWindow {
         onOpenVisualizer: visualizerWindow.show()
     }
     Visualizer { id: visualizerWindow; app: appController }
+    ChannelInspector { id: channelInspector; app: appController }
     NowPlayingNotification {
         id: nowPlayingPopup
         app: appController
@@ -2062,6 +2063,7 @@ ApplicationWindow {
             Action { text: qsTr("Show Lyrics"); icon.name: "view-media-lyrics"; shortcut: "Ctrl+Shift+L"; onTriggered: lyricsWindow.show() }
             Action { text: qsTr("Show Mini Player"); icon.name: "view-restore"; shortcut: "Ctrl+Shift+M"; onTriggered: root.showMiniPlayer() }
             Action { text: qsTr("Winamp Skins…"); icon.name: "preferences-desktop-theme"; onTriggered: skinBrowser.show() }
+            Action { text: qsTr("Channel Inspector"); icon.name: "view-list-details"; shortcut: "Ctrl+Shift+I"; onTriggered: channelInspector.visible ? channelInspector.hide() : channelInspector.show() }
             Action { text: qsTr("Visualizer"); icon.name: "view-media-visualization"; shortcut: "Ctrl+Shift+V"; onTriggered: visualizerWindow.visible ? visualizerWindow.hide() : visualizerWindow.show() }
         }
 

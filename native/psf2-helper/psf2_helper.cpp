@@ -43,6 +43,7 @@
 #include "iop/IopBios.h"
 #include "psx/PsxBios.h"
 #include "ps2/Ps2_PsfDevice.h"
+#include "../inspection.h"
 
 #ifdef KOG_EMBEDDED
 #include "../embedded_stream.h"
@@ -720,9 +721,11 @@ bool writeHeader(const Tags& tags, uint64_t mainFrames, uint64_t totalFrames, ui
 class StreamSoundHandler final : public CSoundHandler
 {
 public:
-    StreamSoundHandler(uint64_t startFrame, uint64_t totalFrames)
+    StreamSoundHandler(uint64_t startFrame, uint64_t totalFrames, Iop::CPsfSubSystem& subsystem, bool ps2)
         : m_startFrame(startFrame)
         , m_totalFrames(totalFrames)
+        , m_subsystem(subsystem)
+        , m_ps2(ps2)
     {
     }
 
@@ -766,6 +769,28 @@ public:
             }
         }
         m_sourceFrame += frames;
+        if(kog_inspection_enabled()) {
+            KogVoice data[48]; KogVoices voices{data, 48};
+            for(unsigned core = 0; core < (m_ps2 ? 2U : 1U); ++core) {
+                auto& spu = m_subsystem.GetSpuCore(core);
+                for(unsigned i = 0; i < 24; ++i) {
+                    const auto& c = spu.GetChannel(i);
+                    const float left = std::abs(double(c.volumeLeftAbs)) / 2147483647.0;
+                    const float right = std::abs(double(c.volumeRightAbs)) / 2147483647.0;
+                    char name[64]; std::snprintf(name, sizeof(name), "SPU %u · Voice %u", core + 1, i + 1);
+                    auto& v = voices.add(name, 2, c.status != Iop::CSpuBase::STOPPED,
+                        0, c.adsrVolume / 2147483647.0f * std::max(left, right), right - left);
+                    std::snprintf(v.instrument, sizeof(v.instrument), "ADPCM %06X", c.address);
+                    std::snprintf(v.details, sizeof(v.details),
+                        "Pitch rate=%.1f Hz (%04X) | Envelope=%08X state %u | ADSR=%04X %04X | Volume L/R=%04X/%04X | Current=%06X | Loop=%06X | Reverb=%u | Control=%04X",
+                        (m_ps2 ? 48000.0 : 44100.0) * c.pitch / 4096.0, c.pitch, c.adsrVolume, c.status,
+                        unsigned(uint16(c.adsrLevel)), unsigned(uint16(c.adsrRate)),
+                        unsigned(uint16(c.volumeLeft)), unsigned(uint16(c.volumeRight)), c.current, c.repeat,
+                        unsigned((spu.GetChannelReverb().f >> i) & 1), spu.GetControl());
+                }
+            }
+            kog_inspection_publish(double(m_sourceFrame) / SAMPLE_RATE, data, voices.count);
+        }
     }
 
     bool HasFreeBuffers() override
@@ -792,6 +817,8 @@ private:
     uint64_t m_totalFrames = 0;
     uint64_t m_sourceFrame = 0;
     bool m_failed = false;
+    Iop::CPsfSubSystem& m_subsystem;
+    bool m_ps2;
 };
 
 void loadArchives(PS2::CPsfDevice& device, const std::vector<fs::path>& paths)
@@ -915,7 +942,7 @@ int runHelper(const fs::path& path, const char* startText, const char* defaultLe
         throw std::runtime_error("writing the PSF2 stream header failed");
     }
 
-    StreamSoundHandler sound(startFrame, totalFrames);
+    StreamSoundHandler sound(startFrame, totalFrames, subsystem, ps2);
     while(!sound.done())
     {
 #ifdef KOG_EMBEDDED

@@ -32,6 +32,7 @@ unsafe extern "C" {
     fn adl_play(device: *mut NativeAdlMidi, sample_count: c_int, output: *mut i16) -> c_int;
     fn adl_positionSeek(device: *mut NativeAdlMidi, seconds: f64);
     fn adl_atEnd(device: *mut NativeAdlMidi) -> c_int;
+    fn adl_setRawEventHook(device: *mut NativeAdlMidi, callback: Option<unsafe extern "C" fn(*mut c_void,u8,u8,u8,*const u8,usize)>, data: *mut c_void);
 }
 
 pub struct AdlMidi {
@@ -44,6 +45,7 @@ pub struct AdlMidi {
     selected_subsong: u32,
     title: String,
     native_pcm: Vec<i16>,
+    inspection: Box<crate::inspection::midi::Live>,
 }
 
 // libADLMIDI instances have no thread affinity. The API is not thread-safe for
@@ -82,6 +84,7 @@ impl AdlMidi {
             selected_subsong,
             title: String::new(),
             native_pcm: Vec::new(),
+            inspection: Box::default(),
         };
 
         if unsafe { adl_switchEmulator(decoder.handle.as_ptr(), ADLMIDI_EMU_NUKED) } < 0 {
@@ -131,6 +134,11 @@ impl AdlMidi {
     pub fn duration(&self) -> Duration {
         self.duration
     }
+
+    pub fn enable_inspection(&mut self) {
+        unsafe { adl_setRawEventHook(self.handle.as_ptr(),Some(inspect_event),(&raw mut *self.inspection).cast()); }
+    }
+    pub fn inspection(&mut self) -> crate::inspection::FrameData { self.inspection.frame() }
 
     pub fn sample_rate(&self) -> u32 {
         SAMPLE_RATE
@@ -203,7 +211,9 @@ impl AdlMidi {
 
     pub fn seek(&mut self, position: Duration) -> Duration {
         let target = position.min(self.duration);
+        *self.inspection = crate::inspection::midi::Live::default();
         unsafe { adl_positionSeek(self.handle.as_ptr(), target.as_secs_f64()) };
+        self.inspection.discard_pending();
         self.rendered_frames =
             ((target.as_secs_f64() * f64::from(SAMPLE_RATE)).floor() as u64).min(self.total_frames);
         target
@@ -228,6 +238,12 @@ impl AdlMidi {
             format!("{context}: {detail}")
         }
     }
+}
+
+unsafe extern "C" fn inspect_event(context:*mut c_void,kind:u8,subtype:u8,channel:u8,data:*const u8,len:usize) {
+    if context.is_null() || data.is_null() || len>256*1024 {return;}
+    let state=unsafe {&mut *context.cast::<crate::inspection::midi::Live>()};
+    state.event(kind,subtype,channel,unsafe {std::slice::from_raw_parts(data,len)});
 }
 
 impl Drop for AdlMidi {

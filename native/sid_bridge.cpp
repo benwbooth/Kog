@@ -69,6 +69,18 @@ struct KogSid {
     std::vector<short> samples;
 };
 
+extern "C" uint32_t kog_sid_registers(KogSid *decoder, uint8_t *registers, uint32_t capacity) {
+    if (!decoder || !registers) return 0;
+    uint32_t count = 0;
+    while (count < capacity && decoder->engine->getSidStatus(count, registers + count * 32)) ++count;
+    return count;
+}
+
+extern "C" double kog_sid_clock(const KogSid *decoder) {
+    if (!decoder) return 0.0;
+    return decoder->tune->getInfo()->clockSpeed() == SidTuneInfo::CLOCK_NTSC ? 1022727.142857143 : 985248.611111111;
+}
+
 extern "C" KogSid *kog_sid_open(const uint8_t *data,
                                   size_t data_size,
                                   uint32_t subsong,

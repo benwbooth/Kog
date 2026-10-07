@@ -1,4 +1,5 @@
 #include "adplug_bridge.h"
+#include "inspection_opl.h"
 
 #include "adplug.h"
 #include "nemuopl.h"
@@ -11,9 +12,24 @@
 #include <string>
 #include <vector>
 
+class KogObservedOpl : public CNemuopl {
+public:
+    explicit KogObservedOpl(int rate) : CNemuopl(rate) {}
+    uint8_t registers[512]{};
+    void write(int reg, int value) override {
+        const int address = ((getchip() << 8) | reg) & 511;
+        registers[address] = static_cast<uint8_t>(value);
+        CNemuopl::write(reg, value);
+    }
+    void init() override {
+        std::fill(std::begin(registers), std::end(registers), 0);
+        CNemuopl::init();
+    }
+};
+
 struct KogAdPlug {
     CPlayer *player = nullptr;
-    CNemuopl *emulator = nullptr;
+    KogObservedOpl *emulator = nullptr;
     uint32_t sample_rate = 0;
     uint32_t subsong_count = 0;
     uint32_t subsong = 0;
@@ -25,6 +41,17 @@ struct KogAdPlug {
     std::string author;
     std::vector<int16_t> scratch;
 };
+
+extern "C" size_t kog_adplug_inspection(KogAdPlug *decoder, KogVoice *out, size_t capacity, uint32_t *position) {
+    if (!decoder || !out || !position) return 0;
+    KogVoices voices{out, capacity};
+    kog_inspect_opl(decoder->emulator->registers, voices, "OPL");
+    position[0] = decoder->player->getorder();
+    position[1] = decoder->player->getpattern();
+    position[2] = decoder->player->getrow();
+    position[3] = decoder->player->getspeed();
+    return voices.count;
+}
 
 static void set_error(int *error, int value) {
     if (error) {
@@ -138,7 +165,7 @@ KogAdPlug *kog_adplug_open(
     try {
         decoder = new KogAdPlug;
         decoder->sample_rate = sample_rate;
-        decoder->emulator = new CNemuopl(static_cast<int>(sample_rate));
+        decoder->emulator = new KogObservedOpl(static_cast<int>(sample_rate));
         decoder->player = CAdPlug::factory(path, decoder->emulator);
         if (!decoder->player) {
             kog_adplug_free(decoder);

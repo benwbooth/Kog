@@ -64,6 +64,11 @@ see [skins and visualizers](SKINS_AND_VISUALIZERS.md) for compatibility details.
 
 ## MIDI, SoundFonts, and Roland emulation
 
+Use **View → Channel Inspector** to watch a keyboard for each channel and a
+tracker with notes, effects, and song data. Qt and web also use **Ctrl+Shift+I**;
+the native phone apps expose it in Now Playing. See the
+[channel inspector guide](CHANNEL_INSPECTOR.md) for controls and decoder coverage.
+
 Choose a MIDI engine under **Hamburger menu → Preferences → Synthesis**.
 
 | Engine | What you need |

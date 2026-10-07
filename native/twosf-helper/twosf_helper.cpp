@@ -38,6 +38,43 @@
 #include "NDSCart.h"
 #include "SPI.h"
 #include "SPU.h"
+#include "../inspection.h"
+
+// Explicit instantiation may name a private member ([temp.explicit]). This
+// read-only bridge keeps the pinned melonDS class layout and sources intact.
+namespace KogNdsInspection {
+template<class Tag, typename Tag::Type member> struct Access {
+    friend typename Tag::Type read(Tag) { return member; }
+};
+struct Channels {
+    using Type = std::array<melonDS::SPUChannel, 16> melonDS::SPU::*;
+    friend Type read(Channels);
+};
+template struct Access<Channels, &melonDS::SPU::Channels>;
+void publish(melonDS::SPU& spu, double position) {
+    if(!kog_inspection_enabled()) return;
+    const auto& channels = spu.*read(Channels{});
+    KogVoice data[16]; KogVoices voices{data, 16};
+    const auto master = spu.Read16(0x04000500);
+    for(unsigned i = 0; i < 16; ++i) {
+        const auto& c = channels[i];
+        const unsigned format = (c.Cnt >> 29) & 3;
+        const bool tonal = format == 3 && i >= 8 && i < 14;
+        const bool noise = format == 3 && i >= 14;
+        const double rate = 16756991.0 / (65536 - c.TimerReload);
+        char name[64]; std::snprintf(name, sizeof(name), "DS SPU %u", i + 1);
+        auto& v = voices.add(name, tonal ? 0 : noise ? 1 : 2,
+            (c.Cnt & 0x80000000U) && (master & 0x8000), tonal ? rate / 8 : 0,
+            c.Volume / (128.0f * (1 << c.VolumeShift)), c.Pan / 64.0f - 1.0f);
+        std::snprintf(v.instrument, sizeof(v.instrument), "%s %08X",
+            tonal ? "Pulse" : noise ? "Noise" : format == 2 ? "ADPCM" : "PCM", c.SrcAddr);
+        std::snprintf(v.details, sizeof(v.details),
+            "Pitch rate=%.1f Hz | Timer=%04X | Control=%08X | Position=%d | Sample=%d | Loop=%u | Length=%u | Duty=%u | Master=%04X",
+            rate, c.TimerReload, c.Cnt, c.Pos, c.CurSample, c.LoopPos, c.Length, unsigned((c.Cnt >> 24) & 7), master);
+    }
+    kog_inspection_publish(position, data, voices.count);
+}
+}
 #include "psflib.h"
 
 #ifdef KOG_EMBEDDED
@@ -527,6 +564,7 @@ int runHelper(const std::string& path, const char* startText, const char* defaul
             if(!nds->IsRunning()) throw std::runtime_error("melonDS stopped before 2SF playback ended");
             nds->RunFrame();
             available = nds->SPU.GetOutputSize();
+            KogNdsInspection::publish(nds->SPU, double(sourceFrame + std::max(available, 0)) / SAMPLE_RATE);
             if(available == 0)
             {
                 if(++emptyFrames > 600U)

@@ -1,4 +1,5 @@
 #include "ncsf_bridge.h"
+#include "inspection.h"
 
 #include <algorithm>
 #include <cctype>
@@ -596,6 +597,31 @@ struct KogNcsf {
     uint64_t rendered_frames = 0;
     std::vector<uint8_t> native_samples;
 };
+
+extern "C" size_t kog_ncsf_inspection(KogNcsf *decoder, KogVoice *out, size_t capacity) {
+    if (!decoder || !out) return 0;
+    KogVoices voices{out, capacity};
+    const auto &player = *decoder->player;
+    for (int i = 0; i < 16; ++i) {
+        const auto &ch = player.channels[i];
+        const bool noise = ch.reg.format == 3 && i >= 14;
+        char name[64]; std::snprintf(name, sizeof(name), "DS Voice %d · Track %d", i + 1, ch.trackId + 1);
+        const float volume = ch.reg.volumeMul / (127.0f * (1 << (ch.reg.volumeDiv == 3 ? 4 : ch.reg.volumeDiv)));
+        auto &v = voices.add(name, noise ? 1 : ch.reg.format == 3 ? 0 : 2, ch.reg.enable, 0, volume, (int(ch.reg.panning) - 64) / 64.0f);
+        if (!noise && ch.reg.enable && ch.tempReg.TIMER > 0) {
+            v.key = ch.orgKey + 12.0f * std::log2(float(ch.tempReg.TIMER) / (65536 - ch.reg.timer));
+        }
+        if (ch.trackId >= 0 && ch.trackId < FSS_MAXTRACKS) {
+            const auto &track = player.tracks[ch.trackId];
+            std::snprintf(v.instrument, sizeof(v.instrument), "Patch %u%s", track.patch, ch.reg.format == 3 ? " PSG" : "");
+            std::snprintf(v.details, sizeof(v.details), "Note=%u | Timer=%04X | Envelope=%d | ADSR=%u:%u:%u:%u | Bend=%d x%u | Mod=%u:%u:%u:%u | Sweep=%d | Duty=%u | Sequence=%td | Tempo=%u",
+                ch.key, ch.reg.timer, ch.ampl, ch.attackLvl, ch.decayRate, ch.sustainLvl, ch.releaseRate,
+                track.pitchBend, track.pitchBendRange, ch.modType, ch.modSpeed, ch.modDepth, ch.modRange, ch.sweepPitch,
+                ch.reg.waveDuty, track.pos && track.startPos ? track.pos - track.startPos : 0, player.tempo);
+        }
+    }
+    return voices.count;
+}
 
 extern "C" KogNcsf *kog_ncsf_open(const char *path,
                                      uint32_t default_length_milliseconds,

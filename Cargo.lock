@@ -1637,6 +1637,7 @@ dependencies = [
  "kog-core",
  "kog-server",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -1644,13 +1645,17 @@ name = "kog-audio"
 version = "0.10.1"
 dependencies = [
  "async-channel",
+ "base64 0.22.1",
  "cc",
  "cmake",
  "compress-tools",
+ "concurrent-queue",
  "directories",
  "encoding_rs",
+ "flate2",
  "futures-lite",
  "kog-core",
+ "kog-inspection",
  "kog-playback-policy",
  "libc",
  "lofty",
@@ -1661,9 +1666,11 @@ dependencies = [
  "rodio",
  "rustysynth",
  "self_cell",
+ "serde",
  "serde_json",
  "sha2",
  "tempfile",
+ "ureq",
  "url",
  "windows-sys 0.61.2",
  "zip",
@@ -1683,6 +1690,13 @@ dependencies = [
  "rusqlite",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "kog-inspection"
+version = "0.10.1"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
@@ -1719,6 +1733,7 @@ dependencies = [
  "include_dir",
  "kog-audio",
  "kog-core",
+ "kog-inspection",
  "rcgen",
  "rustls",
  "rustls-pemfile",
@@ -2200,8 +2215,6 @@ dependencies = [
 [[package]]
 name = "orgorg"
 version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3061d51b1732a215cd8bc3de1d9b0e2dbca0b65be2036c4722932bddae3dbfcb"
 
 [[package]]
 name = "parking"

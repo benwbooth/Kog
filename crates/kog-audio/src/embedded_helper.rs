@@ -6,13 +6,39 @@ use std::cell::RefCell;
 use std::ffi::{CStr, c_char};
 use std::io::{self, Read};
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicBool, Ordering},
 };
 use std::thread::{self, JoinHandle};
 
 thread_local! {
     static CANCELLED: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
+    static INSPECTION: RefCell<Option<Arc<Mutex<Option<crate::inspection::Producer>>>>> = const { RefCell::new(None) };
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kog_inspection_enabled() -> bool {
+    INSPECTION.with(|state| state.borrow().as_ref().is_some_and(|state|
+        state.try_lock().ok().is_some_and(|producer| producer.as_ref().is_some_and(|p| p.enabled()))))
+}
+
+/// The native renderer calls this on its own worker with an owned snapshot.
+/// Its timestamp is the emulator cursor, including any PCM buffered ahead.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn kog_inspection_publish(
+    position: f64, voices: *const crate::inspection::native::Voice, count: usize,
+) {
+    if voices.is_null() || count > 512 || !position.is_finite() || position < 0.0 { return; }
+    INSPECTION.with(|state| {
+        if let Some(state) = state.borrow().as_ref()
+            && let Ok(producer) = state.try_lock()
+            && let Some(producer) = producer.as_ref()
+            && producer.enabled()
+        {
+            let voices = unsafe { std::slice::from_raw_parts(voices, count) };
+            producer.publish_at(crate::inspection::native::frame(voices), position);
+        }
+    });
 }
 
 /// Called by native renderers while seeking or waiting for the emulated
@@ -42,6 +68,7 @@ pub struct EmbeddedHelper {
     reader: Option<Box<dyn Read + Send>>,
     worker: Option<JoinHandle<Result<(), String>>>,
     cancelled: Arc<AtomicBool>,
+    inspection: Arc<Mutex<Option<crate::inspection::Producer>>>,
     #[cfg(unix)]
     socket: Option<UnixStream>,
 }
@@ -87,8 +114,14 @@ impl EmbeddedHelper {
         let socket = Some(reader.try_clone().map_err(|error| error.to_string())?);
         let cancelled = Arc::new(AtomicBool::new(false));
         let worker_cancelled = Arc::clone(&cancelled);
+        // Callbacks may begin before the caller has received the format header.
+        // Native timestamps are in seconds, so this temporary producer's rate
+        // is unused; inspect() adopts all early frames into the player's feed.
+        let inspection = Arc::new(Mutex::new(Some(crate::inspection::Monitor::default().producer(1))));
+        let worker_inspection = Arc::clone(&inspection);
         let worker = thread::spawn(move || {
             CANCELLED.with(|state| *state.borrow_mut() = Some(worker_cancelled));
+            INSPECTION.with(|state| *state.borrow_mut() = Some(worker_inspection));
             #[cfg(any(target_os = "linux", target_os = "android"))]
             unsafe {
                 // A cancelled read closes the peer. Keep EPIPE local to this
@@ -120,6 +153,7 @@ impl EmbeddedHelper {
             reader: Some(Box::new(reader)),
             worker: Some(worker),
             cancelled,
+            inspection,
             #[cfg(unix)]
             socket,
         })
@@ -132,6 +166,11 @@ impl EmbeddedHelper {
             Ok(Err(message)) => Some(message),
             Err(_) => Some("native renderer panicked".to_owned()),
         }
+    }
+
+    pub fn inspect(&mut self, monitor: &crate::inspection::Monitor, sample_rate: u32) {
+        let mut slot=self.inspection.lock().unwrap_or_else(|e| e.into_inner());
+        *slot=Some(slot.take().map_or_else(||monitor.producer(sample_rate),|early|early.into_monitor(monitor,sample_rate)));
     }
 
     fn close_reader(&mut self) {

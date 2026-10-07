@@ -225,6 +225,11 @@ pub trait DecoderBackend: Send + Sync {
     fn probe(&self, source: &PlaybackSource) -> Result<StreamProperties, String>;
     fn append(&self, source: &PlaybackSource, player: &Player) -> Result<(), String>;
 
+    fn append_observed(&self, source: &PlaybackSource, player: &Player, monitor: &crate::inspection::Monitor) -> Result<(), String> {
+        monitor.describe(self.display_name(), "unavailable", "This decoder does not expose musical channel state.");
+        self.append(source, player)
+    }
+
     /// File extensions this backend can advertise in user-facing format lists.
     ///
     /// Most backends use a static allow-list. Native libraries whose accepted
@@ -1144,6 +1149,12 @@ impl DecoderRegistry {
         })
     }
 
+    pub fn append_observed(&self, source: &PlaybackSource, player: &Player, monitor: &crate::inspection::Monitor) -> Result<SelectedBackend, String> {
+        let backend = self.select_source(source).ok_or_else(|| unsupported_message(&source.path))?;
+        backend.append_observed(source, player, monitor)?;
+        Ok(SelectedBackend { id: backend.id(), display_name: backend.display_name(), capabilities: backend.capabilities() })
+    }
+
     #[cfg(any(test, feature = "test-util"))]
     pub fn backend_id_for(&self, path: &Path) -> Option<&'static str> {
         self.select(path).map(DecoderBackend::id)
@@ -1464,6 +1475,15 @@ impl DecoderBackend for MidiBackend {
             }
         };
         Ok(properties)
+    }
+
+    fn append_observed(&self, source: &PlaybackSource, player: &Player, monitor: &crate::inspection::Monitor) -> Result<(), String> {
+        let midi = read_standard_midi_subsong(&source.path, source.subsong)?;
+        let timeline = crate::inspection::midi::Timeline::parse(&midi.bytes)?;
+        self.append(source, player)?;
+        monitor.describe(self.display_name(), "events", "MIDI keys and commands at the playback position. Levels are commanded velocity/volume; synth release tails and synth-specific SysEx tuning are not estimated.");
+        monitor.set_midi(timeline);
+        Ok(())
     }
 
     fn append(&self, source: &PlaybackSource, player: &Player) -> Result<(), String> {

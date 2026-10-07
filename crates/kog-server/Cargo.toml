@@ -7,6 +7,7 @@ description = "Kog's HTTP/HTTPS API and audio streaming server"
 repository = "https://github.com/benwbooth/Kog"
 
 [dependencies]
+kog-inspection = { path = "../kog-inspection" }
 tower = { version = "0.5", features = ["util"] }
 kog-core = { path = "../kog-core" }
 kog-audio = { path = "../kog-audio" }

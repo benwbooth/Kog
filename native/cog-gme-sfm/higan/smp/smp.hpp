@@ -3,6 +3,7 @@
 #include "../../gme/blargg_common.h"
 #include "../processor/spc700/spc700.hpp"
 #include "../dsp/dsp.hpp"
+#include <functional>
 namespace SuperFamicom {
 struct SMP : Processor::SPC700 {
   uint8_t iplrom[64];
@@ -25,6 +26,8 @@ struct SMP : Processor::SPC700 {
   void render(int16_t* buffer, unsigned samples);
   void skip(unsigned samples);
   bool sample(int16_t left, int16_t right);
+  std::function<void(uint64_t)> inspect;
+  uint64_t inspected_frames = 0;
   void set_tempo(double speed) { dsp_clock_step = static_cast<int64_t>(4096.0 / speed); }
   void set_sfm_queue(const uint8_t* first, const uint8_t* end, const uint8_t* loop) {
     queue = first; queue_end = end; queue_loop = loop;

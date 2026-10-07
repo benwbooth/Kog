@@ -71,6 +71,14 @@ impl DecoderBackend for LibVgmBackend {
         })
     }
 
+    fn append_observed(&self, source: &PlaybackSource, player: &Player, monitor: &crate::inspection::Monitor) -> Result<(), String> {
+        let mut audio = LibVgmSource::new(Self::open(source)?);
+        monitor.describe(self.display_name(), "registers", "Writes to the sound cores producing this audio: tone frequencies, key gates, instruments and effects. Levels are programmed controls; sample rates do not establish a sample's musical pitch. Unmapped DSP devices expose their register writes.");
+        audio.inspection = Some(monitor.producer(LIBVGM_SAMPLE_RATE));
+        player.append(audio);
+        Ok(())
+    }
+
     fn append(&self, source: &PlaybackSource, player: &Player) -> Result<(), String> {
         player.append(LibVgmSource::new(Self::open(source)?));
         Ok(())
@@ -92,6 +100,7 @@ fn parse_year(value: &str) -> Option<u32> {
 
 struct LibVgmSource {
     decoder: LibVgm,
+    inspection: Option<crate::inspection::Producer>,
     duration: Duration,
     pcm: Vec<f32>,
     pcm_samples: usize,
@@ -103,6 +112,7 @@ impl LibVgmSource {
         let duration = decoder.total_duration();
         Self {
             decoder,
+            inspection: None,
             duration,
             pcm: vec![0.0; LIBVGM_RENDER_FRAMES * usize::from(LIBVGM_CHANNELS)],
             pcm_samples: 0,
@@ -112,17 +122,23 @@ impl LibVgmSource {
 
     fn fill_pcm(&mut self) {
         self.pcm_index = 0;
-        self.pcm_samples = match self.decoder.render(&mut self.pcm) {
+        let frames = self.inspection.as_ref().map_or(LIBVGM_RENDER_FRAMES, |p| p.render_frames(LIBVGM_RENDER_FRAMES));
+        self.pcm_samples = match self.decoder.render(&mut self.pcm[..frames * usize::from(LIBVGM_CHANNELS)]) {
             Ok(frames) => frames * usize::from(LIBVGM_CHANNELS),
             Err(error) => {
                 eprintln!("Kog libvgm playback error: {error}");
                 0
             }
         };
+        if let Some(producer) = &mut self.inspection {
+            producer.advance(self.pcm_samples / usize::from(LIBVGM_CHANNELS));
+            if producer.enabled() { producer.publish(self.decoder.inspection()); }
+        }
     }
 
     fn seek_to(&mut self, position: Duration) -> Result<(), String> {
-        self.decoder.seek(position)?;
+        let actual = self.decoder.seek(position)?;
+        if let Some(producer) = &mut self.inspection { producer.seek(Duration::from_secs_f64(actual as f64 / f64::from(LIBVGM_SAMPLE_RATE))); }
         self.pcm_samples = 0;
         self.pcm_index = 0;
         Ok(())

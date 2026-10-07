@@ -140,6 +140,7 @@ public:
 
 public:
 	Music_Emu();
+	int32_t inspection_generated_samples() const { return emu_time; }
 	~Music_Emu();
 protected:
 	void set_max_initial_silence( int n )       { max_initial_silence = n; }

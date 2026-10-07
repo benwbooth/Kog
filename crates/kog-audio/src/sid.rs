@@ -11,6 +11,8 @@ struct NativeSid {
 }
 
 unsafe extern "C" {
+    fn kog_sid_registers(decoder: *mut NativeSid, registers: *mut u8, capacity: u32) -> u32;
+    fn kog_sid_clock(decoder: *const NativeSid) -> f64;
     fn kog_sid_open(
         data: *const u8,
         data_size: usize,
@@ -140,6 +142,39 @@ impl Sid {
 
     pub fn duration(&self) -> Duration {
         duration_from_frames(self.total_frames, self.sample_rate)
+    }
+
+    pub fn inspection(&mut self) -> crate::inspection::FrameData {
+        use crate::inspection::{Channel, Field, FrameData, Note, frequency_key};
+        let mut registers = [0_u8; 32 * 3];
+        let count = unsafe { kog_sid_registers(self.handle.as_ptr(), registers.as_mut_ptr(), 3) }.min(3) as usize;
+        let clock = unsafe { kog_sid_clock(self.handle.as_ptr()) };
+        let mut channels = Vec::new();
+        let mut global = Vec::new();
+        for (chip, regs) in registers[..count * 32].chunks_exact(32).enumerate() {
+            let volume = regs[24] & 15;
+            global.push(Field::new(format!("SID {} filter", chip + 1), format!("cutoff {:03X} resonance {:X} routing {:X}", u16::from(regs[21] & 7) | u16::from(regs[22]) << 3, regs[23] >> 4, regs[23] & 15)));
+            for voice in 0..3 {
+                let data = &regs[voice * 7..voice * 7 + 7];
+                let frequency = u16::from_le_bytes([data[0], data[1]]);
+                let pulse = u16::from(data[2]) | u16::from(data[3] & 15) << 8;
+                let control = data[4];
+                let gate = control & 1 != 0;
+                let noise = control & 0x80 != 0;
+                let active = gate && control & 0xf0 != 0 && control & 8 == 0;
+                let hz = f64::from(frequency) * clock / 16777216.0;
+                let notes = if active && !noise { frequency_key(hz).map(|key| vec![Note { key, velocity: f32::from(volume) / 15.0, held: gate }]).unwrap_or_default() } else { Vec::new() };
+                let wave = [(0x10, "Triangle"), (0x20, "Saw"), (0x40, "Pulse"), (0x80, "Noise")].iter().filter_map(|(bit, name)| (control & bit != 0).then_some(*name)).collect::<Vec<_>>().join(" + ");
+                channels.push(Channel { id: (chip * 3 + voice) as u32, name: format!("SID {} · Voice {}", chip + 1, voice + 1),
+                    kind: if noise { "noise" } else { "tonal" }.into(), notes, active,
+                    instrument: wave, level: if active { f32::from(volume) / 15.0 } else { 0.0 }, pan: 0.0,
+                    fields: vec![Field::new("Frequency", format!("{frequency:04X} · {hz:.2} Hz")), Field::new("Pulse width", format!("{pulse:03X}")),
+                        Field::new("Gate", if gate { "On" } else { "Off" }), Field::new("ADSR", format!("{:02X} {:02X}", data[5], data[6])),
+                        Field::new("Control", format!("{control:02X}")), Field::new("Volume", volume)],
+                });
+            }
+        }
+        FrameData { channels, global, row: None }
     }
 
     pub fn sample_rate(&self) -> u32 {

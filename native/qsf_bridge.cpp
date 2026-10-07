@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "qsf_bridge.h"
+#include "inspection.h"
 
 #include <algorithm>
 #include <cctype>
@@ -26,6 +27,7 @@
 
 extern "C" void kog_qsoundc_cleanup(void *state);
 extern "C" int kog_qsoundc_has_rom(void *state, uint32_t size);
+extern "C" size_t kog_qsoundc_inspect(void*, KogVoice*, size_t);
 
 namespace {
 
@@ -518,6 +520,10 @@ extern "C" int64_t kog_qsf_render(KogQsf *decoder, float *output, size_t frames)
         set_error("unknown QSF rendering failure");
         return -1;
     }
+}
+
+extern "C" size_t kog_qsf_inspect(KogQsf* decoder, KogVoice* out, size_t capacity) {
+    return decoder ? kog_qsoundc_inspect(qsound_get_qmix_state(decoder->core), out, capacity) : 0;
 }
 
 extern "C" int64_t kog_qsf_seek(KogQsf *decoder, uint64_t frame) {

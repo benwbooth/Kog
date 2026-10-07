@@ -85,6 +85,14 @@ impl DecoderBackend for SidBackend {
         })
     }
 
+    fn append_observed(&self, source: &PlaybackSource, player: &Player, monitor: &crate::inspection::Monitor) -> Result<(), String> {
+        let mut audio = SidSource::new(Self::open(source)?);
+        monitor.describe(self.display_name(), "registers", "SID oscillator pitch, gate, waveform, pulse width, ADSR and filter registers. Level shows master volume while gated; analog envelopes and digi sample voices are not inferred.");
+        audio.inspection = Some(monitor.producer(audio.sample_rate));
+        player.append(audio);
+        Ok(())
+    }
+
     fn append(&self, source: &PlaybackSource, player: &Player) -> Result<(), String> {
         player.append(SidSource::new(Self::open(source)?));
         Ok(())
@@ -100,6 +108,7 @@ fn released_year(value: &str) -> Option<u32> {
 
 struct SidSource {
     decoder: Sid,
+    inspection: Option<crate::inspection::Producer>,
     duration: Duration,
     channels: u16,
     sample_rate: u32,
@@ -115,6 +124,7 @@ impl SidSource {
         let sample_rate = decoder.sample_rate();
         Self {
             decoder,
+            inspection: None,
             duration,
             channels,
             sample_rate,
@@ -126,17 +136,23 @@ impl SidSource {
 
     fn fill_pcm(&mut self) {
         self.pcm_index = 0;
-        self.pcm_samples = match self.decoder.render(&mut self.pcm) {
+        let frames = self.inspection.as_ref().map_or(SID_RENDER_FRAMES, |p| p.render_frames(SID_RENDER_FRAMES));
+        self.pcm_samples = match self.decoder.render(&mut self.pcm[..frames * usize::from(self.channels)]) {
             Ok(frames) => frames * usize::from(self.channels),
             Err(error) => {
                 eprintln!("Kog SID playback error: {error}");
                 0
             }
         };
+        if let Some(producer) = &mut self.inspection {
+            if producer.enabled() { producer.publish(self.decoder.inspection()); }
+            producer.advance(self.pcm_samples / usize::from(self.channels));
+        }
     }
 
     fn seek_to(&mut self, position: Duration) -> Result<(), String> {
-        self.decoder.seek(position)?;
+        let actual = self.decoder.seek(position)?;
+        if let Some(producer) = &mut self.inspection { producer.seek(actual); }
         self.pcm_samples = 0;
         self.pcm_index = 0;
         Ok(())

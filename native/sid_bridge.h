@@ -27,6 +27,8 @@ const char *kog_sid_title(const KogSid *decoder);
 const char *kog_sid_artist(const KogSid *decoder);
 const char *kog_sid_released(const KogSid *decoder);
 const char *kog_sid_format(const KogSid *decoder);
+uint32_t kog_sid_registers(KogSid *decoder, uint8_t *registers, uint32_t capacity);
+double kog_sid_clock(const KogSid *decoder);
 
 int64_t kog_sid_render(KogSid *decoder, float *output, size_t frames);
 int64_t kog_sid_seek(KogSid *decoder, uint64_t frame);

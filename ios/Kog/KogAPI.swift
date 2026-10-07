@@ -86,6 +86,17 @@ struct KogAPI {
         return try url("/api/stream", options)
     }
 
+    func channelWindow(stream: String, position: Double) async throws -> ChannelWindowReply {
+        guard let components = URLComponents(string: stream), components.path.hasSuffix("/api/stream") else {
+            throw KogError.response("Channel data is unavailable for this source")
+        }
+        var query = Dictionary((components.queryItems ?? []).map { ($0.name, $0.value ?? "") }, uniquingKeysWith: { _,last in last })
+        query["position"] = String(position)
+        let data = try await request("/api/inspection", query: query, timeout: 8)
+        let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try decoder.decode(ChannelWindowReply.self, from: data)
+    }
+
     func setMidiEngine(_ engine: String) async throws {
         _ = try await request("/api/settings/midi", method: "POST", body: ["engine": engine])
     }

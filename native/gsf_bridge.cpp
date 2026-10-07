@@ -1,4 +1,5 @@
 #include "gsf_bridge.h"
+#include "inspection.h"
 
 #include <algorithm>
 #include <cctype>
@@ -20,6 +21,7 @@
 #include <mgba/core/config.h>
 #include <mgba/core/core.h>
 #include <mgba/core/interface.h>
+#include <mgba/internal/gba/gba.h>
 
 #include "psflib.h"
 
@@ -401,6 +403,57 @@ extern "C" KogGsf *kog_gsf_open(const char *path,
 
 extern "C" void kog_gsf_free(KogGsf *decoder) {
     delete decoder;
+}
+
+extern "C" size_t kog_gsf_inspect(KogGsf* decoder, KogVoice* out, size_t capacity, double* ahead) {
+    if(!decoder || !decoder->core) return 0;
+    const auto& gba = *static_cast<GBA*>(decoder->core->board);
+    const auto& audio = gba.audio;
+    const auto& psg = audio.psg;
+    KogVoices voices{out, capacity};
+    *ahead = double(mAudioBufferAvailable(decoder->core->getAudioBuffer(decoder->core))) / decoder->sample_rate;
+    const GBAudioSquareChannel* squares[] = {&psg.ch1, &psg.ch2};
+    const bool playing[] = {psg.playingCh1, psg.playingCh2};
+    const bool left[] = {psg.ch1Left, psg.ch2Left};
+    const bool right[] = {psg.ch1Right, psg.ch2Right};
+    for(unsigned i = 0; i < 2; ++i) {
+        const auto& c = *squares[i];
+        auto& v = voices.add(i == 0 ? "GBA Pulse 1" : "GBA Pulse 2", 0,
+            audio.enable && playing[i], 131072.0 / (2048 - c.control.frequency),
+            c.envelope.currentVolume / 15.0f, float(right[i]) - float(left[i]));
+        std::snprintf(v.instrument, sizeof(v.instrument), "Pulse duty %d", c.envelope.duty);
+        std::snprintf(v.details, sizeof(v.details),
+            "Period=%d | Volume=%d | Envelope=%d step %d direction %u | Length=%d | Sweep=%d shift %d direction %u | Routing=%u/%u",
+            c.control.frequency, c.envelope.currentVolume, c.envelope.initialVolume, c.envelope.stepTime,
+            unsigned(c.envelope.direction), c.control.length, c.sweep.time, c.sweep.shift,
+            unsigned(c.sweep.direction), unsigned(left[i]), unsigned(right[i]));
+    }
+    auto& wave = voices.add("GBA Wave", 0, audio.enable && psg.playingCh3,
+        65536.0 / (2048 - psg.ch3.rate), psg.ch3.volume / 4.0f,
+        float(psg.ch3Right) - float(psg.ch3Left));
+    std::snprintf(wave.details, sizeof(wave.details), "Period=%d | Volume=%d | Length=%u | Bank=%u | Size=%u", psg.ch3.rate, psg.ch3.volume, psg.ch3.length, unsigned(psg.ch3.bank), unsigned(psg.ch3.size));
+    auto& noise = voices.add("GBA Noise", 1, audio.enable && psg.playingCh4, 0,
+        psg.ch4.envelope.currentVolume / 15.0f, float(psg.ch4Right) - float(psg.ch4Left));
+    std::snprintf(noise.details, sizeof(noise.details), "Divisor=%d | Shift=%d | Width=%u | LFSR=%04X | Envelope=%d step %d direction %u | Length=%d",
+        psg.ch4.ratio, psg.ch4.frequency, unsigned(psg.ch4.power), psg.ch4.lfsr,
+        psg.ch4.envelope.currentVolume, psg.ch4.envelope.stepTime, unsigned(psg.ch4.envelope.direction), psg.ch4.length);
+    const GBAAudioFIFO* fifos[] = {&audio.chA, &audio.chB};
+    const bool fifoLeft[] = {audio.chALeft, audio.chBLeft};
+    const bool fifoRight[] = {audio.chARight, audio.chBRight};
+    const bool fifoTimer[] = {audio.chATimer, audio.chBTimer};
+    for(unsigned i = 0; i < 2; ++i) {
+        const auto& c = *fifos[i];
+        float peak = 0;
+        for(auto sample : c.samples) peak = std::max(peak, std::abs(sample / 128.0f));
+        auto& v = voices.add(i == 0 ? "GBA Direct Sound A" : "GBA Direct Sound B", 4,
+            audio.enable && (fifoLeft[i] || fifoRight[i]) && peak > 0, 0, peak,
+            float(fifoRight[i]) - float(fifoLeft[i]));
+        std::snprintf(v.instrument, sizeof(v.instrument), "Software-mixed PCM");
+        std::snprintf(v.details, sizeof(v.details), "DMA source=%d | Timer=%u | FIFO read/write=%d/%d | Sample=%08X | Remaining=%d | Routing=%u/%u",
+            c.dmaSource, unsigned(fifoTimer[i]), c.fifoRead, c.fifoWrite, c.internalSample, c.internalRemaining,
+            unsigned(fifoLeft[i]), unsigned(fifoRight[i]));
+    }
+    return voices.count;
 }
 
 extern "C" uint32_t kog_gsf_sample_rate(const KogGsf *decoder) {

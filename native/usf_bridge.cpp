@@ -3,6 +3,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "usf_bridge.h"
+#include "inspection.h"
+extern "C" size_t kog_usf_core_inspect(void*, KogVoice*, size_t);
 
 #include <algorithm>
 #include <cctype>
@@ -521,6 +523,19 @@ extern "C" int64_t kog_usf_render(KogUsf *decoder, float *output, size_t frames)
         set_error("unknown USF rendering failure");
         return -1;
     }
+}
+
+extern "C" size_t kog_usf_inspect(KogUsf* decoder, KogVoice* out, size_t capacity) {
+    if(!decoder) return 0;
+    const auto count = kog_usf_core_inspect(decoder->core, out, capacity);
+    for(size_t i = 0; i < count; ++i) {
+        float peak = 0;
+        for(size_t j = i; j < decoder->native_samples.size(); j += 2)
+            peak = std::max(peak, std::abs(decoder->native_samples[j] / 32768.0f));
+        out[i].level = peak;
+        out[i].active = peak > 0;
+    }
+    return count;
 }
 
 extern "C" int64_t kog_usf_seek(KogUsf *decoder, uint64_t frame) {

@@ -713,6 +713,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "kog-inspection"
+version = "0.10.1"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "kog-playback-policy"
 version = "0.10.1"
 dependencies = [
@@ -727,6 +734,7 @@ dependencies = [
  "console_error_panic_hook",
  "gloo-net 0.7.0",
  "js-sys",
+ "kog-inspection",
  "kog-playback-policy",
  "leptos",
  "serde",

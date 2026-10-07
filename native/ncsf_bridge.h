@@ -3,12 +3,14 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "inspection.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 typedef struct KogNcsf KogNcsf;
+size_t kog_ncsf_inspection(KogNcsf *decoder, KogVoice *out, size_t capacity);
 
 KogNcsf *kog_ncsf_open(const char *path,
                        uint32_t default_length_milliseconds,

@@ -57,6 +57,7 @@ impl StreamKey {
     /// directory stays browsable without colliding.
     pub fn stem(&self) -> String {
         let mut fingerprint = String::with_capacity(self.locator.len() + 16);
+        fingerprint.push_str("channel-recording-v1\0");
         fingerprint.push_str(&self.locator);
         fingerprint.push('\0');
         fingerprint.push_str(self.codec.setting_value());
@@ -129,6 +130,16 @@ impl StreamCache {
             .join(format!("{}.{}", key.stem(), key.codec.extension()))
     }
 
+    pub fn inspection_path(&self, key: &StreamKey) -> PathBuf {
+        Self::companion_path(&self.entry_path(key))
+    }
+
+    fn companion_path(audio: &Path) -> PathBuf {
+        let mut path = audio.as_os_str().to_os_string();
+        path.push(".channels");
+        PathBuf::from(path)
+    }
+
     /// A sibling temp path the encoder writes into, then `commit` renames.
     /// Writing next to the destination keeps the rename atomic (same
     /// filesystem).
@@ -198,10 +209,8 @@ impl StreamCache {
             if self.lookup(key).is_some() { let _ = std::fs::remove_file(partial); return Ok(entry); }
             return Err(format!("finalizing {}: {error}", entry.display()));
         }
-        let size = std::fs::metadata(&entry)
-            .map(|metadata| metadata.len())
-            .unwrap_or(0);
-        self.evict_to_fit(size);
+        // The committed audio and its metadata are already in entries().
+        self.evict_to_fit(0);
         Ok(entry)
     }
 
@@ -224,12 +233,12 @@ impl StreamCache {
                 let Ok(metadata) = file.metadata() else {
                     continue;
                 };
-                if !metadata.is_file() {
+                if !metadata.is_file() || file.path().extension().is_some_and(|ext| ext == "channels") {
                     continue;
                 }
                 found.push((
                     file.path(),
-                    metadata.len(),
+                    metadata.len() + std::fs::metadata(Self::companion_path(&file.path())).map(|m| m.len()).unwrap_or(0),
                     metadata
                         .modified()
                         .unwrap_or(std::time::SystemTime::UNIX_EPOCH),
@@ -285,6 +294,7 @@ impl StreamCache {
                 break;
             }
             if std::fs::remove_file(&path).is_ok() {
+                let _ = std::fs::remove_file(Self::companion_path(&path));
                 total = total.saturating_sub(size);
             }
         }
@@ -406,6 +416,26 @@ mod tests {
             StreamKey::new("x", StreamCodec::Aac, 5).bitrate_kbps,
             MIN_BITRATE_KBPS
         );
+    }
+
+    #[test]
+    fn inspection_companions_count_toward_capacity_and_are_evicted_with_audio() {
+        let (_dir,cache)=cache();
+        let first=key("a",StreamCodec::Flac,192);
+        let second=key("b",StreamCodec::Flac,192);
+        for (index,key) in [&first,&second].into_iter().enumerate() {
+            let path=cache.partial_path(key);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path,vec![0;400]).unwrap();
+            std::fs::write(cache.inspection_path(key),vec![0;250]).unwrap();
+            filetime_stamp(&path,std::time::SystemTime::UNIX_EPOCH+std::time::Duration::from_secs(100+index as u64)).unwrap();
+            cache.commit(key,&path).unwrap();
+        }
+        assert!(cache.lookup(&first).is_none());
+        assert!(!cache.inspection_path(&first).exists());
+        assert!(cache.lookup(&second).is_some());
+        assert!(cache.inspection_path(&second).is_file());
+        assert_eq!(cache.total_bytes(),650);
     }
 
     #[test]

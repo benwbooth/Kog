@@ -29,6 +29,7 @@ final class KogStore: ObservableObject {
     @Published private(set) var queue = [Track]()
     @Published private(set) var currentIndex = -1
     @Published var playing = false
+    @Published private(set) var channelInspectionActive = false
     @Published var position = 0.0
     @Published var duration = 0.0
     @Published private(set) var shuffle = ShuffleMode(rawValue: KogPreferences.standard.string(forKey: "shuffle_mode") ?? "") ?? (KogPreferences.standard.bool(forKey: "shuffle") ? .all : .off)
@@ -71,12 +72,27 @@ final class KogStore: ObservableObject {
     private var visualizationTask: Task<Void, Never>?
     private var player: AVPlayer?
     private var assetLoader: AuthenticatedAssetLoader?
+    private var inspectionStreamURL: String?
+    private var inspectionStreamOffset = 0.0
     #if KOG_NATIVE_AUDIO
     private var nativePlayer: NativeAudioPlayer?
     private var nativeTimer: Timer?
     private var nativeStartTask: Task<Void, Never>?
     private var nativeGeneration = 0
     #endif
+    var channelInspectionPosition: Double {
+        #if KOG_NATIVE_AUDIO
+        if let decoder = nativePlayer { return inspectionStreamOffset + decoder.position }
+        #endif
+        return position
+    }
+    var channelInspectionStream: String? { inspectionStreamURL }
+    func localChannelSnapshot() async -> ChannelSnapshot {
+        #if KOG_NATIVE_AUDIO
+        if let decoder = nativePlayer { return await decoder.channelSnapshot(playing: playing) }
+        #endif
+        return ChannelSnapshot()
+    }
     private var timeObserver: Any?
     private var finishObserver: NSObjectProtocol?
     private var statusObserver: NSKeyValueObservation?
@@ -381,6 +397,7 @@ final class KogStore: ObservableObject {
         if let tracks = try? workspaceTracks(view["queue"]) { queue = tracks }
         currentIndex = view["current"] as? Int ?? -1
         playing = ["playing", "starting"].contains(view["transport"] as? String ?? "")
+        channelInspectionActive = ["playing", "starting", "paused"].contains(view["transport"] as? String ?? "")
         position = view["position"] as? Double ?? 0; duration = view["duration"] as? Double ?? 0
         volume = view["volume"] as? Double ?? 1
         shuffle = ShuffleMode(rawValue: view["shuffle"] as? String ?? "") ?? .off
@@ -492,6 +509,8 @@ final class KogStore: ObservableObject {
                 let path = track.path
                 let streamOffset = track.isDevice ? 0 : resumeAt
                 let stream = track.isDevice ? nil : try api.nativeStream(track, start: streamOffset).absoluteString
+                inspectionStreamURL = stream
+                inspectionStreamOffset = streamOffset
                 let headers = api.audioHeaders
                 let subsong = Int32(track.fragment) ?? -1
                 let engine = localMidiEngine

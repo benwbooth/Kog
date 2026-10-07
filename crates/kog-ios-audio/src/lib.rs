@@ -1,4 +1,4 @@
-use std::ffi::{CStr, c_char};
+use std::ffi::{CStr, CString, c_char};
 use std::io::Read;
 use std::path::PathBuf;
 use std::ptr;
@@ -143,6 +143,13 @@ pub unsafe extern "C" fn kog_audio_open_reader(
         })),
         Err(message) => { unsafe { error_to_buffer(&message, error, error_capacity) }; ptr::null_mut() }
     }
+}
+
+/// The caller serializes this with read/seek and supplies the audible position.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kog_audio_channel_snapshot(handle: *const KogAudioHandle, position_ms: u64, playing: bool) -> *mut c_char {
+    let snapshot = (unsafe { handle.as_ref() }).map(|handle| handle.reader.channel_snapshot(Duration::from_millis(position_ms), playing)).unwrap_or_default();
+    serde_json::to_string(&snapshot).ok().and_then(|json| CString::new(json).ok()).map_or(ptr::null_mut(), CString::into_raw)
 }
 
 #[unsafe(no_mangle)]

@@ -34,6 +34,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 mod queue_drag;
+mod inspection;
 mod session;
 mod table;
 mod workspace;
@@ -1083,6 +1084,7 @@ struct Ui {
     info_modal: bool,
     artwork_modal: bool,
     visualizer_open: bool,
+    inspector: inspection::View,
     visualizer_mode: VisualizerMode,
     modal_scroll: usize,
     sidebar_visible: bool,
@@ -1477,6 +1479,7 @@ impl Ui {
             info_modal: false,
             artwork_modal: false,
             visualizer_open: false,
+            inspector: inspection::View::default(),
             visualizer_mode: VisualizerMode::Waveform,
             modal_scroll: 0,
             sidebar_visible: true,
@@ -2406,6 +2409,7 @@ impl Ui {
                 };
             }
             (MenuPage::View, 7) => self.show_artwork(),
+            (MenuPage::View, 8) => { self.modal = None; self.visualizer_open = false; self.inspector.open = true; },
             (MenuPage::Playback, 0) => self.play_pause(),
             (MenuPage::Playback, 1) => {
                 self.session_command(SessionCommand::Stop);
@@ -6167,6 +6171,10 @@ impl Ui {
     }
 
     fn key(&mut self, key: Key, size: (usize, usize)) -> bool {
+        if self.inspector.open {
+            if matches!(key, Key::Char(' ')) { self.play_pause(); } else { self.inspector.key(key); }
+            return true;
+        }
         self.hover_position = None;
         if self.tab_drag.take().is_some() && matches!(key, Key::Esc) {
             return true;
@@ -6825,6 +6833,13 @@ impl Ui {
     }
 
     fn mouse(&mut self, button: u16, x: usize, y: usize, release: bool, size: (usize, usize)) {
+        if self.inspector.open {
+            if button == 64 || button == 65 { self.inspector.wheel(button == 65); }
+            if !release && button == 0 && y == 1 {
+                self.inspector.key(if x < 14 {Key::Char('1')} else if x < 26 {Key::Char('2')} else if x < 36 {Key::Char('3')} else if x < 48 {Key::Char('d')} else if x < 65 {Key::Char('f')} else {Key::Esc});
+            }
+            return;
+        }
         if self.tab_drag_mouse(button, x, y, release, size) {
             return;
         }
@@ -9367,7 +9382,9 @@ impl Ui {
                 }
             }
         }
-        if self.visualizer_open {
+        if self.inspector.open {
+            self.inspector.draw(&mut screen, size, &self.player.channel_snapshot());
+        } else if self.visualizer_open {
             draw_visualizer_modal(
                 &mut screen,
                 size,
@@ -10391,7 +10408,7 @@ const REMOTE_MENU: [&str; 9] = [
     "Queue Current Folder",
     "Use Local Library",
 ];
-const VIEW_MENU: [&str; 8] = [
+const VIEW_MENU: [&str; 9] = [
     "Show/Hide Files and Playlists",
     "Track Info…",
     "Lyrics…",
@@ -10400,6 +10417,7 @@ const VIEW_MENU: [&str; 8] = [
     "Supported Formats…",
     "Compact Player On/Off",
     "Show Album Cover…",
+    "Channel Inspector…",
 ];
 const PLAYBACK_MENU: [&str; 14] = [
     "Play/Pause",
@@ -12294,8 +12312,8 @@ pub fn run() -> Result<(), String> {
                 .entries
                 .iter()
                 .any(|column| column.id == "status" && column.visible);
-        let animate = ui.visualizer_open || live_waveform;
-        let frame_interval = if animate { 66 } else { 150 };
+        let animate = ui.visualizer_open || ui.inspector.open || live_waveform;
+        let frame_interval = if ui.inspector.open { 33 } else if animate { 66 } else { 150 };
         if size != last_size || last_draw.elapsed() >= Duration::from_millis(frame_interval) {
             let frame = ui.draw(size);
             if frame != last_frame {

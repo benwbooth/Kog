@@ -20,6 +20,7 @@ pub struct Syntrax {
     subsong_count: u32,
     title: String,
     native_bytes: Vec<u8>,
+    inspection: Option<crate::inspection::Monitor>,
 }
 
 struct SyntraxProcess {
@@ -59,7 +60,15 @@ impl Syntrax {
             subsong_count: header.subsong_count,
             title: header.title,
             native_bytes: Vec::new(),
+            inspection: None,
         })
+    }
+
+    pub fn inspect(&mut self, monitor: crate::inspection::Monitor) {
+        if let Some(process) = self.process.as_mut() {
+            process.stdout.inspect(&monitor, self.sample_rate);
+        }
+        self.inspection = Some(monitor);
     }
 
     pub fn duration(&self) -> Duration {
@@ -165,6 +174,7 @@ impl Syntrax {
         if let Some(mut old_process) = self.process.replace(process) {
             stop_process(&mut old_process);
         }
+        if let Some(monitor) = self.inspection.clone() { self.inspect(monitor); }
         self.rendered_frames = target;
         Ok(duration_from_frames(target, self.sample_rate))
     }

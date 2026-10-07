@@ -46,6 +46,7 @@ fn stream_frame_limit(duration: Option<std::time::Duration>) -> u64 {
 /// would tear down the decoder the mixer is pulling from.
 pub struct PcmReader {
     source: MixerSource,
+    inspection: crate::inspection::Monitor,
     /// Held so the decoded audio keeps being pushed into the mixer.
     _player: Option<Player>,
     _registry: Option<DecoderRegistry>,
@@ -107,9 +108,11 @@ impl PcmReader {
         let total_frames = Some(stream_frame_limit(duration));
         let (mixer_input, mixer_output) = stream_mixer();
         let player = Player::connect_new(&mixer_input);
-        registry.append(&source, &player)?;
+        let inspection = crate::inspection::Monitor::default();
+        registry.append_observed(&source, &player, &inspection)?;
         Ok(Self {
             source: mixer_output,
+            inspection,
             _player: Some(player),
             _registry: Some(registry),
             pending: Vec::with_capacity(PULL_BATCH * 4),
@@ -135,7 +138,7 @@ impl PcmReader {
         let player = Player::connect_new(&mixer_input);
         player.append(crate::ffmpeg_decoder::FfmpegSource::new(decoder));
         Self {
-            source: mixer_output, _player: Some(player), _registry: None,
+            source: mixer_output, inspection: crate::inspection::Monitor::default(), _player: Some(player), _registry: None,
             pending: Vec::with_capacity(PULL_BATCH * 4), position: 0, finished: false,
             duration, total_frames, remaining_frames: total_frames,
         }
@@ -151,6 +154,7 @@ impl PcmReader {
         mixer_input.add(source);
         Self {
             source: mixer_output,
+            inspection: crate::inspection::Monitor::default(),
             // No player: it would feed endless silence and the mixer would
             // never report the end of the source.
             _player: None,
@@ -170,6 +174,13 @@ impl PcmReader {
 
     pub const fn channels(&self) -> u16 {
         STREAM_CHANNELS
+    }
+
+    /// Query with the device-consumed position, not this reader's buffered cursor.
+    pub fn inspection_monitor(&self) -> crate::inspection::Monitor { self.inspection.clone() }
+
+    pub fn channel_snapshot(&self, position: Duration, playing: bool) -> crate::inspection::Snapshot {
+        self.inspection.snapshot(position, playing, false)
     }
 
     pub fn duration(&self) -> Option<Duration> {
@@ -413,6 +424,7 @@ mod tests {
             samples,
         ));
         let mut reader = PcmReader {
+            inspection: crate::inspection::Monitor::default(),
             source,
             _player: Some(player),
             _registry: None,

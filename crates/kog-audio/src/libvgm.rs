@@ -30,6 +30,7 @@ unsafe extern "C" {
     fn kog_libvgm_warning(decoder: *const c_void) -> *const c_char;
     fn kog_libvgm_last_error(decoder: *const c_void) -> *const c_char;
     fn kog_libvgm_render(decoder: *mut c_void, output: *mut f32, frames: usize) -> usize;
+    fn kog_libvgm_inspect(decoder: *mut c_void, voices: *mut crate::inspection::native::Voice, capacity: usize) -> usize;
     fn kog_libvgm_seek(decoder: *mut c_void, frame: u64) -> i32;
 }
 
@@ -131,6 +132,10 @@ impl LibVgm {
 
     pub fn metadata(&self) -> &LibVgmMetadata {
         &self.metadata
+    }
+
+    pub fn inspection(&self) -> crate::inspection::FrameData {
+        crate::inspection::native::capture(512, |out, count| unsafe { kog_libvgm_inspect(self.handle.as_ptr(), out, count) })
     }
 
     pub fn warning(&self) -> Option<&str> {

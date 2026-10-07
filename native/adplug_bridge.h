@@ -3,12 +3,14 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "inspection.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 typedef struct KogAdPlug KogAdPlug;
+size_t kog_adplug_inspection(KogAdPlug *decoder, KogVoice *voices, size_t capacity, uint32_t *position);
 
 enum KogAdPlugError {
     KOG_ADPLUG_OK = 0,

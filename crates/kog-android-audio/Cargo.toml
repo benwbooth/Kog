@@ -9,6 +9,7 @@ description = "JNI bridge to Kog's shared audio decoders"
 crate-type = ["cdylib"]
 
 [dependencies]
+tempfile = "3.27.0"
 jni = "0.21.1"
 kog-audio = { path = "../kog-audio" }
 kog-core = { path = "../kog-core" }

@@ -60,6 +60,14 @@ impl DecoderBackend for QsfBackend {
         })
     }
 
+    fn append_observed(&self, source: &PlaybackSource, player: &Player, monitor: &crate::inspection::Monitor) -> Result<(), String> {
+        let mut audio = QsfSource::new(Self::open(source)?);
+        monitor.describe(self.display_name(), "registers", "Live QSound PCM and ADPCM voices with pitch rates, loops, levels, panning and echo. Sample root notes are not encoded.");
+        audio.inspection = Some(monitor.producer(audio.sample_rate));
+        player.append(audio);
+        Ok(())
+    }
+
     fn append(&self, source: &PlaybackSource, player: &Player) -> Result<(), String> {
         player.append(QsfSource::new(Self::open(source)?));
         Ok(())
@@ -75,6 +83,7 @@ fn tag_year(value: &str) -> Option<u32> {
 
 struct QsfSource {
     decoder: Qsf,
+    inspection: Option<crate::inspection::Producer>,
     duration: Duration,
     channels: u16,
     sample_rate: u32,
@@ -90,6 +99,7 @@ impl QsfSource {
         let sample_rate = decoder.sample_rate();
         Self {
             decoder,
+            inspection: None,
             duration,
             channels,
             sample_rate,
@@ -101,17 +111,23 @@ impl QsfSource {
 
     fn fill_pcm(&mut self) {
         self.pcm_index = 0;
-        self.pcm_samples = match self.decoder.render(&mut self.pcm) {
+        let frames = self.inspection.as_ref().map_or(QSF_RENDER_FRAMES, |p| p.render_frames(QSF_RENDER_FRAMES));
+        self.pcm_samples = match self.decoder.render(&mut self.pcm[..frames * usize::from(self.channels)]) {
             Ok(frames) => frames * usize::from(self.channels),
             Err(error) => {
                 eprintln!("Kog QSF playback error: {error}");
                 0
             }
         };
+        if let Some(producer) = &mut self.inspection {
+            producer.advance(self.pcm_samples / usize::from(self.channels));
+            if producer.enabled() { producer.publish(self.decoder.inspection()); }
+        }
     }
 
     fn seek_to(&mut self, position: Duration) -> Result<(), String> {
-        self.decoder.seek(position)?;
+        let actual = self.decoder.seek(position)?;
+        if let Some(producer) = &mut self.inspection { producer.seek(actual); }
         self.pcm_samples = 0;
         self.pcm_index = 0;
         Ok(())

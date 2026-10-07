@@ -19,6 +19,7 @@ struct NativeHively {
 }
 
 unsafe extern "C" {
+    fn kog_hively_inspection(decoder: *mut NativeHively, voices: *mut crate::inspection::native::Voice, steps: *mut u8, capacity: usize, position: *mut u32, seconds: *mut f64) -> usize;
     fn kog_hively_init();
     fn kog_hively_open(
         data: *const u8,
@@ -97,6 +98,24 @@ impl Hively {
             total_frames,
             title,
         })
+    }
+
+    pub fn inspection(&mut self) -> (crate::inspection::FrameData, f64) {
+        use crate::inspection::{Cell, Field, Row, note_name};
+        let mut steps = [0_u8; 16 * 6];
+        let mut position = [0_u32; 4];
+        let mut seconds = 0.0;
+        let mut frame = crate::inspection::native::capture(16, |out, capacity| unsafe {
+            kog_hively_inspection(self.handle.as_ptr(), out, steps.as_mut_ptr(), capacity, position.as_mut_ptr(), &mut seconds)
+        });
+        frame.row = Some(Row { time: seconds, label: format!("{:03X}:{:02X}", position[0], position[1]),
+            cells: steps.chunks_exact(6).take(frame.channels.len()).enumerate().map(|(id, step)| Cell {
+                channel: id as u32, notes: if step[0] == 0 { "...".into() } else { note_name(f32::from(step[0]) + 23.0) },
+                instrument: format!("{:02X}", step[1]), volume: String::new(),
+                effects: vec![Field::new("FX", format!("{:X}{:02X}", step[2], step[3])), Field::new("FX2", format!("{:X}{:02X}", step[4], step[5]))],
+            }).collect(), ..Row::default() });
+        frame.global = vec![Field::new("Position", position[0]), Field::new("Row", position[1]), Field::new("Speed", position[2]), Field::new("IRQ rate", format!("{} Hz", position[3] * 50))];
+        (frame, seconds)
     }
 
     pub fn duration(&self) -> Duration {

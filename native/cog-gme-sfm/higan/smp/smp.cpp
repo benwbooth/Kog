@@ -34,6 +34,8 @@ bool SMP::sample(int16_t left, int16_t right) {
   if(remaining < 2) return false;
   if(output) { *output++ = left; *output++ = right; }
   remaining -= 2;
+  ++inspected_frames;
+  if(inspect && inspected_frames % 160 == 0) inspect(inspected_frames);
   return true;
 }
 uint8_t SMP::read_logged_port(unsigned port) {

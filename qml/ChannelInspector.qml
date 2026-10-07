@@ -1,0 +1,200 @@
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Layouts
+
+ApplicationWindow {
+    id: root
+    required property var app
+    title: qsTr("Kog — Channel Inspector")
+    width: 1120
+    height: 740
+    minimumWidth: 640
+    minimumHeight: 400
+    color: "#10191f"
+    palette.window: "#10191f"
+    palette.windowText: "#d7e6ed"
+    palette.text: "#d7e6ed"
+    palette.button: "#253944"
+    palette.buttonText: "#d7e6ed"
+    palette.base: "#192832"
+    palette.highlight: "#50c8ef"
+    property var frame: ({ channels: [], rows: [], description: {}, global: [] })
+    readonly property var channels: frame.channels || []
+    readonly property var rows: frame.rows || []
+    property bool follow: true
+    property int mode: 2
+    function refresh() {
+        if (!visible || visibility === Window.Minimized) return
+        try { frame = JSON.parse(app.channel_snapshot()) } catch (_) { }
+    }
+    function fields(items) { return (items || []).map(f => f.name + " " + f.value).join(" · ") }
+    function noteText(notes) {
+        return (notes || []).map(n => {
+            const k = Math.round(n.key)
+            const names = ["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B"]
+            return names[((k % 12) + 12) % 12] + (Math.floor(k / 12) - 1) + (Math.abs(n.key - k) > 0.02 ? " " + Math.round((n.key - k) * 100) + "¢" : "")
+        }).join("  ")
+    }
+    function cellText(row, channel) {
+        return (row.cells || []).filter(c => c.channel === channel).map(c =>
+            [c.notes, c.instrument, c.volume, fields(c.effects)].filter(v => v).join(" ")).join(" | ")
+    }
+    onVisibleChanged: if (visible) refresh()
+    Timer { interval: 33; repeat: true; running: root.visible && root.visibility !== Window.Minimized; onTriggered: root.refresh() }
+    Shortcut { sequence: "Escape"; onActivated: root.hide() }
+    header: ToolBar {
+        RowLayout {
+            anchors.fill: parent
+            anchors.leftMargin: 12
+            anchors.rightMargin: 12
+            Label { text: qsTr("Channels"); font.bold: true }
+            ComboBox {
+                objectName: "channelInspectorMode"
+                model: [qsTr("Keyboards"), qsTr("Tracker"), qsTr("Keyboards + tracker")]
+                currentIndex: root.mode
+                onActivated: root.mode = currentIndex
+                Layout.preferredWidth: 200
+            }
+            Item { Layout.fillWidth: true }
+            Label { text: root.frame.seeking ? qsTr("Seeking…") : root.frame.playing ? qsTr("Playing") : qsTr("Paused / stopped") }
+            Button { text: root.frame.playing ? qsTr("Pause") : qsTr("Play"); onClicked: root.app.play_pause() }
+        }
+    }
+    ColumnLayout {
+        anchors.fill: parent
+        anchors.margins: 12
+        spacing: 8
+        Label {
+            text: root.app.now_title || qsTr("Channel Inspector")
+            color: "#edf4f7"; font.pixelSize: 19; font.bold: true
+            textFormat: Text.PlainText; elide: Text.ElideRight; Layout.fillWidth: true
+        }
+        Label {
+            objectName: "channelCoverage"
+            text: (root.frame.description.backend || "") + " · " + (root.frame.description.detail || qsTr("Play a track to inspect its channels."))
+            color: "#a8bdc9"; wrapMode: Text.Wrap; textFormat: Text.PlainText; Layout.fillWidth: true
+        }
+        Label { text: root.fields(root.frame.global); color: "#83d4bb"; textFormat: Text.PlainText; elide: Text.ElideRight; Layout.fillWidth: true }
+        SplitView {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            orientation: Qt.Vertical
+            ListView {
+                id: keyboards
+                objectName: "channelKeyboards"
+                visible: root.mode !== 1
+                clip: true
+                spacing: 8
+                SplitView.fillHeight: root.mode === 0
+                SplitView.preferredHeight: root.height * 0.43
+                SplitView.minimumHeight: 100
+                model: root.channels.length
+                ScrollBar.vertical: ScrollBar { }
+                delegate: Rectangle {
+                    required property int index
+                    readonly property var channel: root.channels[index] || ({})
+                    width: keyboards.width - 14
+                    height: 90
+                    radius: 5
+                    color: "#192832"
+                    RowLayout {
+                        anchors.fill: parent; anchors.margins: 8; spacing: 12
+                        ColumnLayout {
+                            Layout.preferredWidth: 180
+                            Layout.minimumWidth: 180
+                            Layout.maximumWidth: 180
+                            Label { text: channel.name || ""; textFormat: Text.PlainText; color: "#eff5f7"; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
+                            Label { text: channel.instrument || channel.kind || ""; textFormat: Text.PlainText; color: "#a8bdc9"; font.pixelSize: 10; elide: Text.ElideRight; Layout.fillWidth: true }
+                            ProgressBar { from: 0; to: 1; value: channel.level || 0; Layout.fillWidth: true; Layout.preferredHeight: 6 }
+                            Label { text: root.noteText(channel.notes) || (channel.active ? (channel.kind || qsTr("Active")).toUpperCase() : "—"); textFormat: Text.PlainText; color: "#50c8ef"; font.pixelSize: 10; elide: Text.ElideRight; Layout.fillWidth: true }
+                        }
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            ChannelKeyboard { notes: channel.notes || []; Layout.fillWidth: true; Layout.preferredHeight: 46 }
+                            Label { text: root.fields(channel.fields); textFormat: Text.PlainText; color: "#91aab8"; font.pixelSize: 10; elide: Text.ElideRight; Layout.fillWidth: true }
+                        }
+                    }
+                }
+            }
+            ColumnLayout {
+                visible: root.mode !== 0
+                SplitView.fillHeight: true
+                SplitView.minimumHeight: 120
+                spacing: 4
+                RowLayout {
+                    Label { text: qsTr("Tracker · note / instrument / volume / effects"); color: "#b6cbd5"; Layout.fillWidth: true }
+                    CheckBox { text: qsTr("Follow playback"); checked: root.follow; onToggled: root.follow = checked }
+                }
+                Flickable {
+                    id: trackerHorizontal
+                    Layout.fillWidth: true; Layout.fillHeight: true
+                    clip: true
+                    contentWidth: Math.max(width, 112 + root.channels.length * 230)
+                    contentHeight: height
+                    flickableDirection: Flickable.HorizontalFlick
+                    ScrollBar.horizontal: ScrollBar { }
+                    Column {
+                        width: trackerHorizontal.contentWidth
+                        height: trackerHorizontal.height - 14
+                        Row {
+                            height: 26
+                            Label { width: 112; text: qsTr("Position"); color: "#a8bdc9" }
+                            Repeater {
+                                model: root.channels.length
+                                Label { required property int index; width: 230; text: root.channels[index].name; color: "#a8bdc9"; textFormat: Text.PlainText; elide: Text.ElideRight }
+                            }
+                        }
+                        ListView {
+                            id: tracker
+                            objectName: "channelTracker"
+                            width: parent.width; height: parent.height - 26
+                            clip: true
+                            model: root.rows.length
+                            currentIndex: root.frame.current_row === null || root.frame.current_row === undefined ? -1 : root.frame.current_row
+                            function followRow() { if (root.follow && currentIndex >= 0) positionViewAtIndex(currentIndex, ListView.Center) }
+                            onCurrentIndexChanged: followRow()
+                            onCountChanged: followRow()
+                            Connections { target: root; function onFrameChanged() { tracker.followRow() } }
+                            ScrollBar.vertical: ScrollBar { }
+                            delegate: Rectangle {
+                                required property int index
+                                readonly property var row: root.rows[index] || ({})
+                                width: tracker.width
+                                height: row.global && row.global.length ? 52 : 30
+                                color: index === tracker.currentIndex ? "#234c5f" : index % 2 ? "#15232c" : "#101b22"
+                                Row {
+                                    anchors.top: parent.top; anchors.topMargin: 5
+                                    Label { width: 112; text: row.label || ""; color: "#8acfe7"; font.family: "monospace"; font.pixelSize: 11; leftPadding: 5 }
+                                    Repeater {
+                                        model: root.channels.length
+                                        Label {
+                                            required property int index
+                                            width: 230
+                                            text: root.cellText(row, root.channels[index].id)
+                                            textFormat: Text.PlainText
+                                            color: "#d7e6ed"; font.family: "monospace"; font.pixelSize: 11; elide: Text.ElideRight
+                                            HoverHandler { id: cellHover }
+                                            ToolTip.visible: cellHover.hovered && text.length > 0
+                                            ToolTip.text: text
+                                        }
+                                    }
+                                }
+                                Label { anchors.left: parent.left; anchors.leftMargin: 112; anchors.bottom: parent.bottom; anchors.bottomMargin: 4; text: root.fields(row.global); textFormat: Text.PlainText; color: "#83d4bb"; font.pixelSize: 10 }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Label {
+            visible: root.channels.length === 0
+            text: root.frame.seeking ? qsTr("Waiting for the decoder to finish seeking…") : qsTr("No channel data at this position.")
+            color: "#a8bdc9"; Layout.fillWidth: true
+        }
+        Label {
+            visible: (root.frame.dropped_frames || 0) > 0
+            text: qsTr("%1 older snapshots skipped while the view was idle.").arg(root.frame.dropped_frames || 0)
+            color: "#dfba78"; font.pixelSize: 10
+        }
+    }
+}

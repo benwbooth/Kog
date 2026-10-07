@@ -32,6 +32,9 @@ import java.io.File
 
 /** Compose view model. Queue, selection, workspace and transport are session snapshots. */
 class KogState(private val context: Context) {
+    internal fun inspectionPosition(): Long = controller?.currentPosition ?: position
+    internal fun inspectionStream(): String? = controller?.currentMediaItem?.localConfiguration?.uri?.toString()
+
     val api = KogApi(context)
     val deviceApi = KogApi(context, onDevice = true)
     private val deviceLibrary = DeviceLibrary(context)
@@ -71,6 +74,8 @@ class KogState(private val context: Context) {
     var currentIndex by mutableStateOf(-1)
         private set
     var playing by mutableStateOf(false)
+        private set
+    internal var inspectionActive by mutableStateOf(false)
         private set
     var position by mutableStateOf(0L)
         private set
@@ -248,6 +253,7 @@ class KogState(private val context: Context) {
         }
         currentIndex = snapshot.optInt("current", -1)
         playing = snapshot.optString("transport") in listOf("starting", "playing")
+        inspectionActive = snapshot.optString("transport") in listOf("starting", "playing", "paused")
         position = (snapshot.optDouble("position") * 1000).toLong()
         duration = (snapshot.optDouble("duration") * 1000).toLong()
         filterValue = snapshot.optString("filter")

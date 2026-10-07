@@ -3,12 +3,14 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "inspection.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 typedef struct KogHively KogHively;
+size_t kog_hively_inspection(KogHively *decoder, KogVoice *voices, uint8_t *steps, size_t capacity, uint32_t *position, double *seconds);
 
 enum KogHivelyError {
     KOG_HIVELY_OK = 0,

@@ -20,6 +20,14 @@ internal object NativeAudio {
     val available = loadResult.isSuccess
     val loadError: String? = loadResult.exceptionOrNull()?.message
 
+    private val inspectionHandles = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    external fun nativeSetInspectionDirectory(path: String)
+    external fun nativeInspection(handle: Long, positionMs: Long, playing: Boolean): String
+    internal fun opened(uri: Uri, handle: Long) { inspectionHandles[uri.toString()] = handle }
+    internal fun closed(uri: Uri?, handle: Long) { uri?.let { inspectionHandles.remove(it.toString(), handle) } }
+    internal fun snapshot(track: Track, positionMs: Long, playing: Boolean): String =
+        inspectionHandles[uri(track).toString()]?.let { nativeInspection(it, positionMs, playing) } ?: "{}"
+
     external fun nativeSetHelperDirectory(path: String): Boolean
     external fun nativePolicy(input: String): String
     external fun nativeSession(input: String): String
@@ -33,7 +41,10 @@ internal object NativeAudio {
     external fun nativeClose(handle: Long)
 
     fun configure(context: Context) {
-        if (available) nativeSetHelperDirectory(context.applicationInfo.nativeLibraryDir)
+        if (available) {
+            nativeSetHelperDirectory(context.applicationInfo.nativeLibraryDir)
+            nativeSetInspectionDirectory(File(context.cacheDir, "channel-inspection").absolutePath)
+        }
     }
 
     fun useFor(track: Track): Boolean = track.isDevice
@@ -78,6 +89,7 @@ internal class NativePcmDataSource(private val context: Context) : BaseDataSourc
         if (opened == 0L) throw IOException("Kog could not open $name")
         handle = opened
         sourceUri = uri
+        NativeAudio.opened(uri, handle)
         val duration = NativeAudio.nativeDurationMs(handle)
         val frames = if (duration > 0) ((duration.toDouble() * 48_000.0) / 1000.0).toLong() else -1L
         val pcmBytes = if (frames >= 0) frames * 4 else -1L
@@ -133,6 +145,7 @@ internal class NativePcmDataSource(private val context: Context) : BaseDataSourc
 
     override fun close() {
         if (handle != 0L) {
+            NativeAudio.closed(sourceUri, handle)
             NativeAudio.nativeClose(handle)
             handle = 0
             transferEnded()

@@ -11,6 +11,7 @@ struct NativeSdsf {
 }
 
 unsafe extern "C" {
+    fn kog_sdsf_inspect(decoder: *mut NativeSdsf, out: *mut crate::inspection::native::Voice, capacity: usize) -> usize;
     fn kog_sdsf_open(
         path: *const c_char,
         default_length_milliseconds: u32,
@@ -136,6 +137,10 @@ impl Sdsf {
 
     pub fn kind(&self) -> SdsfKind {
         self.kind
+    }
+
+    pub fn inspection(&self) -> crate::inspection::FrameData {
+        crate::inspection::native::capture(64, |out, capacity| unsafe { kog_sdsf_inspect(self.handle.as_ptr(), out, capacity) })
     }
 
     pub fn duration(&self) -> Duration {

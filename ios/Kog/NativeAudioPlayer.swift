@@ -21,6 +21,10 @@ private func decoderRead(_ handle: UnsafeMutableRawPointer, _ output: UnsafeMuta
 @_silgen_name("kog_audio_seek")
 private func decoderSeek(_ handle: UnsafeMutableRawPointer, _ milliseconds: UInt64,
                          _ error: UnsafeMutablePointer<CChar>, _ errorCapacity: Int) -> Bool
+@_silgen_name("kog_audio_channel_snapshot")
+private func decoderChannels(_ handle: UnsafeRawPointer, _ milliseconds: UInt64, _ playing: Bool) -> UnsafeMutablePointer<CChar>?
+@_silgen_name("kog_audio_string_free")
+private func decoderFreeString(_ string: UnsafeMutablePointer<CChar>)
 @_silgen_name("kog_audio_close")
 private func decoderClose(_ handle: UnsafeMutableRawPointer)
 
@@ -200,6 +204,23 @@ final class NativeAudioPlayer {
         if let pending { return pending }
         guard let render = node.lastRenderTime, let played = node.playerTime(forNodeTime: render) else { return offset }
         return offset + Double(played.sampleTime) / played.sampleRate
+    }
+
+    func channelSnapshot(playing: Bool) async -> ChannelSnapshot {
+        clockLock.lock(); let pending = pendingSeek; clockLock.unlock()
+        if let pending { return ChannelSnapshot(position: pending, playing: playing, seeking: true) }
+        let time = position
+        return await withCheckedContinuation { continuation in
+            queue.async { [weak self] in
+                guard let self, let handle = self.handle,
+                      let json = decoderChannels(handle, UInt64(max(0, time) * 1000), playing) else {
+                    continuation.resume(returning: ChannelSnapshot()); return
+                }
+                let data = Data(String(cString: json).utf8)
+                decoderFreeString(json)
+                continuation.resume(returning: (try? ChannelSnapshot.decode(data)) ?? ChannelSnapshot())
+            }
+        }
     }
 
     private func schedule() {

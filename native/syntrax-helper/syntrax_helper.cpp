@@ -9,6 +9,7 @@
  */
 
 #include <algorithm>
+#include "../inspection.h"
 #include <array>
 #include <charconv>
 #include <cstddef>
@@ -434,8 +435,43 @@ int run(int argc, char** argv)
     while(rendered < totalFrames)
     {
         const int32_t frames = static_cast<int32_t>(
-            std::min<uint64_t>(pcm.size() / CHANNELS, totalFrames - rendered));
+            std::min<uint64_t>(kog_inspection_enabled() ? SAMPLE_RATE / 200 : pcm.size() / CHANNELS, totalFrames - rendered));
         jaytrax_renderChunk(player.get(), pcm.data(), frames, SAMPLE_RATE);
+        if(kog_inspection_enabled()) {
+            KogVoice data[SE_NROFCHANS]; KogVoices voices{data, SE_NROFCHANS};
+            for(int i = 0; i < player->subsong->nrofchans; ++i) {
+                const auto& c = player->voices[i];
+                char name[64]; std::snprintf(name, sizeof(name), "Syntrax %d", i + 1);
+                const bool active = player->playFlg && !player->pauseFlg && c.instrument >= 0 && c.wavePtr;
+                auto& v = voices.add(name, c.sampledata ? 2 : 0, active, 0,
+                    (c.curvol + 10000) / 10000.0f, c.curpan / 256.0f);
+                // The sequencer's chromatic table is C4 at index zero. Retain
+                // its note and modulation even for arbitrarily tuned samples.
+                if(active && c.curfreq > 0) v.key = kog_frequency_key(c.curfreq);
+                if(c.instrument >= 0 && c.instrument < song->nrofinst) {
+                    const auto* inst = song->instruments[c.instrument];
+                    std::snprintf(v.instrument, sizeof(v.instrument), "%d %.32s", c.instrument + 1, inst->instname);
+                    std::snprintf(v.details, sizeof(v.details),
+                        "Order=%d | Row=%d | Note=%d | Pitch=%d | Slide=%d to %d at %d | Arpeggio=%d step %d | Wave=%d length %d | AM=%d/%d | FM=%d/%d | Pan wave=%d/%d | Effects=%d,%d,%d,%d | Speed=%d | Groove=%d | Echo=%u",
+                        c.songpos, c.patpos, c.curnote, c.curfreq, c.bendadd, c.destfreq, c.bendspd,
+                        inst->arpeggio, c.arpcnt, inst->waveform, inst->wavelength, inst->amwave, inst->amspd,
+                        inst->fmwave, inst->fmspd, inst->panwave, inst->panspd, inst->fx[0].effecttype,
+                        inst->fx[1].effecttype, inst->fx[2].effecttype, inst->fx[3].effecttype, player->playSpeed,
+                        player->subsong->groove, player->subsong->delayamount[i]);
+                }
+                if(c.songpos >= 0 && c.songpos < SE_ORDERS_SUBSONG && c.patpos >= 0 && c.patpos < SE_ROWS_PAT) {
+                    const int pat = player->subsong->orders[i][c.songpos].patnr;
+                    if(pat >= 0 && pat < song->nrofpats) {
+                        const auto& row = song->patterns[pat * SE_ROWS_PAT + c.patpos];
+                        const auto used = std::strlen(v.details);
+                        std::snprintf(v.details + used, sizeof(v.details) - used,
+                            " | Pattern=%d | Row data=%02X %02X %02X %02X %02X", pat,
+                            row.srcnote, row.dstnote, row.inst, static_cast<uint8_t>(row.param), row.script);
+                    }
+                }
+            }
+            kog_inspection_publish(double(rendered + frames) / SAMPLE_RATE, data, voices.count);
+        }
         const size_t samples = static_cast<size_t>(frames) * CHANNELS;
         for(size_t sample = 0; sample < samples; ++sample)
         {

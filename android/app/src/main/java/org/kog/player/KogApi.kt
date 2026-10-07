@@ -132,6 +132,14 @@ class KogApi(private val context: Context, val onDevice: Boolean = false) {
         return uri("/api/stream", *options.toTypedArray())
     }
 
+    internal suspend fun channelWindow(stream: String, position: Double): JSONObject {
+        val original = Uri.parse(stream)
+        require(original.path?.endsWith("/api/stream") == true) { "Channel data is unavailable for this source" }
+        val endpoint = original.buildUpon().path(original.path!!.removeSuffix("stream") + "inspection")
+            .appendQueryParameter("position", position.toString()).build().toString()
+        return JSONObject(request(endpoint))
+    }
+
     suspend fun setMidiEngine(engine: String) {
         request(uri("/api/settings/midi"), "POST", JSONObject().put("engine", engine))
     }

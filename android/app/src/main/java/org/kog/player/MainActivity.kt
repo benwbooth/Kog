@@ -647,6 +647,8 @@ private fun CoverArt(state: KogState, track: Track?, modifier: Modifier = Modifi
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun FullPlayer(state: KogState, dismiss: () -> Unit) {
+    var showInspector by remember { mutableStateOf(false) }
+    if (showInspector) ChannelInspector(state) { showInspector = false }
     val track = state.current
     var seek by remember(track?.key) { mutableStateOf<Float?>(null) }
     ModalBottomSheet(onDismissRequest = dismiss, containerColor = Surface,
@@ -685,6 +687,7 @@ private fun FullPlayer(state: KogState, dismiss: () -> Unit) {
                     Icon(Icons.Default.Repeat, "Repeat: ${state.repeatMode}", tint = if (state.repeatOn) Accent else Muted)
                 }
             }
+            TextButton(onClick = { showInspector = true }) { Text("Channel Inspector") }
             Text("Shuffle: ${state.shuffleMode} · Repeat: ${state.repeatMode}", color = Muted, fontSize = 12.sp)
             TextButton(onClick = state::radio) {
                 Icon(Icons.Default.Casino, null, tint = if (state.radioOn) Accent else Muted)

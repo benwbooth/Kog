@@ -37,6 +37,9 @@ fn watch_native(relative: &str) {
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    for path in ["inspection.h", "inspection_opl.h", "inspection_snes.h", "qsound_inspection.inc", "yam_inspection.inc", "usf_inspection.c", "libvgm-kog/inspection_devices.hpp", "libvgm-kog/inspection_registers.hpp"] {
+        println!("cargo:rerun-if-changed=../../native/{path}");
+    }
     println!("cargo:rerun-if-changed=../../native/embedded_stream.h");
     build_spessasynth_midi();
     build_mt32emu();
@@ -335,7 +338,24 @@ fn build_game_music_emu() {
         );
     }
 
-    let output = cmake::Config::new(source)
+    let overlay = PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("gme-inspection-source");
+    native_overlay(source, &overlay, &|path, data| {
+        if path.extension().is_some_and(|ext| ext == "h") {
+            let mut text = String::from_utf8(data).unwrap();
+            text = text.replace("private:", "private: friend struct KogGmeInspector;")
+                .replace("protected:", "protected: friend struct KogGmeInspector;");
+            if path.file_name().is_some_and(|name| name == "Music_Emu.h") {
+                text = text.replacen("public:", "public:\n    bool kog_inspecting = false;", 1);
+            }
+            text.into_bytes()
+        } else if path.file_name().is_some_and(|name| name == "Classic_Emu.cpp") {
+            let text = String::from_utf8(data).unwrap();
+            assert!(text.contains("int msec = buf->length();"), "GME inspection timing overlay needs updating");
+            text.replace("int msec = buf->length();", "int msec = kog_inspecting ? 5 : buf->length();").into_bytes()
+        } else { data }
+    });
+    let output = cmake::Config::new(&overlay)
+        .out_dir(PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("gme-inspection-build"))
         .profile("Release")
         .define("BUILD_SHARED_LIBS", "OFF")
         .define("GME_BUILD_SHARED", "OFF")
@@ -357,9 +377,39 @@ fn build_game_music_emu() {
         .define("CMAKE_INSTALL_LIBDIR", "lib")
         .build();
 
-    println!("cargo:rustc-link-search=native={}/lib", output.display());
-    println!("cargo:rustc-link-lib=static=gme");
+    cc::Build::new().cpp(true).std("c++17").include(overlay.join("gme"))
+        .define(if std::env::var("CARGO_CFG_TARGET_ENDIAN").as_deref() == Ok("big") { "BLARGG_BIG_ENDIAN" } else { "BLARGG_LITTLE_ENDIAN" }, "1")
+        .include("../../native").file("../../native/gme_inspection.cpp")
+        .warnings(false).compile("kog_gme_inspection");
+    println!("cargo:rerun-if-changed=../../native/gme_inspection.cpp");
+    println!("cargo:rerun-if-changed=../../native/inspection.h");
+    // A previous build may leave an uninstrumented libgme in OUT_DIR/lib,
+    // which appears earlier in the linker search path. Give this ABI its own
+    // archive name so the inspector always links to the matching layout.
+    let lib = output.join("lib");
+    let (source_name, target_name) = if lib.join("gme.lib").exists() {
+        ("gme.lib", "kog_gme.lib")
+    } else { ("libgme.a", "libkog_gme.a") };
+    std::fs::copy(lib.join(source_name), lib.join(target_name)).expect("copy inspection GME archive");
+    println!("cargo:rustc-link-search=native={}", lib.display());
+    println!("cargo:rustc-link-lib=static=kog_gme");
     watch_native("../../native/game-music-emu");
+}
+
+/// Apply small, version-checked inspection accessors outside pinned submodules.
+/// Avoid changing unchanged files so native incremental builds stay incremental.
+fn native_overlay(source: &Path, destination: &Path, transform: &dyn Fn(&Path, Vec<u8>) -> Vec<u8>) {
+    fs::create_dir_all(destination).unwrap();
+    for entry in fs::read_dir(source).unwrap().flatten() {
+        if entry.file_name() == ".git" { continue; }
+        let target = destination.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            native_overlay(&entry.path(), &target, transform);
+        } else if entry.file_type().unwrap().is_file() {
+            let bytes = transform(&entry.path(), fs::read(entry.path()).unwrap());
+            if fs::read(&target).ok().as_deref() != Some(bytes.as_slice()) { fs::write(target, bytes).unwrap(); }
+        }
+    }
 }
 
 fn build_sfm_embedded() {
@@ -505,6 +555,26 @@ fn build_openmpt() {
         panic!("OpenMPT submodule is missing; run `git submodule update --init --recursive`");
     }
 
+    // Keep the upstream submodule pristine. A private header accessor and a
+    // small C bridge are compiled in an overlay, against the exact pinned core.
+    let overlay = PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("openmpt-inspection/libopenmpt");
+    fs::create_dir_all(&overlay).expect("create OpenMPT inspection overlay");
+    for entry in fs::read_dir(source.join("libopenmpt")).unwrap().flatten() {
+        if entry.file_type().unwrap().is_file() {
+            fs::copy(entry.path(), overlay.join(entry.file_name())).unwrap();
+        }
+    }
+    let header_path = overlay.join("libopenmpt_impl.hpp");
+    let header = fs::read_to_string(&header_path).unwrap();
+    let anchor = "\tvoid PushToCSoundFileLog( const std::string & text ) const;";
+    assert_eq!(header.matches(anchor).count(), 1, "OpenMPT inspection accessor needs updating for this pin");
+    fs::write(header_path, header.replace(anchor, &format!("\tOpenMPT::CSoundFile & kog_sound_file() {{ return *m_sndFile; }}\n{anchor}"))).unwrap();
+    let c_path = overlay.join("libopenmpt_c.cpp");
+    let mut c_source = fs::read_to_string(&c_path).unwrap();
+    c_source.push_str(&fs::read_to_string("../../native/openmpt_inspection.inc").unwrap());
+    fs::write(c_path, c_source).unwrap();
+    println!("cargo:rerun-if-changed=../../native/openmpt_inspection.inc");
+
     let mut sources = Vec::new();
     for directory in [
         "common",
@@ -514,13 +584,14 @@ fn build_openmpt() {
         "sounddsp",
         "libopenmpt",
     ] {
-        sources.extend(cpp_files(&source.join(directory)));
+        sources.extend(cpp_files(&if directory == "libopenmpt" { overlay.clone() } else { source.join(directory) }));
     }
     sources.sort();
 
     cc::Build::new()
         .cpp(true)
         .std("c++17")
+        .include(overlay.parent().unwrap())
         .include(source)
         .include(source.join("src"))
         .include(source.join("common"))
@@ -1102,6 +1173,7 @@ fn build_ncsf(mgba_output: &Path) {
     let qsound_ctr_source = format!(
         "{qsound_ctr_source}\n\nint kog_qsoundc_has_rom(void* info, UINT32 size)\n{{\n\tstruct qsound_chip* chip = (struct qsound_chip*)info;\n\treturn chip && chip->romData && chip->romSize == size;\n}}\n\nvoid kog_qsoundc_cleanup(void* info)\n{{\n\tstruct qsound_chip* chip = (struct qsound_chip*)info;\n\tif (!chip)\n\t\treturn;\n\tfree(chip->romData);\n\tchip->romData = NULL;\n\tchip->romSize = 0;\n\tchip->romMask = 0;\n}}\n"
     );
+    let qsound_ctr_source = qsound_ctr_source + &fs::read_to_string("../../native/qsound_inspection.inc").unwrap();
     fs::write(qsf_generated.join("qsound_ctr.c"), qsound_ctr_source)
         .expect("write bounded Highly Quixotic qsound_ctr.c");
 
@@ -1109,6 +1181,7 @@ fn build_ncsf(mgba_output: &Path) {
     qsf_build
         .std("c11")
         .include(qsf_core)
+        .include("../../native")
         .define("EMU_COMPILE", None)
         .define("HAVE_STDINT_H", None)
         .files([
@@ -1163,7 +1236,8 @@ fn build_ncsf(mgba_output: &Path) {
     );
     fs::write(
         sdsf_generated.join("yam.c"),
-        yam_source.replace(original_calling_convention, portable_calling_convention),
+        yam_source.replace(original_calling_convention, portable_calling_convention)
+            + &fs::read_to_string("../../native/yam_inspection.inc").unwrap(),
     )
     .expect("write portable Highly Theoretical yam.c");
 
@@ -1171,6 +1245,7 @@ fn build_ncsf(mgba_output: &Path) {
     sdsf_build
         .std("c11")
         .include(sdsf_core)
+        .include("../../native")
         .include(sdsf_core.join("c68k"))
         .define("EMU_COMPILE", None)
         .define("HAVE_STDINT_H", None)
@@ -1327,6 +1402,7 @@ fn build_ncsf(mgba_output: &Path) {
         _ => usf_sources.push("r4300/empty_dynarec.c"),
     }
     usf_build.files(usf_sources.iter().map(|source| usf_core.join(source)));
+    usf_build.file("../../native/usf_inspection.c");
     usf_build.compile("kog_lazyusf2");
 
     // Emit psflib after the C++ archive so one-pass static linkers see the

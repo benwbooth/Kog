@@ -35,6 +35,7 @@ pub struct Psf {
     default_fade_milliseconds: u32,
     metadata: PsfMetadata,
     native_bytes: Vec<u8>,
+    inspection: Option<crate::inspection::Monitor>,
 }
 
 struct PsfProcess {
@@ -44,7 +45,7 @@ struct PsfProcess {
 
 enum PsfOutput {
     #[cfg(windows)]
-    Process(ChildStdout),
+    Process(ChildStdout, crate::inspection::helper_ring::HelperRing),
     Embedded(crate::embedded_helper::EmbeddedHelper),
 }
 
@@ -52,7 +53,7 @@ impl Read for PsfOutput {
     fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
         match self {
             #[cfg(windows)]
-            Self::Process(stdout) => stdout.read(output),
+            Self::Process(stdout, ring) => { let result = stdout.read(output); ring.drain(); result },
             Self::Embedded(stdout) => stdout.read(output),
         }
     }
@@ -101,7 +102,19 @@ impl Psf {
             default_fade_milliseconds,
             metadata: header.metadata,
             native_bytes: Vec::new(),
+            inspection: None,
         })
+    }
+
+    pub fn inspect(&mut self, monitor: crate::inspection::Monitor) {
+        if let Some(process) = self.process.as_mut() {
+            match &mut process.stdout {
+                PsfOutput::Embedded(stdout) => stdout.inspect(&monitor, self.sample_rate),
+                #[cfg(windows)]
+                PsfOutput::Process(_, ring) => ring.inspect(&monitor, self.sample_rate),
+            }
+        }
+        self.inspection = Some(monitor);
     }
 
     pub fn duration(&self) -> Duration {
@@ -200,6 +213,7 @@ impl Psf {
         if let Some(mut old_process) = self.process.replace(process) {
             stop_process(&mut old_process);
         }
+        if let Some(monitor) = self.inspection.clone() { self.inspect(monitor); }
         self.rendered_frames = target;
         Ok(duration_from_frames(target, self.sample_rate))
     }
@@ -214,7 +228,7 @@ impl Psf {
                 |message| format!("{context}: {message}"),
             ),
             #[cfg(windows)]
-            PsfOutput::Process(stdout) => {
+            PsfOutput::Process(stdout, _ring) => {
                 drop(stdout);
                 let Some(mut child) = process.child else {
                     return context;
@@ -349,7 +363,9 @@ fn spawn_helper(
     #[cfg(windows)]
     {
         let helper = helper_path(path)?;
+        let ring = crate::inspection::helper_ring::HelperRing::new()?;
         let mut child = Command::new(&helper)
+            .env("KOG_CHANNEL_RING", ring.path())
             .arg(path)
             .arg(start_frame.to_string())
             .arg(default_length_milliseconds.to_string())
@@ -390,7 +406,7 @@ fn spawn_helper(
         Ok((
             PsfProcess {
                 child: Some(child),
-                stdout: PsfOutput::Process(stdout),
+                stdout: PsfOutput::Process(stdout, ring),
             },
             header,
         ))
@@ -538,7 +554,7 @@ fn stop_process(process: &mut PsfProcess) {
     match &mut process.stdout {
         PsfOutput::Embedded(stdout) => stdout.cancel(),
         #[cfg(windows)]
-        PsfOutput::Process(_) => {}
+        PsfOutput::Process(_, _) => {}
     }
     if let Some(child) = &mut process.child {
         let _ = child.kill();

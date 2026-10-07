@@ -78,6 +78,15 @@ impl DecoderBackend for AdlMidiBackend {
         player.append(AdlMidiSource::new(Self::open(source)?));
         Ok(())
     }
+
+    fn append_observed(&self, source: &PlaybackSource, player: &Player, monitor: &crate::inspection::Monitor) -> Result<(), String> {
+        let mut decoder=Self::open(source)?;
+        decoder.enable_inspection();
+        let mut audio=AdlMidiSource::new(decoder);
+        audio.inspection=Some(monitor.producer(audio.decoder.sample_rate()));
+        monitor.describe(self.display_name(),"events","Live legacy MIDI sequencer notes, controllers and original events. Keyboards follow commanded pitch and sustain; OPL envelopes and instrument tuning are not inferred.");
+        player.append(audio);Ok(())
+    }
 }
 
 fn format_name(path: &Path) -> &'static str {
@@ -97,6 +106,7 @@ fn format_name(path: &Path) -> &'static str {
 
 struct AdlMidiSource {
     decoder: AdlMidi,
+    inspection: Option<crate::inspection::Producer>,
     duration: Duration,
     pcm: Vec<f32>,
     pcm_samples: usize,
@@ -109,6 +119,7 @@ impl AdlMidiSource {
         let channels = usize::from(decoder.channels());
         Self {
             decoder,
+            inspection: None,
             duration,
             pcm: vec![0.0; RENDER_FRAMES * channels],
             pcm_samples: 0,
@@ -118,13 +129,18 @@ impl AdlMidiSource {
 
     fn fill_pcm(&mut self) {
         self.pcm_index = 0;
-        self.pcm_samples = match self.decoder.render(&mut self.pcm) {
+        let frames=self.inspection.as_ref().map_or(RENDER_FRAMES,|p|p.render_frames(RENDER_FRAMES));
+        self.pcm_samples = match self.decoder.render(&mut self.pcm[..frames*usize::from(self.decoder.channels())]) {
             Ok(frames) => frames * usize::from(self.decoder.channels()),
             Err(error) => {
                 eprintln!("Kog libADLMIDI playback error: {error}");
                 0
             }
         };
+        if let Some(producer)=&mut self.inspection {
+            producer.advance(self.pcm_samples/usize::from(self.decoder.channels()));
+            if producer.enabled() {producer.publish(self.decoder.inspection());}
+        }
     }
 }
 
@@ -166,7 +182,8 @@ impl Source for AdlMidiSource {
     }
 
     fn try_seek(&mut self, position: Duration) -> Result<(), SeekError> {
-        self.decoder.seek(position);
+        let actual=self.decoder.seek(position);
+        if let Some(producer)=&mut self.inspection {producer.seek(actual);}
         self.pcm_samples = 0;
         self.pcm_index = 0;
         Ok(())

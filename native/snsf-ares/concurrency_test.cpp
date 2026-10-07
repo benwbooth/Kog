@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "snsf.hpp"
+#include "../inspection_standalone.h"
 #include <thread>
 #include <future>
 #include <atomic>

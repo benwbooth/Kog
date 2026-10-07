@@ -11,6 +11,7 @@ struct NativeQsf {
 }
 
 unsafe extern "C" {
+    fn kog_qsf_inspect(decoder: *mut NativeQsf, out: *mut crate::inspection::native::Voice, capacity: usize) -> usize;
     fn kog_qsf_open(
         path: *const c_char,
         default_length_milliseconds: u32,
@@ -103,6 +104,10 @@ impl Qsf {
             total_frames,
             metadata,
         })
+    }
+
+    pub fn inspection(&self) -> crate::inspection::FrameData {
+        crate::inspection::native::capture(19, |out, capacity| unsafe { kog_qsf_inspect(self.handle.as_ptr(), out, capacity) })
     }
 
     pub fn duration(&self) -> Duration {

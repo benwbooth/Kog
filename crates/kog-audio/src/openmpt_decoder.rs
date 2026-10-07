@@ -86,6 +86,14 @@ impl DecoderBackend for OpenMptBackend {
         })
     }
 
+    fn append_observed(&self, source: &PlaybackSource, player: &Player, monitor: &crate::inspection::Monitor) -> Result<(), String> {
+        let mut audio = OpenMptSource::new(Self::open(source)?);
+        monitor.describe(self.display_name(), "patterns", "Original pattern notes, instruments, volume and effect commands. Keyboards follow the mixer's sample pitch, including slides, vibrato and background voices.");
+        audio.inspection = Some(monitor.producer(OPENMPT_SAMPLE_RATE));
+        player.append(audio);
+        Ok(())
+    }
+
     fn append(&self, source: &PlaybackSource, player: &Player) -> Result<(), String> {
         player.append(OpenMptSource::new(Self::open(source)?));
         Ok(())
@@ -107,6 +115,7 @@ fn parse_year(value: &str) -> Option<u32> {
 
 struct OpenMptSource {
     decoder: OpenMpt,
+    inspection: Option<crate::inspection::Producer>,
     duration: Duration,
     pcm: Vec<f32>,
     pcm_samples: usize,
@@ -118,6 +127,7 @@ impl OpenMptSource {
         let duration = decoder.duration();
         Self {
             decoder,
+            inspection: None,
             duration,
             pcm: vec![0.0; OPENMPT_RENDER_FRAMES * usize::from(OPENMPT_CHANNELS)],
             pcm_samples: 0,
@@ -127,17 +137,23 @@ impl OpenMptSource {
 
     fn fill_pcm(&mut self) {
         self.pcm_index = 0;
-        self.pcm_samples = match self.decoder.render(&mut self.pcm) {
+        let frames = self.inspection.as_ref().map_or(OPENMPT_RENDER_FRAMES, |p| p.render_frames(OPENMPT_RENDER_FRAMES));
+        self.pcm_samples = match self.decoder.render(&mut self.pcm[..frames * usize::from(OPENMPT_CHANNELS)]) {
             Ok(frames) => frames * usize::from(OPENMPT_CHANNELS),
             Err(error) => {
                 eprintln!("Kog libopenmpt playback error: {error}");
                 0
             }
         };
+        if let Some(producer) = &mut self.inspection {
+            if producer.enabled() { producer.publish(self.decoder.inspection()); }
+            producer.advance(self.pcm_samples / usize::from(OPENMPT_CHANNELS));
+        }
     }
 
     fn seek_to(&mut self, position: Duration) -> Result<(), String> {
-        self.decoder.seek(position)?;
+        let actual = self.decoder.seek(position)?;
+        if let Some(producer) = &mut self.inspection { producer.seek(actual); }
         self.pcm_samples = 0;
         self.pcm_index = 0;
         Ok(())

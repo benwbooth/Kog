@@ -26,6 +26,7 @@ pub mod gsf;
 pub mod gsf_decoder;
 pub mod hively;
 pub mod hively_decoder;
+pub mod inspection;
 pub(crate) mod embedded_helper;
 pub mod legacy_id3;
 pub mod library_policy;

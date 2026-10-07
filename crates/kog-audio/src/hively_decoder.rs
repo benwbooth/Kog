@@ -78,6 +78,14 @@ impl DecoderBackend for HivelyBackend {
         })
     }
 
+    fn append_observed(&self, source: &PlaybackSource, player: &Player, monitor: &crate::inspection::Monitor) -> Result<(), String> {
+        let mut audio = HivelySource::new(Self::open(source)?);
+        monitor.describe(self.display_name(), "patterns", "Original AHX/HVL notes, instruments and both effect columns, with live oscillator pitch, envelopes, filters, performance-list position and ring modulation.");
+        audio.inspection = Some(monitor.producer(HIVELY_SAMPLE_RATE));
+        player.append(audio);
+        Ok(())
+    }
+
     fn append(&self, source: &PlaybackSource, player: &Player) -> Result<(), String> {
         player.append(HivelySource::new(Self::open(source)?));
         Ok(())
@@ -98,6 +106,7 @@ fn codec_name(path: &Path) -> &'static str {
 
 struct HivelySource {
     decoder: Hively,
+    inspection: Option<crate::inspection::Producer>,
     duration: Duration,
     pcm: Vec<f32>,
     pcm_samples: usize,
@@ -109,6 +118,7 @@ impl HivelySource {
         let duration = decoder.duration();
         Self {
             decoder,
+            inspection: None,
             duration,
             pcm: vec![0.0; HIVELY_RENDER_FRAMES * usize::from(HIVELY_CHANNELS)],
             pcm_samples: 0,
@@ -118,17 +128,23 @@ impl HivelySource {
 
     fn fill_pcm(&mut self) {
         self.pcm_index = 0;
-        self.pcm_samples = match self.decoder.render(&mut self.pcm) {
+        let frames = self.inspection.as_ref().map_or(HIVELY_RENDER_FRAMES, |p| p.render_frames(HIVELY_RENDER_FRAMES));
+        self.pcm_samples = match self.decoder.render(&mut self.pcm[..frames * usize::from(HIVELY_CHANNELS)]) {
             Ok(frames) => frames * usize::from(HIVELY_CHANNELS),
             Err(error) => {
                 eprintln!("Kog HivelyTracker playback error: {error}");
                 0
             }
         };
+        if let Some(producer) = &mut self.inspection {
+            if producer.enabled() { let (data, time) = self.decoder.inspection(); producer.publish_at(data, time); }
+            producer.advance(self.pcm_samples / usize::from(HIVELY_CHANNELS));
+        }
     }
 
     fn seek_to(&mut self, position: Duration) -> Result<(), String> {
-        self.decoder.seek(position)?;
+        let actual = self.decoder.seek(position)?;
+        if let Some(producer) = &mut self.inspection { producer.seek(actual); }
         self.pcm_samples = 0;
         self.pcm_index = 0;
         Ok(())

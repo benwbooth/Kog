@@ -11,6 +11,7 @@
 //! file removes that cost from every later play or seek.
 
 use std::io::Write;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -42,6 +43,7 @@ pub struct StreamService {
     scratch: PathBuf,
     /// Bounds concurrent metadata expansion and native decoder probes.
     probe_lock: Arc<Mutex<()>>,
+    inspection_active: Arc<Mutex<HashMap<String, PathBuf>>>,
 }
 
 impl StreamService {
@@ -59,6 +61,7 @@ impl StreamService {
             decoder_settings,
             scratch,
             probe_lock: Arc::new(Mutex::new(())),
+            inspection_active: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -86,6 +89,14 @@ impl StreamService {
         // extraction workspace, which is deleted when the registry drops:
         // keep it alive for the whole encode.
         self.start_encode(source, key, decoders)
+    }
+
+    pub fn channel_window(&self, key: &StreamKey, position: f64) -> Result<Option<kog_inspection::Window>, String> {
+        let active = self.inspection_active.lock().unwrap_or_else(|e| e.into_inner()).get(&key.stem()).cloned();
+        if let Some(path) = active {
+            if let Some(window) = crate::inspection::read_window(&path, position)? { return Ok(Some(window)); }
+        }
+        crate::inspection::read_window(&self.cache.inspection_path(key), position)
     }
 
     /// Read one entry's tags without encoding it, using the same resolution
@@ -207,19 +218,59 @@ impl StreamService {
         partial_path: &Path,
         sender: tokio::sync::mpsc::Sender<Result<Bytes, std::io::Error>>,
     ) -> Result<(), String> {
-        let mut pcm = PcmReader::open(source, self.decoder_settings.clone())?;
+        // Freeze the render profile that named this stream and its channel
+        // recording, even if the user changes synths during an encode.
+        let engine = key.render_profile.as_deref().and_then(kog_audio::settings::MidiEngine::from_setting)
+            .unwrap_or_else(|| self.decoder_settings.midi_engine());
+        let settings = DecoderSettings::new(self.decoder_settings.soundfont_path(), engine)
+            .with_sc55_rom_path(self.decoder_settings.sc55_rom_path())
+            .with_mt32_rom_path(self.decoder_settings.mt32_rom_path())
+            .with_mt32_gm_program_mapping(self.decoder_settings.mt32_gm_program_mapping());
+        let mut pcm = PcmReader::open(source, settings)?;
         if key.start_ms > 0 {
             pcm.seek(std::time::Duration::from_millis(key.start_ms))?;
         }
+        let metadata_path = partial_path.with_extension("channels.part");
+        let metadata = std::fs::File::create(&metadata_path).map_err(|e| e.to_string())?;
+        self.inspection_active.lock().unwrap_or_else(|e| e.into_inner()).insert(key.stem(), metadata_path.clone());
+        let active_guard = InspectionActive {
+            active: self.inspection_active.clone(), key: key.stem(), path: metadata_path.clone(),
+        };
         let sample_rate = pcm.sample_rate();
         let channels = pcm.channels();
         let tee = TeeWriter {
             file: partial,
             sender,
         };
+        let pcm = crate::inspection::CaptureReader::new(pcm, metadata, key.start_ms)?;
         encode_to_writer(key.codec, key.bitrate_kbps, sample_rate, channels, pcm, tee)?;
-        self.cache.commit(key, partial_path)?;
+        let final_metadata = self.cache.inspection_path(key);
+        if !final_metadata.exists() {
+            if let Err(error) = std::fs::rename(&metadata_path, &final_metadata) {
+                eprintln!("kog-server: saving channel metadata: {error}");
+            }
+        }
+        if let Err(error) = self.cache.commit(key, partial_path) {
+            if self.cache.lookup(key).is_none() {
+                let _ = std::fs::remove_file(&final_metadata);
+            }
+            return Err(error);
+        }
+        drop(active_guard);
         Ok(())
+    }
+}
+
+struct InspectionActive {
+    active: Arc<Mutex<HashMap<String, PathBuf>>>,
+    key: String,
+    path: PathBuf,
+}
+impl Drop for InspectionActive {
+    fn drop(&mut self) {
+        let mut active = self.active.lock().unwrap_or_else(|e| e.into_inner());
+        if active.get(&self.key) == Some(&self.path) { active.remove(&self.key); }
+        let _ = std::fs::remove_file(&self.path);
     }
 }
 
@@ -299,6 +350,42 @@ mod tests {
             StreamSource::Cached(path) => assert_eq!(path, entry_path),
             StreamSource::Encoding { .. } => panic!("a cached entry must not re-encode"),
         }
+    }
+
+    #[test]
+    fn inspection_metadata_uses_the_encoded_audio_clock_and_survives_a_seek() {
+        use kog_audio::settings::MidiEngine;
+        let (directory, cache) = cache();
+        let path = directory.path().join("inspect.mid");
+        // C4 for one second, then E4 for one second, at 60 BPM.
+        let track = [0,0xff,0x51,3,0x0f,0x42,0x40,0,0x90,60,100,
+            0x83,0x60,0x80,60,0,0,0x90,64,100,0x83,0x60,0x80,64,0,0,0xff,0x2f,0];
+        let mut midi = b"MThd\0\0\0\x06\0\0\0\x01\x01\xe0MTrk".to_vec();
+        midi.extend_from_slice(&(track.len() as u32).to_be_bytes());midi.extend_from_slice(&track);
+        std::fs::write(&path,midi).unwrap();
+        let settings=DecoderSettings::new(None,MidiEngine::Opl3Windows);
+        let service=StreamService::new(cache.clone(),settings,directory.path().join("scratch"));
+        for start_ms in [0,1200] {
+            let key=StreamKey::new(path.to_string_lossy(),StreamCodec::Flac,192)
+                .with_render_profile(MidiEngine::Opl3Windows.setting_value()).with_start_ms(start_ms);
+            let opened=service.open(PlaylistEntry{location:PlaylistLocation::Local(path.clone()),fragment:None},key.clone()).unwrap();
+            let StreamSource::Encoding {mut receiver}=opened else {panic!("expected encode")};
+            let mut bytes=0;
+            while let Some(chunk)=receiver.blocking_recv(){bytes+=chunk.unwrap().len();}
+            assert!(bytes>100);
+            let time=if start_ms==0 {0.2} else {1.3};
+            let window=service.channel_window(&key,time).unwrap().expect("recorded window");
+            let snapshot=window.snapshot(time,false,false);
+            assert_eq!(snapshot.channels[0].notes[0].key,if start_ms==0 {60.0} else {64.0});
+            assert!(!snapshot.playing);
+            assert!(cache.inspection_path(&key).is_file());
+            if let Some(destination)=std::env::var_os("KOG_INSPECTION_FIXTURES") {
+                let destination=Path::new(&destination);std::fs::create_dir_all(destination).unwrap();
+                std::fs::copy(&path,destination.join("fixture.mid")).unwrap();
+                std::fs::write(destination.join(format!("window-{start_ms}.json")),serde_json::to_vec_pretty(&window).unwrap()).unwrap();
+            }
+        }
+        cache.clear();assert!(!cache.root().exists());
     }
 
     #[test]

@@ -1,4 +1,5 @@
 #include "kog_libvgm.h"
+#include "inspection_registers.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -65,6 +66,7 @@ struct kog_libvgm {
     std::vector<uint8_t> yrw801_rom;
     std::vector<int32_t> render_buffer;
     DATA_LOADER *loader;
+    KogVgmInspection::Devices inspection_devices;
     PlayerA player;
     bool started;
     bool ended;
@@ -160,7 +162,8 @@ struct kog_libvgm {
         uint32_t output_sample_rate,
         uint32_t loop_count,
         uint32_t fade_samples,
-        uint32_t end_silence_samples) {
+        uint32_t end_silence_samples,
+        bool observe = true) {
         if (data == NULL || data_size == 0) {
             last_error = "libvgm input is empty";
             return false;
@@ -274,6 +277,8 @@ struct kog_libvgm {
         else
             codec = engine->GetPlayerName();
 
+        if(observe) engine->SetUserDevices(KogVgmInspection::declarations(), EST_OPT_STRICT_OVRD);
+        KogVgmInspection::CreationScope capture(inspection_devices);
         const uint8_t start_result = player.Start();
         if (start_result != 0) {
             char output[96];
@@ -403,6 +408,7 @@ extern "C" int kog_libvgm_seek(kog_libvgm *decoder, uint64_t frame) {
     }
     try {
         decoder->ended = false;
+        KogVgmInspection::CreationScope capture(decoder->inspection_devices);
         const uint8_t result = decoder->player.Seek(PLAYPOS_SAMPLE, static_cast<uint32_t>(frame));
         if (result != 0) {
             char output[96];
@@ -422,4 +428,10 @@ extern "C" int kog_libvgm_seek(kog_libvgm *decoder, uint64_t frame) {
         decoder->last_error = "unknown libvgm seek exception";
         return 1;
     }
+}
+
+extern "C" size_t kog_libvgm_inspect(kog_libvgm* decoder, KogVoice* out, size_t capacity) {
+    KogVoices voices{out, capacity};
+    if(decoder) for(const auto* chip : decoder->inspection_devices) chip->snapshot(voices);
+    return voices.count;
 }

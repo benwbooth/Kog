@@ -3,6 +3,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "sdsf_bridge.h"
+#include "inspection.h"
+#include "satsound.h"
+#include "dcsound.h"
+extern "C" size_t kog_yam_inspect(void*, KogVoice*, size_t);
 
 #include <algorithm>
 #include <cctype>
@@ -488,6 +492,14 @@ extern "C" int64_t kog_sdsf_render(KogSdsf *decoder, float *output, size_t frame
         set_error("unknown SSF/DSF rendering failure");
         return -1;
     }
+}
+
+extern "C" size_t kog_sdsf_inspect(KogSdsf* decoder, KogVoice* out, size_t capacity) {
+    if(!decoder) return 0;
+    void* state = decoder->version == ssf_version
+        ? satsound_get_yam_state(sega_get_satsound_state(decoder->core))
+        : dcsound_get_yam_state(sega_get_dcsound_state(decoder->core));
+    return kog_yam_inspect(state, out, capacity);
 }
 
 extern "C" int64_t kog_sdsf_seek(KogSdsf *decoder, uint64_t frame) {

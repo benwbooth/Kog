@@ -77,6 +77,14 @@ impl DecoderBackend for AdPlugBackend {
         })
     }
 
+    fn append_observed(&self, source: &PlaybackSource, player: &Player, monitor: &crate::inspection::Monitor) -> Result<(), String> {
+        let mut audio = AdPlugSource::new(Self::open(source)?);
+        monitor.describe(self.display_name(), "registers", "OPL key gates, pitch, operator parameters and rhythm voices, with player position where the format provides it. Levels show programmed carrier attenuation; release envelopes are not inferred.");
+        audio.inspection = Some(monitor.producer(ADPLUG_SAMPLE_RATE));
+        player.append(audio);
+        Ok(())
+    }
+
     fn append(&self, source: &PlaybackSource, player: &Player) -> Result<(), String> {
         player.append(AdPlugSource::new(Self::open(source)?));
         Ok(())
@@ -85,6 +93,7 @@ impl DecoderBackend for AdPlugBackend {
 
 struct AdPlugSource {
     decoder: AdPlug,
+    inspection: Option<crate::inspection::Producer>,
     duration: Duration,
     pcm: Vec<f32>,
     pcm_samples: usize,
@@ -96,6 +105,7 @@ impl AdPlugSource {
         let duration = decoder.duration();
         Self {
             decoder,
+            inspection: None,
             duration,
             pcm: vec![0.0; ADPLUG_RENDER_FRAMES * usize::from(ADPLUG_CHANNELS)],
             pcm_samples: 0,
@@ -105,17 +115,23 @@ impl AdPlugSource {
 
     fn fill_pcm(&mut self) {
         self.pcm_index = 0;
-        self.pcm_samples = match self.decoder.render(&mut self.pcm) {
+        let frames = self.inspection.as_ref().map_or(ADPLUG_RENDER_FRAMES, |p| p.render_frames(ADPLUG_RENDER_FRAMES));
+        self.pcm_samples = match self.decoder.render(&mut self.pcm[..frames * usize::from(ADPLUG_CHANNELS)]) {
             Ok(frames) => frames * usize::from(ADPLUG_CHANNELS),
             Err(error) => {
                 eprintln!("Kog AdPlug playback error: {error}");
                 0
             }
         };
+        if let Some(producer) = &mut self.inspection {
+            if producer.enabled() { producer.publish(self.decoder.inspection()); }
+            producer.advance(self.pcm_samples / usize::from(ADPLUG_CHANNELS));
+        }
     }
 
     fn seek_to(&mut self, position: Duration) -> Result<(), String> {
-        self.decoder.seek(position)?;
+        let actual = self.decoder.seek(position)?;
+        if let Some(producer) = &mut self.inspection { producer.seek(actual); }
         self.pcm_samples = 0;
         self.pcm_index = 0;
         Ok(())

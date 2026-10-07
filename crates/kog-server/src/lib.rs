@@ -82,3 +82,5 @@ impl StreamCodec {
 }
 
 pub mod local_api;
+
+mod inspection;

@@ -67,6 +67,14 @@ impl DecoderBackend for PsfBackend {
         })
     }
 
+    fn append_observed(&self, source: &PlaybackSource, player: &Player, monitor: &crate::inspection::Monitor) -> Result<(), String> {
+        let mut decoder = Self::open(source)?;
+        monitor.describe("Psf", "registers", "Live hardware voices, sample addresses, envelopes, pitch rates and effects. Sample tuning is not inferred.");
+        decoder.inspect(monitor.clone());
+        player.append(PsfSource::new(decoder));
+        Ok(())
+    }
+
     fn append(&self, source: &PlaybackSource, player: &Player) -> Result<(), String> {
         player.append(PsfSource::new(Self::open(source)?));
         Ok(())

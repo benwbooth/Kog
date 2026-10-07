@@ -268,6 +268,10 @@ Kog uses version 0.2.1 of the
 orgorg is Copyright (c) 2025 kpqi5858 and is distributed under the MIT
 license; the exact license is in `LICENSES/orgorg-MIT.txt`.
 
+The pinned 0.2.1 source is included in `vendor/orgorg` with its MIT license.
+Kog adds a read-only channel-state accessor for inspection; provenance is
+recorded in `vendor/orgorg/KOG.md`.
+
 The original Cave Story wavetable and PixTone drum data are not included in
 Kog. Users may point Kog at their own `soundbank.wdb` or an extracted
 `wavetable.dat`/`drums.dat` pair. Kog's tests instead generate a small Org-02

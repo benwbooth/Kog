@@ -1,0 +1,9 @@
+[package]
+name = "kog-inspection"
+version = "0.10.1"
+edition = "2024"
+license = "GPL-3.0-or-later"
+description = "Portable musical channel and tracker timeline model for Kog"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }

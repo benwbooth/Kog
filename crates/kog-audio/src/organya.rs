@@ -217,6 +217,30 @@ impl Organya {
         })
     }
 
+    pub fn inspection(&self) -> crate::inspection::FrameData {
+        use crate::inspection::{Cell, Channel, Field, FrameData, Note, Row, frequency_key, note_name};
+        let (beat, voices) = self.player.with_dependent(|_, player| (player.get_beat(), player.channel_state()));
+        let channels = voices.iter().enumerate().map(|(i, voice)| {
+            let rate = f64::from(voice.phase_increment) / 16777216.0 * f64::from(self.sample_rate);
+            let key = if i < 8 { frequency_key(rate / 256.0) } else { None };
+            let level = f32::from(voice.volume) / 254.0;
+            Channel { id: i as u32, name: format!("Organya {} {}", if i < 8 { "Wave" } else { "Drum" }, i % 8 + 1),
+                kind: if i < 8 { "tonal" } else { "percussion" }.into(), active: voice.active,
+                notes: if voice.active { key.map(|key| vec![Note { key, velocity: level, held: true }]).unwrap_or_default() } else { Vec::new() },
+                instrument: format!("{} {:02X}", if i < 8 { "Wave" } else { "Drum" }, voice.wave),
+                level: if voice.active { level } else { 0.0 }, pan: (f32::from(voice.pan_right) - f32::from(voice.pan_left)) / 6.0,
+                fields: vec![Field::new("Tuning", voice.tuning), Field::new("Pi", voice.pi), Field::new("Rate", format!("{rate:.0} Hz"))],
+            }
+        }).collect();
+        let row = Row { label: format!("{beat:06}"), cells: voices.iter().enumerate().filter(|(_, voice)| voice.row_event).map(|(i, voice)| Cell {
+            channel: i as u32,
+            notes: if voice.row_note == 255 { "...".into() } else if i < 8 { note_name(f32::from(voice.row_note) + 24.0) } else { format!("DRM {:02X}", voice.row_note) },
+            instrument: format!("{:02X}", voice.wave), volume: if voice.row_volume == 255 { "..".into() } else { format!("{:02X}", voice.row_volume) },
+            effects: vec![Field::new("Length", voice.row_length), Field::new("Pan", if voice.row_pan == 255 { "..".into() } else { voice.row_pan.to_string() })],
+        }).collect(), ..Row::default() };
+        FrameData { channels, row: Some(row), global: vec![Field::new("Beat", beat), Field::new("Beat length", format!("{} ms", self.header.milliseconds_per_beat)), Field::new("Loop", format!("{}–{}", self.header.loop_start, self.header.loop_end))] }
+    }
+
     pub fn duration(&self) -> Duration {
         duration_from_frames(self.total_frames, self.sample_rate)
     }

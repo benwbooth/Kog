@@ -5,6 +5,7 @@ struct NowPlayingView: View {
     @EnvironmentObject private var store: KogStore
     @Environment(\.dismiss) private var dismiss
     @State private var showVisualizer = false
+    @State private var showInspector = false
     @State private var spectrum = false
     @State private var scrubbing = false
     @State private var scrubPosition = 0.0
@@ -29,6 +30,8 @@ struct NowPlayingView: View {
                     Text(store.current?.label ?? "Ready to play").font(.title2.bold()).multilineTextAlignment(.center)
                     Text(store.current?.detail ?? "").foregroundStyle(Palette.muted).multilineTextAlignment(.center)
                 }
+                Button("Channel Inspector") { showInspector = true }
+                    .sheet(isPresented: $showInspector) { ChannelInspectorView().environmentObject(store) }
                 VStack(spacing: 0) {
                     Slider(value: Binding(get: { min(scrubbing ? scrubPosition : store.position, max(store.duration, 0.01)) }, set: { scrubPosition = $0 }), in: 0...max(store.duration, 0.01)) { editing in
                         if editing { scrubPosition = store.position; scrubbing = true }

@@ -13,6 +13,7 @@
 #endif
 #include <sfc/sfc.hpp>
 #include "../ares-snsf/analyzer.hpp"
+#include "../inspection_snes.h"
 #include "../ares-snsf/boards.hpp"
 #undef register
 #include "../ares-snsf/reset.hpp"
@@ -150,6 +151,13 @@ struct Console final : ares::Platform {
                 }
             }
             ++position;
+            if(position % (sampleRate / 200) == 0 && kog_inspection_enabled()) {
+                uint8_t regs[128];
+                for(unsigned i = 0; i < 128; ++i) regs[i] = ares::SuperFamicom::dsp.registers[i];
+                KogVoice data[8]; KogVoices voices{data, 8};
+                kog_inspect_snes(regs, voices);
+                kog_inspection_publish(double(position) / sampleRate, data, voices.count);
+            }
         }
     }
 };

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // In-process SFM decoder. The descriptor is private to this renderer instance.
 #include "../embedded_stream.h"
+#include "../inspection_snes.h"
 #include "Spc_Sfm.h"
 #include "Bml_Parser.h"
 #include "Data_Reader.h"
@@ -115,6 +116,14 @@ void render(const char* path, uint64_t start, uint32_t default_length, uint32_t 
   const auto frames = (length + fade) * rate / 1000;
   start = std::min(start, frames);
   check(emulator.start_track(0));
+  auto* smp = emulator.get_smp();
+  smp->inspected_frames = static_cast<uint64_t>(emulator.inspection_generated_samples()) / 2;
+  smp->inspect = [smp](uint64_t frame) {
+    if(!kog_inspection_enabled()) return;
+    KogVoice data[8]; KogVoices voices{data, 8};
+    kog_inspect_snes(smp->dsp.spc_dsp.m.regs, voices);
+    kog_inspection_publish(double(frame) / rate, data, voices.count);
+  };
   emulator.set_fade(static_cast<long>(length), static_cast<long>(fade));
   Output output {file};
   output.bytes("KOGSFM1\0", 8);

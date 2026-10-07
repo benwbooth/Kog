@@ -101,6 +101,8 @@ pub struct PlaybackEngine {
     decoders: DecoderRegistry,
     equalizer: EqualizerControl,
     meter: AudioMeter,
+    inspection: crate::inspection::Monitor,
+    remote_inspection: Option<crate::inspection::remote::RemoteMonitor>,
     output_device_id: Option<String>,
     volume: f32,
     state: PlaybackState,
@@ -159,6 +161,8 @@ impl PlaybackEngine {
             decoders,
             equalizer: EqualizerControl::new(equalizer),
             meter: AudioMeter::default(),
+            inspection: crate::inspection::Monitor::default(),
+            remote_inspection: None,
             output_device_id,
             volume: 0.75,
             state: PlaybackState::Stopped,
@@ -178,7 +182,9 @@ impl PlaybackEngine {
         ));
         self.equalizer.reset();
         self.meter.reset();
-        let backend = match self.decoders.append(source, &player) {
+        self.inspection = crate::inspection::Monitor::default();
+        self.remote_inspection = source.remote_url.as_deref().and_then(crate::inspection::remote::RemoteMonitor::new);
+        let backend = match self.decoders.append_observed(source, &player, &self.inspection) {
             Ok(backend) => backend,
             Err(error) => {
                 player.stop();
@@ -285,6 +291,14 @@ impl PlaybackEngine {
 
     pub fn audio_levels(&self) -> [f32; 5] {
         self.meter.levels()
+    }
+
+    pub fn channel_snapshot(&self) -> crate::inspection::Snapshot {
+        if self.state == PlaybackState::Stopped { return crate::inspection::Snapshot::default(); }
+        if let Some(remote) = &self.remote_inspection {
+            return remote.snapshot(self.position(), self.state == PlaybackState::Playing, self.seek_worker.pending_target().is_some());
+        }
+        self.inspection.snapshot(self.position(), self.state == PlaybackState::Playing, self.seek_worker.pending_target().is_some())
     }
 
     pub fn visualizer_frame(&self) -> String {
