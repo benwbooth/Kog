@@ -29,7 +29,7 @@ target      = "v" | "p" | "P" | word "=" ;
 
 music       = label { item } ;
 item        = "|"
-            | note | rest | hit | tie
+            | note | chord | rest | hit | tie
             | "o" signed | ">" | "<"
             | "V" integer | "v" signed | "p" signed | "P" signed
             | "@" word
@@ -37,6 +37,8 @@ item        = "|"
             | word "=" word ;
 
 note        = [ "&" ] letter { accidental } [ cents ] [ length ] ;
+chord       = "'" { chordpart } "'" [ length ] ;
+chordpart   = note | "o" signed | ">" | "<" | "V" integer ;
 letter      = "a" | "b" | "c" | "d" | "e" | "f" | "g" ;
 accidental  = "+" | "#" | "-" ;
 cents       = "(" signed ")" ;
@@ -63,7 +65,9 @@ signed      = [ "+" | "-" ] integer ;
 - `#MACRO` numbers start at 0 and increase by one.
 - A length `n` must divide the whole note (`4 × #TICKS`) evenly, and each dot
   must add a whole number of ticks.
-- A track's notes, hits, rests and ties must add up to `#LENGTH`.
+- A track's notes, chords, hits, rests and ties must add up to `#LENGTH`
+  (a chord counts its length after the closing quote).
+- A chord holds at least one note and no spaces.
 - On each line, the first `|` must fall on a bar boundary and every later `|`
   must close one bar exactly. The first bar is `#PICKUP` ticks longer than
   the rest; the last bar ends at `#LENGTH`.
@@ -87,9 +91,10 @@ The state carries across bar lines and from one line of a track to the next.
 | Text | Event at the current tick | Time advances by |
 | --- | --- | --- |
 | note | a note: key (minus any `#TRANSPOSE` shift), detune (bracket, else `#TUNE`, else 0), current velocity, legato flag, length | its length |
+| chord | a note for each note inside, all at the current tick; each lasts its own length, or the chord's length if it has none | the chord's length |
 | `x` | a hit with the current velocity | its length |
 | `r` | nothing | its length |
-| `^` | adds its length to the preceding note or hit (or continues a rest) | its length |
+| `^` | adds its length to the preceding note or hit, or to the preceding chord's notes that have no length of their own (or continues a rest) | its length |
 | `v`, `p`, `P`, `@`, `name=value`, `~n` | that command | 0 |
 | `o`, `<`, `>`, `V` | nothing (changes state only) | 0 |
 | `\|` | nothing (checks bar boundaries) | 0 |

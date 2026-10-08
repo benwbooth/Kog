@@ -8,6 +8,12 @@ the music really holds it that long (a note held for two thirds of a bar is
 for example because the tempo changes. Ties never change what is played; they
 only show a length that has no single note value.
 
+## Why does a MIDI song have fewer tracks than voices?
+
+Each MIDI channel is one track. Chords and notes that ring on while others
+play are written as chords (chapter 6), so a piano part stays on one line
+instead of one line per finger.
+
 ## Why is the tempo double or half what I expect?
 
 Without a tempo in the file, Kog chooses how many beat steps make a quarter

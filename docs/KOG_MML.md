@@ -64,9 +64,10 @@ biggest chords land. Bars only lay out the text: each
 line holds four bars of one track, separated by `|`, and the parser checks
 that each bar holds exactly `#BAR` quarter notes.
 
-`#TRACK label name key=value … l<length>` declares one track per voice.
-Polyphonic channels such as MIDI get one track per simultaneous voice
-(`voice=0`, `1`, …). Channel commands are written on voice 0.
+`#TRACK label name key=value … l<length>` declares one track per channel.
+Polyphonic channels such as MIDI stay one track and write notes that start
+together as chords. A channel with drum hits, or with voices that bend apart,
+is split into `voice=0`, `1`, … with its commands on voice 0.
 
 ## Notes and lengths
 
@@ -82,6 +83,8 @@ Polyphonic channels such as MIDI get one track per simultaneous voice
 | `c(+37)` | note detuned by +37 cents (only written when it differs from `#TUNE`) |
 | `&c` | legato: the pitch changes without a new key-on (chips that report key-ons) |
 | `^8` | continue the previous note across a bar line or command |
+| `'ceg'4` | chord: notes starting together, then one length |
+| `'c1eg'4` | chord whose C has its own length and rings on while the track moves on |
 | `r` | rest |
 | `x` | unpitched hit: noise, drums, untuned samples |
 

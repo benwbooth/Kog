@@ -1,31 +1,39 @@
 # 5. Tracks and voices
 
-Each track is one voice that plays one note at a time. A voice is whatever the
-decoder reports as a channel: a pulse wave on the NES, an operator pair on an
-OPL chip, one of the PlayStation's 24 sample voices, or a MIDI channel.
+Each track is one channel: whatever the decoder reports as a channel, such as
+a pulse wave on the NES, an operator pair on an OPL chip, one of the
+PlayStation's 24 sample voices, or a MIDI channel. Most chip channels play one
+note at a time, so their tracks are plain melodies.
 
-## Polyphonic channels
+## Polyphonic channels and chords
 
-Some channels play several notes at once. A MIDI channel can hold a chord, and
-a tracker channel can keep a note ringing in the background. Kog splits such a
-channel into as many tracks as it needs simultaneous notes. They share a
-`channel=` number and are told apart by `voice=`:
+Some channels play several notes at once. A MIDI channel can play chords and
+let notes ring while others start, and a tracker channel can keep a note
+ringing in the background. Such a channel is still one track. Notes that start
+together are written as a chord between single quotes, and a note that rings
+on past the next one carries its own length inside the chord:
 
 ```
 #TRACK A "MIDI 1" channel=0 voice=0 kind=tonal l4
-#TRACK B "MIDI 1" channel=0 voice=1 kind=tonal l4
-#TRACK C "MIDI 1" channel=0 voice=2 kind=tonal l2
+A | o4 'ceg'4 'c1e'4 f4 g4 |
 ```
 
-When a new note starts, it goes to the lowest-numbered voice that is silent.
-A C major chord therefore puts C on voice 0, E on voice 1 and G on voice 2.
+The first chord is a C major triad, a quarter note. In the second, the low C
+holds for a whole note while E, then F and G, play above it. Chapter 6 has
+the details.
 
-## Channel commands live on voice 0
+Only channels that really play several notes become chords; a chip channel
+that plays one note at a time never does. Two cases still split a channel
+into several tracks, told apart by `voice=`:
 
-Instrument changes, levels, pans and chip parameters belong to the channel,
-not to one of its notes. They are written on the channel's voice 0 track.
-Pitch bends belong to a sounding note, so they are written on the track of the
-voice that holds that note.
+- a channel that has drum hits (`x`) as well as notes;
+- a decoder that reports separate voices with their own pitch bends.
+
+## Channel commands
+
+Instrument changes, levels, pans, pitch bends and chip parameters belong to
+the channel and are written on its track. On a split channel they are written
+on voice 0, and bends on the track of the voice that bends.
 
 ## Kinds
 

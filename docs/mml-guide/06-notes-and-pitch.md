@@ -68,3 +68,37 @@ changing during a note, such as vibrato, is usually written as a macro
 A slide that crosses into the next semitone ends the note and starts the next
 one. With chips that report key-ons (chapter 8), the new note is marked
 legato with `&`.
+
+## Chords
+
+Notes that start at the same moment on one track are a chord: the notes
+between single quotes, then one length.
+
+```
+'ceg'4                     ; C, E and G together, a quarter note
+'ceg'                      ; the same, at the default length
+'c>c'2                     ; C and the C an octave above, a half note
+```
+
+Inside the quotes, `<`, `>` and `o` change the octave and `V` changes the
+velocity for the notes after them, exactly as outside, and the change
+carries on after the chord. Kog writes a chord's notes from low to high.
+Detunes `(±cents)` and legato `&` belong to each note: `'&ce(+5)g'`.
+
+The length after the closing quote is how far the track moves on. A note
+whose sound is longer or shorter than that carries its own length inside the
+quotes:
+
+```
+'c1eg'4 f4 g4 a4           ; C rings for a whole note under E G, F, G, A
+'c8eg'4                    ; C is let go after an eighth; E and G last a quarter
+```
+
+A tie after a chord, `'ceg'4 ^8`, lengthens the notes written without a
+length of their own. Notes with their own length are complete.
+
+A single note written in quotes, such as `'c1'4`, is a note that keeps
+ringing while the track moves on after a quarter note.
+
+While a chord plays, it is highlighted until its longest note ends.
+

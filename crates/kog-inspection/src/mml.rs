@@ -143,6 +143,15 @@ fn drop_overwritten(events: &mut Vec<Event>) {
 /// A note's register value is the one in force at its onset; the settings
 /// made at note onsets are dropped from the events and implied by the table.
 fn extract_pitched(track: &mut Track) {
+    // When notes overlap (chords, held notes) one register setting serves
+    // several pitches.
+    let mut end = 0;
+    for event in track.events.iter().filter(|e| e.kind.length() > 0) {
+        if event.tick < end {
+            return;
+        }
+        end = event.tick + event.kind.length();
+    }
     let mut names: Vec<String> = Vec::new();
     for event in &track.events {
         if let EventKind::Param(name, _) = &event.kind {
@@ -953,6 +962,12 @@ impl ScoreBuilder {
                 true
             });
         }
+        // Notes of a polyphonic channel that start and end together are one
+        // chord on one track, not one track per voice.
+        let relative_of: BTreeMap<u32, bool> =
+            tracks.iter().zip(&relative).map(|(track, relative)| (track.channel, *relative)).collect();
+        let mut tracks = merge_chords(tracks);
+        let relative: Vec<bool> = tracks.iter().map(|track| relative_of[&track.channel]).collect();
         // Start bars where most notes start: the beat tracker knows the beat
         // but not which beat is the downbeat.
         let bar = u64::from(QUARTER) * u64::from(self.meter.unwrap_or(4).max(1));
@@ -1023,6 +1038,93 @@ impl ScoreBuilder {
             timing,
         }
     }
+}
+
+/// A polyphonic channel (a MIDI channel, a tracker channel with background
+/// voices) becomes one track: notes that start together are a chord, and a
+/// note may hold on while later notes play. Chips with one voice per channel
+/// keep their one track, as do channels with drum hits.
+fn merge_chords(tracks: Vec<Track>) -> Vec<Track> {
+    let mut channels: Vec<(u32, Vec<Track>)> = Vec::new();
+    for track in tracks {
+        match channels.iter_mut().find(|(id, _)| *id == track.channel) {
+            Some((_, group)) => group.push(track),
+            None => channels.push((track.channel, vec![track])),
+        }
+    }
+    let mut out = Vec::new();
+    for (_, group) in channels {
+        match merge_channel(&group) {
+            Some(merged) => out.push(merged),
+            None => out.extend(group),
+        }
+    }
+    out
+}
+
+fn merge_channel(group: &[Track]) -> Option<Track> {
+    if group.len() < 2 || group.iter().flat_map(|t| &t.events).any(|e| matches!(e.kind, EventKind::Hit { .. })) {
+        return None;
+    }
+    let mut events = Vec::new();
+    let mut bends: BTreeMap<u64, i32> = BTreeMap::new();
+    // Every voice of a MIDI channel bends together; keep one copy. Frames a
+    // few milliseconds apart can land on one tick with different values, so
+    // the voice that saw the most of the bend decides.
+    let mut voices: Vec<&Track> = group.iter().collect();
+    voices.sort_by_key(|track| std::cmp::Reverse(track.events.iter().filter(|e| matches!(e.kind, EventKind::Bend(_))).count()));
+    for event in voices.iter().flat_map(|track| &track.events) {
+        match event.kind {
+            EventKind::Bend(cents) => {
+                bends.entry(event.tick).or_insert(cents);
+            }
+            _ => events.push(event.clone()),
+        }
+    }
+    events.extend(bends.into_iter().map(|(tick, cents)| Event { tick, kind: EventKind::Bend(cents) }));
+    // Commands first at each tick, then the chord's notes from low to high.
+    events.sort_by_key(|event| {
+        let key = match event.kind {
+            EventKind::Note { key, cents, .. } => (key, cents),
+            _ => (0, 0),
+        };
+        (event.tick, event.kind.length() > 0, key)
+    });
+    let first = &group[0];
+    Some(Track {
+        label: String::new(),
+        channel: first.channel,
+        voice: 0,
+        name: first.name.clone(),
+        kind: first.kind.clone(),
+        events,
+        pitched: Vec::new(),
+        tuning: Vec::new(),
+    })
+}
+
+/// How many notes start together at `index` (a chord); 1 for a lone note or
+/// a hit.
+fn group_len(events: &[Event], index: usize) -> usize {
+    let Event { tick, kind } = &events[index];
+    if !matches!(kind, EventKind::Note { .. }) {
+        return 1;
+    }
+    1 + events[index + 1..]
+        .iter()
+        .take_while(|e| e.tick == *tick && matches!(e.kind, EventKind::Note { .. }))
+        .count()
+}
+
+/// Where the sound at `index` (with `count` notes) hands over to what follows:
+/// its longest note's end, or the next onset if that comes first. Notes that
+/// end there are written without a length of their own and follow the
+/// track; others carry their own length.
+fn follow_end(events: &[Event], index: usize, count: usize) -> u64 {
+    let group = &events[index..index + count];
+    let end = group.iter().map(|e| e.tick + e.kind.length()).max().unwrap_or(0);
+    let next = events[index + count..].iter().find(|e| e.kind.length() > 0).map_or(u64::MAX, |e| e.tick);
+    end.min(next)
 }
 
 /// Give each onset its place on the beat. Onsets near a beat line (or a half,
@@ -1296,13 +1398,21 @@ fn fold_macros(events: &mut Vec<Event>, macros: &mut Vec<Macro>) {
         .collect();
     let mut removed = vec![false; events.len()];
     let mut inserts: Vec<(usize, Event)> = Vec::new();
+    let mut previous = None;
     for (sound, start, end) in sounds {
+        // The rest of a chord shares its first note's macros.
+        if previous.replace(start) == Some(start) {
+            continue;
+        }
         let mut groups: Vec<(Target, Vec<usize>)> = Vec::new();
         for (index, event) in events.iter().enumerate().skip(sound + 1) {
             if event.tick >= end {
                 break;
             }
             if event.tick <= start {
+                continue;
+            }
+            if removed[index] {
                 continue;
             }
             if let Some((target, _)) = target_value(&event.kind) {
@@ -1847,8 +1957,33 @@ impl Writer<'_> {
             .map_or(0, |(_, shift)| *shift)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn sound(&mut self, track: usize, start: u64, ticks: u64, kind: &EventKind, first: bool, onset: Option<u64>) {
+    /// A note's octave, written as a change from the current one.
+    fn octave_change(&mut self, track: usize, octave: i32) -> String {
+        let text = match self.octave[track].map(|current| octave - current) {
+            Some(0) => String::new(),
+            Some(shift @ 1..=2) => ">".repeat(shift as usize),
+            Some(shift @ -2..=-1) => "<".repeat(-shift as usize),
+            _ => format!("o{octave}"),
+        };
+        self.octave[track] = Some(octave);
+        text
+    }
+
+    /// A note's name and any detune that `#TUNE` does not imply.
+    fn pitch(&self, track: usize, key: i32, cents: i32) -> String {
+        let written = key + self.transpose(track);
+        let mut text = NAMES[written.rem_euclid(12) as usize].to_owned();
+        if cents != self.score.tracks[track].tuning(key) {
+            let _ = write!(text, "({cents:+})");
+        }
+        text
+    }
+
+    fn sound(&mut self, track: usize, start: u64, ticks: u64, sound: Option<usize>, first: bool) {
+        let score = self.score;
+        let events = &score.tracks[track].events;
+        let kind = sound.map_or(&EventKind::Bend(0), |index| &events[index].kind);
+        let onset = sound.map(|index| events[index].tick);
         let quarter = u64::from(self.score.quarter);
         let end = start + ticks;
         let kind_name = match kind {
@@ -1874,27 +2009,49 @@ impl Writer<'_> {
                     self.velocity[track] = Some(*velocity);
                     self.token(track, start, start, "command", &format!("V{velocity}"), None);
                 }
-                let written = key + self.transpose(track);
-                let octave = written.div_euclid(12) - 1;
-                match self.octave[track].map(|current| octave - current) {
-                    Some(0) => {}
-                    Some(shift @ 1..=2) => {
-                        self.token(track, start, start, "command", &">".repeat(shift as usize), None)
-                    }
-                    Some(shift @ -2..=-1) => {
-                        self.token(track, start, start, "command", &"<".repeat(-shift as usize), None)
-                    }
-                    _ => self.token(track, start, start, "command", &format!("o{octave}"), None),
+                let octave = (key + self.transpose(track)).div_euclid(12) - 1;
+                let change = self.octave_change(track, octave);
+                if !change.is_empty() {
+                    self.token(track, start, start, "command", &change, None);
                 }
-                self.octave[track] = Some(octave);
                 let mut text = String::new();
                 if *legato {
                     text.push('&');
                 }
-                text.push_str(NAMES[written.rem_euclid(12) as usize]);
                 // Detune listed in #TUNE is implied; anything else is spelled out.
-                if *cents != self.score.tracks[track].tuning(*key) {
-                    let _ = write!(text, "({cents:+})");
+                let index = sound.unwrap_or_default();
+                let count = group_len(events, index);
+                let follow = follow_end(events, index, count);
+                let group = &events[index..index + count];
+                let mut end = end;
+                if count == 1 && group[0].tick + group[0].kind.length() == follow {
+                    text.push_str(&self.pitch(track, *key, *cents));
+                } else {
+                    // A chord: its notes between quotes, then how far the
+                    // track moves on. A note that holds on past that (or stops
+                    // short of it) carries its own length.
+                    text.clear();
+                    text.push('\'');
+                    for (position, event) in group.iter().enumerate() {
+                        let EventKind::Note { key, cents, velocity, legato, length } = event.kind else { continue };
+                        if position > 0 {
+                            if self.velocity[track] != Some(velocity) {
+                                self.velocity[track] = Some(velocity);
+                                let _ = write!(text, "V{velocity}");
+                            }
+                            let octave = (key + self.transpose(track)).div_euclid(12) - 1;
+                            text.push_str(&self.octave_change(track, octave));
+                        }
+                        if legato {
+                            text.push('&');
+                        }
+                        text.push_str(&self.pitch(track, key, cents));
+                        if event.tick + length != follow {
+                            text.push_str(&length_text(length, quarter, None));
+                        }
+                        end = end.max(event.tick + length);
+                    }
+                    text.push('\'');
                 }
                 text.push_str(&length);
                 self.token(track, start, end, "note", &text, onset);
@@ -1922,12 +2079,18 @@ enum Item {
 fn items(events: &[Event], length: u64, score: &Score) -> Vec<Item> {
     let mut sounds = Vec::new();
     let mut cursor = 0;
+    let mut group_end = 0;
     for (index, event) in events.iter().enumerate() {
+        if index < group_end {
+            continue;
+        }
         if event.kind.length() > 0 {
+            let count = group_len(events, index);
+            group_end = index + count;
             if event.tick > cursor {
                 sounds.push((cursor, event.tick, None));
             }
-            let end = event.tick + event.kind.length();
+            let end = follow_end(events, index, count);
             sounds.push((event.tick, end, Some(index)));
             cursor = end;
         }
@@ -2109,14 +2272,12 @@ pub fn encode_lines(score: &Score, bars_per_line: usize) -> Document {
                             if piece_start >= end {
                                 break;
                             }
-                            let kind = sound.map_or(EventKind::Bend(0), |i| track.events[i].kind.clone());
                             writer.sound(
                                 track_index,
                                 piece_start,
                                 piece_end - piece_start,
-                                &kind,
+                                sound,
                                 first,
-                                sound.map(|i| track.events[i].tick),
                             );
                         }
                     }
@@ -2228,6 +2389,47 @@ pub fn lex(text: &str) -> Vec<(u32, u32, u8)> {
                         b'x' => {
                             push(at(i), at(i + 1), "hit");
                             push(at(i + 1), at(end), "length");
+                        }
+                        b'\'' => {
+                            // A chord: notes, their own lengths, and octave and
+                            // velocity changes, between quotes.
+                            let close = line[i + 1..end].iter().position(|b| *b == b'\'').map_or(end, |n| i + 1 + n + 1);
+                            let mut k = i;
+                            while k < close {
+                                let from = k;
+                                k += 1;
+                                let name = match line[from] {
+                                    b'\'' => "note",
+                                    b'&' => "legato",
+                                    b'<' | b'>' => "octave",
+                                    b'o' | b'V' => {
+                                        while k < close && matches!(line[k], b'0'..=b'9' | b'+' | b'-') {
+                                            k += 1;
+                                        }
+                                        if line[from] == b'o' { "octave" } else { "control" }
+                                    }
+                                    b'(' => {
+                                        while k < close && line[k - 1] != b')' {
+                                            k += 1;
+                                        }
+                                        "cents"
+                                    }
+                                    b'a'..=b'g' => {
+                                        while k < close && matches!(line[k], b'+' | b'#' | b'-') {
+                                            k += 1;
+                                        }
+                                        "note"
+                                    }
+                                    _ => {
+                                        while k < close && matches!(line[k], b'0'..=b'9' | b'.' | b'^' | b't') {
+                                            k += 1;
+                                        }
+                                        "length"
+                                    }
+                                };
+                                push(at(from), at(k), name);
+                            }
+                            push(at(close), at(end), "length");
                         }
                         b'&' | b'a'..=b'g' => {
                             let mut j = i;
@@ -2448,8 +2650,9 @@ struct TrackParse {
     velocity: u8,
     default: u64,
     instrument: Option<String>,
-    /// Index of the last sound event, for `^` continuation.
-    last: Option<usize>,
+    /// The last sound's events that follow the track (several for a chord),
+    /// which `^` lengthens.
+    last: Vec<usize>,
     rest: bool,
 }
 
@@ -2669,7 +2872,7 @@ pub fn parse(text: &str) -> Result<Score, ParseError> {
                             velocity: 0,
                             default,
                             instrument: None,
-                            last: None,
+                            last: Vec::new(),
                             rest: false,
                         });
                     }
@@ -2781,7 +2984,7 @@ fn parse_track_line(
             b'^' => {
                 let length = cursor.length(quarter, state.default)?;
                 if !state.rest {
-                    if let Some(last) = state.last {
+                    for &last in &state.last {
                         match &mut score.tracks[index].events[last].kind {
                             EventKind::Note { length: l, .. } | EventKind::Hit { length: l, .. } => *l += length,
                             _ => {}
@@ -2803,7 +3006,7 @@ fn parse_track_line(
                         length,
                     },
                 });
-                state.last = Some(score.tracks[index].events.len() - 1);
+                state.last = vec![score.tracks[index].events.len() - 1];
                 state.rest = false;
                 state.tick += length;
             }
@@ -2820,50 +3023,73 @@ fn parse_track_line(
                 } else {
                     byte
                 };
-                let mut key = match name {
-                    b'c' => 0,
-                    b'd' => 2,
-                    b'e' => 4,
-                    b'f' => 5,
-                    b'g' => 7,
-                    b'a' => 9,
-                    _ => 11,
-                } + (state.octave + 1) * 12;
+                let shift = transpose_of(score, state);
+                let (key, cents) = read_pitch(cursor, &score.tracks[index], state.octave, shift, name)?;
+                let length = cursor.length(quarter, state.default)?;
+                let events = &mut score.tracks[index].events;
+                events.push(Event {
+                    tick: state.tick,
+                    kind: EventKind::Note { key, cents, velocity: state.velocity, legato, length },
+                });
+                state.last = vec![events.len() - 1];
+                state.rest = false;
+                state.tick += length;
+            }
+            b'\'' => {
+                let shift = transpose_of(score, state);
+                // Each note: key, cents, velocity, legato, and its own length
+                // if it has one (otherwise it follows the track).
+                let mut notes = Vec::new();
                 loop {
-                    if cursor.eat(b'+') || cursor.eat(b'#') {
-                        key += 1;
-                    } else if cursor.eat(b'-') {
-                        key -= 1;
-                    } else {
-                        break;
+                    let Some(next) = cursor.peek() else {
+                        return cursor.error("a chord ends with '");
+                    };
+                    cursor.at += 1;
+                    match next {
+                        b'\'' => break,
+                        b'o' => state.octave = cursor.number()? as i32,
+                        b'>' => state.octave += 1,
+                        b'<' => state.octave -= 1,
+                        b'V' => state.velocity = cursor.number()?.clamp(0, 127) as u8,
+                        b'&' | b'a'..=b'g' => {
+                            let legato = next == b'&';
+                            let name = if legato {
+                                match cursor.peek() {
+                                    Some(name @ b'a'..=b'g') => {
+                                        cursor.at += 1;
+                                        name
+                                    }
+                                    _ => return cursor.error("& must precede a note"),
+                                }
+                            } else {
+                                next
+                            };
+                            let (key, cents) = read_pitch(cursor, &score.tracks[index], state.octave, shift, name)?;
+                            let own = if cursor.peek().is_some_and(|b| b.is_ascii_digit()) {
+                                Some(cursor.length(quarter, state.default)?)
+                            } else {
+                                None
+                            };
+                            notes.push((key, cents, state.velocity, legato, own));
+                        }
+                        _ => return cursor.error("a chord holds notes, o, <, >, V and &, and ends with '"),
                     }
                 }
-                let shift = state
-                    .instrument
-                    .as_ref()
-                    .and_then(|name| score.transpose.iter().find(|(n, _)| n == name))
-                    .map_or(0, |(_, shift)| *shift);
-                let cents = if cursor.eat(b'(') {
-                    let cents = cursor.number()? as i32;
-                    if !cursor.eat(b')') {
-                        return cursor.error("expected ) after cents");
-                    }
-                    cents
-                } else {
-                    score.tracks[index].tuning(key - shift)
-                };
+                if notes.is_empty() {
+                    return cursor.error("a chord needs at least one note");
+                }
                 let length = cursor.length(quarter, state.default)?;
-                score.tracks[index].events.push(Event {
-                    tick: state.tick,
-                    kind: EventKind::Note {
-                        key: key - shift,
-                        cents,
-                        velocity: state.velocity,
-                        legato,
-                        length,
-                    },
-                });
-                state.last = Some(score.tracks[index].events.len() - 1);
+                let events = &mut score.tracks[index].events;
+                state.last.clear();
+                for (key, cents, velocity, legato, own) in notes {
+                    if own.is_none() {
+                        state.last.push(events.len());
+                    }
+                    events.push(Event {
+                        tick: state.tick,
+                        kind: EventKind::Note { key, cents, velocity, legato, length: own.unwrap_or(length) },
+                    });
+                }
                 state.rest = false;
                 state.tick += length;
             }
@@ -2872,6 +3098,48 @@ fn parse_track_line(
             }
         }
     }
+}
+
+/// The `#TRANSPOSE` shift of the track's current instrument.
+fn transpose_of(score: &Score, state: &TrackParse) -> i32 {
+    state
+        .instrument
+        .as_ref()
+        .and_then(|name| score.transpose.iter().find(|(n, _)| n == name))
+        .map_or(0, |(_, shift)| *shift)
+}
+
+/// A note name already read, its accidentals and any `(cents)`: the key as
+/// heard (after `#TRANSPOSE`) and its detune.
+fn read_pitch(cursor: &mut Cursor<'_>, track: &Track, octave: i32, shift: i32, name: u8) -> Result<(i32, i32), ParseError> {
+    let mut key = match name {
+        b'c' => 0,
+        b'd' => 2,
+        b'e' => 4,
+        b'f' => 5,
+        b'g' => 7,
+        b'a' => 9,
+        _ => 11,
+    } + (octave + 1) * 12;
+    loop {
+        if cursor.eat(b'+') || cursor.eat(b'#') {
+            key += 1;
+        } else if cursor.eat(b'-') {
+            key -= 1;
+        } else {
+            break;
+        }
+    }
+    let cents = if cursor.eat(b'(') {
+        let cents = cursor.number()? as i32;
+        if !cursor.eat(b')') {
+            return cursor.error("expected ) after cents");
+        }
+        cents
+    } else {
+        track.tuning(key - shift)
+    };
+    Ok((key - shift, cents))
 }
 
 #[cfg(test)]
@@ -3092,6 +3360,26 @@ mod tests {
                             }
                         },
                     });
+                    // Chords: more notes starting together, some held on past
+                    // the next sound or let go early.
+                    if matches!(events.last().map(|e| &e.kind), Some(EventKind::Note { .. })) {
+                        for _ in 0..[0, 0, 1, 2, 3][next(5) as usize] {
+                            events.push(Event {
+                                tick,
+                                kind: EventKind::Note {
+                                    key: next(140) as i32 - 10,
+                                    cents: next(101) as i32 - 50,
+                                    velocity: next(128) as u8,
+                                    legato: next(3) == 0,
+                                    length: match next(3) {
+                                        // Never past the song's end.
+                                        0 => 1 + next((duration * 3).min(length - tick)),
+                                        _ => duration,
+                                    },
+                                },
+                            });
+                        }
+                    }
                     if duration > 1 && next(2) == 0 {
                         events.push(Event {
                             tick: tick + 1 + next(duration - 1),
@@ -3132,6 +3420,40 @@ mod tests {
         let at = text.find(" c4").or_else(|| text.find(" c")).unwrap();
         text.insert_str(at, " r%1");
         assert!(parse(&text).is_err());
+    }
+
+    #[test]
+    fn chords_hold_notes_and_ties_extend_only_following_notes() {
+        let text = "#KOG-MML 1\n#TEMPO 120.000\n#TICKS 96\n#BAR 4\n#LENGTH 768\n\
+                    #TRACK A \"Piano\" channel=0 voice=0 kind=tonal l4\n\
+                    A | V90 o4 'c1eV70g'4 ^4 '&a<b'2 | '>c(+5)e'1 |\n";
+        let score = parse(text).unwrap();
+        let notes: Vec<(u64, i32, i32, u8, bool, u64)> = score.tracks[0]
+            .events
+            .iter()
+            .filter_map(|event| match event.kind {
+                EventKind::Note { key, cents, velocity, legato, length } => Some((event.tick, key, cents, velocity, legato, length)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            notes,
+            vec![
+                // c holds a whole note; e and g follow the track and the tie.
+                (0, 60, 0, 90, false, 384),
+                (0, 64, 0, 90, false, 192),
+                (0, 67, 0, 70, false, 192),
+                (192, 69, 0, 70, true, 192),
+                (192, 59, 0, 70, false, 192),
+                (384, 60, 5, 70, false, 384),
+                (384, 64, 0, 70, false, 384),
+            ]
+        );
+        assert_eq!(parse(&encode(&score).text).unwrap(), score);
+        let document = encode(&score);
+        let chord = document.spans.iter().find(|span| document.text[span.from..span.to].starts_with('\'')).unwrap();
+        // The chord stays lit while its held note sounds.
+        assert_eq!((chord.start, chord.end), (0, 384));
     }
 
     fn frame(time: f64, channels: Vec<Channel>) -> TimedFrame {

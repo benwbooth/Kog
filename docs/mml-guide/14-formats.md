@@ -9,7 +9,8 @@ the Channel Inspector; this chapter describes what to expect.
 MIDI files, including all four selectable synths and supported containers.
 Notes come straight from the sequence, so lengths, velocities, tempo
 (`#TEMPO` without `inferred`) and time signature (`#BAR`) are those of the
-file. Each MIDI channel becomes as many tracks as it has simultaneous notes.
+file. Each MIDI channel is one track, with chords and held notes written as
+chords (chapter 6).
 Instruments are bank and program (`@"Bank 0:0 \u{b7} Program 1"`); controllers, sustain, pitch bend
 and pressure appear as parameters and bends.
 
@@ -23,7 +24,8 @@ events come from the running sequencer, much like MIDI.
 MOD, S3M, XM, IT and the other OpenMPT formats. Pitches are the mixer's real
 playing pitches, so slides and vibrato effects appear as bends and macros.
 Background voices kept by "new note actions" are assigned to the channel that
-started them and show up as extra voices.
+started them, so a note ringing in the background shows up as a held note in
+a chord.
 
 ## Hively and AHX
 
