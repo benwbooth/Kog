@@ -57,7 +57,10 @@ impl StreamKey {
     /// directory stays browsable without colliding.
     pub fn stem(&self) -> String {
         let mut fingerprint = String::with_capacity(self.locator.len() + 16);
-        fingerprint.push_str("channel-recording-v3\0");
+        // Bump the version whenever recorded channel data changes shape (v4:
+        // tracker rows only at musical events), so cached streams are
+        // recorded again instead of replaying old rows.
+        fingerprint.push_str("channel-recording-v4\0");
         fingerprint.push_str(&self.locator);
         fingerprint.push('\0');
         fingerprint.push_str(self.codec.setting_value());

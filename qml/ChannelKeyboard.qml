@@ -96,7 +96,8 @@ Item {
             }
             Rectangle {
                 objectName: "channelPitchOffset"
-                visible: root.showPitchOffsets && Math.abs(highlight.note.key - highlight.key) > 0.02
+                // A few cents off is the chip's tuning, not a bend.
+                visible: root.showPitchOffsets && Math.abs(highlight.note.key - highlight.key) > 0.25
                 color: "#e66b33"
                 x: parent.width * (0.5 + highlight.note.key - highlight.key) - 1
                 y: parent.height * 0.7

@@ -1,9 +1,11 @@
-//! Count tracker rows per second: `cargo run --example tracker_rate -- song.nsf`
+//! Count tracker rows per second: `cargo run --example tracker_rate -- song.nsf [subsong]`
 use std::io::Read;
 fn main() {
     let path = std::env::args().nth(1).expect("song path");
-    let mut pcm = kog_audio::streaming::PcmReader::open_path(
+    let subsong = std::env::args().nth(2).and_then(|s| s.parse().ok());
+    let mut pcm = kog_audio::streaming::PcmReader::open_path_subsong(
         path.into(),
+        subsong,
         kog_audio::decoder::DecoderSettings::new(None, kog_audio::settings::MidiEngine::Opl3Windows),
     )
     .unwrap();

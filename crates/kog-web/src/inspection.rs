@@ -21,6 +21,11 @@ pub const VIEWS: [(&str, &str); 4] = [
     ("mml", "MML score"),
 ];
 
+/// Semitones off a key before the keyboard marks a bend. Chips with period
+/// registers play many keys a few cents off all the time; that is tuning,
+/// not bending, and marking it would put a line on nearly every key.
+const BEND_MARK: f32 = 0.25;
+
 #[component]
 pub fn Inspector(
     audio: NodeRef<leptos::html::Audio>,
@@ -401,7 +406,7 @@ fn draw_keyboard(
                 }
                 if let Some(note) = note {
                     let bend = note.key - note.key.round();
-                    if !channel.has_relative_pitch() && bend.abs() > 0.02 {
+                    if !channel.has_relative_pitch() && bend.abs() > BEND_MARK {
                         ctx.set_fill_style_str("#ea6c24");
                         ctx.fill_rect(x + w / 2.0 + f64::from(bend) * w - 1.0, 2.0, 2.0, h - 4.0);
                     }
