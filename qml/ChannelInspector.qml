@@ -136,10 +136,15 @@ ApplicationWindow {
     function columnChars(channel) { return trackerWidths[channel] || trackerLimits.map(l => l[0]) }
     // One character of the tracker font, and the width of a channel's column.
     readonly property int trackerChar: 6
-    function channelWidth(channel) {
+    function naturalWidth(channel) {
         const chars = columnChars(channel)
         return (chars[0] + chars[1] + chars[2] + chars[3] + 3) * trackerChar + 12
     }
+    // Columns share any room left in the window, so the tracker fills it.
+    property real trackerRoom: 0
+    readonly property real trackerSpare: channels.length
+        ? Math.max(0, (trackerRoom - channels.reduce((sum, c) => sum + naturalWidth(c.id), 0)) / channels.length) : 0
+    function channelWidth(channel) { return naturalWidth(channel) + trackerSpare }
     onRowsChanged: fitTracker()
     FontLoader { source: Qt.resolvedUrl("fonts/spleen-6x12.otf") }
     onChannelsChanged: fitTracker()
@@ -398,6 +403,8 @@ ApplicationWindow {
                         anchors.margins: 1
                         clip: true
                         readonly property int labelWidth: 13 * root.trackerChar
+                        onWidthChanged: root.trackerRoom = width - labelWidth
+                        Component.onCompleted: root.trackerRoom = width - labelWidth
                         contentWidth: Math.max(width, labelWidth + root.channels.reduce((sum, c) => sum + root.channelWidth(c.id), 0))
                         contentHeight: height
                         flickableDirection: Flickable.HorizontalFlick
@@ -435,7 +442,13 @@ ApplicationWindow {
                                 clip: true
                                 model: root.mode === 0 ? 0 : root.rows.length
                                 currentIndex: root.frame.current_row === null || root.frame.current_row === undefined ? -1 : root.frame.current_row
-                                function followRow() { if (root.follow && currentIndex >= 0) positionViewAtIndex(currentIndex, ListView.Center) }
+                                function followRow() {
+                                    if (!root.follow || currentIndex < 0) return
+                                    positionViewAtIndex(currentIndex, ListView.Center)
+                                    // Rows ahead of the playing one arrive as they are decoded;
+                                    // until then keep the view full rather than centred.
+                                    if (contentHeight > height) contentY = Math.max(originY, Math.min(contentY, originY + contentHeight - height))
+                                }
                                 onCurrentIndexChanged: followRow()
                                 onCountChanged: followRow()
                                 Connections { target: root; function onRowsChanged() { tracker.followRow() } }
@@ -471,7 +484,8 @@ ApplicationWindow {
                                                         model: 4
                                                         TrackerText {
                                                             required property int index
-                                                            width: cell.chars[index] * root.trackerChar
+                                                            // Effects take any spare room.
+                                                            width: cell.chars[index] * root.trackerChar + (index === 3 ? root.trackerSpare : 0)
                                                             height: 15
                                                             readonly property bool empty: !cell.parts[index]
                                                             // Empty fields show as dots, like a tracker.

@@ -184,8 +184,8 @@ impl Monitor {
         let cursor = history
             .rows
             .partition_point(|row| row.time <= snapshot.position + 0.000_001);
-        let begin = cursor.saturating_sub(24);
-        snapshot.rows = history.rows.iter().skip(begin).take(48).cloned().collect();
+        let begin = cursor.saturating_sub(kog_inspection::TRACKER_HISTORY);
+        snapshot.rows = history.rows.iter().skip(begin).take(kog_inspection::TRACKER_ROWS).cloned().collect();
         snapshot.current_row = cursor.checked_sub(1).and_then(|i| i.checked_sub(begin));
         snapshot
     }

@@ -119,7 +119,7 @@ impl Snapshot {
             .iter()
             .chain(next.frames.iter().filter_map(|frame| frame.row.as_ref()))
         {
-            if self.rows.len() >= 48 {
+            if self.rows.len() >= TRACKER_ROWS {
                 break;
             }
             if self.rows.last().is_some_and(|last| row.time > last.time) {
@@ -152,6 +152,11 @@ pub fn tracker_parts(cells: &[&Cell]) -> [String; 4] {
 
 /// Fewest and most characters each tracker column takes.
 pub const TRACKER_LIMITS: [(usize, usize); 4] = [(3, 7), (2, 8), (2, 4), (3, 18)];
+
+/// Tracker rows a snapshot carries, and how many of them come before the
+/// playing row: enough to fill a tall window.
+pub const TRACKER_ROWS: usize = 96;
+pub const TRACKER_HISTORY: usize = 72;
 
 pub fn note_name(key: f32) -> String {
     if !key.is_finite() {
@@ -415,8 +420,8 @@ impl Window {
             }
         }
         let cursor = rows.partition_point(|row| row.time <= position + 0.000_001);
-        let begin = cursor.saturating_sub(24);
-        snapshot.rows = rows.into_iter().skip(begin).take(48).cloned().collect();
+        let begin = cursor.saturating_sub(TRACKER_HISTORY);
+        snapshot.rows = rows.into_iter().skip(begin).take(TRACKER_ROWS).cloned().collect();
         snapshot.current_row = cursor.checked_sub(1).and_then(|i| i.checked_sub(begin));
         snapshot
     }
@@ -586,12 +591,12 @@ mod tests {
             ..Window::default()
         };
         snapshot.append_upcoming_rows(&next);
-        assert_eq!(snapshot.rows.len(), 48);
+        assert_eq!(snapshot.rows.len(), 54);
         assert_eq!(snapshot.current_row, Some(23));
         assert_eq!(snapshot.position, 0.99);
         assert_eq!(snapshot.rows[24].time, 1.0);
         snapshot.append_upcoming_rows(&next);
-        assert_eq!(snapshot.rows.len(), 48);
+        assert_eq!(snapshot.rows.len(), 54);
     }
     #[test]
     fn inspection_prefetch_fills_gaps_after_backwards_seek() {
