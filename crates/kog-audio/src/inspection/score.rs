@@ -36,7 +36,7 @@ pub fn analyze(
     title: &str,
     progress: &Progress,
 ) -> Result<Score, String> {
-    let mut pcm = PcmReader::open(source, settings)?;
+    let mut pcm = PcmReader::open(source, settings.for_recording())?;
     record(&mut pcm, title, progress, MAX_SECONDS, &mut |_| {})
 }
 
@@ -49,7 +49,7 @@ pub fn analyze_progressively(
     progress: &Progress,
     partial: &mut dyn FnMut(Score),
 ) -> Result<Score, String> {
-    let mut pcm = PcmReader::open(source, settings)?;
+    let mut pcm = PcmReader::open(source, settings.for_recording())?;
     record(&mut pcm, title, progress, MAX_SECONDS, partial)
 }
 

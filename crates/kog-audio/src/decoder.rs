@@ -354,6 +354,23 @@ impl DecoderSettings {
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = path;
     }
 
+    /// Independent settings for a second, silent decode of a song, such as
+    /// recording its MML score. Clones share their settings with playback, so
+    /// this copies the values instead. The Nuked SC-55 runs one emulator per
+    /// ROM set and a new render cancels the one in progress, which would stop
+    /// playback; MIDI channel data comes from the sequence, not the synth, so
+    /// the in-process OPL3 synth records the same score.
+    pub fn for_recording(&self) -> Self {
+        let engine = match self.midi_engine() {
+            MidiEngine::Sc55 => MidiEngine::Opl3Windows,
+            engine => engine,
+        };
+        Self::new(self.soundfont_path(), engine)
+            .with_sc55_rom_path(self.sc55_rom_path())
+            .with_mt32_rom_path(self.mt32_rom_path())
+            .with_mt32_gm_program_mapping(self.mt32_gm_program_mapping())
+    }
+
     pub fn midi_engine(&self) -> MidiEngine {
         *self
             .midi_engine
@@ -2831,6 +2848,20 @@ mod tests {
                 .is_err()
         );
         assert!(registry.expand_remote_url("https://").is_err());
+    }
+
+    #[test]
+    fn recording_settings_never_share_the_sc55_with_playback() {
+        let rom = PathBuf::from("/roms/sc55");
+        let playback = DecoderSettings::new(None, MidiEngine::Sc55).with_sc55_rom_path(Some(rom.clone()));
+        let recording = playback.for_recording();
+        assert_eq!(recording.midi_engine(), MidiEngine::Opl3Windows);
+        assert_eq!(recording.sc55_rom_path(), Some(rom));
+        assert_eq!(playback.midi_engine(), MidiEngine::Sc55);
+        // A copy, not a clone: changing playback leaves the recording alone.
+        playback.set_midi_engine(MidiEngine::Mt32);
+        assert_eq!(recording.midi_engine(), MidiEngine::Opl3Windows);
+        assert_eq!(playback.for_recording().midi_engine(), MidiEngine::Mt32);
     }
 
     #[test]

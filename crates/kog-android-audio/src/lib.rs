@@ -255,7 +255,7 @@ pub extern "system" fn Java_org_kog_player_NativeAudio_nativeMml(
         u64::try_from(have).ok(),
         usize::try_from(bars).unwrap_or(4).clamp(1, 64),
         move |progress, partial| {
-            let mut pcm = PcmReader::open_path_subsong(path, subsong, settings)?;
+            let mut pcm = PcmReader::open_path_subsong(path, subsong, settings.for_recording())?;
             kog_audio::inspection::score::record(
                 &mut pcm,
                 &title,
