@@ -78,6 +78,7 @@ is split into `voice=0`, `1`, … with its commands on voice 0.
 | `1 2 4 8 16 32 64 128` | whole, half, quarter … 1/128 note |
 | `3 6 12 24 48 96` | triplets: `12` is a triplet eighth |
 | `4.`, `8..` | dotted and double-dotted lengths |
+| `5/16` | a fraction of a whole note: five sixteenths |
 | `4^16` | tie: a quarter note plus a sixteenth |
 | `l8` | default length (on `#TRACK`), used when a note has none |
 | `c(+37)` | note detuned by +37 cents (only written when it differs from `#TUNE`) |

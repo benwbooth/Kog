@@ -52,14 +52,30 @@ c4^16      ; a quarter note plus a sixteenth, one note
 c1^1^2     ; two and a half whole notes
 ```
 
-Kog writes a length as a single value (with dots) when it can. Otherwise it
-writes whole notes first, then the largest plain values that add up exactly,
-using triplet values only when ordinary ones cannot.
+Kog writes a length as a single value (with dots) when it can, and as a
+fraction when it cannot (see below). You can still write ties yourself.
+
+## Fractions
+
+`n/d` is n d-ths of a whole note:
+
+```
+c5/16      ; five sixteenths: a quarter plus a sixteenth
+c3/8       ; three eighths, the same as c4.
+c9/4       ; two and a quarter whole notes
+c5/96      ; five sixty-fourth triplets
+```
+
+The fraction must come to a whole number of ticks. Kog writes a fraction,
+reduced to lowest terms, for any length that is not a single plain, dotted or
+triplet value, so a note held for five sixteenths reads `c5/16` rather than
+`c4^16`. Ties appear only where a note continues across a bar line or past a
+command.
 
 ## Exact ticks
 
-`Nt` is a length of exactly N ticks: `c7t`. Kog writes it only if a length
-cannot be made from note values, which does not happen in recorded scores.
+`Nt` is a length of exactly N ticks: `c7t`. Kog reads it but writes
+fractions instead.
 
 ## Default length
 

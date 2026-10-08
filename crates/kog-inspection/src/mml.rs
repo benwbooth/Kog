@@ -2052,7 +2052,19 @@ fn length_text(ticks: u64, quarter: u64, default: Option<u64>) -> String {
         }
     }
     parts.extend(tail);
-    parts.join("^")
+    if parts.len() == 1 && !parts[0].ends_with('t') {
+        return parts.remove(0);
+    }
+    // A length that needs ties is written as a fraction of a whole note
+    // instead: `5/16` rather than `4^16`.
+    let gcd = |mut a: u64, mut b: u64| {
+        while b != 0 {
+            (a, b) = (b, a % b);
+        }
+        a
+    };
+    let divisor = gcd(ticks, whole);
+    format!("{}/{}", ticks / divisor, whole / divisor)
 }
 
 const NAMES: [&str; 12] = ["c", "c+", "d", "d+", "e", "f", "f+", "g", "g+", "a", "a+", "b"];
@@ -2572,7 +2584,7 @@ pub fn lex(text: &str) -> Vec<(u32, u32, u8)> {
                                         "note"
                                     }
                                     _ => {
-                                        while k < close && matches!(line[k], b'0'..=b'9' | b'.' | b'^' | b't') {
+                                        while k < close && matches!(line[k], b'0'..=b'9' | b'.' | b'^' | b't' | b'/') {
                                             k += 1;
                                         }
                                         "length"
@@ -2765,6 +2777,15 @@ impl Cursor<'_> {
                 .map_or_else(|| self.error("tick lengths must be positive"), Ok);
         }
         let whole = quarter * 4;
+        if self.eat(b'/') {
+            // A fraction of a whole note: `5/16`.
+            let numerator = u64::try_from(divisor).unwrap_or(0);
+            let denominator = u64::try_from(self.number()?).unwrap_or(0);
+            if numerator == 0 || denominator == 0 || (whole * numerator) % denominator != 0 {
+                return self.error(format!("length {numerator}/{denominator} is not a whole number of ticks"));
+            }
+            return Ok(whole * numerator / denominator);
+        }
         let divisor = u64::try_from(divisor).unwrap_or(0);
         if divisor == 0 || whole % divisor != 0 {
             return self.error(format!("length {divisor} is not a whole number of ticks"));
@@ -3392,7 +3413,7 @@ mod tests {
         assert_eq!(bar.unwrap().index, 0);
         let texts: Vec<_> = active.iter().map(|s| &document.text[s.from..s.to]).collect();
         // Every piece of the sounding note lights up, across its bar line.
-        assert_eq!(texts, ["&e(+12)8^16^64", "^4^16^32^64", "^32", "^16.."]);
+        assert_eq!(texts, ["&e(+12)13/64", "^23/64", "^32", "^16.."]);
         let sounds = |active: &[&Span]| {
             let mut sounds: Vec<_> = active.iter().map(|s| (s.track, s.sound)).collect();
             sounds.dedup();

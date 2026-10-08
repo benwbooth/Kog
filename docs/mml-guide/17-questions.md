@@ -1,12 +1,14 @@
 # 17. Questions and limits
 
-## Why does a note have a long tie like `2^6`?
+## Why does a note have a length like `13/192`?
 
-The note's length is not a single note value at the score's tempo. Either
-the music really holds it that long (a note held for two thirds of a bar is
-`2^6` in 4/4), or the beat Kog found does not match the music in that section,
-for example because the tempo changes. Ties never change what is played; they
-only show a length that has no single note value.
+The note's length is not a single note value at the score's tempo, so Kog
+writes it as a fraction of a whole note. Either the music really holds it
+that long (a note held for two thirds of a bar in 4/4 is `2/3`), or the beat
+Kog found does not match the music in that section, for example because the
+tempo changes or a voice plays slightly behind the others as an echo.
+Fractions never change what is played; they only show a length that has no
+single note value.
 
 ## Why does a MIDI song have fewer tracks than voices?
 

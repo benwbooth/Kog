@@ -48,6 +48,7 @@ tie         = "^" [ length ] ;
 
 length      = value { "^" value } ;
 value       = integer "t"
+            | integer "/" integer
             | integer { "." } ;
 
 word        = bare | string ;
@@ -64,7 +65,8 @@ signed      = [ "+" | "-" ] integer ;
   must come after the `#TRACK` they name.
 - `#MACRO` numbers start at 0 and increase by one.
 - A length `n` must divide the whole note (`4 × #TICKS`) evenly, and each dot
-  must add a whole number of ticks.
+  must add a whole number of ticks. A fraction `n/d` must come to a whole
+  number of ticks.
 - A track's notes, chords, hits, rests and ties must add up to `#LENGTH`
   (a chord counts its length after the closing quote).
 - A chord holds at least one note and no spaces.
