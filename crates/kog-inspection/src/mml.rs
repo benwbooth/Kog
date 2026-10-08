@@ -122,6 +122,49 @@ impl PitchedParam {
     }
 }
 
+/// Leave out what cannot be heard: bends while no note sounds (a note sets
+/// its own pitch), and settings made between notes that are set again before
+/// the next note starts.
+fn drop_inaudible(events: &mut Vec<Event>) {
+    let sounds: Vec<(u64, u64)> = events.iter().filter(|e| e.kind.length() > 0).map(|e| (e.tick, e.tick + e.kind.length())).collect();
+    let mut latest_end = Vec::with_capacity(sounds.len());
+    let mut end = 0;
+    for (_, sound_end) in &sounds {
+        end = end.max(*sound_end);
+        latest_end.push(end);
+    }
+    // Whether `tick` falls inside a sound, and when the next sound starts.
+    let place = |tick: u64| {
+        let after = sounds.partition_point(|(start, _)| *start <= tick);
+        let inside = after > 0 && tick < latest_end[after - 1];
+        (inside, sounds.get(after).map_or(u64::MAX, |(start, _)| *start))
+    };
+    let mut keep = vec![true; events.len()];
+    for (index, event) in events.iter().enumerate() {
+        if event.kind.length() > 0 {
+            continue;
+        }
+        let (inside, next) = place(event.tick);
+        if inside {
+            continue;
+        }
+        if matches!(event.kind, EventKind::Bend(_)) {
+            keep[index] = false;
+            continue;
+        }
+        let Some((target, _)) = target_value(&event.kind) else { continue };
+        keep[index] = !events[index + 1..]
+            .iter()
+            .take_while(|later| later.tick <= next)
+            .any(|later| target_value(&later.kind).is_some_and(|(t, _)| t == target));
+    }
+    let mut index = 0;
+    events.retain(|_| {
+        index += 1;
+        keep[index - 1]
+    });
+}
+
 /// Keep only the last value a command sets at each tick.
 fn drop_overwritten(events: &mut Vec<Event>) {
     let mut keep = vec![true; events.len()];
@@ -139,9 +182,80 @@ fn drop_overwritten(events: &mut Vec<Event>) {
     });
 }
 
-/// Move registers that are a function of the pitch into a per-track table.
-/// A note's register value is the one in force at its onset; the settings
-/// made at note onsets are dropped from the events and implied by the table.
+/// A pitch event (a note's start, or a bend while it sounds) for one
+/// register: its event index, its pitch, the register's value in force after
+/// its tick, and the setting made at that tick (if any).
+type PitchEvent = (usize, (i32, i32), String, Option<usize>);
+
+/// The register's usual value for each pitch, if it follows the pitch.
+fn pitch_table(events: &[Event], name: &str) -> Option<(BTreeMap<(i32, i32), String>, Vec<PitchEvent>)> {
+    let mut notes: Vec<PitchEvent> = Vec::new();
+    let mut current: Option<String> = None;
+    let mut sounding: Option<(i32, u64)> = None;
+    let mut group = 0;
+    while group < events.len() {
+        let tick = events[group].tick;
+        let end = group + events[group..].iter().take_while(|e| e.tick == tick).count();
+        let setting = (group..end).rev().find(|i| matches!(&events[*i].kind, EventKind::Param(n, _) if n == name));
+        if let Some(setting) = setting {
+            if let EventKind::Param(_, value) = &events[setting].kind {
+                current = Some(value.clone());
+            }
+        }
+        for index in group..end {
+            let pitch = match events[index].kind {
+                EventKind::Note { key, cents, length, .. } => {
+                    sounding = Some((key, tick + length));
+                    (key, cents)
+                }
+                EventKind::Bend(cents) => match sounding {
+                    Some((key, until)) if tick < until => (key, cents),
+                    _ => continue,
+                },
+                _ => continue,
+            };
+            if let Some(value) = current.clone() {
+                notes.push((index, pitch, value, setting));
+            }
+        }
+        group = end;
+    }
+    let mut counts: BTreeMap<((i32, i32), &str), usize> = BTreeMap::new();
+    for (_, pitch, value, _) in &notes {
+        *counts.entry((*pitch, value.as_str())).or_default() += 1;
+    }
+    let mut best: BTreeMap<(i32, i32), (&str, usize)> = BTreeMap::new();
+    for (&(pitch, value), &count) in &counts {
+        let entry = best.entry(pitch).or_insert((value, 0));
+        if count > entry.1 {
+            *entry = (value, count);
+        }
+    }
+    let matching = notes.iter().filter(|(_, pitch, value, _)| best[pitch].0 == value).count();
+    // A register that follows the pitch takes about as many values as there
+    // are pitches (a frequency), or rises or falls with the pitch (an octave
+    // block, a period), allowing a few pitches that a driver writes either
+    // way (the same frequency in two octave blocks).
+    let distinct: std::collections::BTreeSet<&str> = best.values().map(|(value, _)| *value).collect();
+    let numbers: Option<Vec<i64>> = best.values().map(|(value, _)| value.parse().ok()).collect();
+    let monotonic = numbers.is_some_and(|numbers| {
+        let pairs = numbers.len().saturating_sub(1).max(1);
+        let rises = numbers.windows(2).filter(|pair| pair[0] < pair[1]).count();
+        let falls = numbers.windows(2).filter(|pair| pair[0] > pair[1]).count();
+        rises.min(falls) * 10 <= pairs
+    });
+    let follows = distinct.len() >= 3.max(best.len() / 2) || (monotonic && distinct.len() >= 2);
+    if !follows || matching < 4 || matching * 5 < notes.len() * 4 {
+        return None;
+    }
+    let table = best.into_iter().map(|(pitch, (value, _))| (pitch, value.to_owned())).collect();
+    Some((table, notes))
+}
+
+/// Move registers that follow the pitch into a per-track table. Each note
+/// (and each bend) sets the register to its pitch's table value, unless a
+/// setting at its own tick says otherwise; those exceptions stay in the
+/// events.
 fn extract_pitched(track: &mut Track) {
     // When notes overlap (chords, held notes) one register setting serves
     // several pitches.
@@ -160,49 +274,59 @@ fn extract_pitched(track: &mut Track) {
             }
         }
     }
-    for name in names {
-        let mut table = PitchedParam { name: name.clone(), values: Vec::new() };
-        let mut current: Option<String> = None;
-        let mut onset_settings = Vec::new();
-        let mut consistent = true;
-        for (index, event) in track.events.iter().enumerate() {
-            match &event.kind {
-                EventKind::Param(n, value) if *n == name => current = Some(value.clone()),
-                EventKind::Note { key, cents, .. } => {
-                    let Some(value) = current.clone() else {
-                        consistent = false;
-                        break;
-                    };
-                    match table.value(*key, *cents) {
-                        Some(known) if known != value => {
-                            consistent = false;
-                            break;
-                        }
-                        Some(_) => {}
-                        None => table.values.push((*key, *cents, value.clone())),
-                    }
-                    // The last setting at this tick, made for this note.
-                    if let Some(setting) = (0..index).rev().take_while(|i| track.events[*i].tick == event.tick).find(|i| {
-                        matches!(&track.events[*i].kind, EventKind::Param(n, _) if *n == name)
-                    }) {
-                        onset_settings.push(setting);
-                    }
+    let candidates: Vec<String> = names.iter().filter(|name| pitch_table(&track.events, name).is_some()).cloned().collect();
+    // An instrument setting can line up with the notes by chance; it then
+    // changes together with other instrument settings, where a pitch
+    // register changes alone or with other pitch registers.
+    let instrument_change = |tick: u64| {
+        track.events.iter().filter(|e| e.tick == tick).any(|e| match &e.kind {
+            EventKind::Param(other, _) => !candidates.contains(other),
+            EventKind::Instrument(_) => true,
+            _ => false,
+        })
+    };
+    let pitched: Vec<String> = candidates
+        .iter()
+        .filter(|name| {
+            let changes: Vec<u64> = track
+                .events
+                .iter()
+                .filter(|e| matches!(&e.kind, EventKind::Param(n, _) if n == *name))
+                .map(|e| e.tick)
+                .collect();
+            let together = changes.iter().filter(|tick| instrument_change(**tick)).count();
+            together * 2 <= changes.len()
+        })
+        .cloned()
+        .collect();
+    for name in pitched {
+        let Some((table, notes)) = pitch_table(&track.events, &name) else { continue };
+        let mut remove = std::collections::HashSet::new();
+        let mut insert = Vec::new();
+        for (index, pitch, value, setting) in &notes {
+            let usual = &table[pitch];
+            match setting {
+                Some(setting) if value == usual => {
+                    remove.insert(*setting);
                 }
+                // A value the table does not give is set at the event's tick.
+                None if value != usual => insert.push((*index, Event { tick: track.events[*index].tick, kind: EventKind::Param(name.clone(), value.clone()) })),
                 _ => {}
             }
         }
-        // A register that never varies with the pitch is not pitch-tied.
-        let distinct = table.values.iter().any(|(_, _, value)| *value != table.values[0].2);
-        if !consistent || onset_settings.len() < 4 || !distinct {
-            continue;
+        let mut events = Vec::with_capacity(track.events.len() + insert.len());
+        let mut pending = insert.into_iter().peekable();
+        for (index, event) in std::mem::take(&mut track.events).into_iter().enumerate() {
+            while pending.peek().is_some_and(|(before, _)| *before == index) {
+                events.push(pending.next().unwrap().1);
+            }
+            if !remove.contains(&index) {
+                events.push(event);
+            }
         }
-        table.values.sort();
-        let mut index = 0;
-        track.events.retain(|_| {
-            index += 1;
-            !onset_settings.contains(&(index - 1))
-        });
-        track.pitched.push(table);
+        track.events = events;
+        let values = table.into_iter().map(|((key, cents), value)| (key, cents, value)).collect();
+        track.pitched.push(PitchedParam { name, values });
     }
 }
 
@@ -651,6 +775,16 @@ impl ScoreBuilder {
             };
             keys.sort_unstable();
             keys.dedup_by_key(|(key, _, _)| *key);
+            // A held note whose pitch glides (a slide, or vibrato across a
+            // semitone line) moves a little each frame: it stays one note and
+            // bends. A jump of most of a semitone or more is a new note.
+            if let ([(key, cents, _)], [sounding]) = (keys.as_mut_slice(), state.sounding.as_slice()) {
+                let heard = *key * 100 + *cents;
+                if !retrigger && *key != sounding.key && (heard - (sounding.key * 100 + sounding.bend)).abs() < 75 {
+                    *key = sounding.key;
+                    *cents = heard - sounding.key * 100;
+                }
+            }
 
             // Releases and retriggers end notes before new commands apply.
             let mut index = 0;
@@ -840,14 +974,7 @@ impl ScoreBuilder {
             .into_iter()
             .filter(|parts| unit_ticks % parts == 0)
             .collect();
-        let mut onsets: Vec<u64> = tracks
-            .iter()
-            .flat_map(|track| track.events.iter())
-            .filter(|event| event.kind.length() > 0)
-            .map(|event| event.tick)
-            .collect();
-        onsets.sort_unstable();
-        onsets.dedup();
+        let onsets = rhythmic_onsets(&tracks, tick_seconds);
         let anchors = track_beats(&onsets, unit_frames, unit_ticks, &subdivisions, grid.jitter);
         let timeline = Timeline { anchors, unit_frames, unit_ticks };
         // Anything off the beat still lands on a quarter of a beat step, so
@@ -870,12 +997,18 @@ impl ScoreBuilder {
             let tick = timeline.tick(frame as f64);
             if timeline.is_anchor(frame as f64) { tick } else { near_line(tick) }
         };
-        let snap_end = |frame: u64| {
+        // Releases are looser than key-ons: a note let go a little before
+        // the next beat (or half, third, quarter of one) still ends on it.
+        let snap_end = |frame: u64, start: u64| {
             let tick = timeline.tick(frame as f64);
-            let nearest = (tick as f64 / unit_ticks as f64).round() as u64 * unit_ticks;
-            // Releases are looser than key-ons: a note let go just before the
-            // next beat still ends on it.
-            if (tick as f64 - nearest as f64).abs() <= 0.45 * unit_ticks as f64 { nearest } else { near_line(tick) }
+            for parts in &subdivisions {
+                let line = (unit_ticks / parts) as f64;
+                let nearest = (tick as f64 / line).round() * line;
+                if nearest as u64 > start && (tick as f64 - nearest).abs() <= 0.45 * line {
+                    return nearest as u64;
+                }
+            }
+            near_line(tick)
         };
         for track in &mut tracks {
             // Commands inside a note keep full resolution so envelopes and
@@ -902,7 +1035,7 @@ impl ScoreBuilder {
                     };
                     match &mut event.kind {
                         EventKind::Note { length, .. } | EventKind::Hit { length, .. } => {
-                            let end = snap_end(event.tick + *length);
+                            let end = snap_end(event.tick + *length, start);
                             let end = if end > start { end } else { place(event.tick + *length).max(start + resolution) };
                             *length = end.saturating_sub(start);
                             if *length == 0 {
@@ -950,7 +1083,7 @@ impl ScoreBuilder {
             events.sort_by_key(|event| (event.tick, event.kind.length() > 0));
             track.events = events;
         }
-        let length = snap_end(end).max(1);
+        let length = snap_end(end, 0).max(1);
         // Nothing may fall after the song's end.
         for track in &mut tracks {
             track.events.retain_mut(|event| {
@@ -1013,6 +1146,7 @@ impl ScoreBuilder {
         let transpose = relative_transpose(&tracks, &relative);
         for track in &mut tracks {
             drop_overwritten(&mut track.events);
+            drop_inaudible(&mut track.events);
             extract_pitched(track);
             extract_tuning(track);
         }
@@ -1493,19 +1627,36 @@ impl Score {
     }
 }
 
+/// Note starts that show the beat, sorted and without repeats. Tracks whose
+/// notes mostly follow each other faster than any beat (fast arpeggios, drum
+/// pitch sweeps written as notes) are left out: they would hide the beat.
+fn rhythmic_onsets(tracks: &[Track], tick_seconds: f64) -> Vec<u64> {
+    let mut onsets = Vec::new();
+    for track in tracks {
+        let starts: Vec<u64> = track
+            .events
+            .iter()
+            .filter(|event| matches!(event.kind, EventKind::Note { .. } | EventKind::Hit { .. }))
+            .map(|event| event.tick)
+            .collect();
+        let mut gaps: Vec<u64> = starts.windows(2).map(|pair| pair[1] - pair[0]).filter(|gap| *gap > 0).collect();
+        gaps.sort_unstable();
+        if gaps.get(gaps.len() / 2).is_some_and(|median| (*median as f64) * tick_seconds < 0.045) {
+            continue;
+        }
+        onsets.extend(starts);
+    }
+    onsets.sort_unstable();
+    onsets.dedup();
+    onsets
+}
+
 /// Find the rhythmic grid: the longest step that nearly every gap between
 /// onsets is a whole multiple of, and where that grid starts. Returns frames
 /// per quarter note (taking the step as a sixteenth or eighth as the tempo
 /// allows) and the grid's offset in frames.
 fn infer_grid(tracks: &[Track], tick_seconds: f64) -> Grid {
-    let mut onsets: Vec<u64> = tracks
-        .iter()
-        .flat_map(|track| track.events.iter())
-        .filter(|event| matches!(event.kind, EventKind::Note { .. } | EventKind::Hit { .. }))
-        .map(|event| event.tick)
-        .collect();
-    onsets.sort_unstable();
-    onsets.dedup();
+    let mut onsets = rhythmic_onsets(tracks, tick_seconds);
     let fallback = || {
         let quarter = f64::from(infer_quarter(tracks, tick_seconds));
         Grid { quarter, steps: 4.0, jitter: 1.0 }

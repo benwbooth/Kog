@@ -58,7 +58,11 @@ macros. Noise channels are hits.
 ## VGM, VGZ, S98, DRO, GYM
 
 Register logs played through the matching sound cores. Mapped chips give
-voices, key gates, frequencies and controls. Programmable DSP devices without
+voices, key gates, frequencies and controls. On the Sega PSG the level is
+the attenuation, so it is not repeated as a parameter. On the YM2612 the
+level is operator 4's total level, so the operator levels list operators 1
+to 3, and only channel 3 shows its special mode (the timer bits drivers
+rewrite constantly are left out). Programmable DSP devices without
 individual voices appear only as register parameters.
 
 ## SID and RSID

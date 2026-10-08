@@ -104,7 +104,9 @@ inline void Device::snapshot(KogVoices& out) const {
             auto& v = emit(ch, ch == 3 ? 1 : 0, sn[ch*2+1] < 15,
                 ch < 3 ? clock / (32.0 * std::max(unsigned(sn[ch*2]), 1u)) : 0,
                 std::pow(10.0f, -float(sn[ch*2+1])/10.0f), 0, 0, 0);
-            std::snprintf(v.details, sizeof(v.details), "Period/control=%03X | Attenuation=%X | Clock=%u Hz | Stereo=%02X", sn[ch*2], sn[ch*2+1], clock, regs[0xff]);
+            // The level already is the attenuation (2 dB a step), so it is not
+            // repeated as a field.
+            std::snprintf(v.details, sizeof(v.details), "Period/control=%03X | Clock=%u Hz | Stereo=%02X", sn[ch*2], clock, regs[0xff]);
         }
         return;
     }
@@ -140,7 +142,13 @@ inline void Device::snapshot(KogVoices& out) const {
             auto& v=emit(ch,dac?2:0,dac || keys[ch],dac?0:clock/(type==DEVID_YM2203?72.0:144.0)*f*(1<<block)/2097152.0,
                 std::pow(10.0f,-float(regs[b+0x4c+c]&127)*0.75f/20), ((regs[b+0xb4+c]&0x40)?1.0f:0.0f)-((regs[b+0xb4+c]&0x80)?1.0f:0.0f), b+0xa0+c,1);
             std::snprintf(v.instrument,sizeof(v.instrument),"%s",dac?"DAC":"4-op FM");
-            std::snprintf(v.details,sizeof(v.details),"F-number=%03X | Block=%u | Key operators=%X | Algorithm/feedback=%02X | Pan/LFO=%02X | Operator levels=%02X %02X %02X %02X | Mode=%02X",f,block,keys[ch],regs[b+0xb0+c],regs[b+0xb4+c],regs[b+0x40+c],regs[b+0x44+c],regs[b+0x48+c],regs[b+0x4c+c],regs[0x27]);
+            // Operator 4's level is the channel level above, so the field
+            // lists operators 1 to 3.
+            int n = std::snprintf(v.details,sizeof(v.details),"F-number=%03X | Block=%u | Key operators=%X | Algorithm/feedback=%02X | Pan/LFO=%02X | Operator 1-3 levels=%02X %02X %02X",f,block,keys[ch],regs[b+0xb0+c],regs[b+0xb4+c],regs[b+0x40+c],regs[b+0x44+c],regs[b+0x48+c]);
+            // Register 27h's low bits are timer controls that drivers rewrite
+            // constantly; only its top bits (channel 3's mode) shape the sound.
+            if(b == 0 && c == 2 && n > 0 && size_t(n) < sizeof(v.details))
+                std::snprintf(v.details+n,sizeof(v.details)-n," | Channel 3 mode=%u",regs[0x27]>>6);
         }
         if(type != DEVID_YM2612) ay(6, clock/(type==DEVID_YM2203?2.0:4.0));
         if(type == DEVID_YM2608 || type == DEVID_YM2610) {

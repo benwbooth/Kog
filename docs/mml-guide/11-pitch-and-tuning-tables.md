@@ -35,10 +35,19 @@ frequency number. Kog moves them into a table:
 
 Each entry is `MIDI key(cents):value`, where the cents part is left out when
 zero. On that track, every note sets the register to the value listed for its
-pitch. A note whose pitch is not listed leaves the register alone.
+pitch, and so does every bend (`P`) while a note sounds: a bend to `P+20` on
+a `c` sets the value listed for C plus 20 cents. A note whose pitch is not
+listed leaves the register alone.
 
-Kog makes a table only when it describes the recording exactly: the register
-must have had that value for every note of that pitch, and must change to
-another value for at least one other pitch. Changes the table does not
-explain, for example a register written between notes, stay on the track as
-ordinary parameters.
+A setting written at the same moment as a note or bend overrides the table
+for that note: `F-number=644 c` sets 644 even if the table lists another
+value for C. Kog writes such settings only where the recording differs from
+the table, so the table and the exceptions together give every register
+value exactly.
+
+Kog makes a table when a register follows the pitch: at least four in five
+notes and bends of each pitch have the same value, and the register either
+takes about as many values as there are pitches (a frequency) or rises or
+falls with the pitch (an octave block, a period). A setting that changes
+together with other instrument settings is an instrument setting that only
+happens to line up with the notes, and gets no table.

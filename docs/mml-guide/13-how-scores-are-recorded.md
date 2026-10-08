@@ -22,7 +22,10 @@ For each voice, Kog compares each frame with the previous one:
 - The voice stops (its key is released) or its pitch moves to another
   semitone: the note ends. The release is where the note ends; the fading
   tail after release is not part of the note.
-- The pitch moves within a semitone: a bend.
+- The pitch moves within a semitone: a bend. A pitch that glides, moving
+  less than three quarters of a semitone from one frame to the next, stays
+  one note and bends even past the next semitone, so a slide or a wide
+  vibrato is one note rather than a string of short ones.
 - The chip reports a new key-on at the same pitch: the note ends and a new
   one starts.
 - An unpitched voice starts: a hit.
@@ -44,7 +47,9 @@ such channels are written at each key-on only.
 Frames are spaced in milliseconds, but music moves in beats. To write note
 values instead of milliseconds, Kog finds the beat:
 
-1. It collects the start time of every note in the song.
+1. It collects the start time of every note in the song, leaving out tracks
+   whose notes mostly follow each other faster than any beat (fast
+   arpeggios, or drums played as pitch sweeps): those would hide the beat.
 2. It looks for the longest step (between about 45 milliseconds and a slow
    quarter note) that nearly every gap between starts is a whole number of.
    Promising steps are refined to a fraction of a frame, because a step that
@@ -68,9 +73,9 @@ followed instead of accumulating. Over long gaps the window is wider, because
 a few percent of tempo drift adds up over a held chord.
 
 Starts that fit no beat line are kept at a quarter of a beat's resolution.
-Releases are snapped more loosely, to the nearest whole beat when they are
-within half a beat of it, so a note let go just before the next one ends on
-the beat. Commands between notes are placed the same way; commands during a
+Releases are snapped more loosely, to the nearest beat, half, third or
+quarter of a beat when they are within about half of that line's spacing,
+so a note let go just before the next one ends on the line. Commands between notes are placed the same way; commands during a
 note keep full resolution so that envelopes and vibrato stay intact.
 
 ## The timing map
@@ -91,6 +96,8 @@ chords heavily. `#PICKUP` makes the first bar longer to line the rest up.
 Before the score is written, Kog:
 
 - drops all but the last value of a setting written twice at the same moment;
+- drops what cannot be heard: bends while no note sounds, and settings made
+  between notes that are set again before the next note starts;
 - moves registers that only follow the pitch into `#PITCH` tables;
 - records each key's usual detune in `#TUNE`;
 - turns repeated changes within notes into macros;
