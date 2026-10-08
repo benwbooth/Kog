@@ -186,11 +186,17 @@ pub fn changes_row(previous: &[Channel], data: &FrameData, time: f64) -> Option<
             if channel.has_relative_pitch() {
                 return spu_event_cell(before, channel);
             }
+            // A row is a musical event: a key-on or release, a new note or
+            // instrument. Envelopes, vibrato and other register motion
+            // change on almost every frame and would race the rows past;
+            // the cell still shows their values at each event.
+            let names = |channel: &Channel| channel.notes.iter().map(|note| note.key.round() as i32).collect::<Vec<_>>();
+            let key_on = |channel: &Channel| (channel.field("Key on").map(str::to_owned), channel.field("Gate").map(str::to_owned));
             let changed = before.is_none_or(|before| {
                 before.active != channel.active
-                    || before.notes != channel.notes
+                    || names(before) != names(channel)
                     || before.instrument != channel.instrument
-                    || before.fields != channel.fields
+                    || key_on(before) != key_on(channel)
             });
             changed.then(|| Cell {
                 channel: channel.id,
