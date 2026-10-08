@@ -262,6 +262,13 @@ struct TreeRow {
     fragment: Option<String>,
 }
 
+impl TreeRow {
+    /// Identity for selection: two rows can share a path (subsongs).
+    fn id(&self) -> String {
+        format!("{}#{}#{}#{}", self.kind, self.path, self.entry, self.fragment.clone().unwrap_or_default())
+    }
+}
+
 /// The desktop search's progress counters, straight from the walk: items
 /// scanned in the filesystem pass, then archive listings, for the status
 /// line under the search box.
@@ -2205,6 +2212,11 @@ fn App() -> impl IntoView {
     let (playlist_dialog_opened, set_playlist_dialog_opened) = signal(0u32);
     // The row being dragged from the tree onto the playlist pane.
     let (dragging_tree, set_dragging_tree) = signal(Option::<TreeRow>::None);
+    // Rows selected in the tree (browse or search), in tree order. Ctrl or
+    // Cmd click toggles a row, Shift click selects a range from the last row
+    // clicked; add, drag and the context menu act on all of them.
+    let tree_multi = RwSignal::new(Vec::<TreeRow>::new());
+    let tree_anchor = RwSignal::new(String::new());
     // A playlist row dragged toward the pane (append its tracks), and a queue
     // row dragged to a new position (reorder).
     let (dragging_playlist, set_dragging_playlist) = signal(Option::<i64>::None);
@@ -3025,6 +3037,7 @@ fn App() -> impl IntoView {
                 }
                 set_tree_selected.set(song);
                 set_tree_selected_dir.set(false);
+                tree_multi.set(Vec::new());
                 // The selected row renders a tick after the state change, and
                 // only once the expanded folders have re-rendered. Poll until
                 // it exists, then land it mid-pane so it is plainly visible.
@@ -4691,6 +4704,11 @@ fn App() -> impl IntoView {
     // tree owns the folders, outside it the loaded tree does. Read at event
     // time — a row rendered by one mode can survive into the other (keyed
     // reuse), so the branch cannot be baked in at creation.
+    // A new search or tree root shows other rows; start the selection over.
+    Effect::new(move |_| {
+        let _ = (tree_search.get(), tree_root.get());
+        tree_multi.set(Vec::new());
+    });
     let tree_toggle = move |path: String| {
         if tree_search.get_untracked().trim().is_empty() {
             toggle_dir(path);
@@ -5373,42 +5391,78 @@ fn App() -> impl IntoView {
     // Add one tree row: a file expands to its playable tracks, and a folder
     // contributes playable files throughout its subtree, including folders
     // inside archives.
-    let add_row_to_playlist = move |row: TreeRow| {
+    let add_rows_to_playlist = move |rows: Vec<TreeRow>| {
+        if rows.is_empty() { return; }
         let destination = playlist_workspace.snapshot();
         if !destination.actions.append { return; }
         let scope = base();
-        let entries = vec![serde_json::json!({"kind":row.kind,"path":row.path,"entry":row.entry,"fragment":row.fragment,"name":row.name})];
+        let entry_of = |row: &TreeRow| serde_json::json!({"kind":row.kind,"path":row.path,"entry":row.entry,"fragment":row.fragment,"name":row.name});
         if destination.active == "queue" {
-            if row.is_dir {
-                backend.send(SessionCommand::Collect {
-                    scope, path: row.path, query: tree_search.get_untracked(),
-                    root: tree_root.get_untracked(), action: QueueAction::AddToQueue,
-                });
-            } else {
-                backend.send(SessionCommand::AppendToTab {key:destination.active.clone(), scope, entries});
+            // Runs of files go in one append; folders are collected in place.
+            let mut files = Vec::new();
+            for row in rows {
+                if row.is_dir {
+                    if !files.is_empty() {
+                        backend.send(SessionCommand::AppendToTab {key:destination.active.clone(), scope:scope.clone(), entries:std::mem::take(&mut files)});
+                    }
+                    backend.send(SessionCommand::Collect {
+                        scope:scope.clone(), path: row.path, query: tree_search.get_untracked(),
+                        root: tree_root.get_untracked(), action: QueueAction::AddToQueue,
+                    });
+                } else {
+                    files.push(entry_of(&row));
+                }
+            }
+            if !files.is_empty() {
+                backend.send(SessionCommand::AppendToTab {key:destination.active.clone(), scope, entries:files});
             }
         } else {
             let header = auth().header();
             let query = tree_search.get_untracked();
             let root = tree_root.get_untracked();
             leptos::task::spawn_local(async move {
-                let resolved = if row.is_dir {
-                    session::request("GET", format!("{scope}/api/library/collect?path={}&q={}&root={}",
-                        url_encode(&row.path), url_encode(&query), url_encode(&root)), header, None)
-                        .await.map(|value| value["tracks"].as_array()
-                            .map(|items| items.iter().map(browse_file_entry).collect()).unwrap_or_default())
-                } else {
-                    session::expand(&scope, header, entries).await
-                };
-                match resolved {
-                    Ok(entries) if base() == scope => backend.send(SessionCommand::AppendToTab {
+                // Resolve every row in order, then append them together.
+                let mut all = Vec::new();
+                for row in rows {
+                    let resolved = if row.is_dir {
+                        session::request("GET", format!("{scope}/api/library/collect?path={}&q={}&root={}",
+                            url_encode(&row.path), url_encode(&query), url_encode(&root)), header.clone(), None)
+                            .await.map(|value| value["tracks"].as_array()
+                                .map(|items| items.iter().map(browse_file_entry).collect()).unwrap_or_default())
+                    } else {
+                        session::expand(&scope, header.clone(), vec![entry_of(&row)]).await
+                    };
+                    match resolved {
+                        Ok(entries) => all.extend(entries),
+                        Err(error) => {
+                            set_message.set(error);
+                            return;
+                        }
+                    }
+                }
+                if base() == scope {
+                    backend.send(SessionCommand::AppendToTab {
                         key:destination.active.clone(), scope,
-                        entries:entries.iter().map(|entry| serde_json::to_value(entry).expect("serializable entry")).collect(),
-                    }),
-                    Ok(_) => set_message.set("Connect to the original playlist server".into()),
-                    Err(error) => set_message.set(error),
+                        entries:all.iter().map(|entry| serde_json::to_value(entry).expect("serializable entry")).collect(),
+                    });
+                } else {
+                    set_message.set("Connect to the original playlist server".into());
                 }
             });
+        }
+    };
+    // Add one tree row: a file expands to its playable tracks, and a folder
+    // contributes playable files throughout its subtree, including folders
+    // inside archives.
+    let add_row_to_playlist = move |row: TreeRow| add_rows_to_playlist(vec![row]);
+    // The rows an action on `row` covers: the whole selection when `row` is
+    // part of it, otherwise `row` alone.
+    let rows_for = move |row: &TreeRow| {
+        let selection = tree_multi.get_untracked();
+        if selection.len() > 1 && selection.iter().any(|selected| selected.id() == row.id()) {
+            selection
+        } else {
+            vec![row.clone()]
         }
     };
 
@@ -5544,14 +5598,14 @@ fn App() -> impl IntoView {
                     let dragging_track = dragging_track.clone();
                     let reorder_to = reorder_to.clone();
                     let set_playlist_drop_active = set_playlist_drop_active.clone();
-                    let add_row_to_playlist = add_row_to_playlist.clone();
+                    let add_rows_to_playlist = add_rows_to_playlist.clone();
                     let append_playlist = append_playlist.clone();
                     let move_track = move_track.clone();
                     Closure::<dyn FnMut(web_sys::DragEvent)>::new(move |ev: web_sys::DragEvent| {
                         ev.prevent_default();
                         set_playlist_drop_active.set(false);
                         if let Some(row) = dragging_tree.get_untracked() {
-                            add_row_to_playlist(row);
+                            add_rows_to_playlist(rows_for(&row));
                         } else if let Some(id) = dragging_playlist.get_untracked() {
                             append_playlist(id);
                         } else if let Some(from) = dragging_track.get_untracked()
@@ -6152,7 +6206,8 @@ fn App() -> impl IntoView {
                                                     let row_tooltip = row_name.clone();
                                                     let tree_toggle = tree_toggle.clone();
                                                     let add_row_to_playlist = add_row_to_playlist.clone();
-                                                    let selected = row.path.clone();
+                                                    let selected = row.id();
+                                                    let selected_path = row.path.clone();
                                                     // The arrow reads `expanded` reactively: the
                                                     // `For` key is the path, so a programmatic
                                                     // expand (a restore) reuses the row and a
@@ -6212,7 +6267,11 @@ fn App() -> impl IntoView {
                                                             class="tree-row"
                                                             class:directory=row.is_dir
                                                             class:selected=move || {
-                                                                tree_selected.get() == selected
+                                                                // A revealed song is selected by path alone.
+                                                                tree_multi.with(|rows| {
+                                                                    rows.iter().any(|row| row.id() == selected)
+                                                                        || (rows.is_empty() && tree_selected.get() == selected_path)
+                                                                })
                                                             }
                                                             style=format!("--tree-indent: {indent}px")
                                                             title=row_tooltip
@@ -6220,8 +6279,36 @@ fn App() -> impl IntoView {
                                                             on:click=move |ev: web_sys::MouseEvent| {
                                                                 set_tree_selected.set(row_click.path.clone());
                                                                 set_tree_selected_dir.set(row_click.is_dir);
+                                                                let id = row_click.id();
+                                                                if !touch_mode && (ev.ctrl_key() || ev.meta_key()) {
+                                                                    // Toggle this row in the selection.
+                                                                    tree_multi.update(|rows| {
+                                                                        if let Some(at) = rows.iter().position(|row| row.id() == id) {
+                                                                            rows.remove(at);
+                                                                        } else {
+                                                                            rows.push(row_click.clone());
+                                                                        }
+                                                                    });
+                                                                    tree_anchor.set(id);
+                                                                    return;
+                                                                }
+                                                                if !touch_mode && ev.shift_key() {
+                                                                    // Select the rows from the last one clicked.
+                                                                    let visible = tree_rows();
+                                                                    let anchor = tree_anchor.get_untracked();
+                                                                    let here = visible.iter().position(|row| row.id() == id);
+                                                                    let from = visible.iter().position(|row| row.id() == anchor).or(here);
+                                                                    if let (Some(from), Some(here)) = (from, here) {
+                                                                        tree_multi.set(visible[from.min(here)..=from.max(here)].to_vec());
+                                                                    }
+                                                                    return;
+                                                                }
+                                                                if ev.detail() < 2 {
+                                                                    tree_multi.set(vec![row_click.clone()]);
+                                                                    tree_anchor.set(id);
+                                                                }
                                                                 if !touch_mode && ev.detail() >= 2 {
-                                                                    add_row_to_playlist(row_click.clone());
+                                                                    add_rows_to_playlist(rows_for(&row_click));
                                                                 } else if row_click.is_dir {
                                                                     tree_toggle(row_click.path.clone());
                                                                 } else if touch_mode {
@@ -6238,6 +6325,11 @@ fn App() -> impl IntoView {
                                                                 ev.stop_propagation();
                                                                 set_tree_selected.set(row_menu.path.clone());
                                                                 set_tree_selected_dir.set(row_menu.is_dir);
+                                                                // A right click outside the selection selects that row.
+                                                                if !tree_multi.with_untracked(|rows| rows.iter().any(|row| row.id() == row_menu.id())) {
+                                                                    tree_multi.set(vec![row_menu.clone()]);
+                                                                    tree_anchor.set(row_menu.id());
+                                                                }
                                                                 set_tree_menu.set(Some((
                                                                     ev.client_x() as f64,
                                                                     ev.client_y() as f64,
@@ -6245,6 +6337,11 @@ fn App() -> impl IntoView {
                                                                 )));
                                                             }
                                                             on:dragstart=move |ev: web_sys::DragEvent| {
+                                                                // Dragging an unselected row drags it alone.
+                                                                if !tree_multi.with_untracked(|rows| rows.iter().any(|row| row.id() == row_drag.id())) {
+                                                                    tree_multi.set(vec![row_drag.clone()]);
+                                                                    tree_anchor.set(row_drag.id());
+                                                                }
                                                                 set_dragging_tree.set(Some(row_drag.clone()));
                                                                 if let Some(transfer) = ev.data_transfer() {
                                                                     let _ = transfer.set_data(
@@ -7878,17 +7975,21 @@ fn App() -> impl IntoView {
                                 <button
                                     class="menu-item"
                                     on:click={
-                                        let add_row_to_playlist = add_row_to_playlist.clone();
+                                        let add_rows_to_playlist = add_rows_to_playlist.clone();
                                         move |_| {
                                             if let Some((_, _, row)) = tree_menu.get() {
-                                                add_row_to_playlist(row);
+                                                add_rows_to_playlist(rows_for(&row));
                                                 if touch_mode { set_mobile_view.set(MobileView::Queue); }
                                             }
                                             set_tree_menu.set(None);
                                         }
                                     }
                                 >
-                                    {if touch_mode { "Add to Queue" } else { "Add to Playlist" }}
+                                    {move || {
+                                        let count = tree_menu.get().map_or(1, |(_, _, row)| rows_for(&row).len());
+                                        let target = if touch_mode { "Queue" } else { "Playlist" };
+                                        if count > 1 { format!("Add {count} Items to {target}") } else { format!("Add to {target}") }
+                                    }}
                                 </button>
                                 <Show
                                     when=move || {
