@@ -30,6 +30,12 @@ impl Default for View {
     }
 }
 impl View {
+    /// Open on one view: 1 keyboards, 2 tracker, 3 both, 4 MML.
+    pub fn show(&mut self, mode: u8) {
+        self.mode = mode;
+        self.open = true;
+    }
+
     pub fn key(&mut self, key: Key) {
         if self.guide.open {
             self.guide.key(key);

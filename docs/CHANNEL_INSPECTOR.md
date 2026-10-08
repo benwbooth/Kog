@@ -1,11 +1,13 @@
 # Channel Inspector
 
-Open **View → Channel Inspector** in Qt, the web player, or the terminal.
-Qt and the web player also use **Ctrl+Shift+I**. On Android and iOS, open
-**Channel Inspector** from Now Playing.
+Each view has its own entry in the **View** menu of Qt, the web player and
+the terminal: **Channel Keyboards + Tracker** (**Channel Inspector** in the
+terminal; **Ctrl+Shift+I** in Qt and the web player), **Channel Keyboards**,
+**Channel Tracker** and **MML Score**. Tabs along the top of the inspector
+switch between them (keys **1** to **4** in the terminal). On Android and iOS,
+open **Channel Inspector** from Now Playing.
 
-Choose **Keyboards**, **Tracker**, or **Both**. **MML score** (key **4** in the
-terminal) shows the whole song as [Kog MML](KOG_MML.md), split into tracks and
+**MML score** shows the whole song as [Kog MML](KOG_MML.md), split into tracks and
 bars, with the sounding notes highlighted as it plays. Each musical channel has its
 own keyboard. Cyan keys are held; green keys are retained by sustain. Multiple
 keys can light together. Fractional pitches have an orange bend marker. Noise,

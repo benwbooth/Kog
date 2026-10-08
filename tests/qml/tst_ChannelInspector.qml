@@ -104,6 +104,21 @@ TestCase {
         verify(exportButton.visible && exportButton.enabled)
     }
 
+    function test_views_are_tabs_and_show_mode_opens_one() {
+        const tabs = findChild(inspector, "channelInspectorMode")
+        verify(tabs !== null && tabs.visible)
+        compare(tabs.count, 4)
+        compare(tabs.currentIndex, 2)
+        tabs.itemAt(3).clicked()
+        compare(inspector.mode, 3)
+        compare(inspector.title, "Kog — MML Score")
+        inspector.hide()
+        inspector.showMode(1)
+        tryCompare(inspector, "visible", true)
+        compare(inspector.mode, 1)
+        compare(tabs.currentIndex, 1)
+    }
+
     function test_mml_guide_opens_with_chapters() {
         inspector.mode = 3
         const button = findChild(inspector, "mmlGuideButton")

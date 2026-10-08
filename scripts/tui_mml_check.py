@@ -96,10 +96,9 @@ with tempfile.TemporaryDirectory(prefix="kog-tui-mml-") as base:
         send(b" ")
         wait_for("Playing")
         send(b"\x1bv")
-        wait_for("Channel Inspector")
-        send(b"\x1b" + shortcut("Channel Inspector"))
+        wait_for("MML Score")
+        send(b"\x1b" + shortcut("MML Score"))
         wait_for("[4 MML]")
-        send("4")
         # The NSF has no length, so recording runs to the ten-minute cap; the
         # first bars must appear while it is still going.
         wait_for("; bar", 30)

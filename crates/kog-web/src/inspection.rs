@@ -13,6 +13,14 @@ struct Reply {
     detail: Option<String>,
 }
 
+/// The inspector's views, as mode values and labels.
+pub const VIEWS: [(&str, &str); 4] = [
+    ("both", "Keyboards + tracker"),
+    ("keyboards", "Keyboards"),
+    ("tracker", "Tracker"),
+    ("mml", "MML score"),
+];
+
 #[component]
 pub fn Inspector(
     audio: NodeRef<leptos::html::Audio>,
@@ -21,10 +29,11 @@ pub fn Inspector(
     close: Callback<()>,
     toggle_play: Callback<()>,
     authorization: Signal<Option<String>>,
+    /// Which view is showing: "both", "keyboards", "tracker" or "mml".
+    mode: RwSignal<String>,
 ) -> impl IntoView {
     let state = RwSignal::new(Snapshot::default());
     let message = RwSignal::new(String::new());
-    let mode = RwSignal::new("both".to_owned());
     let follow = RwSignal::new(true);
     let follow_read = follow.read_only();
     let tracker = NodeRef::<leptos::html::Div>::new();
@@ -220,12 +229,16 @@ pub fn Inspector(
         <Show when=move || open.get()>
             <div class="scrim" on:click=move |_| close.run(())></div>
             <section class="channel-inspector" role="dialog" aria-modal="true" aria-label="Channel Inspector">
-                <header><h2>"Channel Inspector"</h2><button type="button" aria-label="Close Channel Inspector" on:click=move |_| close.run(())>"×"</button></header>
+                <header><h2>{move || if mode.get() == "mml" { "MML Score" } else { "Channel Inspector" }}</h2><button type="button" aria-label="Close Channel Inspector" on:click=move |_| close.run(())>"×"</button></header>
                 <div class="channel-tools">
                     <button type="button" on:click=move |_| toggle_play.run(())>{move || if state.with(|s| s.playing) { "Pause" } else { "Play" }}</button>
-                    <select aria-label="Inspector view" on:change=move |ev| mode.set(event_target_value(&ev))>
-                        <option value="both">"Keyboards and tracker"</option><option value="keyboards">"Keyboards"</option><option value="tracker">"Tracker"</option><option value="mml">"MML score"</option>
-                    </select>
+                    // Every view is one click away instead of hidden in a drop-down.
+                    <div class="channel-modes" role="tablist" aria-label="Inspector view">
+                        {VIEWS.iter().map(|(value, label)| view! {
+                            <button type="button" role="tab" aria-selected=move || (mode.get() == *value).to_string()
+                                class:current=move || mode.get() == *value on:click=move |_| mode.set((*value).to_owned())>{*label}</button>
+                        }).collect_view()}
+                    </div>
                     <label><input type="checkbox" prop:checked=move || follow.get() on:change=move |ev| follow.set(event_target_checked(&ev))/>{"Follow playback"}</label>
                     <span>{move || state.with(|s| format!("{} · {:.3} s", s.description.backend, s.position))}</span>
                 </div>

@@ -2459,7 +2459,12 @@ impl Ui {
                 };
             }
             (MenuPage::View, 7) => self.show_artwork(),
-            (MenuPage::View, 8) => { self.modal = None; self.visualizer_open = false; self.inspector.open = true; },
+            (MenuPage::View, 8..=11) => {
+                self.modal = None;
+                self.visualizer_open = false;
+                // Each Channel Inspector view has its own entry.
+                self.inspector.show([3, 1, 2, 4][index - 8]);
+            }
             (MenuPage::Playback, 0) => self.play_pause(),
             (MenuPage::Playback, 1) => {
                 self.session_command(SessionCommand::Stop);
@@ -10467,7 +10472,7 @@ const REMOTE_MENU: [&str; 9] = [
     "Queue Current Folder",
     "Use Local Library",
 ];
-const VIEW_MENU: [&str; 9] = [
+const VIEW_MENU: [&str; 12] = [
     "Show/Hide Files and Playlists",
     "Track Info…",
     "Lyrics…",
@@ -10477,6 +10482,9 @@ const VIEW_MENU: [&str; 9] = [
     "Compact Player On/Off",
     "Show Album Cover…",
     "Channel Inspector…",
+    "Channel Keyboards…",
+    "Channel Tracker…",
+    "MML Score…",
 ];
 const PLAYBACK_MENU: [&str; 14] = [
     "Play/Pause",

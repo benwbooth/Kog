@@ -6,7 +6,7 @@ import Qt.labs.platform as Platform
 ApplicationWindow {
     id: root
     required property var app
-    title: qsTr("Kog — Channel Inspector")
+    title: qsTr("Kog — %1").arg(mode === 3 ? qsTr("MML Score") : qsTr("Channel Inspector"))
     width: Math.min(1800, Screen.desktopAvailableWidth)
     height: 740
     minimumWidth: 640
@@ -24,6 +24,14 @@ ApplicationWindow {
     property var rows: []
     property bool follow: true
     property int mode: 2
+    readonly property var modeNames: [qsTr("Keyboards"), qsTr("Tracker"), qsTr("Keyboards + tracker"), qsTr("MML score")]
+    // Open (or bring forward) the window showing one view.
+    function showMode(next) {
+        mode = next
+        show()
+        raise()
+        requestActivate()
+    }
     // MML score: the playing bar arrives as highlighted rich text, the other
     // bars are fetched once per score revision by their delegates.
     // Each piece of the MML state is its own property so a change in one (the
@@ -101,12 +109,20 @@ ApplicationWindow {
             anchors.leftMargin: 12
             anchors.rightMargin: 12
             Label { text: qsTr("Channels"); font.bold: true }
-            ComboBox {
+            // Every view is one click away instead of hidden in a drop-down.
+            TabBar {
                 objectName: "channelInspectorMode"
-                model: [qsTr("Keyboards"), qsTr("Tracker"), qsTr("Keyboards + tracker"), qsTr("MML score")]
                 currentIndex: root.mode
-                onActivated: root.mode = currentIndex
-                Layout.preferredWidth: 200
+                Repeater {
+                    model: root.modeNames
+                    TabButton {
+                        required property string modelData
+                        required property int index
+                        text: modelData
+                        width: implicitWidth
+                        onClicked: root.mode = index
+                    }
+                }
             }
             Label { visible: root.mode === 3; text: qsTr("Bars per line") }
             SpinBox {

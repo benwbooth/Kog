@@ -2,13 +2,15 @@
 
 ## Opening it
 
-The MML view is part of the Channel Inspector.
+The MML view is part of the Channel Inspector, and has its own entry in the
+View menu. Inside the inspector, the tabs along the top switch between the
+keyboards, the tracker and the MML score.
 
 | Player | How to open it |
 | --- | --- |
-| Desktop (Qt) | **View → Channel Inspector** (or **Ctrl+Shift+I**), then choose **MML score** in the view menu |
-| Web player | Open the Channel Inspector, then choose **MML score** |
-| Terminal | Open the Channel Inspector from the View menu, then press **4** |
+| Desktop (Qt) | **View → MML Score** |
+| Web player | **View → MML Score** in the menu |
+| Terminal | **View → MML Score…**, or press **4** in the Channel Inspector |
 | Android and iOS | Open **Channel Inspector** from Now Playing, then choose **MML** |
 
 The **Guide** button next to the score opens this book.
