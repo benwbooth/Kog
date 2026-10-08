@@ -204,6 +204,41 @@ pub fn Inspector(
         })
     });
     let rows = Memo::new(move |_| state.with(|s| s.rows.clone()));
+    // Tracker column widths in characters per channel: they grow to fit the
+    // rows shown so columns stay put, and start over for a new source.
+    let widths = RwSignal::new(std::collections::HashMap::<u32, [usize; 4]>::new());
+    let width_source = RwSignal::new(String::new());
+    Effect::new(move |_| {
+        let source = state.with(|s| format!("{}/{}", s.description.backend, s.channels.len()));
+        if width_source.get_untracked() != source {
+            width_source.set(source);
+            widths.set(Default::default());
+        }
+        let mut next = widths.get_untracked();
+        let mut changed = false;
+        rows.with(|rows| {
+            for row in rows {
+                let mut channels: Vec<u32> = row.cells.iter().map(|cell| cell.channel).collect();
+                channels.dedup();
+                for channel in channels {
+                    let cells: Vec<_> = row.cells.iter().filter(|cell| cell.channel == channel).collect();
+                    let parts = kog_inspection::tracker_parts(&cells);
+                    let entry = next.entry(channel).or_insert_with(|| kog_inspection::TRACKER_LIMITS.map(|(least, _)| least));
+                    for (column, part) in parts.iter().enumerate() {
+                        let (_, most) = kog_inspection::TRACKER_LIMITS[column];
+                        let fit = part.chars().count().min(most);
+                        if fit > entry[column] {
+                            entry[column] = fit;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        });
+        if changed {
+            widths.set(next);
+        }
+    });
     let current = Memo::new(move |_| {
         state.with(|s| {
             s.current_row
@@ -253,14 +288,23 @@ pub fn Inspector(
                 </Show>
                 <Show when=move || matches!(mode.get().as_str(), "both" | "tracker")>
                     <div class="channel-tracker" node_ref=tracker>
-                        <table><thead><tr><th>"Time / row"</th>{move || columns.get().into_iter().map(|(_,name)| view!{<th>{name}</th>}).collect_view()}<th>"Song data"</th></tr></thead>
+                        // A classic tracker: a pixel font, one column per channel,
+                        // and note, instrument, volume and effects in their own colours.
+                        <table><thead><tr><th>"ROW"</th>{move || columns.get().into_iter().enumerate().map(|(index,(_,name))| view!{<th>{format!("{:02} {name}", index + 1)}</th>}).collect_view()}<th>"SONG"</th></tr></thead>
                         <tbody><For each=move || rows.get() key=|row| (row.time.to_bits(),row.label.clone()) children=move |row| {
                                 let key = (row.time.to_bits(),row.label.clone());
                                 let cells = columns.with(|columns| columns.iter().map(|(id,_)| {
                                     let cells = row.cells.iter().filter(|cell| cell.channel == *id).collect::<Vec<_>>();
-                                    let text = cells.iter().map(|cell| format!("{} {} {}", cell.notes,cell.instrument,cell.volume)).collect::<Vec<_>>().join(" · ");
-                                    let effects = cells.iter().flat_map(|cell| &cell.effects).map(|f| format!("{} {}",f.name,f.value)).collect::<Vec<_>>().join(" · ");
-                                    view! {<td title=effects.clone()><b>{text}</b><small>{effects.clone()}</small></td>}
+                                    let parts = kog_inspection::tracker_parts(&cells);
+                                    let title = parts.iter().filter(|p| !p.is_empty()).cloned().collect::<Vec<_>>().join(" ");
+                                    let id = *id;
+                                    let spans = parts.into_iter().enumerate().map(|(column, text)| {
+                                        let empty = text.is_empty();
+                                        let text = if empty { if column == 0 { "---".to_owned() } else { "..".to_owned() } } else { text };
+                                        let width = move || format!("{}ch", widths.with(|w| w.get(&id).map_or(kog_inspection::TRACKER_LIMITS[column].0, |w| w[column])));
+                                        view! {<span class=["tn","ti","tv","tf"][column] class:blank=empty style:width=width>{text}</span>}
+                                    }).collect_view();
+                                    view! {<td title=title>{spans}</td>}
                                 }).collect_view());
                                 view!{<tr class:current=move || current.with(|c| c.as_ref()==Some(&key))><th>{row.label.clone()}</th>{cells}<td>{row.global.iter().map(|f| format!("{} {}",f.name,f.value)).collect::<Vec<_>>().join(" · ")}</td></tr>}
                         }/></tbody></table>

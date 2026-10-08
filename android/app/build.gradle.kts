@@ -25,6 +25,8 @@ android {
     }
 
     sourceSets.getByName("androidTest").assets.srcDir(rootProject.file("../tests/ui-contract"))
+    // The tracker's pixel font is shared with the desktop and web players.
+    sourceSets.getByName("main").assets.srcDir(rootProject.file("../qml/fonts"))
 
     buildTypes {
         debug { versionNameSuffix = "-dev" }

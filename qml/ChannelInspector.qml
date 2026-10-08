@@ -100,6 +100,49 @@ ApplicationWindow {
         return (row.cells || []).filter(c => c.channel === channel).map(c =>
             [c.notes, c.instrument, c.volume, fields(c.effects)].filter(v => v).join(" ")).join(" | ")
     }
+    // Tracker cells as classic columns: note, instrument, volume, effects.
+    // Effects named FX are the tracker's own effect columns; their values
+    // stand alone.
+    function cellParts(row, channel) {
+        const cells = (row.cells || []).filter(c => c.channel === channel)
+        const first = key => (cells.find(c => c[key]) || {})[key] || ""
+        return [
+            cells.map(c => c.notes).filter(v => v).join(" "),
+            first("instrument"),
+            first("volume"),
+            cells.reduce((all, c) => all.concat(c.effects || []), []).map(f => /^FX\d*$/.test(f.name) ? f.value : f.name + " " + f.value).join(" ")
+        ]
+    }
+    // Column widths in characters, per channel: they grow to fit what has
+    // been shown (within limits) so columns stay put from row to row.
+    readonly property var trackerLimits: [[3, 7], [2, 8], [2, 4], [3, 18]]
+    property var trackerWidths: ({})
+    property string trackerSource: ""
+    function fitTracker() {
+        const source = (frame.description && frame.description.backend || "") + "/" + channels.length
+        const widths = source === trackerSource ? Object.assign({}, trackerWidths) : {}
+        let changed = source !== trackerSource
+        for (const row of rows) {
+            for (const channel of channels) {
+                const parts = cellParts(row, channel.id)
+                const current = widths[channel.id] || trackerLimits.map(l => l[0])
+                const next = current.map((w, i) => Math.max(w, Math.min(trackerLimits[i][1], parts[i].length)))
+                if (next.some((w, i) => w !== current[i]) || !widths[channel.id]) { widths[channel.id] = next; changed = true }
+            }
+        }
+        trackerSource = source
+        if (changed) trackerWidths = widths
+    }
+    function columnChars(channel) { return trackerWidths[channel] || trackerLimits.map(l => l[0]) }
+    // One character of the tracker font, and the width of a channel's column.
+    readonly property int trackerChar: 6
+    function channelWidth(channel) {
+        const chars = columnChars(channel)
+        return (chars[0] + chars[1] + chars[2] + chars[3] + 3) * trackerChar + 12
+    }
+    onRowsChanged: fitTracker()
+    FontLoader { source: Qt.resolvedUrl("fonts/spleen-6x12.otf") }
+    onChannelsChanged: fitTracker()
     onVisibleChanged: if (visible) refresh()
     Timer { interval: 33; repeat: true; running: root.visible && root.visibility !== Window.Minimized; onTriggered: root.refresh() }
     Shortcut { sequence: "Escape"; onActivated: root.hide() }
@@ -342,61 +385,114 @@ ApplicationWindow {
                     Label { text: qsTr("Tracker · note / instrument / volume / effects"); color: "#b6cbd5"; Layout.fillWidth: true }
                     CheckBox { text: qsTr("Follow playback"); checked: root.follow; onToggled: root.follow = checked }
                 }
-                Flickable {
-                    id: trackerHorizontal
+                // A classic tracker: a small pixel font, one column per
+                // channel, and note, instrument, volume and effects each in
+                // their own colour.
+                Rectangle {
                     Layout.fillWidth: true; Layout.fillHeight: true
-                    clip: true
-                    contentWidth: Math.max(width, 112 + root.channels.length * 230)
-                    contentHeight: height
-                    flickableDirection: Flickable.HorizontalFlick
-                    ScrollBar.horizontal: ScrollBar { }
-                    Column {
-                        width: trackerHorizontal.contentWidth
-                        height: trackerHorizontal.height - 14
-                        Row {
-                            height: 26
-                            Label { width: 112; text: qsTr("Position"); color: "#a8bdc9" }
-                            Repeater {
-                                model: root.mode === 0 ? 0 : root.channels.length
-                                Label { required property int index; width: 230; text: root.channels[index].name; color: "#a8bdc9"; textFormat: Text.PlainText; elide: Text.ElideRight }
-                            }
-                        }
-                        ListView {
-                            id: tracker
-                            objectName: "channelTracker"
-                            width: parent.width; height: parent.height - 26
-                            clip: true
-                            model: root.mode === 0 ? 0 : root.rows.length
-                            currentIndex: root.frame.current_row === null || root.frame.current_row === undefined ? -1 : root.frame.current_row
-                            function followRow() { if (root.follow && currentIndex >= 0) positionViewAtIndex(currentIndex, ListView.Center) }
-                            onCurrentIndexChanged: followRow()
-                            onCountChanged: followRow()
-                            Connections { target: root; function onRowsChanged() { tracker.followRow() } }
-                            ScrollBar.vertical: ScrollBar { }
-                            delegate: Rectangle {
-                                required property int index
-                                readonly property var row: root.rows[index] || ({})
-                                width: tracker.width
-                                height: row.global && row.global.length ? 52 : 30
-                                color: index === tracker.currentIndex ? "#234c5f" : index % 2 ? "#15232c" : "#101b22"
+                    color: "#070b0e"
+                    border.color: "#1d2a32"
+                    Flickable {
+                        id: trackerHorizontal
+                        anchors.fill: parent
+                        anchors.margins: 1
+                        clip: true
+                        readonly property int labelWidth: 13 * root.trackerChar
+                        contentWidth: Math.max(width, labelWidth + root.channels.reduce((sum, c) => sum + root.channelWidth(c.id), 0))
+                        contentHeight: height
+                        flickableDirection: Flickable.HorizontalFlick
+                        ScrollBar.horizontal: ScrollBar { }
+                        Column {
+                            width: trackerHorizontal.contentWidth
+                            height: trackerHorizontal.height - 14
+                            Rectangle {
+                                width: parent.width; height: 20
+                                color: "#101a21"
                                 Row {
-                                    anchors.top: parent.top; anchors.topMargin: 5
-                                    Label { width: 112; text: row.label || ""; color: "#8acfe7"; font.family: "monospace"; font.pixelSize: 11; leftPadding: 5 }
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    TrackerText { width: trackerHorizontal.labelWidth; height: 20; leftPadding: 6; text: qsTr("ROW"); color: "#6c8494" }
                                     Repeater {
-                                        model: root.channels.length
-                                        Label {
+                                        model: root.mode === 0 ? 0 : root.channels.length
+                                        Item {
                                             required property int index
-                                            width: 230
-                                            text: root.cellText(row, root.channels[index].id)
-                                            textFormat: Text.PlainText
-                                            color: "#d7e6ed"; font.family: "monospace"; font.pixelSize: 11; elide: Text.ElideRight
-                                            HoverHandler { id: cellHover }
-                                            ToolTip.visible: cellHover.hovered && text.length > 0
-                                            ToolTip.text: text
+                                            readonly property var channel: root.channels[index]
+                                            width: root.channelWidth(channel.id); height: 20
+                                            Rectangle { width: 1; height: parent.height; color: "#2a3b46" }
+                                            TrackerText {
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                x: 6; width: parent.width - 8
+                                                text: String(index + 1).padStart(2, "0") + " " + channel.name
+                                                color: "#a9c4d2"
+                                            }
                                         }
                                     }
                                 }
-                                Label { anchors.left: parent.left; anchors.leftMargin: 112; anchors.bottom: parent.bottom; anchors.bottomMargin: 4; text: root.fields(row.global); textFormat: Text.PlainText; color: "#83d4bb"; font.pixelSize: 10 }
+                            }
+                            ListView {
+                                id: tracker
+                                objectName: "channelTracker"
+                                width: parent.width; height: parent.height - 20
+                                clip: true
+                                model: root.mode === 0 ? 0 : root.rows.length
+                                currentIndex: root.frame.current_row === null || root.frame.current_row === undefined ? -1 : root.frame.current_row
+                                function followRow() { if (root.follow && currentIndex >= 0) positionViewAtIndex(currentIndex, ListView.Center) }
+                                onCurrentIndexChanged: followRow()
+                                onCountChanged: followRow()
+                                Connections { target: root; function onRowsChanged() { tracker.followRow() } }
+                                ScrollBar.vertical: ScrollBar { }
+                                delegate: Rectangle {
+                                    id: trackerRow
+                                    required property int index
+                                    readonly property var row: root.rows[index] || ({})
+                                    readonly property bool current: index === tracker.currentIndex
+                                    width: tracker.width
+                                    height: row.global && row.global.length ? 28 : 15
+                                    color: current ? "#1d4a5e" : index % 4 === 0 ? "#0f171d" : "#070b0e"
+                                    Row {
+                                        TrackerText {
+                                            width: trackerHorizontal.labelWidth; height: 15; leftPadding: 6
+                                            text: trackerRow.row.label || ""
+                                            color: trackerRow.current ? "#ffffff" : "#d8b85a"
+                                        }
+                                        Repeater {
+                                            model: root.channels.length
+                                            Item {
+                                                id: cell
+                                                required property int index
+                                                readonly property int channelId: root.channels[index].id
+                                                readonly property var parts: root.cellParts(trackerRow.row, channelId)
+                                                readonly property var chars: root.columnChars(channelId)
+                                                width: root.channelWidth(channelId); height: 15
+                                                Rectangle { width: 1; height: trackerRow.height; color: "#2a3b46" }
+                                                Row {
+                                                    x: 6
+                                                    spacing: root.trackerChar
+                                                    Repeater {
+                                                        model: 4
+                                                        TrackerText {
+                                                            required property int index
+                                                            width: cell.chars[index] * root.trackerChar
+                                                            height: 15
+                                                            readonly property bool empty: !cell.parts[index]
+                                                            // Empty fields show as dots, like a tracker.
+                                                            text: empty ? (index === 0 ? "---" : "..") : cell.parts[index]
+                                                            color: empty ? "#33454f" : ["#eef4f7", "#58c8f0", "#8fdc7c", "#e39cf2"][index]
+                                                        }
+                                                    }
+                                                }
+                                                HoverHandler { id: cellHover }
+                                                ToolTip.visible: cellHover.hovered && cell.parts.some(p => p.length > 0)
+                                                ToolTip.text: root.cellText(trackerRow.row, cell.channelId)
+                                            }
+                                        }
+                                    }
+                                    TrackerText {
+                                        anchors.left: parent.left; anchors.leftMargin: trackerHorizontal.labelWidth + 6
+                                        anchors.bottom: parent.bottom; anchors.bottomMargin: 1
+                                        text: root.fields(trackerRow.row.global)
+                                        color: "#83d4bb"
+                                    }
+                                }
                             }
                         }
                     }

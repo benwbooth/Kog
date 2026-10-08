@@ -55,6 +55,8 @@ TestCase {
         verify(tracker !== null)
         tryCompare(keyboards, "count", 1)
         compare(inspector.cellText(inspector.rows[0], 0), "C-4 E-4 01 64 CC64 Sustain 127")
+        compare(inspector.cellParts(inspector.rows[0], 0), ["C-4 E-4", "01", "64", "CC64 Sustain 127"])
+        compare(inspector.columnChars(0), [7, 2, 2, 16])
         compare(tracker.currentIndex, 0)
         inspector.mode = 1
         compare(keyboards.visible, false)

@@ -129,6 +129,30 @@ impl Snapshot {
     }
 }
 
+/// A tracker cell's classic columns for one channel: notes, instrument,
+/// volume and effects. Effects named `FX…` are a tracker's own effect columns
+/// and show their value alone.
+pub fn tracker_parts(cells: &[&Cell]) -> [String; 4] {
+    let first = |pick: fn(&Cell) -> &str| cells.iter().map(|cell| pick(cell)).find(|v| !v.is_empty()).unwrap_or_default().to_owned();
+    [
+        cells.iter().map(|cell| cell.notes.as_str()).filter(|v| !v.is_empty()).collect::<Vec<_>>().join(" "),
+        first(|cell| &cell.instrument),
+        first(|cell| &cell.volume),
+        cells
+            .iter()
+            .flat_map(|cell| &cell.effects)
+            .map(|field| {
+                let tracker_column = field.name.strip_prefix("FX").is_some_and(|rest| rest.bytes().all(|b| b.is_ascii_digit()));
+                if tracker_column { field.value.clone() } else { format!("{} {}", field.name, field.value) }
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
+    ]
+}
+
+/// Fewest and most characters each tracker column takes.
+pub const TRACKER_LIMITS: [(usize, usize); 4] = [(3, 7), (2, 8), (2, 4), (3, 18)];
+
 pub fn note_name(key: f32) -> String {
     if !key.is_finite() {
         return "—".into();
@@ -521,6 +545,20 @@ mod tests {
             row(&[], &channel).is_none(),
             "silent voices do not populate the tracker"
         );
+    }
+
+    #[test]
+    fn tracker_parts_split_cells_into_classic_columns() {
+        let cell = Cell {
+            channel: 0,
+            notes: "C-4".into(),
+            instrument: "01".into(),
+            volume: "40".into(),
+            effects: vec![Field::new("FX", "A0F"), Field::new("Sustain", "On")],
+        };
+        let chord = Cell { notes: "E-4".into(), instrument: String::new(), ..cell.clone() };
+        assert_eq!(tracker_parts(&[&cell, &chord]), ["C-4 E-4", "01", "40", "A0F Sustain On A0F Sustain On"].map(String::from));
+        assert_eq!(tracker_parts(&[]), ["", "", "", ""].map(String::from));
     }
 
     #[test]

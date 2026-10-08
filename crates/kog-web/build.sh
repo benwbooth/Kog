@@ -34,6 +34,9 @@ cp "$here/style.css" "$out_dir/style.css"
 cp "$here/manifest.webmanifest" "$out_dir/manifest.webmanifest"
 # The trailing slash matters: a plain `cp -r` into an existing icons dir would
 # nest a second icons directory instead of refreshing its contents.
+# The tracker's pixel font is shared with the Qt app.
+mkdir -p "$out_dir/fonts"
+cp "$here/../../qml/fonts/spleen-6x12.otf" "$out_dir/fonts/spleen-6x12.otf"
 mkdir -p "$out_dir/icons"
 cp -r "$here/icons/." "$out_dir/icons/"
 

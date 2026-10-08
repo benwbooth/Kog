@@ -180,24 +180,70 @@ private fun InspectorTracker(snapshot: InspectionSnapshot, follow: Boolean, modi
     LaunchedEffect(snapshot.current,snapshot.rows.firstOrNull()?.time,follow) {
         if (follow && snapshot.current != null) scroll.scrollToItem((snapshot.current - 4).coerceAtLeast(0))
     }
-    Box(modifier.horizontalScroll(rememberScrollState())) {
-        Column(Modifier.width(((snapshot.channels.size + 1) * 190 + 90).dp)) {
-            Row { Text("Time / row",Modifier.width(90.dp)); snapshot.channels.forEach { Text(it.name,Modifier.width(190.dp),fontSize = 11.sp) };Text("Song data") }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    // The Spleen 6x12 pixel font, as in the desktop and web trackers.
+    val pixel = remember { FontFamily(androidx.compose.ui.text.font.Font("spleen-6x12.otf", context.assets)) }
+    val char = 7.dp
+    val widths = remember(snapshot.backend, snapshot.channels.size) { mutableStateMapOf<Int, IntArray>() }
+    snapshot.rows.forEach { row ->
+        snapshot.channels.forEach { channel ->
+            val parts = trackerParts(row.cells.filter { it.channel == channel.id })
+            val current = widths[channel.id] ?: TRACKER_LIMITS.map { it.first }.toIntArray()
+            val next = IntArray(4) { maxOf(current[it], minOf(TRACKER_LIMITS[it].second, parts[it].length)) }
+            if (!next.contentEquals(widths[channel.id])) widths[channel.id] = next
+        }
+    }
+    fun chars(channel: Int) = widths[channel] ?: TRACKER_LIMITS.map { it.first }.toIntArray()
+    fun columnWidth(channel: Int) = char * (chars(channel).sum() + 3) + 10.dp
+    val text = androidx.compose.ui.text.TextStyle(fontFamily = pixel, fontSize = 12.sp, lineHeight = 15.sp)
+    Box(modifier.background(Color(0xff070b0e)).horizontalScroll(rememberScrollState())) {
+        Column(Modifier.width(char * 13 + snapshot.channels.fold(0.dp) { sum, c -> sum + columnWidth(c.id) } + 200.dp)) {
+            Row(Modifier.background(Color(0xff101a21)).padding(vertical = 3.dp)) {
+                Text("ROW", Modifier.width(char * 13).padding(start = 5.dp), style = text, color = Color(0xff6c8494))
+                snapshot.channels.forEachIndexed { index, channel ->
+                    Text("%02d %s".format(index + 1, channel.name), Modifier.width(columnWidth(channel.id)).padding(start = 5.dp),
+                        style = text, color = Color(0xffa9c4d2), maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Clip)
+                }
+                Text("SONG", style = text, color = Color(0xff6c8494))
+            }
             LazyColumn(state = scroll) {
-                itemsIndexed(snapshot.rows) { index,row ->
-                    Row(Modifier.background(if (snapshot.current == index) Color(0xff27516c) else Color.Transparent)) {
-                        Text(row.label,Modifier.width(90.dp).padding(3.dp),fontSize = 11.sp,fontFamily = FontFamily.Monospace)
+                itemsIndexed(snapshot.rows) { index, row ->
+                    val current = snapshot.current == index
+                    Row(Modifier.background(if (current) Color(0xff1d4a5e) else if (index % 4 == 0) Color(0xff0f171d) else Color.Transparent)) {
+                        Text(row.label, Modifier.width(char * 13).padding(start = 5.dp), style = text,
+                            color = if (current) Color.White else Color(0xffd8b85a), maxLines = 1)
                         snapshot.channels.forEach { channel ->
-                            val cells = row.cells.filter { it.channel == channel.id }
-                            Column(Modifier.width(190.dp).padding(3.dp)) {
-                                Text(cells.joinToString(" · ") { "${it.notes} ${it.instrument} ${it.volume}" },fontSize = 11.sp,fontFamily = FontFamily.Monospace,color = Color(0xff72d0fc))
-                                Text(cells.flatMap { it.effects }.joinToString(" · ") { it.label() },fontSize = 10.sp)
+                            val parts = trackerParts(row.cells.filter { it.channel == channel.id })
+                            val chars = chars(channel.id)
+                            Row(Modifier.width(columnWidth(channel.id)).height(IntrinsicSize.Min)) {
+                                Box(Modifier.width(1.dp).fillMaxHeight().background(Color(0xff2a3b46)))
+                                Spacer(Modifier.width(5.dp))
+                                parts.forEachIndexed { column, part ->
+                                    val blank = part.isEmpty()
+                                    Text(if (blank) (if (column == 0) "---" else "..") else part,
+                                        Modifier.width(char * chars[column]), style = text, maxLines = 1,
+                                        overflow = androidx.compose.ui.text.style.TextOverflow.Clip,
+                                        color = if (blank) Color(0xff33454f) else TRACKER_COLOURS[column])
+                                    Spacer(Modifier.width(char))
+                                }
                             }
                         }
-                        Text(row.global.joinToString(" · ") { it.label() },Modifier.width(190.dp).padding(3.dp),fontSize = 10.sp)
+                        Text(row.global.joinToString(" ") { it.label() }, style = text, color = Color(0xff83d4bb), maxLines = 1)
                     }
                 }
             }
         }
     }
 }
+
+/** Fewest and most characters of each tracker column: note, instrument, volume, effects. */
+private val TRACKER_LIMITS = listOf(3 to 7, 2 to 8, 2 to 4, 3 to 18)
+private val TRACKER_COLOURS = listOf(Color(0xffeef4f7), Color(0xff58c8f0), Color(0xff8fdc7c), Color(0xffe39cf2))
+
+/** A channel's tracker cells as classic columns; effects named FX… are the tracker's own and show their value alone. */
+private fun trackerParts(cells: List<InspectionCell>): List<String> = listOf(
+    cells.map { it.notes }.filter { it.isNotEmpty() }.joinToString(" "),
+    cells.map { it.instrument }.firstOrNull { it.isNotEmpty() }.orEmpty(),
+    cells.map { it.volume }.firstOrNull { it.isNotEmpty() }.orEmpty(),
+    cells.flatMap { it.effects }.joinToString(" ") { if (Regex("FX\\d*").matches(it.name)) it.value else "${it.name} ${it.value}" },
+)

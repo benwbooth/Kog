@@ -94,6 +94,14 @@ sample ROM data; users must supply files obtained from hardware they own.
 Roland product names are used only to identify compatibility and do not imply
 affiliation or endorsement.
 
+## Spleen
+
+`qml/fonts/spleen-6x12.otf` is the 6×12 size of Frederic Cambus's
+[Spleen](https://github.com/fcambus/spleen) bitmap font, release 2.1.0,
+unmodified. The Channel Inspector's tracker view uses it on every frontend.
+It is BSD-2-Clause licensed; the license is in
+`LICENSES/Spleen-BSD-2-Clause.txt`.
+
 ## Nuked SC-55
 
 The `native/nuked-sc55` Git submodule is J.C. Moyer's reusable backend fork of

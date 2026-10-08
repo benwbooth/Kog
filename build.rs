@@ -60,6 +60,7 @@ fn main() {
         "qml/SearchHighlightLabel.qml",
         "qml/PlaybackTitle.qml",
         "qml/RemoteBrowser.qml",
+        "qml/TrackerText.qml",
     ]))
     // Keep the bridge include root limited to Kog's hand-written integration
     // header instead of recursively tracking the whole repository.
@@ -161,6 +162,7 @@ fn main() {
         "qml/icons/view-restore-light.svg",
         "qml/icons/window-close.svg",
         "qml/icons/window-close-light.svg",
+        "qml/fonts/spleen-6x12.otf",
     ])
     .files([
         "src/app_controller.rs",

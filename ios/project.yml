@@ -24,6 +24,8 @@ targets:
       - path: ../LICENSES
         type: folder
         buildPhase: resources
+      - path: ../qml/fonts/spleen-6x12.otf
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.kog.player

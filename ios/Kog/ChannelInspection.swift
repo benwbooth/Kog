@@ -33,6 +33,23 @@ struct ChannelCell: Codable, Equatable, Sendable {
     var volume: String
     var effects: [ChannelField]
 }
+/// Tracker columns: note, instrument, volume and effects, with the fewest and
+/// most characters each takes.
+enum TrackerColumns {
+    static let limits = [(3, 7), (2, 8), (2, 4), (3, 18)]
+    /// A channel's cells as classic columns. Effects named FX… are the
+    /// tracker's own effect columns and show their value alone.
+    static func parts(_ cells: [ChannelCell]) -> [String] {
+        [
+            cells.map(\.notes).filter { !$0.isEmpty }.joined(separator: " "),
+            cells.map(\.instrument).first { !$0.isEmpty } ?? "",
+            cells.map(\.volume).first { !$0.isEmpty } ?? "",
+            cells.flatMap(\.effects).map { field in
+                field.name.hasPrefix("FX") && field.name.dropFirst(2).allSatisfy(\.isNumber) ? field.value : "\(field.name) \(field.value)"
+            }.joined(separator: " "),
+        ]
+    }
+}
 struct ChannelRow: Codable, Equatable, Sendable {
     var time: Double
     var label: String

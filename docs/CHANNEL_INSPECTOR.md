@@ -7,6 +7,11 @@ terminal; **Ctrl+Shift+I** in Qt and the web player), **Channel Keyboards**,
 switch between them (keys **1** to **4** in the terminal). On Android and iOS,
 open **Channel Inspector** from Now Playing.
 
+The tracker looks like a classic tracker: the small Spleen pixel font, a
+column per channel, and the note, instrument, volume and effects of each cell
+in their own colours, with dots where a field is empty. Hover over a cell on the desktop or the web
+for its full text.
+
 **MML score** shows the whole song as [Kog MML](KOG_MML.md), split into tracks and
 bars, with the sounding notes highlighted as it plays. Each musical channel has its
 own keyboard. Cyan keys are held; green keys are retained by sustain. Multiple

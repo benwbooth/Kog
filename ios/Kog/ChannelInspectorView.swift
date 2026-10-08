@@ -161,31 +161,76 @@ private struct ChannelLevelMeter: View {
 private struct ChannelTrackerView: View {
     let snapshot: ChannelSnapshot
     let follow: Bool
+    /// Column widths in characters per channel; they grow to fit the rows
+    /// shown so columns stay put, and start over for a new source.
+    @State private var widths = [Int: [Int]]()
+    @State private var source = ""
+    // The Spleen 6x12 pixel font, as in the desktop and web trackers.
+    private let pixel = Font.custom("Spleen 6x12", fixedSize: 12)
+    private let char: CGFloat = 6
+    private let colours: [Color] = [Color(red: 0.93, green: 0.96, blue: 0.97), Color(red: 0.35, green: 0.78, blue: 0.94),
+                                    Color(red: 0.56, green: 0.86, blue: 0.49), Color(red: 0.89, green: 0.61, blue: 0.95)]
+    private func chars(_ channel: Int) -> [Int] { widths[channel] ?? TrackerColumns.limits.map(\.0) }
+    private func columnWidth(_ channel: Int) -> CGFloat { CGFloat(chars(channel).reduce(0, +) + 3) * char + 10 }
+    private func fit() {
+        let next = "\(snapshot.description.backend)/\(snapshot.channels.count)"
+        var grown = next == source ? widths : [:]
+        for row in snapshot.rows {
+            for channel in snapshot.channels {
+                let parts = TrackerColumns.parts(row.cells.filter { $0.channel == channel.id })
+                let current = grown[channel.id] ?? TrackerColumns.limits.map(\.0)
+                grown[channel.id] = current.indices.map { max(current[$0], min(TrackerColumns.limits[$0].1, parts[$0].count)) }
+            }
+        }
+        source = next
+        if grown != widths { widths = grown }
+    }
     var body: some View {
         ScrollViewReader { reader in
             ScrollView([.horizontal,.vertical]) {
                 LazyVStack(alignment:.leading,spacing:0) {
                     HStack(spacing:0) {
-                        Text("Time / row").frame(width:90,alignment:.leading)
-                        ForEach(snapshot.channels) { channel in Text(channel.name).frame(width:190,alignment:.leading) }
-                        Text("Song data").frame(width:190,alignment:.leading)
-                    }.font(.caption.bold()).padding(.vertical,4)
+                        Text("ROW").foregroundStyle(Color(red: 0.42, green: 0.52, blue: 0.58)).frame(width:char * 13,alignment:.leading)
+                        ForEach(Array(snapshot.channels.enumerated()),id:\.element.id) { index,channel in
+                            Text(String(format:"%02d ",index + 1) + channel.name).lineLimit(1)
+                                .foregroundStyle(Color(red: 0.66, green: 0.77, blue: 0.82))
+                                .frame(width:columnWidth(channel.id),alignment:.leading)
+                        }
+                        Text("SONG").foregroundStyle(Color(red: 0.42, green: 0.52, blue: 0.58))
+                    }.padding(.vertical,3).padding(.leading,5).background(Color(red: 0.06, green: 0.1, blue: 0.13))
                     ForEach(Array(snapshot.rows.enumerated()),id:\.offset) { index,row in
-                        HStack(alignment:.top,spacing:0) {
-                            Text(row.label).frame(width:90,alignment:.leading)
+                        let current = snapshot.currentRow == index
+                        HStack(spacing:0) {
+                            Text(row.label).foregroundStyle(current ? .white : Color(red: 0.85, green: 0.72, blue: 0.35))
+                                .frame(width:char * 13,alignment:.leading)
                             ForEach(snapshot.channels) { channel in
-                                let cells = row.cells.filter { $0.channel == channel.id }
-                                VStack(alignment:.leading,spacing:3) {
-                                    Text(cells.map { "\($0.notes) \($0.instrument) \($0.volume)" }.joined(separator:" · ")).foregroundStyle(Palette.accent)
-                                    Text(cells.flatMap(\.effects).map(\.label).joined(separator:" · ")).font(.caption2)
-                                }.frame(width:180,alignment:.leading).padding(.horizontal,5)
+                                let parts = TrackerColumns.parts(row.cells.filter { $0.channel == channel.id })
+                                let chars = chars(channel.id)
+                                HStack(spacing:char) {
+                                    ForEach(0..<4,id:\.self) { column in
+                                        let blank = parts[column].isEmpty
+                                        Text(blank ? (column == 0 ? "---" : "..") : parts[column]).lineLimit(1)
+                                            .foregroundStyle(blank ? Color(red: 0.2, green: 0.27, blue: 0.31) : colours[column])
+                                            .frame(width:CGFloat(chars[column]) * char,alignment:.leading).clipped()
+                                    }
+                                }
+                                .padding(.leading,5)
+                                .frame(width:columnWidth(channel.id),alignment:.leading)
+                                .overlay(alignment:.leading) { Rectangle().fill(Color(red: 0.16, green: 0.23, blue: 0.27)).frame(width:1) }
                             }
-                            Text(row.global.map(\.label).joined(separator:" · ")).frame(width:190,alignment:.leading)
-                        }.font(.system(.caption,design:.monospaced)).padding(.vertical,4)
-                            .background(snapshot.currentRow == index ? Palette.accent.opacity(0.22) : Color.clear).id(index)
+                            Text(row.global.map { "\($0.name) \($0.value)" }.joined(separator:" ")).lineLimit(1)
+                                .foregroundStyle(Color(red: 0.51, green: 0.83, blue: 0.73))
+                        }
+                        .padding(.leading,5).frame(height:15)
+                        .background(current ? Color(red: 0.11, green: 0.29, blue: 0.37) : index % 4 == 0 ? Color(red: 0.06, green: 0.09, blue: 0.11) : Color.clear)
+                        .id(index)
                     }
                 }
+                .font(pixel)
             }
+            .background(Color(red: 0.03, green: 0.04, blue: 0.05))
+            .onAppear(perform: fit)
+            .onChange(of:snapshot.rows) { _,_ in fit() }
             .onChange(of:snapshot.currentRow) { _,index in if follow,let index { reader.scrollTo(index,anchor:.center) } }
             .onChange(of:snapshot.rows.first?.time) { _,_ in if follow,let index=snapshot.currentRow { reader.scrollTo(index,anchor:.center) } }
         }

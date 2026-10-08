@@ -3511,6 +3511,68 @@ body.touch .track .index-cell {
 .channel-inspector{position:fixed;z-index:120;inset:5vh 3vw;display:flex;flex-direction:column;gap:10px;padding:18px;border:1px solid var(--border,#596274);border-radius:12px;background:var(--base);color:var(--text,#e4e8ef);box-shadow:0 12px 60px #0009;overflow:hidden}
 .channel-inspector header{display:flex;align-items:center;justify-content:space-between}.channel-inspector h2{margin:0;font-size:20px}.channel-tools{display:flex;align-items:center;flex-wrap:wrap;gap:16px}.channel-tools label{display:flex;align-items:center;gap:6px}.channel-description{font-size:12px;opacity:.8;margin:0;flex-shrink:0}.channel-keyboards{overflow:auto;min-height:100px;flex:1}.channel-voice{display:flex;gap:12px;padding:8px 0;border-bottom:1px solid #858b982e;min-width:670px}.channel-identity{display:flex;flex-direction:column;width:175px;flex-shrink:0;font-size:12px;gap:3px}.channel-identity strong{font-size:13px}.channel-identity meter{width:100%;height:8px}.channel-keys{flex:1;min-width:450px}.channel-keys canvas{width:100%;max-width:1520px;height:auto;aspect-ratio:1520/64;margin-inline:auto;display:block}.channel-keys details{font-size:11px}.channel-keys p{white-space:normal;margin:4px 0}.channel-tracker{position:relative;overflow:auto;flex:1;min-height:100px;font:12px ui-monospace,monospace}.channel-tracker table{border-collapse:separate;border-spacing:0;min-width:100%}.channel-tracker th,.channel-tracker td{min-width:180px;max-width:270px;padding:4px 8px;border-bottom:1px solid #858b982e;vertical-align:top;text-align:left}.channel-tracker th:first-child{min-width:96px;width:96px;position:sticky;left:0;background:var(--base)}.channel-tracker thead{position:sticky;top:0;z-index:2;background:var(--base)}.channel-tracker td small{display:block;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;max-width:260px;opacity:.7}.channel-tracker .current,.channel-tracker .current th:first-child{background:#23789a55}.channel-tracker b{font-weight:500;color:var(--highlight)}@media(max-width:650px){.channel-inspector{inset:1vh 1vw;padding:10px}.channel-tools{gap:8px;font-size:12px}}
 
+/* The tracker uses the Spleen 6x12 pixel font at its native size. */
+@font-face {
+  font-family: "Spleen 6x12";
+  src: url("/fonts/spleen-6x12.otf") format("opentype");
+  font-display: block;
+}
+.channel-inspector .channel-tracker {
+  font: 12px/15px "Spleen 6x12", ui-monospace, monospace;
+  -webkit-font-smoothing: none;
+  -moz-osx-font-smoothing: unset;
+  font-smooth: never;
+  background: #070b0e;
+  border: 1px solid #1d2a32;
+  border-radius: 4px;
+  color: #eef4f7;
+}
+.channel-inspector .channel-tracker table {
+  border-collapse: collapse;
+}
+.channel-inspector .channel-tracker th,
+.channel-inspector .channel-tracker td {
+  min-width: 0;
+  max-width: none;
+  padding: 0 6px;
+  border-bottom: 0;
+  border-left: 1px solid #2a3b46;
+  white-space: nowrap;
+  font-weight: normal;
+}
+.channel-inspector .channel-tracker thead th {
+  background: #101a21;
+  color: #a9c4d2;
+  padding: 3px 6px;
+}
+.channel-inspector .channel-tracker tbody th {
+  color: #d8b85a;
+  background: inherit;
+  border-left: 0;
+}
+.channel-inspector .channel-tracker tbody tr:nth-child(4n + 1) {
+  background: #0f171d;
+}
+.channel-inspector .channel-tracker tbody tr.current,
+.channel-inspector .channel-tracker tbody tr.current th {
+  background: #1d4a5e;
+  color: #fff;
+}
+.channel-tracker td span {
+  display: inline-block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: top;
+  margin-right: 1ch;
+}
+.channel-tracker td span:last-child { margin-right: 0; }
+.channel-tracker .tn { color: #eef4f7; }
+.channel-tracker .ti { color: #58c8f0; }
+.channel-tracker .tv { color: #8fdc7c; }
+.channel-tracker .tf { color: #e39cf2; }
+.channel-tracker td span.blank { color: #33454f; }
+.channel-tracker tbody td:last-child { color: #83d4bb; }
+
 .channel-modes {
   display: flex;
   flex-wrap: wrap;
