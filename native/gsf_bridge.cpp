@@ -20,6 +20,7 @@
 #include <mgba-util/vfs.h>
 #include <mgba/core/config.h>
 #include <mgba/core/core.h>
+#include <mgba/core/log.h>
 #include <mgba/core/interface.h>
 #include <mgba/internal/gba/gba.h>
 
@@ -274,6 +275,13 @@ struct KogGsf {
     }
 
     void initialize_core() {
+        // mGBA's default logger prints every BIOS call and DMA to stdout,
+        // hundreds of lines a second; a music player has no use for them.
+        static mLogger silent = {
+            [](mLogger *, int, mLogLevel, const char *, va_list) {},
+            nullptr,
+        };
+        mLogSetDefaultLogger(&silent);
         destroy_core();
         VFile *file = VFileFromConstMemory(rom.data(), rom.size());
         if (file == nullptr) {

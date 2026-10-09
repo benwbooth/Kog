@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rodio::cpal;
 use rodio::cpal::traits::{DeviceTrait, HostTrait};
@@ -106,7 +106,85 @@ pub struct PlaybackEngine {
     output_device_id: Option<String>,
     volume: f32,
     state: PlaybackState,
+    heartbeat: Heartbeat,
 }
+
+/// When the audio device last took samples. A device whose stream stops
+/// asking for audio (some ALSA/PipeWire setups wedge after an underrun) is
+/// opened again before the next track, instead of every later track queueing
+/// behind the stuck one in silence.
+#[derive(Clone)]
+struct Heartbeat {
+    base: Instant,
+    last_pull_ms: Arc<AtomicU64>,
+}
+
+impl Heartbeat {
+    fn new() -> Self {
+        Self { base: Instant::now(), last_pull_ms: Arc::new(AtomicU64::new(0)) }
+    }
+
+    fn now_ms(&self) -> u64 {
+        u64::try_from(self.base.elapsed().as_millis()).unwrap_or(u64::MAX)
+    }
+
+    fn beat(&self) {
+        self.last_pull_ms.store(self.now_ms(), Ordering::Relaxed);
+    }
+
+    /// The device has not taken audio for this long.
+    fn silent_for(&self) -> Duration {
+        Duration::from_millis(self.now_ms().saturating_sub(self.last_pull_ms.load(Ordering::Relaxed)))
+    }
+}
+
+/// Passes samples through, noting that the device is still pulling them.
+struct HeartbeatSource<S> {
+    input: S,
+    heartbeat: Heartbeat,
+    count: u32,
+}
+
+impl<S: Source<Item = f32>> Iterator for HeartbeatSource<S> {
+    type Item = f32;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.count = self.count.wrapping_add(1);
+        if self.count % 2048 == 0 {
+            self.heartbeat.beat();
+        }
+        self.input.next()
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.input.size_hint()
+    }
+}
+
+impl<S: Source<Item = f32>> Source for HeartbeatSource<S> {
+    fn current_span_len(&self) -> Option<usize> {
+        self.input.current_span_len()
+    }
+
+    fn channels(&self) -> ChannelCount {
+        self.input.channels()
+    }
+
+    fn sample_rate(&self) -> SampleRate {
+        self.input.sample_rate()
+    }
+
+    fn total_duration(&self) -> Option<Duration> {
+        self.input.total_duration()
+    }
+
+    fn try_seek(&mut self, position: Duration) -> Result<(), SeekError> {
+        self.input.try_seek(position)
+    }
+}
+
+/// How long the device may go without taking audio before it counts as stuck.
+const STALLED_OUTPUT: Duration = Duration::from_secs(2);
 
 struct AsyncSeekWorker {
     shared: Arc<AsyncSeekShared>,
@@ -166,6 +244,7 @@ impl PlaybackEngine {
             output_device_id,
             volume: 0.75,
             state: PlaybackState::Stopped,
+            heartbeat: Heartbeat::new(),
         }
     }
 
@@ -310,6 +389,19 @@ impl PlaybackEngine {
     }
 
     fn ensure_output(&mut self) -> Result<(), String> {
+        if self.output.is_some() && self.heartbeat.silent_for() > STALLED_OUTPUT {
+            eprintln!("kog: the audio output stopped taking audio; opening it again");
+            self.seek_worker.cancel();
+            if let Some(player) = self.player.take() {
+                player.stop();
+            }
+            self.processing_mixer = None;
+            // Closing a wedged stream can block on its audio thread, so it
+            // is closed off the caller's thread.
+            if let Some(stuck) = self.output.take() {
+                let _ = std::thread::Builder::new().name("kog-close-output".to_owned()).spawn(move || drop(stuck));
+            }
+        }
         if self.output.is_some() {
             return Ok(());
         }
@@ -331,10 +423,16 @@ impl PlaybackEngine {
         // Rodio removes an empty mixer from its parent. Permanent silence keeps
         // this DSP bus alive between tracks without changing Player::empty().
         processing_mixer.add(Zero::new(channels, sample_rate));
-        output.mixer().add(AudioMeterSource::new(
-            EqualizerSource::new(processing_source, self.equalizer.clone()),
-            self.meter.clone(),
-        ));
+        output.mixer().add(HeartbeatSource {
+            input: AudioMeterSource::new(
+                EqualizerSource::new(processing_source, self.equalizer.clone()),
+                self.meter.clone(),
+            ),
+            heartbeat: self.heartbeat.clone(),
+            count: 0,
+        });
+        // A new stream counts as live until it has had time to start.
+        self.heartbeat.beat();
         Ok((output, processing_mixer))
     }
 }
