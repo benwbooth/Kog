@@ -75,6 +75,9 @@ impl Default for Monitor {
     }
 }
 
+/// Seconds of past frames whose notes a snapshot still shows.
+const RECENT_NOTES: f64 = 0.06;
+
 impl Monitor {
     pub fn describe(&self, backend: &str, kind: &str, detail: &str) {
         *self.0.description.lock().unwrap_or_else(|e| e.into_inner()) = Description {
@@ -178,6 +181,19 @@ impl Monitor {
         {
             snapshot.channels = frame.data.channels.clone();
             snapshot.global = frame.data.global.clone();
+        }
+        // Views poll a few dozen times a second; a note shorter than that
+        // could fall between two looks and never light up. Keep notes from
+        // the last moment of frames on the keyboard.
+        for frame in history.frames.iter().rev().skip_while(|frame| frame.time > snapshot.position + 0.000_001).take_while(|frame| frame.time > snapshot.position - RECENT_NOTES) {
+            for earlier in &frame.data.channels {
+                let Some(channel) = snapshot.channels.iter_mut().find(|channel| channel.id == earlier.id) else { continue };
+                for note in &earlier.notes {
+                    if !channel.notes.iter().any(|shown| shown.key.round() == note.key.round()) {
+                        channel.notes.push(note.clone());
+                    }
+                }
+            }
         }
         // Retain a little future data: native trackers decode ahead of the
         // sound device, while the highlighted row follows audible position.

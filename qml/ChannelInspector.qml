@@ -118,12 +118,22 @@ ApplicationWindow {
     readonly property var trackerLimits: [[3, 7], [2, 8], [2, 4], [3, 18]]
     property var trackerWidths: ({})
     property string trackerSource: ""
+    // Ids of the channels, which change far less often than the 30 Hz frame:
+    // tracker layout binds to these so a new frame does not lay it out again.
+    property var channelIds: []
+    // The newest row already measured; only rows after it are measured.
+    property real trackerFitted: -1
     function fitTracker() {
-        const source = (frame.description && frame.description.backend || "") + "/" + channels.length
-        const widths = source === trackerSource ? Object.assign({}, trackerWidths) : {}
-        let changed = source !== trackerSource
+        const source = (frame.description && frame.description.backend || "") + "/" + channelIds.join(",")
+        const fresh = source !== trackerSource
+        const widths = fresh ? {} : Object.assign({}, trackerWidths)
+        let changed = fresh
+        const after = fresh ? -1 : trackerFitted
         for (const row of rows) {
-            for (const channel of channels) {
+            if (row.time <= after) continue
+            trackerFitted = Math.max(trackerFitted, row.time)
+            for (const id of channelIds) {
+                const channel = { id: id }
                 const parts = cellParts(row, channel.id)
                 const current = widths[channel.id] || trackerLimits.map(l => l[0])
                 const next = current.map((w, i) => Math.max(w, Math.min(trackerLimits[i][1], parts[i].length)))
@@ -142,12 +152,19 @@ ApplicationWindow {
     }
     // Columns share any room left in the window, so the tracker fills it.
     property real trackerRoom: 0
-    readonly property real trackerSpare: channels.length
-        ? Math.max(0, (trackerRoom - channels.reduce((sum, c) => sum + naturalWidth(c.id), 0)) / channels.length) : 0
+    readonly property real trackerSpare: channelIds.length
+        ? Math.max(0, (trackerRoom - channelIds.reduce((sum, id) => sum + naturalWidth(id), 0)) / channelIds.length) : 0
     function channelWidth(channel) { return naturalWidth(channel) + trackerSpare }
     onRowsChanged: fitTracker()
     FontLoader { source: Qt.resolvedUrl("fonts/spleen-6x12.otf") }
-    onChannelsChanged: fitTracker()
+    onChannelsChanged: {
+        const ids = channels.map(c => c.id)
+        if (ids.join(",") !== channelIds.join(",")) {
+            channelIds = ids
+            trackerFitted = -1
+            fitTracker()
+        }
+    }
     onVisibleChanged: if (visible) refresh()
     Timer { interval: 33; repeat: true; running: root.visible && root.visibility !== Window.Minimized; onTriggered: root.refresh() }
     Shortcut { sequence: "Escape"; onActivated: root.hide() }
@@ -405,7 +422,7 @@ ApplicationWindow {
                         readonly property int labelWidth: 13 * root.trackerChar
                         onWidthChanged: root.trackerRoom = width - labelWidth
                         Component.onCompleted: root.trackerRoom = width - labelWidth
-                        contentWidth: Math.max(width, labelWidth + root.channels.reduce((sum, c) => sum + root.channelWidth(c.id), 0))
+                        contentWidth: Math.max(width, labelWidth + root.channelIds.reduce((sum, id) => sum + root.channelWidth(id), 0))
                         contentHeight: height
                         flickableDirection: Flickable.HorizontalFlick
                         ScrollBar.horizontal: ScrollBar { }
@@ -468,11 +485,11 @@ ApplicationWindow {
                                             color: trackerRow.current ? "#ffffff" : "#d8b85a"
                                         }
                                         Repeater {
-                                            model: root.channels.length
+                                            model: root.channelIds.length
                                             Item {
                                                 id: cell
                                                 required property int index
-                                                readonly property int channelId: root.channels[index].id
+                                                readonly property int channelId: root.channelIds[index] === undefined ? -1 : root.channelIds[index]
                                                 readonly property var parts: root.cellParts(trackerRow.row, channelId)
                                                 readonly property var chars: root.columnChars(channelId)
                                                 width: root.channelWidth(channelId); height: 15
