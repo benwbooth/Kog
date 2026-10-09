@@ -59,6 +59,7 @@ inline void Device::write(unsigned a, unsigned v, unsigned width, unsigned index
         a = port * 256 + latches[port];
     }
     regs[a & 65535] = v;
+    if(type == DEVID_YM2612 && a == 0x2a) dac_write(uint8_t(v));
     if((type == DEVID_YM2612 || type == DEVID_YM2203 || type == DEVID_YM2608 || type == DEVID_YM2610) && a == 0x28) {
         unsigned ch = v & 3; if(ch < 3) keys[ch + ((v & 4) ? 3 : 0)] = v >> 4;
     }
@@ -139,9 +140,22 @@ inline void Device::snapshot(KogVoices& out) const {
         for(unsigned ch=0; ch<count; ++ch) {
             unsigned b = ch/3*256, c=ch%3, f=regs[b+0xa0+c]|((regs[b+0xa4+c]&7)<<8), block=(regs[b+0xa4+c]>>3)&7;
             const bool dac = type == DEVID_YM2612 && ch == 5 && (regs[0x2b]&0x80);
-            auto& v=emit(ch,dac?2:0,dac || keys[ch],dac?0:clock/(type==DEVID_YM2203?72.0:144.0)*f*(1<<block)/2097152.0,
+            if(dac) {
+                // Each DAC drum sample sits on its own key, sample 1 on C2
+                // (MIDI 36), like a drum map, so hits show on the keyboard
+                // and in scores; the key is the sample's number, not a pitch.
+                dac_frame();
+                const bool sounding = dac_sounding && dac_sample > 0;
+                const double key = 35.0 + dac_sample;
+                auto& v=emit(ch,3,sounding,sounding ? 440.0*std::pow(2.0,(key-69.0)/12.0) : 0,
+                    1.0f, ((regs[b+0xb4+c]&0x40)?1.0f:0.0f)-((regs[b+0xb4+c]&0x80)?1.0f:0.0f), 0, 0);
+                std::snprintf(v.instrument,sizeof(v.instrument),"DAC drums");
+                std::snprintf(v.details,sizeof(v.details),"Sample=%u | Key on=%u | Pitch basis=Drum map (C2 = sample 1)",dac_sample,dac_hits);
+                continue;
+            }
+            auto& v=emit(ch,0,keys[ch],clock/(type==DEVID_YM2203?72.0:144.0)*f*(1<<block)/2097152.0,
                 std::pow(10.0f,-float(regs[b+0x4c+c]&127)*0.75f/20), ((regs[b+0xb4+c]&0x40)?1.0f:0.0f)-((regs[b+0xb4+c]&0x80)?1.0f:0.0f), b+0xa0+c,1);
-            std::snprintf(v.instrument,sizeof(v.instrument),"%s",dac?"DAC":"4-op FM");
+            std::snprintf(v.instrument,sizeof(v.instrument),"%s","4-op FM");
             // Operator 4's level is the channel level above, so the field
             // lists operators 1 to 3.
             int n = std::snprintf(v.details,sizeof(v.details),"F-number=%03X | Block=%u | Key operators=%X | Algorithm/feedback=%02X | Pan/LFO=%02X | Operator 1-3 levels=%02X %02X %02X",f,block,keys[ch],regs[b+0xb0+c],regs[b+0xb4+c],regs[b+0x40+c],regs[b+0x44+c],regs[b+0x48+c]);

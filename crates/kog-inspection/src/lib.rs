@@ -202,6 +202,9 @@ pub fn changes_row(previous: &[Channel], data: &FrameData, time: f64) -> Option<
                 channel: channel.id,
                 notes: if !channel.active {
                     "OFF".into()
+                } else if channel.field("Pitch basis").is_some_and(|basis| basis.starts_with("Drum map")) {
+                    // A drum map's key is a sample number: S01 is the first.
+                    channel.notes.iter().map(|note| format!("S{:02}", note.key.round() as i32 - 35)).collect::<Vec<_>>().join(" ")
                 } else if channel.notes.is_empty() {
                     channel.kind.to_uppercase()
                 } else {

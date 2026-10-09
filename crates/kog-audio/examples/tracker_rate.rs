@@ -25,8 +25,11 @@ fn main() {
         let seconds = (consumed / frame_bytes) as f64 / rate;
         let snapshot = monitor.snapshot(std::time::Duration::from_secs_f64(seconds), true, false);
         for row in &snapshot.rows {
-            if times.insert(row.time.to_bits()) && sample.len() < 12 {
-                sample.push(format!("{:.3} {}", row.time, row.cells.iter().map(|c| format!("{}:{}", c.channel, c.notes)).collect::<Vec<_>>().join(",")));
+            // KOG_CHANNEL=<id> lists that channel's cells instead.
+            let only: Option<u32> = std::env::var("KOG_CHANNEL").ok().and_then(|id| id.parse().ok());
+            let cells: Vec<_> = row.cells.iter().filter(|c| only.is_none_or(|id| c.channel == id)).collect();
+            if times.insert(row.time.to_bits()) && sample.len() < 24 && !cells.is_empty() {
+                sample.push(format!("{:.3} {}", row.time, cells.iter().map(|c| format!("{}:{} {}", c.channel, c.notes, c.instrument)).collect::<Vec<_>>().join(",")));
             }
         }
     }

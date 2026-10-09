@@ -12,6 +12,10 @@ column per channel, and the note, instrument, volume and effects of each cell
 in their own colours, with dots where a field is empty. Hover over a cell on the desktop or the web
 for its full text.
 
+Mega Drive DAC drums show as a drum map: each sample the DAC plays gets its
+own key (sample 1 on C2) and a tracker label (`S01`), so kicks and snares
+read as separate drums.
+
 **MML score** shows the whole song as [Kog MML](KOG_MML.md), split into tracks and
 bars, with the sounding notes highlighted as it plays. Each musical channel has its
 own keyboard. Cyan keys are held; green keys are retained by sustain. Multiple

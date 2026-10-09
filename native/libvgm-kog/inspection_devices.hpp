@@ -2,6 +2,7 @@
 #include "../inspection.h"
 #include "../libvgm/emu/SoundEmu.h"
 #include "../libvgm/emu/SoundDevs.h"
+#include <algorithm>
 #include <array>
 #include <memory>
 #include <stdexcept>
@@ -39,11 +40,62 @@ struct Device {
     unsigned bank = 0, selected_channel = 0, sn_latch = 0;
     bool linked = false;
 
+    // YM2612 DAC drums. The DAC is a stream of 8-bit sample bytes with no
+    // key-on, so a hit is found two ways: sound resuming after a quiet
+    // inspection frame, or the stream repeating the opening bytes of a sample
+    // already heard (a drum restarted mid-sample). Each sample is told apart
+    // by its opening bytes and numbered in the order it is first heard.
+    static constexpr size_t dac_print = 16;
+    mutable std::vector<std::array<uint8_t, dac_print>> dac_samples;
+    mutable std::array<uint8_t, dac_print> dac_recent{}, dac_capture{};
+    mutable size_t dac_recent_count = 0, dac_captured = 0;
+    mutable bool dac_quiet = true, dac_loud = false, dac_sounding = false;
+    mutable unsigned dac_sample = 0, dac_hits = 0;
+
+    void dac_write(uint8_t value) {
+        const bool loud = value < 0x7c || value > 0x84;
+        std::copy(dac_recent.begin() + 1, dac_recent.end(), dac_recent.begin());
+        dac_recent.back() = value;
+        dac_recent_count = std::min(dac_recent_count + 1, dac_print);
+        if(loud) dac_loud = true;
+        if(dac_quiet && loud) {
+            dac_quiet = false;
+            ++dac_hits;
+            dac_captured = 0;
+            // Unknown until its opening bytes are in.
+            dac_sample = 0;
+        }
+        if(dac_captured < dac_print && !dac_quiet) {
+            dac_capture[dac_captured++] = value;
+            if(dac_captured == dac_print) {
+                auto known = std::find(dac_samples.begin(), dac_samples.end(), dac_capture);
+                if(known == dac_samples.end()) { dac_samples.push_back(dac_capture); known = dac_samples.end() - 1; }
+                dac_sample = unsigned(known - dac_samples.begin()) + 1;
+            }
+            return;
+        }
+        if(dac_recent_count == dac_print) {
+            auto restart = std::find(dac_samples.begin(), dac_samples.end(), dac_recent);
+            if(restart != dac_samples.end()) {
+                ++dac_hits;
+                dac_sample = unsigned(restart - dac_samples.begin()) + 1;
+            }
+        }
+    }
+    // Called once per inspection frame: a frame with no loud byte is quiet.
+    void dac_frame() const {
+        dac_sounding = dac_loud;
+        if(!dac_loud) dac_quiet = true;
+        dac_loud = false;
+    }
+
     void clear() {
         regs.fill(0); latches.fill(0); keys.fill(0); sn.fill(0);
         regs[0xff] = type == DEVID_SN76496 ? 0xff : 0;
         for(unsigned i = 1; i < 8; i += 2) sn[i] = 15;
         bank = selected_channel = sn_latch = writes = last_address = last_value = 0;
+        dac_samples.clear(); dac_recent_count = dac_captured = 0;
+        dac_quiet = true; dac_loud = dac_sounding = false; dac_sample = dac_hits = 0;
     }
     void write(unsigned address, unsigned value, unsigned width, unsigned rw_index);
     void snapshot(KogVoices& voices) const;

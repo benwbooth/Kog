@@ -62,7 +62,22 @@ voices, key gates, frequencies and controls. On the Sega PSG the level is
 the attenuation, so it is not repeated as a parameter. On the YM2612 the
 level is operator 4's total level, so the operator levels list operators 1
 to 3, and only channel 3 shows its special mode (the timer bits drivers
-rewrite constantly are left out). Programmable DSP devices without
+rewrite constantly are left out).
+
+### Drums on the Mega Drive DAC
+
+The YM2612's sixth channel can play 8-bit samples through its DAC, which is
+how most Mega Drive music plays drums. The DAC has no key-on, so Kog finds
+each hit itself: sound starting again after a quiet moment, or a sample
+restarting from its first bytes. Each sample is told apart by its opening
+bytes and numbered in the order it is first heard. The track is a drum map,
+like MIDI percussion: sample 1 is `c` in octave 2 (key 36), sample 2 `c+`,
+and so on, so a kick and snare pattern reads `o2 c c+ c c c+`. The keys are
+sample numbers, not pitches. The tracker writes them `S01`, `S02`, and the
+keyboard lights one key per sample.
+
+Drivers that mix several samples into the DAC in software (XGM, GEMS) are
+heard as one stream, so overlapping drums show as a single hit. Programmable DSP devices without
 individual voices appear only as register parameters.
 
 ## SID and RSID
