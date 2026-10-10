@@ -62,6 +62,20 @@ visualizers. Change tray behavior in **Preferences → General**. **F1** opens
 About Kog. Classic Winamp skins and experimental modern skins are available;
 see [skins and visualizers](SKINS_AND_VISUALIZERS.md) for compatibility details.
 
+## Exporting audio
+
+Right-click playlist rows in Qt and choose **Export…**, or use **Tracks →
+Export…** in the terminal player, to render tracks to audio files: FLAC,
+WAV (16 or 24-bit), Apple Lossless, MP3, AAC (M4A), Ogg Vorbis or Opus.
+Tracks are decoded exactly as they play, with the same synth and emulator
+settings, and can include the equalizer and effects. Files are named after
+the track number and title, never overwrite existing files, and carry title,
+artist, album and track tags. Several tracks can also get an M3U playlist of
+the exported files. In the terminal, **Preferences → Cycle Export Format**
+and **Export With Effects On/Off** choose how. Saved playlists export as M3U
+from their right-click menu in Qt and the web player, and from **Saved →
+Export as M3U…** in the terminal.
+
 ## Effects
 
 **Preferences → Effects** in Qt, and **Preferences → Effects…** in the

@@ -65,6 +65,19 @@ struct AutoFitCache {
 }
 
 const SESSION_FILE: &str = "tui-session.json";
+const EXPORT_FOLDER_SETTING: &str = "export-folder";
+const EXPORT_FORMAT_SETTING: &str = "export-format";
+const EXPORT_EFFECTS_SETTING: &str = "export-effects";
+
+fn export_format() -> kog_audio::export::ExportFormat {
+    kog_audio::settings::load_text(EXPORT_FORMAT_SETTING)
+        .and_then(|id| kog_audio::export::ExportFormat::from_id(&id))
+        .unwrap_or(kog_audio::export::ExportFormat::Flac)
+}
+
+fn export_with_effects() -> bool {
+    kog_audio::settings::load_text(EXPORT_EFFECTS_SETTING).as_deref() == Some("true")
+}
 const SIDEBAR_WIDTH_FILE: &str = "tui-sidebar-width";
 const TREE_STATE_FILE: &str = "tui-tree-state.json";
 const SESSION_MAX_BYTES: usize = 64 * 1024 * 1024;
@@ -553,6 +566,7 @@ enum PromptKind {
     SaveSelection,
     DuplicatePlaylist,
     ExportPlaylist,
+    ExportTracks,
     Volume,
     SeekPosition,
     AddToPlaylist,
@@ -1002,6 +1016,7 @@ struct Ui {
     list_anchor: Option<usize>,
     tracks: Vec<Track>,
     selected_tracks: HashSet<usize>,
+    export: Option<(Arc<kog_audio::export::ExportProgress>, std::thread::JoinHandle<(Vec<PathBuf>, Vec<String>)>, usize)>,
     selection_anchor: Option<usize>,
     range_click_pending: Option<Focus>,
     session_dirty: bool,
@@ -1406,6 +1421,7 @@ impl Ui {
             workspace_query: String::new(),
             tracks: Vec::new(),
             selected_tracks: HashSet::new(),
+            export: None,
             selection_anchor: None,
             range_click_pending: None,
             session_dirty: false,
@@ -2568,6 +2584,18 @@ impl Ui {
                 }
             }
             (MenuPage::Preferences, 15) => self.open_child_menu(MenuPage::Server, size),
+            (MenuPage::Preferences, 18) => {
+                let formats = kog_audio::export::EXPORT_FORMATS;
+                let current = export_format();
+                let next = formats[(formats.iter().position(|f| *f == current).unwrap_or(0) + 1) % formats.len()];
+                let _ = kog_audio::settings::save_text(EXPORT_FORMAT_SETTING, next.id());
+                self.status = format!("Export format: {}", next.label());
+            }
+            (MenuPage::Preferences, 19) => {
+                let enabled = !export_with_effects();
+                let _ = kog_audio::settings::save_text(EXPORT_EFFECTS_SETTING, if enabled { "true" } else { "false" });
+                self.status = format!("Export with equalizer and effects: {}", if enabled { "on" } else { "off" });
+            }
             (MenuPage::Preferences, 17) => {
                 self.modal = None;
                 self.effects_view.show(AppSettings::load().effects);
@@ -2721,6 +2749,17 @@ impl Ui {
             (MenuPage::Tracks, 11) => self.blacklist_selected_tracks(false),
             (MenuPage::Tracks, 12) => self.blacklist_selected_tracks(true),
             (MenuPage::Tracks, 13) => self.open_tag_editor(),
+            (MenuPage::Tracks, 14) => {
+                let folder = kog_audio::settings::load_text(EXPORT_FOLDER_SETTING).unwrap_or_else(|| {
+                    directories::UserDirs::new()
+                        .and_then(|dirs| dirs.audio_dir().map(Path::to_path_buf))
+                        .unwrap_or_else(|| PathBuf::from("."))
+                        .join("Kog export")
+                        .display()
+                        .to_string()
+                });
+                self.begin_prompt(PromptKind::ExportTracks, folder);
+            }
             (MenuPage::Saved, 0) => self.enqueue_selected_lists(false),
             (MenuPage::Saved, 1) => self.enqueue_selected_lists(true),
             (MenuPage::Saved, 2) => {
@@ -4256,6 +4295,82 @@ impl Ui {
         });
     }
 
+    /// Export the selected tracks (or the one under the cursor) in the
+    /// background, in the chosen export format.
+    fn start_export(&mut self, folder: PathBuf) {
+        if self.export.is_some() {
+            self.status = "An export is already running".to_owned();
+            return;
+        }
+        if folder.as_os_str().is_empty() {
+            return;
+        }
+        let _ = kog_audio::settings::save_text(EXPORT_FOLDER_SETTING, &folder.display().to_string());
+        let mut indices: Vec<_> = if self.selected_tracks.is_empty() {
+            vec![self.selected[2]]
+        } else {
+            self.selected_tracks.iter().copied().collect()
+        };
+        indices.sort_unstable();
+        let mut tracks = Vec::new();
+        for index in indices {
+            let Some(track) = self.tracks.get(index) else { continue };
+            for source in self.decoders.expand_queue_entry(&track.entry) {
+                tracks.push(kog_audio::export::ExportTrack {
+                    title: if source.subsong.is_some() || tracks.is_empty() { track.name.clone() } else { String::new() },
+                    source,
+                    ..Default::default()
+                });
+            }
+        }
+        if tracks.is_empty() {
+            self.status = "Select tracks to export".to_owned();
+            return;
+        }
+        let settings = AppSettings::load();
+        let options = kog_audio::export::ExportOptions {
+            format: export_format(),
+            bitrate_kbps: 0,
+            apply_effects: export_with_effects(),
+            equalizer: self.equalizer.clone(),
+            effects: settings.effects,
+            decoder: self.decoder_settings.clone(),
+            // Several tracks also get a playlist of the exported files.
+            playlist: (tracks.len() > 1).then(|| "Kog export".to_owned()),
+        };
+        let progress = Arc::new(kog_audio::export::ExportProgress::default());
+        let worker_progress = progress.clone();
+        let count = tracks.len();
+        let worker = std::thread::spawn(move || kog_audio::export::export_tracks(&tracks, &options, &folder, worker_progress));
+        self.export = Some((progress, worker, count));
+        self.status = format!("Exporting {count} tracks…");
+    }
+
+    fn poll_export(&mut self) {
+        let Some((progress, worker, count)) = &self.export else { return };
+        if !worker.is_finished() {
+            let done = progress.done_ms.load(std::sync::atomic::Ordering::Relaxed);
+            let total = progress.total_ms.load(std::sync::atomic::Ordering::Relaxed).max(1);
+            self.status = format!("Exporting {count} tracks… {}%", (done * 100 / total).min(99));
+            return;
+        }
+        let (_, worker, count) = self.export.take().expect("checked above");
+        self.status = match worker.join() {
+            Ok((written, errors)) => {
+                let files = written.iter().filter(|p| p.extension().is_none_or(|e| e != "m3u")).count();
+                let mut message = format!("Exported {files} of {count} tracks");
+                if let Some(folder) = written.first().and_then(|path| path.parent()) {
+                    message.push_str(&format!(" to {}", folder.display()));
+                }
+                if let Some(error) = errors.first() {
+                    message.push_str(&format!(" · {} failed: {error}", errors.len()));
+                }
+                message
+            }
+            Err(_) => "The export stopped unexpectedly".to_owned(),
+        };
+    }
+
     fn poll_folders(&mut self) {
         self.poll_session_ports();
     }
@@ -5267,6 +5382,7 @@ impl Ui {
                     Err(error) => self.status = error,
                 }
             }
+            PromptKind::ExportTracks => self.start_export(PathBuf::from(value.trim())),
             PromptKind::ExportPlaylist => {
                 let id = self.lists.get(self.selected[0]).map_or(0, |(id, _)| *id);
                 let entries = if id == 0 {
@@ -10262,6 +10378,7 @@ fn prompt_label(kind: PromptKind) -> &'static str {
         PromptKind::SaveSelection => "Save selection as",
         PromptKind::DuplicatePlaylist => "Duplicate playlist as",
         PromptKind::ExportPlaylist => "Export playlist to",
+        PromptKind::ExportTracks => "Export selected tracks to folder",
         PromptKind::Volume => "Volume 0-100",
         PromptKind::SeekPosition => "Seek to seconds, mm:ss, or hh:mm:ss",
         PromptKind::AddToPlaylist => "Add to saved playlist named",
@@ -10524,7 +10641,7 @@ const PLAYBACK_MENU: [&str; 14] = [
     "Clear Queue",
     "Seek to Time…",
 ];
-const PREFERENCES_MENU: [&str; 18] = [
+const PREFERENCES_MENU: [&str; 20] = [
     "Music Folder…",
     "Volume…",
     "Cycle Repeat",
@@ -10543,6 +10660,8 @@ const PREFERENCES_MENU: [&str; 18] = [
     "API Server               ›",
     "Auto Download Covers On/Off",
     "Effects…",
+    "Cycle Export Format",
+    "Export With Effects On/Off",
 ];
 const SERVER_MENU: [&str; 17] = [
     "Start Server",
@@ -10597,7 +10716,7 @@ const TREE_MENU: [&str; 10] = [
     "Use as Tree Root",
     "Reset Tree Root",
 ];
-const TRACKS_MENU: [&str; 14] = [
+const TRACKS_MENU: [&str; 15] = [
     "Play",
     "Remove Selected",
     "Add to Saved Playlist…",
@@ -10612,6 +10731,7 @@ const TRACKS_MENU: [&str; 14] = [
     "Blacklist Song",
     "Blacklist Folder",
     "Edit Tags…",
+    "Export…",
 ];
 const TAG_FIELDS: [(&str, &str); 13] = [
     ("title", "Title"),
@@ -12378,6 +12498,7 @@ pub fn run() -> Result<(), String> {
         ui.poll_search_due();
         ui.poll_search();
         ui.poll_folders();
+        ui.poll_export();
         ui.poll_workspace();
         ui.poll_tab_drag(last_size);
         ui.poll_remote();

@@ -1162,6 +1162,7 @@ ApplicationWindow {
         mainWindow: root
     }
     Preferences { id: preferences; app: appController }
+    ExportDialog { id: exportDialog; app: appController }
     AboutKog { id: aboutKog; buildStamp: root.buildStamp }
     RemoteBrowser {
         id: remoteBrowser
@@ -1804,6 +1805,12 @@ ApplicationWindow {
         MenuSeparator {}
         MenuItem { action: saveSelectionAction }
         MenuItem { action: editTagsAction }
+        MenuItem {
+            text: qsTr("Export…")
+            icon.name: "document-export"
+            enabled: root.playlistWorkspace.active === "queue" && root.selectedRows.length > 0
+            onTriggered: exportDialog.openFor(root.selectedRows)
+        }
         MenuItem {
             text: qsTr("Blacklist Song")
             icon.name: "list-remove"

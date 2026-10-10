@@ -345,6 +345,14 @@ pub mod qobject {
         #[qinvokable]
         fn effects_state(self: &AppController) -> QString;
         #[qinvokable]
+        fn export_formats(self: &AppController) -> QString;
+        #[qinvokable]
+        fn start_export(self: Pin<&mut AppController>, indices: QString, options: QString) -> QString;
+        #[qinvokable]
+        fn export_state(self: Pin<&mut AppController>) -> QString;
+        #[qinvokable]
+        fn cancel_export(self: &AppController);
+        #[qinvokable]
         fn set_effects(self: &AppController, settings: QString) -> QString;
         #[qinvokable]
         fn mml_text(self: Pin<&mut AppController>) -> QString;
@@ -1905,6 +1913,8 @@ pub struct AppControllerRust {
     radio: Option<RadioState>,
     cover_art: Option<CoverArtState>,
     mml: crate::mml_view::MmlView,
+    export: Option<ExportRun>,
+    export_message: String,
     cover_art_generation: u64,
     directory_scan_active: bool,
     directory_scan_files_scanned: i32,
@@ -2174,6 +2184,8 @@ impl Default for AppControllerRust {
             mpris: MprisService::default(),
             api_server: None,
             mml: crate::mml_view::MmlView::default(),
+            export: None,
+            export_message: String::new(),
         };
 
         // Restore the remembered tree root and expanded folders before radio
@@ -2663,6 +2675,13 @@ fn visible_source_index(model: &qobject::AppController, index: i32) -> Option<us
         .ok()
         .and_then(|index| model.rust().visible_indices.get(index))
         .copied()
+}
+
+/// A background export of playlist rows.
+struct ExportRun {
+    progress: Arc<kog_audio::export::ExportProgress>,
+    worker: std::thread::JoinHandle<(Vec<PathBuf>, Vec<String>)>,
+    count: usize,
 }
 
 fn selected_sources(model: &qobject::AppController, indices: &str) -> Vec<PlaybackSource> {
@@ -5412,6 +5431,121 @@ impl qobject::AppController {
     }
 
     /// The Kog MML guide's chapters as JSON, each with its page as rich text.
+    /// The formats tracks can be exported to, as JSON.
+    pub fn export_formats(&self) -> QString {
+        let formats: Vec<_> = kog_audio::export::EXPORT_FORMATS
+            .iter()
+            .map(|format| serde_json::json!({
+                "id": format.id(), "label": format.label(), "lossy": format.lossy(),
+                "bitrate": format.default_bitrate(), "extension": format.extension(),
+            }))
+            .collect();
+        QString::from(serde_json::Value::from(formats).to_string())
+    }
+
+    /// Export the selected playlist rows in the background; returns an error
+    /// or "". Options: format, bitrate, applyEffects, folder.
+    pub fn start_export(mut self: Pin<&mut Self>, indices: QString, options: QString) -> QString {
+        if self.rust().export.is_some() {
+            return QString::from("An export is already running");
+        }
+        let Ok(options) = serde_json::from_str::<serde_json::Value>(&options.to_string()) else {
+            return QString::from("The export options could not be read");
+        };
+        let Some(format) = options["format"].as_str().and_then(kog_audio::export::ExportFormat::from_id) else {
+            return QString::from("Choose a format");
+        };
+        let folder = options["folder"].as_str().unwrap_or_default();
+        let folder = PathBuf::from(match folder.strip_prefix("file://") {
+            Some(path) => percent_encoding::percent_decode_str(path).decode_utf8_lossy().into_owned(),
+            None => folder.to_owned(),
+        });
+        if folder.as_os_str().is_empty() {
+            return QString::from("Choose a folder");
+        }
+        let tracks: Vec<_> = selected_source_indices(&self, &indices.to_string())
+            .into_iter()
+            .filter_map(|index| self.rust().tracks.get(index))
+            .map(|track| kog_audio::export::ExportTrack {
+                source: track.source.clone(),
+                title: track.title.clone(),
+                artist: if track.artist.is_empty() { track.album_artist.clone() } else { track.artist.clone() },
+                album: track.album.clone(),
+                track_number: track.track_number,
+            })
+            .collect();
+        if tracks.is_empty() {
+            return QString::from("Select tracks to export");
+        }
+        let settings = AppSettings::load();
+        let export_options = kog_audio::export::ExportOptions {
+            format,
+            bitrate_kbps: options["bitrate"].as_u64().unwrap_or(0).min(512) as u16,
+            apply_effects: options["applyEffects"].as_bool().unwrap_or(false),
+            equalizer: self.rust().equalizer_settings.clone(),
+            effects: settings.effects,
+            decoder: self.rust().decoder_settings.clone(),
+            playlist: options["playlist"].as_str().filter(|name| !name.trim().is_empty()).map(str::to_owned),
+        };
+        let progress = Arc::new(kog_audio::export::ExportProgress::default());
+        let worker_progress = progress.clone();
+        let count = tracks.len();
+        let worker = std::thread::Builder::new()
+            .name("kog-export".into())
+            .spawn(move || kog_audio::export::export_tracks(&tracks, &export_options, &folder, worker_progress));
+        match worker {
+            Ok(worker) => {
+                let mut rust = self.as_mut().rust_mut();
+                rust.export = Some(ExportRun { progress, worker, count });
+                rust.export_message.clear();
+                QString::default()
+            }
+            Err(error) => QString::from(format!("Starting the export failed: {error}")),
+        }
+    }
+
+    /// Progress of the running or last export, as JSON.
+    pub fn export_state(mut self: Pin<&mut Self>) -> QString {
+        let finished = self.rust().export.as_ref().is_some_and(|run| run.worker.is_finished());
+        if finished {
+            let run = self.as_mut().rust_mut().export.take().expect("checked above");
+            let cancelled = run.progress.cancel.load(std::sync::atomic::Ordering::Relaxed);
+            let message = match run.worker.join() {
+                Ok((written, errors)) => {
+                    let mut message = if cancelled {
+                        format!("Export cancelled after {} of {} tracks", written.len(), run.count)
+                    } else {
+                        format!("Exported {} of {} tracks", written.iter().filter(|p| p.extension().is_none_or(|e| e != "m3u")).count(), run.count)
+                    };
+                    if let Some(folder) = written.first().and_then(|path| path.parent()) {
+                        message.push_str(&format!(" to {}", folder.display()));
+                    }
+                    if let Some(error) = errors.iter().find(|error| !error.ends_with("Export cancelled")) {
+                        message.push_str(&format!(". {} failed: {error}", errors.len()));
+                    }
+                    message
+                }
+                Err(_) => "The export stopped unexpectedly".to_owned(),
+            };
+            self.as_mut().rust_mut().export_message = message;
+        }
+        let rust = self.rust();
+        let (running, done, total) = rust.export.as_ref().map_or((false, 0, 0), |run| {
+            (
+                true,
+                run.progress.done_ms.load(std::sync::atomic::Ordering::Relaxed),
+                run.progress.total_ms.load(std::sync::atomic::Ordering::Relaxed),
+            )
+        });
+        QString::from(serde_json::json!({"running": running, "doneMs": done, "totalMs": total, "message": rust.export_message}).to_string())
+    }
+
+    pub fn cancel_export(&self) {
+        if let Some(run) = &self.rust().export {
+            run.progress.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
     /// The effects chain and everything the Effects page offers, as JSON.
     pub fn effects_state(&self) -> QString {
         let mut state = kog_core::effects::catalog();

@@ -53,6 +53,9 @@ struct Encoder
     int inputChannels = 0;
     int64_t nextPts = 0;
     bool finished = false;
+    // Writing straight to a file: seekable, so containers can finish their
+    // headers (WAV sizes, MP4 indexes).
+    bool fileOutput = false;
 
     ~Encoder()
     {
@@ -60,9 +63,37 @@ struct Encoder
         av_audio_fifo_free(fifo);
         swr_free(&resampler);
         avcodec_free_context(&codec);
-        if(format) format->pb = nullptr;
-        avio_context_free(&io);
+        if(fileOutput)
+        {
+            if(format && format->pb) avio_closep(&format->pb);
+        }
+        else
+        {
+            if(format) format->pb = nullptr;
+            avio_context_free(&io);
+        }
         avformat_free_context(format);
+    }
+
+    // Containers and encoders by kind: 0-2 stream, 3-10 files.
+    struct Kind { const char* container; const char* encoder; AVSampleFormat sampleFormat; bool bitrate; int rate; };
+    static Kind describe(int kind)
+    {
+        switch(kind)
+        {
+        case 0: return {"adts", "aac", AV_SAMPLE_FMT_FLTP, true, 0};
+        case 1: return {"ogg", "libopus", AV_SAMPLE_FMT_FLTP, true, 48000};
+        case 2: return {"flac", "flac", AV_SAMPLE_FMT_S16, false, 0};
+        case 3: return {"wav", "pcm_s16le", AV_SAMPLE_FMT_S16, false, 0};
+        case 4: return {"wav", "pcm_s24le", AV_SAMPLE_FMT_S32, false, 0};
+        case 5: return {"flac", "flac", AV_SAMPLE_FMT_S32, false, 0};
+        case 6: return {"ipod", "alac", AV_SAMPLE_FMT_S16P, false, 0};
+        case 7: return {"mp3", "libmp3lame", AV_SAMPLE_FMT_FLTP, true, 0};
+        case 8: return {"ipod", "aac", AV_SAMPLE_FMT_FLTP, true, 0};
+        case 9: return {"ogg", "libvorbis", AV_SAMPLE_FMT_FLTP, true, 0};
+        case 10: return {"ogg", "libopus", AV_SAMPLE_FMT_FLTP, true, 48000};
+        default: throw std::runtime_error("unsupported audio format");
+        }
     }
 
     static int writePacket(void* opaque, const uint8_t* bytes, int count)
@@ -80,25 +111,31 @@ struct Encoder
         return writePacket(opaque, static_cast<const uint8_t*>(bytes), count);
     }
 
-    void initialize(int kind, int bitrateKbps, int inputRate, int channels)
+    void initialize(int kind, int bitrateKbps, int inputRate, int channels,
+                    const char* path = nullptr, const char* const* tags = nullptr)
     {
         if(inputRate < 8000 || inputRate > 384000 || channels < 1 || channels > 8)
             throw std::runtime_error("invalid PCM stream properties");
-        if(kind < 0 || kind > 2 || write == nullptr)
+        fileOutput = path != nullptr;
+        if(!fileOutput && (kind < 0 || kind > 2 || write == nullptr))
             throw std::runtime_error("unsupported stream encoder");
+        const Kind info = describe(kind);
         inputChannels = channels;
-        const char* container = kind == 0 ? "adts" : kind == 1 ? "ogg" : "flac";
-        const char* encoderName = kind == 0 ? "aac" : kind == 1 ? "libopus" : "flac";
+        const char* container = info.container;
+        const char* encoderName = info.encoder;
         check(avformat_alloc_output_context2(&format, nullptr, container, nullptr),
               "creating audio container");
         if(!format) throw std::runtime_error("audio container is unavailable");
+        for(const char* const* tag = tags; tag && tag[0] && tag[1]; tag += 2)
+            av_dict_set(&format->metadata, tag[0], tag[1], 0);
         const AVCodec* encoder = avcodec_find_encoder_by_name(encoderName);
-        if(!encoder && kind == 1) encoder = avcodec_find_encoder(AV_CODEC_ID_OPUS);
+        if(!encoder && std::strcmp(encoderName, "libopus") == 0) encoder = avcodec_find_encoder(AV_CODEC_ID_OPUS);
+        if(!encoder && std::strcmp(encoderName, "libvorbis") == 0) encoder = avcodec_find_encoder(AV_CODEC_ID_VORBIS);
         if(!encoder) throw std::runtime_error(std::string(encoderName) + " encoder is unavailable");
         codec = avcodec_alloc_context3(encoder);
         if(!codec) throw std::runtime_error("allocating audio encoder failed");
         codec->codec_type = AVMEDIA_TYPE_AUDIO;
-        codec->sample_rate = kind == 1 ? 48000 : inputRate;
+        codec->sample_rate = info.rate ? info.rate : inputRate;
 #if LIBAVCODEC_VERSION_MAJOR >= 62
         const void* config = nullptr;
         int count = 0;
@@ -122,7 +159,7 @@ struct Encoder
             codec->sample_rate = nearest;
         }
 #endif
-        codec->sample_fmt = kind == 2 ? AV_SAMPLE_FMT_S16 : AV_SAMPLE_FMT_FLTP;
+        codec->sample_fmt = info.sampleFormat;
 #if LIBAVCODEC_VERSION_MAJOR >= 62
         config = nullptr;
         count = 0;
@@ -147,10 +184,11 @@ struct Encoder
 #endif
         av_channel_layout_default(&codec->ch_layout, channels);
         codec->time_base = AVRational{1, codec->sample_rate};
-        if(kind != 2) codec->bit_rate = bitrateKbps * 1000;
+        if(info.bitrate) codec->bit_rate = bitrateKbps * 1000;
+        if(info.sampleFormat == AV_SAMPLE_FMT_S32) codec->bits_per_raw_sample = 24;
         if(format->oformat->flags & AVFMT_GLOBALHEADER)
             codec->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
-        if(kind == 1 && std::strcmp(encoder->name, "opus") == 0)
+        if((kind == 1 || kind == 10) && std::strcmp(encoder->name, "opus") == 0)
             codec->strict_std_compliance = FF_COMPLIANCE_EXPERIMENTAL;
         check(avcodec_open2(codec, encoder, nullptr), "opening audio encoder");
         stream = avformat_new_stream(format, nullptr);
@@ -171,6 +209,13 @@ struct Encoder
         if(!fifo) throw std::runtime_error("allocating audio sample queue failed");
         packet = av_packet_alloc();
         if(!packet) throw std::runtime_error("allocating encoded packet failed");
+        if(fileOutput)
+        {
+            check(avio_open(&format->pb, path, AVIO_FLAG_WRITE), "creating the output file");
+            io = format->pb;
+            check(avformat_write_header(format, nullptr), "writing audio header");
+            return;
+        }
         auto* buffer = static_cast<unsigned char*>(av_malloc(32768));
         if(!buffer) throw std::runtime_error("allocating encoded output buffer failed");
         io = avio_alloc_context(buffer, 32768, 1, this, nullptr, writePacket, nullptr);
@@ -198,6 +243,7 @@ struct Encoder
             const int writeStatus = av_interleaved_write_frame(format, packet);
             av_packet_unref(packet);
             check(writeStatus, "writing encoded packet");
+            if(fileOutput) continue;
             avio_flush(io);
             check(io->error, "flushing encoded packet");
         }
@@ -313,6 +359,14 @@ struct Encoder
         check(avcodec_send_frame(codec, nullptr), "flushing audio encoder");
         drainPackets();
         check(av_write_trailer(format), "finishing audio container");
+        if(fileOutput)
+        {
+            check(format->pb->error, "writing the output file");
+            check(avio_closep(&format->pb), "closing the output file");
+            io = nullptr;
+            finished = true;
+            return;
+        }
         avio_flush(io);
         check(io->error, "flushing encoded output");
         finished = true;
@@ -348,6 +402,26 @@ extern "C" void* kog_ffmpeg_encoder_open(int codec, int bitrate_kbps,
         encoder->write = write;
         encoder->opaque = opaque;
         encoder->initialize(codec, bitrate_kbps, input_rate, channels);
+        return encoder.release();
+    }
+    catch(const std::exception& failure)
+    {
+        if(error_capacity > 0)
+            std::snprintf(error, error_capacity, "%s", failure.what());
+        return nullptr;
+    }
+}
+
+extern "C" void* kog_ffmpeg_encoder_open_file(int format, int bitrate_kbps,
+                                                int input_rate, int channels,
+                                                const char* path, const char* const* tags,
+                                                char* error, size_t error_capacity)
+{
+    try
+    {
+        if(!path || !*path) throw std::runtime_error("no output file");
+        auto encoder = std::make_unique<Encoder>();
+        encoder->initialize(format, bitrate_kbps, input_rate, channels, path, tags);
         return encoder.release();
     }
     catch(const std::exception& failure)
