@@ -500,6 +500,10 @@ private fun QueueTrack(state: KogState, track: Track, index: Int, selecting: Boo
                 if (index < state.queue.lastIndex) DropdownMenuItem(text = { Text("Move down") }, onClick = {
                     state.move(index, index + 1); menu = false
                 })
+                if (!track.isDevice && track.kind in setOf("local", "archive")) DropdownMenuItem(
+                    text = { Text(if (track.key in state.downloading) "Saving to phone…" else "Save to phone") },
+                    enabled = track.key !in state.downloading,
+                    onClick = { state.saveToPhone(track); menu = false })
                 state.playlists.filter { it.id != 0L }.forEach { playlist ->
                     DropdownMenuItem(text = { Text("Add to ${playlist.name}") }, onClick = {
                         state.saveToPlaylist(playlist, listOf(track)); menu = false

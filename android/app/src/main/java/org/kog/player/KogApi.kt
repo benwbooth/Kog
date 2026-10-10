@@ -162,6 +162,47 @@ class KogApi(private val context: Context, val onDevice: Boolean = false) {
         "/api/art", "kind" to track.kind, "path" to track.path, "token" to token,
     )
 
+    private fun authorization() = when {
+        token.isNotBlank() -> "Bearer $token"
+        username.isNotBlank() -> "Basic " + Base64.getEncoder().encodeToString(
+            "$username:$password".toByteArray(Charsets.UTF_8))
+        else -> ""
+    }
+
+    /** Download a server track's original file into [folder]. A track inside an
+     * archive downloads the whole archive so companion files come along. */
+    suspend fun download(track: Track, folder: File): File = withContext(Dispatchers.IO) {
+        require(!onDevice && !track.isDevice && track.kind in setOf("local", "archive")) { "Only server tracks can be saved" }
+        val connection = URL(uri("/api/media/download", "kind" to "local", "path" to track.path, "token" to token))
+            .openConnection() as HttpURLConnection
+        try {
+            connection.connectTimeout = 15_000
+            connection.readTimeout = 60_000
+            authorization().takeIf(String::isNotEmpty)?.let { connection.setRequestProperty("Authorization", it) }
+            if (connection.responseCode !in 200..299) {
+                val text = connection.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
+                val message = runCatching { JSONObject(text).optString("error") }.getOrNull()
+                error(message?.ifBlank { null } ?: "HTTP ${connection.responseCode}")
+            }
+            val name = track.path.substringAfterLast('/').ifBlank { "track" }
+            require(name != "." && name != ".." && '\u0000' !in name) { "Invalid file name" }
+            folder.mkdirs()
+            val stem = name.substringBeforeLast('.', name)
+            val extension = name.substringAfterLast('.', "").let { if (it.isEmpty()) "" else ".$it" }
+            var destination = File(folder, name)
+            var suffix = 2
+            while (destination.exists()) destination = File(folder, "$stem (${suffix++})$extension")
+            val temporary = File.createTempFile("kog-download-", ".part", folder)
+            try {
+                connection.inputStream.use { input -> temporary.outputStream().use(input::copyTo) }
+                check(temporary.renameTo(destination)) { "Cannot save $name" }
+            } finally { temporary.delete() }
+            destination
+        } finally {
+            connection.disconnect()
+        }
+    }
+
     private suspend fun request(path: String, method: String = "GET", body: Any? = null): String =
         withContext(Dispatchers.IO) {
             if (onDevice) {
@@ -180,12 +221,7 @@ class KogApi(private val context: Context, val onDevice: Boolean = false) {
                 connection.requestMethod = method
                 connection.connectTimeout = 10_000
                 connection.readTimeout = 45_000
-                val authorization = when {
-                    token.isNotBlank() -> "Bearer $token"
-                    username.isNotBlank() -> "Basic " + Base64.getEncoder().encodeToString(
-                        "$username:$password".toByteArray(Charsets.UTF_8))
-                    else -> ""
-                }
+                val authorization = authorization()
                 if (authorization.isNotEmpty()) connection.setRequestProperty("Authorization", authorization)
                 if (body != null) {
                     connection.doOutput = true

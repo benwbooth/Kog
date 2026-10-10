@@ -1163,6 +1163,12 @@ ApplicationWindow {
     }
     Preferences { id: preferences; app: appController }
     ExportDialog { id: exportDialog; app: appController }
+    Timer {
+        id: offlineTimer
+        interval: 500
+        repeat: true
+        onTriggered: if (!appController.offline_poll()) stop()
+    }
     AboutKog { id: aboutKog; buildStamp: root.buildStamp }
     RemoteBrowser {
         id: remoteBrowser
@@ -1805,6 +1811,22 @@ ApplicationWindow {
         MenuSeparator {}
         MenuItem { action: saveSelectionAction }
         MenuItem { action: editTagsAction }
+        MenuItem {
+            readonly property var offline: playlistContextMenu.visible && root.selectedRows.length > 0
+                ? JSON.parse(appController.offline_rows(root.selectedRows.join(","))) : ({ remote: 0, saved: 0 })
+            text: offline.saved > 0 && offline.saved === offline.remote ? qsTr("Remove Offline Copy") : qsTr("Download for Offline")
+            icon.name: offline.saved > 0 && offline.saved === offline.remote ? "edit-delete" : "download"
+            visible: offline.remote > 0
+            height: visible ? implicitHeight : 0
+            onTriggered: {
+                if (offline.saved > 0 && offline.saved === offline.remote) {
+                    appController.remove_offline(root.selectedRows.join(","))
+                } else {
+                    appController.download_offline(root.selectedRows.join(","))
+                    offlineTimer.start()
+                }
+            }
+        }
         MenuItem {
             text: qsTr("Export…")
             icon.name: "document-export"

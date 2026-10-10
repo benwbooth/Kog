@@ -3,6 +3,7 @@ package org.kog.player
 import android.content.ComponentName
 import android.content.Context
 import android.net.Uri
+import android.widget.Toast
 import android.os.Bundle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -466,6 +467,20 @@ class KogState(private val context: Context) {
             Track(kind = "device", path = it.absolutePath, name = it.name).saved()
         })).put("action", if (play) "play_now" else "add_to_queue"))
         if (files.isNotEmpty()) onAdded()
+    }
+
+    var downloading by mutableStateOf(setOf<String>())
+        private set
+
+    /** Save a server track on this phone so it plays without the server; it
+     * appears in the on-device library under Server downloads. */
+    fun saveToPhone(track: Track) = scope.launch {
+        if (track.key in downloading) return@launch
+        downloading = downloading + track.key
+        runCatching { api.download(track, File(deviceLibrary.root, "Server downloads")) }
+            .onSuccess { Toast.makeText(context, "Saved ${it.name} on this phone", Toast.LENGTH_SHORT).show() }
+            .onFailure { error = it.message ?: "Saving failed" }
+        downloading = downloading - track.key
     }
 
     fun importFolder(uri: Uri) = task {

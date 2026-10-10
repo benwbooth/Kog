@@ -76,6 +76,19 @@ and **Export With Effects On/Off** choose how. Saved playlists export as M3U
 from their right-click menu in Qt and the web player, and from **Saved →
 Export as M3U…** in the terminal.
 
+## Offline copies of server tracks
+
+Tracks streamed from a Kog server can be kept on this computer or phone. In
+Qt, right-click playlist rows and choose **Download for Offline**; in the
+terminal use **Tracks → Download for Offline**. The original file is saved in
+`Music/Kog offline`, and a track inside an archive downloads the whole
+archive so its companion files and sibling songs come along. The playlist
+keeps the server row, but playing it plays the local copy, so it works
+without the server. **Remove Offline Copy** deletes the file once no other
+track uses it. On Android choose **Save to phone** from a server track's
+menu, and on iOS **Save to iPhone**; the file then appears in the on-device
+library.
+
 ## Effects
 
 **Preferences → Effects** in Qt, and **Preferences → Effects…** in the

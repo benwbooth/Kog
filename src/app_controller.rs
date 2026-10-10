@@ -353,6 +353,14 @@ pub mod qobject {
         #[qinvokable]
         fn cancel_export(self: &AppController);
         #[qinvokable]
+        fn offline_rows(self: &AppController, indices: QString) -> QString;
+        #[qinvokable]
+        fn download_offline(self: Pin<&mut AppController>, indices: QString);
+        #[qinvokable]
+        fn remove_offline(self: Pin<&mut AppController>, indices: QString);
+        #[qinvokable]
+        fn offline_poll(self: Pin<&mut AppController>) -> bool;
+        #[qinvokable]
         fn set_effects(self: &AppController, settings: QString) -> QString;
         #[qinvokable]
         fn mml_text(self: Pin<&mut AppController>) -> QString;
@@ -1915,6 +1923,7 @@ pub struct AppControllerRust {
     mml: crate::mml_view::MmlView,
     export: Option<ExportRun>,
     export_message: String,
+    offline: Option<OfflineRun>,
     cover_art_generation: u64,
     directory_scan_active: bool,
     directory_scan_files_scanned: i32,
@@ -2186,6 +2195,7 @@ impl Default for AppControllerRust {
             mml: crate::mml_view::MmlView::default(),
             export: None,
             export_message: String::new(),
+            offline: None,
         };
 
         // Restore the remembered tree root and expanded folders before radio
@@ -2675,6 +2685,13 @@ fn visible_source_index(model: &qobject::AppController, index: i32) -> Option<us
         .ok()
         .and_then(|index| model.rust().visible_indices.get(index))
         .copied()
+}
+
+/// Background downloads of remote rows for offline play.
+struct OfflineRun {
+    worker: std::thread::JoinHandle<Vec<String>>,
+    done: Arc<std::sync::atomic::AtomicUsize>,
+    total: usize,
 }
 
 /// A background export of playlist rows.
@@ -5544,6 +5561,75 @@ impl qobject::AppController {
         if let Some(run) = &self.rust().export {
             run.progress.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
         }
+    }
+
+    /// For the selected rows: how many stream from a server, and how many of
+    /// those already have offline copies, as JSON.
+    pub fn offline_rows(&self, indices: QString) -> QString {
+        let urls: Vec<String> = selected_sources(&self, &indices.to_string()).into_iter().filter_map(|source| source.remote_url).collect();
+        let saved = urls.iter().filter(|url| kog_audio::offline::find(url).is_some()).count();
+        QString::from(serde_json::json!({"remote": urls.len(), "saved": saved}).to_string())
+    }
+
+    /// Download the selected remote rows for offline play, in the background.
+    pub fn download_offline(mut self: Pin<&mut Self>, indices: QString) {
+        if self.rust().offline.is_some() {
+            self.as_mut().set_status(qstring("A download is already running"));
+            return;
+        }
+        let urls: Vec<String> = selected_sources(&self, &indices.to_string()).into_iter().filter_map(|source| source.remote_url).collect();
+        if urls.is_empty() {
+            self.as_mut().set_status(qstring("Select tracks from a Kog server to download"));
+            return;
+        }
+        let done = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let worker_done = done.clone();
+        let total = urls.len();
+        let folder = kog_audio::offline::default_folder();
+        let worker = std::thread::spawn(move || {
+            let mut errors = Vec::new();
+            for url in urls {
+                if let Err(error) = kog_audio::offline::download(&url, &folder) {
+                    errors.push(error);
+                }
+                worker_done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            errors
+        });
+        self.as_mut().rust_mut().offline = Some(OfflineRun { worker, done, total });
+        self.as_mut().set_status(qstring(format!("Downloading {total} tracks for offline play…")));
+    }
+
+    pub fn remove_offline(mut self: Pin<&mut Self>, indices: QString) {
+        let mut removed = 0;
+        for source in selected_sources(&self, &indices.to_string()) {
+            if let Some(url) = source.remote_url {
+                if kog_audio::offline::find(&url).is_some() && kog_audio::offline::remove(&url).is_ok() {
+                    removed += 1;
+                }
+            }
+        }
+        self.as_mut().set_status(qstring(format!("Removed {removed} offline copies")));
+    }
+
+    /// Update the status line while downloads run; false once none is running.
+    pub fn offline_poll(mut self: Pin<&mut Self>) -> bool {
+        let Some(run) = &self.rust().offline else { return false };
+        let done = run.done.load(std::sync::atomic::Ordering::Relaxed);
+        let total = run.total;
+        if !run.worker.is_finished() {
+            self.as_mut().set_status(qstring(format!("Downloading for offline play… {done} of {total}")));
+            return true;
+        }
+        let run = self.as_mut().rust_mut().offline.take().expect("checked above");
+        let errors = run.worker.join().unwrap_or_else(|_| vec!["The download stopped unexpectedly".to_owned()]);
+        let saved = total - errors.len();
+        let mut message = format!("Saved {saved} of {total} tracks for offline play in {}", kog_audio::offline::default_folder().display());
+        if let Some(error) = errors.first() {
+            message.push_str(&format!(" · {error}"));
+        }
+        self.as_mut().set_status(qstring(message));
+        false
     }
 
     /// The effects chain and everything the Effects page offers, as JSON.

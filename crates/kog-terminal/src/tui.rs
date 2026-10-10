@@ -1017,6 +1017,7 @@ struct Ui {
     tracks: Vec<Track>,
     selected_tracks: HashSet<usize>,
     export: Option<(Arc<kog_audio::export::ExportProgress>, std::thread::JoinHandle<(Vec<PathBuf>, Vec<String>)>, usize)>,
+    offline: Option<(std::thread::JoinHandle<Vec<String>>, Arc<std::sync::atomic::AtomicUsize>, usize)>,
     selection_anchor: Option<usize>,
     range_click_pending: Option<Focus>,
     session_dirty: bool,
@@ -1422,6 +1423,7 @@ impl Ui {
             tracks: Vec::new(),
             selected_tracks: HashSet::new(),
             export: None,
+            offline: None,
             selection_anchor: None,
             range_click_pending: None,
             session_dirty: false,
@@ -2749,6 +2751,15 @@ impl Ui {
             (MenuPage::Tracks, 11) => self.blacklist_selected_tracks(false),
             (MenuPage::Tracks, 12) => self.blacklist_selected_tracks(true),
             (MenuPage::Tracks, 13) => self.open_tag_editor(),
+            (MenuPage::Tracks, 15) => self.download_offline(),
+            (MenuPage::Tracks, 16) => {
+                let removed = self
+                    .remote_selection()
+                    .iter()
+                    .filter(|url| kog_audio::offline::find(url).is_some() && kog_audio::offline::remove(url).is_ok())
+                    .count();
+                self.status = format!("Removed {removed} offline copies");
+            }
             (MenuPage::Tracks, 14) => {
                 let folder = kog_audio::settings::load_text(EXPORT_FOLDER_SETTING).unwrap_or_else(|| {
                     directories::UserDirs::new()
@@ -4344,6 +4355,70 @@ impl Ui {
         let worker = std::thread::spawn(move || kog_audio::export::export_tracks(&tracks, &options, &folder, worker_progress));
         self.export = Some((progress, worker, count));
         self.status = format!("Exporting {count} tracks…");
+    }
+
+    /// Stream URLs of the selected remote tracks (or the one under the cursor).
+    fn remote_selection(&self) -> Vec<String> {
+        let mut indices: Vec<_> = if self.selected_tracks.is_empty() {
+            vec![self.selected[2]]
+        } else {
+            self.selected_tracks.iter().copied().collect()
+        };
+        indices.sort_unstable();
+        indices
+            .into_iter()
+            .filter_map(|index| self.tracks.get(index))
+            .filter(|track| track.entry.kind == "remote")
+            .map(|track| track.entry.path.clone())
+            .collect()
+    }
+
+    /// Save the selected remote tracks for offline play, in the background.
+    fn download_offline(&mut self) {
+        if self.offline.is_some() {
+            self.status = "A download is already running".to_owned();
+            return;
+        }
+        let urls = self.remote_selection();
+        if urls.is_empty() {
+            self.status = "Select tracks from a Kog server to download".to_owned();
+            return;
+        }
+        let total = urls.len();
+        let done = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let worker_done = done.clone();
+        let folder = kog_audio::offline::default_folder();
+        let worker = std::thread::spawn(move || {
+            let mut errors = Vec::new();
+            for url in urls {
+                if let Err(error) = kog_audio::offline::download(&url, &folder) {
+                    errors.push(error);
+                }
+                worker_done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            errors
+        });
+        self.offline = Some((worker, done, total));
+        self.status = format!("Downloading {total} tracks for offline play…");
+    }
+
+    fn poll_offline(&mut self) {
+        let Some((worker, done, total)) = &self.offline else { return };
+        if !worker.is_finished() {
+            self.status = format!("Downloading for offline play… {} of {total}", done.load(std::sync::atomic::Ordering::Relaxed));
+            return;
+        }
+        let (worker, _, total) = self.offline.take().expect("checked above");
+        let errors = worker.join().unwrap_or_else(|_| vec!["The download stopped unexpectedly".to_owned()]);
+        let mut message = format!(
+            "Saved {} of {total} tracks for offline play in {}",
+            total - errors.len(),
+            kog_audio::offline::default_folder().display()
+        );
+        if let Some(error) = errors.first() {
+            message.push_str(&format!(" · {error}"));
+        }
+        self.status = message;
     }
 
     fn poll_export(&mut self) {
@@ -10716,7 +10791,7 @@ const TREE_MENU: [&str; 10] = [
     "Use as Tree Root",
     "Reset Tree Root",
 ];
-const TRACKS_MENU: [&str; 15] = [
+const TRACKS_MENU: [&str; 17] = [
     "Play",
     "Remove Selected",
     "Add to Saved Playlist…",
@@ -10732,6 +10807,8 @@ const TRACKS_MENU: [&str; 15] = [
     "Blacklist Folder",
     "Edit Tags…",
     "Export…",
+    "Download for Offline",
+    "Remove Offline Copy",
 ];
 const TAG_FIELDS: [(&str, &str); 13] = [
     ("title", "Title"),
@@ -12499,6 +12576,7 @@ pub fn run() -> Result<(), String> {
         ui.poll_search();
         ui.poll_folders();
         ui.poll_export();
+        ui.poll_offline();
         ui.poll_workspace();
         ui.poll_tab_drag(last_size);
         ui.poll_remote();

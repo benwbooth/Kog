@@ -252,6 +252,9 @@ impl PlaybackEngine {
     }
 
     pub fn play_source(&mut self, source: &PlaybackSource) -> Result<SelectedBackend, String> {
+        // A remote track downloaded for offline play plays from the copy.
+        let offline = crate::offline::local_source(source, &self.decoders);
+        let source = offline.as_ref().unwrap_or(source);
         self.ensure_output()?;
         self.seek_worker.cancel();
         if let Some(player) = self.player.take() {

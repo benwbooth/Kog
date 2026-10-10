@@ -19,6 +19,7 @@ pub mod cuesheet_decoder;
 pub mod decoder;
 pub mod ffmpeg;
 pub mod export;
+pub mod offline;
 pub mod ffmpeg_encoder;
 pub mod ffmpeg_decoder;
 pub mod gme;
