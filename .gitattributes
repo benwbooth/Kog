@@ -3,4 +3,6 @@ native/ares-snsf/** -whitespace
 LICENSES/ares-upstream.txt -whitespace
 web/modern/vendor/classicpro/** -text -whitespace
 web/modern/dist/ClassicPro-LICENSE.rtf -text -whitespace
-android/gradlew.bat text eol=crlf
+# Stored with CRLF as is: an end-of-line conversion at checkout made Nix
+# fetchers disagree about the source hash.
+android/gradlew.bat -text
