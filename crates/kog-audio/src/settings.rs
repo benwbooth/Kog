@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use directories::ProjectDirs;
 
+use kog_core::effects::EffectsSettings;
 use kog_core::equalizer::EqualizerSettings;
 
 use crate::decoder::DecoderSettings;
@@ -25,6 +26,7 @@ const OUTPUT_DEVICE_SETTING_FILE: &str = "output-device";
 const PLAYLIST_COLUMN_LAYOUT_SETTING_FILE: &str = "playlist-column-layout";
 const PLAYLIST_COLUMN_WIDTHS_SETTING_FILE: &str = "playlist-column-widths";
 const EQUALIZER_SETTING_FILE: &str = "equalizer-settings";
+const EFFECTS_SETTING_FILE: &str = "effects-settings";
 const SHUFFLE_MODE_SETTING_FILE: &str = "shuffle-mode";
 const REPEAT_MODE_SETTING_FILE: &str = "repeat-mode";
 const RADIO_ENABLED_SETTING_FILE: &str = "radio-enabled";
@@ -140,6 +142,7 @@ pub struct AppSettings {
     pub output_device: Option<OutputDevicePreference>,
     pub playlist_column_layout: Option<String>,
     pub equalizer: EqualizerSettings,
+    pub effects: EffectsSettings,
     pub shuffle_mode: ShuffleMode,
     pub repeat_mode: RepeatMode,
     pub radio_enabled: bool,
@@ -194,6 +197,9 @@ impl AppSettings {
         let equalizer = load_text(EQUALIZER_SETTING_FILE)
             .and_then(|value| EqualizerSettings::parse(&value))
             .unwrap_or_default();
+        let effects = load_text(EFFECTS_SETTING_FILE)
+            .and_then(|value| EffectsSettings::parse(&value))
+            .unwrap_or_default();
         let shuffle_mode = load_text(SHUFFLE_MODE_SETTING_FILE)
             .and_then(|value| ShuffleMode::from_setting(&value))
             .unwrap_or_default();
@@ -220,6 +226,7 @@ impl AppSettings {
             output_device,
             playlist_column_layout,
             equalizer,
+            effects,
             shuffle_mode,
             repeat_mode,
             radio_enabled,
@@ -328,6 +335,10 @@ impl AppSettings {
 
     pub fn save_equalizer(settings: &EqualizerSettings) -> Result<(), String> {
         save_text(EQUALIZER_SETTING_FILE, &settings.serialize()?)
+    }
+
+    pub fn save_effects(settings: &EffectsSettings) -> Result<(), String> {
+        save_text(EFFECTS_SETTING_FILE, &settings.serialize())
     }
 
     pub fn save_shuffle_mode(mode: ShuffleMode) -> Result<(), String> {

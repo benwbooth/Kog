@@ -11,6 +11,7 @@ use rodio::{ChannelCount, DeviceSinkBuilder, MixerDeviceSink, Player, SampleRate
 
 use crate::decoder::{DecoderRegistry, PlaybackSource, SelectedBackend};
 use kog_core::equalizer::{EqualizerControl, EqualizerSettings, EqualizerSource};
+use kog_core::effects::{EffectsControl, EffectsSettings, EffectsSource};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PlaybackState {
@@ -100,6 +101,7 @@ pub struct PlaybackEngine {
     seek_worker: AsyncSeekWorker,
     decoders: DecoderRegistry,
     equalizer: EqualizerControl,
+    effects: EffectsControl,
     meter: AudioMeter,
     inspection: crate::inspection::Monitor,
     remote_inspection: Option<crate::inspection::remote::RemoteMonitor>,
@@ -238,6 +240,7 @@ impl PlaybackEngine {
             seek_worker: AsyncSeekWorker::new(),
             decoders,
             equalizer: EqualizerControl::new(equalizer),
+            effects: EffectsControl::new(EffectsSettings::default()),
             meter: AudioMeter::default(),
             inspection: crate::inspection::Monitor::default(),
             remote_inspection: None,
@@ -260,6 +263,7 @@ impl PlaybackEngine {
                 .expect("output creates processing mixer"),
         ));
         self.equalizer.reset();
+        self.effects.reset();
         self.meter.reset();
         self.inspection = crate::inspection::Monitor::default();
         self.remote_inspection = source.remote_url.as_deref().and_then(crate::inspection::remote::RemoteMonitor::new);
@@ -299,6 +303,7 @@ impl PlaybackEngine {
         if let Some(player) = self.player.as_ref() {
             player.stop();
             self.equalizer.reset();
+            self.effects.reset();
             self.meter.reset();
         }
         self.state = PlaybackState::Stopped;
@@ -311,6 +316,7 @@ impl PlaybackEngine {
             .ok_or_else(|| "Nothing is loaded".to_owned())?;
         self.seek_worker.request(player.clone(), position);
         self.equalizer.reset();
+        self.effects.reset();
         self.meter.reset();
         Ok(())
     }
@@ -328,6 +334,11 @@ impl PlaybackEngine {
 
     pub fn set_equalizer(&self, settings: EqualizerSettings) {
         self.equalizer.set(settings);
+    }
+
+    /// The effects chain after the equalizer; it applies straight away.
+    pub fn set_effects(&self, settings: EffectsSettings) {
+        self.effects.set(settings);
     }
 
     pub fn switch_output_device(&mut self, output_device_id: Option<String>) -> Result<(), String> {
@@ -425,7 +436,10 @@ impl PlaybackEngine {
         processing_mixer.add(Zero::new(channels, sample_rate));
         output.mixer().add(HeartbeatSource {
             input: AudioMeterSource::new(
-                EqualizerSource::new(processing_source, self.equalizer.clone()),
+                EffectsSource::new(
+                    EqualizerSource::new(processing_source, self.equalizer.clone()),
+                    self.effects.clone(),
+                ),
                 self.meter.clone(),
             ),
             heartbeat: self.heartbeat.clone(),

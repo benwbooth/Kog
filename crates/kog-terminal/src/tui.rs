@@ -34,6 +34,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 mod queue_drag;
+mod effects;
 mod guide;
 mod inspection;
 mod mml;
@@ -1087,6 +1088,7 @@ struct Ui {
     artwork_modal: bool,
     visualizer_open: bool,
     inspector: inspection::View,
+    effects_view: effects::Effects,
     visualizer_mode: VisualizerMode,
     modal_scroll: usize,
     sidebar_visible: bool,
@@ -1352,6 +1354,7 @@ impl Ui {
         );
         let volume = settings.output_volume as f32;
         player.set_volume(volume);
+        player.set_effects(settings.effects.clone());
         let columns = Columns::load(&settings);
         let starred_keys = library
             .db()
@@ -1489,6 +1492,7 @@ impl Ui {
             artwork_modal: false,
             visualizer_open: false,
             inspector: inspection::View::default(),
+            effects_view: effects::Effects::default(),
             visualizer_mode: VisualizerMode::Waveform,
             modal_scroll: 0,
             sidebar_visible: true,
@@ -2564,6 +2568,10 @@ impl Ui {
                 }
             }
             (MenuPage::Preferences, 15) => self.open_child_menu(MenuPage::Server, size),
+            (MenuPage::Preferences, 17) => {
+                self.modal = None;
+                self.effects_view.show(AppSettings::load().effects);
+            }
             (MenuPage::Preferences, 16) => {
                 let enabled = !self.download_cover_art;
                 match AppSettings::save_download_cover_art(enabled) {
@@ -6226,6 +6234,15 @@ impl Ui {
     }
 
     fn key(&mut self, key: Key, size: (usize, usize)) -> bool {
+        if self.effects_view.open {
+            if let Some(settings) = self.effects_view.key(key) {
+                self.player.set_effects(settings.clone());
+                if let Err(error) = AppSettings::save_effects(&settings) {
+                    self.status = error;
+                }
+            }
+            return true;
+        }
         if self.inspector.open {
             if matches!(key, Key::Char(' ')) { self.play_pause(); } else { self.inspector.key(key); }
             return true;
@@ -7980,6 +7997,11 @@ impl Ui {
             self.modal = Some(self.info_content());
         }
         let (width, height) = size;
+        if self.effects_view.open {
+            let mut screen = String::from("\x1b[H\x1b[?25l");
+            self.effects_view.draw(&mut screen, size);
+            return screen;
+        }
         if self.inspector.open {
             let mut screen = String::from("\x1b[H\x1b[?25l");
             if width < 24 || height < 10 {
@@ -10502,7 +10524,7 @@ const PLAYBACK_MENU: [&str; 14] = [
     "Clear Queue",
     "Seek to Time…",
 ];
-const PREFERENCES_MENU: [&str; 17] = [
+const PREFERENCES_MENU: [&str; 18] = [
     "Music Folder…",
     "Volume…",
     "Cycle Repeat",
@@ -10520,6 +10542,7 @@ const PREFERENCES_MENU: [&str; 17] = [
     "Read M3U/PLS On/Off",
     "API Server               ›",
     "Auto Download Covers On/Off",
+    "Effects…",
 ];
 const SERVER_MENU: [&str; 17] = [
     "Start Server",

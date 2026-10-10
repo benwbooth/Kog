@@ -62,6 +62,18 @@ visualizers. Change tray behavior in **Preferences → General**. **F1** opens
 About Kog. Classic Winamp skins and experimental modern skins are available;
 see [skins and visualizers](SKINS_AND_VISUALIZERS.md) for compatibility details.
 
+## Effects
+
+**Preferences → Effects** in Qt, and **Preferences → Effects…** in the
+terminal player, add an effects chain after the equalizer: reverb, stereo
+widener, echo, chorus, warmth (bass boost and high cut), bitcrusher,
+distortion, and compressor/limiter. Effects run top to bottom; each can be
+switched off, moved, removed, or added more than once, and every setting has
+a slider. Presets (Room, Hall, Wide chip, Lo-fi handheld, Arcade cabinet,
+Echo chamber, Overdrive) are a starting point. Changes apply at once and are
+saved for both players. The web player and the phone apps do not have
+effects yet.
+
 ## MIDI, SoundFonts, and Roland emulation
 
 Use **View → Channel Keyboards + Tracker** (or the separate keyboards, tracker

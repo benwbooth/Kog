@@ -343,6 +343,10 @@ pub mod qobject {
         #[qinvokable]
         fn mml_guide(self: &AppController) -> QString;
         #[qinvokable]
+        fn effects_state(self: &AppController) -> QString;
+        #[qinvokable]
+        fn set_effects(self: &AppController, settings: QString) -> QString;
+        #[qinvokable]
         fn mml_text(self: Pin<&mut AppController>) -> QString;
         #[qinvokable]
         fn export_mml(self: Pin<&mut AppController>, file: QString) -> QString;
@@ -2033,6 +2037,7 @@ impl Default for AppControllerRust {
                 .map(|device| device.id.clone()),
         );
         playback.set_volume(app_settings.output_volume as f32);
+        playback.set_effects(app_settings.effects.clone());
         let library_db = kog_core::db::LibraryDb::open().unwrap_or_else(|error| {
             eprintln!("Kog could not open its database: {error}");
             kog_core::db::LibraryDb::open_in_memory().expect("in-memory database")
@@ -5407,6 +5412,25 @@ impl qobject::AppController {
     }
 
     /// The Kog MML guide's chapters as JSON, each with its page as rich text.
+    /// The effects chain and everything the Effects page offers, as JSON.
+    pub fn effects_state(&self) -> QString {
+        let mut state = kog_core::effects::catalog();
+        state["settings"] = AppSettings::load().effects.to_json();
+        QString::from(state.to_string())
+    }
+
+    /// Apply and save an effects chain sent as JSON; returns an error or "".
+    pub fn set_effects(&self, settings: QString) -> QString {
+        let Some(settings) = kog_core::effects::EffectsSettings::parse(&settings.to_string()) else {
+            return QString::from("The effects settings could not be read");
+        };
+        self.rust().playback.set_effects(settings.clone());
+        match AppSettings::save_effects(&settings) {
+            Ok(()) => QString::default(),
+            Err(error) => QString::from(error),
+        }
+    }
+
     pub fn mml_guide(&self) -> QString {
         // Qt's Markdown reader leaves almost no space between blocks, so the
         // desktop shows the guide as styled HTML instead.

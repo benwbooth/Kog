@@ -29,6 +29,29 @@ Window {
     palette.buttonText: foregroundColor
 
     property int currentPage: 0
+
+    // Effects: the chain after the equalizer, edited here and applied at once.
+    readonly property var effectsCatalog: JSON.parse(app.effects_state())
+    property var effectsChain: effectsCatalog.settings.chain || []
+    property bool effectsEnabled: effectsCatalog.settings.enabled !== false
+    property string effectsPreset: effectsCatalog.settings.preset || ""
+    property string effectsError: ""
+    function effectInfo(kind) { return effectsCatalog.effects.find(e => e.kind === kind) || { label: kind, params: [] } }
+    function commitEffects(chain, preset) {
+        effectsChain = chain
+        if (preset !== undefined) effectsPreset = preset
+        effectsError = app.set_effects(JSON.stringify({ version: 1, enabled: effectsEnabled, preset: effectsPreset, chain: chain }))
+    }
+    function editedChain(edit) {
+        const chain = JSON.parse(JSON.stringify(effectsChain))
+        edit(chain)
+        return chain
+    }
+    function formatParam(spec, value) {
+        if (spec.id === "ping_pong") return value >= 0.5 ? qsTr("On") : qsTr("Off")
+        const digits = spec.step >= 1 ? 0 : spec.step >= 0.1 ? 1 : 2
+        return value.toFixed(digits) + (spec.unit ? (spec.unit.startsWith(":") || spec.unit === "×" ? "" : " ") + spec.unit : "")
+    }
     readonly property var outputDevices: JSON.parse(app.output_devices_json)
     readonly property var supportedFormatCatalog: JSON.parse(app.supported_formats_json)
     property string formatSearchText: ""
@@ -158,7 +181,8 @@ Window {
                         { title: qsTr("General"), iconName: "configure" },
                         { title: qsTr("Synthesis"), iconName: "audio-midi" },
                         { title: qsTr("Formats"), iconName: "audio-x-generic" },
-                        { title: qsTr("Server"), iconName: "network-server" }
+                        { title: qsTr("Server"), iconName: "network-server" },
+                        { title: qsTr("Effects"), iconName: "audio-effects" }
                     ]
 
                     ItemDelegate {
@@ -1356,6 +1380,151 @@ Window {
                                 text: serverState.detail
                                 wrapMode: Text.Wrap
                                 color: root.palette.placeholderText
+                            }
+                        }
+                    }
+
+                    Item { Layout.fillHeight: true }
+                }
+            }
+
+            ScrollView {
+                objectName: "effectsPage"
+                clip: true
+                contentWidth: availableWidth
+
+                ColumnLayout {
+                    x: 22
+                    width: parent.width - 44
+                    spacing: 18
+
+                    PreferenceLabel {
+                        text: qsTr("Effects")
+                        font.pixelSize: 22
+                        font.bold: true
+                    }
+                    PreferenceLabel {
+                        Layout.fillWidth: true
+                        wrapMode: Text.Wrap
+                        color: root.palette.placeholderText
+                        text: qsTr("Effects run after the equalizer, top to bottom, on everything Kog plays here and in the terminal player. Changes apply at once.")
+                    }
+
+                    RowLayout {
+                        spacing: 12
+                        CheckBox {
+                            objectName: "effectsEnabled"
+                            text: qsTr("Use effects")
+                            checked: root.effectsEnabled
+                            onToggled: { root.effectsEnabled = checked; root.commitEffects(root.effectsChain) }
+                        }
+                        PreferenceLabel { text: qsTr("Preset") }
+                        ComboBox {
+                            objectName: "effectsPreset"
+                            Layout.preferredWidth: 220
+                            model: root.effectsCatalog.presets.map(p => p.preset).concat(root.effectsCatalog.presets.some(p => p.preset === root.effectsPreset) ? [] : [qsTr("Custom")])
+                            currentIndex: Math.max(0, model.indexOf(root.effectsPreset) >= 0 ? model.indexOf(root.effectsPreset) : model.length - 1)
+                            onActivated: index => {
+                                const preset = root.effectsCatalog.presets[index]
+                                if (!preset) return
+                                root.effectsEnabled = true
+                                root.commitEffects(JSON.parse(JSON.stringify(preset.chain)), preset.preset)
+                            }
+                        }
+                        Button {
+                            objectName: "effectsAdd"
+                            text: qsTr("Add effect")
+                            enabled: root.effectsChain.length < 16
+                            onClicked: addMenu.open()
+                            Menu {
+                                id: addMenu
+                                Repeater {
+                                    model: root.effectsCatalog.effects
+                                    MenuItem {
+                                        required property var modelData
+                                        text: modelData.label
+                                        onTriggered: {
+                                            const params = {}
+                                            for (const spec of modelData.params) params[spec.id] = spec.default
+                                            root.commitEffects(root.editedChain(chain => chain.push({ kind: modelData.kind, enabled: true, params: params })), "")
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    PreferenceLabel {
+                        visible: root.effectsChain.length === 0
+                        text: qsTr("No effects. Pick a preset or add one.")
+                        color: root.palette.placeholderText
+                    }
+                    PreferenceLabel {
+                        visible: root.effectsError.length > 0
+                        text: root.effectsError
+                        color: "#d9534f"
+                    }
+
+                    Repeater {
+                        model: root.effectsChain.length
+                        PreferenceGroup {
+                            id: effectGroup
+                            required property int index
+                            readonly property var slot: root.effectsChain[index]
+                            readonly property var info: root.effectInfo(slot.kind)
+                            objectName: "effectSlot"
+                            title: (index + 1) + ". " + info.label
+                            Layout.fillWidth: true
+
+                            ColumnLayout {
+                                anchors.fill: parent
+                                spacing: 6
+                                RowLayout {
+                                    CheckBox {
+                                        text: qsTr("On")
+                                        checked: effectGroup.slot.enabled !== false
+                                        onToggled: root.commitEffects(root.editedChain(chain => chain[effectGroup.index].enabled = checked), "")
+                                    }
+                                    Item { Layout.fillWidth: true }
+                                    Button {
+                                        text: qsTr("Move up")
+                                        enabled: effectGroup.index > 0
+                                        onClicked: root.commitEffects(root.editedChain(chain => chain.splice(effectGroup.index - 1, 0, chain.splice(effectGroup.index, 1)[0])), "")
+                                    }
+                                    Button {
+                                        text: qsTr("Move down")
+                                        enabled: effectGroup.index < root.effectsChain.length - 1
+                                        onClicked: root.commitEffects(root.editedChain(chain => chain.splice(effectGroup.index + 1, 0, chain.splice(effectGroup.index, 1)[0])), "")
+                                    }
+                                    Button {
+                                        text: qsTr("Remove")
+                                        onClicked: root.commitEffects(root.editedChain(chain => chain.splice(effectGroup.index, 1)), "")
+                                    }
+                                }
+                                Repeater {
+                                    model: effectGroup.info.params
+                                    RowLayout {
+                                        id: paramRow
+                                        required property var modelData
+                                        readonly property real value: effectGroup.slot.params[modelData.id] !== undefined ? effectGroup.slot.params[modelData.id] : modelData.default
+                                        spacing: 10
+                                        PreferenceLabel { text: paramRow.modelData.label; Layout.preferredWidth: 140 }
+                                        Slider {
+                                            Layout.fillWidth: true
+                                            from: paramRow.modelData.min
+                                            to: paramRow.modelData.max
+                                            stepSize: paramRow.modelData.step
+                                            snapMode: Slider.SnapAlways
+                                            value: paramRow.value
+                                            onMoved: root.commitEffects(root.editedChain(chain => chain[effectGroup.index].params[paramRow.modelData.id] = value), "")
+                                        }
+                                        PreferenceLabel {
+                                            text: root.formatParam(paramRow.modelData, paramRow.value)
+                                            Layout.preferredWidth: 80
+                                            horizontalAlignment: Text.AlignRight
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
