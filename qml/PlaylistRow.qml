@@ -369,6 +369,9 @@ Item {
             pressX = mouse.x
             pressY = mouse.y
             manualDragging = false
+            // A drag released over another row never delivers the click
+            // this flag swallows, so a new press must not inherit it.
+            suppressNextClick = false
         }
         onPositionChanged: mouse => {
             hoverX = mouse.x

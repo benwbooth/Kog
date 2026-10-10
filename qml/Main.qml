@@ -1771,16 +1771,28 @@ ApplicationWindow {
     Action {
         id: undoQueueAppendAction
         objectName: "editUndoAction"
-        text: root.playlistWorkspace.active === "queue" ? qsTr("Undo Append") : qsTr("Undo")
+        text: qsTr("Undo")
         icon.name: "edit-undo"
         shortcut: StandardKey.Undo
         enabled: !!root.playlistWorkspace.actions.undo
         onTriggered: appController.workspace_command(JSON.stringify({op: "undo"}))
     }
+    Shortcut {
+        id: moveUpShortcut
+        sequence: "Alt+Up"
+        enabled: !!root.playlistWorkspace.actions.move_up
+        onActivated: appController.workspace_command(JSON.stringify({op:"nudge", delta:-1}))
+    }
+    Shortcut {
+        id: moveDownShortcut
+        sequence: "Alt+Down"
+        enabled: !!root.playlistWorkspace.actions.move_down
+        onActivated: appController.workspace_command(JSON.stringify({op:"nudge", delta:1}))
+    }
     Action {
         id: redoQueueAppendAction
         objectName: "editRedoAction"
-        text: root.playlistWorkspace.active === "queue" ? qsTr("Redo Append") : qsTr("Redo")
+        text: qsTr("Redo")
         icon.name: "edit-redo"
         shortcut: StandardKey.Redo
         enabled: !!root.playlistWorkspace.actions.redo
@@ -2034,16 +2046,16 @@ ApplicationWindow {
                 objectName: "editMoveUp"
                 text: qsTr("Move Up")
                 icon.name: "go-up"
-                enabled: !!root.playlistWorkspace.actions.move_up
-                onTriggered: appController.workspace_command(JSON.stringify({op:"nudge", delta:-1}))
+                enabled: moveUpShortcut.enabled
+                onTriggered: moveUpShortcut.activated()
             }
             MenuItem {
                 id: editMoveDown
                 objectName: "editMoveDown"
                 text: qsTr("Move Down")
                 icon.name: "go-down"
-                enabled: !!root.playlistWorkspace.actions.move_down
-                onTriggered: appController.workspace_command(JSON.stringify({op:"nudge", delta:1}))
+                enabled: moveDownShortcut.enabled
+                onTriggered: moveDownShortcut.activated()
             }
             MenuItem { action: editTagsAction }
             MenuSeparator {}

@@ -66,8 +66,8 @@ internal fun EditMenuItems(state: KogState, dismiss: () -> Unit) {
     val actions = state.workspace.actions
     val queue = state.workspace.active == "queue"
     fun send(op: String, fields: JSONObject = JSONObject()) { state.workspaceCommand(op, fields); dismiss() }
-    DropdownMenuItem(text = { Text(if (queue) "Undo Append" else "Undo") }, enabled = actions["undo"] == true, onClick = { send("undo") })
-    DropdownMenuItem(text = { Text(if (queue) "Redo Append" else "Redo") }, enabled = actions["redo"] == true, onClick = { send("redo") })
+    DropdownMenuItem(text = { Text("Undo") }, enabled = actions["undo"] == true, onClick = { send("undo") })
+    DropdownMenuItem(text = { Text("Redo") }, enabled = actions["redo"] == true, onClick = { send("redo") })
     HorizontalDivider()
     DropdownMenuItem(text = { Text("Select All") }, enabled = actions["select_all"] == true, onClick = {
         send("selection", JSONObject().put("command", JSONObject().put("op", "all")))

@@ -70,9 +70,9 @@ Item {
                 smoke.stage++
             } else if (smoke.stage === 3) {
                 if (app.playlist_count !== 3) return
-                smoke.check(smoke.control("editUndoAction").text === "Undo Append", "Queue undo label")
+                smoke.check(smoke.control("editUndoAction").text === "Undo", "Queue undo label")
                 smoke.control("editUndoAction").trigger()
-                smoke.check(app.playlist_count === 0, "Undo Append failed")
+                smoke.check(app.playlist_count === 0, "Queue undo failed")
                 smoke.control("editRedoAction").trigger()
                 smoke.stage++
             } else if (smoke.stage === 4) {

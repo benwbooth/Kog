@@ -8,8 +8,8 @@ struct PlaylistEditCommands: View {
     private func enabled(_ action: String) -> Bool { store.workspace.actions[action] == true }
     private func send(_ op: String) { store.workspaceCommand(["op": op]) }
     var body: some View {
-        Button(isQueue ? "Undo Append" : "Undo", systemImage: "arrow.uturn.backward") { send("undo") }.disabled(!enabled("undo"))
-        Button(isQueue ? "Redo Append" : "Redo", systemImage: "arrow.uturn.forward") { send("redo") }.disabled(!enabled("redo"))
+        Button("Undo", systemImage: "arrow.uturn.backward") { send("undo") }.disabled(!enabled("undo"))
+        Button("Redo", systemImage: "arrow.uturn.forward") { send("redo") }.disabled(!enabled("redo"))
         Divider()
         Button("Select All", systemImage: "checkmark.circle") { store.workspaceCommand(["op": "selection", "command": ["op": "all"]]) }.disabled(!enabled("select_all"))
         Button("Clear Selection") { store.workspaceCommand(["op": "selection", "command": ["op": "clear"]]) }.disabled(!enabled("clear_selection"))

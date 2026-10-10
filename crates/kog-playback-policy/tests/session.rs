@@ -980,3 +980,35 @@ fn workspace_queue_activation_selects_and_plays_the_requested_row_atomically() {
     let effects = workspace_action(&mut s, workspace::Command::Activate { index: 1 });
     assert!(effects.iter().any(|e| matches!(e, Effect::Pause)));
 }
+
+#[test]
+fn reorder_remove_and_clear_are_undoable_and_keep_later_appends() {
+    let mut s = session("qt");
+    append(&mut s, &["A", "B", "C", "D"]);
+    let titles = |s: &Session<Value>| s.queue().iter().map(|t| t["title"].as_str().unwrap().to_owned()).collect::<Vec<_>>().join("");
+    let token = play_token(s.dispatch(Command::Play { index: 3 }));
+    s.dispatch(Command::Output { token, event: OutputEvent::Started });
+    s.dispatch(Command::Move { indices: vec![1, 2], target: 4 });
+    assert_eq!(titles(&s), "ADBC");
+    assert!(s.workspace().actions.undo);
+    s.dispatch(Command::Remove { indices: vec![0] });
+    assert_eq!(titles(&s), "DBC");
+    append(&mut s, &["E"]);
+    workspace_action(&mut s, workspace::Command::Undo);
+    assert_eq!(titles(&s), "ADBCE", "removed row returns, later append stays");
+    workspace_action(&mut s, workspace::Command::Undo);
+    assert_eq!(titles(&s), "ABCDE");
+    assert_eq!(s.current(), Some(3), "the playing row is followed, not restarted");
+    workspace_action(&mut s, workspace::Command::Redo);
+    assert_eq!(titles(&s), "ADBCE");
+    workspace_action(&mut s, workspace::Command::Redo);
+    assert_eq!(titles(&s), "DBCE");
+    workspace_action(&mut s, workspace::Command::Clear);
+    assert_eq!(titles(&s), "");
+    workspace_action(&mut s, workspace::Command::Undo);
+    assert_eq!(titles(&s), "DBCE");
+    // A move that changes nothing is not an undo step.
+    s.dispatch(Command::Move { indices: vec![0], target: 0 });
+    workspace_action(&mut s, workspace::Command::Undo);
+    assert_eq!(titles(&s), "ADBCE", "history before the clear survives it");
+}

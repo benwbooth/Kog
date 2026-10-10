@@ -103,10 +103,10 @@ pub fn EditMenu(
     };
     view! {
         <button class="menu-item" role="menuitem" disabled=move || !controller.snapshot().actions.undo on:click=move |_| send(Command::Undo)>
-            {move || if controller.snapshot().active == "queue" { "Undo Append" } else { "Undo" }}
+            "Undo"
         </button>
         <button class="menu-item" role="menuitem" disabled=move || !controller.snapshot().actions.redo on:click=move |_| send(Command::Redo)>
-            {move || if controller.snapshot().active == "queue" { "Redo Append" } else { "Redo" }}
+            "Redo"
         </button>
         <div class="menu-separator" role="separator"></div>
         <button class="menu-item" role="menuitem" disabled=move || !controller.snapshot().actions.select_all on:click=move |_| { on_select_all.run(()); on_action.run(()); }>"Select All"</button>

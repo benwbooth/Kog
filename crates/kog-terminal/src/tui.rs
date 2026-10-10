@@ -9587,9 +9587,7 @@ impl Ui {
                     true,
                 );
                 for (row, index) in (layer.offset..labels.len()).take(page).enumerate() {
-                    let label = if layer.page == MenuPage::Edit && !self.is_draft() {
-                        match index { 0 => "Undo Append", 1 => "Redo Append", _ => labels[index] }
-                    } else { labels[index] };
+                    let label = labels[index];
                     let enabled = self.menu_item_enabled(layer.page, index);
                     let selected = index == layer.selected && enabled;
                     let surface = if !enabled && !label.is_empty() {

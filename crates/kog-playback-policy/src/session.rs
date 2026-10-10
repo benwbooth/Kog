@@ -395,6 +395,31 @@ struct QueueAppend {
     rows: Vec<u64>,
 }
 
+/// A reorder or removal as one undo step: the row order before it, the rows
+/// it dropped, and the next row id then, so rows appended since survive.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct QueueRows<T> {
+    order: Vec<u64>,
+    dropped: Vec<(u64, T)>,
+    next_row: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+enum QueueEdit<T> {
+    Append(QueueAppend),
+    Rows(QueueRows<T>),
+}
+
+impl<T> QueueEdit<T> {
+    fn token(&self) -> Option<u64> {
+        match self {
+            QueueEdit::Append(edit) => Some(edit.token),
+            QueueEdit::Rows(_) => None,
+        }
+    }
+}
+
 /// Stable identities connect draft rows to the queue that plays them, including
 /// separate occurrences of the same song.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -448,9 +473,9 @@ pub struct Session<T> {
     #[serde(default)]
     playlist_playback: Option<PlaylistPlayback>,
     #[serde(default)]
-    append_undo: Vec<QueueAppend>,
+    append_undo: Vec<QueueEdit<T>>,
     #[serde(default)]
-    append_redo: Vec<QueueAppend>,
+    append_redo: Vec<QueueEdit<T>>,
     output: Option<OutputRequest>,
     transport_epoch: u64,
     radio: RadioBuffer<T>,
@@ -751,6 +776,25 @@ impl<T: Item> Session<T> {
         self.rows = order.iter().map(|i| self.rows[*i]).collect();
         self.changed(mapping, effects);
     }
+    fn remove_recorded(&mut self, indices: Vec<usize>, effects: &mut Vec<Effect>) {
+        let edit = self.rows_snapshot(&indices);
+        self.remove(indices, effects);
+        self.record_rows(edit);
+    }
+    fn reorder_recorded(&mut self, order: Vec<usize>, effects: &mut Vec<Effect>) {
+        let edit = self.rows_snapshot(&[]);
+        self.reorder(order, effects);
+        self.record_rows(edit);
+    }
+    /// Clearing cancels pending appends but keeps the undo history, plus one
+    /// step that brings the cleared rows back.
+    fn clear_recorded(&mut self, effects: &mut Vec<Effect>) {
+        let edit = self.rows_snapshot(&(0..self.queue.len()).collect::<Vec<_>>());
+        let history = std::mem::take(&mut self.append_undo);
+        self.clear(effects);
+        self.append_undo = history;
+        self.record_rows(edit);
+    }
     fn stop(&mut self, effects: &mut Vec<Effect>) {
         self.transport_epoch += 1;
         self.output = None;
@@ -875,12 +919,12 @@ impl<T: Item> Session<T> {
             workspace::QueueAction::AddToQueue,
             effects,
         );
-        self.append_undo.push(QueueAppend {
+        self.append_undo.push(QueueEdit::Append(QueueAppend {
             scope,
             entries,
             token: self.serial,
             rows: vec![],
-        });
+        }));
         if self.append_undo.len() > 50 {
             self.append_undo.remove(0);
         }
@@ -1042,13 +1086,24 @@ impl<T: Item> Session<T> {
     }
     fn undo_append(&mut self, redo: bool, effects: &mut Vec<Effect>) {
         if redo {
-            if let Some(edit) = self.append_redo.pop() {
-                self.begin_append(edit.scope, edit.entries, effects);
+            match self.append_redo.pop() {
+                Some(QueueEdit::Append(edit)) => self.begin_append(edit.scope, edit.entries, effects),
+                Some(QueueEdit::Rows(edit)) => {
+                    let inverse = self.restore_rows(edit, effects);
+                    self.append_undo.push(QueueEdit::Rows(inverse));
+                }
+                None => (),
             }
             return;
         }
-        let Some(edit) = self.append_undo.pop() else {
-            return;
+        let edit = match self.append_undo.pop() {
+            Some(QueueEdit::Append(edit)) => edit,
+            Some(QueueEdit::Rows(edit)) => {
+                let inverse = self.restore_rows(edit, effects);
+                self.append_redo.push(QueueEdit::Rows(inverse));
+                return;
+            }
+            None => return,
         };
         self.pending.remove(&edit.token);
         self.expansion_order.retain(|serial| *serial != edit.token);
@@ -1061,8 +1116,67 @@ impl<T: Item> Session<T> {
         if !indices.is_empty() {
             self.remove(indices, effects);
         }
-        self.append_redo.push(edit);
+        self.append_redo.push(QueueEdit::Append(edit));
         self.finish_expansions(effects);
+    }
+    /// The undo step for an edit about to drop `dropping` or move rows.
+    fn rows_snapshot(&self, dropping: &[usize]) -> QueueRows<T> {
+        QueueRows {
+            order: self.rows.clone(),
+            dropped: dropping
+                .iter()
+                .filter_map(|&i| Some((*self.rows.get(i)?, self.queue[i].clone())))
+                .collect(),
+            next_row: self.next_row,
+        }
+    }
+    /// Keep an edit's undo step unless the edit changed nothing.
+    fn record_rows(&mut self, edit: QueueRows<T>) {
+        if edit.order == self.rows {
+            return;
+        }
+        self.append_redo.clear();
+        self.append_undo.push(QueueEdit::Rows(edit));
+        if self.append_undo.len() > 50 {
+            self.append_undo.remove(0);
+        }
+    }
+    /// Put rows back in a recorded order, returning the step that reverses
+    /// this. Rows appended after the recording stay, after the restored ones.
+    fn restore_rows(&mut self, edit: QueueRows<T>, effects: &mut Vec<Effect>) -> QueueRows<T> {
+        use std::collections::{HashMap, HashSet};
+        let position: HashMap<u64, usize> = self.rows.iter().enumerate().map(|(i, id)| (*id, i)).collect();
+        let mut dropped: HashMap<u64, T> = edit.dropped.into_iter().collect();
+        let recorded: HashSet<u64> = edit.order.iter().copied().collect();
+        let target: Vec<u64> = edit
+            .order
+            .iter()
+            .filter(|id| position.contains_key(id) || dropped.contains_key(id))
+            .chain(self.rows.iter().filter(|id| **id >= edit.next_row && !recorded.contains(id)))
+            .copied()
+            .collect();
+        let kept: HashMap<u64, usize> = target.iter().enumerate().map(|(i, id)| (*id, i)).collect();
+        let leaving: Vec<usize> = (0..self.rows.len()).filter(|i| !kept.contains_key(&self.rows[*i])).collect();
+        let inverse = self.rows_snapshot(&leaving);
+        if self.current.is_some_and(|i| leaving.contains(&i)) {
+            self.stop(effects)
+        }
+        let mapping = self.rows.iter().map(|id| kept.get(id).copied()).collect();
+        let (mut queue, mut metadata) = (Vec::with_capacity(target.len()), Vec::with_capacity(target.len()));
+        for id in &target {
+            if let Some(&i) = position.get(id) {
+                queue.push(self.queue[i].clone());
+                metadata.push(self.metadata[i].clone());
+            } else if let Some(track) = dropped.remove(id) {
+                metadata.push(track.metadata());
+                queue.push(track);
+            }
+        }
+        self.queue = queue;
+        self.metadata = metadata;
+        self.rows = target;
+        self.changed(mapping, effects);
+        inverse
     }
     fn finish_expansions(&mut self, effects: &mut Vec<Effect>) {
         while let Some(serial) = self.expansion_order.front().copied() {
@@ -1093,20 +1207,20 @@ impl<T: Item> Session<T> {
                         let start = self.rows.len();
                         self.append(tracks, action, effects);
                         self.transport_epoch = epoch;
-                        if let Some(edit) = self
+                        if let Some(QueueEdit::Append(edit)) = self
                             .append_undo
                             .iter_mut()
-                            .find(|edit| edit.token == serial)
+                            .find(|edit| edit.token() == Some(serial))
                         {
                             edit.rows = self.rows[start..].to_vec();
                         }
                         if self.rows.len() == start {
-                            self.append_undo.retain(|edit| edit.token != serial);
+                            self.append_undo.retain(|edit| edit.token() != Some(serial));
                         }
                     }
                     Err(error) => {
                         self.error = Some(error);
-                        self.append_undo.retain(|edit| edit.token != serial);
+                        self.append_undo.retain(|edit| edit.token() != Some(serial));
                     }
                 }
             }
@@ -1208,9 +1322,9 @@ impl<T: Item> Session<T> {
                         );
                     }
                     workspace::Command::Remove => {
-                        self.remove(self.selection.indices.clone(), effects)
+                        self.remove_recorded(self.selection.indices.clone(), effects)
                     }
-                    workspace::Command::Clear => self.clear(effects),
+                    workspace::Command::Clear => self.clear_recorded(effects),
                     workspace::Command::Nudge { delta } => {
                         let selected = &self.selection.indices;
                         let mut order: Vec<_> = (0..self.queue.len()).collect();
@@ -1228,7 +1342,7 @@ impl<T: Item> Session<T> {
                                 }
                             }
                         }
-                        self.reorder(order, effects);
+                        self.reorder_recorded(order, effects);
                     }
                     _ => unreachable!(),
                 }
@@ -1497,9 +1611,9 @@ impl<T: Item> Session<T> {
                     }
                 }
             }
-            Command::Clear => self.clear(&mut effects),
+            Command::Clear => self.clear_recorded(&mut effects),
             Command::Remove { indices } => {
-                self.remove(indices, &mut effects);
+                self.remove_recorded(indices, &mut effects);
             }
             Command::Move {
                 mut indices,
@@ -1516,9 +1630,9 @@ impl<T: Item> Session<T> {
                     .saturating_sub(indices.iter().filter(|i| **i < target).count())
                     .min(order.len());
                 order.splice(slot..slot, indices);
-                self.reorder(order, &mut effects);
+                self.reorder_recorded(order, &mut effects);
             }
-            Command::Reorder { indices } => self.reorder(indices, &mut effects),
+            Command::Reorder { indices } => self.reorder_recorded(indices, &mut effects),
             Command::UpdateItem { index, track } => {
                 if index < self.queue.len() {
                     self.metadata[index] = track.metadata();
@@ -1559,7 +1673,7 @@ impl<T: Item> Session<T> {
             } => {
                 if physical {
                     let indices = crate::sort::sorted_rows(&self.metadata, &column, descending);
-                    self.reorder(indices, &mut effects);
+                    self.reorder_recorded(indices, &mut effects);
                 }
                 self.sort_column = column;
                 self.descending = descending;
