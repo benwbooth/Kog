@@ -13,6 +13,8 @@ use rodio::source::SeekError;
 use rodio::{ChannelCount, SampleRate, Source};
 use serde_json::{Value, json};
 
+use crate::patch::Patch;
+
 /// The effects Kog offers, in the order the catalog lists them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EffectKind {
@@ -24,6 +26,8 @@ pub enum EffectKind {
     Bitcrusher,
     Distortion,
     Compressor,
+    /// A patch built from blocks; the slot names it.
+    Custom,
 }
 
 pub const EFFECT_KINDS: [EffectKind; 8] = [
@@ -47,9 +51,33 @@ pub struct ParamSpec {
     pub default: f32,
     pub step: f32,
     pub unit: &'static str,
+    /// Names of the values of a setting that picks one of several, by index.
+    pub choices: &'static [&'static str],
 }
 
-const fn param(
+impl ParamSpec {
+    /// A value brought into range (and to a whole choice).
+    pub fn clamp(&self, value: f32) -> f32 {
+        let value = value.clamp(self.min, self.max);
+        if self.choices.is_empty() { value } else { value.round() }
+    }
+}
+
+/// A setting that picks one of `choices`.
+pub(crate) const fn choice(id: &'static str, label: &'static str, choices: &'static [&'static str], default: usize) -> ParamSpec {
+    ParamSpec {
+        id,
+        label,
+        min: 0.0,
+        max: (choices.len() - 1) as f32,
+        default: default as f32,
+        step: 1.0,
+        unit: "",
+        choices,
+    }
+}
+
+pub(crate) const fn param(
     id: &'static str,
     label: &'static str,
     min: f32,
@@ -66,6 +94,7 @@ const fn param(
         default,
         step,
         unit,
+        choices: &[],
     }
 }
 
@@ -80,6 +109,7 @@ impl EffectKind {
             Self::Bitcrusher => "bitcrusher",
             Self::Distortion => "distortion",
             Self::Compressor => "compressor",
+            Self::Custom => "custom",
         }
     }
 
@@ -93,11 +123,12 @@ impl EffectKind {
             Self::Bitcrusher => "Bitcrusher",
             Self::Distortion => "Distortion",
             Self::Compressor => "Compressor",
+            Self::Custom => "Custom effect",
         }
     }
 
     pub fn from_id(id: &str) -> Option<Self> {
-        EFFECT_KINDS.into_iter().find(|kind| kind.id() == id)
+        EFFECT_KINDS.into_iter().chain([Self::Custom]).find(|kind| kind.id() == id)
     }
 
     pub fn params(self) -> &'static [ParamSpec] {
@@ -167,6 +198,10 @@ impl EffectKind {
                 ];
                 P
             }
+            Self::Custom => {
+                const P: &[ParamSpec] = &[param("mix", "Mix", 0.0, 1.0, 1.0, 0.01, "")];
+                P
+            }
         }
     }
 }
@@ -177,6 +212,8 @@ pub struct EffectSlot {
     pub kind: EffectKind,
     pub enabled: bool,
     pub params: BTreeMap<String, f32>,
+    /// For a custom effect: the name of its patch.
+    pub patch: Option<String>,
 }
 
 impl EffectSlot {
@@ -190,7 +227,13 @@ impl EffectSlot {
                 .iter()
                 .map(|spec| (spec.id.to_owned(), spec.default))
                 .collect(),
+            patch: None,
         }
+    }
+
+    /// A custom effect running the named patch.
+    pub fn custom(patch: &str) -> Self {
+        Self { patch: Some(patch.to_owned()), ..Self::new(EffectKind::Custom) }
     }
 
     /// A setting, clamped to its range; the default when it is missing.
@@ -202,7 +245,7 @@ impl EffectSlot {
             .get(id)
             .copied()
             .filter(|value| value.is_finite())
-            .map_or(spec.default, |value| value.clamp(spec.min, spec.max))
+            .map_or(spec.default, |value| spec.clamp(value))
     }
 
     fn with(mut self, values: &[(&str, f32)]) -> Self {
@@ -219,10 +262,14 @@ pub struct EffectsSettings {
     pub enabled: bool,
     pub preset_name: String,
     pub chain: Vec<EffectSlot>,
+    /// Effects built from blocks, by name; slots refer to them.
+    pub patches: Vec<Patch>,
 }
 
 /// Effects in a chain at most; each kind may appear more than once.
 pub const MAX_EFFECTS: usize = 16;
+/// Saved custom effects at most.
+pub const MAX_PATCHES: usize = 64;
 
 impl EffectsSettings {
     pub fn to_json(&self) -> Value {
@@ -234,7 +281,9 @@ impl EffectsSettings {
                 "kind": slot.kind.id(),
                 "enabled": slot.enabled,
                 "params": slot.kind.params().iter().map(|spec| (spec.id.to_owned(), json!(slot.get(spec.id)))).collect::<serde_json::Map<_, _>>(),
+                "patch": slot.patch,
             })).collect::<Vec<_>>(),
+            "patches": self.patches.iter().map(Patch::to_json).collect::<Vec<_>>(),
         })
     }
 
@@ -264,6 +313,9 @@ impl EffectsSettings {
                     let kind = EffectKind::from_id(slot.get("kind")?.as_str()?)?;
                     let mut effect = EffectSlot::new(kind);
                     effect.enabled = slot.get("enabled").and_then(Value::as_bool).unwrap_or(true);
+                    if kind == EffectKind::Custom {
+                        effect.patch = Some(slot.get("patch")?.as_str()?.chars().take(60).collect());
+                    }
                     for spec in kind.params() {
                         if let Some(value) = slot
                             .get("params")
@@ -274,7 +326,7 @@ impl EffectsSettings {
                             if value.is_finite() {
                                 effect
                                     .params
-                                    .insert(spec.id.to_owned(), value.clamp(spec.min, spec.max));
+                                    .insert(spec.id.to_owned(), spec.clamp(value));
                             }
                         }
                     }
@@ -282,11 +334,22 @@ impl EffectsSettings {
                 })
                 .take(MAX_EFFECTS)
                 .collect(),
+            patches: {
+                let mut patches: Vec<Patch> = value
+                    .get("patches")
+                    .and_then(Value::as_array)
+                    .map(|items| items.iter().filter_map(Patch::from_json).take(MAX_PATCHES).collect())
+                    .unwrap_or_default();
+                // Names are how slots find patches, so keep them unique.
+                let mut seen = std::collections::HashSet::new();
+                patches.retain(|patch| seen.insert(patch.name.clone()));
+                patches
+            },
         })
     }
 
     pub fn parse(text: &str) -> Option<Self> {
-        if text.len() > 64 * 1024 {
+        if text.len() > 1024 * 1024 {
             return None;
         }
         Self::from_json(&serde_json::from_str(text).ok()?)
@@ -305,6 +368,7 @@ pub fn presets() -> Vec<EffectsSettings> {
         enabled: true,
         preset_name: name.to_owned(),
         chain,
+        patches: Vec::new(),
     };
     vec![
         preset("None", vec![]),
@@ -370,6 +434,7 @@ pub fn catalog() -> Value {
             })).collect::<Vec<_>>(),
         })).collect::<Vec<_>>(),
         "presets": presets().iter().map(EffectsSettings::to_json).collect::<Vec<_>>(),
+        "custom": crate::patch::catalog(),
     })
 }
 
@@ -421,14 +486,14 @@ impl EffectsControl {
 // Building blocks
 
 #[derive(Clone, Copy, Default)]
-struct Biquad {
+pub(crate) struct Biquad {
     b0: f32,
     b1: f32,
     b2: f32,
     a1: f32,
     a2: f32,
-    z1: f32,
-    z2: f32,
+    pub(crate) z1: f32,
+    pub(crate) z2: f32,
 }
 
 impl Biquad {
@@ -474,7 +539,35 @@ impl Biquad {
         )
     }
 
-    fn process(&mut self, x: f32) -> f32 {
+    /// The RBJ cookbook filters, by `FILTER_TYPES` index.
+    pub(crate) fn design(kind: usize, frequency: f32, q: f32, gain_db: f32, rate: f32) -> Self {
+        let w = TAU * frequency.clamp(10.0, rate * 0.45) / rate;
+        let (sin, cos) = w.sin_cos();
+        let alpha = sin / (2.0 * q.max(0.05));
+        let a = 10f32.powf(gain_db / 40.0);
+        match kind {
+            1 => Self::from((1.0 + cos) / 2.0, -(1.0 + cos), (1.0 + cos) / 2.0, 1.0 + alpha, -2.0 * cos, 1.0 - alpha),
+            2 => Self::from(alpha, 0.0, -alpha, 1.0 + alpha, -2.0 * cos, 1.0 - alpha),
+            3 => Self::from(1.0, -2.0 * cos, 1.0, 1.0 + alpha, -2.0 * cos, 1.0 - alpha),
+            4 => Self::from(1.0 + alpha * a, -2.0 * cos, 1.0 - alpha * a, 1.0 + alpha / a, -2.0 * cos, 1.0 - alpha / a),
+            5 | 6 => {
+                let root = 2.0 * a.sqrt() * alpha;
+                let sign = if kind == 5 { 1.0 } else { -1.0 };
+                Self::from(
+                    a * ((a + 1.0) - sign * (a - 1.0) * cos + root),
+                    sign * 2.0 * a * ((a - 1.0) - sign * (a + 1.0) * cos),
+                    a * ((a + 1.0) - sign * (a - 1.0) * cos - root),
+                    (a + 1.0) + sign * (a - 1.0) * cos + root,
+                    -sign * 2.0 * ((a - 1.0) + sign * (a + 1.0) * cos),
+                    (a + 1.0) + sign * (a - 1.0) * cos - root,
+                )
+            }
+            7 => Self::from(1.0 - alpha, -2.0 * cos, 1.0 + alpha, 1.0 + alpha, -2.0 * cos, 1.0 - alpha),
+            _ => Self::from((1.0 - cos) / 2.0, 1.0 - cos, (1.0 - cos) / 2.0, 1.0 + alpha, -2.0 * cos, 1.0 - alpha),
+        }
+    }
+
+    pub(crate) fn process(&mut self, x: f32) -> f32 {
         let y = self.b0 * x + self.z1;
         self.z1 = self.b1 * x - self.a1 * y + self.z2;
         self.z2 = self.b2 * x - self.a2 * y;
@@ -483,26 +576,26 @@ impl Biquad {
 }
 
 /// A delay line read at a fractional position behind the write head.
-struct DelayLine {
+pub(crate) struct DelayLine {
     buffer: Vec<f32>,
     write: usize,
 }
 
 impl DelayLine {
-    fn new(length: usize) -> Self {
+    pub(crate) fn new(length: usize) -> Self {
         Self {
             buffer: vec![0.0; length.max(2)],
             write: 0,
         }
     }
 
-    fn push(&mut self, value: f32) {
+    pub(crate) fn push(&mut self, value: f32) {
         self.buffer[self.write] = value;
         self.write = (self.write + 1) % self.buffer.len();
     }
 
     /// The sample `delay` samples ago (before the latest push).
-    fn read(&self, delay: f32) -> f32 {
+    pub(crate) fn read(&self, delay: f32) -> f32 {
         let length = self.buffer.len();
         let delay = delay.clamp(1.0, (length - 2) as f32);
         let whole = delay.floor() as usize;
@@ -546,7 +639,7 @@ impl Allpass {
 // ---------------------------------------------------------------------------
 // Effects
 
-trait Effect: Send {
+pub(crate) trait Effect: Send {
     fn process(&mut self, left: f32, right: f32) -> (f32, f32);
 }
 
@@ -831,9 +924,14 @@ impl Effect for Compressor {
     }
 }
 
-fn build(slot: &EffectSlot, rate: f32) -> Box<dyn Effect> {
+fn build(slot: &EffectSlot, rate: f32, patches: &[Patch]) -> Option<Box<dyn Effect>> {
     let time = |ms: f32| (-1.0 / (ms / 1000.0 * rate)).exp();
-    match slot.kind {
+    Some(match slot.kind {
+        EffectKind::Custom => {
+            let name = slot.patch.as_deref()?;
+            let patch = patches.iter().find(|patch| patch.name == name)?;
+            Box::new(crate::patch::PatchEffect::new(patch, rate, slot.get("mix")))
+        }
         EffectKind::Reverb => Box::new(Reverb::new(slot, rate)),
         EffectKind::Widener => Box::new(Widener {
             width: slot.get("width"),
@@ -870,7 +968,7 @@ fn build(slot: &EffectSlot, rate: f32) -> Box<dyn Effect> {
             ceiling: 10f32.powf(slot.get("ceiling") / 20.0),
             envelope_db: -120.0,
         }),
-    }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -922,7 +1020,7 @@ impl<S: Source<Item = f32>> EffectsSource<S> {
                 .chain
                 .iter()
                 .filter(|slot| slot.enabled)
-                .map(|slot| build(slot, rate))
+                .filter_map(|slot| build(slot, rate, &settings.patches))
                 .collect()
         } else {
             Vec::new()
@@ -1045,6 +1143,7 @@ mod tests {
             run(
                 EffectsSettings {
                     enabled: true,
+                    patches: Vec::new(),
                     ..Default::default()
                 },
                 samples.clone()
@@ -1061,6 +1160,7 @@ mod tests {
         for kind in EFFECT_KINDS {
             let settings = EffectsSettings {
                 enabled: true,
+                patches: Vec::new(),
                 preset_name: String::new(),
                 chain: vec![EffectSlot::new(kind)],
             };
@@ -1087,6 +1187,7 @@ mod tests {
         for kind in [EffectKind::Reverb, EffectKind::Delay] {
             let settings = EffectsSettings {
                 enabled: true,
+                patches: Vec::new(),
                 preset_name: String::new(),
                 chain: vec![EffectSlot::new(kind)],
             };
@@ -1111,9 +1212,25 @@ mod tests {
     }
 
     #[test]
+    fn custom_slots_run_their_patch_and_round_trip() {
+        let patch = crate::patch::templates().remove(0);
+        let settings = EffectsSettings {
+            enabled: true,
+            preset_name: String::new(),
+            chain: vec![EffectSlot::custom(&patch.name), EffectSlot::custom("missing")],
+            patches: vec![patch],
+        };
+        assert_eq!(EffectsSettings::parse(&settings.serialize()), Some(settings.clone()));
+        let output = run(settings, impulse());
+        let tail: f32 = output[4_000..].iter().map(|value| value.abs()).sum();
+        assert!(tail > 0.01, "the reverb patch left no tail");
+    }
+
+    #[test]
     fn widener_at_zero_makes_mono() {
         let settings = EffectsSettings {
             enabled: true,
+            patches: Vec::new(),
             preset_name: String::new(),
             chain: vec![EffectSlot::new(EffectKind::Widener).with(&[("width", 0.0)])],
         };

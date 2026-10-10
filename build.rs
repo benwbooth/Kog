@@ -61,6 +61,7 @@ fn main() {
         "qml/PlaybackTitle.qml",
         "qml/RemoteBrowser.qml",
         "qml/TrackerText.qml",
+        "qml/PatchEditor.qml",
     ]))
     // Keep the bridge include root limited to Kog's hand-written integration
     // header instead of recursively tracking the whole repository.

@@ -36,11 +36,38 @@ Window {
     property bool effectsEnabled: effectsCatalog.settings.enabled !== false
     property string effectsPreset: effectsCatalog.settings.preset || ""
     property string effectsError: ""
-    function effectInfo(kind) { return effectsCatalog.effects.find(e => e.kind === kind) || { label: kind, params: [] } }
+    // Custom effects built from blocks; chain slots name them.
+    property var effectsPatches: effectsCatalog.settings.patches || []
+    function effectInfo(kind) {
+        if (kind === "custom") return { label: qsTr("Custom effect"), params: [{ id: "mix", label: qsTr("Mix"), min: 0, max: 1, default: 1, step: 0.01, unit: "" }] }
+        return effectsCatalog.effects.find(e => e.kind === kind) || { label: kind, params: [] }
+    }
     function commitEffects(chain, preset) {
         effectsChain = chain
         if (preset !== undefined) effectsPreset = preset
-        effectsError = app.set_effects(JSON.stringify({ version: 1, enabled: effectsEnabled, preset: effectsPreset, chain: chain }))
+        effectsError = app.set_effects(JSON.stringify({ version: 1, enabled: effectsEnabled, preset: effectsPreset, chain: chain, patches: effectsPatches }))
+    }
+    function savePatch(patch, originalName) {
+        const patches = effectsPatches.filter(p => p.name !== originalName && p.name !== patch.name)
+        patches.push(patch)
+        effectsPatches = patches
+        // Slots follow a renamed effect.
+        commitEffects(editedChain(chain => { for (const slot of chain) if (slot.kind === "custom" && slot.patch === originalName) slot.patch = patch.name }))
+    }
+    function deletePatch(name) {
+        effectsPatches = effectsPatches.filter(p => p.name !== name)
+        commitEffects(editedChain(chain => { for (let i = chain.length - 1; i >= 0; --i) if (chain[i].kind === "custom" && chain[i].patch === name) chain.splice(i, 1) }), "")
+    }
+    function freeName(base) {
+        let name = base, n = 2
+        while (effectsPatches.some(p => p.name === name)) name = base + " " + n++
+        return name
+    }
+    PatchEditor {
+        id: patchEditor
+        objectName: "patchEditor"
+        catalog: root.effectsCatalog.custom
+        onSaved: (patch, originalName) => root.savePatch(patch, originalName)
     }
     function editedChain(edit) {
         const chain = JSON.parse(JSON.stringify(effectsChain))
@@ -1450,6 +1477,15 @@ Window {
                                         }
                                     }
                                 }
+                                MenuSeparator { visible: root.effectsPatches.length > 0 }
+                                Repeater {
+                                    model: root.effectsPatches
+                                    MenuItem {
+                                        required property var modelData
+                                        text: modelData.name
+                                        onTriggered: root.commitEffects(root.editedChain(chain => chain.push({ kind: "custom", patch: modelData.name, enabled: true, params: { mix: 1 } })), "")
+                                    }
+                                }
                             }
                         }
                     }
@@ -1473,7 +1509,7 @@ Window {
                             readonly property var slot: root.effectsChain[index]
                             readonly property var info: root.effectInfo(slot.kind)
                             objectName: "effectSlot"
-                            title: (index + 1) + ". " + info.label
+                            title: (index + 1) + ". " + (slot.kind === "custom" ? slot.patch + (root.effectsPatches.some(p => p.name === slot.patch) ? "" : qsTr(" (missing)")) : info.label)
                             Layout.fillWidth: true
 
                             ColumnLayout {
@@ -1526,6 +1562,64 @@ Window {
                                     }
                                 }
                             }
+                        }
+                    }
+
+                    PreferenceLabel {
+                        text: qsTr("Custom effects")
+                        font.pixelSize: 18
+                        font.bold: true
+                        Layout.topMargin: 12
+                    }
+                    PreferenceLabel {
+                        Layout.fillWidth: true
+                        wrapMode: Text.Wrap
+                        color: root.palette.placeholderText
+                        text: qsTr("Build your own effects from blocks: filters, delays, combs, all-passes, gain, waveshapers, crushers, width, pan, compressors and ring modulators, in series, in parallel paths or in feedback loops, with LFOs and envelope followers moving any setting. Saved effects appear in Add effect.")
+                    }
+                    RowLayout {
+                        Button {
+                            objectName: "patchNew"
+                            text: qsTr("New custom effect")
+                            onClicked: newMenu.open()
+                            Menu {
+                                id: newMenu
+                                MenuItem {
+                                    text: qsTr("Empty")
+                                    onTriggered: patchEditor.edit({ name: root.freeName(qsTr("My effect")), modulators: [], stages: [] }, root.effectsPatches.map(p => p.name))
+                                }
+                                MenuSeparator {}
+                                Repeater {
+                                    model: root.effectsCatalog.custom.templates
+                                    MenuItem {
+                                        required property var modelData
+                                        text: qsTr("From %1").arg(modelData.name)
+                                        onTriggered: {
+                                            const copy = JSON.parse(JSON.stringify(modelData))
+                                            copy.name = root.freeName(modelData.name.replace(" (blocks)", ""))
+                                            patchEditor.edit(copy, root.effectsPatches.map(p => p.name))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Repeater {
+                        model: root.effectsPatches
+                        RowLayout {
+                            id: patchRow
+                            required property var modelData
+                            PreferenceLabel { text: patchRow.modelData.name; Layout.fillWidth: true }
+                            Button { text: qsTr("Edit"); onClicked: patchEditor.edit(patchRow.modelData, root.effectsPatches.map(p => p.name)) }
+                            Button {
+                                text: qsTr("Duplicate")
+                                onClicked: {
+                                    const copy = JSON.parse(JSON.stringify(patchRow.modelData))
+                                    copy.name = root.freeName(copy.name)
+                                    root.savePatch(copy, "")
+                                }
+                            }
+                            Button { text: qsTr("Delete"); onClicked: root.deletePatch(patchRow.modelData.name) }
                         }
                     }
 

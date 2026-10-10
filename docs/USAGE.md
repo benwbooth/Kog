@@ -74,6 +74,19 @@ Echo chamber, Overdrive) are a starting point. Changes apply at once and are
 saved for both players. The web player and the phone apps do not have
 effects yet.
 
+**Custom effects** are built from blocks: filters (low-pass, high-pass,
+band-pass, notch, peak, shelves, all-pass), delay lines, combs, all-passes,
+gain, waveshapers, bit and rate crushers, stereo width, pan, compressors and
+ring modulators. Blocks run in series, in parallel paths that are summed at
+their own levels, or in feedback loops, and any setting can be moved by an
+LFO or an envelope follower. Start from an empty effect or from a template
+(the built-in effects rebuilt from blocks, an auto-wah and a tremolo). In Qt,
+**New custom effect** opens the editor; in the terminal, **N** makes one and
+**E** edits it, with **A** adding a block, **P** parallel paths, **F** a
+feedback loop, **L**/**V** an LFO or envelope follower, and **M** choosing
+what moves the selected setting. Saved custom effects can be added to the
+chain like any other effect.
+
 ## MIDI, SoundFonts, and Roland emulation
 
 Use **View → Channel Keyboards + Tracker** (or the separate keyboards, tracker
