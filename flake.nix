@@ -67,7 +67,9 @@
               pname = "kog-web";
               version = (builtins.fromTOML (builtins.readFile ./crates/kog-web/Cargo.toml)).package.version;
               # Preserve the repository layout: the frontend imports the
-              # shared playback policy and embeds Qt's format icons.
+              # shared playback policy and the MML/inspection crate (whose
+              # guide chapters it embeds), Qt's format icons and the
+              # tracker's pixel font.
               src = pkgs.lib.fileset.toSource {
                 root = ./.;
                 fileset = pkgs.lib.fileset.unions [
@@ -79,7 +81,10 @@
                   ./crates/kog-web/manifest.webmanifest
                   ./crates/kog-web/icons
                   ./crates/kog-playback-policy
+                  ./crates/kog-inspection
+                  ./docs/mml-guide
                   ./qml/icons
+                  ./qml/fonts
                 ];
               };
               postUnpack = ''sourceRoot="$sourceRoot/crates/kog-web"'';
@@ -97,6 +102,8 @@
                   target/wasm32-unknown-unknown/release/kog_web.wasm
                 cp index.html style.css manifest.webmanifest $out/
                 cp -r icons $out/icons
+                mkdir -p $out/fonts
+                cp ../../qml/fonts/spleen-6x12.otf $out/fonts/
                 # Match build.sh: the server serves precompressed assets on
                 # mobile, while rewriting index.html and kog_web.js itself.
                 find "$out" -type f ! -name '*.gz' ! -name 'index.html' ! -name 'kog_web.js' -exec sh -c \
