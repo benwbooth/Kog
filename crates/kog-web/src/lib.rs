@@ -7153,7 +7153,7 @@ fn App() -> impl IntoView {
                                                                     // bars unstyled (invisible).
                                                                     <span
                                                                         class="row-meter"
-                                                                        style="display: inline-flex; align-items: center; justify-content: center; gap: 1px; width: 24px; height: 18px; padding: 1px; box-sizing: border-box; border-radius: 4px; vertical-align: middle; margin-left: 3px; pointer-events: none; background: rgba(0, 0, 0, 0.85); border: 1px solid rgba(255, 255, 255, 0.18);"
+                                                                        style="display: inline-flex; align-items: center; justify-content: center; gap: 1.1px; width: 24px; height: 18px; padding: 1px; box-sizing: border-box; border-radius: 9px; vertical-align: middle; margin-left: 3px; pointer-events: none; background: #000;"
                                                                     >
                                                                         <For
                                                                             each=|| [0usize, 1, 2, 3, 4, 5]
@@ -7169,15 +7169,13 @@ fn App() -> impl IntoView {
                                                                                         .copied()
                                                                                         .unwrap_or(0.0)
                                                                                         .clamp(0.0, 1.0);
-                                                                                    // Mirrored around
-                                                                                    // the middle and
-                                                                                    // shifting from cool
-                                                                                    // to hot as it grows,
-                                                                                    // like the desktop's.
+                                                                                    // One color,
+                                                                                    // mirrored around
+                                                                                    // the middle, like
+                                                                                    // the desktop's.
                                                                                     format!(
-                                                                                        "width: 2px; flex: none; min-height: 2px; border-radius: 1px; background: hsl({:.0}, 85%, 72%); height: {}px;",
-                                                                                        180.0 * (1.0 - level),
-                                                                                        2.0 + 12.0 * level
+                                                                                        "width: 2px; flex: none; min-height: 2px; border-radius: 1px; background: color-mix(in srgb, var(--highlight) 70%, white); transition: height 160ms cubic-bezier(0.34, 1.56, 0.64, 1); height: {}px;",
+                                                                                        2.0 + 11.0 * level
                                                                                     )
                                                                                 }
                                                                             ></span>

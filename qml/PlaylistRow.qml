@@ -271,8 +271,9 @@ Item {
                     height: 18
                     visible: root.isPlaying
 
-                    // Six bands, lowest on the left, each mirrored around the
-                    // middle line and shifting from cool to hot as it grows.
+                    // Like the Dynamic Island equalizer: six rounded bars in
+                    // one color on a black pill, each mirrored around the
+                    // middle and springing to its band's level.
                     readonly property var levels: [
                         root.app.audio_level_low,
                         root.app.audio_level_low_mid,
@@ -281,17 +282,12 @@ Item {
                         root.app.audio_level_high,
                         root.app.audio_level_air
                     ]
-                    function levelColor(level) {
-                        return Qt.hsla(0.5 * (1 - level), 0.85,
-                            root.selected ? 0.72 : 0.58, 1)
-                    }
+                    readonly property color barColor: Qt.lighter(root.theme.highlight, 1.35)
 
                     Rectangle {
                         anchors.fill: parent
-                        radius: 4
-                        color: Qt.rgba(0, 0, 0, 0.85)
-                        border.width: 1
-                        border.color: Qt.rgba(1, 1, 1, 0.18)
+                        radius: height / 2
+                        color: "black"
                     }
 
                     Repeater {
@@ -302,17 +298,19 @@ Item {
                             readonly property real level: Math.max(0, Math.min(1,
                                 playingWaveform.levels[index]))
 
-                            x: 4 + index * 3
+                            x: 3.25 + index * 3.1
                             y: playingWaveform.height / 2 - height / 2
                             width: 2
-                            height: 2 + 12 * level
-                            radius: 1
-                            color: playingWaveform.levelColor(level)
+                            height: 2 + 11 * level
+                            radius: width / 2
+                            antialiasing: true
+                            color: playingWaveform.barColor
 
                             Behavior on height {
-                                NumberAnimation {
-                                    duration: 70
-                                    easing.type: Easing.OutCubic
+                                SpringAnimation {
+                                    spring: 5
+                                    damping: 0.3
+                                    epsilon: 0.05
                                 }
                             }
                         }
