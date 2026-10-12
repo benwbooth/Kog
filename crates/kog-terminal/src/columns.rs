@@ -20,7 +20,7 @@ pub struct Columns {
 const DEFAULTS: [(&str, &str, usize, bool); 22] = [
     ("index", "#", 5, true),
     ("star", "★", 3, false),
-    ("status", "Status", 7, false),
+    ("status", "Status", 8, false),
     ("rating", "Rating", 8, false),
     ("title", "Title", 39, true),
     ("albumartist", "Album Artist", 20, false),

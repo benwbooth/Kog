@@ -97,7 +97,7 @@ const MEDIA_RADIO: &str = "⚄";
 const CLEAR_PLAYLIST_ICON: &str = "≡×";
 const PLAYLIST_PLAY: &str = "▶ ";
 const PLAYLIST_PAUSE: &str = "❚❚";
-const STATUS_WAVEFORM_WIDTH: usize = 3;
+const STATUS_WAVEFORM_WIDTH: usize = 6;
 
 fn load_sidebar_width() -> Option<usize> {
     kog_audio::settings::load_text(SIDEBAR_WIDTH_FILE)?
@@ -11717,31 +11717,21 @@ fn waveform_color(column: usize, width: usize) -> (u8, u8, u8) {
     )
 }
 
-/// The playing row's level meter, the desktop's six bars in braille: two
-/// bars per cell, each mirrored around the middle (a short line, then full
-/// height), and each cell warming from cyan to red with its louder bar.
+/// The playing row's level meter: the desktop's six bars as solid blocks,
+/// one cell each, growing in eighths from the bottom and warming from cyan
+/// to red with their level. A quiet bar keeps a sliver; silence is blank.
 fn status_waveform_glyphs(levels: [f32; 6]) -> Vec<(char, (u8, u8, u8))> {
-    let mut dots = vec![0_u8; STATUS_WAVEFORM_WIDTH];
-    for (x, level) in levels.into_iter().enumerate() {
-        let rows = if level >= 0.5 {
-            0..4
-        } else if level > 0.02 {
-            1..3
-        } else {
-            0..0
-        };
-        for y in rows {
-            braille_dot(&mut dots, STATUS_WAVEFORM_WIDTH, x, y);
-        }
-    }
-    dots.into_iter()
-        .enumerate()
-        .map(|(cell, mask)| {
-            let level = levels[cell * 2].max(levels[cell * 2 + 1]).clamp(0.0, 1.0);
-            (
-                char::from_u32(0x2800 + u32::from(mask)).unwrap_or(' '),
-                level_color(level),
-            )
+    const BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    levels
+        .into_iter()
+        .map(|level| {
+            let level = level.clamp(0.0, 1.0);
+            let glyph = if level > 0.02 {
+                BLOCKS[((level * 8.0).ceil() as usize).clamp(1, 8) - 1]
+            } else {
+                ' '
+            };
+            (glyph, level_color(level))
         })
         .collect()
 }
@@ -11777,7 +11767,7 @@ fn paint_playlist_waveform(
     surface: Surface,
 ) {
     let (_, background) = surface_colors(surface);
-    let prefix_width = cell_width(PLAYLIST_PLAY);
+    let prefix_width = status_waveform_offset(column_width);
     for (column, &(glyph, (red, green, blue))) in glyphs.iter().enumerate() {
         let cell_offset = prefix_width + column;
         if cell_offset >= column_width.saturating_sub(1) {
@@ -11794,6 +11784,12 @@ fn paint_playlist_waveform(
             viewport_x + visible_x,
         ));
     }
+}
+
+/// Where the meter starts in a status cell: just after the "▶" when it fits
+/// beside it, otherwise over it (the moving bars already say "playing").
+fn status_waveform_offset(column_width: usize) -> usize {
+    if column_width.saturating_sub(1) > STATUS_WAVEFORM_WIDTH { 1 } else { 0 }
 }
 
 fn draw_visualizer_modal(
@@ -12776,14 +12772,12 @@ mod tests {
         let frame = serde_json::json!({"wave": wave, "spectrum": vec![0.0_f32; 40]}).to_string();
         let glyphs = status_waveform_glyphs([0.0, 0.2, 0.4, 0.6, 0.8, 1.0]);
         assert_eq!(glyphs.len(), STATUS_WAVEFORM_WIDTH);
-        let chars = |levels| status_waveform_glyphs(levels).into_iter().map(|(c, _)| c).collect::<Vec<_>>();
-        // Silent, a short middle line, then full height, mirrored.
-        assert_eq!(chars([0.0; 6]), vec!['\u{2800}'; 3]);
-        assert_eq!(chars([0.3; 6]), vec!['\u{2836}'; 3]);
-        assert_eq!(chars([0.9; 6]), vec!['\u{28ff}'; 3]);
-        assert_eq!(glyphs[0].0, '\u{2830}', "a silent bar beside a short one");
+        let chars: String = glyphs.iter().map(|(c, _)| c).collect();
+        assert_eq!(chars, " ▂▄▅▇█");
         assert_eq!(level_color(0.0), (66, 240, 240));
         assert_eq!(level_color(1.0), (240, 66, 66));
+        assert_eq!(status_waveform_offset(8), 1);
+        assert_eq!(status_waveform_offset(7), 0);
         let mut status = String::new();
         paint(&mut status, 12, 10, PLAYLIST_PLAY, 6, Surface::Main, false);
         paint_playlist_waveform(&mut status, 12, 10, 20, 0, 7, 0, &glyphs, Surface::Main);

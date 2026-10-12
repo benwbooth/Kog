@@ -146,9 +146,9 @@ impl Ui {
             && self.player.state() == PlaybackState::Playing
             && self.columns.positions().any(|(column, start, width)| {
                 self.columns.entries[column].id == "status"
-                    && (start + cell_width(PLAYLIST_PLAY)
+                    && (start + status_waveform_offset(width)
                         ..start
-                            + (cell_width(PLAYLIST_PLAY) + STATUS_WAVEFORM_WIDTH)
+                            + (status_waveform_offset(width) + STATUS_WAVEFORM_WIDTH)
                                 .min(width.saturating_sub(1)))
                         .contains(&column_offset)
             })
