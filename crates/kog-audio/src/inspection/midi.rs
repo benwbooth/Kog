@@ -13,6 +13,154 @@ struct Voice {
     sostenuto: bool,
 }
 
+/// General MIDI program names, by program number minus one.
+const GM_PROGRAMS: [&str; 128] = [
+    "Acoustic Grand Piano",
+    "Bright Acoustic Piano",
+    "Electric Grand Piano",
+    "Honky-tonk Piano",
+    "Electric Piano 1",
+    "Electric Piano 2",
+    "Harpsichord",
+    "Clavinet",
+    "Celesta",
+    "Glockenspiel",
+    "Music Box",
+    "Vibraphone",
+    "Marimba",
+    "Xylophone",
+    "Tubular Bells",
+    "Dulcimer",
+    "Drawbar Organ",
+    "Percussive Organ",
+    "Rock Organ",
+    "Church Organ",
+    "Reed Organ",
+    "Accordion",
+    "Harmonica",
+    "Tango Accordion",
+    "Acoustic Guitar (nylon)",
+    "Acoustic Guitar (steel)",
+    "Electric Guitar (jazz)",
+    "Electric Guitar (clean)",
+    "Electric Guitar (muted)",
+    "Overdriven Guitar",
+    "Distortion Guitar",
+    "Guitar Harmonics",
+    "Acoustic Bass",
+    "Electric Bass (finger)",
+    "Electric Bass (pick)",
+    "Fretless Bass",
+    "Slap Bass 1",
+    "Slap Bass 2",
+    "Synth Bass 1",
+    "Synth Bass 2",
+    "Violin",
+    "Viola",
+    "Cello",
+    "Contrabass",
+    "Tremolo Strings",
+    "Pizzicato Strings",
+    "Orchestral Harp",
+    "Timpani",
+    "String Ensemble 1",
+    "String Ensemble 2",
+    "Synth Strings 1",
+    "Synth Strings 2",
+    "Choir Aahs",
+    "Voice Oohs",
+    "Synth Voice",
+    "Orchestra Hit",
+    "Trumpet",
+    "Trombone",
+    "Tuba",
+    "Muted Trumpet",
+    "French Horn",
+    "Brass Section",
+    "Synth Brass 1",
+    "Synth Brass 2",
+    "Soprano Sax",
+    "Alto Sax",
+    "Tenor Sax",
+    "Baritone Sax",
+    "Oboe",
+    "English Horn",
+    "Bassoon",
+    "Clarinet",
+    "Piccolo",
+    "Flute",
+    "Recorder",
+    "Pan Flute",
+    "Blown Bottle",
+    "Shakuhachi",
+    "Whistle",
+    "Ocarina",
+    "Lead 1 (square)",
+    "Lead 2 (sawtooth)",
+    "Lead 3 (calliope)",
+    "Lead 4 (chiff)",
+    "Lead 5 (charang)",
+    "Lead 6 (voice)",
+    "Lead 7 (fifths)",
+    "Lead 8 (bass + lead)",
+    "Pad 1 (new age)",
+    "Pad 2 (warm)",
+    "Pad 3 (polysynth)",
+    "Pad 4 (choir)",
+    "Pad 5 (bowed)",
+    "Pad 6 (metallic)",
+    "Pad 7 (halo)",
+    "Pad 8 (sweep)",
+    "FX 1 (rain)",
+    "FX 2 (soundtrack)",
+    "FX 3 (crystal)",
+    "FX 4 (atmosphere)",
+    "FX 5 (brightness)",
+    "FX 6 (goblins)",
+    "FX 7 (echoes)",
+    "FX 8 (sci-fi)",
+    "Sitar",
+    "Banjo",
+    "Shamisen",
+    "Koto",
+    "Kalimba",
+    "Bagpipe",
+    "Fiddle",
+    "Shanai",
+    "Tinkle Bell",
+    "Agogo",
+    "Steel Drums",
+    "Woodblock",
+    "Taiko Drum",
+    "Melodic Tom",
+    "Synth Drum",
+    "Reverse Cymbal",
+    "Guitar Fret Noise",
+    "Breath Noise",
+    "Seashore",
+    "Bird Tweet",
+    "Telephone Ring",
+    "Helicopter",
+    "Applause",
+    "Gunshot",
+];
+
+/// The General MIDI (GS) drum kit a percussion channel's program selects.
+fn gm_drum_kit(program: u8) -> &'static str {
+    match program {
+        0..=7 => "Standard Kit",
+        8..=15 => "Room Kit",
+        16..=23 => "Power Kit",
+        24 => "Electronic Kit",
+        25..=31 => "TR-808 Kit",
+        32..=39 => "Jazz Kit",
+        40..=47 => "Brush Kit",
+        48..=55 => "Orchestra Kit",
+        56..=127 => "SFX Kit",
+        _ => "Drum Kit",
+    }
+}
+
 #[derive(Clone)]
 struct MidiChannel {
     voices: BTreeMap<u8, Voice>,
@@ -180,10 +328,15 @@ impl MidiChannel {
             active: !notes.is_empty(),
             notes,
             instrument: format!(
-                "Bank {}:{} · Program {}",
+                "Bank {}:{} · Program {} {}",
                 self.controls[0],
                 self.controls[32],
-                u16::from(self.program) + 1
+                u16::from(self.program) + 1,
+                if id == 9 {
+                    gm_drum_kit(self.program)
+                } else {
+                    GM_PROGRAMS[usize::from(self.program & 0x7f)]
+                }
             ),
             level,
             pan: (f32::from(self.controls[10]) - 64.0) / 64.0,
@@ -532,6 +685,19 @@ mod tests {
             key: key.into(),
             vel: 100.into(),
         });
+    }
+
+    #[test]
+    fn channels_name_their_general_midi_program_or_drum_kit() {
+        let mut channel = MidiChannel::default();
+        channel.apply(MidiMessage::ProgramChange { program: 40.into() });
+        assert_eq!(channel.channel(0).instrument, "Bank 0:0 · Program 41 Violin");
+        assert_eq!(
+            MidiChannel::default().channel(0).instrument,
+            "Bank 0:0 · Program 1 Acoustic Grand Piano"
+        );
+        channel.apply(MidiMessage::ProgramChange { program: 25.into() });
+        assert_eq!(channel.channel(9).instrument, "Bank 0:0 · Program 26 TR-808 Kit");
     }
 
     #[test]
