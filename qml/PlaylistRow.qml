@@ -267,8 +267,8 @@ Item {
                     id: playingWaveform
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
-                    width: 20
-                    height: 14
+                    width: 24
+                    height: 18
                     visible: root.isPlaying
 
                     // Six bands, lowest on the left, each mirrored around the
@@ -289,8 +289,7 @@ Item {
                     Rectangle {
                         anchors.fill: parent
                         radius: 4
-                        visible: root.selected
-                        color: Qt.rgba(0.02, 0.08, 0.11, 0.78)
+                        color: Qt.rgba(0, 0, 0, 0.85)
                         border.width: 1
                         border.color: Qt.rgba(1, 1, 1, 0.18)
                     }
@@ -303,10 +302,10 @@ Item {
                             readonly property real level: Math.max(0, Math.min(1,
                                 playingWaveform.levels[index]))
 
-                            x: 1 + index * 3
+                            x: 4 + index * 3
                             y: playingWaveform.height / 2 - height / 2
                             width: 2
-                            height: 2 + 10 * level
+                            height: 2 + 12 * level
                             radius: 1
                             color: playingWaveform.levelColor(level)
 

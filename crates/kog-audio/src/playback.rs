@@ -620,6 +620,8 @@ struct AudioMeterSource<S> {
     frames_in_window: u32,
     frames_per_window: u32,
     smoothed: [f32; AUDIO_METER_BANDS],
+    average: [f32; AUDIO_METER_BANDS],
+    loudest: f32,
 }
 
 impl<S: Source<Item = f32>> AudioMeterSource<S> {
@@ -645,6 +647,8 @@ impl<S: Source<Item = f32>> AudioMeterSource<S> {
             frames_in_window: 0,
             frames_per_window: (sample_rate.get() / 50).max(64),
             smoothed: [0.0; AUDIO_METER_BANDS],
+            average: [0.0; AUDIO_METER_BANDS],
+            loudest: 0.0,
         }
     }
 
@@ -670,14 +674,27 @@ impl<S: Source<Item = f32>> AudioMeterSource<S> {
         }
 
         let frames = f64::from(self.frames_in_window);
-        for index in 0..AUDIO_METER_BANDS {
+        let loudness: [f32; AUDIO_METER_BANDS] = std::array::from_fn(|index| {
             let rms = (self.energy[index] / frames).sqrt() as f32 * AUDIO_METER_GAIN[index];
             let decibels = 20.0 * rms.max(0.000_001).log10();
-            let target = ((decibels + 60.0) / 60.0).clamp(0.0, 1.0);
+            ((decibels + 60.0) / 60.0).clamp(0.0, 1.0)
+        });
+        // Bounce: each bar rides on how much louder its band is than its
+        // own recent average, so beats kick it up and lulls drop it on loud
+        // and quiet music alike instead of it sitting near full. Bands far
+        // below the loudest one, and silence, fade out.
+        let loudest = loudness.iter().copied().fold(0.0_f32, f32::max);
+        self.loudest = loudest.max(self.loudest - 0.004);
+        for index in 0..AUDIO_METER_BANDS {
+            self.average[index] += 0.06 * (loudness[index] - self.average[index]);
+            let presence = ((loudness[index] - (self.loudest - 0.6)) / 0.15).clamp(0.0, 1.0)
+                * (loudness[index] / 0.15).clamp(0.0, 1.0);
+            let target =
+                ((0.45 + 3.0 * (loudness[index] - self.average[index])) * presence).clamp(0.0, 1.0);
             let smoothing = if target > self.smoothed[index] {
-                0.72
+                0.85
             } else {
-                0.16
+                0.3
             };
             self.smoothed[index] += smoothing * (target - self.smoothed[index]);
             if self.smoothed[index] < 0.004 {
@@ -696,6 +713,8 @@ impl<S: Source<Item = f32>> AudioMeterSource<S> {
         self.energy.fill(0.0);
         self.frames_in_window = 0;
         self.smoothed.fill(0.0);
+        self.average = [0.0; AUDIO_METER_BANDS];
+        self.loudest = 0.0;
         self.meter.reset();
     }
 }
