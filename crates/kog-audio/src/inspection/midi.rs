@@ -327,17 +327,20 @@ impl MidiChannel {
             kind: if id == 9 { "percussion" } else { "tonal" }.into(),
             active: !notes.is_empty(),
             notes,
-            instrument: format!(
-                "Bank {}:{} · Program {} {}",
-                self.controls[0],
-                self.controls[32],
-                u16::from(self.program) + 1,
-                if id == 9 {
+            // The name first, so a narrow label keeps it; the bank only
+            // when one is selected.
+            instrument: {
+                let name = if id == 9 {
                     gm_drum_kit(self.program)
                 } else {
                     GM_PROGRAMS[usize::from(self.program & 0x7f)]
+                };
+                let mut label = format!("{} {name}", u16::from(self.program) + 1);
+                if self.controls[0] != 0 || self.controls[32] != 0 {
+                    label.push_str(&format!(" · Bank {}:{}", self.controls[0], self.controls[32]));
                 }
-            ),
+                label
+            },
             level,
             pan: (f32::from(self.controls[10]) - 64.0) / 64.0,
             fields: vec![
@@ -691,13 +694,16 @@ mod tests {
     fn channels_name_their_general_midi_program_or_drum_kit() {
         let mut channel = MidiChannel::default();
         channel.apply(MidiMessage::ProgramChange { program: 40.into() });
-        assert_eq!(channel.channel(0).instrument, "Bank 0:0 · Program 41 Violin");
+        assert_eq!(channel.channel(0).instrument, "41 Violin");
         assert_eq!(
             MidiChannel::default().channel(0).instrument,
-            "Bank 0:0 · Program 1 Acoustic Grand Piano"
+            "1 Acoustic Grand Piano"
         );
         channel.apply(MidiMessage::ProgramChange { program: 25.into() });
-        assert_eq!(channel.channel(9).instrument, "Bank 0:0 · Program 26 TR-808 Kit");
+        assert_eq!(channel.channel(9).instrument, "26 TR-808 Kit");
+        let mut banked = MidiChannel::default();
+        banked.apply(MidiMessage::Controller { controller: 0.into(), value: 8.into() });
+        assert_eq!(banked.channel(0).instrument, "1 Acoustic Grand Piano · Bank 8:0");
     }
 
     #[test]
