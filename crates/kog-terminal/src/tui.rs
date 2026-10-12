@@ -97,7 +97,7 @@ const MEDIA_RADIO: &str = "⚄";
 const CLEAR_PLAYLIST_ICON: &str = "≡×";
 const PLAYLIST_PLAY: &str = "▶ ";
 const PLAYLIST_PAUSE: &str = "❚❚";
-const STATUS_WAVEFORM_WIDTH: usize = 4;
+const STATUS_WAVEFORM_WIDTH: usize = 3;
 
 fn load_sidebar_width() -> Option<usize> {
     kog_audio::settings::load_text(SIDEBAR_WIDTH_FILE)?
@@ -8822,7 +8822,7 @@ impl Ui {
                 Surface::Header,
                 self.keyboard_column,
             );
-            let mut status_waveform = None::<Vec<char>>;
+            let mut status_waveform = None::<Vec<(char, (u8, u8, u8))>>;
             for y in layout.track_top
                 ..layout
                     .footer_top
@@ -8901,7 +8901,7 @@ impl Ui {
                                 && self.player.state() == PlaybackState::Playing
                             {
                                 let glyphs = status_waveform.get_or_insert_with(|| {
-                                    status_waveform_glyphs(self.player.visualizer_envelope())
+                                    status_waveform_glyphs(self.player.audio_levels())
                                 });
                                 paint_playlist_waveform(
                                     &mut screen,
@@ -11717,20 +11717,51 @@ fn waveform_color(column: usize, width: usize) -> (u8, u8, u8) {
     )
 }
 
-fn status_waveform_glyphs(envelope: [f32; 8]) -> Vec<char> {
-    const DISPLAY_GAIN: f32 = 2.5;
+/// The playing row's level meter, the desktop's six bars in braille: two
+/// bars per cell, each mirrored around the middle (a short line, then full
+/// height), and each cell warming from cyan to red with its louder bar.
+fn status_waveform_glyphs(levels: [f32; 6]) -> Vec<(char, (u8, u8, u8))> {
     let mut dots = vec![0_u8; STATUS_WAVEFORM_WIDTH];
-    for (x, amplitude) in envelope.into_iter().enumerate() {
-        // RMS is measured linearly. Boost only the display scale so ordinary
-        // passages reach the upper dots, while silence remains blank.
-        let height = ((amplitude * DISPLAY_GAIN).clamp(0.0, 1.0).sqrt() * 4.0).ceil() as usize;
-        for y in 4 - height..4 {
+    for (x, level) in levels.into_iter().enumerate() {
+        let rows = if level >= 0.5 {
+            0..4
+        } else if level > 0.02 {
+            1..3
+        } else {
+            0..0
+        };
+        for y in rows {
             braille_dot(&mut dots, STATUS_WAVEFORM_WIDTH, x, y);
         }
     }
     dots.into_iter()
-        .map(|mask| char::from_u32(0x2800 + u32::from(mask)).unwrap_or(' '))
+        .enumerate()
+        .map(|(cell, mask)| {
+            let level = levels[cell * 2].max(levels[cell * 2 + 1]).clamp(0.0, 1.0);
+            (
+                char::from_u32(0x2800 + u32::from(mask)).unwrap_or(' '),
+                level_color(level),
+            )
+        })
         .collect()
+}
+
+/// Cyan when quiet through green and yellow to red at full, as on the
+/// desktop (hue 180° to 0°, 85% saturation, 60% lightness).
+fn level_color(level: f32) -> (u8, u8, u8) {
+    let hue = 180.0 * (1.0 - level) / 60.0;
+    let (saturation, lightness) = (0.85_f32, 0.6_f32);
+    let chroma = (1.0 - (2.0 * lightness - 1.0).abs()) * saturation;
+    let x = chroma * (1.0 - (hue % 2.0 - 1.0).abs());
+    let (r, g, b) = match hue as u32 {
+        0 => (chroma, x, 0.0),
+        1 => (x, chroma, 0.0),
+        2 => (0.0, chroma, x),
+        _ => (0.0, x, chroma),
+    };
+    let m = lightness - chroma / 2.0;
+    let byte = |v: f32| ((v + m) * 255.0).round().clamp(0.0, 255.0) as u8;
+    (byte(r), byte(g), byte(b))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -11742,12 +11773,12 @@ fn paint_playlist_waveform(
     column_start: usize,
     column_width: usize,
     scroll: usize,
-    glyphs: &[char],
+    glyphs: &[(char, (u8, u8, u8))],
     surface: Surface,
 ) {
     let (_, background) = surface_colors(surface);
     let prefix_width = cell_width(PLAYLIST_PLAY);
-    for (column, &glyph) in glyphs.iter().enumerate() {
+    for (column, &(glyph, (red, green, blue))) in glyphs.iter().enumerate() {
         let cell_offset = prefix_width + column;
         if cell_offset >= column_width.saturating_sub(1) {
             break;
@@ -11758,7 +11789,6 @@ fn paint_playlist_waveform(
         if visible_x >= viewport_width {
             continue;
         }
-        let (red, green, blue) = waveform_color(column, glyphs.len());
         screen.push_str(&format!(
             "\x1b[{row};{}H\x1b[38;2;{red};{green};{blue};48;2;{background}m{glyph}\x1b[0m",
             viewport_x + visible_x,
@@ -12600,7 +12630,8 @@ pub fn run() -> Result<(), String> {
                 .iter()
                 .any(|column| column.id == "status" && column.visible);
         let animate = ui.visualizer_open || ui.inspector.open || live_waveform;
-        let frame_interval = if ui.inspector.open { 33 } else if animate { 66 } else { 150 };
+        // The level meter updates twenty times a second.
+        let frame_interval = if ui.inspector.open { 33 } else if animate { 50 } else { 150 };
         if size != last_size || last_draw.elapsed() >= Duration::from_millis(frame_interval) {
             let frame = ui.draw(size);
             if frame != last_frame {
@@ -12743,15 +12774,16 @@ mod tests {
             .map(|sample| (sample as f32 * std::f32::consts::TAU / 32.0).sin())
             .collect();
         let frame = serde_json::json!({"wave": wave, "spectrum": vec![0.0_f32; 40]}).to_string();
-        let glyphs = status_waveform_glyphs([0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 0.5, 0.1]);
+        let glyphs = status_waveform_glyphs([0.0, 0.2, 0.4, 0.6, 0.8, 1.0]);
         assert_eq!(glyphs.len(), STATUS_WAVEFORM_WIDTH);
-        assert!(
-            glyphs
-                .iter()
-                .any(|glyph| ('\u{2801}'..='\u{28ff}').contains(glyph))
-        );
-        assert_eq!(status_waveform_glyphs([0.0; 8]), vec!['\u{2800}'; 4]);
-        assert_eq!(status_waveform_glyphs([0.25; 8]), vec!['\u{28ff}'; 4]);
+        let chars = |levels| status_waveform_glyphs(levels).into_iter().map(|(c, _)| c).collect::<Vec<_>>();
+        // Silent, a short middle line, then full height, mirrored.
+        assert_eq!(chars([0.0; 6]), vec!['\u{2800}'; 3]);
+        assert_eq!(chars([0.3; 6]), vec!['\u{2836}'; 3]);
+        assert_eq!(chars([0.9; 6]), vec!['\u{28ff}'; 3]);
+        assert_eq!(glyphs[0].0, '\u{2830}', "a silent bar beside a short one");
+        assert_eq!(level_color(0.0), (66, 240, 240));
+        assert_eq!(level_color(1.0), (240, 66, 66));
         let mut status = String::new();
         paint(&mut status, 12, 10, PLAYLIST_PLAY, 6, Surface::Main, false);
         paint_playlist_waveform(&mut status, 12, 10, 20, 0, 7, 0, &glyphs, Surface::Main);
