@@ -779,15 +779,18 @@ button:focus-visible {
    Island's waveform, widening, bouncing and warming in color as they grow.
    Geometry and color are set inline per update. */
 .row-meter {
-  display: inline-block;
-  position: relative;
+  /* Pinned to the cell's right edge, as on the desktop: in the flow it
+   * overflowed the narrow status cell and text-overflow swapped the whole
+   * pill for an ellipsis. */
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
   width: 24px;
   height: 18px;
   box-sizing: border-box;
   border-radius: 9px;
   background: #000;
-  vertical-align: middle;
-  margin-left: 3px;
   pointer-events: none;
 }
 
@@ -1064,6 +1067,15 @@ body.touch .track .index-cell {
 .track .status-cell {
   padding: 0 0 0 3px;
   text-align: left;
+}
+
+.track .status-cell {
+  position: relative;
+}
+
+/* Room for the play glyph beside the meter in the narrow cell. */
+.track .status-cell:has(.row-meter) {
+  padding-left: 0;
 }
 
 .track .star-cell {
