@@ -774,7 +774,7 @@ button:focus-visible {
   cursor: pointer;
 }
 
-/* The playing row's five-band level meter, sitting beside the play glyph
+/* The playing row's six-band level meter, sitting beside the play glyph
    in the status cell, exactly like the desktop's PlaylistRow. */
 .row-meter {
   /* In flow inside the status cell: an in-flow inline chip can never join
@@ -783,9 +783,9 @@ button:focus-visible {
    * the 14px chip fits the 26px row with room to spare. Paint styles are
    * duplicated inline in the markup against stale cached stylesheets. */
   display: inline-flex;
-  align-items: flex-end;
+  align-items: center;
   gap: 1px;
-  width: 16px;
+  width: 20px;
   height: 14px;
   padding: 1px;
   box-sizing: border-box;
@@ -808,14 +808,8 @@ button:focus-visible {
   transition: height 70ms cubic-bezier(0.215, 0.61, 0.355, 1);
 }
 
-/* The desktop's band gradient: blue → teal → green across the five bars. */
-/* The current row is highlight blue, so the meter always wears the
- * desktop's selected-row set: lighter bars on the dark plate. */
-.row-meter-bar:nth-child(1) { background: #8cbcff; }
-.row-meter-bar:nth-child(2) { background: #64d8ff; }
-.row-meter-bar:nth-child(3) { background: #47eee7; }
-.row-meter-bar:nth-child(4) { background: #53edb4; }
-.row-meter-bar:nth-child(5) { background: #82ef99; }
+/* Bars are mirrored around the middle; their color, cool to hot with
+ * level, is set inline per frame. */
 
 /* The insertion point while a queue row is dragged to a new position. */
 .track.reorder-above {

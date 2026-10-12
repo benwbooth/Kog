@@ -35,6 +35,7 @@ pub mod qobject {
         #[qproperty(f64, audio_level_mid)]
         #[qproperty(f64, audio_level_high_mid)]
         #[qproperty(f64, audio_level_high)]
+        #[qproperty(f64, audio_level_air)]
         #[qproperty(QString, status)]
         #[qproperty(QString, now_title)]
         #[qproperty(QString, now_artist)]
@@ -1874,6 +1875,7 @@ pub struct AppControllerRust {
     audio_level_mid: f64,
     audio_level_high_mid: f64,
     audio_level_high: f64,
+    audio_level_air: f64,
     status: QString,
     now_title: QString,
     now_artist: QString,
@@ -2102,6 +2104,7 @@ impl Default for AppControllerRust {
             audio_level_mid: 0.0,
             audio_level_high_mid: 0.0,
             audio_level_high: 0.0,
+            audio_level_air: 0.0,
             status: qstring("Drop audio files here or use the Kog menu to add files"),
             now_title: qstring("Not Playing"),
             now_artist: QString::default(),
@@ -5389,13 +5392,14 @@ impl qobject::AppController {
         let levels = if self.as_ref().rust().playback.state() == PlaybackState::Playing {
             self.as_ref().rust().playback.audio_levels()
         } else {
-            [0.0; 5]
+            [0.0; 6]
         };
         self.as_mut().set_audio_level_low(f64::from(levels[0]));
         self.as_mut().set_audio_level_low_mid(f64::from(levels[1]));
         self.as_mut().set_audio_level_mid(f64::from(levels[2]));
         self.as_mut().set_audio_level_high_mid(f64::from(levels[3]));
         self.as_mut().set_audio_level_high(f64::from(levels[4]));
+        self.as_mut().set_audio_level_air(f64::from(levels[5]));
     }
 
     pub fn channel_snapshot(&self, include_tracker: bool) -> QString {

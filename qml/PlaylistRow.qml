@@ -267,20 +267,24 @@ Item {
                     id: playingWaveform
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
-                    width: 16
+                    width: 20
                     height: 14
                     visible: root.isPlaying
 
+                    // Six bands, lowest on the left, each mirrored around the
+                    // middle line and shifting from cool to hot as it grows.
                     readonly property var levels: [
                         root.app.audio_level_low,
                         root.app.audio_level_low_mid,
                         root.app.audio_level_mid,
                         root.app.audio_level_high_mid,
-                        root.app.audio_level_high
+                        root.app.audio_level_high,
+                        root.app.audio_level_air
                     ]
-                    readonly property var colors: root.selected
-                        ? ["#8cbcff", "#64d8ff", "#47eee7", "#53edb4", "#82ef99"]
-                        : ["#438cf5", "#32b8ed", "#20cbd2", "#27cf9c", "#55d979"]
+                    function levelColor(level) {
+                        return Qt.hsla(0.5 * (1 - level), 0.85,
+                            root.selected ? 0.72 : 0.58, 1)
+                    }
 
                     Rectangle {
                         anchors.fill: parent
@@ -292,18 +296,19 @@ Item {
                     }
 
                     Repeater {
-                        model: 5
+                        model: 6
 
                         Rectangle {
                             required property int index
+                            readonly property real level: Math.max(0, Math.min(1,
+                                playingWaveform.levels[index]))
 
                             x: 1 + index * 3
-                            y: 1 + 12 - height
+                            y: playingWaveform.height / 2 - height / 2
                             width: 2
-                            height: 2 + 10 * Math.max(0, Math.min(1,
-                                playingWaveform.levels[index]))
+                            height: 2 + 10 * level
                             radius: 1
-                            color: playingWaveform.colors[index]
+                            color: playingWaveform.levelColor(level)
 
                             Behavior on height {
                                 NumberAnimation {

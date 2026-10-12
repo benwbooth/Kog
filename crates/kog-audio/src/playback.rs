@@ -382,7 +382,7 @@ impl PlaybackEngine {
         self.state
     }
 
-    pub fn audio_levels(&self) -> [f32; 5] {
+    pub fn audio_levels(&self) -> [f32; AUDIO_METER_BANDS] {
         self.meter.levels()
     }
 
@@ -571,9 +571,9 @@ fn run_seek_worker(shared: Arc<AsyncSeekShared>) {
     }
 }
 
-const AUDIO_METER_BANDS: usize = 5;
-const AUDIO_METER_SPLITS_HZ: [f32; AUDIO_METER_BANDS - 1] = [180.0, 700.0, 2_500.0, 7_000.0];
-const AUDIO_METER_GAIN: [f32; AUDIO_METER_BANDS] = [1.35, 1.2, 1.0, 1.05, 1.2];
+const AUDIO_METER_BANDS: usize = 6;
+const AUDIO_METER_SPLITS_HZ: [f32; AUDIO_METER_BANDS - 1] = [150.0, 500.0, 1_500.0, 4_000.0, 9_000.0];
+const AUDIO_METER_GAIN: [f32; AUDIO_METER_BANDS] = [1.35, 1.2, 1.05, 1.0, 1.1, 1.3];
 
 #[derive(Clone)]
 struct AudioMeter {
@@ -658,7 +658,8 @@ impl<S: Source<Item = f32>> AudioMeterSource<S> {
             self.low_pass[1] - self.low_pass[0],
             self.low_pass[2] - self.low_pass[1],
             self.low_pass[3] - self.low_pass[2],
-            sample - self.low_pass[3],
+            self.low_pass[4] - self.low_pass[3],
+            sample - self.low_pass[4],
         ];
         for (energy, band) in self.energy.iter_mut().zip(bands) {
             *energy += f64::from(band) * f64::from(band);
@@ -954,11 +955,11 @@ mod tests {
         let treble = measured_sine(10_000.0);
 
         assert!(
-            bass[0] > bass[4],
+            bass[0] > bass[5],
             "bass should favor the low band: {bass:?}"
         );
         assert!(
-            treble[4] > treble[0],
+            treble[5] > treble[0],
             "treble should favor the high band: {treble:?}"
         );
         assert!(bass.iter().copied().fold(0.0_f32, f32::max) > 0.25);

@@ -27,6 +27,7 @@ TestCase {
         property real audio_level_mid: 0
         property real audio_level_high_mid: 0
         property real audio_level_high: 0
+        property real audio_level_air: 0
         property var commands: []
         function workspace_command(value) {
             const command = JSON.parse(value)

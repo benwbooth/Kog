@@ -1483,26 +1483,26 @@ fn set_track_notifications_pref(
 #[derive(Default)]
 struct BandState {
     rate: u32,
-    alphas: [f32; 4],
-    low_pass: [f32; 4],
-    energy: [f64; 5],
+    alphas: [f32; 5],
+    low_pass: [f32; 5],
+    energy: [f64; 6],
     frames_in_window: u32,
     frames_per_window: u32,
-    smoothed: [f32; 5],
+    smoothed: [f32; 6],
 }
 
 impl BandState {
     /// Split frequencies and window length tuned for `sample_rate`.
     fn reset(&mut self, sample_rate: u32) {
-        const SPLITS_HZ: [f32; 4] = [180.0, 700.0, 2_500.0, 7_000.0];
+        const SPLITS_HZ: [f32; 5] = [150.0, 500.0, 1_500.0, 4_000.0, 9_000.0];
         let rate = sample_rate as f32;
         self.rate = sample_rate;
         self.alphas = SPLITS_HZ.map(|frequency| {
             let frequency = frequency.min(rate * 0.45);
             1.0 - (-2.0 * std::f32::consts::PI * frequency / rate).exp()
         });
-        self.low_pass = [0.0; 4];
-        self.energy = [0.0; 5];
+        self.low_pass = [0.0; 5];
+        self.energy = [0.0; 6];
         self.frames_in_window = 0;
         self.frames_per_window = (sample_rate / 50).max(64);
     }
@@ -1516,7 +1516,8 @@ impl BandState {
             self.low_pass[1] - self.low_pass[0],
             self.low_pass[2] - self.low_pass[1],
             self.low_pass[3] - self.low_pass[2],
-            sample - self.low_pass[3],
+            self.low_pass[4] - self.low_pass[3],
+            sample - self.low_pass[4],
         ];
         for (energy, band) in self.energy.iter_mut().zip(bands) {
             *energy += f64::from(band) * f64::from(band);
@@ -1525,9 +1526,9 @@ impl BandState {
         if self.frames_in_window < self.frames_per_window {
             return;
         }
-        const GAINS: [f32; 5] = [1.35, 1.2, 1.0, 1.05, 1.2];
+        const GAINS: [f32; 6] = [1.35, 1.2, 1.05, 1.0, 1.1, 1.3];
         let frames = f64::from(self.frames_in_window);
-        for index in 0..5 {
+        for index in 0..6 {
             let rms = (self.energy[index] / frames).sqrt() as f32 * GAINS[index];
             let decibels = 20.0 * rms.max(0.000_001).log10();
             let target = ((decibels + 60.0) / 60.0).clamp(0.0, 1.0);
@@ -2256,7 +2257,7 @@ fn App() -> impl IntoView {
     let (playing, set_playing) = signal(false);
     // Band levels of the currently streaming track, for the playing row's
     // meter: five 0..1 values polled from the server while it decodes.
-    let (audio_levels, set_audio_levels) = signal([0.0_f32; 5]);
+    let (audio_levels, set_audio_levels) = signal([0.0_f32; 6]);
     let (visualizer_open, set_visualizer_open) = signal(false);
     let (inspector_open, set_inspector_open) = signal(false);
     let inspector_mode = RwSignal::new("both".to_owned());
@@ -4309,7 +4310,7 @@ fn App() -> impl IntoView {
 
         let levels_poll = Closure::<dyn FnMut()>::new(move || {
             if !playing.get_untracked() {
-                set_audio_levels.set([0.0; 5]);
+                set_audio_levels.set([0.0; 6]);
                 if visualizer_open.get_untracked() {
                     set_visualizer_wave.set(Vec::new());
                     set_visualizer_spectrum.set(Vec::new());
@@ -4320,7 +4321,7 @@ fn App() -> impl IntoView {
                 return;
             };
             if audio.paused() || audio.muted() || audio.volume() <= 0.0 {
-                set_audio_levels.set([0.0; 5]);
+                set_audio_levels.set([0.0; 6]);
                 if visualizer_open.get_untracked() {
                     set_visualizer_wave.set(Vec::new());
                     set_visualizer_spectrum.set(Vec::new());
@@ -7127,7 +7128,7 @@ fn App() -> impl IntoView {
                                                                 >
                                                                     // The desktop's status cell:
                                                                     // the play/pause glyph with
-                                                                    // the five-band waveform
+                                                                    // the six-band level meter
                                                                     // beside it, centered in the
                                                                     // cell. Paint styles are
                                                                     // inline so a stale cached
@@ -7135,10 +7136,10 @@ fn App() -> impl IntoView {
                                                                     // bars unstyled (invisible).
                                                                     <span
                                                                         class="row-meter"
-                                                                        style="display: inline-flex; align-items: flex-end; gap: 1px; width: 16px; height: 14px; padding: 1px; box-sizing: border-box; border-radius: 4px; vertical-align: middle; margin-left: 3px; pointer-events: none; background: rgba(5, 20, 28, 0.78); border: 1px solid rgba(255, 255, 255, 0.18);"
+                                                                        style="display: inline-flex; align-items: center; gap: 1px; width: 20px; height: 14px; padding: 1px; box-sizing: border-box; border-radius: 4px; vertical-align: middle; margin-left: 3px; pointer-events: none; background: rgba(5, 20, 28, 0.78); border: 1px solid rgba(255, 255, 255, 0.18);"
                                                                     >
                                                                         <For
-                                                                            each=|| [0usize, 1, 2, 3, 4]
+                                                                            each=|| [0usize, 1, 2, 3, 4, 5]
                                                                             key=|band| *band
                                                                             let:band
                                                                         >
@@ -7151,23 +7152,14 @@ fn App() -> impl IntoView {
                                                                                         .copied()
                                                                                         .unwrap_or(0.0)
                                                                                         .clamp(0.0, 1.0);
-                                                                                    // The desktop's
-                                                                                    // selected-row set:
-                                                                                    // the current row
-                                                                                    // is highlight
-                                                                                    // blue, and the
-                                                                                    // normal colors
-                                                                                    // vanish on it.
-                                                                                    const COLORS: [&str; 5] = [
-                                                                                        "#8cbcff",
-                                                                                        "#64d8ff",
-                                                                                        "#47eee7",
-                                                                                        "#53edb4",
-                                                                                        "#82ef99",
-                                                                                    ];
+                                                                                    // Mirrored around
+                                                                                    // the middle and
+                                                                                    // shifting from cool
+                                                                                    // to hot as it grows,
+                                                                                    // like the desktop's.
                                                                                     format!(
-                                                                                        "width: 2px; flex: none; min-height: 2px; border-radius: 1px; background: {}; height: {}px;",
-                                                                                        COLORS[band],
+                                                                                        "width: 2px; flex: none; min-height: 2px; border-radius: 1px; background: hsl({:.0}, 85%, 72%); height: {}px;",
+                                                                                        180.0 * (1.0 - level),
                                                                                         2.0 + 10.0 * level
                                                                                     )
                                                                                 }

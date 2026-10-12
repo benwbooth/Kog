@@ -84,6 +84,7 @@ FocusScope {
         readonly property real audio_level_mid: editor.app.audio_level_mid
         readonly property real audio_level_high_mid: editor.app.audio_level_high_mid
         readonly property real audio_level_high: editor.app.audio_level_high
+        readonly property real audio_level_air: editor.app.audio_level_air
         function track_value_at(row, column) { return editor.app.workspace_track_value_at(editor.rows[row], column) }
         function track_number_at(row) { return String(editor.rows[row] + 1) }
         function track_status_message_at(row) { return track_value_at(row, "status_message") }
