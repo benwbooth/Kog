@@ -8,6 +8,7 @@ pub mod ffi;
 pub mod radio;
 pub mod sort;
 pub mod selection;
+pub mod waveform;
 pub mod workspace;
 pub mod session;
 

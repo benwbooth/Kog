@@ -774,23 +774,15 @@ button:focus-visible {
   cursor: pointer;
 }
 
-/* The playing row's six-band level meter, beside the play glyph in the
-   status cell like the desktop's PlaylistRow: rounded bars in one color on
-   a black pill, mirrored around the middle and springing to each level,
-   like the iOS Dynamic Island equalizer. */
+/* The playing row's level meter beside the play glyph, like the desktop's
+   PlaylistRow: the Dynamic Island's Now Playing waveform, six pill bars on
+   a black pill that widen as they grow, with the album art showing through.
+   Geometry and fill are set inline per update. */
 .row-meter {
-  /* In flow inside the status cell: an in-flow inline chip can never join
-   * the row's grid placement (a definite grid placement made the
-   * auto-placed cells spill into a second grid row, growing the row), and
-   * the chip fits the 26px row. Box styles are duplicated inline in the
-   * markup against stale cached stylesheets. */
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 1.1px;
+  display: inline-block;
+  position: relative;
   width: 24px;
   height: 18px;
-  padding: 1px;
   box-sizing: border-box;
   border-radius: 9px;
   background: #000;
@@ -800,13 +792,8 @@ button:focus-visible {
 }
 
 .row-meter-bar {
-  width: 2px;
-  flex: none;
-  min-height: 2px;
-  border-radius: 1px;
-  background: color-mix(in srgb, var(--highlight) 70%, white);
-  /* Overshoot then settle, like a spring. */
-  transition: height 160ms cubic-bezier(0.34, 1.56, 0.64, 1);
+  position: absolute;
+  border-radius: 999px;
 }
 
 /* The insertion point while a queue row is dragged to a new position. */

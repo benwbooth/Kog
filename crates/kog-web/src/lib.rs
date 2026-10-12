@@ -1476,94 +1476,6 @@ fn set_track_notifications_pref(
     });
 }
 
-/// The desktop playing-row meter's band analysis, client-side: the same
-/// cascaded one-pole splits, windowed RMS in dB mapped to 0..1, and
-/// asymmetric smoothing as `AudioMeterSource` in kog-audio, fed from the
-/// audio element's Web Audio tap.
-#[derive(Default)]
-struct BandState {
-    rate: u32,
-    alphas: [f32; 5],
-    low_pass: [f32; 5],
-    energy: [f64; 6],
-    frames_in_window: u32,
-    frames_per_window: u32,
-    smoothed: [f32; 6],
-    average: [f32; 6],
-    loudest: f32,
-}
-
-impl BandState {
-    /// Split frequencies and window length tuned for `sample_rate`.
-    fn reset(&mut self, sample_rate: u32) {
-        const SPLITS_HZ: [f32; 5] = [150.0, 500.0, 1_500.0, 4_000.0, 9_000.0];
-        let rate = sample_rate as f32;
-        self.rate = sample_rate;
-        self.alphas = SPLITS_HZ.map(|frequency| {
-            let frequency = frequency.min(rate * 0.45);
-            1.0 - (-2.0 * std::f32::consts::PI * frequency / rate).exp()
-        });
-        self.low_pass = [0.0; 5];
-        self.energy = [0.0; 6];
-        self.average = [0.0; 6];
-        self.loudest = 0.0;
-        self.frames_in_window = 0;
-        self.frames_per_window = (sample_rate / 50).max(64);
-    }
-
-    fn observe(&mut self, sample: f32) {
-        for (low_pass, alpha) in self.low_pass.iter_mut().zip(self.alphas) {
-            *low_pass += alpha * (sample - *low_pass);
-        }
-        let bands = [
-            self.low_pass[0],
-            self.low_pass[1] - self.low_pass[0],
-            self.low_pass[2] - self.low_pass[1],
-            self.low_pass[3] - self.low_pass[2],
-            self.low_pass[4] - self.low_pass[3],
-            sample - self.low_pass[4],
-        ];
-        for (energy, band) in self.energy.iter_mut().zip(bands) {
-            *energy += f64::from(band) * f64::from(band);
-        }
-        self.frames_in_window += 1;
-        if self.frames_in_window < self.frames_per_window {
-            return;
-        }
-        const GAINS: [f32; 6] = [1.35, 1.2, 1.05, 1.0, 1.1, 1.3];
-        let frames = f64::from(self.frames_in_window);
-        let loudness: [f32; 6] = std::array::from_fn(|index| {
-            let rms = (self.energy[index] / frames).sqrt() as f32 * GAINS[index];
-            let decibels = 20.0 * rms.max(0.000_001).log10();
-            ((decibels + 60.0) / 60.0).clamp(0.0, 1.0)
-        });
-        // Bounce: each bar rides on how much louder its band is than its
-        // own recent average, so beats kick it up and lulls drop it on loud
-        // and quiet music alike instead of it sitting near full. Bands far
-        // below the loudest one, and silence, fade out.
-        let loudest = loudness.iter().copied().fold(0.0_f32, f32::max);
-        self.loudest = loudest.max(self.loudest - 0.004);
-        for index in 0..6 {
-            self.average[index] += 0.06 * (loudness[index] - self.average[index]);
-            let presence = ((loudness[index] - (self.loudest - 0.6)) / 0.15).clamp(0.0, 1.0)
-                * (loudness[index] / 0.15).clamp(0.0, 1.0);
-            let target =
-                ((0.45 + 3.0 * (loudness[index] - self.average[index])) * presence).clamp(0.0, 1.0);
-            let smoothing = if target > self.smoothed[index] {
-                0.85
-            } else {
-                0.3
-            };
-            self.smoothed[index] += smoothing * (target - self.smoothed[index]);
-            if self.smoothed[index] < 0.004 {
-                self.smoothed[index] = 0.0;
-            }
-        }
-        self.energy.fill(0.0);
-        self.frames_in_window = 0;
-    }
-}
-
 /// Hand `url` to the browser as a download: a hidden same-origin anchor with
 /// the download attribute, so an empty `filename` keeps the server's
 /// attachment disposition and a non-empty one names the file directly (a
@@ -4226,8 +4138,6 @@ fn App() -> impl IntoView {
             Rc::new(RefCell::new(None));
         // Warmed context, ready before the tap exists.
         let context_slot: Rc<RefCell<Option<web_sys::AudioContext>>> = Rc::new(RefCell::new(None));
-        // Band analysis state, mirroring the desktop's per-stream state.
-        let analysis = Rc::new(RefCell::new(BandState::default()));
         // Consecutive silent reads while audibly playing: a stale tap.
         let dry_reads = Rc::new(std::cell::Cell::new(0u32));
 
@@ -4382,20 +4292,19 @@ fn App() -> impl IntoView {
                 return;
             }
             dry_reads.set(0);
-            let mut state = analysis.borrow_mut();
-            if state.rate == 0 {
-                state.reset(context.sample_rate() as u32);
-            }
-            for sample in samples {
-                state.observe(sample);
-            }
-            set_audio_levels.set(state.smoothed);
+            // The latest frame, measured as the desktop measures it.
+            let rate = context.sample_rate() as u32;
+            let frame = kog_playback_policy::waveform::frame_len(rate).min(samples.len());
+            set_audio_levels.set(kog_playback_policy::waveform::levels(
+                &samples[samples.len() - frame..],
+                rate,
+            ));
         });
         web_sys::window()
             .expect("window for the level meter")
             .set_interval_with_callback_and_timeout_and_arguments_0(
                 levels_poll.as_ref().unchecked_ref(),
-                70,
+                (1000 / kog_playback_policy::waveform::UPDATES_PER_SECOND) as i32,
             )
             .expect("level meter interval");
         levels_poll.forget();
@@ -7143,17 +7052,18 @@ fn App() -> impl IntoView {
                                                                     }
                                                                     fallback=|| ()
                                                                 >
-                                                                    // The desktop's status cell:
-                                                                    // the play/pause glyph with
-                                                                    // the six-band level meter
-                                                                    // beside it, centered in the
-                                                                    // cell. Paint styles are
-                                                                    // inline so a stale cached
-                                                                    // stylesheet cannot leave the
-                                                                    // bars unstyled (invisible).
+                                                                    // The desktop's status cell meter:
+                                                                    // the Dynamic Island's Now
+                                                                    // Playing waveform, six pill
+                                                                    // bars on black that widen as
+                                                                    // they grow, showing the album
+                                                                    // art through them (white
+                                                                    // without art). Paint styles
+                                                                    // are inline so a stale cached
+                                                                    // stylesheet cannot hide them.
                                                                     <span
                                                                         class="row-meter"
-                                                                        style="display: inline-flex; align-items: center; justify-content: center; gap: 1.1px; width: 24px; height: 18px; padding: 1px; box-sizing: border-box; border-radius: 9px; vertical-align: middle; margin-left: 3px; pointer-events: none; background: #000;"
+                                                                        style="display: inline-block; position: relative; width: 24px; height: 18px; box-sizing: border-box; border-radius: 9px; vertical-align: middle; margin-left: 3px; pointer-events: none; background: #000;"
                                                                     >
                                                                         <For
                                                                             each=|| [0usize, 1, 2, 3, 4, 5]
@@ -7163,19 +7073,35 @@ fn App() -> impl IntoView {
                                                                             <span
                                                                                 class="row-meter-bar"
                                                                                 style=move || {
-                                                                                    let levels = audio_levels.get();
-                                                                                    let level = levels
+                                                                                    let level = audio_levels
+                                                                                        .get()
                                                                                         .get(band)
                                                                                         .copied()
                                                                                         .unwrap_or(0.0)
                                                                                         .clamp(0.0, 1.0);
-                                                                                    // One color,
-                                                                                    // mirrored around
-                                                                                    // the middle, like
-                                                                                    // the desktop's.
+                                                                                    let art = art_src();
+                                                                                    let fill = if art == artwork::PLACEHOLDER {
+                                                                                        "#fff".to_owned()
+                                                                                    } else {
+                                                                                        format!("#fff url(\"{art}\")")
+                                                                                    };
+                                                                                    // The bars' 20x14 area,
+                                                                                    // laid out as iOS does.
+                                                                                    const WIDTH: f32 = 20.0;
+                                                                                    const HEIGHT: f32 = 14.0;
+                                                                                    let slot = WIDTH / kog_playback_policy::waveform::BARS as f32;
+                                                                                    let base = slot / 2.0;
+                                                                                    let width = base * (1.0 + kog_playback_policy::waveform::WIDTH_GROWTH * level);
+                                                                                    let height = (level * HEIGHT).max(base);
+                                                                                    let left = slot * (band as f32 + 0.5) - width / 2.0;
+                                                                                    let top = (HEIGHT - height) / 2.0;
                                                                                     format!(
-                                                                                        "width: 2px; flex: none; min-height: 2px; border-radius: 1px; background: color-mix(in srgb, var(--highlight) 70%, white); transition: height 160ms cubic-bezier(0.34, 1.56, 0.64, 1); height: {}px;",
-                                                                                        2.0 + 11.0 * level
+                                                                                        "position: absolute; left: {:.2}px; top: {:.2}px; width: {width:.2}px; height: {height:.2}px; border-radius: 999px; background: {fill}; background-size: {WIDTH}px {HEIGHT}px; background-position: {:.2}px {:.2}px; filter: saturate(1.25); transition: all {}ms cubic-bezier(0.25, 1, 0.5, 1);",
+                                                                                        2.0 + left,
+                                                                                        2.0 + top,
+                                                                                        -left,
+                                                                                        -top,
+                                                                                        kog_playback_policy::waveform::SPRING_MS,
                                                                                     )
                                                                                 }
                                                                             ></span>

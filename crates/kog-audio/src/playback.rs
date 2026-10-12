@@ -571,9 +571,7 @@ fn run_seek_worker(shared: Arc<AsyncSeekShared>) {
     }
 }
 
-const AUDIO_METER_BANDS: usize = 6;
-const AUDIO_METER_SPLITS_HZ: [f32; AUDIO_METER_BANDS - 1] = [150.0, 500.0, 1_500.0, 4_000.0, 9_000.0];
-const AUDIO_METER_GAIN: [f32; AUDIO_METER_BANDS] = [1.35, 1.2, 1.05, 1.0, 1.1, 1.3];
+const AUDIO_METER_BANDS: usize = kog_playback_policy::waveform::BARS;
 
 #[derive(Clone)]
 struct AudioMeter {
@@ -614,26 +612,14 @@ struct AudioMeterSource<S> {
     sample_rate: SampleRate,
     channel_cursor: usize,
     frame_sum: f32,
-    low_pass: [f32; AUDIO_METER_BANDS - 1],
-    low_pass_alpha: [f32; AUDIO_METER_BANDS - 1],
-    energy: [f64; AUDIO_METER_BANDS],
-    frames_in_window: u32,
-    frames_per_window: u32,
-    smoothed: [f32; AUDIO_METER_BANDS],
-    average: [f32; AUDIO_METER_BANDS],
-    loudest: f32,
+    analyzer: kog_playback_policy::waveform::Analyzer,
 }
 
 impl<S: Source<Item = f32>> AudioMeterSource<S> {
     fn new(input: S, meter: AudioMeter) -> Self {
         let channels = input.channels();
         let sample_rate = input.sample_rate();
-        let rate = sample_rate.get() as f32;
         meter.tap.set_rate(sample_rate.get());
-        let low_pass_alpha = AUDIO_METER_SPLITS_HZ.map(|frequency| {
-            let frequency = frequency.min(rate * 0.45);
-            1.0 - (-2.0 * std::f32::consts::PI * frequency / rate).exp()
-        });
         Self {
             input,
             meter,
@@ -641,80 +627,21 @@ impl<S: Source<Item = f32>> AudioMeterSource<S> {
             sample_rate,
             channel_cursor: 0,
             frame_sum: 0.0,
-            low_pass: [0.0; AUDIO_METER_BANDS - 1],
-            low_pass_alpha,
-            energy: [0.0; AUDIO_METER_BANDS],
-            frames_in_window: 0,
-            frames_per_window: (sample_rate.get() / 50).max(64),
-            smoothed: [0.0; AUDIO_METER_BANDS],
-            average: [0.0; AUDIO_METER_BANDS],
-            loudest: 0.0,
+            analyzer: kog_playback_policy::waveform::Analyzer::new(sample_rate.get()),
         }
     }
 
     fn observe_frame(&mut self, sample: f32) {
         self.meter.tap.push(sample);
-        for (low_pass, alpha) in self.low_pass.iter_mut().zip(self.low_pass_alpha) {
-            *low_pass += alpha * (sample - *low_pass);
+        if self.analyzer.push(sample) {
+            self.meter.publish(self.analyzer.levels());
         }
-        let bands = [
-            self.low_pass[0],
-            self.low_pass[1] - self.low_pass[0],
-            self.low_pass[2] - self.low_pass[1],
-            self.low_pass[3] - self.low_pass[2],
-            self.low_pass[4] - self.low_pass[3],
-            sample - self.low_pass[4],
-        ];
-        for (energy, band) in self.energy.iter_mut().zip(bands) {
-            *energy += f64::from(band) * f64::from(band);
-        }
-        self.frames_in_window += 1;
-        if self.frames_in_window < self.frames_per_window {
-            return;
-        }
-
-        let frames = f64::from(self.frames_in_window);
-        let loudness: [f32; AUDIO_METER_BANDS] = std::array::from_fn(|index| {
-            let rms = (self.energy[index] / frames).sqrt() as f32 * AUDIO_METER_GAIN[index];
-            let decibels = 20.0 * rms.max(0.000_001).log10();
-            ((decibels + 60.0) / 60.0).clamp(0.0, 1.0)
-        });
-        // Bounce: each bar rides on how much louder its band is than its
-        // own recent average, so beats kick it up and lulls drop it on loud
-        // and quiet music alike instead of it sitting near full. Bands far
-        // below the loudest one, and silence, fade out.
-        let loudest = loudness.iter().copied().fold(0.0_f32, f32::max);
-        self.loudest = loudest.max(self.loudest - 0.004);
-        for index in 0..AUDIO_METER_BANDS {
-            self.average[index] += 0.06 * (loudness[index] - self.average[index]);
-            let presence = ((loudness[index] - (self.loudest - 0.6)) / 0.15).clamp(0.0, 1.0)
-                * (loudness[index] / 0.15).clamp(0.0, 1.0);
-            let target =
-                ((0.45 + 3.0 * (loudness[index] - self.average[index])) * presence).clamp(0.0, 1.0);
-            let smoothing = if target > self.smoothed[index] {
-                0.85
-            } else {
-                0.3
-            };
-            self.smoothed[index] += smoothing * (target - self.smoothed[index]);
-            if self.smoothed[index] < 0.004 {
-                self.smoothed[index] = 0.0;
-            }
-        }
-        self.meter.publish(self.smoothed);
-        self.energy.fill(0.0);
-        self.frames_in_window = 0;
     }
 
     fn reset(&mut self) {
         self.channel_cursor = 0;
         self.frame_sum = 0.0;
-        self.low_pass.fill(0.0);
-        self.energy.fill(0.0);
-        self.frames_in_window = 0;
-        self.smoothed.fill(0.0);
-        self.average = [0.0; AUDIO_METER_BANDS];
-        self.loudest = 0.0;
+        self.analyzer.reset();
         self.meter.reset();
     }
 }
@@ -974,7 +901,7 @@ mod tests {
         let treble = measured_sine(10_000.0);
 
         assert!(
-            bass[0] > bass[5],
+            bass[1] > bass[5],
             "bass should favor the low band: {bass:?}"
         );
         assert!(

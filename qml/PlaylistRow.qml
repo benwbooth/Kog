@@ -3,6 +3,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Controls.impl as ControlsImpl
+import QtQuick.Effects
 
 Item {
     id: root
@@ -271,9 +272,13 @@ Item {
                     height: 18
                     visible: root.isPlaying
 
-                    // Like the Dynamic Island equalizer: six rounded bars in
-                    // one color on a black pill, each mirrored around the
-                    // middle and springing to its band's level.
+                    // The Dynamic Island's Now Playing waveform, as iOS draws
+                    // it (MediaControls' MRUWaveformView): six pill bars on
+                    // black, each centered in its slot and vertically, half
+                    // the slot wide when quiet and up to 66% wider when loud,
+                    // springing to new heights twenty times a second. The
+                    // bars show the album art, blurred and saturated, through
+                    // them; without art they are white.
                     readonly property var levels: [
                         root.app.audio_level_low,
                         root.app.audio_level_low_mid,
@@ -282,7 +287,7 @@ Item {
                         root.app.audio_level_high,
                         root.app.audio_level_air
                     ]
-                    readonly property color barColor: Qt.lighter(root.theme.highlight, 1.35)
+                    readonly property string artwork: root.app.current_artwork_path || ""
 
                     Rectangle {
                         anchors.fill: parent
@@ -290,29 +295,79 @@ Item {
                         color: "black"
                     }
 
-                    Repeater {
-                        model: 6
+                    Item {
+                        id: waveformArea
+                        anchors.centerIn: parent
+                        width: 20
+                        height: 14
 
-                        Rectangle {
-                            required property int index
-                            readonly property real level: Math.max(0, Math.min(1,
-                                playingWaveform.levels[index]))
+                        Item {
+                            id: waveformFill
+                            anchors.fill: parent
+                            visible: false
+                            layer.enabled: true
 
-                            x: 3.25 + index * 3.1
-                            y: playingWaveform.height / 2 - height / 2
-                            width: 2
-                            height: 2 + 11 * level
-                            radius: width / 2
-                            antialiasing: true
-                            color: playingWaveform.barColor
+                            Rectangle {
+                                anchors.fill: parent
+                                color: "white"
+                            }
+                            Image {
+                                anchors.fill: parent
+                                visible: status === Image.Ready
+                                source: playingWaveform.artwork.length > 0
+                                    ? "file://" + playingWaveform.artwork : ""
+                                // A tiny decode, scaled up smoothly, is the blur.
+                                sourceSize: Qt.size(6, 6)
+                                fillMode: Image.PreserveAspectCrop
+                                smooth: true
+                                asynchronous: true
+                            }
+                        }
 
-                            Behavior on height {
-                                SpringAnimation {
-                                    spring: 5
-                                    damping: 0.3
-                                    epsilon: 0.05
+                        // Shown directly, in white, where effects cannot run.
+                        Item {
+                            id: waveformBars
+                            anchors.fill: parent
+                            visible: GraphicsInfo.api === GraphicsInfo.Software
+                            layer.enabled: !visible
+
+                            Repeater {
+                                model: 6
+
+                                Rectangle {
+                                    required property int index
+                                    readonly property real slot: waveformArea.width / 6
+                                    readonly property real base: slot / 2
+                                    property real level: Math.max(0, Math.min(1,
+                                        playingWaveform.levels[index]))
+
+                                    width: base + 0.66 * level * base
+                                    height: Math.max(level * waveformArea.height, base)
+                                    x: slot * (index + 0.5) - width / 2
+                                    y: (waveformArea.height - height) / 2
+                                    radius: width / 2
+                                    antialiasing: true
+                                    color: "white"
+
+                                    Behavior on level {
+                                        SmoothedAnimation {
+                                            duration: 325
+                                            velocity: -1
+                                        }
+                                    }
                                 }
                             }
+                        }
+
+                        MultiEffect {
+                            anchors.fill: parent
+                            visible: !waveformBars.visible
+                            source: waveformFill
+                            saturation: 0.25
+                            maskEnabled: true
+                            maskSource: waveformBars
+                            maskThresholdMin: 0.5
+                            maskSpreadAtMin: 1.0
                         }
                     }
                 }
