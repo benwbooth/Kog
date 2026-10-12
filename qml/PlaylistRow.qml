@@ -3,7 +3,6 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Controls.impl as ControlsImpl
-import QtQuick.Effects
 
 Item {
     id: root
@@ -272,13 +271,10 @@ Item {
                     height: 18
                     visible: root.isPlaying
 
-                    // The Dynamic Island's Now Playing waveform, as iOS draws
-                    // it (MediaControls' MRUWaveformView): six pill bars on
-                    // black, each centered in its slot and vertically, half
-                    // the slot wide when quiet and up to 66% wider when loud,
-                    // springing to new heights twenty times a second. The
-                    // bars show the album art, blurred and saturated, through
-                    // them; without art they are white.
+                    // Six pill bars on black, laid out like the Dynamic
+                    // Island's waveform (centered in their slots, half a slot
+                    // wide when quiet and up to 66% wider when loud), springing
+                    // to each new height and warming from cyan to red.
                     readonly property var levels: [
                         root.app.audio_level_low,
                         root.app.audio_level_low_mid,
@@ -287,7 +283,6 @@ Item {
                         root.app.audio_level_high,
                         root.app.audio_level_air
                     ]
-                    readonly property string artwork: root.app.current_artwork_path || ""
 
                     Rectangle {
                         anchors.fill: parent
@@ -301,73 +296,35 @@ Item {
                         width: 20
                         height: 14
 
-                        Item {
-                            id: waveformFill
-                            anchors.fill: parent
-                            visible: false
-                            layer.enabled: true
+                        Repeater {
+                            model: 6
 
                             Rectangle {
-                                anchors.fill: parent
-                                color: "white"
-                            }
-                            Image {
-                                anchors.fill: parent
-                                visible: status === Image.Ready
-                                source: playingWaveform.artwork.length > 0
-                                    ? "file://" + playingWaveform.artwork : ""
-                                // A tiny decode, scaled up smoothly, is the blur.
-                                sourceSize: Qt.size(6, 6)
-                                fillMode: Image.PreserveAspectCrop
-                                smooth: true
-                                asynchronous: true
-                            }
-                        }
+                                required property int index
+                                readonly property real slot: waveformArea.width / 6
+                                readonly property real base: slot / 2
+                                property real level: Math.max(0, Math.min(1,
+                                    playingWaveform.levels[index]))
+                                // The spring overshoots; keep the drawing in range.
+                                readonly property real shown: Math.max(0, Math.min(1, level))
 
-                        // Shown directly, in white, where effects cannot run.
-                        Item {
-                            id: waveformBars
-                            anchors.fill: parent
-                            visible: GraphicsInfo.api === GraphicsInfo.Software
-                            layer.enabled: !visible
+                                width: base + 0.66 * shown * base
+                                height: Math.max(shown * waveformArea.height, base)
+                                x: slot * (index + 0.5) - width / 2
+                                y: (waveformArea.height - height) / 2
+                                radius: width / 2
+                                antialiasing: true
+                                color: Qt.hsla(0.5 * (1 - shown), 0.85,
+                                    root.selected ? 0.7 : 0.6, 1)
 
-                            Repeater {
-                                model: 6
-
-                                Rectangle {
-                                    required property int index
-                                    readonly property real slot: waveformArea.width / 6
-                                    readonly property real base: slot / 2
-                                    property real level: Math.max(0, Math.min(1,
-                                        playingWaveform.levels[index]))
-
-                                    width: base + 0.66 * level * base
-                                    height: Math.max(level * waveformArea.height, base)
-                                    x: slot * (index + 0.5) - width / 2
-                                    y: (waveformArea.height - height) / 2
-                                    radius: width / 2
-                                    antialiasing: true
-                                    color: "white"
-
-                                    Behavior on level {
-                                        SmoothedAnimation {
-                                            duration: 325
-                                            velocity: -1
-                                        }
+                                Behavior on level {
+                                    SpringAnimation {
+                                        spring: 7
+                                        damping: 0.22
+                                        epsilon: 0.005
                                     }
                                 }
                             }
-                        }
-
-                        MultiEffect {
-                            anchors.fill: parent
-                            visible: !waveformBars.visible
-                            source: waveformFill
-                            saturation: 0.25
-                            maskEnabled: true
-                            maskSource: waveformBars
-                            maskThresholdMin: 0.5
-                            maskSpreadAtMin: 1.0
                         }
                     }
                 }

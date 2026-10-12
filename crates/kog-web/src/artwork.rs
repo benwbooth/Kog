@@ -3,7 +3,7 @@
 
 use super::*;
 
-pub const PLACEHOLDER: &str = "/icons/cover-placeholder.svg";
+const PLACEHOLDER: &str = "/icons/cover-placeholder.svg";
 
 #[derive(Default)]
 struct Loading {

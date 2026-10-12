@@ -4138,6 +4138,8 @@ fn App() -> impl IntoView {
             Rc::new(RefCell::new(None));
         // Warmed context, ready before the tap exists.
         let context_slot: Rc<RefCell<Option<web_sys::AudioContext>>> = Rc::new(RefCell::new(None));
+        // Beat emphasis state, as the desktop keeps per stream.
+        let bounce = Rc::new(RefCell::new(kog_playback_policy::waveform::Bounce::default()));
         // Consecutive silent reads while audibly playing: a stale tap.
         let dry_reads = Rc::new(std::cell::Cell::new(0u32));
 
@@ -4295,10 +4297,10 @@ fn App() -> impl IntoView {
             // The latest frame, measured as the desktop measures it.
             let rate = context.sample_rate() as u32;
             let frame = kog_playback_policy::waveform::frame_len(rate).min(samples.len());
-            set_audio_levels.set(kog_playback_policy::waveform::levels(
+            set_audio_levels.set(bounce.borrow_mut().apply(kog_playback_policy::waveform::levels(
                 &samples[samples.len() - frame..],
                 rate,
-            ));
+            )));
         });
         web_sys::window()
             .expect("window for the level meter")
@@ -7053,14 +7055,13 @@ fn App() -> impl IntoView {
                                                                     fallback=|| ()
                                                                 >
                                                                     // The desktop's status cell meter:
-                                                                    // the Dynamic Island's Now
-                                                                    // Playing waveform, six pill
-                                                                    // bars on black that widen as
-                                                                    // they grow, showing the album
-                                                                    // art through them (white
-                                                                    // without art). Paint styles
-                                                                    // are inline so a stale cached
-                                                                    // stylesheet cannot hide them.
+                                                                    // six pill bars on black, laid
+                                                                    // out like the Dynamic Island's
+                                                                    // waveform, widening, bouncing
+                                                                    // and warming in color as they
+                                                                    // grow. Paint styles are inline
+                                                                    // so a stale cached stylesheet
+                                                                    // cannot hide them.
                                                                     <span
                                                                         class="row-meter"
                                                                         style="display: inline-block; position: relative; width: 24px; height: 18px; box-sizing: border-box; border-radius: 9px; vertical-align: middle; margin-left: 3px; pointer-events: none; background: #000;"
@@ -7079,12 +7080,8 @@ fn App() -> impl IntoView {
                                                                                         .copied()
                                                                                         .unwrap_or(0.0)
                                                                                         .clamp(0.0, 1.0);
-                                                                                    let art = art_src();
-                                                                                    let fill = if art == artwork::PLACEHOLDER {
-                                                                                        "#fff".to_owned()
-                                                                                    } else {
-                                                                                        format!("#fff url(\"{art}\")")
-                                                                                    };
+                                                                                    // Cool to hot as the bar grows.
+                                                                                    let fill = format!("hsl({:.0}, 85%, 62%)", 180.0 * (1.0 - level));
                                                                                     // The bars' 20x14 area,
                                                                                     // laid out as iOS does.
                                                                                     const WIDTH: f32 = 20.0;
@@ -7096,12 +7093,10 @@ fn App() -> impl IntoView {
                                                                                     let left = slot * (band as f32 + 0.5) - width / 2.0;
                                                                                     let top = (HEIGHT - height) / 2.0;
                                                                                     format!(
-                                                                                        "position: absolute; left: {:.2}px; top: {:.2}px; width: {width:.2}px; height: {height:.2}px; border-radius: 999px; background: {fill}; background-size: {WIDTH}px {HEIGHT}px; background-position: {:.2}px {:.2}px; filter: saturate(1.25); transition: all {}ms cubic-bezier(0.25, 1, 0.5, 1);",
+                                                                                        "position: absolute; left: {:.2}px; top: {:.2}px; width: {width:.2}px; height: {height:.2}px; border-radius: 999px; background: {fill}; transition: left {ms}ms, top {ms}ms, width {ms}ms, height {ms}ms; transition-timing-function: cubic-bezier(0.34, 1.56, 0.64, 1);",
                                                                                         2.0 + left,
                                                                                         2.0 + top,
-                                                                                        -left,
-                                                                                        -top,
-                                                                                        kog_playback_policy::waveform::SPRING_MS,
+                                                                                        ms = kog_playback_policy::waveform::SPRING_MS,
                                                                                     )
                                                                                 }
                                                                             ></span>

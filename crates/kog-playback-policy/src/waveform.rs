@@ -9,8 +9,9 @@
 pub const BARS: usize = 6;
 /// How often the bars get new heights.
 pub const UPDATES_PER_SECOND: u32 = 20;
-/// How long a bar takes to spring to a new height, in milliseconds.
-pub const SPRING_MS: u32 = 325;
+/// How long a bar takes to spring to a new height, in milliseconds (iOS
+/// takes 325; shorter reads as bouncier).
+pub const SPRING_MS: u32 = 140;
 /// How much wider a bar at full height is than a quiet one.
 pub const WIDTH_GROWTH: f32 = 0.66;
 
@@ -123,6 +124,31 @@ fn fft(real: &mut [f32], imag: &mut [f32]) {
     }
 }
 
+/// Beat emphasis on top of the iOS heights: each bar rides on how far its
+/// band is above its own recent average, so beats kick it up and lulls drop
+/// it instead of it hovering. Silence stays dark.
+#[derive(Clone, Debug, Default)]
+pub struct Bounce {
+    average: [f32; BARS],
+}
+
+impl Bounce {
+    pub fn apply(&mut self, levels: [f32; BARS]) -> [f32; BARS] {
+        std::array::from_fn(|index| {
+            let level = levels[index];
+            self.average[index] += 0.15 * (level - self.average[index]);
+            // The treble moves less in the iOS heights, so it gets more kick.
+            let kick = 2.5 * (1.0 + 0.35 * index as f32);
+            let gate = (level / 0.03).clamp(0.0, 1.0);
+            ((0.35 + kick * (level - self.average[index])) * gate).clamp(0.0, 1.0)
+        })
+    }
+
+    pub fn reset(&mut self) {
+        self.average = [0.0; BARS];
+    }
+}
+
 /// Feeds a running stream into the analysis: keeps the latest frame and
 /// produces new heights `UPDATES_PER_SECOND` times a second.
 #[derive(Clone, Debug, Default)]
@@ -132,6 +158,7 @@ pub struct Analyzer {
     cursor: usize,
     since_update: u32,
     levels: [f32; BARS],
+    bounce: Bounce,
 }
 
 impl Analyzer {
@@ -160,7 +187,7 @@ impl Analyzer {
             .chain(&self.frame[..self.cursor])
             .copied()
             .collect();
-        self.levels = levels(&ordered, self.sample_rate);
+        self.levels = self.bounce.apply(levels(&ordered, self.sample_rate));
         true
     }
 
@@ -173,6 +200,7 @@ impl Analyzer {
         self.cursor = 0;
         self.since_update = 0;
         self.levels = [0.0; BARS];
+        self.bounce.reset();
     }
 }
 

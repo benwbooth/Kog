@@ -775,9 +775,9 @@ button:focus-visible {
 }
 
 /* The playing row's level meter beside the play glyph, like the desktop's
-   PlaylistRow: the Dynamic Island's Now Playing waveform, six pill bars on
-   a black pill that widen as they grow, with the album art showing through.
-   Geometry and fill are set inline per update. */
+   PlaylistRow: six pill bars on a black pill, laid out like the Dynamic
+   Island's waveform, widening, bouncing and warming in color as they grow.
+   Geometry and color are set inline per update. */
 .row-meter {
   display: inline-block;
   position: relative;
