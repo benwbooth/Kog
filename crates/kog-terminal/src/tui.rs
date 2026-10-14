@@ -11718,8 +11718,8 @@ fn waveform_color(column: usize, width: usize) -> (u8, u8, u8) {
 }
 
 /// The playing row's level meter: the desktop's six bars as solid blocks,
-/// one cell each, growing in eighths from the bottom and warming from cyan
-/// to red with their level. A quiet bar keeps a sliver; silence is blank.
+/// one cell each, growing in eighths from the bottom and shading from blue
+/// to green with their level. A quiet bar keeps a sliver; silence is blank.
 fn status_waveform_glyphs(levels: [f32; 6]) -> Vec<(char, (u8, u8, u8))> {
     const BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
     levels
@@ -11736,10 +11736,10 @@ fn status_waveform_glyphs(levels: [f32; 6]) -> Vec<(char, (u8, u8, u8))> {
         .collect()
 }
 
-/// Cyan when quiet through green and yellow to red at full, as on the
-/// desktop (hue 180° to 0°, 85% saturation, 60% lightness).
+/// Blue when quiet through cyan to green at full, as on the desktop
+/// (hue 210° to 120°, 85% saturation, 60% lightness).
 fn level_color(level: f32) -> (u8, u8, u8) {
-    let hue = 180.0 * (1.0 - level) / 60.0;
+    let hue = (210.0 - 90.0 * level) / 60.0;
     let (saturation, lightness) = (0.85_f32, 0.6_f32);
     let chroma = (1.0 - (2.0 * lightness - 1.0).abs()) * saturation;
     let x = chroma * (1.0 - (hue % 2.0 - 1.0).abs());
@@ -12774,8 +12774,8 @@ mod tests {
         assert_eq!(glyphs.len(), STATUS_WAVEFORM_WIDTH);
         let chars: String = glyphs.iter().map(|(c, _)| c).collect();
         assert_eq!(chars, " ▂▄▅▇█");
-        assert_eq!(level_color(0.0), (66, 240, 240));
-        assert_eq!(level_color(1.0), (240, 66, 66));
+        assert_eq!(level_color(0.0), (66, 153, 240));
+        assert_eq!(level_color(1.0), (66, 240, 66));
         assert_eq!(status_waveform_offset(8), 1);
         assert_eq!(status_waveform_offset(7), 0);
         let mut status = String::new();

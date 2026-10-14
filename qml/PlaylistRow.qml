@@ -274,7 +274,7 @@ Item {
                     // Six pill bars on black, laid out like the Dynamic
                     // Island's waveform (centered in their slots, half a slot
                     // wide when quiet and up to 66% wider when loud), springing
-                    // to each new height and warming from cyan to red.
+                    // to each new height and shading from blue to green.
                     readonly property var levels: [
                         root.app.audio_level_low,
                         root.app.audio_level_low_mid,
@@ -314,7 +314,7 @@ Item {
                                 y: (waveformArea.height - height) / 2
                                 radius: width / 2
                                 antialiasing: true
-                                color: Qt.hsla(0.5 * (1 - shown), 0.85,
+                                color: Qt.hsla((210 - 90 * shown) / 360, 0.85,
                                     root.selected ? 0.7 : 0.6, 1)
 
                                 Behavior on level {

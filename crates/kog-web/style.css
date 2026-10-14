@@ -776,7 +776,7 @@ button:focus-visible {
 
 /* The playing row's level meter beside the play glyph, like the desktop's
    PlaylistRow: six pill bars on a black pill, laid out like the Dynamic
-   Island's waveform, widening, bouncing and warming in color as they grow.
+   Island's waveform, widening, bouncing and shading blue to green as they grow.
    Geometry and color are set inline per update. */
 .row-meter {
   /* Pinned to the cell's right edge, as on the desktop: in the flow it

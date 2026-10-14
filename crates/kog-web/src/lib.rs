@@ -7058,7 +7058,7 @@ fn App() -> impl IntoView {
                                                                     // six pill bars on black, laid
                                                                     // out like the Dynamic Island's
                                                                     // waveform, widening, bouncing
-                                                                    // and warming in color as they
+                                                                    // and shading blue to green as they
                                                                     // grow. Paint styles are inline
                                                                     // so a stale cached stylesheet
                                                                     // cannot hide them.
@@ -7081,7 +7081,7 @@ fn App() -> impl IntoView {
                                                                                         .unwrap_or(0.0)
                                                                                         .clamp(0.0, 1.0);
                                                                                     // Cool to hot as the bar grows.
-                                                                                    let fill = format!("hsl({:.0}, 85%, 62%)", 180.0 * (1.0 - level));
+                                                                                    let fill = format!("hsl({:.0}, 85%, 62%)", 210.0 - 90.0 * level);
                                                                                     // The bars' 20x14 area,
                                                                                     // laid out as iOS does.
                                                                                     const WIDTH: f32 = 20.0;
