@@ -14,12 +14,34 @@ Rectangle {
     property real availableWidth: width
     property var columns: []
     property bool layoutReady: false
-    property bool adjustingColumns: false
     property string menuColumn: "index"
     property string resizingColumn: ""
     property real resizingWidth: 0
 
     readonly property var visibleColumns: columns.filter(column => column.visible)
+    // Width handed out on top of the saved widths so the columns always fill
+    // the view: never blank space after the last column. Flexible (text)
+    // columns share it in proportion to their width; with none visible, every
+    // column does. The column being dragged keeps exactly the dragged width.
+    readonly property var stretch: {
+        const extra = ({})
+        let used = 0
+        for (const column of visibleColumns)
+            used += column.id === resizingColumn ? resizingWidth : column.width
+        const spare = availableWidth - used
+        if (spare <= 0.5)
+            return extra
+        let candidates = visibleColumns.filter(column => column.flexible
+            && column.id !== resizingColumn)
+        if (candidates.length === 0)
+            candidates = visibleColumns.filter(column => column.id !== resizingColumn)
+        let weight = 0
+        for (const column of candidates)
+            weight += column.width
+        for (const column of candidates)
+            extra[column.id] = weight > 0 ? spare * column.width / weight : spare / candidates.length
+        return extra
+    }
     readonly property real totalWidth: {
         let total = 0
         for (const column of visibleColumns)
@@ -130,7 +152,8 @@ Rectangle {
     }
 
     function effectiveColumnWidth(column) {
-        return column.id === resizingColumn ? resizingWidth : column.width
+        return column.id === resizingColumn ? resizingWidth
+            : column.width + (stretch[column.id] || 0)
     }
 
     function setColumnWidth(identifier, width) {
@@ -141,40 +164,6 @@ Rectangle {
         updated[index].width = Math.max(updated[index].minimumWidth,
             Math.min(updated[index].maximumWidth, width))
         columns = updated
-    }
-
-    function fitAvailableWidth() {
-        if (adjustingColumns || availableWidth <= 0 || columns.length === 0)
-            return
-        let currentWidth = 0
-        for (const column of columns) {
-            if (column.visible)
-                currentWidth += column.width
-        }
-        let remaining = availableWidth - currentWidth
-        if (remaining <= 0.5)
-            return
-
-        const updated = columns.map(copyColumn)
-        adjustingColumns = true
-        for (let pass = 0; pass < 8 && remaining > 0.5; ++pass) {
-            const candidates = updated.filter(column => column.visible
-                && column.flexible && column.width < column.maximumWidth - 0.5)
-            if (candidates.length === 0)
-                break
-            const share = remaining / candidates.length
-            let consumed = 0
-            for (const column of candidates) {
-                const added = Math.min(share, column.maximumWidth - column.width)
-                column.width += added
-                consumed += added
-            }
-            remaining -= consumed
-            if (consumed <= 0.5)
-                break
-        }
-        columns = updated
-        adjustingColumns = false
     }
 
     function restoreLayout() {
@@ -262,7 +251,6 @@ Rectangle {
         const updated = columns.map(copyColumn)
         updated[index].visible = !updated[index].visible
         columns = updated
-        fitAvailableWidth()
         persistLayout()
     }
 
@@ -333,20 +321,15 @@ Rectangle {
 
     function resetLayout() {
         columns = defaultColumns()
-        fitAvailableWidth()
         persistLayout()
     }
 
     Component.onCompleted: {
         restoreLayout()
         layoutReady = true
-        fitAvailableWidth()
     }
-    onSavedLayoutChanged: if (layoutReady && savedLayout !== encodedLayout()) {
+    onSavedLayoutChanged: if (layoutReady && savedLayout !== encodedLayout())
         restoreLayout()
-        fitAvailableWidth()
-    }
-    onAvailableWidthChanged: if (layoutReady) fitAvailableWidth()
 
     component HeaderCell: Rectangle {
         id: cell
@@ -446,7 +429,8 @@ Rectangle {
                 return
             }
             dragColumn = root.visibleColumns[index].id
-            root.resizingWidth = root.visibleColumns[index].width
+            // Start from the width on screen, stretch included.
+            root.resizingWidth = root.effectiveColumnWidth(root.visibleColumns[index])
             root.resizingColumn = dragColumn
             previousX = mouse.x
             mouse.accepted = true

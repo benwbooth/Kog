@@ -98,6 +98,19 @@ TestCase {
         compare(titleLabel.elided, false)
     }
 
+    function test_columns_fill_a_wide_view_without_blank_space() {
+        header.resetLayout()
+        const saved = header.encodedLayout()
+        header.availableWidth = 3000
+        compare(Math.round(header.totalWidth), 3000)
+        const title = header.columns[header.columnIndex("title")]
+        const index = header.columns[header.columnIndex("index")]
+        verify(header.effectiveColumnWidth(title) > title.width, "Text columns take the spare width")
+        compare(header.effectiveColumnWidth(index), index.width)
+        compare(header.encodedLayout(), saved, "Filling the view must not change the saved widths")
+        header.availableWidth = Qt.binding(() => header.width)
+    }
+
     function test_manual_resize_updates_cells_without_rebuilding_columns() {
         header.resetLayout()
         wait(0)
