@@ -98,17 +98,33 @@ TestCase {
         compare(titleLabel.elided, false)
     }
 
-    function test_columns_fill_a_wide_view_without_blank_space() {
+    function test_columns_are_never_wider_than_their_contents() {
         header.resetLayout()
-        const saved = header.encodedLayout()
-        header.availableWidth = 3000
-        compare(Math.round(header.totalWidth), 3000)
-        const title = header.columns[header.columnIndex("title")]
-        const index = header.columns[header.columnIndex("index")]
-        verify(header.effectiveColumnWidth(title) > title.width, "Text columns take the spare width")
-        compare(header.effectiveColumnWidth(index), index.width)
-        compare(header.encodedLayout(), saved, "Filling the view must not change the saved widths")
-        header.availableWidth = Qt.binding(() => header.width)
+        header.refreshFitted()
+        const artist = header.columns[header.columnIndex("artist")]
+        const content = header.fittedColumnWidth(artist)
+        verify(artist.width > content, "the default Artist width is wider than its values")
+        compare(header.effectiveColumnWidth(artist), content)
+        const status = header.columns[header.columnIndex("status")]
+        compare(header.effectiveColumnWidth(status), status.width)
+
+        // Narrower than the contents stays the user's choice.
+        header.setColumnWidth("artist", content - 20)
+        header.refreshFitted()
+        compare(header.effectiveColumnWidth(header.columns[header.columnIndex("artist")]), content - 20)
+
+        // Dragging wider stops at the contents.
+        let edge = 0
+        for (const column of header.visibleColumns) {
+            edge += header.effectiveColumnWidth(column)
+            if (column.id === "artist")
+                break
+        }
+        mousePress(header, edge - 1, 15)
+        mouseMove(header, edge + 99, 15)
+        compare(header.resizingWidth, content)
+        mouseRelease(header, edge + 99, 15)
+        header.resetLayout()
     }
 
     function test_manual_resize_updates_cells_without_rebuilding_columns() {
@@ -117,9 +133,10 @@ TestCase {
         const title = header.columns[header.columnIndex("title")]
         const titleCell = findChild(playlistRow, "playlistCell_title")
         verify(titleCell !== null)
+        header.refreshFitted()
         let edge = 0
         for (const column of header.visibleColumns) {
-            edge += column.width
+            edge += header.effectiveColumnWidth(column)
             if (column.id === "title")
                 break
         }

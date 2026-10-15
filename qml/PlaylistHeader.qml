@@ -19,29 +19,12 @@ Rectangle {
     property real resizingWidth: 0
 
     readonly property var visibleColumns: columns.filter(column => column.visible)
-    // Width handed out on top of the saved widths so the columns always fill
-    // the view: never blank space after the last column. Flexible (text)
-    // columns share it in proportion to their width; with none visible, every
-    // column does. The column being dragged keeps exactly the dragged width.
-    readonly property var stretch: {
-        const extra = ({})
-        let used = 0
-        for (const column of visibleColumns)
-            used += column.id === resizingColumn ? resizingWidth : column.width
-        const spare = availableWidth - used
-        if (spare <= 0.5)
-            return extra
-        let candidates = visibleColumns.filter(column => column.flexible
-            && column.id !== resizingColumn)
-        if (candidates.length === 0)
-            candidates = visibleColumns.filter(column => column.id !== resizingColumn)
-        let weight = 0
-        for (const column of candidates)
-            weight += column.width
-        for (const column of candidates)
-            extra[column.id] = weight > 0 ? spare * column.width / weight : spare / candidates.length
-        return extra
-    }
+    // Each text column's content width, capped at its saved width (only
+    // whether the content is narrower matters). A column is never drawn
+    // wider than its widest value; narrower stays the user's choice.
+    property var fitted: ({})
+    // Columns whose cells are not text keep their saved width.
+    readonly property var fixedColumns: ["star", "status", "rating"]
     readonly property real totalWidth: {
         let total = 0
         for (const column of visibleColumns)
@@ -152,16 +135,45 @@ Rectangle {
     }
 
     function effectiveColumnWidth(column) {
-        return column.id === resizingColumn ? resizingWidth
-            : column.width + (stretch[column.id] || 0)
+        if (column.id === resizingColumn)
+            return resizingWidth
+        const content = fitted[column.id]
+        return content === undefined ? column.width : Math.min(column.width, content)
     }
+
+    function refreshFitted() {
+        const next = ({})
+        for (const column of visibleColumns) {
+            if (fixedColumns.indexOf(column.id) < 0)
+                next[column.id] = fittedColumnWidth(column, column.width)
+        }
+        fitted = next
+    }
+    // The revision moves with every session update (playback progress
+    // included), so content changes refit at most a few times a second.
+    Timer {
+        id: refitTimer
+        interval: 400
+        onTriggered: root.refreshFitted()
+    }
+    function scheduleRefit() {
+        if (!refitTimer.running)
+            refitTimer.start()
+    }
+    Connections {
+        target: root.app
+        function onPlaylist_revisionChanged() { root.scheduleRefit() }
+        function onPlaylist_countChanged() { root.scheduleRefit() }
+    }
+    onColumnsChanged: scheduleRefit()
 
     function setColumnWidth(identifier, width) {
         const index = columnIndex(identifier)
         if (index < 0)
             return
         const updated = columns.map(copyColumn)
-        updated[index].width = Math.max(updated[index].minimumWidth,
+        // Narrower than the contents is the user's choice, down to a sliver.
+        updated[index].width = Math.max(Math.min(updated[index].minimumWidth, 16),
             Math.min(updated[index].maximumWidth, width))
         columns = updated
     }
@@ -283,7 +295,8 @@ Rectangle {
         persistLayout()
     }
 
-    function fittedColumnWidth(column) {
+    function fittedColumnWidth(column, limit) {
+        const cap = limit === undefined ? column.maximumWidth : limit
         // PlaylistRow reserves 26 px before title text for the format icon,
         // 6 px after it, and 6 px on each side of other text cells.
         const inset = column.id === "title" ? 36 : 18
@@ -292,7 +305,7 @@ Rectangle {
         for (let row = 0; row < root.app.playlist_count; ++row) {
             contentWidth = Math.max(contentWidth, columnFontMetrics.advanceWidth(
                 root.app.track_value_at(row, column.id)))
-            if (contentWidth + inset >= column.maximumWidth)
+            if (contentWidth + inset >= cap)
                 break
         }
         return Math.ceil(contentWidth + inset)
@@ -404,6 +417,7 @@ Rectangle {
 
         property string dragColumn: ""
         property real previousX: 0
+        property real dragMaximum: 0
 
         function boundaryIndexAt(x) {
             let edge = 0
@@ -429,8 +443,13 @@ Rectangle {
                 return
             }
             dragColumn = root.visibleColumns[index].id
-            // Start from the width on screen, stretch included.
-            root.resizingWidth = root.effectiveColumnWidth(root.visibleColumns[index])
+            const column = root.visibleColumns[index]
+            // Start from the width on screen; a text column can be dragged
+            // narrower than its contents but never wider.
+            dragMaximum = root.fixedColumns.indexOf(column.id) < 0
+                ? Math.min(column.maximumWidth, root.fittedColumnWidth(column))
+                : column.maximumWidth
+            root.resizingWidth = root.effectiveColumnWidth(column)
             root.resizingColumn = dragColumn
             previousX = mouse.x
             mouse.accepted = true
@@ -441,8 +460,8 @@ Rectangle {
             const index = root.columnIndex(dragColumn)
             if (index >= 0) {
                 const column = root.columns[index]
-                root.resizingWidth = Math.max(column.minimumWidth,
-                    Math.min(column.maximumWidth,
+                root.resizingWidth = Math.max(Math.min(column.minimumWidth, 16),
+                    Math.min(dragMaximum,
                         root.resizingWidth + mouse.x - previousX))
             }
             previousX = mouse.x
