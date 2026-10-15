@@ -3197,6 +3197,7 @@ ApplicationWindow {
                                 }
                             }
                             SearchHighlightLabel {
+                                id: treeNameLabel
                                 Layout.fillWidth: true
                                 sourceText: treeDelegate.fileName
                                 query: fileTreeModel.searchText
@@ -3226,8 +3227,10 @@ ApplicationWindow {
                             z: 2
                             acceptedButtons: Qt.LeftButton | Qt.RightButton
                             hoverEnabled: true
-                            onEntered: directoryTree.showRowTooltip(
-                                treePointer, treeDelegate.fileName)
+                            // Only a name the row cuts off needs a tooltip.
+                            onEntered: if (treeNameLabel.elided)
+                                directoryTree.showRowTooltip(
+                                    treePointer, treeDelegate.fileName)
                             onExited: directoryTree.hideRowTooltip(treePointer)
                             preventStealing: true
                             scrollGestureEnabled: false

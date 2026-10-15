@@ -127,6 +127,15 @@ TestCase {
         header.resetLayout()
     }
 
+    function test_tooltips_only_for_cut_off_text() {
+        header.resetLayout()
+        header.refreshFitted()
+        const title = header.columns[header.columnIndex("title")]
+        const artist = header.columns[header.columnIndex("artist")]
+        verify(playlistRow.cellCutOff(title, testCase.longTitle), "an elided title gets a tooltip")
+        verify(!playlistRow.cellCutOff(artist, "Artist"), "a value that fits gets none")
+    }
+
     function test_manual_resize_updates_cells_without_rebuilding_columns() {
         header.resetLayout()
         wait(0)

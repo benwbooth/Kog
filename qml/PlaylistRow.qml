@@ -70,8 +70,9 @@ Item {
     }
 
     // Single tooltip for the whole row, driven by the proven rowPointer
-    // hover path: field contents under the cursor, Star/Unstar over the
-    // star column, and the playback status only over empty cells. One
+    // hover path. It shows a field's contents only when the cell cuts them
+    // off (elided, or partly scrolled out of view), plus a track's status
+    // message (why it failed or is missing) over its empty cells. One
     // tooltip means no competing popups and no hover-event races.
     readonly property string hoverTip: {
         root.revision
@@ -80,12 +81,40 @@ Item {
         const column = root.columnAt(rowPointer.hoverX)
         if (column === null)
             return root.statusMessage
-        if (column.id === "star")
-            return root.rowStarred ? qsTr("Unstar") : qsTr("Star")
-        if (column.id === "status" && root.isPlaying)
-            return qsTr("Open audio visualizer")
+        if (column.id === "star" || column.id === "status")
+            return ""
         const value = String(root.app.track_value_at(root.rowIndex, column.id))
-        return value.length > 0 ? value : root.statusMessage
+        if (value.length === 0)
+            return root.statusMessage
+        return root.cellCutOff(column, value) ? value : ""
+    }
+
+    FontMetrics {
+        id: cellMetrics
+        font.pixelSize: 11
+    }
+
+    // Whether a cell shows less than all of `value`: the text is wider than
+    // the cell (the same insets the column auto-fit uses), or the cell runs
+    // past either side of the list's viewport.
+    function cellCutOff(column, value) {
+        const width = columns.effectiveColumnWidth(column)
+        const inset = column.id === "title" ? 36 : 18
+        if (cellMetrics.advanceWidth(value) + inset > width + 0.5)
+            return true
+        const view = root.ListView.view
+        if (!view)
+            return false
+        let start = 0
+        for (const visible of columns.visibleColumns) {
+            if (visible.id === column.id)
+                break
+            start += columns.effectiveColumnWidth(visible)
+        }
+        const left = root.mapToItem(view, start, 0).x
+        const right = left + width
+        const viewportRight = view.width - (view.verticalScrollGutter || 0)
+        return left < -0.5 || right > viewportRight + 0.5
     }
 
     implicitHeight: 24
