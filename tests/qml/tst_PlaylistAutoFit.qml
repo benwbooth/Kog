@@ -132,7 +132,7 @@ TestCase {
         header.refreshFitted()
         const title = header.columns[header.columnIndex("title")]
         const artist = header.columns[header.columnIndex("artist")]
-        verify(playlistRow.cellCutOff(title, testCase.longTitle), "an elided title gets a tooltip")
+        tryVerify(() => playlistRow.cellCutOff(title, testCase.longTitle), 1000, "an elided title gets a tooltip")
         verify(!playlistRow.cellCutOff(artist, "Artist"), "a value that fits gets none")
     }
 

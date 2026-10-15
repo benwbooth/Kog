@@ -89,30 +89,21 @@ Item {
         return root.cellCutOff(column, value) ? value : ""
     }
 
-    FontMetrics {
-        id: cellMetrics
-        font.pixelSize: 11
-    }
-
-    // Whether a cell shows less than all of `value`: the text is wider than
-    // the cell (the same insets the column auto-fit uses), or the cell runs
+    // Whether a cell shows less than all of its text: its label elides it
+    // (measured with the label's own font and padding), or the cell runs
     // past either side of the list's viewport.
     function cellCutOff(column, value) {
-        const width = columns.effectiveColumnWidth(column)
-        const inset = column.id === "title" ? 36 : 18
-        if (cellMetrics.advanceWidth(value) + inset > width + 0.5)
+        const index = columns.visibleColumns.findIndex(visible => visible.id === column.id)
+        const cell = index >= 0 ? cellRepeater.itemAt(index) : null
+        if (cell === null)
+            return false
+        if (cell.elided)
             return true
         const view = root.ListView.view
         if (!view)
             return false
-        let start = 0
-        for (const visible of columns.visibleColumns) {
-            if (visible.id === column.id)
-                break
-            start += columns.effectiveColumnWidth(visible)
-        }
-        const left = root.mapToItem(view, start, 0).x
-        const right = left + width
+        const left = cell.mapToItem(view, 0, 0).x
+        const right = left + cell.width
         const viewportRight = view.width - (view.verticalScrollGutter || 0)
         return left < -0.5 || right > viewportRight + 0.5
     }
@@ -218,6 +209,8 @@ Item {
                 color: cell.useLightIcon ? "#ffffff" : "#111111"
             }
         }
+
+        readonly property alias elided: cellLabel.elided
 
         SearchHighlightLabel {
             id: cellLabel
@@ -365,6 +358,7 @@ Item {
         anchors.fill: parent
 
         Repeater {
+            id: cellRepeater
             model: root.columns.visibleColumns
 
             Cell {

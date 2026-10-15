@@ -2009,8 +2009,46 @@ pub fn start() {
     leptos::mount::mount_to_body(App);
 }
 
+/// Playlist cells and file tree rows show their full text as a tooltip only
+/// when it is cut off: elided, wider than its box, or partly scrolled out of
+/// view. Their `title` is parked in `data-cut-tip` whenever the text fits,
+/// decided as the pointer enters, so the reactive titles stay as they are.
+fn install_cut_off_tooltips() {
+    let _ = js_sys::eval(
+        r#"(() => {
+  if (window.kogCutOffTips) return;
+  window.kogCutOffTips = true;
+  const clipped = node => {
+    if (node.scrollWidth <= node.clientWidth + 1) return false;
+    const style = getComputedStyle(node);
+    return style.overflowX !== 'visible' || style.textOverflow === 'ellipsis';
+  };
+  document.addEventListener('mouseover', event => {
+    const element = event.target.closest && event.target.closest('.track .cell, .tree-row');
+    if (!element) return;
+    const full = element.getAttribute('title') ?? element.dataset.cutTip;
+    if (full === undefined || full === null) return;
+    let cut = clipped(element) || [...element.querySelectorAll('*')].some(clipped);
+    const box = element.getBoundingClientRect();
+    for (let parent = element.parentElement; parent && !cut; parent = parent.parentElement) {
+      if (getComputedStyle(parent).overflowX === 'visible') continue;
+      const view = parent.getBoundingClientRect();
+      cut = box.left < view.left - 1 || box.right > view.right + 1;
+    }
+    if (cut) {
+      element.setAttribute('title', full);
+    } else {
+      element.dataset.cutTip = full;
+      element.removeAttribute('title');
+    }
+  }, true);
+})()"#,
+    );
+}
+
 #[component]
 fn App() -> impl IntoView {
+    install_cut_off_tooltips();
     // A phone opening the server's own address is already pointed at it.
     let origin = web_sys::window()
         .and_then(|window| window.location().origin().ok())
