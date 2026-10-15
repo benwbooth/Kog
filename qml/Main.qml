@@ -208,7 +208,7 @@ ApplicationWindow {
         required property string themedIconName
         required property string description
 
-        Layout.preferredWidth: 34
+        Layout.preferredWidth: 32
         Layout.preferredHeight: 34
         icon.name: themedIconName
         icon.color: root.palette.text
@@ -2197,6 +2197,9 @@ ApplicationWindow {
 
         implicitHeight: 48
         padding: 5
+        // The window buttons sit right at the window's edge, as native
+        // title bars place them.
+        rightPadding: root.useMacWindowControls ? 5 : 0
         palette.window: root.toolbarSurface
         palette.button: root.toolbarSurface
         palette.windowText: root.palette.text
@@ -2217,10 +2220,9 @@ ApplicationWindow {
 
         RowLayout {
             anchors.fill: parent
-            anchors.leftMargin: 12
-            // Together with the control group's margin, leave an 8 px
-            // resize edge beside the Linux window buttons.
-            anchors.rightMargin: Qt.platform.os === "linux" ? 5 : 12
+            // macOS puts the first traffic light about 13 px from the edge.
+            anchors.leftMargin: root.useMacWindowControls ? 3 : 12
+            anchors.rightMargin: root.useMacWindowControls ? 12 : 0
             spacing: 2
 
             RowLayout {
@@ -2369,7 +2371,7 @@ ApplicationWindow {
             RowLayout {
                 visible: !root.useMacWindowControls
                 Layout.leftMargin: 3
-                Layout.rightMargin: 3
+                Layout.rightMargin: 0
                 spacing: 0
 
                 DesktopWindowButton {
