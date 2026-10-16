@@ -961,7 +961,7 @@ impl ScoreBuilder {
         // report key-ons tens of milliseconds late), give each onset its place
         // on that beat, and keep the time of each beat for highlighting.
         let grid = match self.tempo {
-            Some(bpm) => Grid { quarter: (60.0 / bpm) / tick_seconds, steps: 4.0, jitter: 1.0 },
+            Some(bpm) => Grid { quarter: (60.0 / bpm) / tick_seconds, steps: 4.0, jitter: 1.0, triplets: true },
             None => infer_grid(&tracks, tick_seconds),
         };
         let steps = grid.steps;
@@ -970,9 +970,13 @@ impl ScoreBuilder {
         // Finer lines between beat steps (halves, triplets, quarters …) that
         // divide into whole ticks, coarsest first.
         // Finer lines would also catch late or early key-ons, so stop at quarters.
+        // A quarter of a short step (a 16th at a quick tempo) is a flam or a
+        // late key-on, not a note value; such steps split in halves at most.
+        let finest = if unit_frames * tick_seconds < 0.1 { 2 } else { 4 };
         let subdivisions: Vec<u64> = [1u64, 2, 3, 4]
             .into_iter()
-            .filter(|parts| unit_ticks % parts == 0)
+            .filter(|parts| unit_ticks % parts == 0 && *parts <= finest.max(3) && (*parts != 3 || grid.triplets))
+            .filter(|parts| *parts == 3 || *parts <= finest)
             .collect();
         let onsets = rhythmic_onsets(&tracks, tick_seconds);
         let anchors = track_beats(&onsets, unit_frames, unit_ticks, &subdivisions, grid.jitter);
@@ -1680,7 +1684,7 @@ fn infer_grid(tracks: &[Track], tick_seconds: f64) -> Grid {
     let mut onsets = rhythmic_onsets(tracks, tick_seconds);
     let fallback = || {
         let quarter = f64::from(infer_quarter(tracks, tick_seconds));
-        Grid { quarter, steps: 4.0, jitter: 1.0 }
+        Grid { quarter, steps: 4.0, jitter: 1.0, triplets: true }
     };
     if onsets.len() < 8 {
         return fallback();
@@ -1741,9 +1745,17 @@ fn infer_grid(tracks: &[Track], tick_seconds: f64) -> Grid {
     }
     // The longest step that explains almost as many onsets as the best one;
     // shorter steps always fit, so they are only chosen when nothing else does.
-    let Some(&(unit, _, phase)) = candidates.iter().rev().find(|c| c.1 >= best - 0.03) else {
+    let Some(&(mut unit, unit_fit, mut phase)) = candidates.iter().rev().find(|c| c.1 >= best - 0.03) else {
         return fallback();
     };
+    // A step three times a straight one (a dotted beat) fits as well as that
+    // straight step but writes every note as a triplet. Unless halving the
+    // step fits too, the music moves in the straight step.
+    let (third_fit, third_phase) = fit(unit / 3.0);
+    if third_fit >= unit_fit - 0.03 && fit(unit / 2.0).0 < third_fit - 0.05 {
+        unit /= 3.0;
+        phase = third_phase;
+    }
     // How far onsets that belong to the grid sit from it: decoders that report
     // key-ons per audio block place them a few frames late or early.
     let mut offsets: Vec<f64> = times
@@ -1790,7 +1802,23 @@ fn infer_grid(tracks: &[Track], tick_seconds: f64) -> Grid {
                 .then((bpm(unit * *b as f64) - 125.0).abs().total_cmp(&(bpm(unit * *a as f64) - 125.0).abs()))
         })
         .map_or(4.0, |steps| steps as f64);
-    Grid { quarter: unit * steps, steps, jitter }
+    // Onsets between steps: on halves or quarters of a step, or on thirds.
+    // Thirds only count as triplets when they are common; otherwise they are
+    // flams and grace notes, better read on the straight lines.
+    let between = |parts: &[f64]| {
+        times
+            .iter()
+            .filter(|time| {
+                let position = ((**time - phase) / unit).rem_euclid(1.0);
+                let off = position.min(1.0 - position) * unit > (0.08 * unit).max(0.75);
+                off && parts.iter().any(|line| (position - line).abs() * unit <= (0.06 * unit).max(0.75))
+            })
+            .count()
+    };
+    let thirds = between(&[1.0 / 3.0, 2.0 / 3.0]);
+    let straight = between(&[0.25, 0.5, 0.75]);
+    let triplets = thirds * 10 >= times.len() && thirds > straight;
+    Grid { quarter: unit * steps, steps, jitter, triplets }
 }
 
 /// A rhythmic grid in decoder frames.
@@ -1800,6 +1828,9 @@ struct Grid {
     steps: f64,
     /// Typical distance of an on-grid onset from its grid line.
     jitter: f64,
+    /// Whether onsets between grid steps fall on thirds of a step often
+    /// enough to be triplets rather than flams and grace notes.
+    triplets: bool,
 }
 
 /// Estimate a beat from the most common gap between onsets on the same voice,
@@ -2286,6 +2317,12 @@ fn items(events: &[Event], length: u64, score: &Score) -> Plan {
     let quarter = u64::from(score.quarter.max(1));
     let standard = standard_lengths(quarter);
     let plain = |ticks: u64| standard.iter().any(|(length, _)| *length == ticks);
+    // A straight value (not a triplet), dots allowed.
+    let straight = |ticks: u64| {
+        standard.iter().any(|(length, text)| {
+            *length == ticks && text.trim_end_matches('.').parse::<u64>().is_ok_and(u64::is_power_of_two)
+        })
+    };
     // (start, end, sound, gate)
     let mut sounds: Vec<(u64, u64, Option<usize>, u64)> = Vec::new();
     let mut cursor = 0;
@@ -2310,7 +2347,7 @@ fn items(events: &[Event], length: u64, score: &Score) -> Plan {
         let mut gate = 0;
         // A single note or hit cut short of the next one by a gap no longer
         // than itself is written at its full step with a gate, when that
-        // step is a plain note value and the note alone is not.
+        // step is a plain note value.
         let next = starts[position + 1..].iter().map(|(_, tick)| *tick).find(|next| *next >= end);
         if count == 1
             && event.tick + event.kind.length() == end
@@ -2318,7 +2355,13 @@ fn items(events: &[Event], length: u64, score: &Score) -> Plan {
         {
             let gap = next - end;
             let sounding = end - tick;
-            if gap > 0 && gap <= sounding && plain(sounding + gap) && !plain(sounding) {
+            // Either the note alone has an awkward length, or the gap is a
+            // short release and the whole step is a straight value.
+            if gap > 0
+                && gap <= sounding
+                && plain(sounding + gap)
+                && (!plain(sounding) || (gap * 2 <= sounding && straight(sounding + gap)))
+            {
                 gate = gap;
                 end = next;
             }
