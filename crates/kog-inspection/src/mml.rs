@@ -1102,27 +1102,48 @@ impl ScoreBuilder {
         let mut tracks = merge_chords(tracks);
         let relative: Vec<bool> = tracks.iter().map(|track| relative_of[&track.channel]).collect();
         // Start bars where most notes start: the beat tracker knows the beat
-        // but not which beat is the downbeat.
-        let bar = u64::from(QUARTER) * u64::from(self.meter.unwrap_or(4).max(1));
-        // Chords mark strong beats: weight each onset tick by the square of
-        // how many voices start on it.
+        // but not which beat is the downbeat. Chords mark strong beats:
+        // weight each onset tick by the square of how many voices start on it.
         let mut starts: BTreeMap<u64, usize> = BTreeMap::new();
         for track in &tracks {
             for event in track.events.iter().filter(|e| e.kind.length() > 0) {
                 *starts.entry(event.tick).or_default() += 1;
             }
         }
-        let mut residues: BTreeMap<u64, usize> = BTreeMap::new();
-        for (tick, voices) in starts {
-            // Only beat lines can be downbeats.
-            if tick % unit_ticks == 0 {
-                *residues.entry(tick % bar).or_default() += voices * voices;
+        let downbeat = |bar: u64| {
+            let mut residues: BTreeMap<u64, usize> = BTreeMap::new();
+            for (tick, voices) in &starts {
+                // Only beat lines can be downbeats.
+                if tick % unit_ticks == 0 {
+                    *residues.entry(tick % bar).or_default() += voices * voices;
+                }
             }
-        }
-        let pickup = residues
-            .into_iter()
-            .max_by_key(|(residue, count)| (*count, std::cmp::Reverse(*residue)))
-            .map_or(0, |(residue, _)| residue);
+            residues
+                .into_iter()
+                .max_by_key(|(residue, count)| (*count, std::cmp::Reverse(*residue)))
+                .map_or(0, |(residue, _)| residue)
+        };
+        // Without a meter from the music, choose three or four beats a bar by
+        // which splits fewer notes across bar lines (each split is a tie).
+        let beats = self.meter.unwrap_or_else(|| {
+            let ties = |beats: u64| {
+                let bar = u64::from(QUARTER) * beats;
+                let pickup = downbeat(bar);
+                tracks
+                    .iter()
+                    .flat_map(|track| &track.events)
+                    .filter(|event| {
+                        let length = event.kind.length();
+                        length > 0 && {
+                            let into = (event.tick + bar - pickup % bar) % bar;
+                            into + length > bar
+                        }
+                    })
+                    .count()
+            };
+            if ties(3) * 5 < ties(4) * 4 { 3 } else { 4 }
+        }).max(1);
+        let pickup = downbeat(u64::from(QUARTER) * u64::from(beats));
         let timing = timeline.timing(tick_seconds, length);
         let seconds = timing.last().map_or(0, |(_, micros)| *micros) as f64 / 1e6;
         let ticks = timing.last().map_or(0, |(tick, _)| *tick) as f64;
@@ -1162,7 +1183,7 @@ impl ScoreBuilder {
             backend: description.backend.clone(),
             tempo,
             quarter: QUARTER,
-            beats: self.meter.unwrap_or(4).max(1),
+            beats,
             inferred: self.tempo.is_none(),
             length,
             tracks,
@@ -1959,7 +1980,9 @@ impl Document {
 
 /// Words that need no quotes: printable ASCII without spaces or MML syntax.
 fn bare(value: &str) -> bool {
+    // A lone note letter before `=` would read as a natural note.
     !value.is_empty()
+        && !(value.len() == 1 && matches!(value.as_bytes()[0], b'a'..=b'g'))
         && value
             .bytes()
             .all(|b| b.is_ascii_graphic() && !matches!(b, b'"' | b'=' | b'|' | b';' | b'\\'))
@@ -2067,7 +2090,6 @@ fn length_text(ticks: u64, quarter: u64, default: Option<u64>) -> String {
     format!("{}/{}", ticks / divisor, whole / divisor)
 }
 
-const NAMES: [&str; 12] = ["c", "c+", "d", "d+", "e", "f", "f+", "g", "g+", "a", "a+", "b"];
 
 struct Writer<'a> {
     score: &'a Score,
@@ -2077,6 +2099,8 @@ struct Writer<'a> {
     velocity: Vec<Option<u8>>,
     instrument: Vec<Option<String>>,
     default: Vec<u64>,
+    /// Each track's key signature, for spelling notes.
+    key: Vec<i32>,
 }
 
 impl Writer<'_> {
@@ -2120,7 +2144,8 @@ impl Writer<'_> {
             .map_or(0, |(_, shift)| *shift)
     }
 
-    /// A note's octave, written as a change from the current one.
+    /// A note's octave, written as a change from the current one. The octave
+    /// follows the written letter: b+ in C is c of the next octave up.
     fn octave_change(&mut self, track: usize, octave: i32) -> String {
         let text = match self.octave[track].map(|current| octave - current) {
             Some(0) => String::new(),
@@ -2135,7 +2160,7 @@ impl Writer<'_> {
     /// A note's name and any detune that `#TUNE` does not imply.
     fn pitch(&self, track: usize, key: i32, cents: i32) -> String {
         let written = key + self.transpose(track);
-        let mut text = NAMES[written.rem_euclid(12) as usize].to_owned();
+        let mut text = name_in_key(written, self.key[track]);
         if cents != self.score.tracks[track].tuning(key) {
             let _ = write!(text, "({cents:+})");
         }
@@ -2172,7 +2197,8 @@ impl Writer<'_> {
                     self.velocity[track] = Some(*velocity);
                     self.token(track, start, start, "command", &format!("V{velocity}"), None);
                 }
-                let octave = (key + self.transpose(track)).div_euclid(12) - 1;
+                let written = key + self.transpose(track);
+                let octave = (written - letter_alteration(written, self.key[track])).div_euclid(12) - 1;
                 let change = self.octave_change(track, octave);
                 if !change.is_empty() {
                     self.token(track, start, start, "command", &change, None);
@@ -2202,7 +2228,8 @@ impl Writer<'_> {
                                 self.velocity[track] = Some(velocity);
                                 let _ = write!(text, "V{velocity}");
                             }
-                            let octave = (key + self.transpose(track)).div_euclid(12) - 1;
+                            let written = key + self.transpose(track);
+                            let octave = (written - letter_alteration(written, self.key[track])).div_euclid(12) - 1;
                             text.push_str(&self.octave_change(track, octave));
                         }
                         if legato {
@@ -2235,31 +2262,72 @@ enum Item {
     Command(u64, usize),
     /// start, end, the sound's event (None for a gap), first piece of it
     Piece(u64, u64, Option<usize>, bool),
+    /// The track's gate from here on: how many ticks before the end of its
+    /// written length each note stops (`q`), so a note and the short gap
+    /// after it read as one plain value.
+    Gate(u64, u64),
+    /// The key signature from here on (`K`), in sharps (positive) or flats.
+    Key(u64, i32),
 }
+
+/// A plan for writing one track: its items, and the written length of each
+/// sound (gates folded in), from which the track's default length is chosen.
+struct Plan {
+    items: Vec<Item>,
+    lengths: Vec<u64>,
+}
+
+/// Bars per key signature section.
+const KEY_SECTION_BARS: usize = 8;
 
 /// A track as commands and sound pieces in time order. Sounds and gaps are
 /// split where a command falls inside them and at bar lines.
-fn items(events: &[Event], length: u64, score: &Score) -> Vec<Item> {
-    let mut sounds = Vec::new();
+fn items(events: &[Event], length: u64, score: &Score) -> Plan {
+    let quarter = u64::from(score.quarter.max(1));
+    let standard = standard_lengths(quarter);
+    let plain = |ticks: u64| standard.iter().any(|(length, _)| *length == ticks);
+    // (start, end, sound, gate)
+    let mut sounds: Vec<(u64, u64, Option<usize>, u64)> = Vec::new();
     let mut cursor = 0;
     let mut group_end = 0;
-    for (index, event) in events.iter().enumerate() {
+    let starts: Vec<(usize, u64)> = events
+        .iter()
+        .enumerate()
+        .filter(|(_, event)| event.kind.length() > 0)
+        .map(|(index, event)| (index, event.tick))
+        .collect();
+    for (position, &(index, tick)) in starts.iter().enumerate() {
         if index < group_end {
             continue;
         }
-        if event.kind.length() > 0 {
-            let count = group_len(events, index);
-            group_end = index + count;
-            if event.tick > cursor {
-                sounds.push((cursor, event.tick, None));
-            }
-            let end = follow_end(events, index, count);
-            sounds.push((event.tick, end, Some(index)));
-            cursor = end;
+        let event = &events[index];
+        let count = group_len(events, index);
+        group_end = index + count;
+        if tick > cursor {
+            sounds.push((cursor, tick, None, 0));
         }
+        let mut end = follow_end(events, index, count);
+        let mut gate = 0;
+        // A single note or hit cut short of the next one by a gap no longer
+        // than itself is written at its full step with a gate, when that
+        // step is a plain note value and the note alone is not.
+        let next = starts[position + 1..].iter().map(|(_, tick)| *tick).find(|next| *next >= end);
+        if count == 1
+            && event.tick + event.kind.length() == end
+            && let Some(next) = next.or((end < length).then_some(length))
+        {
+            let gap = next - end;
+            let sounding = end - tick;
+            if gap > 0 && gap <= sounding && plain(sounding + gap) && !plain(sounding) {
+                gate = gap;
+                end = next;
+            }
+        }
+        sounds.push((tick, end, Some(index), gate));
+        cursor = end;
     }
     if cursor < length {
-        sounds.push((cursor, length, None));
+        sounds.push((cursor, length, None, 0));
     }
     let commands: Vec<(u64, usize)> = events
         .iter()
@@ -2267,18 +2335,34 @@ fn items(events: &[Event], length: u64, score: &Score) -> Vec<Item> {
         .filter(|(_, event)| event.kind.length() == 0)
         .map(|(index, event)| (event.tick, index))
         .collect();
+    let keys = key_sections(events, score);
     let mut items = Vec::new();
+    let mut lengths = Vec::new();
     let mut next_command = 0;
-    for (start, end, sound) in sounds {
+    let mut next_key = 0;
+    let mut current_gate = 0;
+    for (start, end, sound, gate) in sounds {
+        if sound.is_some() {
+            lengths.push(end - start);
+            if gate != current_gate {
+                items.push(Item::Gate(start, gate));
+                current_gate = gate;
+            }
+        }
         let mut piece_start = start;
         loop {
             while next_command < commands.len() && commands[next_command].0 <= piece_start {
                 items.push(Item::Command(commands[next_command].0, commands[next_command].1));
                 next_command += 1;
             }
+            while next_key < keys.len() && keys[next_key].0 <= piece_start {
+                items.push(Item::Key(keys[next_key].0, keys[next_key].1));
+                next_key += 1;
+            }
             let bar_end = score.next_bar(piece_start);
             let command_tick = commands.get(next_command).map_or(u64::MAX, |c| c.0);
-            let piece_end = end.min(bar_end).min(command_tick);
+            let key_tick = keys.get(next_key).map_or(u64::MAX, |k| k.0);
+            let piece_end = end.min(bar_end).min(command_tick).min(key_tick);
             items.push(Item::Piece(piece_start, piece_end, sound, piece_start == start));
             piece_start = piece_end;
             if piece_start >= end {
@@ -2289,7 +2373,109 @@ fn items(events: &[Event], length: u64, score: &Score) -> Vec<Item> {
     for &(tick, index) in &commands[next_command..] {
         items.push(Item::Command(tick, index));
     }
-    items
+    Plan { items, lengths }
+}
+
+/// How many sharps (positive) or flats (negative) each letter has in a key
+/// signature, for c d e f g a b.
+fn key_accidentals(signature: i32) -> [i32; 7] {
+    // Sharps are added f c g d a e b; flats b e a d g c f.
+    const SHARPS: [usize; 7] = [3, 0, 4, 1, 5, 2, 6];
+    const FLATS: [usize; 7] = [6, 2, 5, 1, 4, 0, 3];
+    let mut accidentals = [0; 7];
+    let order = if signature >= 0 { &SHARPS } else { &FLATS };
+    for letter in order.iter().take(signature.unsigned_abs().min(7) as usize) {
+        accidentals[*letter] = signature.signum();
+    }
+    accidentals
+}
+
+const LETTERS: [(u8, i32); 7] = [(b'c', 0), (b'd', 2), (b'e', 4), (b'f', 5), (b'g', 7), (b'a', 9), (b'b', 11)];
+
+/// A pitch class spelled in a key signature: the letter and the accidental
+/// it needs written (`None` when the signature already gives it).
+fn spell(pitch_class: i32, signature: i32) -> (u8, Option<i32>) {
+    let accidentals = key_accidentals(signature);
+    if let Some((letter, _)) = LETTERS
+        .iter()
+        .zip(accidentals)
+        .find(|((_, base), accidental)| (base + accidental).rem_euclid(12) == pitch_class)
+    {
+        return (letter.0, None);
+    }
+    // Sharps in sharp keys and C, flats in flat keys.
+    let alteration = if signature >= 0 { 1 } else { -1 };
+    let (letter, base) = LETTERS
+        .iter()
+        .find(|(_, base)| (base + alteration).rem_euclid(12) == pitch_class)
+        .or_else(|| LETTERS.iter().find(|(_, base)| *base == pitch_class))
+        .copied()
+        .unwrap_or((b'c', 0));
+    (letter, Some((pitch_class - base + 6).rem_euclid(12) - 6))
+}
+
+/// How far a written pitch sits above its letter's natural note in a key
+/// signature: the letter's octave is the pitch's minus this.
+fn letter_alteration(written: i32, signature: i32) -> i32 {
+    let (letter, explicit) = spell(written.rem_euclid(12), signature);
+    let index = LETTERS.iter().position(|(name, _)| *name == letter).unwrap_or(0);
+    explicit.unwrap_or(key_accidentals(signature)[index])
+}
+
+/// A pitch's name in a key signature: its letter, with `+`, `-` or `=`
+/// (natural) only when the signature does not already give it.
+fn name_in_key(written: i32, signature: i32) -> String {
+    let (letter, explicit) = spell(written.rem_euclid(12), signature);
+    let mut text = char::from(letter).to_string();
+    match explicit {
+        None => {}
+        Some(0) => text.push('='),
+        Some(shift) if shift > 0 => text.push_str(&"+".repeat(shift as usize)),
+        Some(shift) => text.push_str(&"-".repeat(shift.unsigned_abs() as usize)),
+    }
+    text
+}
+
+/// Key signatures for a track: one per section of `KEY_SECTION_BARS` bars,
+/// whichever needs the fewest written accidentals, changing only when the
+/// change saves more than it costs. Each entry is where a signature starts.
+fn key_sections(events: &[Event], score: &Score) -> Vec<(u64, i32)> {
+    let mut sections: Vec<(u64, [usize; 12])> = Vec::new();
+    for event in events {
+        let EventKind::Note { key, .. } = event.kind else { continue };
+        let bar = (0..)
+            .find(|bar| score.bar_start(bar + 1) > event.tick)
+            .unwrap_or(0);
+        let section = bar / KEY_SECTION_BARS;
+        while sections.len() <= section {
+            let start = score.bar_start(sections.len() * KEY_SECTION_BARS);
+            sections.push((start, [0; 12]));
+        }
+        sections[section].1[key.rem_euclid(12) as usize] += 1;
+    }
+    let cost = |counts: &[usize; 12], signature: i32| -> usize {
+        (0..12)
+            .filter(|pitch| spell(*pitch, signature).1.is_some())
+            .map(|pitch| counts[pitch as usize])
+            .sum()
+    };
+    let mut keys: Vec<(u64, i32)> = Vec::new();
+    let mut current = 0;
+    for (start, counts) in sections {
+        if counts.iter().sum::<usize>() == 0 {
+            continue;
+        }
+        // Fewest accidentals; the fewest sharps or flats on a tie.
+        let best = (-6..=6)
+            .min_by_key(|signature: &i32| (cost(&counts, *signature), signature.unsigned_abs()))
+            .unwrap_or(0);
+        // A change costs a K command; keep the key unless it saves more.
+        if best != current && cost(&counts, current) > cost(&counts, best) + 2 {
+            keys.push((start, best));
+            current = best;
+        }
+    }
+    keys
 }
 
 fn macro_target(target: &Target) -> String {
@@ -2318,7 +2504,13 @@ pub fn encode_lines(score: &Score, bars_per_line: usize) -> Document {
         velocity: vec![None; tracks],
         instrument: vec![None; tracks],
         default: Vec::with_capacity(tracks),
+        key: vec![0; tracks],
     };
+    let plans: Vec<Plan> = score
+        .tracks
+        .iter()
+        .map(|track| items(&track.events, score.length, score))
+        .collect();
     let text = &mut writer.text;
     let _ = writeln!(text, "#{FORMAT}");
     let _ = writeln!(text, "#TITLE {}", quote(&score.title));
@@ -2350,8 +2542,8 @@ pub fn encode_lines(score: &Score, bars_per_line: usize) -> Document {
             word(instrument)
         );
     }
-    for track in &score.tracks {
-        let lengths = track.events.iter().map(|e| e.kind.length()).filter(|l| *l > 0);
+    for (track, plan) in score.tracks.iter().zip(&plans) {
+        let lengths = plan.lengths.iter().copied();
         let standard = standard_lengths(quarter);
         let default = mode(lengths.filter(|l| standard.iter().any(|(s, _)| s == l))).unwrap_or(quarter);
         writer.default.push(default);
@@ -2394,11 +2586,6 @@ pub fn encode_lines(score: &Score, bars_per_line: usize) -> Document {
         writer.text.push('\n');
     }
     let label_width = score.tracks.iter().map(|t| t.label.len()).max().unwrap_or(1);
-    let plans: Vec<_> = score
-        .tracks
-        .iter()
-        .map(|track| items(&track.events, score.length, score))
-        .collect();
     let mut cursors = vec![0usize; tracks];
     let mut bars = Vec::new();
     let bar_count = score.bar_count();
@@ -2421,7 +2608,7 @@ pub fn encode_lines(score: &Score, bars_per_line: usize) -> Document {
             for index in group.clone() {
                 let end = score.bar_start(index + 1).min(score.length).max(score.bar_start(index));
                 let last = index + 1 == bar_count;
-                let plan = &plans[track_index];
+                let plan = &plans[track_index].items;
                 let mut cursor = cursors[track_index];
                 while let Some(item) = plan.get(cursor) {
                     match *item {
@@ -2430,6 +2617,19 @@ pub fn encode_lines(score: &Score, bars_per_line: usize) -> Document {
                                 break;
                             }
                             writer.command(track_index, tick, &track.events[event].kind);
+                        }
+                        Item::Gate(tick, gate) => {
+                            if tick >= end && !last {
+                                break;
+                            }
+                            writer.token(track_index, tick, tick, "command", &format!("q{gate}"), None);
+                        }
+                        Item::Key(tick, signature) => {
+                            if tick >= end && !last {
+                                break;
+                            }
+                            writer.key[track_index] = signature;
+                            writer.token(track_index, tick, tick, "command", &format!("K{signature}"), None);
                         }
                         Item::Piece(piece_start, piece_end, sound, first) => {
                             if piece_start >= end {
@@ -2528,7 +2728,8 @@ pub fn lex(text: &str) -> Vec<(u32, u32, u8)> {
                         continue;
                     }
                     let token_end = word_end(i);
-                    if line.get(token_end) == Some(&b'=') {
+                    let natural = token_end == i + 1 && matches!(line[i], b'a'..=b'g');
+                    if !natural && line.get(token_end) == Some(&b'=') {
                         push(at(i), at(token_end + 1), "key");
                         let value_end = word_end(token_end + 1);
                         push(at(token_end + 1), at(value_end), "value");
@@ -2546,7 +2747,7 @@ pub fn lex(text: &str) -> Vec<(u32, u32, u8)> {
                         }
                         b'~' => push(at(i), at(end), "macro"),
                         b'o' | b'<' | b'>' => push(at(i), at(end), "octave"),
-                        b'V' | b'v' | b'p' | b'P' => push(at(i), at(end), "control"),
+                        b'V' | b'v' | b'p' | b'P' | b'q' | b'K' => push(at(i), at(end), "control"),
                         b'r' => push(at(i), at(end), "rest"),
                         b'^' => push(at(i), at(end), "tie"),
                         b'x' => {
@@ -2765,7 +2966,9 @@ impl Cursor<'_> {
         while i < self.bytes.len() && self.bytes[i].is_ascii_graphic() && !matches!(self.bytes[i], b'=' | b'"') {
             i += 1;
         }
-        i > self.at && self.bytes.get(i) == Some(&b'=')
+        // A note letter then `=` is a natural note, not an assignment.
+        let note = i == self.at + 1 && matches!(self.bytes[self.at], b'a'..=b'g');
+        i > self.at && !note && self.bytes.get(i) == Some(&b'=')
     }
     /// One note value: a divisor of the whole note with dots, or `Nt` ticks.
     fn note_value(&mut self, quarter: u64) -> Result<u64, ParseError> {
@@ -2826,6 +3029,33 @@ struct TrackParse {
     /// which `^` lengthens.
     last: Vec<usize>,
     rest: bool,
+    /// Ticks each note stops before its written length ends (`q`).
+    gate: u64,
+    /// The key signature in sharps or flats (`K`).
+    key: i32,
+    /// The sound still being lengthened by `^`, and the gate it started
+    /// under; the gate comes off once the sound is complete.
+    pending: Vec<usize>,
+    pending_gate: u64,
+}
+
+impl TrackParse {
+    fn finish_sound(&mut self, events: &mut [Event]) {
+        for &index in &self.pending {
+            if let EventKind::Note { length, .. } | EventKind::Hit { length, .. } = &mut events[index].kind
+                && *length > self.pending_gate
+            {
+                *length -= self.pending_gate;
+            }
+        }
+        self.pending.clear();
+    }
+
+    fn start_sound(&mut self, events: &mut [Event]) {
+        self.finish_sound(events);
+        self.pending = self.last.clone();
+        self.pending_gate = self.gate;
+    }
 }
 
 pub fn parse(text: &str) -> Result<Score, ParseError> {
@@ -3046,6 +3276,10 @@ pub fn parse(text: &str) -> Result<Score, ParseError> {
                             instrument: None,
                             last: Vec::new(),
                             rest: false,
+                            gate: 0,
+                            key: 0,
+                            pending: Vec::new(),
+                            pending_gate: 0,
                         });
                     }
                     other => return cursor.error(format!("unknown header #{other}")),
@@ -3069,6 +3303,9 @@ pub fn parse(text: &str) -> Result<Score, ParseError> {
             line: 1,
             message: format!("missing #{FORMAT} header"),
         });
+    }
+    for (track, state) in score.tracks.iter_mut().zip(&mut states) {
+        state.finish_sound(&mut track.events);
     }
     for (track, state) in score.tracks.iter().zip(&states) {
         if state.tick != score.length {
@@ -3138,6 +3375,8 @@ fn parse_track_line(
             b'>' => state.octave += 1,
             b'<' => state.octave -= 1,
             b'V' => state.velocity = cursor.number()?.clamp(0, 127) as u8,
+            b'q' => state.gate = cursor.number()?.max(0) as u64,
+            b'K' => state.key = (cursor.number()? as i32).clamp(-7, 7),
             b'v' => command(EventKind::Level(cursor.number()? as i32)),
             b'p' => command(EventKind::Pan(cursor.number()? as i32)),
             b'P' => command(EventKind::Bend(cursor.number()? as i32)),
@@ -3166,6 +3405,7 @@ fn parse_track_line(
                 state.tick += length;
             }
             b'r' => {
+                state.finish_sound(&mut score.tracks[index].events);
                 state.tick += cursor.length(quarter, state.default)?;
                 state.rest = true;
             }
@@ -3179,6 +3419,7 @@ fn parse_track_line(
                     },
                 });
                 state.last = vec![score.tracks[index].events.len() - 1];
+                state.start_sound(&mut score.tracks[index].events);
                 state.rest = false;
                 state.tick += length;
             }
@@ -3196,7 +3437,7 @@ fn parse_track_line(
                     byte
                 };
                 let shift = transpose_of(score, state);
-                let (key, cents) = read_pitch(cursor, &score.tracks[index], state.octave, shift, name)?;
+                let (key, cents) = read_pitch(cursor, &score.tracks[index], state.octave, shift, name, state.key)?;
                 let length = cursor.length(quarter, state.default)?;
                 let events = &mut score.tracks[index].events;
                 events.push(Event {
@@ -3204,6 +3445,7 @@ fn parse_track_line(
                     kind: EventKind::Note { key, cents, velocity: state.velocity, legato, length },
                 });
                 state.last = vec![events.len() - 1];
+                state.start_sound(events);
                 state.rest = false;
                 state.tick += length;
             }
@@ -3236,7 +3478,7 @@ fn parse_track_line(
                             } else {
                                 next
                             };
-                            let (key, cents) = read_pitch(cursor, &score.tracks[index], state.octave, shift, name)?;
+                            let (key, cents) = read_pitch(cursor, &score.tracks[index], state.octave, shift, name, state.key)?;
                             let own = if cursor.peek().is_some_and(|b| b.is_ascii_digit()) {
                                 Some(cursor.length(quarter, state.default)?)
                             } else {
@@ -3262,6 +3504,7 @@ fn parse_track_line(
                         kind: EventKind::Note { key, cents, velocity, legato, length: own.unwrap_or(length) },
                     });
                 }
+                state.start_sound(events);
                 state.rest = false;
                 state.tick += length;
             }
@@ -3283,24 +3526,24 @@ fn transpose_of(score: &Score, state: &TrackParse) -> i32 {
 
 /// A note name already read, its accidentals and any `(cents)`: the key as
 /// heard (after `#TRANSPOSE`) and its detune.
-fn read_pitch(cursor: &mut Cursor<'_>, track: &Track, octave: i32, shift: i32, name: u8) -> Result<(i32, i32), ParseError> {
-    let mut key = match name {
-        b'c' => 0,
-        b'd' => 2,
-        b'e' => 4,
-        b'f' => 5,
-        b'g' => 7,
-        b'a' => 9,
-        _ => 11,
-    } + (octave + 1) * 12;
+fn read_pitch(cursor: &mut Cursor<'_>, track: &Track, octave: i32, shift: i32, name: u8, signature: i32) -> Result<(i32, i32), ParseError> {
+    let letter = LETTERS.iter().position(|(letter, _)| *letter == name).unwrap_or(6);
+    let mut key = LETTERS[letter].1 + (octave + 1) * 12;
+    // Written accidentals replace the key signature's: `=` is natural.
+    let mut written = false;
     loop {
         if cursor.eat(b'+') || cursor.eat(b'#') {
             key += 1;
         } else if cursor.eat(b'-') {
             key -= 1;
+        } else if cursor.eat(b'=') {
         } else {
             break;
         }
+        written = true;
+    }
+    if !written {
+        key += key_accidentals(signature)[letter];
     }
     let cents = if cursor.eat(b'(') {
         let cents = cursor.number()? as i32;
