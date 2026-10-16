@@ -224,7 +224,7 @@ impl Organya {
             let rate = f64::from(voice.phase_increment) / 16777216.0 * f64::from(self.sample_rate);
             let key = if i < 8 { frequency_key(rate / 256.0) } else { None };
             let level = f32::from(voice.volume) / 254.0;
-            Channel { id: i as u32, name: format!("Organya {} {}", if i < 8 { "Wave" } else { "Drum" }, i % 8 + 1),
+            Channel { pads: Vec::new(), id: i as u32, name: format!("Organya {} {}", if i < 8 { "Wave" } else { "Drum" }, i % 8 + 1),
                 kind: if i < 8 { "tonal" } else { "percussion" }.into(), active: voice.active,
                 notes: if voice.active { key.map(|key| vec![Note { key, velocity: level, held: true }]).unwrap_or_default() } else { Vec::new() },
                 instrument: format!("{} {:02X}", if i < 8 { "Wave" } else { "Drum" }, voice.wave),

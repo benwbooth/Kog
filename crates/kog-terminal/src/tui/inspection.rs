@@ -1,4 +1,4 @@
-use super::{Key, Surface, paint, truncate};
+use super::{Key, Surface, cell_width, paint, truncate};
 use kog_audio::inspection::{Channel, Snapshot, note_name};
 
 pub(super) struct View {
@@ -425,6 +425,10 @@ fn draw_keyboard(
     first: usize,
 ) {
     let (x, y, width, height) = area;
+    if !channel.pads.is_empty() {
+        draw_pads(out, channel, area);
+        return;
+    }
     let black = |key: usize| matches!(key % 12, 1 | 3 | 6 | 8 | 10);
     let whites = (first..128)
         .filter(|key| !black(*key))
@@ -490,6 +494,33 @@ fn draw_keyboard(
                 bg,
                 fill
             ));
+        }
+    }
+}
+
+/// A channel without musical keys (noise, samples) shows one pad per noise
+/// rate or per sample, lit while it sounds, in place of the keyboard.
+fn draw_pads(out: &mut String, channel: &Channel, area: (usize, usize, usize, usize)) {
+    let (x, y, width, height) = area;
+    let count = channel.pads.len();
+    let pad_width = (width.saturating_sub(count - 1) / count).clamp(1, 12);
+    let left = x + (width - (pad_width * count + count - 1)) / 2;
+    for (index, pad) in channel.pads.iter().enumerate() {
+        let (fg, bg) = if pad.level > 0.0 {
+            ("12;20;27", "79;195;247")
+        } else {
+            ("145;170;184", "34;50;60")
+        };
+        let start = left + index * (pad_width + 1);
+        for row in 0..height {
+            let text = if row == height / 2 {
+                let label = truncate(&pad.label, pad_width);
+                let padding = pad_width - cell_width(&label);
+                format!("{}{label}{}", " ".repeat(padding / 2), " ".repeat(padding - padding / 2))
+            } else {
+                " ".repeat(pad_width)
+            };
+            out.push_str(&format!("\x1b[{};{}H\x1b[38;2;{fg};48;2;{bg}m{text}\x1b[0m", y + row, start));
         }
     }
 }

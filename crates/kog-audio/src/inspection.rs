@@ -50,6 +50,8 @@ struct History {
     frames: VecDeque<Frame>,
     rows: VecDeque<Row>,
     previous: Vec<Channel>,
+    /// Each sample channel's samples in the order first heard, for its pads.
+    samples: std::collections::BTreeMap<u32, Vec<String>>,
 }
 
 /// One feed per loaded source. Replacing a track replaces the feed, so an old
@@ -195,6 +197,7 @@ impl Monitor {
                 }
             }
         }
+        kog_inspection::annotate_pads(&mut snapshot.channels, &mut history.samples);
         // Retain a little future data: native trackers decode ahead of the
         // sound device, while the highlighted row follows audible position.
         let cursor = history

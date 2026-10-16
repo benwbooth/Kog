@@ -383,8 +383,18 @@ ApplicationWindow {
                         }
                         ColumnLayout {
                             Layout.fillWidth: true
+                            ChannelPads {
+                                visible: (channel.pads || []).length > 0
+                                pads: channel.pads || []
+                                Layout.minimumWidth: implicitWidth
+                                Layout.preferredWidth: implicitWidth
+                                Layout.maximumWidth: implicitWidth
+                                Layout.preferredHeight: implicitHeight
+                                Layout.alignment: Qt.AlignHCenter
+                            }
                             ChannelKeyboard {
                                 objectName: "channelKeyboard"
+                                visible: (channel.pads || []).length === 0
                                 notes: channel.notes || []
                                 showPitchOffsets: !root.relativePitch(channel)
                                 Layout.minimumWidth: implicitWidth

@@ -165,7 +165,7 @@ impl Sid {
                 let hz = f64::from(frequency) * clock / 16777216.0;
                 let notes = if active && !noise { frequency_key(hz).map(|key| vec![Note { key, velocity: f32::from(volume) / 15.0, held: gate }]).unwrap_or_default() } else { Vec::new() };
                 let wave = [(0x10, "Triangle"), (0x20, "Saw"), (0x40, "Pulse"), (0x80, "Noise")].iter().filter_map(|(bit, name)| (control & bit != 0).then_some(*name)).collect::<Vec<_>>().join(" + ");
-                channels.push(Channel { id: (chip * 3 + voice) as u32, name: format!("SID {} · Voice {}", chip + 1, voice + 1),
+                channels.push(Channel { pads: Vec::new(), id: (chip * 3 + voice) as u32, name: format!("SID {} · Voice {}", chip + 1, voice + 1),
                     kind: if noise { "noise" } else { "tonal" }.into(), notes, active,
                     instrument: wave, level: if active { f32::from(volume) / 15.0 } else { 0.0 }, pan: 0.0,
                     fields: vec![Field::new("Frequency", format!("{frequency:04X} · {hz:.2} Hz")), Field::new("Pulse width", format!("{pulse:03X}")),

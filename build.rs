@@ -36,6 +36,7 @@ fn main() {
         "qml/ChannelInspector.qml",
         "qml/MmlGuide.qml",
         "qml/ChannelKeyboard.qml",
+        "qml/ChannelPads.qml",
         "qml/Equalizer.qml",
         "qml/InfoInspector.qml",
         "qml/AboutKog.qml",

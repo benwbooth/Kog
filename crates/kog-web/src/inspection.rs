@@ -358,6 +358,34 @@ fn Keyboard(id: u32, state: RwSignal<Snapshot>) -> impl IntoView {
     }
 }
 
+/// A channel without musical keys (noise, samples) shows one pad per noise
+/// rate or per sample, lit while it sounds, as the desktop does.
+fn draw_pads(ctx: &web_sys::CanvasRenderingContext2d, channel: &Channel, width: f64, height: f64) {
+    let count = channel.pads.len() as f64;
+    let gap = 8.0;
+    let pad_width = ((width - gap * (count - 1.0)) / count).min(176.0);
+    let pad_height = height.min(88.0) * 0.7;
+    let left = (width - (pad_width * count + gap * (count - 1.0))) / 2.0;
+    let top = (height - pad_height) / 2.0;
+    ctx.set_font("22px ui-monospace, monospace");
+    ctx.set_text_align("center");
+    ctx.set_text_baseline("middle");
+    for (index, pad) in channel.pads.iter().enumerate() {
+        let x = left + index as f64 * (pad_width + gap);
+        if pad.level > 0.0 {
+            let alpha = 0.35 + 0.65 * f64::from(pad.level.min(1.0));
+            ctx.set_fill_style_str(&format!("rgba(79, 195, 247, {alpha:.2})"));
+        } else {
+            ctx.set_fill_style_str("#22323c");
+        }
+        ctx.fill_rect(x, top, pad_width, pad_height);
+        ctx.set_fill_style_str(if pad.level > 0.0 { "#0c141b" } else { "#91aab8" });
+        let _ = ctx.fill_text_with_max_width(&pad.label, x + pad_width / 2.0, top + pad_height / 2.0, pad_width - 6.0);
+    }
+    ctx.set_text_align("start");
+    ctx.set_text_baseline("alphabetic");
+}
+
 fn draw_keyboard(
     ctx: &web_sys::CanvasRenderingContext2d,
     channel: &Channel,
@@ -367,6 +395,10 @@ fn draw_keyboard(
     let black = |key: usize| matches!(key % 12, 1 | 3 | 6 | 8 | 10);
     let white_width = width / 75.0;
     ctx.clear_rect(0.0, 0.0, width, height);
+    if !channel.pads.is_empty() {
+        draw_pads(ctx, channel, width, height);
+        return;
+    }
     for pass in [false, true] {
         let mut white = 0;
         for key in 0..128 {

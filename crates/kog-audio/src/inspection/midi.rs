@@ -321,7 +321,7 @@ impl MidiChannel {
             / 127.0
             * f32::from(self.controls[11])
             / 127.0;
-        Channel {
+        Channel { pads: Vec::new(),
             id: u32::from(id),
             name: format!("MIDI {}", id + 1),
             kind: if id == 9 { "percussion" } else { "tonal" }.into(),

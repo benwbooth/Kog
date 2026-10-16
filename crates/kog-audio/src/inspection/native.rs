@@ -57,7 +57,7 @@ pub(crate) fn frame(voices: &[Voice]) -> FrameData {
                 let held = !fields
                     .iter()
                     .any(|field| field.name == "Gate" && field.value == "Off");
-                Channel {
+                Channel { pads: Vec::new(),
                     id: voice.id,
                     name: string(&voice.name),
                     instrument: string(&voice.instrument),

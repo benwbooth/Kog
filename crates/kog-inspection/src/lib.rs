@@ -41,6 +41,80 @@ pub struct Channel {
     pub pan: f32,
     pub active: bool,
     pub fields: Vec<Field>,
+    /// For unpitched channels (noise, samples), what the keyboard shows in
+    /// place of keys: one pad per noise rate or per sample, lit by level.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pads: Vec<Pad>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Pad {
+    pub label: String,
+    /// 0 when dark, otherwise the channel's level while this pad sounds.
+    pub level: f32,
+}
+
+/// Pads for the unpitched channels in `channels`. NES noise gets its sixteen
+/// rates, labeled as trackers do (F is the highest); a channel playing
+/// samples from an address (the NES DMC) gets one pad per sample heard so
+/// far (`samples` remembers them per channel, the latest sixteen), in
+/// address order so pads never trade places; any other noise, sample or
+/// drum channel without keys gets a single activity pad.
+pub fn annotate_pads(channels: &mut [Channel], samples: &mut std::collections::BTreeMap<u32, Vec<String>>) {
+    for channel in channels {
+        if !channel.notes.is_empty() || !matches!(channel.kind.as_str(), "noise" | "sample" | "percussion") {
+            continue;
+        }
+        let level = if channel.active { channel.level.max(0.05) } else { 0.0 };
+        if let Some(rate) = channel
+            .field("Rate/mode")
+            .and_then(|value| u8::from_str_radix(value.trim(), 16).ok())
+        {
+            let lit = 15 - usize::from(rate & 0x0f);
+            channel.pads = (0..16)
+                .map(|index| Pad {
+                    label: format!("{index:X}"),
+                    level: if index == lit { level } else { 0.0 },
+                })
+                .collect();
+            continue;
+        }
+        if let Some(address) = channel.field("Address").map(str::to_owned) {
+            let seen = samples.entry(channel.id).or_default();
+            if channel.active {
+                remember_sample(seen, &address);
+            }
+            let mut ordered = seen.clone();
+            ordered.sort();
+            channel.pads = ordered
+                .iter()
+                .map(|label| Pad {
+                    label: label.clone(),
+                    level: if *label == address { level } else { 0.0 },
+                })
+                .collect();
+            if !channel.pads.is_empty() {
+                continue;
+            }
+        }
+        let label = match channel.kind.as_str() {
+            "noise" => "Noise",
+            "sample" => "Sample",
+            _ => "Drums",
+        };
+        channel.pads = vec![Pad { label: label.into(), level }];
+    }
+}
+
+const MAX_SAMPLE_PADS: usize = 16;
+
+fn remember_sample(seen: &mut Vec<String>, address: &str) {
+    if let Some(index) = seen.iter().position(|known| known == address) {
+        seen.remove(index);
+    } else if seen.len() == MAX_SAMPLE_PADS {
+        seen.remove(0);
+    }
+    seen.push(address.to_owned());
 }
 
 impl Channel {
@@ -420,6 +494,21 @@ impl Window {
         }
         snapshot.channels = channels.into_values().cloned().collect();
         snapshot.global = global.clone();
+        // A window stands alone, so its sample pads come from every sample
+        // it plays, not only those already heard.
+        let mut samples = std::collections::BTreeMap::<u32, Vec<String>>::new();
+        for channel in self
+            .initial
+            .channels
+            .iter()
+            .chain(self.frames.iter().flat_map(|frame| frame.channels.iter()))
+            .filter(|channel| channel.active && channel.kind == "sample")
+        {
+            if let Some(address) = channel.field("Address") {
+                remember_sample(samples.entry(channel.id).or_default(), address);
+            }
+        }
+        annotate_pads(&mut snapshot.channels, &mut samples);
         let mut rows = self.rows.iter().collect::<Vec<_>>();
         for row in self.frames.iter().filter_map(|frame| frame.row.as_ref()) {
             if rows.last().is_none_or(|last| {
@@ -458,6 +547,39 @@ pub fn missing_window_position(windows: &[Window], position: f64, lookahead: f64
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn unpitched_channels_get_pads_instead_of_dead_keys() {
+        let channel = |kind: &str, active, fields: Vec<Field>| super::Channel {
+            kind: kind.into(),
+            active,
+            level: 0.6,
+            fields,
+            ..Default::default()
+        };
+        let mut samples = std::collections::BTreeMap::new();
+        let mut channels = vec![
+            channel("noise", true, vec![Field::new("Rate/mode", "8C")]),
+            channel("sample", true, vec![Field::new("Address", "C400")]),
+            channel("noise", true, vec![]),
+            channel("tonal", true, vec![]),
+        ];
+        channels[1].id = 1;
+        super::annotate_pads(&mut channels, &mut samples);
+        // Rate 0xC is noise pitch 3; the short-mode bit does not move it.
+        assert_eq!(channels[0].pads.len(), 16);
+        assert_eq!(channels[0].pads.iter().position(|pad| pad.level > 0.0), Some(3));
+        assert_eq!(channels[1].pads.iter().map(|pad| pad.label.as_str()).collect::<Vec<_>>(), ["C400"]);
+        assert_eq!(channels[2].pads.len(), 1);
+        assert!(channels[3].pads.is_empty());
+
+        // A second sample adds a pad; pads stay in address order.
+        let mut next = vec![channel("sample", true, vec![Field::new("Address", "C000")])];
+        next[0].id = 1;
+        super::annotate_pads(&mut next, &mut samples);
+        let labels = next[0].pads.iter().map(|pad| (pad.label.as_str(), pad.level > 0.0)).collect::<Vec<_>>();
+        assert_eq!(labels, [("C000", true), ("C400", false)]);
+    }
+
     use super::*;
     #[test]
     fn spu_rows_follow_gates_retriggers_and_commands_without_envelope_spam() {
