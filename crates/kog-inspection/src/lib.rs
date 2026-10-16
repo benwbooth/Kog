@@ -62,7 +62,12 @@ pub struct Pad {
 /// drum channel without keys gets a single activity pad.
 pub fn annotate_pads(channels: &mut [Channel], samples: &mut std::collections::BTreeMap<u32, Vec<String>>) {
     for channel in channels {
-        if !channel.notes.is_empty() || !matches!(channel.kind.as_str(), "noise" | "sample" | "percussion") {
+        // A pitched sample (relative pitch, a drum map) keeps its keyboard
+        // even while silent.
+        if !channel.notes.is_empty()
+            || !matches!(channel.kind.as_str(), "noise" | "sample" | "percussion")
+            || channel.field("Pitch basis").is_some()
+        {
             continue;
         }
         let level = if channel.active { channel.level.max(0.05) } else { 0.0 };

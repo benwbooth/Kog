@@ -143,11 +143,14 @@ struct KogGmeInspector {
             const float left = std::abs(int(static_cast<int8_t>(r[0]))) / 128.0f;
             const float right = std::abs(int(static_cast<int8_t>(r[1]))) / 128.0f;
             char name[64]; std::snprintf(name, sizeof(name), "SPC Voice %d", i + 1);
-            auto &v = voices.add(name, noise ? 1 : 2, osc.env > 0, 0,
+            // A BRR sample has no root note, so its pitch is relative: the
+            // sample's own rate (pitch 1000) plays as C4.
+            auto &v = voices.add(name, noise ? 1 : 2, osc.env > 0, noise || pitch == 0 ? 0.0 : 261.6256 * pitch / 4096.0,
                 osc.env / 2047.0f * std::max(left, right), right - left);
             std::snprintf(v.instrument, sizeof(v.instrument), "BRR sample %02X", r[4]);
-            std::snprintf(v.details, sizeof(v.details), "Pitch=%04X (%.0f Hz sample rate) | ADSR=%02X:%02X | Gain=%02X | Envelope=%03X | BRR=%04X | Echo=%d | Pitch modulation=%d",
-                pitch, pitch * 32000.0 / 4096.0, r[5], r[6], r[7], osc.env, osc.brr_addr, !!(regs[0x4d] & (1 << i)), !!(regs[0x2d] & (1 << i)));
+            std::snprintf(v.details, sizeof(v.details), "Pitch=%04X (%.0f Hz sample rate) | ADSR=%02X:%02X | Gain=%02X | Envelope=%03X | BRR=%04X | Echo=%d | Pitch modulation=%d%s",
+                pitch, pitch * 32000.0 / 4096.0, r[5], r[6], r[7], osc.env, osc.brr_addr, !!(regs[0x4d] & (1 << i)), !!(regs[0x2d] & (1 << i)),
+                noise ? "" : " | Pitch basis=Relative (C4 = normal sample rate)");
         }
     }
     void ay(Ay_Emu &emu) {
