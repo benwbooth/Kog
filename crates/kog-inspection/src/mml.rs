@@ -662,6 +662,8 @@ pub struct ScoreBuilder {
     channels: BTreeMap<u32, ChannelState>,
     last_tick: u64,
     tempo: Option<f64>,
+    /// Where a tempo the music reports changes: frame tick and BPM.
+    tempo_changes: Vec<(u64, f64)>,
     meter: Option<u32>,
 }
 
@@ -675,6 +677,7 @@ impl ScoreBuilder {
             channels: BTreeMap::new(),
             last_tick: 0,
             tempo: None,
+            tempo_changes: Vec::new(),
             meter: None,
         }
     }
@@ -728,8 +731,14 @@ impl ScoreBuilder {
     }
 
     fn process(&mut self, frame: &TimedFrame) {
-        if self.tempo.is_none() {
-            self.tempo = tempo_bpm(frame);
+        if let Some(bpm) = tempo_bpm(frame) {
+            if self.tempo.is_none() {
+                self.tempo = Some(bpm);
+            }
+            if self.tempo_changes.last().is_none_or(|(_, last)| (bpm / last - 1.0).abs() > 0.005) {
+                let tick = self.to_tick(frame.time);
+                self.tempo_changes.push((tick, bpm));
+            }
         }
         if self.meter.is_none() {
             self.meter = meter(frame);
@@ -979,7 +988,39 @@ impl ScoreBuilder {
             .filter(|parts| *parts == 3 || *parts <= finest)
             .collect();
         let onsets = rhythmic_onsets(&tracks, tick_seconds);
-        let anchors = track_beats(&onsets, unit_frames, unit_ticks, &subdivisions, grid.jitter);
+        // Follow each tempo section on its own beat step, the tick count
+        // carrying on from one section to the next.
+        let sections = if self.tempo.is_some() {
+            // The music reports its tempo: each change starts a section.
+            let mut sections: Vec<(usize, f64, f64)> = Vec::new();
+            for &(tick, bpm) in &self.tempo_changes {
+                let start = onsets.partition_point(|onset| *onset < tick);
+                let unit = (60.0 / bpm) / tick_seconds / steps;
+                match sections.last_mut() {
+                    Some(last) if last.0 == start => last.1 = unit,
+                    _ => sections.push((start, unit, grid.jitter)),
+                }
+            }
+            if sections.first().is_none_or(|first| first.0 != 0) {
+                sections.insert(0, (0, unit_frames, grid.jitter));
+            }
+            sections
+        } else {
+            tempo_sections(&onsets, tick_seconds, unit_frames, grid.jitter)
+        };
+        let mut anchors: Vec<(f64, u64)> = Vec::new();
+        for (index, &(start, section_unit, jitter)) in sections.iter().enumerate() {
+            let end = sections.get(index + 1).map_or(onsets.len(), |next| next.0);
+            let part = track_beats(&onsets[start..end], section_unit, unit_ticks, &subdivisions, jitter);
+            let offset = match (anchors.last(), part.first()) {
+                (Some(&(at, tick)), Some(&(first, _))) => {
+                    let previous_unit = sections[index - 1].1;
+                    tick + ((first - at) / previous_unit).round().max(1.0) as u64 * unit_ticks
+                }
+                _ => 0,
+            };
+            anchors.extend(part.into_iter().map(|(frame, tick)| (frame, tick + offset)));
+        }
         let timeline = Timeline { anchors, unit_frames, unit_ticks };
         // Anything off the beat still lands on a quarter of a beat step, so
         // stray key-ons, releases and commands do not leave 1/128 slivers.
@@ -1681,13 +1722,97 @@ fn rhythmic_onsets(tracks: &[Track], tick_seconds: f64) -> Vec<u64> {
 /// per quarter note (taking the step as a sixteenth or eighth as the tempo
 /// allows) and the grid's offset in frames.
 fn infer_grid(tracks: &[Track], tick_seconds: f64) -> Grid {
-    let mut onsets = rhythmic_onsets(tracks, tick_seconds);
-    let fallback = || {
+    let onsets = rhythmic_onsets(tracks, tick_seconds);
+    grid_from_onsets(&onsets, tick_seconds).unwrap_or_else(|| {
         let quarter = f64::from(infer_quarter(tracks, tick_seconds));
         Grid { quarter, steps: 4.0, jitter: 1.0, triplets: true }
-    };
+    })
+}
+
+/// Where the tempo changes: stretches of about eight seconds whose own beat
+/// step differs from the song's by more than 6% (allowing for steps twice or
+/// half as long), joined while they agree. Each section is its first onset,
+/// its step in frames and its timing jitter.
+fn tempo_sections(onsets: &[u64], tick_seconds: f64, unit: f64, jitter: f64) -> Vec<(usize, f64, f64)> {
+    let window = 8.0 / tick_seconds;
+    let mut sections = vec![(0usize, unit, jitter)];
+    let mut start = 0;
+    while start < onsets.len() {
+        let until = onsets[start] as f64 + window;
+        let end = onsets[start..].iter().position(|onset| *onset as f64 >= until).map_or(onsets.len(), |n| start + n);
+        let local = (end - start >= 24).then(|| grid_from_onsets(&onsets[start..end], tick_seconds)).flatten();
+        let part = &onsets[start..end];
+        let step = local.as_ref().map_or(unit, |grid| {
+            // The local step in the song's family: a power of two away.
+            let mut ratio = grid.quarter / grid.steps / unit;
+            while ratio >= 1.5 {
+                ratio /= 2.0;
+            }
+            while ratio < 0.75 {
+                ratio *= 2.0;
+            }
+            // A real tempo change fits this stretch clearly better than the
+            // song's step does; otherwise it is noise in a steady song.
+            let clearly = step_fit(part, unit * ratio) >= step_fit(part, unit) + 0.15;
+            if (ratio - 1.0).abs() <= 0.06 || !clearly { unit } else { unit * ratio }
+        });
+        let (_, current, _) = *sections.last().unwrap_or(&(0, unit, jitter));
+        if (step / current - 1.0).abs() > 0.04 {
+            if start == 0 {
+                sections[0].1 = step;
+            } else {
+                // The change happened somewhere in the stretch before: walk
+                // back over the gaps that the new step explains better.
+                let floor = sections.last().map_or(0, |section| section.0) + 1;
+                let off = |gap: f64, unit: f64| {
+                    let steps = (gap / unit).round().max(1.0);
+                    (gap / unit - steps).abs() / steps
+                };
+                let mut begin = start;
+                while begin > floor {
+                    let gap = (onsets[begin] - onsets[begin - 1]) as f64;
+                    if off(gap, step) + 0.05 < off(gap, current) {
+                        begin -= 1;
+                    } else {
+                        break;
+                    }
+                }
+                sections.push((begin, step, local.map_or(jitter, |grid| grid.jitter)));
+            }
+        }
+        start = end.max(start + 1);
+    }
+    sections
+}
+
+/// The share of onsets within 8% of a step of `unit` frames, on the phase
+/// that fits them best.
+fn step_fit(onsets: &[u64], unit: f64) -> f64 {
+    if onsets.is_empty() || unit <= 0.0 {
+        return 0.0;
+    }
+    let (mut x, mut y) = (0.0, 0.0);
+    for onset in onsets {
+        let angle = std::f64::consts::TAU * (*onset as f64 / unit).fract();
+        x += angle.cos();
+        y += angle.sin();
+    }
+    let phase = (y.atan2(x) / std::f64::consts::TAU).rem_euclid(1.0) * unit;
+    let tolerance = (0.08 * unit).max(0.75);
+    onsets
+        .iter()
+        .filter(|onset| {
+            let offset = ((**onset as f64 - phase) / unit).rem_euclid(1.0) * unit;
+            offset.min(unit - offset) <= tolerance
+        })
+        .count() as f64
+        / onsets.len() as f64
+}
+
+/// The grid of a run of onsets (frames), if there are enough to find one.
+fn grid_from_onsets(onsets: &[u64], tick_seconds: f64) -> Option<Grid> {
     if onsets.len() < 8 {
-        return fallback();
+        return None;
     }
     let times: Vec<f64> = onsets.iter().map(|tick| *tick as f64).collect();
     let fit = |unit: f64| {
@@ -1745,9 +1870,7 @@ fn infer_grid(tracks: &[Track], tick_seconds: f64) -> Grid {
     }
     // The longest step that explains almost as many onsets as the best one;
     // shorter steps always fit, so they are only chosen when nothing else does.
-    let Some(&(mut unit, unit_fit, mut phase)) = candidates.iter().rev().find(|c| c.1 >= best - 0.03) else {
-        return fallback();
-    };
+    let &(mut unit, unit_fit, mut phase) = candidates.iter().rev().find(|c| c.1 >= best - 0.03)?;
     // A step three times a straight one (a dotted beat) fits as well as that
     // straight step but writes every note as a triplet. Unless halving the
     // step fits too, the music moves in the straight step.
@@ -1818,7 +1941,7 @@ fn infer_grid(tracks: &[Track], tick_seconds: f64) -> Grid {
     let thirds = between(&[1.0 / 3.0, 2.0 / 3.0]);
     let straight = between(&[0.25, 0.5, 0.75]);
     let triplets = thirds * 10 >= times.len() && thirds > straight;
-    Grid { quarter: unit * steps, steps, jitter, triplets }
+    Some(Grid { quarter: unit * steps, steps, jitter, triplets })
 }
 
 /// A rhythmic grid in decoder frames.
@@ -2630,6 +2753,28 @@ pub fn encode_lines(score: &Score, bars_per_line: usize) -> Document {
     }
     let label_width = score.tracks.iter().map(|t| t.label.len()).max().unwrap_or(1);
     let mut cursors = vec![0usize; tracks];
+    // Each bar's tempo, smoothed over five bars so a few late notes do not
+    // read as tempo changes. A bar whose tempo has moved more than 6% from
+    // the last one written starts with `t`, which only documents #TIMING.
+    let bar_tempos: Vec<f64> = (0..score.bar_count())
+        .map(|index| {
+            let (start, end) = (score.bar_start(index), score.bar_start(index + 1).min(score.length));
+            let seconds = score.seconds_at(end) - score.seconds_at(start);
+            if end > start && seconds > 0.0 { 60.0 * (end - start) as f64 / quarter as f64 / seconds } else { 0.0 }
+        })
+        .collect();
+    let smoothed: Vec<f64> = (0..bar_tempos.len())
+        .map(|index| {
+            let mut near: Vec<f64> = bar_tempos[index.saturating_sub(2)..(index + 3).min(bar_tempos.len())]
+                .iter()
+                .copied()
+                .filter(|tempo| *tempo > 0.0)
+                .collect();
+            near.sort_by(f64::total_cmp);
+            near.get(near.len() / 2).copied().unwrap_or(0.0)
+        })
+        .collect();
+    let mut written_tempo = f64::from(score.tempo) / 1000.0;
     let mut bars = Vec::new();
     let bar_count = score.bar_count();
     // Bars are written bars_per_line to a line; each group is one block that
@@ -2650,6 +2795,14 @@ pub fn encode_lines(score: &Score, bars_per_line: usize) -> Document {
             let _ = write!(writer.text, "{:<label_width$} |", track.label);
             for index in group.clone() {
                 let end = score.bar_start(index + 1).min(score.length).max(score.bar_start(index));
+                if track_index == 0 && !score.timing.is_empty() {
+                    let bpm = smoothed[index];
+                    if bpm > 0.0 && (bpm / written_tempo - 1.0).abs() > 0.06 {
+                        written_tempo = bpm;
+                        let start = score.bar_start(index);
+                        writer.token(0, start, start, "command", &format!("t{:.0}", bpm), None);
+                    }
+                }
                 let last = index + 1 == bar_count;
                 let plan = &plans[track_index].items;
                 let mut cursor = cursors[track_index];
@@ -2790,7 +2943,7 @@ pub fn lex(text: &str) -> Vec<(u32, u32, u8)> {
                         }
                         b'~' => push(at(i), at(end), "macro"),
                         b'o' | b'<' | b'>' => push(at(i), at(end), "octave"),
-                        b'V' | b'v' | b'p' | b'P' | b'q' | b'K' => push(at(i), at(end), "control"),
+                        b'V' | b'v' | b'p' | b'P' | b'q' | b'K' | b't' => push(at(i), at(end), "control"),
                         b'r' => push(at(i), at(end), "rest"),
                         b'^' => push(at(i), at(end), "tie"),
                         b'x' => {
@@ -3419,6 +3572,10 @@ fn parse_track_line(
             b'<' => state.octave -= 1,
             b'V' => state.velocity = cursor.number()?.clamp(0, 127) as u8,
             b'q' => state.gate = cursor.number()?.max(0) as u64,
+            // Tempo marks only document the #TIMING map.
+            b't' => {
+                cursor.number()?;
+            }
             b'K' => state.key = (cursor.number()? as i32).clamp(-7, 7),
             b'v' => command(EventKind::Level(cursor.number()? as i32)),
             b'p' => command(EventKind::Pan(cursor.number()? as i32)),
@@ -3604,6 +3761,19 @@ fn read_pitch(cursor: &mut Cursor<'_>, track: &Track, octave: i32, shift: i32, n
 mod tests {
     use super::*;
     use crate::{Channel, Field, FrameData, Note};
+
+    #[test]
+    fn a_tempo_change_starts_a_new_section_and_a_steady_song_has_one() {
+        let mut onsets: Vec<u64> = (0..200).map(|i| i * 20).collect();
+        let change = *onsets.last().unwrap() + 26;
+        onsets.extend((0..200).map(|i| change + i * 26));
+        let sections = tempo_sections(&onsets, 0.005, 20.0, 0.5);
+        assert_eq!(sections.len(), 2, "{sections:?}");
+        assert!((sections[1].1 / 26.0 - 1.0).abs() < 0.05, "{sections:?}");
+        assert!(sections[1].0 >= 190 && sections[1].0 <= 210, "{sections:?}");
+        let steady: Vec<u64> = (0..400).map(|i| i * 20 + (i * 7 % 3)).collect();
+        assert_eq!(tempo_sections(&steady, 0.005, 20.0, 0.5).len(), 1);
+    }
 
     fn note(key: i32, cents: i32, tick: u64, length: u64, legato: bool) -> Event {
         Event {
