@@ -66,20 +66,26 @@ pub fn annotate_pads(channels: &mut [Channel], samples: &mut std::collections::B
             continue;
         }
         let level = if channel.active { channel.level.max(0.05) } else { 0.0 };
-        if let Some(rate) = channel
-            .field("Rate/mode")
-            .and_then(|value| u8::from_str_radix(value.trim(), 16).ok())
+        if channel.kind == "noise"
+            && let Some((labels, lit)) = noise_pads(channel)
         {
-            let lit = 15 - usize::from(rate & 0x0f);
-            channel.pads = (0..16)
-                .map(|index| Pad {
-                    label: format!("{index:X}"),
+            channel.pads = labels
+                .into_iter()
+                .enumerate()
+                .map(|(index, label)| Pad {
+                    label,
                     level: if index == lit { level } else { 0.0 },
                 })
                 .collect();
             continue;
         }
-        if let Some(address) = channel.field("Address").map(str::to_owned) {
+        // A sample is known by its address (NES DMC) or, failing that, by
+        // the instrument naming it (an SPC voice's BRR sample).
+        let sample = channel.field("Address").map(str::to_owned).or_else(|| {
+            (channel.kind == "sample" && !channel.instrument.is_empty())
+                .then(|| channel.instrument.trim_start_matches("BRR sample ").to_owned())
+        });
+        if let Some(address) = sample {
             let seen = samples.entry(channel.id).or_default();
             if channel.active {
                 remember_sample(seen, &address);
@@ -107,6 +113,46 @@ pub fn annotate_pads(channels: &mut [Channel], samples: &mut std::collections::B
 }
 
 const MAX_SAMPLE_PADS: usize = 16;
+
+/// A noise channel's rate as pads, highest pitch last, for the chips whose
+/// noise rate the inspector reports: labels and the lit pad.
+fn noise_pads(channel: &Channel) -> Option<(Vec<String>, usize)> {
+    let hex = |name: &str| channel.field(name).and_then(|value| u32::from_str_radix(value.trim(), 16).ok());
+    let decimal = |name: &str| channel.field(name).and_then(|value| value.trim().parse::<u32>().ok());
+    let sixteen = |lit: u32| Some(((0..16).map(|index| format!("{index:X}")).collect(), lit.min(15) as usize));
+    let name = channel.name.as_str();
+    if let Some(rate) = hex("Rate/mode") {
+        // NES: rate index 0 is the highest pitch.
+        return sixteen(15 - (rate & 0x0f));
+    }
+    if name.starts_with("SN76489") {
+        // Three fixed shift rates, or following tone 3.
+        let lit = match decimal("Period")? {
+            64 => 0,
+            32 => 1,
+            16 => 2,
+            _ => 3,
+        };
+        return Some((["Low", "Mid", "High", "Tone 3"].map(str::to_owned).to_vec(), lit));
+    }
+    if let Some(shift) = decimal("Shift") {
+        // GBA: a larger clock shift is a lower pitch.
+        return sixteen(15 - shift.min(15));
+    }
+    if name.starts_with("GB Noise") {
+        // NR43's clock shift sits in the frequency register's high nibble.
+        return sixteen(15 - ((hex("Frequency")? >> 4) & 0x0f));
+    }
+    if name.starts_with("HuC6280") {
+        // A larger noise frequency value is a higher pitch.
+        return sixteen((hex("Noise")? & 0x1f) >> 1);
+    }
+    if let Some(period) = hex("Noise") {
+        // AY/YM: a five-bit period, shorter is higher.
+        return sixteen(15 - ((period & 0x1f) >> 1));
+    }
+    None
+}
 
 fn remember_sample(seen: &mut Vec<String>, address: &str) {
     if let Some(index) = seen.iter().position(|known| known == address) {
