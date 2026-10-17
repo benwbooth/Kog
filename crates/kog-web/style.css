@@ -775,7 +775,7 @@ button:focus-visible {
 }
 
 /* The playing row's level meter beside the play glyph, like the desktop's
-   PlaylistRow: six pill bars on a black pill, laid out like the Dynamic
+   PlaylistRow: six pill bars on a black rectangle, laid out like the Dynamic
    Island's waveform, widening, bouncing and shading blue to green as they grow.
    Geometry and color are set inline per update. */
 .row-meter {
@@ -789,7 +789,7 @@ button:focus-visible {
   width: 24px;
   height: 18px;
   box-sizing: border-box;
-  border-radius: 9px;
+  border-radius: 4px;
   background: #000;
   pointer-events: none;
 }

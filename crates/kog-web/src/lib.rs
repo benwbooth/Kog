@@ -7102,7 +7102,7 @@ fn App() -> impl IntoView {
                                                                     // cannot hide them.
                                                                     <span
                                                                         class="row-meter"
-                                                                        style="position: absolute; right: 0; top: 50%; transform: translateY(-50%); width: 24px; height: 18px; box-sizing: border-box; border-radius: 9px; pointer-events: none; background: #000;"
+                                                                        style="position: absolute; right: 0; top: 50%; transform: translateY(-50%); width: 24px; height: 18px; box-sizing: border-box; border-radius: 4px; pointer-events: none; background: #000;"
                                                                     >
                                                                         <For
                                                                             each=|| [0usize, 1, 2, 3, 4, 5]

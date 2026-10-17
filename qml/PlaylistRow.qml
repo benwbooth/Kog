@@ -293,7 +293,7 @@ Item {
                     height: 18
                     visible: root.isPlaying
 
-                    // Six pill bars on black, laid out like the Dynamic
+                    // Six pill bars on a black rectangle, laid out like the Dynamic
                     // Island's waveform (centered in their slots, half a slot
                     // wide when quiet and up to 66% wider when loud), springing
                     // to each new height and shading from blue to green.
@@ -308,7 +308,7 @@ Item {
 
                     Rectangle {
                         anchors.fill: parent
-                        radius: height / 2
+                        radius: 4
                         color: "black"
                     }
 
