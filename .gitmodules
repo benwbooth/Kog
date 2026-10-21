@@ -87,10 +87,10 @@
 	url = https://github.com/Thealexbarney/LibAtrac9.git
 [submodule "native/celt-0061"]
 	path = native/celt-0061
-	url = https://gitlab.xiph.org/xiph/celt.git
+	url = https://github.com/xiph/opus.git
 [submodule "native/celt-0110"]
 	path = native/celt-0110
-	url = https://gitlab.xiph.org/xiph/celt.git
+	url = https://github.com/xiph/opus.git
 [submodule "native/xz"]
 	path = native/xz
 	url = https://github.com/tukaani-project/xz.git
