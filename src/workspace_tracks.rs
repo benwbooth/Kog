@@ -13,6 +13,8 @@ use serde_json::Value;
 pub struct WorkspaceTracks {
     entries: Vec<Value>,
     pub rows: Vec<MetadataRow>,
+    /// Bumped whenever `rows` change.
+    pub generation: u64,
     // Retain recently viewed metadata across queue/draft tab switches.
     // Rows alone only cache the tab being left, which loses it on A -> B -> A.
     cache: HashMap<String, Track>,
@@ -48,6 +50,7 @@ impl WorkspaceTracks {
         if entries == self.entries {
             return;
         }
+        self.generation += 1;
         self.cancel.store(true, Ordering::Relaxed);
         self.cancel = Arc::new(AtomicBool::new(false));
         self.receiver = None;
@@ -146,6 +149,7 @@ impl WorkspaceTracks {
                             Err(error) => row.error = Some(error),
                         }
                         changed = true;
+                        self.generation += 1;
                     }
                 }
                 Err(TryRecvError::Empty) => break,

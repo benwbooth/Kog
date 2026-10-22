@@ -14,23 +14,74 @@ FocusScope {
     property string sortColumn: "index"
     property bool sortAscending: true
     property int dropTarget: -1
-    readonly property string activeKey: workspaceState.active || ""
-    onActiveKeyChanged: dropTarget = -1
+    // Main window: one editor per open tab, each kept alive so switching tabs
+    // shows it as it was left. Empty means follow whichever tab is active.
+    property string tabKey: ""
+    readonly property bool live: tabKey.length === 0 || workspaceState.active === tabKey
+    property var frozenState: ({})
+    // Checks the new state itself: `live` may not have caught up with it yet.
+    onWorkspaceStateChanged: if (tabKey.length === 0 || workspaceState.active === tabKey) frozenState = workspaceState
+    readonly property var shownState: live ? workspaceState : frozenState
+    readonly property string activeKey: tabKey.length > 0 ? tabKey : (workspaceState.active || "")
+    // Moves only when this tab's rows, their metadata or stars changed, and
+    // only while it is in front, so switching tabs never re-renders them.
+    property int revision: 0
+    property int seenGeneration: -1
+    function bump() {
+        revision += 1
+        seenGeneration = app.workspace_tab_generation(activeKey)
+    }
+    Connections {
+        target: editor.app
+        enabled: editor.live
+        function onWorkspace_revisionChanged() { editor.bumpIfChanged() }
+        function onPlaylist_revisionChanged() { editor.bumpIfChanged() }
+    }
+    function bumpIfChanged() {
+        if (app.workspace_tab_generation(activeKey) !== seenGeneration) bump()
+    }
+    onLiveChanged: if (live) bumpIfChanged()
+    onActiveKeyChanged: {
+        dropTarget = -1
+        scrollSave.stop()
+        Qt.callLater(restoreScroll)
+    }
+    // Each tab keeps where it was scrolled to. Saving waits until scrolling
+    // settles so the jump while switching tabs is never recorded.
+    property var scrollPositions: ({})
+    Timer {
+        id: scrollSave
+        interval: 150
+        onTriggered: editor.scrollPositions[editor.activeKey] = Qt.point(list.contentX, list.contentY)
+    }
+    function restoreScroll() {
+        const saved = scrollPositions[activeKey]
+        list.contentX = saved ? saved.x : 0
+        list.contentY = saved ? saved.y : list.originY
+        scrollSave.stop()
+    }
     onVisibleChanged: if (!visible) dropTarget = -1
     signal openVisualizer()
-    readonly property var tab: (workspaceState.tabs || []).find(item => item.key === workspaceState.active) || ({})
-    readonly property var actions: workspaceState.actions || ({})
-    readonly property var selection: workspaceState.selected || []
-    readonly property var rows: {
-        app.workspace_revision
+    readonly property var tab: (shownState.tabs || []).find(item => item.key === shownState.active) || ({})
+    readonly property var actions: shownState.actions || ({})
+    readonly property var selection: shownState.selected || []
+    // Replaced only when the shown rows really change: every row and cell
+    // binds to it.
+    property var rows: []
+    function updateRows() {
         const words = searchQuery.toLowerCase().trim().split(/\s+/).filter(word => word.length > 0)
-        return (workspaceState.entries || []).map((entry, index) => index).filter(index => {
+        const next = (shownState.entries || []).map((entry, index) => index).filter(index => {
             if (words.length === 0) return true
             const text = ["title", "artist", "albumartist", "album", "genre", "composer", "filename"]
-                .map(column => String(app.workspace_track_value_at(index, column))).join("\n").toLowerCase()
+                .map(column => String(app.workspace_tab_value_at(activeKey, index, column))).join("\n").toLowerCase()
             return words.every(word => text.indexOf(word) >= 0)
         })
+        if (next.length !== rows.length || next.some((value, index) => value !== rows[index]))
+            rows = next
     }
+    onRevisionChanged: updateRows()
+    onShownStateChanged: updateRows()
+    Component.onCompleted: updateRows()
     function send(command) { app.workspace_command(JSON.stringify(command)) }
     function dropIndex(x, y) {
         if (!actions.append || x < 0 || x >= list.width - list.verticalScrollGutter
@@ -64,19 +115,22 @@ FocusScope {
         list.forceActiveFocus()
         contextMenu.popup()
     }
-    onSearchQueryChanged: if (visible) send({op: "selection", command: {op: "clear"}})
+    onSearchQueryChanged: {
+        updateRows()
+        if (visible) send({op: "selection", command: {op: "clear"}})
+    }
     Keys.onDeletePressed: send({op: "remove"})
 
     // The same row and column controls as the play queue, backed by draft
     // metadata. Editing this model never changes the playback queue.
     QtObject {
         id: rowData
-        readonly property int playlist_revision: editor.app.workspace_revision + editor.app.playlist_revision
+        readonly property int playlist_revision: editor.revision
         readonly property int playlist_count: editor.rows.length
         readonly property int current_index: {
             playlist_revision
             editor.app.current_index
-            return editor.app.workspace_current_index()
+            return editor.live ? editor.app.workspace_current_index() : -1
         }
         readonly property string playback_state: editor.app.playback_state
         readonly property real audio_level_low: editor.app.audio_level_low
@@ -85,7 +139,7 @@ FocusScope {
         readonly property real audio_level_high_mid: editor.app.audio_level_high_mid
         readonly property real audio_level_high: editor.app.audio_level_high
         readonly property real audio_level_air: editor.app.audio_level_air
-        function track_value_at(row, column) { return editor.app.workspace_track_value_at(editor.rows[row], column) }
+        function track_value_at(row, column) { return editor.app.workspace_tab_value_at(editor.activeKey, editor.rows[row], column) }
         function track_number_at(row) { return String(editor.rows[row] + 1) }
         function track_status_message_at(row) { return track_value_at(row, "status_message") }
         function track_missing_at(row) { return track_value_at(row, "missing") === "true" }
@@ -115,6 +169,7 @@ FocusScope {
                 availableWidth: headerViewport.width
                 theme: editor.theme
                 app: rowData
+                cacheKey: editor.activeKey
                 savedLayout: editor.app.playlist_column_layout
                 sortColumn: editor.sortColumn
                 sortAscending: editor.sortAscending
@@ -131,7 +186,7 @@ FocusScope {
             visible: text.length > 0
             Layout.fillWidth: true
             padding: 8
-            text: editor.tab.loading ? qsTr("Loading playlist…") : editor.workspaceState.error || ""
+            text: editor.tab.loading ? qsTr("Loading playlist…") : editor.shownState.error || ""
             wrapMode: Text.WordWrap
             color: editor.theme.text
         }
@@ -166,6 +221,8 @@ FocusScope {
                 }
             }
             delegate: editor.compact ? classicRow : tableRow
+            onContentYChanged: scrollSave.restart()
+            onContentXChanged: scrollSave.restart()
             ScrollBar.vertical: ScrollBar { id: verticalBar; policy: ScrollBar.AsNeeded }
             ScrollBar.horizontal: ScrollBar { id: horizontalBar; policy: ScrollBar.AsNeeded }
             footer: Item { width: 1; height: list.horizontalScrollGutter }
@@ -220,7 +277,7 @@ FocusScope {
                 const target = editor.dropIndex(viewX, viewY)
                 editor.dropTarget = -1
                 if (target < 0) return
-                editor.app.workspace_move(target === editor.rows.length ? editor.workspaceState.entries.length : editor.rows[target])
+                editor.app.workspace_move(target === editor.rows.length ? editor.shownState.entries.length : editor.rows[target])
             }
             onDragCanceled: editor.dropTarget = -1
         }

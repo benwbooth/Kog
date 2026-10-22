@@ -23,6 +23,21 @@ Rectangle {
     // whether the content is narrower matters). A column is never drawn
     // wider than its widest value; narrower stays the user's choice.
     property var fitted: ({})
+    // Fitted widths per tab, so returning to a tab shows its columns at
+    // once instead of refitting them over every row again.
+    property string cacheKey: ""
+    property var fittedCache: ({})
+    property double restoredAt: 0
+    onCacheKeyChanged: {
+        refitTimer.stop()
+        const cached = fittedCache[cacheKey]
+        if (cached) {
+            fitted = cached
+            restoredAt = Date.now()
+        } else {
+            Qt.callLater(refreshFitted)
+        }
+    }
     // Columns whose cells are not text keep their saved width.
     readonly property var fixedColumns: ["star", "status", "rating"]
     readonly property real totalWidth: {
@@ -148,6 +163,8 @@ Rectangle {
                 next[column.id] = fittedColumnWidth(column, column.width)
         }
         fitted = next
+        if (cacheKey.length > 0)
+            fittedCache[cacheKey] = next
     }
     // The revision moves with every session update (playback progress
     // included), so content changes refit at most a few times a second.
@@ -157,6 +174,10 @@ Rectangle {
         onTriggered: root.refreshFitted()
     }
     function scheduleRefit() {
+        // The tab switch itself also bumps the revision; its cached widths
+        // already fit.
+        if (Date.now() - restoredAt < 100)
+            return
         if (!refitTimer.running)
             refitTimer.start()
     }
@@ -165,7 +186,11 @@ Rectangle {
         function onPlaylist_revisionChanged() { root.scheduleRefit() }
         function onPlaylist_countChanged() { root.scheduleRefit() }
     }
-    onColumnsChanged: scheduleRefit()
+    onColumnsChanged: {
+        fittedCache = ({})
+        restoredAt = 0
+        scheduleRefit()
+    }
 
     function setColumnWidth(identifier, width) {
         const index = columnIndex(identifier)

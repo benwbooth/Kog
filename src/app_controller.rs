@@ -190,6 +190,15 @@ pub mod qobject {
         #[qinvokable]
         fn workspace_track_value_at(self: &AppController, index: i32, column: QString) -> QString;
         #[qinvokable]
+        fn workspace_tab_value_at(
+            self: &AppController,
+            key: QString,
+            index: i32,
+            column: QString,
+        ) -> QString;
+        #[qinvokable]
+        fn workspace_tab_generation(self: &AppController, key: QString) -> i32;
+        #[qinvokable]
         fn workspace_current_index(self: &AppController) -> i32;
         #[qinvokable]
         fn workspace_toggle_stars(self: Pin<&mut AppController>, indices: QString);
@@ -485,7 +494,7 @@ pub mod qobject {
 }
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -1952,12 +1961,18 @@ pub struct AppControllerRust {
     tracks: Vec<Track>,
     visible_indices: Vec<usize>,
     workspace_tracks: crate::workspace_tracks::WorkspaceTracks,
+    /// Which tab `workspace_tracks` belongs to. Other open tabs keep their
+    /// metadata here, so switching back shows them without reloading.
+    workspace_tracks_key: String,
+    parked_workspace_tracks: HashMap<String, crate::workspace_tracks::WorkspaceTracks>,
     sort_column: PlaylistSortColumn,
     filter: String,
     library_db: kog_core::db::LibraryDb,
     /// The library's data version last seen, to notice outside changes.
     library_version: i64,
     starred: HashSet<String>,
+    /// Bumped on every star change; part of each tab's generation.
+    starred_serial: u64,
     directory: PathBuf,
     decoder_settings: DecoderSettings,
     decoders: DecoderRegistry,
@@ -2192,11 +2207,14 @@ impl Default for AppControllerRust {
             tracks: Vec::new(),
             visible_indices: Vec::new(),
             workspace_tracks: crate::workspace_tracks::WorkspaceTracks::default(),
+            workspace_tracks_key: String::new(),
+            parked_workspace_tracks: HashMap::new(),
             sort_column: PlaylistSortColumn::Index,
             filter: String::new(),
             library_db,
             library_version: 0,
             starred: HashSet::new(),
+            starred_serial: 0,
             directory,
             decoder_settings,
             decoders,
@@ -2589,7 +2607,19 @@ fn midi_status(
 
 impl AppControllerRust {
     fn refresh_workspace_tracks(&mut self) {
-        let entries = self.session.workspace_model().snapshot().entries;
+        let snapshot = self.session.workspace_model().snapshot();
+        if snapshot.active != self.workspace_tracks_key {
+            let next = self
+                .parked_workspace_tracks
+                .remove(&snapshot.active)
+                .unwrap_or_default();
+            let previous = std::mem::replace(&mut self.workspace_tracks, next);
+            let previous_key = std::mem::replace(&mut self.workspace_tracks_key, snapshot.active.clone());
+            self.parked_workspace_tracks.insert(previous_key, previous);
+        }
+        self.parked_workspace_tracks
+            .retain(|key, _| snapshot.tabs.iter().any(|tab| &tab.key == key));
+        let entries = snapshot.entries;
         self.workspace_tracks.refresh(entries, &self.tracks, || {
             self.decoders.background_worker(self.decoder_settings.clone())
         });
@@ -3739,10 +3769,39 @@ impl qobject::AppController {
         )
     }
     pub fn workspace_track_value_at(&self, index: i32, column: QString) -> QString {
-        let Some(row) = usize::try_from(index)
-            .ok()
-            .and_then(|index| self.rust().workspace_tracks.rows.get(index))
-        else {
+        self.metadata_row_value(&self.rust().workspace_tracks.rows, index, column)
+    }
+
+    fn tab_workspace_tracks(&self, key: &str) -> Option<&crate::workspace_tracks::WorkspaceTracks> {
+        if key == self.rust().workspace_tracks_key {
+            Some(&self.rust().workspace_tracks)
+        } else {
+            self.rust().parked_workspace_tracks.get(key)
+        }
+    }
+
+    /// A value from one tab's rows, active or not, so each tab's view keeps
+    /// showing its own songs while another tab is in front.
+    pub fn workspace_tab_value_at(&self, key: QString, index: i32, column: QString) -> QString {
+        match self.tab_workspace_tracks(&key.to_string()) {
+            Some(tracks) => self.metadata_row_value(&tracks.rows, index, column),
+            None => QString::default(),
+        }
+    }
+
+    /// Changes whenever a tab's rows or their metadata change.
+    pub fn workspace_tab_generation(&self, key: QString) -> i32 {
+        self.tab_workspace_tracks(&key.to_string())
+            .map_or(-1, |tracks| tracks.generation.wrapping_add(self.rust().starred_serial) as i32)
+    }
+
+    fn metadata_row_value(
+        &self,
+        rows: &[crate::workspace_tracks::MetadataRow],
+        index: i32,
+        column: QString,
+    ) -> QString {
+        let Some(row) = usize::try_from(index).ok().and_then(|index| rows.get(index)) else {
             return QString::default();
         };
         let column = column.to_string();
@@ -3827,8 +3886,10 @@ impl qobject::AppController {
             }
             if starring {
                 self.as_mut().rust_mut().starred.insert(key);
+                self.as_mut().rust_mut().starred_serial += 1;
             } else {
                 self.as_mut().rust_mut().starred.remove(&key);
+                self.as_mut().rust_mut().starred_serial += 1;
             }
         }
         self.as_mut().bump_playlist_revision();
@@ -4695,9 +4756,11 @@ impl qobject::AppController {
                 Ok(()) => {
                     if starring {
                         self.as_mut().rust_mut().starred.insert(key);
+                self.as_mut().rust_mut().starred_serial += 1;
                         starred_count += 1;
                     } else {
                         self.as_mut().rust_mut().starred.remove(&key);
+                self.as_mut().rust_mut().starred_serial += 1;
                         unstarred_count += 1;
                     }
                 }

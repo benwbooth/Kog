@@ -61,6 +61,20 @@ ApplicationWindow {
         try { return JSON.parse(appController.workspace_json_for_selection(root.selectedRows.length)) } catch (_) { return { active: "queue", tabs: [], entries: [], selected: [] } }
     }
     property string previousWorkspaceTab: ""
+    // The open tabs' keys, changed in place so each tab's editor survives.
+    property ListModel editorTabs: ListModel { Component.onCompleted: root.syncEditorTabs() }
+    onPlaylistWorkspaceChanged: syncEditorTabs()
+    function syncEditorTabs() {
+        const keys = (playlistWorkspace.tabs || []).map(tab => tab.key)
+        for (let i = editorTabs.count - 1; i >= 0; --i)
+            if (keys.indexOf(editorTabs.get(i).key) < 0) editorTabs.remove(i)
+        for (const key of keys) {
+            let found = false
+            for (let i = 0; i < editorTabs.count && !found; ++i)
+                found = editorTabs.get(i).key === key
+            if (!found) editorTabs.append({ key: key })
+        }
+    }
     readonly property string workspaceTabKey: playlistWorkspace.active
     onWorkspaceTabKeyChanged: {
         if (previousWorkspaceTab.length > 0 && workspaceTabKey === "queue")
@@ -1697,7 +1711,7 @@ ApplicationWindow {
         shortcut: StandardKey.SelectAll
         enabled: root.playlistWorkspace.active === "queue" ? appController.playlist_count > 0 : !!root.playlistWorkspace.actions.select_all
         onTriggered: {
-            if (root.playlistWorkspace.active !== "queue") { playlistEditor.selectAll(); return }
+            if (root.playlistWorkspace.active !== "queue") { const editor = playlistEditors.active(); if (editor) editor.selectAll(); return }
             const rows = []
             for (let index = 0; index < appController.playlist_count; ++index)
                 rows.push(index)
@@ -3545,18 +3559,37 @@ ApplicationWindow {
                     app: appController
                     workspaceState: root.playlistWorkspace
                 }
-                PlaylistEditor {
-                    id: playlistEditor
+                // One editor per open tab, kept alive while hidden, so going
+                // back to a tab shows it exactly as it was left.
+                Item {
+                    id: playlistEditors
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     visible: root.playlistWorkspace.active !== "queue"
-                    app: appController
-                    workspaceState: root.playlistWorkspace
-                    theme: root.palette
-                    queueSelection: root.selectedRows
-                    searchModel: fileTreeModel
-                    searchQuery: root.playlistHighlightQuery
-                    onOpenVisualizer: visualizerWindow.openWaveform()
+                    function active() {
+                        for (let i = 0; i < editorRepeater.count; ++i) {
+                            const editor = editorRepeater.itemAt(i)
+                            if (editor && editor.live) return editor
+                        }
+                        return null
+                    }
+                    Repeater {
+                        id: editorRepeater
+                        model: root.editorTabs
+                        PlaylistEditor {
+                            required property string key
+                            anchors.fill: parent
+                            tabKey: key
+                            visible: live
+                            app: appController
+                            workspaceState: root.playlistWorkspace
+                            theme: root.palette
+                            queueSelection: root.selectedRows
+                            searchModel: fileTreeModel
+                            searchQuery: root.playlistHighlightQuery
+                            onOpenVisualizer: visualizerWindow.openWaveform()
+                        }
+                    }
                 }
 
                 Item {
