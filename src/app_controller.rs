@@ -6944,6 +6944,7 @@ impl qobject::AppController {
                     playing,
                 } => {
                     self.as_mut().apply_session_view();
+                    let index = self.as_ref().rust().session.output_index(&token).unwrap_or(index);
                     self.as_mut()
                         .start_session_output(token, index, seconds, playing);
                 }

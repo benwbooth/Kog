@@ -148,6 +148,7 @@ impl Ui {
                     playing,
                 } => {
                     self.apply_session_view();
+                    let index = self.session.output_index(&token).unwrap_or(index);
                     let name = self.tracks.get(index).map(|track| track.name.clone());
                     let result = self
                         .tracks

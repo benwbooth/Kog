@@ -586,6 +586,14 @@ impl<T: Item> Session<T> {
     pub fn current(&self) -> Option<usize> {
         self.current
     }
+    /// Where the song a `Play` effect asked for is in the queue now. A host
+    /// that handles effects after later commands have run must use this, not
+    /// the effect's index: songs loaded in before the clicked one (the rest
+    /// of a playlist) shift it.
+    pub fn output_index(&self, token: &Token) -> Option<usize> {
+        let output = self.output.as_ref().filter(|output| &output.token == token)?;
+        self.rows.iter().position(|row| *row == output.row)
+    }
     pub fn order(&self) -> &PlaybackOrder {
         &self.order
     }

@@ -350,6 +350,43 @@ fn tab_start_plays_the_clicked_song_first_and_places_the_rest_around_it() {
 }
 
 #[test]
+fn a_late_play_effect_still_starts_the_clicked_song() {
+    // Hosts that run effects after later commands (Qt) must not play the
+    // song the earlier part of the playlist shifted into the old index.
+    let mut s = session("tab-late-play");
+    tab(&mut s, &["first", "clicked"]);
+    workspace_action(&mut s, workspace::Command::Select { indices: vec![1] });
+    let effects = workspace_action(
+        &mut s,
+        workspace::Command::Queue {
+            action: workspace::QueueAction::PlayNow,
+        },
+    );
+    let jobs: Vec<_> = effects
+        .into_iter()
+        .filter_map(|e| match e {
+            Effect::Expand { token, entries, .. } => Some((token, entries)),
+            _ => None,
+        })
+        .collect();
+    let mut play = None;
+    for job in &jobs {
+        for effect in s.dispatch(Command::Complete {
+            token: job.0.clone(),
+            result: IoResult::Expanded {
+                tracks: job.1.clone(),
+            },
+        }) {
+            if let Effect::Play { token, .. } = effect {
+                play = Some(token);
+            }
+        }
+    }
+    let index = s.output_index(&play.expect("the clicked song plays")).unwrap();
+    assert_eq!(s.queue()[index]["title"], "clicked");
+}
+
+#[test]
 fn duplicate_occurrences_and_explicit_multi_selection_have_bounded_navigation() {
     let mut s = session("tab-duplicates");
     append(&mut s, &["outside"]);
