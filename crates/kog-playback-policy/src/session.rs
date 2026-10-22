@@ -395,8 +395,21 @@ struct QueueAppend {
     scope: String,
     entries: Vec<Value>,
     token: u64,
+    /// Later parts of a large append, read separately so the first songs
+    /// arrive at once instead of after every file has been read.
+    #[serde(default)]
+    more: Vec<u64>,
     rows: Vec<u64>,
 }
+
+impl QueueAppend {
+    fn tokens(&self) -> impl Iterator<Item = u64> + '_ {
+        std::iter::once(self.token).chain(self.more.iter().copied())
+    }
+}
+
+/// Songs read per part of a large append.
+const APPEND_PART: usize = 24;
 
 /// A reorder or removal as one undo step: the row order before it, the rows
 /// it dropped, and the next row id then, so rows appended since survive.
@@ -415,10 +428,10 @@ enum QueueEdit<T> {
 }
 
 impl<T> QueueEdit<T> {
-    fn token(&self) -> Option<u64> {
+    fn owns(&self, serial: u64) -> bool {
         match self {
-            QueueEdit::Append(edit) => Some(edit.token),
-            QueueEdit::Rows(_) => None,
+            QueueEdit::Append(edit) => edit.tokens().any(|token| token == serial),
+            QueueEdit::Rows(_) => false,
         }
     }
 }
@@ -964,16 +977,24 @@ impl<T: Item> Session<T> {
         });
     }
     fn begin_append(&mut self, scope: String, entries: Vec<Value>, effects: &mut Vec<Effect>) {
-        self.expand(
-            scope.clone(),
-            entries.clone(),
-            workspace::QueueAction::AddToQueue,
-            effects,
-        );
+        let mut tokens = vec![];
+        for part in entries.chunks(APPEND_PART) {
+            self.expand(
+                scope.clone(),
+                part.to_vec(),
+                workspace::QueueAction::AddToQueue,
+                effects,
+            );
+            tokens.push(self.serial);
+        }
+        let Some((&token, more)) = tokens.split_first() else {
+            return;
+        };
         self.append_undo.push(QueueEdit::Append(QueueAppend {
             scope,
             entries,
-            token: self.serial,
+            token,
+            more: more.to_vec(),
             rows: vec![],
         }));
         if self.append_undo.len() > 50 {
@@ -1231,8 +1252,11 @@ impl<T: Item> Session<T> {
             }
             None => return,
         };
-        self.pending.remove(&edit.token);
-        self.expansion_order.retain(|serial| *serial != edit.token);
+        let tokens: Vec<u64> = edit.tokens().collect();
+        for token in &tokens {
+            self.pending.remove(token);
+        }
+        self.expansion_order.retain(|serial| !tokens.contains(serial));
         let indices = self
             .rows
             .iter()
@@ -1336,21 +1360,29 @@ impl<T: Item> Session<T> {
                         if let Some(QueueEdit::Append(edit)) = self
                             .append_undo
                             .iter_mut()
-                            .find(|edit| edit.token() == Some(serial))
+                            .find(|edit| edit.owns(serial))
                         {
-                            edit.rows = self.rows[start..].to_vec();
+                            edit.rows.extend_from_slice(&self.rows[start..]);
                         }
-                        if self.rows.len() == start {
-                            self.append_undo.retain(|edit| edit.token() != Some(serial));
-                        }
+                        self.drop_empty_append(serial);
                     }
                     Err(error) => {
                         self.error = Some(error);
-                        self.append_undo.retain(|edit| edit.token() != Some(serial));
+                        self.drop_empty_append(serial);
                     }
                 }
             }
         }
+    }
+    /// An append whose parts all finished without adding a song is no undo step.
+    fn drop_empty_append(&mut self, serial: u64) {
+        let pending = &self.pending;
+        self.append_undo.retain(|edit| match edit {
+            QueueEdit::Append(append) if edit.owns(serial) => {
+                !append.rows.is_empty() || append.tokens().any(|token| pending.contains_key(&token))
+            }
+            _ => true,
+        });
     }
     fn workspace_command(&mut self, command: workspace::Command, effects: &mut Vec<Effect>) {
         if let workspace::Command::Activate { index } = &command {

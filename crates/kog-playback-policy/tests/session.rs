@@ -1082,3 +1082,43 @@ fn reorder_remove_and_clear_are_undoable_and_keep_later_appends() {
     workspace_action(&mut s, workspace::Command::Undo);
     assert_eq!(titles(&s), "ADBCE", "history before the clear survives it");
 }
+
+#[test]
+fn a_large_append_arrives_in_parts_and_undoes_as_one_step() {
+    let mut s = session("big-append");
+    let entries: Vec<Value> = (0..60).map(|i| row(&format!("song {i}"))).collect();
+    let jobs: Vec<_> = s
+        .dispatch(Command::AppendToTab {
+            key: workspace::QUEUE_TAB.into(),
+            scope: "local".into(),
+            entries,
+        })
+        .into_iter()
+        .filter_map(|e| match e {
+            Effect::Expand { token, entries, .. } => Some((token, entries)),
+            _ => None,
+        })
+        .collect();
+    assert!(jobs.len() > 1, "large appends are read in parts");
+    // The first part shows at once; a later part can't jump ahead of it.
+    s.dispatch(Command::Complete {
+        token: jobs[1].0.clone(),
+        result: IoResult::Expanded { tracks: jobs[1].1.clone() },
+    });
+    assert!(s.queue().is_empty());
+    s.dispatch(Command::Complete {
+        token: jobs[0].0.clone(),
+        result: IoResult::Expanded { tracks: jobs[0].1.clone() },
+    });
+    assert_eq!(s.queue().len(), jobs[0].1.len() + jobs[1].1.len());
+    assert_eq!(s.queue()[0]["title"], "song 0");
+    // Undo removes what arrived and cancels the rest.
+    workspace_action(&mut s, workspace::Command::Undo);
+    for (token, tracks) in &jobs[2..] {
+        s.dispatch(Command::Complete {
+            token: token.clone(),
+            result: IoResult::Expanded { tracks: tracks.clone() },
+        });
+    }
+    assert!(s.queue().is_empty());
+}
