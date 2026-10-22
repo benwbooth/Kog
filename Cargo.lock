@@ -1675,8 +1675,6 @@ version = "0.10.1"
 dependencies = [
  "async-channel",
  "base64 0.22.1",
- "cc",
- "cmake",
  "compress-tools",
  "concurrent-queue",
  "directories",
@@ -1685,13 +1683,13 @@ dependencies = [
  "futures-lite",
  "kog-core",
  "kog-inspection",
+ "kog-native",
  "kog-playback-policy",
  "libc",
  "lofty",
  "midly",
  "orgorg",
  "percent-encoding",
- "pkg-config",
  "rodio",
  "rustysynth",
  "self_cell",
@@ -1739,6 +1737,15 @@ dependencies = [
  "serde_json",
  "tempfile",
  "zip",
+]
+
+[[package]]
+name = "kog-native"
+version = "0.10.1"
+dependencies = [
+ "cc",
+ "cmake",
+ "pkg-config",
 ]
 
 [[package]]

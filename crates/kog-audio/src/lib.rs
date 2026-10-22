@@ -4,6 +4,9 @@
 //! pipeline, and random radio. The UI crate depends on it; it never
 //! depends on the UI, so engine edits and UI edits compile apart.
 
+// The C and C++ libraries the decoders call into; linked through this crate.
+extern crate kog_native;
+
 pub mod adlmidi;
 #[cfg(target_os = "android")]
 pub mod android_helpers;

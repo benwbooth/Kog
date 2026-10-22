@@ -121,12 +121,12 @@
             # the real version).
             # CXX-Qt caches absolute header paths. Both Cargo passes must use
             # /build/source so those paths still resolve in the final build.
-            normalizedSrc = pkgs.runCommand "source"
+            normalize = tree: pkgs.runCommand "source"
               {
                 nativeBuildInputs = [ pkgs.python3 ];
               }
               ''
-                cp -r ${pkgs.lib.cleanSource ./.} $out
+                cp -r ${tree} $out
                 chmod -R u+w $out
                 ${pkgs.python3}/bin/python3 - <<'PYEOF'
                 import os
@@ -162,6 +162,21 @@
                 open(lock, "w").write(text)
                 PYEOF
               '';
+            normalizedSrc = normalize (pkgs.lib.cleanSource ./.);
+            # Just what the bundled C/C++ libraries need: the workspace
+            # manifests, the kog-native crate and native/. Its store path only
+            # changes when one of those does, so their build stays cached
+            # through every Rust-only change.
+            nativeTree = normalize (pkgs.lib.fileset.toSource {
+              root = ./.;
+              fileset = pkgs.lib.fileset.unions ([
+                ./Cargo.toml
+                ./Cargo.lock
+                ./crates/kog-native
+                ./native
+              ] ++ map (member: ./. + "/${member}/Cargo.toml") (builtins.filter (member: member != "crates/kog-native")
+                (builtins.fromTOML (builtins.readFile ./Cargo.toml)).workspace.members));
+            });
             commonArgs = {
               src = pkgs.lib.cleanSource ./.;
               nativeBuildInputs = [ pkgs.cmake pkgs.ninja pkgs.pkg-config pkgs.clang pkgs.mold pkgs.qt6.wrapQtAppsHook ];
@@ -194,6 +209,22 @@
               # the real package build below keeps `--locked`.
               cargoExtraArgs = "";
             });
+            # The bundled C/C++ libraries, built once per change to native/
+            # on top of the dependency cache; the package build reuses them.
+            nativeArtifacts = craneLib.cargoBuild (commonArgs // {
+              pname = "kog-native";
+              src = craneLib.mkDummySrc {
+                src = nativeTree;
+                extraDummyScript = ''
+                  rm -rf $out/crates/kog-native $out/native
+                  cp -r ${nativeTree}/crates/kog-native $out/crates/kog-native
+                  cp -r ${nativeTree}/native $out/native
+                '';
+              };
+              inherit cargoArtifacts;
+              cargoExtraArgs = "-p kog-native";
+              doCheck = false;
+            });
           in
           {
             # Exposed so the frontend can be built (and inspected) on its own:
@@ -202,7 +233,7 @@
             default = craneLib.buildPackage (
               commonArgs
               // {
-                inherit cargoArtifacts;
+                cargoArtifacts = nativeArtifacts;
                 KOG_BUILD_REV = inputs.self.shortRev or inputs.self.dirtyShortRev or "unknown";
                 # Embed the built frontend here, not in the shared args: the
                 # deps derivation uses a synthetic tree with no web directory.
