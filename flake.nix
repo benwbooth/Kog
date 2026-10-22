@@ -301,6 +301,12 @@
             # is what makes the dev loop feel instant. Kept in the shell (not
             # a script) so every cargo invocation here shares one fingerprint.
             export RUSTFLAGS="''${RUSTFLAGS:-} -C link-arg=-fuse-ld=mold"
+            # The host environment can carry NIX_CFLAGS_LINK="-L/usr/lib",
+            # and on NixOS /usr/lib holds the system's glibc, which can be
+            # newer than the shell's; a binary linked against it won't load.
+            # Drop those paths so links here only see the shell's glibc.
+            NIX_CFLAGS_LINK="$(printf '%s\n' ''${NIX_CFLAGS_LINK:-} | grep -v '^-L/usr/lib' | tr '\n' ' ')"
+            export NIX_CFLAGS_LINK
             export QMAKE="${qtEnv}/bin/qmake"
             export QT_INCLUDE_PATH="${qtEnv}/include"
             export QT_LIBEXEC_PATH="${qtEnv}/libexec"
