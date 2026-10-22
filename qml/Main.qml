@@ -33,6 +33,7 @@ ApplicationWindow {
     property alias sidebarWidth: mainWindowSettings.sidebarWidth
     property alias treeSectionExpanded: mainWindowSettings.treeSectionExpanded
     property alias playlistsSectionExpanded: mainWindowSettings.playlistsSectionExpanded
+    property alias playlistsHeight: mainWindowSettings.playlistsHeight
     MainWindowSettings { id: mainWindowSettings; app: appController }
     property string playlistHighlightQuery: ""
     // A track can outlive the pane: clearing the playlist detaches what is
@@ -2842,10 +2843,11 @@ ApplicationWindow {
                                     hoverEnabled: true
                                     acceptedButtons: Qt.NoButton
                                 }
+                                // The whole path, only when the label cuts it short.
                                 ToolTip.visible: treeRootHover.containsMouse
-                                    && text.length > 0
+                                    && text.length > 0 && truncated
                                 ToolTip.delay: 600
-                                ToolTip.text: fileTreeModel.display_name(appController.directory_path)
+                                ToolTip.text: appController.directory_path
                             }
                         }
                     }
@@ -3356,6 +3358,37 @@ ApplicationWindow {
                 }
                 }
 
+                // Drag to share the sidebar between Files and Playlists.
+                Rectangle {
+                    objectName: "playlistsResizeHandle"
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 5
+                    visible: root.treeSectionExpanded && root.playlistsSectionExpanded
+                    color: playlistsResize.containsMouse || playlistsResize.pressed
+                        ? root.palette.highlight : "transparent"
+                    MouseArea {
+                        id: playlistsResize
+                        anchors.fill: parent
+                        anchors.topMargin: -3
+                        anchors.bottomMargin: -3
+                        hoverEnabled: true
+                        cursorShape: Qt.SplitVCursor
+                        property real startY: 0
+                        property real startHeight: 0
+                        onPressed: mouse => {
+                            startY = mapToItem(null, 0, mouse.y).y
+                            startHeight = playlistsSection.height
+                        }
+                        onPositionChanged: mouse => {
+                            if (!pressed)
+                                return
+                            const y = mapToItem(null, 0, mouse.y).y
+                            const available = sidebarPane.height - 160
+                            root.playlistsHeight = Math.max(60, Math.min(available, startHeight + startY - y))
+                        }
+                    }
+                }
+
                 SidebarSectionHeader {
                     sectionTitle: qsTr("Playlists")
                     sectionExpanded: root.playlistsSectionExpanded
@@ -3370,8 +3403,8 @@ ApplicationWindow {
                 Item {
                     id: playlistsSection
                     Layout.fillWidth: true
-                    Layout.preferredHeight: Math.min(playlistsList.contentHeight + 8, 10000)
-                    Layout.maximumHeight: root.treeSectionExpanded ? 260 : 10000
+                    Layout.preferredHeight: root.treeSectionExpanded ? root.playlistsHeight : 10000
+                    Layout.maximumHeight: root.treeSectionExpanded ? root.playlistsHeight : 10000
                     Layout.fillHeight: !root.treeSectionExpanded
                     visible: root.playlistsSectionExpanded
                     clip: true
