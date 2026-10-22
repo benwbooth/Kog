@@ -990,16 +990,16 @@
         "effects.2.entries": [
           {
             "kind": "local",
-            "path": "/First.wav",
-            "title": "First",
+            "path": "/Last.wav",
+            "title": "Last",
             "album": "Album"
           }
         ],
         "effects.3.entries": [
           {
             "kind": "local",
-            "path": "/Last.wav",
-            "title": "Last",
+            "path": "/First.wav",
+            "title": "First",
             "album": "Album"
           }
         ]
@@ -1013,8 +1013,8 @@
       },
       "capture": {
         "nav_head": "effects.1.token",
-        "nav_prefix": "effects.2.token",
-        "nav_suffix": "effects.3.token"
+        "nav_prefix": "effects.3.token",
+        "nav_suffix": "effects.2.token"
       }
     },
     {

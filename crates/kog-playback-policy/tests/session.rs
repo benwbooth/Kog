@@ -329,7 +329,7 @@ fn tab_start_plays_the_clicked_song_first_and_places_the_rest_around_it() {
                 _ => None,
             })
             .collect();
-        // The clicked entry, then the songs before it, then after it.
+        // The clicked entry, then the next songs, then the songs before it.
         assert_eq!(jobs.len(), 3);
         s.dispatch(Command::Complete {
             token: jobs[0].0.clone(),
@@ -347,15 +347,15 @@ fn tab_start_plays_the_clicked_song_first_and_places_the_rest_around_it() {
             s.dispatch(Command::Stop);
         }
         s.dispatch(Command::Complete {
-            token: jobs[1].0.clone(),
+            token: jobs[2].0.clone(),
             result: IoResult::Expanded {
                 tracks: vec![row("subsong 1"), row("subsong 2")],
             },
         });
         s.dispatch(Command::Complete {
-            token: jobs[2].0.clone(),
+            token: jobs[1].0.clone(),
             result: IoResult::Expanded {
-                tracks: jobs[2].1.clone(),
+                tracks: jobs[1].1.clone(),
             },
         });
         if cancel {
@@ -1121,4 +1121,48 @@ fn a_large_append_arrives_in_parts_and_undoes_as_one_step() {
         });
     }
     assert!(s.queue().is_empty());
+}
+
+#[test]
+fn a_playlist_song_that_ends_before_the_next_is_read_waits_for_it() {
+    let mut s = session("tab-next-wait");
+    let titles: Vec<String> = (0..80).map(|i| format!("song {i}")).collect();
+    let names: Vec<&str> = titles.iter().map(String::as_str).collect();
+    tab(&mut s, &names);
+    workspace_action(&mut s, workspace::Command::Select { indices: vec![0] });
+    let jobs: Vec<_> = workspace_action(
+        &mut s,
+        workspace::Command::Queue {
+            action: workspace::QueueAction::PlayNow,
+        },
+    )
+    .into_iter()
+    .filter_map(|e| match e {
+        Effect::Expand { token, entries, .. } => Some((token, entries)),
+        _ => None,
+    })
+    .collect();
+    // The clicked song, a few next songs, then the rest in larger parts.
+    assert!(jobs.len() > 2);
+    assert!(jobs[1].1.len() < jobs[2].1.len());
+    let complete = |s: &mut Session<Value>, job: &(Token, Vec<Value>)| {
+        s.dispatch(Command::Complete {
+            token: job.0.clone(),
+            result: IoResult::Expanded { tracks: job.1.clone() },
+        })
+    };
+    complete(&mut s, &jobs[0]);
+    assert_eq!(s.queue()[s.current().unwrap()]["title"], "song 0");
+    // It ends before anything after it was read: wait, don't stop.
+    let token = s.snapshot().output_token.unwrap().clone();
+    s.dispatch(Command::Output { token, event: OutputEvent::Ended });
+    assert_ne!(s.snapshot().transport, Transport::Stopped);
+    complete(&mut s, &jobs[1]);
+    assert_eq!(s.queue()[s.current().unwrap()]["title"], "song 1");
+    // Later parts join in order, whatever order they arrive in.
+    for job in jobs[2..].iter().rev() {
+        complete(&mut s, job);
+    }
+    let titles: Vec<_> = s.queue().iter().map(|t| t["title"].as_str().unwrap().to_owned()).collect();
+    assert_eq!(titles, (0..80).map(|i| format!("song {i}")).collect::<Vec<_>>());
 }
