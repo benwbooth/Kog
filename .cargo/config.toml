@@ -4,3 +4,11 @@
 # switching between them recompiled everything, C++ libraries included.
 [build]
 rustc-wrapper = ""
+
+# The same goes for C and C++: ~/.cargo/config.toml routes them through kache,
+# which compiled with the system's newer glibc headers instead of the dev
+# shell's, leaving a binary that could not start. Use the shell's compilers.
+[env]
+HOST_CC = "cc"
+HOST_CXX = "c++"
+CC_KNOWN_WRAPPER_CUSTOM = ""
