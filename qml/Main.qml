@@ -924,6 +924,14 @@ ApplicationWindow {
     }
 
     AppController { id: appController }
+    // Playlists saved elsewhere (the server, the terminal player, a script)
+    // appear without a restart.
+    Timer {
+        interval: 2000
+        running: true
+        repeat: true
+        onTriggered: appController.poll_library_changes()
+    }
     FileTreeModel { id: fileTreeModel }
     FileTreeModel { id: modernLibraryModel }
 
@@ -1715,6 +1723,13 @@ ApplicationWindow {
     }
 
     Action {
+        id: importPlaylistsAction
+        text: qsTr("Import Playlists…")
+        icon.name: "document-open"
+        onTriggered: appController.import_playlists()
+    }
+
+    Action {
         id: editTagsAction
         text: qsTr("Edit Tags…")
         icon.name: "document-edit"
@@ -1822,6 +1837,7 @@ ApplicationWindow {
         MenuItem { action: redoQueueAppendAction }
         MenuSeparator {}
         MenuItem { action: saveSelectionAction }
+        MenuItem { action: importPlaylistsAction }
         MenuItem { action: editTagsAction }
         MenuItem {
             readonly property var offline: playlistContextMenu.visible && root.selectedRows.length > 0
@@ -1972,6 +1988,11 @@ ApplicationWindow {
             icon.name: "document-save-as"
             onTriggered: appController.export_playlist(root.playlistMenuPid)
         }
+        MenuItem {
+            text: qsTr("Import Playlists…")
+            icon.name: "document-open"
+            onTriggered: appController.import_playlists()
+        }
         MenuSeparator {}
         MenuItem {
             text: qsTr("Delete…")
@@ -2021,6 +2042,7 @@ ApplicationWindow {
         MenuSeparator {}
         MenuItem { action: savePlaylistAction }
         MenuItem { action: saveSelectionAction }
+        MenuItem { action: importPlaylistsAction }
         MenuSeparator {}
 
         Menu {

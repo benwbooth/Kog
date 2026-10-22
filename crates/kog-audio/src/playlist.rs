@@ -79,6 +79,42 @@ impl TryFrom<&StoredEntry> for PlaylistEntry {
     }
 }
 
+impl From<&PlaylistEntry> for StoredEntry {
+    fn from(entry: &PlaylistEntry) -> Self {
+        let (kind, path, member) = match &entry.location {
+            PlaylistLocation::Local(path) => (KIND_LOCAL, path.to_string_lossy().into_owned(), String::new()),
+            PlaylistLocation::Archive { archive_path, entry_name } => {
+                (KIND_ARCHIVE, archive_path.to_string_lossy().into_owned(), entry_name.clone())
+            }
+            PlaylistLocation::Remote(url) => (KIND_REMOTE, url.clone(), String::new()),
+        };
+        StoredEntry { kind: kind.to_owned(), path, entry: member, fragment: entry.fragment.clone() }
+    }
+}
+
+/// Save a playlist file (M3U or PLS) as one of the library's playlists,
+/// named after the file (with " (2)" and so on when the name is taken).
+/// Returns the name used and how many tracks it holds.
+pub fn import_playlist_file(db: &kog_core::db::LibraryDb, path: &Path) -> Result<(String, usize), String> {
+    let playlist = Playlist::open(path)?;
+    let entries: Vec<StoredEntry> = playlist.entries().iter().map(StoredEntry::from).collect();
+    if entries.is_empty() {
+        return Err(format!("{} has no tracks", path.display()));
+    }
+    let stem = path
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().trim().to_owned())
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or_else(|| "Imported playlist".to_owned());
+    let taken: Vec<String> = db.list_playlists()?.into_iter().map(|playlist| playlist.name).collect();
+    let name = (1..)
+        .map(|n| if n == 1 { stem.clone() } else { format!("{stem} ({n})") })
+        .find(|name| !taken.iter().any(|existing| existing == name))
+        .unwrap_or(stem);
+    db.create_playlist_with_entries(&name, &entries)?;
+    Ok((name, entries.len()))
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Playlist {
     entries: Vec<PlaylistEntry>,

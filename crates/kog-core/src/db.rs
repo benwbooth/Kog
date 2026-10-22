@@ -530,6 +530,14 @@ impl LibraryDb {
         })
     }
 
+    /// Changes whenever another connection (the server, the terminal player,
+    /// another window) commits to the library, so a view can reload.
+    pub fn data_version(&self) -> i64 {
+        self.conn
+            .query_row("PRAGMA data_version", [], |row| row.get(0))
+            .unwrap_or(0)
+    }
+
     pub fn list_playlists(&self) -> Result<Vec<StoredPlaylist>, String> {
         let mut statement = self
             .conn

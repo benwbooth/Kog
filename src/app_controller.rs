@@ -259,6 +259,10 @@ pub mod qobject {
         #[qinvokable]
         fn export_playlist(self: Pin<&mut AppController>, id: i32);
         #[qinvokable]
+        fn import_playlists(self: Pin<&mut AppController>);
+        #[qinvokable]
+        fn poll_library_changes(self: Pin<&mut AppController>);
+        #[qinvokable]
         fn save_playlist_column_layout(self: Pin<&mut AppController>, layout: QString);
         #[qinvokable]
         fn play_index(self: Pin<&mut AppController>, index: i32);
@@ -1948,6 +1952,8 @@ pub struct AppControllerRust {
     sort_column: PlaylistSortColumn,
     filter: String,
     library_db: kog_core::db::LibraryDb,
+    /// The library's data version last seen, to notice outside changes.
+    library_version: i64,
     starred: HashSet<String>,
     directory: PathBuf,
     decoder_settings: DecoderSettings,
@@ -2185,6 +2191,7 @@ impl Default for AppControllerRust {
             sort_column: PlaylistSortColumn::Index,
             filter: String::new(),
             library_db,
+            library_version: 0,
             starred: HashSet::new(),
             directory,
             decoder_settings,
@@ -4019,6 +4026,50 @@ impl qobject::AppController {
             return self.rust().library_db.starred_entries();
         }
         self.rust().library_db.playlist_entries(id)
+    }
+
+    /// Save chosen M3U/PLS files as library playlists, named after the files.
+    pub fn import_playlists(mut self: Pin<&mut Self>) {
+        let directory = self.as_ref().rust().directory.clone();
+        let Some(paths) = rfd::FileDialog::new()
+            .set_title("Import Playlists")
+            .set_directory(directory)
+            .add_filter("Playlists", &["m3u", "m3u8", "pls"])
+            .pick_files()
+        else {
+            return;
+        };
+        let mut imported = Vec::new();
+        let mut failed = Vec::new();
+        for path in &paths {
+            match kog_audio::playlist::import_playlist_file(&self.as_ref().rust().library_db, path) {
+                Ok((name, count)) => imported.push(format!("{name} ({count})")),
+                Err(error) => failed.push(error),
+            }
+        }
+        self.as_mut().bump_playlists_revision();
+        let mut status = match imported.len() {
+            0 => String::from("No playlists imported"),
+            1 => format!("Imported {}", imported[0]),
+            n => format!("Imported {n} playlists"),
+        };
+        if let Some(error) = failed.first() {
+            status.push_str(&format!("; {} failed: {error}", failed.len()));
+        }
+        self.as_mut().set_status(qstring(status));
+    }
+
+    /// Reload the playlists when the library changed outside this window:
+    /// the server, the terminal player or a script saving playlists.
+    pub fn poll_library_changes(mut self: Pin<&mut Self>) {
+        let version = self.as_ref().rust().library_db.data_version();
+        if version != self.as_ref().rust().library_version {
+            let first = self.as_ref().rust().library_version == 0;
+            self.as_mut().rust_mut().library_version = version;
+            if !first {
+                self.as_mut().bump_playlists_revision();
+            }
+        }
     }
 
     /// Export a stored playlist (or Favorites) as a portable `.m3u` file:
