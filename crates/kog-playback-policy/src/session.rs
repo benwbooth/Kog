@@ -1758,6 +1758,9 @@ impl<T: Item> Session<T> {
                     .apply(command, self.queue.len(), &self.visible);
             }
             Command::Filter { query } => {
+                if query == self.filter {
+                    return vec![];
+                }
                 self.filter = query;
                 self.refresh()
             }

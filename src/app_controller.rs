@@ -1870,6 +1870,9 @@ pub struct AppControllerRust {
     playlist_column_layout: QString,
     session_expanded_json: QString,
     session_last_written: String,
+    /// The latest session checkpoint not yet written. Writing it (megabytes
+    /// of JSON for a big queue) waits for the next poll so clicks don't.
+    pending_session_save: Option<serde_json::Value>,
     current_index: i32,
     playback_state: QString,
     mpris_raise_serial: i32,
@@ -2101,6 +2104,7 @@ impl Default for AppControllerRust {
             playlist_column_layout,
             session_expanded_json: QString::default(),
             session_last_written: String::new(),
+            pending_session_save: None,
             current_index: -1,
             playback_state: qstring(PlaybackState::Stopped.as_str()),
             mpris_raise_serial: 0,
@@ -4014,6 +4018,7 @@ impl qobject::AppController {
     }
 
     pub fn poll_workspace(mut self: Pin<&mut Self>) {
+        self.as_mut().write_pending_session();
         self.as_mut().poll_session_ports();
         if self.as_mut().rust_mut().workspace_tracks.poll() {
             self.as_mut().workspace_changed();
@@ -4517,7 +4522,22 @@ impl qobject::AppController {
     /// Snapshot the pane, current row, tree root, and the expanded folders
     /// QML collected, then save its separate UI state in SQLite when changed.
     /// The queue and drafts are persisted by the shared session effects.
+    fn write_pending_session(mut self: Pin<&mut Self>) {
+        let Some(value) = self.as_mut().rust_mut().pending_session_save.take() else {
+            return;
+        };
+        let result = {
+            let mut this = self.as_mut().rust_mut();
+            let this = &mut *this;
+            this.session_store.save(&this.library_db, &value.to_string())
+        };
+        if let Err(error) = result {
+            self.as_mut().set_status(qstring(error));
+        }
+    }
+
     pub fn flush_session(mut self: Pin<&mut Self>, expanded: QString) {
+        self.as_mut().write_pending_session();
         let expanded = parse_session_expanded(&expanded.to_string());
         let snapshot = self.as_ref().rust().session_snapshot(&expanded);
         if self.as_ref().rust().session_last_written == snapshot {
@@ -6927,14 +6947,7 @@ impl qobject::AppController {
             focus_only &= matches!(&effect, SessionEffect::Persist { .. });
             match effect {
                 SessionEffect::Persist { value } => {
-                    let result = {
-                        let mut this = self.as_mut().rust_mut();
-                        let this = &mut *this;
-                        this.session_store.save(&this.library_db, &value.to_string())
-                    };
-                    if let Err(error) = result {
-                        self.as_mut().set_status(qstring(error));
-                    }
+                    self.as_mut().rust_mut().pending_session_save = Some(value);
                 }
                 SessionEffect::QueueChanged { .. } => {}
                 SessionEffect::Play {
