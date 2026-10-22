@@ -25,7 +25,7 @@ FocusScope {
     signal dragMoved(real x, real y)
     signal dragFinished(real x, real y)
     signal dragCancelled()
-    implicitHeight: 30
+    implicitHeight: 21
     Accessible.role: Accessible.ListItem
     Accessible.name: name
     Accessible.selected: selected
@@ -135,11 +135,12 @@ FocusScope {
         anchors.right: parent.right
         anchors.rightMargin: 4
         anchors.verticalCenter: parent.verticalCenter
-        width: 26; height: 26
+        width: 20; height: 20
+        padding: 0
         visible: !row.renaming && (hover.hovered || row.selected || row.activeFocus)
         enabled: row.canAppend && row.entryCount > 0
         text: "+"
-        font.pixelSize: 18
+        font.pixelSize: 15
         display: AbstractButton.TextOnly
         flat: true
         Accessible.name: qsTr("Append to “%1”").arg(row.destinationName)

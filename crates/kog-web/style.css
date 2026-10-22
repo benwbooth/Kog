@@ -677,7 +677,7 @@ button:focus-visible {
 
 .tree-row.favorite-row,
 .tree-row.playlist-row {
-  height: 30px;
+  height: var(--tree-row-height);
 }
 
 .empty {

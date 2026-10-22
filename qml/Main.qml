@@ -3458,13 +3458,15 @@ ApplicationWindow {
                         clip: true
                         model: playlistsModel
                         spacing: 1
+                        // Row height plus spacing, for drop positions.
+                        readonly property int rowPitch: 22
 
                         delegate: PlaylistSidebarRow {
                             id: playlistRow
                             required property int index
                             objectName: "sidebarPlaylist_" + pid
                             width: playlistsList.width
-                            height: 30
+                            height: playlistsList.rowPitch - playlistsList.spacing
                             theme: root.palette
                             selected: root.isPlaylistSelected(pid)
                             renaming: root.renamingPlaylistId === pid
@@ -3513,7 +3515,7 @@ ApplicationWindow {
                                 root.playlistInsertIndex = !favorite && !root.playlistAppendTarget
                                         && point.x >= 0 && point.x < playlistsList.width
                                         && point.y >= 0 && point.y < playlistsList.height
-                                    ? Math.max(1, Math.min(Math.floor((point.y + playlistsList.contentY) / 31), playlistsModel.count))
+                                    ? Math.max(1, Math.min(Math.floor((point.y + playlistsList.contentY) / playlistsList.rowPitch), playlistsModel.count))
                                     : -1
                             }
                             onDragFinished: (x, y) => {
@@ -3534,7 +3536,7 @@ ApplicationWindow {
                             radius: 1
                             color: root.palette.highlight
                             visible: root.playlistInsertIndex >= 0
-                            y: root.playlistInsertIndex * 31 - playlistsList.contentY
+                            y: root.playlistInsertIndex * playlistsList.rowPitch - playlistsList.contentY
                         }
                     }
                 }
