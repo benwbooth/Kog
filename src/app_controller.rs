@@ -2709,10 +2709,11 @@ impl AppControllerRust {
     }
 
     fn total_duration_value(&self) -> QString {
+        // The play queue as shown: a playlist playing from its tab is not in it.
         let duration = self
-            .tracks
+            .visible_indices
             .iter()
-            .filter_map(|track| track.duration)
+            .filter_map(|index| self.tracks.get(*index)?.duration)
             .fold(Duration::ZERO, |total, duration| total + duration);
         qstring(total_duration_label(duration))
     }

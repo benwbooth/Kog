@@ -163,6 +163,10 @@ pub struct PlaybackOrder {
     /// activated. Some(empty) must stay empty after all its rows are removed.
     #[serde(default)]
     playback_scope: Option<Vec<usize>>,
+    /// Rows that queue playback (no explicit scope) never reaches: a
+    /// playlist's songs, which are played from their tab, not the queue.
+    #[serde(default)]
+    excluded: Vec<usize>,
 }
 
 /// Commands have the same meaning for buttons, media keys, and end-of-stream
@@ -206,6 +210,7 @@ impl PlaybackOrder {
             sequence: Vec::new(),
             original: Vec::new(),
             playback_scope: None,
+            excluded: Vec::new(),
         }
     }
 
@@ -407,6 +412,20 @@ impl PlaybackOrder {
         self.sequence.clear();
         self.original.clear();
         self.playback_scope = None;
+        self.excluded.clear();
+    }
+
+    /// Set the rows queue playback skips; see `excluded`.
+    pub fn set_excluded(&mut self, mut rows: Vec<usize>) {
+        rows.sort_unstable();
+        rows.dedup();
+        self.excluded = rows;
+    }
+
+    fn unscoped(&self, count: usize) -> Vec<usize> {
+        (0..count)
+            .filter(|index| self.excluded.binary_search(index).is_err())
+            .collect()
     }
 
     pub fn remap_tracks(&mut self, old_to_new: &[Option<usize>]) {
@@ -423,6 +442,8 @@ impl PlaybackOrder {
         if let Some(scope) = &mut self.playback_scope {
             *scope = remap_indices(scope, old_to_new);
         }
+        let excluded = remap_indices(&self.excluded, old_to_new);
+        self.set_excluded(excluded);
     }
 
     pub fn set_playback_scope<T: TrackOrderInfo>(
@@ -467,9 +488,13 @@ impl PlaybackOrder {
         if let Some(scope) = &self.playback_scope {
             scope.iter().copied().filter(|index| *index < count).collect()
         } else if self.sequence.len() == count {
-            self.sequence.clone()
+            self.sequence
+                .iter()
+                .copied()
+                .filter(|index| self.excluded.binary_search(index).is_err())
+                .collect()
         } else {
-            (0..count).collect()
+            self.unscoped(count)
         }
     }
 
@@ -719,7 +744,7 @@ impl PlaybackOrder {
     }
 
     fn build_shuffle_order<T: TrackOrderInfo>(&mut self, tracks: &[T]) -> Vec<usize> {
-        let candidates = self.playback_scope.clone().unwrap_or_else(|| (0..tracks.len()).collect());
+        let candidates = self.playback_scope.clone().unwrap_or_else(|| self.unscoped(tracks.len()));
         match self.shuffle_mode {
             ShuffleMode::Off => Vec::new(),
             ShuffleMode::All => shuffled_indices(candidates.len(), &mut self.seed)

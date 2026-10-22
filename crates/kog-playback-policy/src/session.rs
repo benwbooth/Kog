@@ -491,6 +491,11 @@ pub struct Session<T> {
     playlist_request: Option<PlaylistRequest<T>>,
     #[serde(default)]
     playlist_playback: Option<PlaylistPlayback>,
+    /// Rows of the playlist being played from its tab. They live in `queue`
+    /// so playback and navigation work as for any song, but the play queue
+    /// never shows them: playing a playlist leaves the queue as it was.
+    #[serde(default)]
+    playlist_rows: Vec<u64>,
     #[serde(default)]
     append_undo: Vec<QueueEdit<T>>,
     #[serde(default)]
@@ -566,6 +571,7 @@ impl<T: Item> Session<T> {
             expansion_order: VecDeque::new(),
             playlist_request: None,
             playlist_playback: None,
+            playlist_rows: vec![],
             append_undo: vec![],
             append_redo: vec![],
             output: None,
@@ -724,10 +730,28 @@ impl<T: Item> Session<T> {
             crate::sort::sorted_rows(&self.metadata, &self.sort_column, self.descending)
         };
         self.order.set_sequence(sorted.clone(), self.queue.len());
+        let hidden: std::collections::HashSet<u64> = self.playlist_rows.iter().copied().collect();
+        self.order.set_excluded(
+            (0..self.rows.len())
+                .filter(|i| hidden.contains(&self.rows[*i]))
+                .collect(),
+        );
         self.visible = sorted
             .into_iter()
-            .filter(|i| self.metadata[*i].matches(&self.filter))
+            .filter(|i| !hidden.contains(&self.rows[*i]) && self.metadata[*i].matches(&self.filter))
             .collect();
+    }
+    /// Queue positions of the playing playlist's rows.
+    fn playlist_indices(&self) -> Vec<usize> {
+        let hidden: std::collections::HashSet<u64> = self.playlist_rows.iter().copied().collect();
+        (0..self.rows.len())
+            .filter(|i| hidden.contains(&self.rows[*i]))
+            .collect()
+    }
+    fn set_playlist_rows(&mut self, start: usize, end: usize) {
+        let end = end.min(self.rows.len());
+        self.playlist_rows = self.rows[start.min(end)..end].to_vec();
+        self.refresh();
     }
     fn changed(&mut self, old_to_new: Vec<Option<usize>>, effects: &mut Vec<Effect>) {
         self.order.remap_tracks(&old_to_new);
@@ -1077,6 +1101,11 @@ impl<T: Item> Session<T> {
             }
             let before = load.before.clone();
             let after = load.after.clone();
+            // The previous playlist's songs go; the play queue stays as is.
+            let previous = self.playlist_indices();
+            if !previous.is_empty() {
+                self.remove(previous, effects);
+            }
             let start = self.queue.len();
             let before_len = before.as_ref().map_or(0, Vec::len);
             let mut tracks = before.unwrap_or_default();
@@ -1091,6 +1120,7 @@ impl<T: Item> Session<T> {
                 &self.order_tracks(),
                 Some(current),
             );
+            self.set_playlist_rows(start, self.queue.len());
             self.play(current, false, effects);
             if let Some(load) = self.playlist_request.as_mut() {
                 // Playing started a new transport; the rest still belongs to it.
@@ -1132,6 +1162,7 @@ impl<T: Item> Session<T> {
             &self.order_tracks(),
             self.current,
         );
+        self.set_playlist_rows(committed.start, end);
         self.finish_playlist_mapping();
     }
 
@@ -1706,7 +1737,16 @@ impl<T: Item> Session<T> {
                     }
                 }
             }
-            Command::Clear => self.clear_recorded(&mut effects),
+            Command::Clear => {
+                // Clearing the play queue leaves a playlist that is playing.
+                let playlist = self.playlist_indices();
+                if playlist.is_empty() {
+                    self.clear_recorded(&mut effects)
+                } else {
+                    let queued = (0..self.queue.len()).filter(|i| !playlist.contains(i)).collect();
+                    self.remove_recorded(queued, &mut effects)
+                }
+            }
             Command::Remove { indices } => {
                 self.remove_recorded(indices, &mut effects);
             }
@@ -2044,6 +2084,7 @@ impl<T: Item> Session<T> {
             .retain(|_, p| !matches!(p, Pending::Expand { .. } | Pending::Playlist { .. }));
         self.playlist_request = None;
         self.playlist_playback = None;
+        self.playlist_rows.clear();
         self.expansion_order.clear();
         self.append_undo.clear();
         self.append_redo.clear();
@@ -2088,7 +2129,7 @@ impl<T: Item> Session<T> {
     pub fn checkpoint(&self) -> Value {
         serde_json::json!({"version":1,"session_id":self.id,"queue":self.queue.iter().map(Item::entry).collect::<Vec<_>>(),
             "metadata":self.metadata,"rows":self.rows,"next_row":self.next_row,"current":self.current,
-            "order":serde_json::to_string(&self.order).expect("serializable playback order"),"selection":self.selection,"workspace":self.workspace,"playlist_playback":self.playlist_playback,"volume":self.volume,
+            "order":serde_json::to_string(&self.order).expect("serializable playback order"),"selection":self.selection,"workspace":self.workspace,"playlist_playback":self.playlist_playback,"playlist_rows":self.playlist_rows,"volume":self.volume,
             "filter":self.filter,"sort_column":self.sort_column,"descending":self.descending,"physical_sort":self.physical_sort,
             "radio_enabled":self.radio.enabled(),"radio_scope":self.radio_scope,"radio_root":self.radio_root})
     }
@@ -2111,6 +2152,8 @@ impl<T: Item> Session<T> {
             workspace: Value,
             #[serde(default)]
             playlist_playback: Option<PlaylistPlayback>,
+            #[serde(default)]
+            playlist_rows: Vec<u64>,
             volume: f64,
             filter: String,
             sort_column: String,
@@ -2155,6 +2198,7 @@ impl<T: Item> Session<T> {
         next.selection.remap(&mapping);
         next.workspace = workspace::Workspace::restore(saved.workspace)?;
         next.playlist_playback = saved.playlist_playback;
+        next.playlist_rows = saved.playlist_rows;
         next.volume = saved.volume.clamp(0.0, 1.0);
         next.filter = saved.filter;
         next.sort_column = saved.sort_column;

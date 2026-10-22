@@ -229,7 +229,8 @@ fn tab_end_repeat_restore_and_queue_activation_use_the_correct_playback_scope() 
     });
     assert_eq!(s.queue()[s.current().unwrap()]["title"], "last");
 
-    // Explicit playback from the main queue returns to its normal order.
+    // Explicit playback from the main queue returns to its normal order,
+    // which skips the playlist's songs.
     s.dispatch(Command::Repeat {
         mode: RepeatMode::Off,
     });
@@ -237,7 +238,30 @@ fn tab_end_repeat_restore_and_queue_activation_use_the_correct_playback_scope() 
     s.dispatch(Command::Navigate {
         event: NavigationEvent::Next,
     });
-    assert_eq!(s.current(), Some(2));
+    assert_eq!(s.queue()[s.current().unwrap()]["title"], "main one");
+}
+
+#[test]
+fn playing_a_playlist_leaves_the_play_queue_as_it_was() {
+    let mut s = session("tab-in-place");
+    append(&mut s, &["main one", "main two"]);
+    tab(&mut s, &["first", "second"]);
+    play_tab(&mut s, vec![0]);
+    assert_eq!(s.queue()[s.current().unwrap()]["title"], "first");
+    let shown = |s: &Session<Value>| -> Vec<String> {
+        s.visible().iter().map(|i| s.queue()[*i]["title"].as_str().unwrap().to_owned()).collect()
+    };
+    assert_eq!(shown(&s), ["main one", "main two"]);
+    // Playing it again replaces its songs instead of adding another copy.
+    play_tab(&mut s, vec![1]);
+    assert_eq!(s.queue()[s.current().unwrap()]["title"], "second");
+    assert_eq!(s.queue().len(), 4);
+    assert_eq!(shown(&s), ["main one", "main two"]);
+    // Clearing the queue keeps the playlist playing.
+    s.dispatch(Command::Clear);
+    assert!(shown(&s).is_empty());
+    assert_eq!(s.queue()[s.current().unwrap()]["title"], "second");
+    assert_ne!(s.snapshot().transport, Transport::Stopped);
 }
 
 #[test]

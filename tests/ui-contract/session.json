@@ -1250,7 +1250,7 @@
     {
       "session": "tab-playback",
       "expect": {
-        "snapshot.current": 2
+        "snapshot.current": 4
       },
       "command": {
         "op": "navigate",
