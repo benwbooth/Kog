@@ -1,0 +1,6 @@
+# Kog builds in one place with Cargo's own incremental cache. A rustc
+# wrapper (kache in ~/.cargo/config.toml) served stale crates here, and
+# builds with and without it count as different compilers to Cargo, so
+# switching between them recompiled everything, C++ libraries included.
+[build]
+rustc-wrapper = ""

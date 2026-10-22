@@ -62,6 +62,11 @@ pkg-config = "0.3.32"
 # emulators (reSIDfp, mGBA, Nuked cores …) and the resampler run inside the
 # audio callback, and unoptimised they cannot keep up with real time, so
 # heavier songs underrun and play nothing. The UI crates stay quick to build.
+# Nobody debugs Kog with a debugger: without debug info the binary is a
+# fraction of the size and links in seconds instead of minutes.
+[profile.dev]
+debug = 0
+
 [profile.dev.package."*"]
 opt-level = 2
 
