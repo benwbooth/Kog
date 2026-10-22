@@ -163,6 +163,7 @@ watch_args=(
   --watch qml
   --watch build.rs
   --watch Cargo.toml
+  --watch .cargo
   --ignore target
   --ignore crates/kog-web/target
   --ignore crates/kog-server/web
