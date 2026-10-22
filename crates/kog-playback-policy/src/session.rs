@@ -356,6 +356,9 @@ enum Pending<T> {
         scope: String,
         request: u64,
         prefix: bool,
+        /// The clicked entry alone (neither the songs before nor after it).
+        #[serde(default)]
+        head: bool,
     },
     Radio {
         generation: u64,
@@ -441,6 +444,22 @@ struct PlaylistRequest<T> {
     after: Option<Vec<T>>,
     #[serde(default)]
     source: Option<(String, Vec<(u64, Value)>, usize)>,
+    /// The clicked entry alone, expanded first so it starts at once.
+    #[serde(default)]
+    head: Option<Vec<T>>,
+    /// Once the clicked song plays: where its block starts in the queue, how
+    /// many songs came before it and from it, and which halves are in.
+    #[serde(default)]
+    committed: Option<Committed>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct Committed {
+    start: usize,
+    before_len: usize,
+    head_len: usize,
+    before_in: bool,
+    after_in: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -948,7 +967,9 @@ impl<T: Item> Session<T> {
             request,
             transport_epoch: self.transport_epoch,
             before: (start == 0).then(Vec::new),
-            after: None,
+            after: (start + 1 == entries.len()).then(Vec::new),
+            head: None,
+            committed: None,
             source: self.workspace.active_rows().and_then(|(key, rows)| {
                 let selected = self.workspace.snapshot().selected;
                 let candidates: Vec<_> = if rows.len() == entries.len() {
@@ -976,7 +997,13 @@ impl<T: Item> Session<T> {
                 })
             }),
         });
-        for (prefix, entries) in [(true, &entries[..start]), (false, &entries[start..])] {
+        // The clicked entry is expanded on its own so it plays at once; the
+        // songs before and after it join the queue around it as they load.
+        for (prefix, head, entries) in [
+            (false, true, &entries[start..start + 1]),
+            (true, false, &entries[..start]),
+            (false, false, &entries[start + 1..]),
+        ] {
             if entries.is_empty() {
                 continue;
             }
@@ -987,6 +1014,7 @@ impl<T: Item> Session<T> {
                     scope: scope.clone(),
                     request,
                     prefix,
+                    head,
                 },
             );
             effects.push(Effect::Expand {
@@ -1001,6 +1029,7 @@ impl<T: Item> Session<T> {
         &mut self,
         request: u64,
         prefix: bool,
+        head: bool,
         result: IoResult<T>,
         effects: &mut Vec<Effect>,
     ) {
@@ -1015,14 +1044,8 @@ impl<T: Item> Session<T> {
             self.playlist_request = None;
             return;
         }
-        match result {
-            IoResult::Expanded { tracks } => {
-                if prefix {
-                    load.before = Some(tracks);
-                } else {
-                    load.after = Some(tracks);
-                }
-            }
+        let tracks = match result {
+            IoResult::Expanded { tracks } => tracks,
             other => {
                 self.error = Some(match other {
                     IoResult::Failed { error } => error,
@@ -1031,22 +1054,95 @@ impl<T: Item> Session<T> {
                 self.playlist_request = None;
                 return;
             }
+        };
+        match (prefix, head) {
+            (true, _) => load.before = Some(tracks),
+            (false, true) => load.head = Some(tracks),
+            (false, false) => load.after = Some(tracks),
         }
-        if load.before.is_none() || load.after.is_none() {
+        let Some(mut committed) = load.committed.clone() else {
+            // Start the clicked song as soon as it is ready, with whatever
+            // else has arrived around it.
+            let Some(head) = load.head.clone() else { return };
+            if head.is_empty() {
+                return;
+            }
+            let before = load.before.clone();
+            let after = load.after.clone();
+            let start = self.queue.len();
+            let before_len = before.as_ref().map_or(0, Vec::len);
+            let mut tracks = before.unwrap_or_default();
+            tracks.extend(head.iter().cloned());
+            tracks.extend(after.clone().unwrap_or_default());
+            let current = start + before_len;
+            self.append(tracks, workspace::QueueAction::AddToQueue, effects);
+            self.order.clear_queue();
+            self.order.set_radio_enabled(false, &self.order_tracks(), self.current);
+            self.order.set_playback_scope(
+                Some((start..self.queue.len()).collect()),
+                &self.order_tracks(),
+                Some(current),
+            );
+            self.play(current, false, effects);
+            if let Some(load) = self.playlist_request.as_mut() {
+                // Playing started a new transport; the rest still belongs to it.
+                load.transport_epoch = self.transport_epoch;
+                load.committed = Some(Committed {
+                    start,
+                    before_len,
+                    head_len: head.len(),
+                    before_in: load.before.is_some(),
+                    after_in: after.is_some(),
+                });
+            }
+            self.finish_playlist_mapping();
+            return;
+        };
+        // A half that arrived after the clicked song started: put it in place.
+        if prefix && !committed.before_in {
+            let tracks = load.before.clone().unwrap_or_default();
+            committed.before_len = tracks.len();
+            committed.before_in = true;
+            let at = committed.start;
+            load.committed = Some(committed.clone());
+            self.replace_range(at, at, tracks, effects);
+        } else if !prefix && !head && !committed.after_in {
+            let tracks = load.after.clone().unwrap_or_default();
+            committed.after_in = true;
+            let at = committed.start + committed.before_len + committed.head_len;
+            load.committed = Some(committed.clone());
+            self.replace_range(at, at, tracks, effects);
+        } else {
+            return;
+        }
+        let end = committed.start
+            + committed.before_len
+            + committed.head_len
+            + self.playlist_request.as_ref().and_then(|load| load.after.as_ref()).filter(|_| committed.after_in).map_or(0, Vec::len);
+        self.order.set_playback_scope(
+            Some((committed.start..end.min(self.queue.len())).collect()),
+            &self.order_tracks(),
+            self.current,
+        );
+        self.finish_playlist_mapping();
+    }
+
+    /// Once every part of a playlist is in the queue, tie its rows to the
+    /// playlist tab's rows so the tab follows playback.
+    fn finish_playlist_mapping(&mut self) {
+        let Some(load) = self.playlist_request.as_ref() else { return };
+        let Some(committed) = load.committed.as_ref() else { return };
+        if !committed.before_in || !committed.after_in {
             return;
         }
         let load = self.playlist_request.take().unwrap();
-        let mut tracks = load.before.unwrap();
-        let after = load.after.unwrap();
-        if after.is_empty() {
-            return;
-        }
-        let start = self.queue.len();
-        let current = start + tracks.len();
-        tracks.extend(after);
-        self.append(tracks, workspace::QueueAction::AddToQueue, effects);
+        let committed = load.committed.unwrap();
+        let start = committed.start;
+        let current = start + committed.before_len;
+        let total = committed.before_len + committed.head_len + load.after.map_or(0, |after| after.len());
+        let end = (start + total).min(self.queue.len());
         self.playlist_playback = load.source.map(|(key, source, clicked)| {
-            let expanded: Vec<_> = self.queue[start..].iter().map(Item::entry).collect();
+            let expanded: Vec<_> = self.queue[start..end].iter().map(Item::entry).collect();
             let mut targets = vec![None; source.len()];
             // Match each occurrence in order, separately on either side of the
             // clicked row so an expanded archive cannot shift its identity.
@@ -1070,19 +1166,10 @@ impl<T: Item> Session<T> {
             PlaylistPlayback {
                 key,
                 source_rows: source.into_iter().map(|(id, _)| id).collect(),
-                queue_rows: self.rows[start..].to_vec(),
+                queue_rows: self.rows[start..end].to_vec(),
                 targets,
             }
         });
-        self.order.clear_queue();
-        self.order
-            .set_radio_enabled(false, &self.order_tracks(), self.current);
-        self.order.set_playback_scope(
-            Some((start..self.queue.len()).collect()),
-            &self.order_tracks(),
-            Some(current),
-        );
-        self.play(current, false, effects);
     }
     fn undo_append(&mut self, redo: bool, effects: &mut Vec<Effect>) {
         if redo {
@@ -1459,8 +1546,8 @@ impl<T: Item> Session<T> {
         };
         match pending {
             Pending::Playlist {
-                request, prefix, ..
-            } => self.finish_playlist(request, prefix, result, effects),
+                request, prefix, head, ..
+            } => self.finish_playlist(request, prefix, head, result, effects),
             Pending::Load {
                 key, generation, ..
             } => self.workspace_command(

@@ -286,7 +286,7 @@ fn tab_shuffle_and_late_album_metadata_never_include_other_queue_rows() {
 }
 
 #[test]
-fn tab_start_accounts_for_expanded_prefix_and_rejects_superseded_completions() {
+fn tab_start_plays_the_clicked_song_first_and_places_the_rest_around_it() {
     for cancel in [false, true] {
         let mut s = session("tab-expansion");
         append(&mut s, &["outside"]);
@@ -305,33 +305,42 @@ fn tab_start_accounts_for_expanded_prefix_and_rejects_superseded_completions() {
                 _ => None,
             })
             .collect();
-        assert_eq!(jobs.len(), 2);
+        // The clicked entry, then the songs before it, then after it.
+        assert_eq!(jobs.len(), 3);
         s.dispatch(Command::Complete {
-            token: jobs[1].0.clone(),
+            token: jobs[0].0.clone(),
             result: IoResult::Expanded {
-                tracks: jobs[1].1.clone(),
+                tracks: jobs[0].1.clone(),
             },
         });
         assert_eq!(
             s.queue(),
-            &[row("outside")],
-            "A partial load cannot publish a partial playlist"
+            &[row("outside"), row("clicked")],
+            "The clicked song plays without waiting for the rest"
         );
+        assert_eq!(s.current(), Some(1));
         if cancel {
             s.dispatch(Command::Stop);
         }
         s.dispatch(Command::Complete {
-            token: jobs[0].0.clone(),
+            token: jobs[1].0.clone(),
             result: IoResult::Expanded {
                 tracks: vec![row("subsong 1"), row("subsong 2")],
             },
         });
+        s.dispatch(Command::Complete {
+            token: jobs[2].0.clone(),
+            result: IoResult::Expanded {
+                tracks: jobs[2].1.clone(),
+            },
+        });
         if cancel {
-            assert_eq!(s.queue(), &[row("outside")]);
+            assert_eq!(s.queue(), &[row("outside"), row("clicked")]);
             assert_eq!(s.snapshot().transport, Transport::Stopped);
         } else {
             assert_eq!(s.current(), Some(3));
             assert_eq!(s.queue()[3]["title"], "clicked");
+            assert_eq!(s.queue()[4]["title"], "following");
             s.dispatch(Command::Navigate {
                 event: NavigationEvent::Previous,
             });

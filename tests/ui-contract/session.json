@@ -982,18 +982,20 @@
         "effects.1.entries": [
           {
             "kind": "local",
-            "path": "/First.wav",
-            "title": "First",
+            "path": "/Middle.wav",
+            "title": "Middle",
             "album": "Album"
           }
         ],
         "effects.2.entries": [
           {
             "kind": "local",
-            "path": "/Middle.wav",
-            "title": "Middle",
+            "path": "/First.wav",
+            "title": "First",
             "album": "Album"
-          },
+          }
+        ],
+        "effects.3.entries": [
           {
             "kind": "local",
             "path": "/Last.wav",
@@ -1010,8 +1012,9 @@
         }
       },
       "capture": {
-        "nav_prefix": "effects.1.token",
-        "nav_suffix": "effects.2.token"
+        "nav_head": "effects.1.token",
+        "nav_prefix": "effects.2.token",
+        "nav_suffix": "effects.3.token"
       }
     },
     {
@@ -1029,13 +1032,19 @@
             "path": "/Other.wav",
             "title": "Other",
             "album": "Album"
+          },
+          {
+            "kind": "local",
+            "path": "/Middle.wav",
+            "title": "Middle",
+            "album": "Album"
           }
         ],
-        "snapshot.current": null
+        "snapshot.current": 2
       },
       "command": {
         "op": "complete",
-        "token": "@nav_suffix",
+        "token": "@nav_head",
         "result": {
           "kind": "expanded",
           "tracks": [
@@ -1043,12 +1052,6 @@
               "kind": "local",
               "path": "/Middle.wav",
               "title": "Middle",
-              "album": "Album"
-            },
-            {
-              "kind": "local",
-              "path": "/Last.wav",
-              "title": "Last",
               "album": "Album"
             }
           ]
@@ -1072,6 +1075,28 @@
               "kind": "local",
               "path": "/First.wav",
               "title": "First",
+              "album": "Album"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "session": "tab-playback",
+      "expect": {
+        "snapshot.queue.4.title": "Last",
+        "snapshot.current": 3
+      },
+      "command": {
+        "op": "complete",
+        "token": "@nav_suffix",
+        "result": {
+          "kind": "expanded",
+          "tracks": [
+            {
+              "kind": "local",
+              "path": "/Last.wav",
+              "title": "Last",
               "album": "Album"
             }
           ]
@@ -1310,15 +1335,15 @@
         ]
       },
       "capture": {
-        "activatePrefix": "effects.1.token",
-        "activateSuffix": "effects.2.token"
+        "activateHead": "effects.1.token",
+        "activatePrefix": "effects.2.token"
       }
     },
     {
       "session": "tab-activation",
       "command": {
         "op": "complete",
-        "token": "@activateSuffix",
+        "token": "@activateHead",
         "result": {
           "kind": "expanded",
           "tracks": [
@@ -1333,7 +1358,13 @@
         }
       },
       "expect": {
-        "snapshot.current": null
+        "snapshot.current": 0,
+        "snapshot.row_ids": [
+          1
+        ]
+      },
+      "capture": {
+        "activateOutput": "snapshot.output_token"
       }
     },
     {
@@ -1361,13 +1392,10 @@
         "snapshot.current": 2,
         "snapshot.workspace.current": 2,
         "snapshot.row_ids": [
-          1,
           2,
-          3
+          3,
+          1
         ]
-      },
-      "capture": {
-        "activateOutput": "snapshot.output_token"
       }
     },
     {
@@ -1411,9 +1439,9 @@
         "snapshot.transport": "paused",
         "snapshot.position": 7.25,
         "snapshot.row_ids": [
-          1,
           2,
-          3
+          3,
+          1
         ],
         "effects.1.action": "pause"
       }
@@ -1431,9 +1459,9 @@
         "snapshot.transport": "playing",
         "snapshot.position": 7.25,
         "snapshot.row_ids": [
-          1,
           2,
-          3
+          3,
+          1
         ],
         "effects.1.action": "resume"
       }
@@ -1451,9 +1479,9 @@
         "snapshot.current": 0,
         "snapshot.workspace.current": 0,
         "snapshot.row_ids": [
-          1,
           2,
-          3
+          3,
+          1
         ],
         "effects.1.action": "play"
       }
