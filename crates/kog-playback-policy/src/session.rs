@@ -622,6 +622,13 @@ impl<T: Item> Session<T> {
     pub fn visible(&self) -> &[usize] {
         &self.visible
     }
+    /// Songs in the tab in front: the play queue as shown, or a playlist tab.
+    pub fn shown_count(&self) -> usize {
+        match self.workspace.active_rows() {
+            Some((_, rows)) => rows.len(),
+            None => self.visible.len(),
+        }
+    }
     pub fn workspace_model(&self) -> &workspace::Workspace {
         &self.workspace
     }

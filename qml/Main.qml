@@ -2699,6 +2699,23 @@ ApplicationWindow {
                 Layout.alignment: Qt.AlignVCenter
                 spacing: 4
 
+                // Songs in the play queue or the playlist tab in front.
+                Label {
+                    objectName: "songCountLabel"
+                    Layout.fillWidth: true
+                    horizontalAlignment: Text.AlignRight
+                    text: {
+                        const workspace = root.playlistWorkspace
+                        const count = workspace.active === "queue"
+                            ? appController.playlist_count
+                            : (workspace.entries || []).length
+                        return count === 1 ? qsTr("1 song") : qsTr("%1 songs").arg(count.toLocaleString(Qt.locale(), "f", 0))
+                    }
+                    font.pixelSize: 10
+                    color: root.palette.placeholderText
+                    elide: Text.ElideRight
+                }
+
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: 2
@@ -2753,13 +2770,7 @@ ApplicationWindow {
                     text: {
                         if (root.footer.transientStatus)
                             return appController.status
-                        const count = appController.playlist_count
-                        const tracks = count === 1
-                            ? qsTr("1 track")
-                            : qsTr("%1 tracks").arg(count)
-                        return count > 0
-                            ? tracks + " · " + appController.total_duration
-                            : appController.total_duration
+                        return appController.total_duration
                     }
                     font.pixelSize: 10
                     color: root.palette.placeholderText
@@ -3112,8 +3123,9 @@ ApplicationWindow {
                     // delegate's required file roles are updated by TreeView
                     // when a pooled row is assigned a new model index.
                     reuseItems: true
-                    rowHeightProvider: function(row) { return 26 }
-                    contentHeight: rows * 26
+                    readonly property int rowPitch: 20
+                    rowHeightProvider: function(row) { return rowPitch }
+                    contentHeight: rows * rowPitch
                     boundsBehavior: Flickable.StopAtBounds
                     maximumFlickVelocity: 12000
                     flickDeceleration: 2200
@@ -3168,7 +3180,10 @@ ApplicationWindow {
                         }
                         width: Math.max(0,
                             directoryTree.width - directoryTree.scrollGutter)
-                        implicitHeight: 26
+                        // Compact rows: the tree is for scanning many names.
+                        implicitHeight: directoryTree.rowPitch
+                        topPadding: 0
+                        bottomPadding: 0
                         // Use Kog's bundled SVG for folders and formats.
                         // Resolving a theme folder icon on each reused row
                         // stalls upward scrolling through nested folders.
@@ -3191,20 +3206,20 @@ ApplicationWindow {
                         // also makes Qt resolve it for every recycled row.
                         icon.name: ""
                         contentItem: RowLayout {
-                            spacing: 5
+                            spacing: 4
 
                             ControlsImpl.IconImage {
-                                Layout.preferredWidth: 18
-                                Layout.preferredHeight: 18
+                                Layout.preferredWidth: 16
+                                Layout.preferredHeight: 16
                                 visible: !treeDelegate.svgIcon
                                 name: treeDelegate.svgIcon ? "" : fileIcon
-                                sourceSize.width: 18
-                                sourceSize.height: 18
+                                sourceSize.width: 16
+                                sourceSize.height: 16
                                 fillMode: Image.PreserveAspectFit
                             }
                             Item {
-                                Layout.preferredWidth: 18
-                                Layout.preferredHeight: 18
+                                Layout.preferredWidth: 16
+                                Layout.preferredHeight: 16
                                 visible: treeDelegate.svgIcon
                                 clip: true
 
@@ -3214,8 +3229,8 @@ ApplicationWindow {
                                         ? Qt.resolvedUrl("icons/" + treeDelegate.fileIcon
                                             + (treeDelegate.useLightIcon ? "-light" : "") + ".svg")
                                         : ""
-                                    sourceSize.width: 18
-                                    sourceSize.height: 18
+                                    sourceSize.width: 16
+                                    sourceSize.height: 16
                                     fillMode: Image.PreserveAspectFit
                                     asynchronous: true
                                     mipmap: true

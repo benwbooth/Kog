@@ -22,6 +22,8 @@
   --highlight-text: #ffffff;
   --border: #34393d;
   --row-height: 26px;
+  /* The folder tree is scanned, not read row by row: keep it compact. */
+  --tree-row-height: 21px;
   --sidebar-width: 260px;
   --transport-height: 92px;
   --toolbar-height: 48px;
@@ -607,7 +609,7 @@ button:focus-visible {
   align-items: center;
   gap: 4px;
   width: 100%;
-  height: var(--row-height);
+  height: var(--tree-row-height);
   border: 0;
   border-radius: 0;
   padding: 0 8px 0 var(--tree-indent, 0px);
@@ -1468,7 +1470,8 @@ body.touch .track .index-cell {
   display: block;
 }
 
-.transport-status {
+.transport-status,
+.song-count {
   text-align: right;
   font-size: 10px;
   color: var(--faint);
@@ -1749,6 +1752,7 @@ body.touch .track .index-cell {
 @media (max-width: 820px), (pointer: coarse) and (max-width: 1200px) {
   :root {
     --row-height: 44px;
+    --tree-row-height: 44px;
     --transport-height: 154px;
     --toolbar-height: 52px;
   }
@@ -1962,7 +1966,8 @@ body.touch .track .index-cell {
     min-width: 0;
   }
 
-  .transport-status {
+  .transport-status,
+  .song-count {
     display: none;
   }
 
@@ -2254,6 +2259,7 @@ body.touch .track .index-cell {
 @media (max-width: 820px), (pointer: coarse) and (max-width: 1200px) {
   :root {
     --row-height: 52px;
+    --tree-row-height: 52px;
     --toolbar-height: 56px;
     --transport-height: 66px;
   }

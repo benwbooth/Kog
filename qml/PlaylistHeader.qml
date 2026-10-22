@@ -165,6 +165,30 @@ Rectangle {
         fitted = next
         if (cacheKey.length > 0)
             fittedCache[cacheKey] = next
+        if (Date.now() < growUntil)
+            growToContent()
+    }
+    // Songs just loaded or added: widen text columns to their content (up to
+    // each column's maximum), so new rows aren't cut off. Their details can
+    // arrive a little after the rows, hence a short window rather than once.
+    property double growUntil: 0
+    function growToContent() {
+        const updated = columns.map(copyColumn)
+        let changed = false
+        for (const column of updated) {
+            if (!column.visible || fixedColumns.indexOf(column.id) >= 0)
+                continue
+            const width = Math.max(column.minimumWidth,
+                Math.min(column.maximumWidth, fittedColumnWidth(column)))
+            if (width > column.width) {
+                column.width = width
+                changed = true
+            }
+        }
+        if (changed) {
+            columns = updated
+            persistLayout()
+        }
     }
     // The revision moves with every session update (playback progress
     // included), so content changes refit at most a few times a second.
@@ -184,7 +208,11 @@ Rectangle {
     Connections {
         target: root.app
         function onPlaylist_revisionChanged() { root.scheduleRefit() }
-        function onPlaylist_countChanged() { root.scheduleRefit() }
+        function onPlaylist_countChanged() {
+            root.growUntil = Date.now() + 3000
+            root.restoredAt = 0
+            root.scheduleRefit()
+        }
     }
     onColumnsChanged: {
         fittedCache = ({})

@@ -7494,6 +7494,17 @@ fn App() -> impl IntoView {
                     </div>
 
                     <div class="transport-right">
+                        <div class="song-count">
+                            {move || {
+                                let count = if pane_key.get() == "queue" {
+                                    backend.revision.track();
+                                    session_model.with_value(|model| model.shown_count())
+                                } else {
+                                    pane_entries.read().len()
+                                };
+                                if count == 1 { "1 song".to_owned() } else { format!("{count} songs") }
+                            }}
+                        </div>
                         <div class="volume-row">
                             <button
                                 class="flat clear-list"

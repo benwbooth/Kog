@@ -9484,6 +9484,20 @@ impl Ui {
             Surface::Muted,
             false,
         );
+        // Songs in the queue or playlist tab in front, by the volume.
+        let count = self.session.shown_count();
+        let count_label = if count == 1 { "1 song".to_owned() } else { format!("{count} songs") };
+        let count_row = if volume_row == layout.footer_top { volume_row + 1 } else { volume_row - 1 };
+        let count_width = width.saturating_sub(icon_x).saturating_sub(1);
+        paint(
+            &mut screen,
+            count_row + 1,
+            width.saturating_sub(cell_width(&count_label).min(count_width)),
+            &count_label,
+            count_width,
+            Surface::Muted,
+            false,
+        );
         let thumb = (self.volume * (volume_width - 1) as f32).round() as usize;
         if thumb > 0 {
             paint(
