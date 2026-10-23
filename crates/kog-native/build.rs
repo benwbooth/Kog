@@ -87,10 +87,7 @@ fn main() {
     build_ncsf(&mgba_output);
     build_ffmpeg();
     // Last: it hides only the symbols that clash with the libraries above.
-    // Desktop only for now (its object merge uses the host nm/objcopy).
-    if !ios && std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("android") {
-        build_furnace();
-    }
+    build_furnace();
 
     cc::Build::new()
         .cpp(true)
@@ -1604,24 +1601,46 @@ fn build_furnace() {
     let build = output.join("build");
     // Furnace vendors chip cores and helpers (blip_buf, emu2413, Nuked-OPL3,
     // reSIDfp...) that other decoders link too. Merge it into one object, then
-    // make Furnace's copies of anything clashing private to it.
+    // make Furnace's copies of anything clashing private to it. (Hiding
+    // everything would also hide C++ COMDAT template copies, which the final
+    // link must still merge.)
+    let apple = std::env::var("CARGO_CFG_TARGET_VENDOR").as_deref() == Ok("apple");
     let archives = [
         build.join("libkog_furnace.a"),
         build.join("extern/fmt/libfmt.a"),
         build.join("extern/fftw/libfftw3.a"),
     ];
-    let merged = build.join("kog_furnace_merged.o");
     let compiler = cc::Build::new().cpp(true).get_compiler();
-    let mut link = std::process::Command::new(compiler.path());
-    link.args(["-r", "-nostdlib", "-Wl,--whole-archive"]);
-    link.args(&archives);
-    link.args(["-Wl,--no-whole-archive", "-o"]).arg(&merged);
-    let status = link.status().expect("run the linker to merge Furnace");
-    assert!(status.success(), "merging Furnace into one object failed");
-    // Localize Furnace's strong definitions that another native library in
-    // this crate also defines. (Hiding everything would also hide C++
-    // COMDAT template copies, which the final link must still merge.)
-    let nm = std::env::var("NM").unwrap_or_else(|_| "nm".to_owned());
+    // Prefer the toolchain's own LLVM tools (the Android NDK ships them next
+    // to clang); fall back to NM/OBJCOPY or the host's.
+    let tool = |name: &str, env: &str, fallback: &str| -> PathBuf {
+        if let Ok(path) = std::env::var(env) {
+            return PathBuf::from(path);
+        }
+        let beside = compiler.path().parent().map(|dir| dir.join(name));
+        match beside {
+            Some(path) if path.is_file() => path,
+            _ => PathBuf::from(fallback),
+        }
+    };
+    let nm = tool("llvm-nm", "NM", "nm");
+    let merge = |output: &Path, hidden: Option<&Path>| {
+        let mut link = std::process::Command::new(compiler.path());
+        link.args(compiler.args());
+        link.args(["-r", "-nostdlib"]);
+        if apple {
+            // Apple's ld -r makes private externs local by default.
+            link.arg("-Wl,-all_load");
+            if let Some(list) = hidden {
+                link.arg(format!("-Wl,-unexported_symbols_list,{}", list.display()));
+            }
+            link.args(&archives);
+        } else {
+            link.arg("-Wl,--whole-archive").args(&archives).arg("-Wl,--no-whole-archive");
+        }
+        let status = link.arg("-o").arg(output).status().expect("run the linker to merge Furnace");
+        assert!(status.success(), "merging Furnace into one object failed");
+    };
     let strong = |path: &Path| -> std::collections::BTreeSet<String> {
         let output = std::process::Command::new(&nm)
             .args(["-g", "--defined-only"])
@@ -1633,15 +1652,21 @@ fn build_furnace() {
             .filter_map(|line| {
                 let mut fields = line.split_whitespace();
                 let (_, kind, name) = (fields.next()?, fields.next()?, fields.next()?);
-                matches!(kind, "T" | "D" | "B" | "R").then(|| name.to_owned())
+                matches!(kind, "T" | "D" | "B" | "R" | "S").then(|| name.to_owned())
             })
             .collect()
     };
+    let merged = build.join("kog_furnace_merged.o");
+    merge(&merged, None);
     let ours = strong(&merged);
     let mut theirs = std::collections::BTreeSet::new();
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR"));
-    let mut stack = vec![out_dir.clone()];
-    while let Some(directory) = stack.pop() {
+    let mut roots = vec![out_dir.clone()];
+    // iOS's renderer archives come prebuilt from ios/native/build.sh.
+    if let Ok(native_libs) = std::env::var("KOG_IOS_NATIVE_LIB_DIR") {
+        roots.push(PathBuf::from(native_libs));
+    }
+    while let Some(directory) = roots.pop() {
         let Ok(entries) = fs::read_dir(&directory) else { continue };
         for entry in entries.flatten() {
             let path = entry.path();
@@ -1649,23 +1674,31 @@ fn build_furnace() {
                 continue;
             }
             if path.is_dir() {
-                stack.push(path);
+                roots.push(path);
             } else if path.extension().is_some_and(|extension| extension == "a") {
                 theirs.extend(strong(&path));
             }
         }
     }
-    let clashes: Vec<_> = ours.intersection(&theirs).filter(|name| !name.starts_with("kog_furnace_")).cloned().collect();
+    let clashes: Vec<_> = ours
+        .intersection(&theirs)
+        .filter(|name| !name.trim_start_matches('_').starts_with("kog_furnace_"))
+        .cloned()
+        .collect();
     if !clashes.is_empty() {
-        let objcopy = std::env::var("OBJCOPY").unwrap_or_else(|_| "objcopy".to_owned());
         let list = build.join("kog_furnace_localize.txt");
         fs::write(&list, clashes.join("\n")).expect("write the Furnace symbol list");
-        let status = std::process::Command::new(&objcopy)
-            .arg(format!("--localize-symbols={}", list.display()))
-            .arg(&merged)
-            .status()
-            .expect("run objcopy on Furnace");
-        assert!(status.success(), "hiding Furnace's clashing symbols failed");
+        if apple {
+            merge(&merged, Some(&list));
+        } else {
+            let objcopy = tool("llvm-objcopy", "OBJCOPY", "objcopy");
+            let status = std::process::Command::new(&objcopy)
+                .arg(format!("--localize-symbols={}", list.display()))
+                .arg(&merged)
+                .status()
+                .expect("run objcopy on Furnace");
+            assert!(status.success(), "hiding Furnace's clashing symbols failed");
+        }
     }
     let bundle = build.join("libkog_furnace_bundle.a");
     let _ = std::fs::remove_file(&bundle);

@@ -477,7 +477,6 @@ impl DecoderRegistry {
         };
         // Ahead of OpenMPT, which shares the .ftm and .dmf extensions with
         // other formats; Furnace only claims files with its own magic.
-        #[cfg(not(any(target_os = "ios", target_os = "android")))]
         {
             let openmpt = registry
                 .backends
