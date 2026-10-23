@@ -55,9 +55,10 @@ ApplicationWindow {
     property int selectedRow: -1
     property int selectionAnchor: -1
     property var selectedRows: []
+    // Re-read only when the workspace itself changed: the JSON carries every
+    // open tab's entries, so re-parsing it on each queue update stalls frames.
     readonly property var playlistWorkspace: {
         appController.workspace_revision
-        appController.playlist_revision
         try { return JSON.parse(appController.workspace_json_for_selection(root.selectedRows.length)) } catch (_) { return { active: "queue", tabs: [], entries: [], selected: [] } }
     }
     property string previousWorkspaceTab: ""

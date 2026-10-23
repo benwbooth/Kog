@@ -9,7 +9,7 @@ Item {
     property var selectedRows: []
     property int selectionAnchor: -1
     readonly property var workspaceState: {
-        app.workspace_revision; app.playlist_revision
+        app.workspace_revision
         return JSON.parse(app.workspace_json_for_selection(selectedRows.length))
     }
     readonly property bool queueActive: workspaceState.active === "queue"

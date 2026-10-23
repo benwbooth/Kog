@@ -22,6 +22,7 @@ pub mod qobject {
         #[qproperty(i32, playlist_revision)]
         #[qproperty(i32, playlists_revision)]
         #[qproperty(i32, workspace_revision)]
+        #[qproperty(i32, workspace_metadata_revision)]
         #[qproperty(QString, playlist_sort_column)]
         #[qproperty(bool, playlist_sort_ascending)]
         #[qproperty(QString, playlist_column_layout)]
@@ -1869,6 +1870,12 @@ pub struct AppControllerRust {
     playlist_revision: i32,
     playlists_revision: i32,
     workspace_revision: i32,
+    /// Moves when a tab's row metadata arrives, without the workspace itself
+    /// changing.
+    workspace_metadata_revision: i32,
+    /// The workspace as QML last saw it: the revision only moves when this
+    /// changes, since QML re-reads every open tab's entries on each move.
+    workspace_seen: String,
     session: Session<Track>,
     session_store: kog_core::state::StateCursor,
     session_ui_store: kog_core::state::StateCursor,
@@ -2101,6 +2108,8 @@ impl Default for AppControllerRust {
             playlist_revision: 0,
             playlists_revision: 0,
             workspace_revision: 0,
+            workspace_metadata_revision: 0,
+            workspace_seen: String::new(),
             session: Session::new(
                 session_id,
                 std::time::SystemTime::now()
@@ -4000,8 +4009,13 @@ impl qobject::AppController {
 
     fn workspace_changed(mut self: Pin<&mut Self>) {
         self.as_mut().rust_mut().refresh_workspace_tracks();
-        let next = self.as_ref().rust().workspace_revision.wrapping_add(1);
-        self.as_mut().set_workspace_revision(next);
+        let seen = serde_json::to_string(&self.as_ref().rust().session.workspace_for_selection(0))
+            .unwrap_or_default();
+        if seen != self.as_ref().rust().workspace_seen {
+            self.as_mut().rust_mut().workspace_seen = seen;
+            let next = self.as_ref().rust().workspace_revision.wrapping_add(1);
+            self.as_mut().set_workspace_revision(next);
+        }
     }
 
     pub fn open_playlist_tab(mut self: Pin<&mut Self>, id: i32, name: QString) {
@@ -4083,7 +4097,8 @@ impl qobject::AppController {
         self.as_mut().write_pending_session();
         self.as_mut().poll_session_ports();
         if self.as_mut().rust_mut().workspace_tracks.poll() {
-            self.as_mut().workspace_changed();
+            let next = self.as_ref().rust().workspace_metadata_revision.wrapping_add(1);
+            self.as_mut().set_workspace_metadata_revision(next);
         }
     }
 

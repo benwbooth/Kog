@@ -36,6 +36,15 @@ FocusScope {
         enabled: editor.live
         function onWorkspace_revisionChanged() { editor.bumpIfChanged() }
         function onPlaylist_revisionChanged() { editor.bumpIfChanged() }
+        // Metadata for a big playlist arrives for a long time; refreshing
+        // every visible cell for each batch made scrolling stutter.
+        function onWorkspace_metadata_revisionChanged() { if (!metadataBump.running) metadataBump.start() }
+    }
+    Timer {
+        id: metadataBump
+        interval: 1000
+        // Never mid-scroll: wait until the list has been still for a moment.
+        onTriggered: if (scrollSave.running) restart(); else editor.bumpIfChanged()
     }
     function bumpIfChanged() {
         if (app.workspace_tab_generation(activeKey) !== seenGeneration) bump()
