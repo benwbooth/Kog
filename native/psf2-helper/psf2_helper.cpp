@@ -271,7 +271,7 @@ void validateIrx(const Bytes& irx, const fs::path& path)
     constexpr size_t ELF_HEADER_SIZE = 52;
     constexpr size_t PROGRAM_HEADER_SIZE = 32;
     constexpr size_t SECTION_HEADER_SIZE = 40;
-    constexpr size_t IOPMOD_SIZE = 282;
+    constexpr size_t IOPMOD_NAME_OFFSET = 26;
 
     if(irx.size() < ELF_HEADER_SIZE || std::memcmp(irx.data(), "\x7f" "ELF", 4) != 0 ||
        irx[4] != 1 || irx[5] != 1 || readU16(irx.data() + 18) != 8)
@@ -332,8 +332,12 @@ void validateIrx(const Bytes& irx, const fs::path& path)
         }
         if(type == IOPMOD_SECTION)
         {
-            if(dataSize < IOPMOD_SIZE ||
-               std::memchr(irx.data() + dataOffset + 26, 0, 256) == nullptr)
+            // The fixed fields end at 26; the module name may be empty and is
+            // often all the section holds (rips' psf2.irx carry 27 bytes).
+            // Play! reads the name as a C string, so it must end inside the file.
+            if(dataSize < IOPMOD_NAME_OFFSET + 1 ||
+               std::memchr(irx.data() + dataOffset + IOPMOD_NAME_OFFSET, 0,
+                           irx.size() - (dataOffset + IOPMOD_NAME_OFFSET)) == nullptr)
             {
                 throw std::runtime_error("psf2.irx has an invalid IOP module section in " +
                                          displayPath(path));
