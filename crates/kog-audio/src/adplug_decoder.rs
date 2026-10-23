@@ -61,6 +61,11 @@ impl DecoderBackend for AdPlugBackend {
         Ok(Some(decoder.subsong_count()))
     }
 
+    // Westwood ADL banks often leave subsong 0 (and others) empty.
+    fn playable_subsongs(&self, path: &Path) -> Result<Option<Vec<u32>>, String> {
+        AdPlug::playable_subsongs(path, ADPLUG_SAMPLE_RATE).map(Some)
+    }
+
     fn probe(&self, source: &PlaybackSource) -> Result<StreamProperties, String> {
         let decoder = Self::open(source)?;
         let metadata = decoder.metadata();

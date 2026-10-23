@@ -206,6 +206,48 @@ KogAdPlug *kog_adplug_open(
     }
 }
 
+size_t kog_adplug_playable_subsongs(
+    const char *path,
+    uint32_t sample_rate,
+    uint32_t *subsongs,
+    size_t capacity,
+    int *error
+) {
+    set_error(error, KOG_ADPLUG_OK);
+    if (!path || !path[0] || sample_rate < 8000 || sample_rate > 192000) {
+        set_error(error, KOG_ADPLUG_INVALID_ARGUMENT);
+        return 0;
+    }
+    KogObservedOpl *emulator = nullptr;
+    CPlayer *player = nullptr;
+    size_t playable = 0;
+    try {
+        emulator = new KogObservedOpl(static_cast<int>(sample_rate));
+        player = CAdPlug::factory(path, emulator);
+        if (!player) {
+            set_error(error, KOG_ADPLUG_OPEN_FAILED);
+        } else {
+            // Westwood ADL and other banks keep empty slots (often the first)
+            // between their songs; list only the ones that play.
+            const unsigned count = std::max(1u, player->getsubsongs());
+            for (unsigned subsong = 0; subsong < count; ++subsong) {
+                if (player->songlength(static_cast<int>(subsong)) == 0) continue;
+                if (playable < capacity) subsongs[playable] = subsong;
+                ++playable;
+            }
+        }
+    } catch (const std::bad_alloc &) {
+        set_error(error, KOG_ADPLUG_OUT_OF_MEMORY);
+        playable = 0;
+    } catch (...) {
+        set_error(error, KOG_ADPLUG_OPEN_FAILED);
+        playable = 0;
+    }
+    delete player;
+    delete emulator;
+    return playable;
+}
+
 void kog_adplug_free(KogAdPlug *decoder) {
     if (!decoder) {
         return;

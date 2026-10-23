@@ -24,6 +24,13 @@ unsafe extern "C" {
         error: *mut c_int,
     ) -> *mut NativeAdPlug;
     fn kog_adplug_free(decoder: *mut NativeAdPlug);
+    fn kog_adplug_playable_subsongs(
+        path: *const c_char,
+        sample_rate: u32,
+        subsongs: *mut u32,
+        capacity: usize,
+        error: *mut c_int,
+    ) -> usize;
     fn kog_adplug_sample_rate(decoder: *const NativeAdPlug) -> u32;
     fn kog_adplug_subsong_count(decoder: *const NativeAdPlug) -> u32;
     fn kog_adplug_total_frames(decoder: *const NativeAdPlug) -> u64;
@@ -157,6 +164,27 @@ impl AdPlug {
         let actual = unsafe { kog_adplug_seek(self.handle.as_ptr(), target) };
         let actual = u64::try_from(actual).map_err(|_| "AdPlug failed while seeking".to_owned())?;
         Ok(duration_from_frames(actual, self.sample_rate))
+    }
+
+    /// The subsongs that play, skipping the empty slots some banks keep.
+    pub fn playable_subsongs(path: &Path, sample_rate: u32) -> Result<Vec<u32>, String> {
+        let native_path = native_path(path)?;
+        let mut subsongs = vec![0_u32; 256];
+        let mut error = 0;
+        let mut count = unsafe {
+            kog_adplug_playable_subsongs(native_path.as_ptr(), sample_rate, subsongs.as_mut_ptr(), subsongs.len(), &mut error)
+        };
+        if count > subsongs.len() {
+            subsongs.resize(count, 0);
+            count = unsafe {
+                kog_adplug_playable_subsongs(native_path.as_ptr(), sample_rate, subsongs.as_mut_ptr(), subsongs.len(), &mut error)
+            };
+        }
+        if error != 0 {
+            return Err(native_error(path, 0, error));
+        }
+        subsongs.truncate(count.min(subsongs.len()));
+        Ok(subsongs)
     }
 
     pub fn supported_extensions() -> Vec<String> {

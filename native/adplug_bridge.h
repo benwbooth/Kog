@@ -27,6 +27,15 @@ KogAdPlug *kog_adplug_open(
     int *error
 );
 void kog_adplug_free(KogAdPlug *decoder);
+/* The subsongs that play (nonzero length), in order; returns how many there
+   are, writing at most `capacity` of them. */
+size_t kog_adplug_playable_subsongs(
+    const char *path,
+    uint32_t sample_rate,
+    uint32_t *subsongs,
+    size_t capacity,
+    int *error
+);
 
 uint32_t kog_adplug_sample_rate(const KogAdPlug *decoder);
 uint32_t kog_adplug_subsong_count(const KogAdPlug *decoder);

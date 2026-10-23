@@ -246,6 +246,12 @@ pub trait DecoderBackend: Send + Sync {
         Ok(None)
     }
 
+    /// The subsongs an expansion lists: every one by default, or only those
+    /// that play for backends whose files keep empty slots.
+    fn playable_subsongs(&self, path: &Path) -> Result<Option<Vec<u32>>, String> {
+        Ok(self.subsong_count(path)?.map(|count| (0..count).collect()))
+    }
+
     fn source_for_fragment(&self, path: PathBuf, fragment: &str) -> Result<PlaybackSource, String> {
         let subsong = fragment.parse::<u32>().map_err(|error| {
             format!(
@@ -844,17 +850,18 @@ impl DecoderRegistry {
                 warnings: Vec::new(),
             });
         };
-        let Some(count) = backend.subsong_count(&path)? else {
+        let Some(subsongs) = backend.playable_subsongs(&path)? else {
             return Ok(ExpansionResult {
                 sources: vec![PlaybackSource::from_path(path)],
                 warnings: Vec::new(),
             });
         };
-        if count == 0 {
+        if subsongs.is_empty() {
             return Err(format!("{} contains no playable subsongs", path.display()));
         }
         Ok(ExpansionResult {
-            sources: (0..count)
+            sources: subsongs
+                .into_iter()
                 .map(|subsong| PlaybackSource {
                     path: path.clone(),
                     remote_url: None,
