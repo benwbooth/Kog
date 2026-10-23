@@ -1576,7 +1576,13 @@ fn build_furnace() {
             .canonicalize()
             .expect("canonicalize the Furnace bridge"),
     );
-    let output = cmake::Config::new(&source)
+    let mut config = cmake::Config::new(&source);
+    // Furnace requires Cocoa on every Apple target, but only its GUI uses it
+    // and iOS has none: satisfy the lookup with Foundation instead.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("ios") {
+        config.define("COCOA", "-framework Foundation");
+    }
+    let output = config
         .out_dir(PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR")).join("furnace"))
         .profile("Release")
         .define("CMAKE_PROJECT_furnace_INCLUDE", &bridge)
