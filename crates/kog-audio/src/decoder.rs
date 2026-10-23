@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::Duration;
 use std::time::SystemTime;
 
+use midly::num::u28;
 use midly::{Format, Fps, Header, MetaMessage, MidiMessage, Smf, Timing, TrackEventKind};
 use lofty::file::TaggedFileExt;
 use lofty::tag::{Accessor, ItemKey};
@@ -1667,7 +1668,102 @@ pub fn read_standard_midi_subsong(
     if selected.title.is_none() {
         selected.title = document.title.as_deref().and_then(decode_midi_text);
     }
+    if let Some(trimmed) = trim_trailing_silence(&selected.bytes) {
+        selected.bytes = trimmed;
+    }
     Ok(selected)
+}
+
+/// How long a song may keep sounding after its last note event.
+const MIDI_SILENT_TAIL_SECONDS: f64 = 3.0;
+
+/// Some files put End of Track long after their last note (Ultima 8's
+/// Chopping sits silent for 98 s). End every track a few seconds after the
+/// last note instead, for every synth, so the next song follows promptly.
+/// Returns `None` when the file already ends in time.
+fn trim_trailing_silence(bytes: &[u8]) -> Option<Vec<u8>> {
+    let smf = Smf::parse(bytes).ok()?;
+    let Timing::Metrical(ticks_per_beat) = smf.header.timing else {
+        return None;
+    };
+    let ticks_per_beat = f64::from(ticks_per_beat.as_int().max(1));
+    let mut tempos = Vec::new();
+    let mut last_note = None::<u64>;
+    let mut end = 0_u64;
+    for track in &smf.tracks {
+        let mut tick = 0_u64;
+        for event in track {
+            tick += u64::from(event.delta.as_int());
+            match event.kind {
+                TrackEventKind::Meta(MetaMessage::Tempo(tempo)) => tempos.push((tick, tempo.as_int())),
+                TrackEventKind::Midi {
+                    message: MidiMessage::NoteOn { .. } | MidiMessage::NoteOff { .. },
+                    ..
+                } => last_note = Some(last_note.map_or(tick, |last| last.max(tick))),
+                _ => {}
+            }
+        }
+        end = end.max(tick);
+    }
+    let last_note = last_note?;
+    tempos.sort_by_key(|(tick, _)| *tick);
+    // Seconds at a tick, and the tick a number of seconds in.
+    let seconds_at = |target: u64| {
+        let (mut seconds, mut at, mut tempo) = (0.0, 0_u64, 500_000.0);
+        for &(tick, next) in tempos.iter().take_while(|(tick, _)| *tick < target) {
+            seconds += (tick - at) as f64 * tempo / ticks_per_beat / 1e6;
+            at = tick;
+            tempo = f64::from(next);
+        }
+        seconds + (target - at) as f64 * tempo / ticks_per_beat / 1e6
+    };
+    let cutoff_seconds = seconds_at(last_note) + MIDI_SILENT_TAIL_SECONDS;
+    if seconds_at(end) <= cutoff_seconds {
+        return None;
+    }
+    let cutoff = {
+        let (mut seconds, mut at, mut tempo) = (0.0, 0_u64, 500_000.0);
+        for &(tick, next) in &tempos {
+            let span = (tick - at) as f64 * tempo / ticks_per_beat / 1e6;
+            if seconds + span >= cutoff_seconds {
+                break;
+            }
+            seconds += span;
+            at = tick;
+            tempo = f64::from(next);
+        }
+        at + ((cutoff_seconds - seconds) * 1e6 * ticks_per_beat / tempo) as u64
+    };
+    let tracks = smf
+        .tracks
+        .iter()
+        .map(|track| {
+            let mut kept = Vec::with_capacity(track.len());
+            let (mut tick, mut written) = (0_u64, 0_u64);
+            for event in track {
+                tick += u64::from(event.delta.as_int());
+                if matches!(event.kind, TrackEventKind::Meta(MetaMessage::EndOfTrack)) {
+                    break;
+                }
+                if tick > cutoff {
+                    break;
+                }
+                let mut event = *event;
+                event.delta = u28::new((tick - written) as u32);
+                written = tick;
+                kept.push(event);
+            }
+            let end_of_track = tick.min(cutoff).max(written);
+            kept.push(midly::TrackEvent {
+                delta: u28::new((end_of_track - written) as u32),
+                kind: TrackEventKind::Meta(MetaMessage::EndOfTrack),
+            });
+            kept
+        })
+        .collect();
+    let mut out = Vec::with_capacity(bytes.len());
+    Smf { header: smf.header, tracks }.write_std(&mut out).ok()?;
+    Some(out)
 }
 
 fn is_spessasynth_container_path(path: &Path) -> bool {
@@ -2403,6 +2499,64 @@ fn create_midi_sequencer(
 
 #[cfg(any(test, feature = "test-util"))]
 mod tests {
+
+    /// How long each MIDI synth takes from picking a song to its first
+    /// sound, after another song played:
+    ///   KOG_MIDI_PROBE=<a.mid> KOG_MIDI_PROBE_NEXT=<b.mid> KOG_SOUNDFONT=<sf2>
+    ///   KOG_SC55_ROMS=<dir> KOG_MT32_ROMS=<dir>
+    ///   cargo test -p kog-audio --lib -- --ignored midi_engines_start_promptly --nocapture
+    #[test]
+    #[ignore = "needs KOG_MIDI_PROBE, KOG_MIDI_PROBE_NEXT, KOG_SOUNDFONT, KOG_SC55_ROMS and KOG_MT32_ROMS"]
+    fn midi_engines_start_promptly() {
+        let var = |name: &str| PathBuf::from(std::env::var(name).unwrap_or_else(|_| panic!("set {name}")));
+        let first = std::fs::read(var("KOG_MIDI_PROBE")).expect("read first MIDI");
+        let next = std::fs::read(var("KOG_MIDI_PROBE_NEXT")).expect("read next MIDI");
+        for engine in [MidiEngine::RustySynth, MidiEngine::Opl3Windows, MidiEngine::Sc55, MidiEngine::Mt32] {
+            let settings = DecoderSettings::new(Some(var("KOG_SOUNDFONT")), engine)
+                .with_sc55_rom_path(Some(var("KOG_SC55_ROMS")))
+                .with_mt32_rom_path(Some(var("KOG_MT32_ROMS")));
+            let backend = MidiBackend::new(settings);
+            if engine == MidiEngine::Sc55 {
+                crate::sc55::warm_sc55_server(&var("KOG_SC55_ROMS"));
+            }
+            let open = |bytes: &[u8]| -> Box<dyn Iterator<Item = f32>> {
+                match engine {
+                    MidiEngine::RustySynth => {
+                        let (midi, duration) = load_midi_file(Path::new("probe.mid"), bytes).expect("parse");
+                        Box::new(MidiSource::new(backend.load_soundfont().expect("soundfont"), midi, duration).expect("open"))
+                    }
+                    MidiEngine::Opl3Windows => Box::new(
+                        OplMidiSource::new(Arc::new(OplMidiTimeline::parse(bytes).expect("parse"))).expect("open"),
+                    ),
+                    MidiEngine::Sc55 => Box::new(Sc55MidiSource::new(
+                        backend.open_sc55(Path::new("probe.mid"), bytes).expect("open"),
+                    )),
+                    MidiEngine::Mt32 => Box::new(backend.open_mt32(bytes).expect("open")),
+                }
+            };
+            // A song plays a while, then the next is picked while it is held.
+            let mut playing = open(&first);
+            for _ in 0..44_100 {
+                playing.next();
+            }
+            let started = std::time::Instant::now();
+            let mut source = open(&next);
+            let opened = started.elapsed();
+            let mut sounded = None;
+            for index in 0..44_100 * 2 * 10 {
+                match source.next() {
+                    Some(sample) if sample.abs() > 0.000_5 => {
+                        sounded = Some((started.elapsed(), index / 2));
+                        break;
+                    }
+                    Some(_) => {}
+                    None => break,
+                }
+            }
+            drop(playing);
+            println!("{engine:?}: opened in {opened:?}; first sound {sounded:?} (wall time, frame)");
+        }
+    }
     use std::io::Write;
 
     use super::*;
