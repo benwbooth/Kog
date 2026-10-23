@@ -188,6 +188,7 @@ impl AppSettings {
             .clamp(0.0, 1.0);
         let output_device = load_text(OUTPUT_DEVICE_SETTING_FILE)
             .and_then(|value| OutputDevicePreference::parse(&value));
+        migrate_artist_after_album();
         let playlist_column_layout = load_text(PLAYLIST_COLUMN_LAYOUT_SETTING_FILE)
             .filter(|value| validate_playlist_column_layout(value))
             .or_else(|| {
@@ -409,6 +410,38 @@ impl OutputDevicePreference {
 
 fn valid_output_device_text(value: &str, maximum_length: usize) -> bool {
     !value.is_empty() && value.len() <= maximum_length && !value.contains(['\0', '\r', '\n'])
+}
+
+const COLUMN_ORDER_SETTING_FILE: &str = "column-order-version";
+
+/// Artist used to sit before Album; it now follows it. Move it once in the
+/// saved desktop and terminal layouts, then leave any later order alone.
+fn migrate_artist_after_album() {
+    if load_text(COLUMN_ORDER_SETTING_FILE).as_deref() == Some("2") {
+        return;
+    }
+    for file in [PLAYLIST_COLUMN_LAYOUT_SETTING_FILE, "tui-column-layout"] {
+        if let Some(layout) = load_text(file) {
+            let moved = artist_after_album(&layout);
+            if moved != layout {
+                let _ = save_text(file, &moved);
+            }
+        }
+    }
+    let _ = save_text(COLUMN_ORDER_SETTING_FILE, "2");
+}
+
+/// `id,width,visible;...` with the `artist` entry moved to just after `album`.
+pub fn artist_after_album(layout: &str) -> String {
+    let mut entries: Vec<&str> = layout.trim().split(';').collect();
+    let position = |entries: &[&str], id: &str| entries.iter().position(|entry| entry.split(',').next() == Some(id));
+    if let (Some(artist), Some(album)) = (position(&entries, "artist"), position(&entries, "album"))
+        && artist < album
+    {
+        let entry = entries.remove(artist);
+        entries.insert(album, entry);
+    }
+    entries.join(";")
 }
 
 fn validate_playlist_column_layout(value: &str) -> bool {

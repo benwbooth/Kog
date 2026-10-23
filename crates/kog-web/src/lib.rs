@@ -394,10 +394,10 @@ impl ColumnId {
         ColumnId::Status,
         ColumnId::Rating,
         ColumnId::Title,
-        ColumnId::AlbumArtist,
-        ColumnId::Artist,
-        ColumnId::Composer,
         ColumnId::Album,
+        ColumnId::Artist,
+        ColumnId::AlbumArtist,
+        ColumnId::Composer,
         ColumnId::Length,
         ColumnId::FileSizeBytes,
         ColumnId::FileSize,
@@ -776,6 +776,17 @@ fn decode_columns(raw: &str) -> Vec<Column> {
     }
     if !columns.iter().any(|column| column.visible) {
         return default_columns();
+    }
+    // Artist used to sit before Album; it now follows it. Move it in layouts
+    // saved before that, until this browser saves a layout of its own.
+    if load("kog.column-order").as_deref() != Some("2") {
+        let at = |columns: &[Column], id| columns.iter().position(|column| column.id == id);
+        if let (Some(artist), Some(album)) = (at(&columns, ColumnId::Artist), at(&columns, ColumnId::Album))
+            && artist < album
+        {
+            let column = columns.remove(artist);
+            columns.insert(album, column);
+        }
     }
     columns
 }
@@ -3134,6 +3145,8 @@ fn App() -> impl IntoView {
             let notifications = track_notifications.get();
             let connected = connected.get();
             if restoring.get() || !connected { return; }
+            // The layout being saved now has the current column order.
+            store("kog.column-order", "2");
             let mut expanded = expanded.into_iter().collect::<Vec<_>>();
             expanded.sort();
             persist.save(
