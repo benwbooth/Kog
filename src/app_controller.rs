@@ -7422,7 +7422,9 @@ impl qobject::AppController {
             self.as_mut()
                 .commit_equalizer_settings(settings, "Equalizer matched track genre");
         }
+        let opening = std::time::Instant::now();
         let result = self.as_mut().rust_mut().playback.play_source(&track.source);
+        eprintln!("kog: started {} in {:?}", track.source.path.display(), opening.elapsed());
         match result {
             Ok(backend) => {
                 self.as_mut().populate_now_playing(index);

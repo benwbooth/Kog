@@ -130,7 +130,11 @@ impl Sc55 {
         rom_directory: &Path,
         path: &Path,
     ) -> Result<Self, String> {
+        let started = std::time::Instant::now();
         let (reader, header) = spawn_embedded(schedule_file.path(), rom_directory)?;
+        // Diagnostics for slow song starts: how long the shared synth took to
+        // take this song (it may still have been busy with the last one).
+        eprintln!("kog sc55: {} ready to render after {:?}", path.display(), started.elapsed());
         validate_header(&header, 0, path)?;
         Self::from_stream(schedule_file, header, reader)
     }
@@ -236,6 +240,7 @@ impl Sc55 {
             .checked_add(byte_count as u64)
             .ok_or_else(|| "Nuked SC-55 PCM cache request overflowed".to_owned())?;
         let mut progress = lock_unpoisoned(&self.cache_state.progress);
+        let waiting = std::time::Instant::now();
         while progress.available_bytes < byte_end && !progress.finished && progress.error.is_none()
         {
             progress = self
@@ -243,6 +248,13 @@ impl Sc55 {
                 .ready
                 .wait(progress)
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+        if waiting.elapsed() > Duration::from_millis(100) {
+            eprintln!(
+                "kog sc55: playback waited {:?} for the synth at frame {}",
+                waiting.elapsed(),
+                self.rendered_frames
+            );
         }
         if progress.available_bytes < byte_end {
             return Err(progress.error.clone().unwrap_or_else(|| {
