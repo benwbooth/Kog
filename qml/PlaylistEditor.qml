@@ -61,7 +61,13 @@ FocusScope {
     Timer {
         id: scrollSave
         interval: 150
-        onTriggered: editor.scrollPositions[editor.activeKey] = Qt.point(list.contentX, list.contentY)
+        onTriggered: {
+            editor.scrollPositions[editor.activeKey] = Qt.point(list.contentX, list.contentY)
+            // Missing song info loads from the top of the view on.
+            const top = list.indexAt(0, list.contentY + 1)
+            if (top >= 0 && top < editor.rows.length)
+                editor.app.workspace_tab_first_visible(editor.activeKey, editor.rows[top])
+        }
     }
     function restoreScroll() {
         const saved = scrollPositions[activeKey]

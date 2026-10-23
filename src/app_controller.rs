@@ -204,6 +204,8 @@ pub mod qobject {
         #[qinvokable]
         fn workspace_toggle_stars(self: Pin<&mut AppController>, indices: QString);
         #[qinvokable]
+        fn workspace_tab_first_visible(self: &AppController, key: QString, row: i32);
+        #[qinvokable]
         fn workspace_sort(self: Pin<&mut AppController>, column: QString, descending: bool);
         #[qinvokable]
         fn workspace_move(self: Pin<&mut AppController>, target: i32);
@@ -3796,6 +3798,13 @@ impl qobject::AppController {
         match self.tab_workspace_tracks(&key.to_string()) {
             Some(tracks) => self.metadata_row_value(&tracks.rows, index, column),
             None => QString::default(),
+        }
+    }
+
+    /// The tab's top visible row, so its missing metadata loads from there.
+    pub fn workspace_tab_first_visible(&self, key: QString, row: i32) {
+        if let (Some(tracks), Ok(row)) = (self.tab_workspace_tracks(&key.to_string()), usize::try_from(row)) {
+            tracks.prioritize(row);
         }
     }
 

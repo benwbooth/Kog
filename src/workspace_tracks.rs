@@ -1,7 +1,7 @@
 //! Metadata for saved-playlist views, separate from the playback queue.
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError};
 
 use kog_audio::decoder::DecoderRegistry;
@@ -20,6 +20,9 @@ pub struct WorkspaceTracks {
     cache: HashMap<String, Track>,
     receiver: Option<Receiver<(usize, Result<Track, String>)>>,
     cancel: Arc<AtomicBool>,
+    /// The first row in view: the worker reads from there on, so a long
+    /// playlist fills in where the person is looking first.
+    priority: Arc<AtomicUsize>,
 }
 
 pub struct MetadataRow {
@@ -107,11 +110,23 @@ impl WorkspaceTracks {
         }
         let decoders = worker();
         let cancel = self.cancel.clone();
+        let priority = self.priority.clone();
         let (sender, receiver) = std::sync::mpsc::channel();
         self.receiver = Some(receiver);
         std::thread::spawn(move || {
             let mut cache: HashMap<String, Track> = HashMap::new();
-            for (index, entry) in missing {
+            let mut missing: std::collections::BTreeMap<usize, StoredEntry> = missing.into_iter().collect();
+            loop {
+                let from = priority.load(Ordering::Relaxed);
+                let Some(index) = missing
+                    .range(from..)
+                    .next()
+                    .or_else(|| missing.iter().next())
+                    .map(|(index, _)| *index)
+                else {
+                    break;
+                };
+                let entry = missing.remove(&index).expect("index is missing");
                 if cancel.load(Ordering::Relaxed) {
                     break;
                 }
@@ -133,6 +148,11 @@ impl WorkspaceTracks {
                 }
             }
         });
+    }
+
+    /// Read metadata from this row on first (the top of the view).
+    pub fn prioritize(&self, row: usize) {
+        self.priority.store(row, Ordering::Relaxed);
     }
 
     pub fn poll(&mut self) -> bool {
