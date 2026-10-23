@@ -1676,16 +1676,15 @@ pub fn read_standard_midi_subsong(
 
 /// How long a song may keep sounding after its last note event.
 const MIDI_SILENT_TAIL_SECONDS: f64 = 3.0;
-/// Leading silence longer than this is cut down to `MIDI_LEAD_IN_SECONDS`.
-const MIDI_LONGEST_LEAD_IN_SECONDS: f64 = 1.0;
-/// Kept before the first note so setup messages (resets, patches) land.
-const MIDI_LEAD_IN_SECONDS: f64 = 0.5;
+/// Kept before the first note when SysEx (a GS/GM reset, a patch dump)
+/// precedes it: synths need a moment to apply those. Otherwise none.
+const MIDI_SYSEX_LEAD_IN_SECONDS: f64 = 0.2;
 
 /// Some files sit silent around their notes: Maniac Mansion's intro waits
 /// 4.5 s before its first note, and Ultima 8's Chopping keeps going 98 s
-/// after its last. For every synth, start half a second before the first
-/// note and end a few seconds after the last. Setup messages before the
-/// first note keep their order. Returns `None` when nothing needs cutting.
+/// after its last. For every synth, start at the first note and end a few
+/// seconds after the last. Setup messages before the first note keep their
+/// order. Returns `None` when nothing needs cutting.
 fn trim_silence(bytes: &[u8]) -> Option<Vec<u8>> {
     let smf = Smf::parse(bytes).ok()?;
     let Timing::Metrical(ticks_per_beat) = smf.header.timing else {
@@ -1694,6 +1693,7 @@ fn trim_silence(bytes: &[u8]) -> Option<Vec<u8>> {
     let ticks_per_beat = f64::from(ticks_per_beat.as_int().max(1));
     let mut tempos = Vec::new();
     let mut first_note = None::<u64>;
+    let mut sysex_ticks = Vec::new();
     let mut last_note = None::<u64>;
     let mut end = 0_u64;
     for track in &smf.tracks {
@@ -1702,6 +1702,7 @@ fn trim_silence(bytes: &[u8]) -> Option<Vec<u8>> {
             tick += u64::from(event.delta.as_int());
             match event.kind {
                 TrackEventKind::Meta(MetaMessage::Tempo(tempo)) => tempos.push((tick, tempo.as_int())),
+                TrackEventKind::SysEx(_) | TrackEventKind::Escape(_) => sysex_ticks.push(tick),
                 TrackEventKind::Midi { message, .. } => {
                     if matches!(message, MidiMessage::NoteOn { vel, .. } if vel.as_int() > 0) {
                         first_note = Some(first_note.map_or(tick, |first| first.min(tick)));
@@ -1741,12 +1742,8 @@ fn trim_silence(bytes: &[u8]) -> Option<Vec<u8>> {
     };
     let cutoff_seconds = seconds_at(last_note) + MIDI_SILENT_TAIL_SECONDS;
     let cutoff = if seconds_at(end) > cutoff_seconds { tick_at(cutoff_seconds) } else { u64::MAX };
-    let lead_seconds = seconds_at(first_note);
-    let shift = if lead_seconds > MIDI_LONGEST_LEAD_IN_SECONDS {
-        tick_at(lead_seconds - MIDI_LEAD_IN_SECONDS).min(first_note)
-    } else {
-        0
-    };
+    let lead_in = if sysex_ticks.iter().any(|tick| *tick < first_note) { MIDI_SYSEX_LEAD_IN_SECONDS } else { 0.0 };
+    let shift = tick_at((seconds_at(first_note) - lead_in).max(0.0)).min(first_note);
     if cutoff == u64::MAX && shift == 0 {
         return None;
     }
@@ -2541,9 +2538,9 @@ mod tests {
             .unwrap();
         let trimmed = Smf::parse(Box::leak(trim_silence(&bytes).expect("trimmed").into_boxed_slice())).unwrap();
         let ticks: Vec<u32> = trimmed.tracks[0].iter().map(|event| event.delta.as_int()).collect();
-        // Setup stays first; the note starts 0.5 s (30 ticks) in; the song
-        // ends 3 s (180 ticks) after the note off.
-        assert_eq!(ticks, vec![0, 0, 30, 60, 180]);
+        // Setup stays first; the note starts at once; the song ends 3 s
+        // (180 ticks) after the note off.
+        assert_eq!(ticks, vec![0, 0, 0, 60, 180]);
         assert!(matches!(trimmed.tracks[0][4].kind, TrackEventKind::Meta(MetaMessage::EndOfTrack)));
     }
 
