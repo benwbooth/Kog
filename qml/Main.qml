@@ -3538,6 +3538,10 @@ ApplicationWindow {
                             visible: root.playlistInsertIndex >= 0
                             y: root.playlistInsertIndex * playlistsList.rowPitch - playlistsList.contentY
                         }
+
+                        maximumFlickVelocity: 12000
+                        flickDeceleration: 2200
+                        KineticWheelHandler { view: playlistsList }
                     }
                 }
                 Item {
