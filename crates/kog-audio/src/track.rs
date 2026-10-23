@@ -181,6 +181,9 @@ impl Track {
             if let Some(better) = title_from_filename(&track.source) {
                 track.title = better;
             }
+        } else if let Some(name) = filename_adding_to_short_title(&track.title, &track.source) {
+            // "Theme" alone says little; "Theme · Shofixti" says which.
+            track.title = format!("{} · {name}", track.title.trim());
         }
         track.refresh_search_text();
         track
@@ -306,6 +309,34 @@ fn shared_by_sibling_midi(title: &str, source: &PlaybackSource) -> bool {
     counts.get(title).is_some_and(|count| *count >= 3)
 }
 
+/// For a short title, the cleaned filename when it names the song in words
+/// the title lacks (and is itself not a placeholder like `TRACK2` or `M07`).
+fn filename_adding_to_short_title(title: &str, source: &PlaybackSource) -> Option<String> {
+    let words = |text: &str| -> Vec<String> {
+        text.split(|c: char| !c.is_alphanumeric())
+            .filter(|word| !word.is_empty())
+            .map(str::to_lowercase)
+            .collect()
+    };
+    let title_words = words(title);
+    let short = title_words.len() <= 2 && title.trim().chars().count() <= 14;
+    if !short {
+        return None;
+    }
+    let name = title_from_filename(source)?;
+    let name_words = words(&name);
+    // `TRACK2`, `M07`, `SONG00`, `BOSS-05`: a short word and a number.
+    let numbered = name_words.len() <= 2
+        && name_words.iter().any(|word| word.chars().any(|c| c.is_ascii_digit()))
+        && name_words.iter().all(|word| word.chars().filter(|c| c.is_alphabetic()).count() <= 6);
+    let informative = !numbered
+        && name.chars().filter(|c| c.is_alphabetic()).count() >= 4
+        && title_is_informative(&name, &PlaybackSource::from_path(PathBuf::from("/")));
+    let adds = name_words.iter().any(|word| word.chars().any(|c| c.is_alphabetic()) && !title_words.contains(word));
+    let repeats = title_words.iter().all(|word| name_words.contains(word));
+    (informative && adds && !repeats).then_some(name)
+}
+
 /// The filename as a title: no extension, separators as spaces, and rip
 /// prefixes such as `PCGame-COMMANDER_KEEN-` dropped. The subsong number
 /// stays for files holding several songs.
@@ -396,6 +427,12 @@ mod tests {
         for good in ["Hyperspace Travel", "Shofixti's Theme", "Paavinkatu blues", "- One Must Fall! 1 -", "song"] {
             assert!(title_is_informative(good, &source("song.mid")), "{good} is a real title");
         }
+        assert_eq!(filename_adding_to_short_title("Theme", &source("Shofixti.mid")).as_deref(), Some("Shofixti"));
+        assert_eq!(filename_adding_to_short_title("Hyperspace Travel", &source("H-Space.mid")), None);
+        assert_eq!(filename_adding_to_short_title("Death", &source("BOSS-05.MID")), None);
+        assert_eq!(filename_adding_to_short_title("Diamondus", &source("Diamondus.s3m")), None);
+        assert_eq!(filename_adding_to_short_title("Combat", &source("TRACK2.S3M")), None);
+        assert_eq!(filename_adding_to_short_title("Shofixti's Theme", &source("Shofixti.mid")), None);
         assert_eq!(title_from_filename(&source("PCGame-COMMANDER_KEEN-fish_polka.mid")).as_deref(), Some("fish polka"));
         assert_eq!(title_from_filename(&source("02 - Debut Of The Chron-O-John.mid")).as_deref(), Some("02 - Debut Of The Chron-O-John"));
     }
