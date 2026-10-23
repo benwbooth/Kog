@@ -272,14 +272,55 @@ struct BootedEmulator
     uint32_t sampleRate = 0;
 };
 
-// Post-reset settle steps between songs on a live emulator: a GS reset
-// silences and reinitializes the synth, so only a short drain is needed
-// (tens of milliseconds emulated) rather than the full cold-boot below.
+// Minimum settle steps after a GS reset between songs on a live emulator
+// (tens of milliseconds emulated); silenceBetweenSongs then waits for quiet.
 constexpr uint32_t POST_RESET_SETTLE_STEPS = 48000U;
 
 // The core invokes its sample callback even while booting or settling a reset.
 // Those samples precede the requested track and must be drained, not written.
 void discardSample(void*, const AudioFrame<int32_t>&) {}
+
+struct SilenceWatch
+{
+    uint64_t quietFrames = 0;
+};
+
+void watchSilence(void* context, const AudioFrame<int32_t>& frame)
+{
+    auto& watch = *static_cast<SilenceWatch*>(context);
+    const auto level = [](int32_t value) { return value < 0 ? -int64_t(value) : int64_t(value); };
+    // Within a few 16-bit steps of silence (Normalize shifts right by 15).
+    constexpr int64_t QUIET = int64_t(4) << 15;
+    if(level(frame.left) < QUIET && level(frame.right) < QUIET)
+        ++watch.quietFrames;
+    else
+        watch.quietFrames = 0;
+}
+
+// Between songs on a live emulator, silence the previous song before the next
+// one starts: a GS reset alone leaves the last notes (and their release)
+// sounding into the next song's first moments. Stop every voice, reset, then
+// run the synth until its output has stayed silent for a while.
+void silenceBetweenSongs(Emulator& emulator)
+{
+    for(uint8_t channel = 0; channel < 16; ++channel)
+    {
+        const uint8_t status = uint8_t(0xB0 | channel);
+        const uint8_t soundOff[] = {status, 120, 0, status, 123, 0, status, 121, 0, status, 64, 0};
+        emulator.PostMIDI(std::span<const uint8_t>(soundOff));
+    }
+    emulator.PostSystemReset(EMU_SystemReset::GS_RESET);
+    SilenceWatch watch;
+    emulator.SetSampleCallback(watchSilence, &watch);
+    // At least the old fixed settle; then until ~100 ms (at 32 kHz or more)
+    // of silence, giving up after about two emulated seconds.
+    for(uint32_t step = 0; step < 4'000'000U; ++step)
+    {
+        emulator.Step();
+        if(step >= POST_RESET_SETTLE_STEPS && watch.quietFrames >= 3200) break;
+    }
+    emulator.SetSampleCallback(discardSample, nullptr);
+}
 
 BootedEmulator bootEmulator(const fs::path& romDirectory,
                             std::string_view requestedRomset)
@@ -583,9 +624,7 @@ void runServer(const fs::path& romDirectory, std::string_view requestedRomset)
             const ServerJob job = parseJobLine(line);
             const Schedule schedule = readSchedule(job.schedulePath);
             const uint64_t expectedEpoch = epoch.load(std::memory_order_relaxed);
-            booted.emulator->PostSystemReset(EMU_SystemReset::GS_RESET);
-            for(uint32_t step = 0; step < POST_RESET_SETTLE_STEPS; ++step)
-                booted.emulator->Step();
+            silenceBetweenSongs(*booted.emulator);
             SocketGuard sock = connectLoopback(job.port);
             FILE* out = fdopenSocket(sock.sock);
             // The guard must not close the socket out from under stdio.
@@ -710,9 +749,7 @@ extern "C" int kog_sc55_render(const char* schedulePath,
             bootEmbedded(*context, romPath);
             if(context->renderedBefore)
             {
-                context->booted->emulator->PostSystemReset(EMU_SystemReset::GS_RESET);
-                for(uint32_t step = 0; step < POST_RESET_SETTLE_STEPS; ++step)
-                    context->booted->emulator->Step();
+                silenceBetweenSongs(*context->booted->emulator);
             }
             context->renderedBefore = true;
             renderJob(*context->booted, schedule, 0, output, &context->epoch, epoch);
